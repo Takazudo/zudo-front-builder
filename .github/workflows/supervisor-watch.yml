@@ -45,6 +45,11 @@
 # is the emitter or the harvester breaking, i.e. exactly the silent no-op
 # #2902 exists to prevent. The harvester keeps the two apart by exit code.
 #
+# A job log older than the repository's Actions retention (7 days on this
+# repo) answers 410 and is skipped as `log-expired` — enumerated, listed in
+# the step summary, never a partial harvest. A window in which every log has
+# expired is still `no-data`, not red.
+#
 # ALLOWED-TO-FAIL WITHOUT SWALLOWING THE SIGNAL: no `continue-on-error: true`
 # anywhere. That flag has a sharp edge — a continue-on-error step never marks
 # its job "failed", so a downstream `if: failure()` never fires and the
@@ -156,6 +161,8 @@ jobs:
           name: supervisor-watch
           path: supervisor-watch-out
           if-no-files-found: warn
+          # The repository setting caps this at 7 days regardless of the
+          # value below (see the header comment on job-log expiry).
           retention-days: 14
 
       # `!cancelled()` rather than the bare condition: a bare `if:` implicitly
