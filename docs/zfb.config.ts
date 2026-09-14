@@ -26,7 +26,7 @@ export default defineConfig(
     // today's rendering. Neither v4 default is neutral.
     logo: "/img/logo.svg",
     home: {
-      wide: false,
+      wide: true,
       introMarkdown: `Write your pages in TSX and MDX. zfb turns them into one Request/Response application: prerender it to static HTML, serve it on Cloudflare Workers, or run it as a local content server inside your own app.
 
 For developers building content sites or adding content to a desktop app, zfb provides routing, rendering, and content collections as small, composable parts. The engine ships as a single Rust binary.
