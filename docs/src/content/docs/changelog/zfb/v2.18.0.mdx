@@ -1,0 +1,27 @@
+---
+title: v2.18.0
+sidebar_position: 128
+---
+
+# v2.18.0
+
+Released: 2026-09-16
+
+## Features
+
+- Resolve plugin virtual modules in the islands scanner (200452e6).
+- Wire plugin virtual modules into the islands scanner resolver (d4a66b52).
+- Emit gated `--alias` flags for single-file plugin aliases in the shared resolver (a9f08829).
+- Emit gated `--alias` flags for single-file plugin aliases in islands bundles (da0ea149).
+- Emit gated `--alias` flags for plugin aliases in the SSR bundler (8ecf2dff).
+- Stage injected-route entrypoints and their import closure as exact files (fdb49c70).
+- Plumb injected-route entrypoints through build and dev bundling (f3d7d567).
+
+## Bug Fixes
+
+- Stop duplicating `Cache-Control` when plugin middleware supplies a valid value (ec4a38a6).
+- Seed the dev islands scanner with package-route entrypoints (8c65f033).
+- Seed dev CSS content globs from package-injected routes (f9f56aa7).
+- Skip esbuild `--alias` flags for names esbuild rejects (38c9b4d6).
+- Update rustls to clear RUSTSEC-2026-0285 (3ac04943).
+- Allow SSR virtual modules to import exact canonical files materialized from injected-route staging claims while preserving the hidden-path guard (6be62a31).
