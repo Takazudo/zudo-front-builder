@@ -6158,6 +6158,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "tempfile",
+ "tracing",
  "zfb-types",
 ]
 

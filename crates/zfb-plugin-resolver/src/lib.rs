@@ -33,8 +33,11 @@
 //!    overwriting user-supplied entries.
 //!
 //! Callers then write the merged map into their synthetic tsconfig and
-//! pass `--tsconfig=<that path>` to esbuild. No `--alias` flags are
-//! emitted for plugin entries.
+//! pass `--tsconfig=<that path>` to esbuild. The only plugin entries that
+//! ALSO get `--alias` flags are those whose target is a single file
+//! (virtual modules, and gated single-file aliases — see
+//! `ResolverInputs::plugin_alias_args`), where prefix-with-slash cannot
+//! widen the match.
 //!
 //! ## Why one shared crate
 //!
@@ -138,8 +141,8 @@ pub struct ResolverInputs {
     ///
     /// esbuild's `--alias` (`PackageAliases`) is applied earlier in
     /// resolution and is **not** `node_modules`-gated, so it reaches the
-    /// node_modules entrypoint. We deliberately use it ONLY for virtual
-    /// modules — never for `@/`-style aliases — because:
+    /// node_modules entrypoint. It is only safe for a target that is a
+    /// single *file*:
     ///
     /// - A virtual module's target is always a single materialized
     ///   `.mjs` *file*. esbuild's alias is prefix-with-slash, so
@@ -151,8 +154,36 @@ pub struct ResolverInputs {
     /// - A plugin alias like `@/foo` may point at a *directory*, where
     ///   prefix-with-slash WOULD silently resolve `@/foo/bar` to a real
     ///   file — exactly the regression #269 moved aliases off `--alias`
-    ///   to avoid. Those stay `compilerOptions.paths`-only.
+    ///   to avoid. Those stay `compilerOptions.paths`-only; single-file
+    ///   plugin aliases ride `--alias` too, via
+    ///   [`Self::plugin_alias_args`].
     pub virtual_module_alias_args: Vec<(String, String)>,
+
+    /// `(from, absolute-POSIX-path)` pairs for **plugin aliases** that
+    /// ALSO become esbuild `--alias` flags via
+    /// [`Self::plugin_alias_flags`] (#3002) — a subset of the alias
+    /// entries in `paths_entries`, which is itself unaffected. Without the
+    /// flag, `ctx.addAlias` silently does not apply to an importer whose
+    /// realpath is under `node_modules` (same gate as #1263 above).
+    ///
+    /// An alias qualifies only when all three gates pass:
+    ///
+    /// 1. **The target `is_file()`.** A file has no children, so
+    ///    esbuild's prefix-with-slash `--alias` cannot resolve `from/x`
+    ///    through it (#269 exact-match contract). A plain check with no
+    ///    extension or `index.*` probing: an extensionless target esbuild
+    ///    would resolve via probing stays tsconfig-only rather than
+    ///    re-deriving esbuild's resolver in Rust.
+    /// 2. **The user does not claim `from`** in their own
+    ///    `compilerOptions.paths` (exact or wildcard, user-wins #1267):
+    ///    `--alias` is applied before tsconfig `paths`, so a flag would
+    ///    override the user's mapping.
+    /// 3. **No slash-prefix collision** with another alias `from`, a
+    ///    virtual-module specifier, or a caller-reserved specifier
+    ///    (`a` collides with `a` and `a/b`, not `ab`). esbuild's `--alias`
+    ///    matches `from` and `from/…`, so a flag for `@/foo` would capture
+    ///    an import of `@/foo/bar` meant for a separate registration.
+    pub plugin_alias_args: Vec<(String, String)>,
 
     /// Held-alive temp-file handles for plugin virtual modules.
     ///
@@ -183,6 +214,28 @@ impl ResolverInputs {
             .map(|(specifier, target)| format!("--alias:{specifier}={target}"))
             .collect()
     }
+
+    /// esbuild `--alias:<from>=<absolute-path>` CLI flags for every
+    /// single-file plugin alias (see [`Self::plugin_alias_args`]), in the
+    /// same format as [`Self::virtual_module_alias_flags`]. Empty when no
+    /// plugin alias qualifies, so a zero-plugin argv stays byte-identical.
+    pub fn plugin_alias_flags(&self) -> impl Iterator<Item = String> + '_ {
+        self.plugin_alias_args
+            .iter()
+            .map(|(from, target)| format!("--alias:{from}={target}"))
+    }
+}
+
+/// True when `a` and `b` are equal or one is a slash-prefix of the other
+/// (`a` vs `a/b`), i.e. the specifier space esbuild's prefix-with-slash
+/// `--alias` for one would also capture for the other. `a` vs `ab` is no
+/// collision.
+fn specifiers_slash_prefix_collide(a: &str, b: &str) -> bool {
+    fn is_slash_prefix(prefix: &str, s: &str) -> bool {
+        s.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
+    is_slash_prefix(a, b) || is_slash_prefix(b, a)
 }
 
 /// Build the per-call resolver inputs from plugin-registered aliases
@@ -205,28 +258,69 @@ impl ResolverInputs {
 ///   plugin EXACT key (`virtual:foo/bar`) out-specifics a user
 ///   `virtual:foo/*` pattern in TS/esbuild path matching, so the plugin
 ///   `paths_entry` must be suppressed too.
+/// - `reserved_specifiers`: specifiers the caller already emits its own
+///   hardcoded `--alias` for (the SSR bundler's `zfb`). A plugin alias
+///   colliding with one gets no `--alias` flag of its own.
 ///
 /// On success the returned `ResolverInputs::paths_entries` contains one
 /// entry per alias plus one entry per virtual module the user does NOT
 /// own, all keyed on the bare specifier, all targeting a single absolute
 /// POSIX path. `virtual_module_alias_args` carries the same
-/// user-unclaimed virtual-module entries.
+/// user-unclaimed virtual-module entries; `plugin_alias_args` carries the
+/// aliases passing the three gates documented on
+/// [`ResolverInputs::plugin_alias_args`].
 pub fn build_resolver_inputs(
     aliases: &[(String, String)],
     virtual_modules: &[(String, String)],
     working_dir: &Path,
     user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
+    reserved_specifiers: &[&str],
 ) -> Result<ResolverInputs> {
     let mut paths_entries: Vec<(String, String)> = Vec::new();
     let mut virtual_module_alias_args: Vec<(String, String)> = Vec::new();
+    let mut plugin_alias_args: Vec<(String, String)> = Vec::new();
     let mut temp_files: Vec<NamedTempFile> = Vec::new();
 
     // Plugin aliases first. The target string already came from the
     // plugin registry as an absolute filesystem path (resolved against
     // the project root by `PluginSetupAccumulator::resolve_against_root`).
     // Normalize to POSIX so the JSON output is platform-stable.
-    for (from, to) in aliases {
-        paths_entries.push((from.clone(), path_to_posix_string(Path::new(to))));
+    for (index, (from, to)) in aliases.iter().enumerate() {
+        let posix_target = path_to_posix_string(Path::new(to));
+        paths_entries.push((from.clone(), posix_target.clone()));
+
+        if !Path::new(to).is_file() {
+            tracing::debug!(
+                alias = %from,
+                target = %to,
+                "plugin alias target is not an existing file; tsconfig paths only, no --alias"
+            );
+            continue;
+        }
+        if user_claims_specifier(user_tsconfig_paths, from) {
+            continue;
+        }
+        let collision = aliases
+            .iter()
+            .enumerate()
+            .filter(|(other_index, _)| *other_index != index)
+            .map(|(_, (other, _))| other.as_str())
+            .chain(
+                virtual_modules
+                    .iter()
+                    .map(|(specifier, _)| specifier.as_str()),
+            )
+            .chain(reserved_specifiers.iter().copied())
+            .find(|other| specifiers_slash_prefix_collide(from, other));
+        if let Some(other) = collision {
+            tracing::warn!(
+                "zfb-plugin-resolver: plugin alias `{from}` overlaps `{other}` under esbuild's \
+                 prefix-with-slash --alias matching; `{from}` stays tsconfig-paths-only and will \
+                 not apply to importers under node_modules"
+            );
+            continue;
+        }
+        plugin_alias_args.push((from.clone(), posix_target));
     }
 
     // Plugin virtual modules. Each source is written to a `.mjs` temp
@@ -330,6 +424,7 @@ pub fn build_resolver_inputs(
     Ok(ResolverInputs {
         paths_entries,
         virtual_module_alias_args,
+        plugin_alias_args,
         _temp_files: temp_files,
     })
 }
@@ -1098,10 +1193,12 @@ mod tests {
     #[test]
     fn empty_inputs_produce_empty_outputs() {
         let dir = TempDir::new().unwrap();
-        let r = build_resolver_inputs(&[], &[], dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&[], &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
         assert!(r.paths_entries.is_empty());
         assert!(r.virtual_module_alias_args.is_empty());
         assert!(r.virtual_module_alias_flags().is_empty());
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.plugin_alias_flags().count(), 0);
         assert!(r._temp_files.is_empty());
     }
 
@@ -1112,22 +1209,23 @@ mod tests {
     fn alias_produces_exact_match_paths_entry() {
         let dir = TempDir::new().unwrap();
         let aliases = vec![("@/foo".to_string(), "/abs/src/foo.tsx".to_string())];
-        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
         assert_eq!(r.paths_entries.len(), 1);
         assert_eq!(r.paths_entries[0].0, "@/foo");
         assert_eq!(r.paths_entries[0].1, "/abs/src/foo.tsx");
         // No wildcard — bare specifier only.
         assert!(!r.paths_entries[0].0.contains('*'));
         assert!(!r.paths_entries[0].1.contains('*'));
-        // Plugin aliases must NOT become `--alias` flags — only virtual
-        // modules do (#1263). `@/`-style aliases can target a directory,
-        // where esbuild's prefix-with-slash `--alias` would regress the
-        // exact-match contract (#269).
+        // The target does not exist on disk, so the alias fails the
+        // `is_file()` gate and gets no `--alias` flag (#3002): only a
+        // single-file target is safe under esbuild's prefix-with-slash
+        // `--alias` without regressing the exact-match contract (#269).
         assert!(
             r.virtual_module_alias_args.is_empty(),
-            "alias entries must not be emitted as --alias flags"
+            "alias entries must not be emitted as virtual-module --alias flags"
         );
         assert!(r.virtual_module_alias_flags().is_empty());
+        assert_eq!(r.plugin_alias_flags().count(), 0);
     }
 
     /// Virtual modules materialize to a `.mjs` temp file under
@@ -1141,7 +1239,7 @@ mod tests {
             "virtual:meta".to_string(),
             "export default { ok: true };".to_string(),
         )];
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
         assert_eq!(r.paths_entries.len(), 1);
         assert_eq!(r.paths_entries[0].0, "virtual:meta");
         assert_eq!(r._temp_files.len(), 1);
@@ -1200,7 +1298,7 @@ mod tests {
             "virtual:meta".to_string(),
             "export default { ok: true };".to_string(),
         )];
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
         let tmp_path = r._temp_files[0].path().to_path_buf();
 
         let second_handle = std::fs::OpenOptions::new()
@@ -1233,7 +1331,7 @@ mod tests {
     fn virtual_module_alias_flags_format_is_alias_colon_key_equals_value() {
         let dir = TempDir::new().unwrap();
         let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
         let flags = r.virtual_module_alias_flags();
         assert_eq!(flags.len(), 1);
         let flag = &flags[0];
@@ -1256,7 +1354,7 @@ mod tests {
     fn virtual_module_falls_back_to_system_tmpdir_when_working_dir_missing() {
         let bogus = std::path::PathBuf::from("/this/path/should/not/exist/zfb-test");
         let vms = vec![("virtual:x".to_string(), "export const x = 1;".to_string())];
-        let r = build_resolver_inputs(&[], &vms, &bogus, &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, &bogus, &BTreeMap::new(), &[]).unwrap();
         assert_eq!(r._temp_files.len(), 1);
         let tmp_path = r._temp_files[0].path();
         assert!(tmp_path.exists(), "temp file must be on disk");
@@ -1359,17 +1457,184 @@ mod tests {
             "virtual:meta".to_string(),
             "export const meta = 1;".to_string(),
         )];
-        let r = build_resolver_inputs(&aliases, &vms, dir.path(), &BTreeMap::new()).unwrap();
+        let r = build_resolver_inputs(&aliases, &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
         assert_eq!(r.paths_entries.len(), 3);
         assert_eq!(r.paths_entries[0].0, "@/foo");
         assert_eq!(r.paths_entries[1].0, "@/bar");
         assert_eq!(r.paths_entries[2].0, "virtual:meta");
         assert_eq!(r._temp_files.len(), 1);
         // Only the virtual module becomes an `--alias` flag; the two
-        // `@/`-aliases do NOT (#1263 — they stay tsconfig-paths-only).
+        // `@/`-aliases' targets do not exist on disk, so they fail the
+        // `is_file()` gate and stay tsconfig-paths-only (#3002).
         assert_eq!(r.virtual_module_alias_args.len(), 1);
         assert_eq!(r.virtual_module_alias_args[0].0, "virtual:meta");
         assert_eq!(r.virtual_module_alias_flags().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // plugin alias `--alias` flags (#3002) — file / user-wins / collision gates
+    // -----------------------------------------------------------------------
+
+    fn write_file(dir: &Path, rel: &str) -> String {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "export default 1;").unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn file_target_alias_emits_flag_in_virtual_module_flag_format() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/foo.tsx");
+        let aliases = vec![("@/foo".to_string(), target.clone())];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        let posix = path_to_posix_string(Path::new(&target));
+        assert_eq!(
+            r.plugin_alias_args,
+            vec![("@/foo".to_string(), posix.clone())]
+        );
+        assert_eq!(
+            r.plugin_alias_flags().collect::<Vec<_>>(),
+            vec![format!("--alias:@/foo={posix}")]
+        );
+        assert_eq!(r.paths_entries, vec![("@/foo".to_string(), posix)]);
+        assert!(r.virtual_module_alias_flags().is_empty());
+    }
+
+    #[test]
+    fn directory_target_alias_emits_no_flag_and_keeps_paths_entry() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("src/components");
+        std::fs::create_dir_all(&target).unwrap();
+        let target = target.to_string_lossy().into_owned();
+        let aliases = vec![("@/components".to_string(), target.clone())];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.plugin_alias_flags().count(), 0);
+        assert_eq!(
+            r.paths_entries,
+            vec![(
+                "@/components".to_string(),
+                path_to_posix_string(Path::new(&target))
+            )]
+        );
+    }
+
+    #[test]
+    fn missing_target_alias_emits_no_flag_and_does_not_probe_extensions() {
+        let dir = TempDir::new().unwrap();
+        // `foo.tsx` exists, but the registered target is extensionless:
+        // esbuild might resolve it by probing, zfb must not.
+        write_file(dir.path(), "src/foo.tsx");
+        let target = dir.path().join("src/foo").to_string_lossy().into_owned();
+        let aliases = vec![("@/foo".to_string(), target)];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.paths_entries.len(), 1);
+    }
+
+    #[test]
+    fn user_wildcard_claim_suppresses_alias_flag() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/foo.tsx");
+        let aliases = vec![("@/foo".to_string(), target)];
+        let mut user = BTreeMap::new();
+        user.insert("@/*".to_string(), vec!["src/*".to_string()]);
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &user, &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.paths_entries.len(), 1, "paths_entries is unchanged");
+    }
+
+    #[test]
+    fn user_exact_claim_suppresses_alias_flag() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/foo.tsx");
+        let aliases = vec![("@/foo".to_string(), target)];
+        let mut user = BTreeMap::new();
+        user.insert("@/foo".to_string(), vec!["src/user-foo.tsx".to_string()]);
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &user, &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.paths_entries.len(), 1, "paths_entries is unchanged");
+    }
+
+    #[test]
+    fn alias_slash_prefixing_another_alias_emits_no_flag_for_either() {
+        let dir = TempDir::new().unwrap();
+        let foo = write_file(dir.path(), "src/foo.tsx");
+        let bar = write_file(dir.path(), "src/bar.tsx");
+        let aliases = vec![
+            ("@/foo".to_string(), foo),
+            ("@/foo/bar".to_string(), bar.clone()),
+        ];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert!(
+            r.plugin_alias_args.is_empty(),
+            "`@/foo` would capture `@/foo/bar` under prefix-with-slash --alias"
+        );
+        assert_eq!(r.paths_entries.len(), 2, "paths_entries is unchanged");
+
+        // A directory `@/foo/bar` target collides just the same: the gate is
+        // about the specifier space, not the other entry's target kind.
+        let dir_target = dir.path().join("src/dir");
+        std::fs::create_dir_all(&dir_target).unwrap();
+        let aliases = vec![
+            ("@/foo".to_string(), bar),
+            (
+                "@/foo/bar".to_string(),
+                dir_target.to_string_lossy().into_owned(),
+            ),
+        ];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+    }
+
+    #[test]
+    fn non_slash_prefix_overlap_is_not_a_collision() {
+        let dir = TempDir::new().unwrap();
+        let a = write_file(dir.path(), "src/a.tsx");
+        let ab = write_file(dir.path(), "src/ab.tsx");
+        let aliases = vec![("@/a".to_string(), a), ("@/ab".to_string(), ab)];
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_eq!(r.plugin_alias_flags().count(), 2);
+    }
+
+    #[test]
+    fn alias_overlapping_virtual_module_specifier_emits_no_alias_flag() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/meta.ts");
+        let aliases = vec![("virtual:meta".to_string(), target)];
+        let vms = vec![(
+            "virtual:meta/extra".to_string(),
+            "export default 1;".to_string(),
+        )];
+        let r = build_resolver_inputs(&aliases, &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.virtual_module_alias_flags().len(), 1);
+    }
+
+    #[test]
+    fn alias_under_reserved_specifier_emits_no_flag() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/x.ts");
+        let aliases = vec![("zfb/x".to_string(), target)];
+        let r =
+            build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &["zfb"]).unwrap();
+        assert!(r.plugin_alias_args.is_empty());
+        assert_eq!(r.paths_entries.len(), 1, "paths_entries is unchanged");
+
+        // Without the reservation the same alias qualifies.
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_eq!(r.plugin_alias_flags().count(), 1);
+    }
+
+    #[test]
+    fn specifiers_slash_prefix_collide_matrix() {
+        assert!(specifiers_slash_prefix_collide("a", "a"));
+        assert!(specifiers_slash_prefix_collide("a", "a/b"));
+        assert!(specifiers_slash_prefix_collide("a/b", "a"));
+        assert!(!specifiers_slash_prefix_collide("a", "ab"));
+        assert!(!specifiers_slash_prefix_collide("ab", "a"));
+        assert!(!specifiers_slash_prefix_collide("a/b", "a/c"));
     }
 
     // -----------------------------------------------------------------------
@@ -1390,7 +1655,7 @@ mod tests {
             "@/components/*".to_string(),
             vec!["src/components/*".to_string()],
         );
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user, &[]).unwrap();
         // paths_entries is untouched by filtering — the synthetic-tsconfig
         // entry for the virtual module is always present.
         assert_eq!(r.paths_entries.len(), 1);
@@ -1424,7 +1689,7 @@ mod tests {
             "virtual:foo".to_string(),
             vec!["src/user-foo.ts".to_string()],
         );
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user, &[]).unwrap();
         // A user-claimed specifier is dropped from BOTH paths_entries and
         // the --alias arg set → the user's own mapping governs (#1267).
         assert!(
@@ -1459,7 +1724,7 @@ mod tests {
         ];
         let mut user = BTreeMap::new();
         user.insert("virtual:foo/*".to_string(), vec!["src/foo/*".to_string()]);
-        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user, &[]).unwrap();
         // The wildcard-covered `virtual:foo/bar` is dropped from BOTH
         // paths_entries and the alias set (a plugin EXACT key would
         // out-specific the user's `virtual:foo/*` in path matching and win
@@ -1864,6 +2129,7 @@ mod tests {
             )],
             root,
             &user,
+            &[],
         )
         .unwrap();
         assert!(resolver.paths_entries.is_empty());

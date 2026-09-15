@@ -11807,6 +11807,7 @@ fn run_esbuild(
         &effective_plugin_virtual_modules,
         shadow,
         &input.tsconfig_paths,
+        &[],
     )
     .context("bundler: failed materializing plugin resolver inputs")?;
 
