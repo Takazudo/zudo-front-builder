@@ -81,6 +81,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
@@ -630,6 +631,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         content_collections: vec![ContentCollectionSpec::new(
             "blog",
@@ -817,6 +819,7 @@ async fn embedded_v8_md_page_renders_to_html() {
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
@@ -1274,6 +1277,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         content_collections: vec![ContentCollectionSpec::new(
             "blog",

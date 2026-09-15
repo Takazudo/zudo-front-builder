@@ -443,7 +443,13 @@ jobs:
       # `metafile_path` stays `None` on the mock path. This step proves real
       # esbuild resolves both allowlisted dot-path spellings (`.zudo-doc/
       # routes-src/**`, `.zfb/*.json`) out of the shadow and that the audit
-      # passes them.
+      # passes them. The SAME binary also carries issue #3021's twin
+      # (`real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit`,
+      # epic #3019): identical fixture shape, but the hidden dir is OUTSIDE
+      # `KNOWN_FIRST_PARTY_STAGING_DIRS` and the staged spelling instead comes
+      # from `BundlerInput::injected_route_entrypoints` (#3004) — no new
+      # binary predicate needed below, since `binary(=...)` already selects
+      # every test in this target.
       # Workspace-root alias regression (issue #1885, epic #1883): this is a
       # separate real-esbuild binary because its positive fixture proves the
       # #1884 staging claim composes with root-package TS/TSX/CSS/JSON, a

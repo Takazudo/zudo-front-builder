@@ -319,6 +319,15 @@ pub struct BundlerInput {
     /// byte-identical to a bundle that never knew this field (the additive
     /// walk is skipped entirely). Default: `None`.
     pub injected_pages_root: Option<PathBuf>,
+    /// Absolute source paths of registered injected routes' project-local
+    /// entrypoints (issue #3004). Each one that stays under `project_root`
+    /// both lexically and canonically is staged as an exact file together
+    /// with its relative-import closure, so the project-relative spelling the
+    /// generated route module imports exists in the shadow even when the
+    /// entrypoint lives in a hidden or gitignored directory. Paths outside
+    /// `project_root` (or symlinks resolving outside it) are skipped.
+    /// Default: empty — byte-identical to a bundle that never knew this field.
+    pub injected_route_entrypoints: Vec<PathBuf>,
     /// Directory of content collections. `.mdx` files anywhere under
     /// this directory are pre-compiled with
     /// [`compile_mdx_to_jsx_module_cached`] before esbuild sees them.
@@ -778,6 +787,7 @@ impl BundlerInput {
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
+            injected_route_entrypoints: Vec::new(),
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
@@ -1002,6 +1012,9 @@ const MIRROR_SKIP_DIRS: &[&str] = &[
 /// metadata), and NOT a permanent contract — this is compatibility for the
 /// CURRENT zudo-doc 4.x mechanism; zfb's long-term plan is real injected
 /// routes (see `crates/zfb/tests/build_package_routes_consumer.rs`).
+/// Registered injected routes need no entry here: their project-local
+/// entrypoints arrive via [`BundlerInput::injected_route_entrypoints`] and are
+/// staged as exact files plus their relative-import closure (issue #3004).
 const KNOWN_FIRST_PARTY_STAGING_DIRS: &[&str] = &[".zudo-doc/routes-src"];
 /// Companion to [`KNOWN_FIRST_PARTY_STAGING_DIRS`] (issue #1840): dot-dirs
 /// whose TOP-LEVEL `*.json` meta files are staged — zudo-doc's docHistory
@@ -2770,6 +2783,31 @@ pub fn bundle_with_session(
                 &mut exact_target_staging_dirs,
             );
         }
+    }
+    // Injected-route entrypoints (#3004) are staged as exact files so the
+    // project-relative spelling the generated route module imports exists in
+    // the shadow; esbuild still resolves. The boundary check runs HERE, not in
+    // the closure walk below, because `validate_first_party_path` hard-errors
+    // on a symlink escape where an out-of-root entrypoint must merely be
+    // skipped.
+    let canonical_project_root = fs::canonicalize(&project_root).ok();
+    for entrypoint in &input.injected_route_entrypoints {
+        let lexical = normalize_path_lexical(entrypoint);
+        let canonical_inside = canonical_project_root.as_ref().is_some_and(|root| {
+            fs::canonicalize(&lexical).is_ok_and(|canonical| canonical.starts_with(root))
+        });
+        if !lexical.starts_with(&project_root)
+            || !canonical_inside
+            || !lexical.is_file()
+            || project_path_is_inside_node_modules(&lexical, &project_root)
+        {
+            tracing::debug!(
+                entrypoint = %entrypoint.display(),
+                "bundler: skip injected-route entrypoint (not a first-party file under the project root)"
+            );
+            continue;
+        }
+        exact_target_staging_files.insert(lexical);
     }
     let effective_virtual_context = mat_ctx
         .worker_build_context
@@ -13584,6 +13622,7 @@ mod tests {
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
+            injected_route_entrypoints: Vec::new(),
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
@@ -19385,6 +19424,7 @@ mod tests {
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
+            injected_route_entrypoints: Vec::new(),
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),

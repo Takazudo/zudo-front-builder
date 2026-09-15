@@ -2839,6 +2839,7 @@ export default function PostPage({ title, params }: Props) {
             authored_css_paths: std::collections::BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
+            injected_route_entrypoints: Vec::new(),
             content_dir: PathBuf::from("content"),
             content_collections: vec![zfb_build::ContentCollectionSpec::new("blog", &blog_dir)],
             components_dir: PathBuf::from("components"),
