@@ -2488,6 +2488,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &project_root,
         &dev_assets_root,
         &cfg,
+        &injected_route_seed_entrypoints,
         &islands_plugin_config.alias_entries,
         &islands_plugin_config.virtual_modules,
         &raw_import_invalidation,
@@ -2518,6 +2519,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189: build + write CSS into the isolated dev-assets root.
         let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
+        // #3024 — the same frozen-at-boot survivor list the boot pass uses;
+        // no per-tick recompute, matching `run_islands`'s seed.
+        let package_route_entrypoints_for_css = injected_route_seed_entrypoints.clone();
         let plugin_alias_entries_for_css = islands_plugin_config.alias_entries.clone();
         // Issue #2168: re-read from the shared store at use time (see the
         // matching change to `run_islands` above) instead of freezing
@@ -2538,6 +2542,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root_for_css,
                 &dev_assets_root_for_css,
                 &cfg_for_css,
+                &package_route_entrypoints_for_css,
                 &plugin_alias_entries_for_css,
                 &plugin_virtual_modules_for_css,
                 &raw_import_invalidation_for_css,
@@ -4591,10 +4596,16 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
 /// later fails. A failed boot CSS build must still register sibling
 /// watches, or there is no filesystem event through which recovery could
 /// ever trigger.
+///
+/// `package_route_entrypoints` is the boot-frozen survivor
+/// `InjectedRouteSet` entrypoint list (#3024) — the same slice `zfb build`
+/// feeds `assemble_css_content_globs`, so a utility class used only inside
+/// a package-route page reaches Tailwind's `@source` scan in dev too.
 fn build_dev_css_and_publish_mirror_roots(
     project_root: &Path,
     dev_assets_root: &Path,
     cfg: &config::Config,
+    package_route_entrypoints: &[PathBuf],
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     raw_import_invalidation: &zfb_build::RawImportInvalidation,
@@ -4603,7 +4614,7 @@ fn build_dev_css_and_publish_mirror_roots(
         project_root,
         dev_assets_root,
         cfg,
-        &[],
+        package_route_entrypoints,
         plugin_alias_entries,
         plugin_virtual_modules,
         &|roots| raw_import_invalidation.replace_css_mirror_roots(roots.to_vec()),
@@ -18342,6 +18353,7 @@ mod tests {
             &cfg,
             &[],
             &[],
+            &[],
             &raw_import_invalidation,
         );
 
@@ -18403,6 +18415,7 @@ mod tests {
             &project,
             &project.join(".zfb-dev-assets"),
             &cfg,
+            &[],
             &[],
             &[],
             &raw_import_invalidation,
