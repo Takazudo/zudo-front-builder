@@ -4237,7 +4237,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // resolver, so this is a no-op on the conventional-pages path.
     let resolver = FsResolver::new()
         .with_project_root(project_root)
-        .with_injected_route_roots(package_route_entrypoints);
+        .with_injected_route_roots(package_route_entrypoints)
+        .with_virtual_modules(project_root, &plugin_config.virtual_modules);
     // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
     // by `materialise_islands_shadow_with_worker_context` below, via
     // `scan_meta.workspace_package_edges_from_islands`) to the first-party
@@ -6880,6 +6881,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // (the build overlay above already merges package routes into
         // `build_pages_root`); build passes `None`.
         None,
+        // #3004/#3021 — every MATERIALIZED (post-precedence survivor)
+        // package route's real absolute entrypoint, so the bundler stages
+        // each one as an exact file plus its relative-import closure even
+        // when it lives in a hidden/gitignored dir outside the
+        // `.zudo-doc/routes-src` compatibility allowlist. Reuses
+        // `package_route_entrypoints` (#1191 review) rather than the raw
+        // `setup_registries.injected_routes` list: a user-shadowed or
+        // package-vs-package-dropped route was never materialised into the
+        // overlay and is never imported, so staging its entrypoint would be
+        // pure overhead.
+        package_route_entrypoints.to_vec(),
     )?;
     emit_build_phase_timing("vendor-extraction-and-bundler-input", phase_started);
 

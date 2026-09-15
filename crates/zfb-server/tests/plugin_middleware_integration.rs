@@ -32,6 +32,12 @@ struct CountingDispatcher {
     /// Records the last [`PluginRequest`] the dispatcher saw so
     /// method/header/body-propagation tests can assert on it.
     last_request: tokio::sync::Mutex<Option<PluginRequest>>,
+    /// Headers the response-handler branch returns. Defaults to the
+    /// original fixed pair below; overridable via
+    /// [`CountingDispatcher::with_response_headers`] so cache-control
+    /// duplication tests can drive arbitrary plugin header sets without
+    /// a second dispatcher type.
+    response_headers: tokio::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl CountingDispatcher {
@@ -41,7 +47,17 @@ impl CountingDispatcher {
             passthrough_handler_id: pass.into(),
             response_handler_id: respond.into(),
             last_request: tokio::sync::Mutex::new(None),
+            response_headers: tokio::sync::Mutex::new(vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-zfb-plugin".into(), "ok".into()),
+            ]),
         }
+    }
+
+    /// Override the headers the response-handler branch returns.
+    async fn with_response_headers(self: Arc<Self>, headers: Vec<(String, String)>) -> Arc<Self> {
+        *self.response_headers.lock().await = headers;
+        self
     }
 }
 
@@ -58,10 +74,7 @@ impl DevMiddlewareDispatcher for CountingDispatcher {
             return Ok(PluginDispatchOutcome::Passthrough);
         }
         if handler_id == self.response_handler_id {
-            let headers = vec![
-                ("content-type".into(), "application/json".into()),
-                ("x-zfb-plugin".into(), "ok".into()),
-            ];
+            let headers = self.response_headers.lock().await.clone();
             // Echo what the plugin saw so the test can assert on the
             // wire-level method propagation rather than relying on an
             // out-of-band channel.
@@ -498,6 +511,218 @@ async fn plugin_error_body_is_generic_in_preview_mode() {
     assert!(
         body.contains("Internal Server Error"),
         "Preview mode must return a generic error body; got: {body}"
+    );
+
+    server.abort();
+}
+
+// -------------------------------------------------------------------
+// Issue #3009 — a plugin-supplied Cache-Control must not duplicate the
+// framework default. Every assertion here uses `get_all(...).count()`
+// (never `.get(...)`, which returns only the first value and would pass
+// identically before and after the fix).
+// -------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_cache_control_no_store_is_not_duplicated() {
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![("cache-control".into(), "no-store".into())])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("cache-control")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(values, vec!["no-store".to_string()], "values: {values:?}");
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_cache_control_custom_value_is_preserved_not_overridden() {
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![("cache-control".into(), "public, max-age=60".into())])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("cache-control")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["public, max-age=60".to_string()],
+        "values: {values:?}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_no_cache_control_gets_framework_default() {
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![("content-type".into(), "application/json".into())])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("cache-control")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(values, vec!["no-store".to_string()], "values: {values:?}");
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_two_cache_control_values_both_reach_the_wire_with_no_default_added() {
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![
+            ("cache-control".into(), "no-store".into()),
+            ("cache-control".into(), "must-revalidate".into()),
+        ])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("cache-control")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["no-store".to_string(), "must-revalidate".to_string()],
+        "values: {values:?}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_invalid_cache_control_value_is_dropped_and_default_applies() {
+    // A `HeaderValue` cannot contain a raw newline — `try_from` fails,
+    // so this must be dropped by the existing invalid-header handling
+    // and the flag must NOT be set, meaning the framework default still
+    // applies.
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![("cache-control".into(), "bad\nvalue".into())])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("cache-control")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(values, vec!["no-store".to_string()], "values: {values:?}");
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_two_set_cookie_values_both_reach_the_wire() {
+    // Regression guard for append semantics: unrelated to Cache-Control,
+    // but proves this fix did not switch header insertion from append
+    // to insert for any other header.
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"))
+        .with_response_headers(vec![
+            ("set-cookie".into(), "a=1".into()),
+            ("set-cookie".into(), "b=2".into()),
+        ])
+        .await;
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/echo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let values: Vec<_> = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["a=1".to_string(), "b=2".to_string()],
+        "values: {values:?}"
     );
 
     server.abort();

@@ -43,6 +43,8 @@
 //! | `prerender=false` rejection under `output: static` | `build_package_routes::output_static_rejects_ssr_shaped_package_route` |
 //! | user-vs-package collision | `build_package_routes::user_pages_wins_collision_including_shape_dup` |
 //! | package-only island route | `build_package_routes::package_route_with_use_client_emits_island_asset` |
+//! | package-only island route, dev mode | `dev_serve_injected_routes_e2e::dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle` (#3011 — the dev-side counterpart of the row above: `rebundle_islands` seeds package-route entrypoints too, not only `zfb build`'s overlay) |
+//! | injected-route entrypoint staged OUTSIDE the dot-path allowlist | `injected_route_entrypoint_outside_dot_path_allowlist_resolves_from_the_staged_workspace_copy` (this file, #3021 — the command-layer counterpart of `bundler_dot_path_staging_esbuild_regression::real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit`) |
 
 #![cfg(unix)]
 
@@ -709,6 +711,111 @@ export default function GeneratedNestedRoute() {
         root.join("pages/index.tsx"),
         r#"export default function Home() {
   return <html><body>PROJECT_LOCAL_GENERATED_HOME</body></html>;
+}
+"#,
+    )
+    .expect("write home page");
+}
+
+/// Issue #3021 (epic #3019, confirming #3004/#3020): the command-layer
+/// counterpart to `bundler_dot_path_staging_esbuild_regression.rs`'s
+/// injected-entrypoint twin — same `injectRoute`-registered-preset shape as
+/// [`write_project_local_generated_routes_fixture`] above, but the generated
+/// route + its relative helper live under `.example-package/routes-src/`, a
+/// hidden dir deliberately OUTSIDE `KNOWN_FIRST_PARTY_STAGING_DIRS`. Before
+/// Wave 2's plumbing this route would 404 (no staged spelling reaches the
+/// generated overlay module's project-relative import); this proves `zfb
+/// build`'s `assemble_bundler_input` call now threads the registered
+/// entrypoint through to the bundler end to end.
+#[test]
+fn injected_route_entrypoint_outside_dot_path_allowlist_resolves_from_the_staged_workspace_copy() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[injected_route_entrypoint_outside_allowlist] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[injected_route_entrypoint_outside_allowlist] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace = tmp.path();
+    fs::write(
+        workspace.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'sub-packages/*'\n",
+    )
+    .expect("write workspace manifest");
+    let root = workspace.join("sub-packages/host");
+    fs::create_dir_all(&root).expect("create workspace project");
+    let _nm = link_embedded_node_modules(&root);
+    write_injected_entrypoint_consumer_fixture(&root);
+
+    let Some(dist) = build_and_collect(
+        &root,
+        &esbuild,
+        "injected_route_entrypoint_outside_allowlist",
+    ) else {
+        return;
+    };
+
+    let page = root.join("dist/hidden-page/index.html");
+    assert!(
+        page.is_file(),
+        "`/hidden-page` must render from the injected-route-entrypoint staged copy; dist: {dist:#?}"
+    );
+    let body = fs::read_to_string(&page).expect("read rendered hidden-page route");
+    assert!(
+        body.contains("HIDDEN_PAGE_HELPER_MARKER"),
+        "the hidden-page route must render its relative helper's marker; got: {body}"
+    );
+}
+
+/// `injectRoute("/hidden-page", ".example-package/routes-src/route.tsx")`
+/// with a relative helper — the exact repro shape the epic names, rooted
+/// under a hidden dir the dot-path allowlist never covers.
+fn write_injected_entrypoint_consumer_fixture(root: &Path) {
+    let routes = root.join(".example-package/routes-src");
+    fs::create_dir_all(&routes).expect("create injected-entrypoint route source dir");
+    // Real-world shape — the whole premise of #3004: a conventionally
+    // gitignored dir the generic staging walker would otherwise skip.
+    fs::write(root.join(".gitignore"), ".example-package/\n").expect("write fixture gitignore");
+    fs::write(
+        routes.join("helper.ts"),
+        r#"export const helperMarker = "HIDDEN_PAGE_HELPER_MARKER";
+"#,
+    )
+    .expect("write injected-entrypoint helper module");
+    fs::write(
+        routes.join("route.tsx"),
+        r#"import { helperMarker } from "./helper";
+export default function HiddenPage() {
+  return <html><body>{helperMarker}</body></html>;
+}
+"#,
+    )
+    .expect("write injected-entrypoint route");
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "hidden-page-preset",
+  setup({ injectRoute }) {
+    injectRoute("/hidden-page", ".example-package/routes-src/route.tsx");
+  },
+};
+"#,
+    )
+    .expect("write hidden-page preset");
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .expect("write hidden-page config");
+    fs::create_dir_all(root.join("pages")).expect("create pages dir");
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"export default function Home() {
+  return <html><body>HIDDEN_PAGE_CONSUMER_HOME</body></html>;
 }
 "#,
     )

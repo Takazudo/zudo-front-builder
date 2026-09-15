@@ -18,7 +18,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupFixtures, makeRun, readCalls, setupFixtures } from "./fixtures/gh-fixture-tree.mjs";
 import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
@@ -281,7 +281,24 @@ describe("resolveDefaultRetryDelayMs (#2932)", () => {
   });
 });
 
-describe("runCli", () => {
+// #3029: every test below drives the real CLI, which means every test pays
+// for at least one real `gh api --help` probe spawn plus the real gh calls
+// its scenario needs (run list, run-jobs, job log, and a second attempt on
+// any retry case) -- by design, per this file's header comment, since the
+// point is to exercise the actual subprocess/argv contract rather than a
+// JS-level mock. `retryDelayMs: 0` (sink()) already removes every
+// artificial sleep from that path, so the remaining wall time is pure
+// process-spawn/exec latency, which is fine unloaded (measured 300-1400ms
+// per test) but balloons under concurrent CPU contention (a `cargo clippy`
+// build, or another heavy process) because the OS scheduler simply gives
+// this process fewer cycles -- not because anything here is waiting on a
+// timer. vitest's 5000ms default assumes in-process work and has no
+// margin for that, so this suite gets a wider, still-finite budget scoped
+// to just the tests that spawn real subprocesses (every other describe
+// block in this file stays on the 5000ms default).
+const REAL_SUBPROCESS_TEST_TIMEOUT_MS = 20000;
+
+describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
   it("exit 0: harvests a completed run's health job log and emits round-trippable records", async () => {
     const runs = [makeRun({ databaseId: 1001 })];
     const { dir, stubPath } = setupFixtures({
@@ -497,7 +514,19 @@ describe("runCli", () => {
     // production default-parameter path -- retryDelayMs omitted from the
     // options bag entirely -- so a regression that stops reading the env
     // var (e.g. an accidental revert to the bare DEFAULT_RETRY_DELAY_MS
-    // default) would show up as a ~2 s slowdown here, not silently.
+    // default) would go undetected.
+    //
+    // #3029: this used to assert on measured wall-clock time (first an
+    // absolute ceiling, then a before/after delta) -- both are bare timing
+    // waits, and both went flaky under real ambient contention (a
+    // concurrent `pnpm test:workspace` run once produced a 77ms delta where
+    // 300ms was the floor, purely from scheduling noise between the two
+    // measurements). Spying on the real `setTimeout` that sleep() calls
+    // proves the env var reaches the pause deterministically, by asserting
+    // on the exact ms argument scheduled rather than on how long anything
+    // actually took -- so it needs no injected delay of any real size, and
+    // no comparison across two runs.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const runs = [makeRun({ databaseId: 1019 })];
     const { dir, stubPath } = setupFixtures({
       runs,
@@ -506,23 +535,25 @@ describe("runCli", () => {
       transientlyFailingJobIds: [5019],
     });
     process.env.GH_STUB_FIXTURES_DIR = dir;
-    process.env.HARVEST_RETRY_DELAY_MS = "0";
+    // Small and non-obvious (not 0, not a round number another test could
+    // coincidentally produce) so the assertion below can only pass if this
+    // exact value travelled from the env var to sleep()'s setTimeout call.
+    process.env.HARVEST_RETRY_DELAY_MS = "37";
     try {
       const s = sink();
       delete s.retryDelayMs; // force the default-parameter path, not the sink's override
 
-      const started = Date.now();
       const code = await runCli(["--gh", stubPath], s);
-      const elapsedMs = Date.now() - started;
 
       expect(code).toBe(EXIT_OK);
       expect(s.err()).toMatch(/run=1019 .* job=5019 lines=1 failedRecords=0/);
-      // A generous ceiling well under the real 2000 ms default -- this
-      // guards against the env var being ignored, not against ordinary
-      // subprocess jitter.
-      expect(elapsedMs).toBeLessThan(1500);
+      // The retry pause is the only setTimeout call on this path (GH_ATTEMPTS
+      // - 1 pauses); toHaveBeenCalledWith checks the spy's call log for a
+      // matching call among however many unrelated timers also fired.
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 37);
     } finally {
       delete process.env.HARVEST_RETRY_DELAY_MS;
+      setTimeoutSpy.mockRestore();
     }
   });
 
@@ -915,136 +946,140 @@ describe("runCli", () => {
   });
 });
 
-describe("gh --allow-escape-sequences capability probe (#2986)", () => {
-  it("probeAllowEscapeSequences reads --help text rather than parsing gh --version", async () => {
-    const { dir, stubPath } = setupFixtures({ runs: [] });
-    process.env.GH_STUB_FIXTURES_DIR = dir;
+describe(
+  "gh --allow-escape-sequences capability probe (#2986)",
+  { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS },
+  () => {
+    it("probeAllowEscapeSequences reads --help text rather than parsing gh --version", async () => {
+      const { dir, stubPath } = setupFixtures({ runs: [] });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    expect(await probeAllowEscapeSequences({ gh: stubPath }, { write: () => {} })).toBe(true);
-    expect(readCalls(dir)).toEqual(["api --help"]);
+      expect(await probeAllowEscapeSequences({ gh: stubPath }, { write: () => {} })).toBe(true);
+      expect(readCalls(dir)).toEqual(["api --help"]);
 
-    process.env.GH_STUB_ESCAPE_GUARD = "0";
-    expect(await probeAllowEscapeSequences({ gh: stubPath }, { write: () => {} })).toBe(false);
-  });
-
-  it("(b) guard on: the job-log call carries the flag and the probe runs exactly once across a multi-run harvest", async () => {
-    const runs = [makeRun({ databaseId: 3001 }), makeRun({ databaseId: 3002 })];
-    const { dir, stubPath } = setupFixtures({
-      runs,
-      jobsById: {
-        3001: [{ id: 7001, name: "health" }],
-        3002: [{ id: 7002, name: "health" }],
-      },
-      logsByJobId: {
-        7001: JOB_LOG_WITH_RECORD,
-        7002: JOB_LOG_WITH_RECORD,
-      },
+      process.env.GH_STUB_ESCAPE_GUARD = "0";
+      expect(await probeAllowEscapeSequences({ gh: stubPath }, { write: () => {} })).toBe(false);
     });
-    process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    const s = sink();
-    const code = await runCli(["--gh", stubPath], s);
+    it("(b) guard on: the job-log call carries the flag and the probe runs exactly once across a multi-run harvest", async () => {
+      const runs = [makeRun({ databaseId: 3001 }), makeRun({ databaseId: 3002 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: {
+          3001: [{ id: 7001, name: "health" }],
+          3002: [{ id: 7002, name: "health" }],
+        },
+        logsByJobId: {
+          7001: JOB_LOG_WITH_RECORD,
+          7002: JOB_LOG_WITH_RECORD,
+        },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    expect(code).toBe(EXIT_OK);
-    expect(s.err()).toMatch(/runs=2 harvested=2 failed=0 records=2/);
+      const s = sink();
+      const code = await runCli(["--gh", stubPath], s);
 
-    const calls = readCalls(dir);
-    expect(calls.filter((line) => line === "api --help")).toHaveLength(1);
-    expect(calls).toContain(
-      "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7001/logs",
-    );
-    expect(calls).toContain(
-      "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7002/logs",
-    );
-  });
+      expect(code).toBe(EXIT_OK);
+      expect(s.err()).toMatch(/runs=2 harvested=2 failed=0 records=2/);
 
-  it("(c) GH_STUB_ESCAPE_GUARD=0: no flag is added and nothing about the probe fails the harvest", async () => {
-    process.env.GH_STUB_ESCAPE_GUARD = "0";
-    const runs = [makeRun({ databaseId: 3003 })];
-    const { dir, stubPath } = setupFixtures({
-      runs,
-      jobsById: { 3003: [{ id: 7003, name: "health" }] },
-      logsByJobId: { 7003: JOB_LOG_WITH_RECORD },
+      const calls = readCalls(dir);
+      expect(calls.filter((line) => line === "api --help")).toHaveLength(1);
+      expect(calls).toContain(
+        "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7001/logs",
+      );
+      expect(calls).toContain(
+        "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7002/logs",
+      );
     });
-    process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    const s = sink();
-    const code = await runCli(["--gh", stubPath], s);
+    it("(c) GH_STUB_ESCAPE_GUARD=0: no flag is added and nothing about the probe fails the harvest", async () => {
+      process.env.GH_STUB_ESCAPE_GUARD = "0";
+      const runs = [makeRun({ databaseId: 3003 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 3003: [{ id: 7003, name: "health" }] },
+        logsByJobId: { 7003: JOB_LOG_WITH_RECORD },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    expect(code).toBe(EXIT_OK);
-    expect(s.err()).not.toMatch(/warning:/);
-    const calls = readCalls(dir);
-    expect(calls).toContain("api repos/{owner}/{repo}/actions/jobs/7003/logs");
-    expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
-  });
+      const s = sink();
+      const code = await runCli(["--gh", stubPath], s);
 
-  it("(d) a probe that exits non-zero warns once and the harvest continues without the flag", async () => {
-    const runs = [makeRun({ databaseId: 3004 })];
-    const { dir, stubPath } = setupFixtures({
-      runs,
-      jobsById: { 3004: [{ id: 7004, name: "health" }] },
-      logsByJobId: { 7004: JOB_LOG_WITH_RECORD },
-      helpProbeFail: true,
+      expect(code).toBe(EXIT_OK);
+      expect(s.err()).not.toMatch(/warning:/);
+      const calls = readCalls(dir);
+      expect(calls).toContain("api repos/{owner}/{repo}/actions/jobs/7003/logs");
+      expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
     });
-    process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    const s = sink();
-    const code = await runCli(["--gh", stubPath], s);
+    it("(d) a probe that exits non-zero warns once and the harvest continues without the flag", async () => {
+      const runs = [makeRun({ databaseId: 3004 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 3004: [{ id: 7004, name: "health" }] },
+        logsByJobId: { 7004: JOB_LOG_WITH_RECORD },
+        helpProbeFail: true,
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    expect(code).toBe(EXIT_OK);
-    // Exactly one warning line -- the probe is called once per runCli, and
-    // its `runGh` retry (GH_ATTEMPTS) does not multiply the warning.
-    const warnings = s
-      .err()
-      .split("\n")
-      .filter((line) => line.startsWith("warning:"));
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/could not probe .* --allow-escape-sequences/);
-    // Manifest/summary output is unaffected by the warning.
-    expect(s.err()).toMatch(/run=3004 .* job=7004 lines=1 failedRecords=0/);
-    expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
+      const s = sink();
+      const code = await runCli(["--gh", stubPath], s);
 
-    const calls = readCalls(dir);
-    expect(calls.filter((line) => line === "api --help")).toHaveLength(2);
-    expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
-  });
+      expect(code).toBe(EXIT_OK);
+      // Exactly one warning line -- the probe is called once per runCli, and
+      // its `runGh` retry (GH_ATTEMPTS) does not multiply the warning.
+      const warnings = s
+        .err()
+        .split("\n")
+        .filter((line) => line.startsWith("warning:"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/could not probe .* --allow-escape-sequences/);
+      // Manifest/summary output is unaffected by the warning.
+      expect(s.err()).toMatch(/run=3004 .* job=7004 lines=1 failedRecords=0/);
+      expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
 
-  it("(e) end to end: a real ESC byte in the job log round-trips through parsing and --save-dir byte-identical", async () => {
-    const rawEsc = "[36;1m";
-    const jobLogWithEscapeSequence = [
-      `${LOG_PREFIX}${rawEsc}##[section]Starting: Run tests[0m`,
-      UP_UP2_RECORD_LINE,
-    ].join("\n");
-    const runs = [makeRun({ databaseId: 3005 })];
-    const { dir, stubPath } = setupFixtures({
-      runs,
-      jobsById: { 3005: [{ id: 7005, name: "health" }] },
-      logsByJobId: { 7005: jobLogWithEscapeSequence },
+      const calls = readCalls(dir);
+      expect(calls.filter((line) => line === "api --help")).toHaveLength(2);
+      expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
     });
-    process.env.GH_STUB_FIXTURES_DIR = dir;
-    const saveDir = join(dir, "saved");
 
-    const s = sink();
-    const code = await runCli(["--gh", stubPath, "--save-dir", saveDir], s);
+    it("(e) end to end: a real ESC byte in the job log round-trips through parsing and --save-dir byte-identical", async () => {
+      const rawEsc = "[36;1m";
+      const jobLogWithEscapeSequence = [
+        `${LOG_PREFIX}${rawEsc}##[section]Starting: Run tests[0m`,
+        UP_UP2_RECORD_LINE,
+      ].join("\n");
+      const runs = [makeRun({ databaseId: 3005 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 3005: [{ id: 7005, name: "health" }] },
+        logsByJobId: { 7005: jobLogWithEscapeSequence },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+      const saveDir = join(dir, "saved");
 
-    expect(code).toBe(EXIT_OK);
-    const emittedLines = s.out().trimEnd().split("\n");
-    expect(emittedLines).toHaveLength(1);
-    const record = parseTimelineLine(emittedLines[0]);
-    expect(record).not.toBeNull();
-    expect(record.case).toBe("up+up2");
+      const s = sink();
+      const code = await runCli(["--gh", stubPath, "--save-dir", saveDir], s);
 
-    // Guard-on stub tests prove the gh >= 2.97 path: without the flag, this
-    // fixture's ESC byte would make the stub fail exactly like real gh.
-    const calls = readCalls(dir);
-    expect(calls).toContain(
-      "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7005/logs",
-    );
+      expect(code).toBe(EXIT_OK);
+      const emittedLines = s.out().trimEnd().split("\n");
+      expect(emittedLines).toHaveLength(1);
+      const record = parseTimelineLine(emittedLines[0]);
+      expect(record).not.toBeNull();
+      expect(record.case).toBe("up+up2");
 
-    // Byte-identical, not merely string-equal: compare raw Buffers so a
-    // silent encoding change (e.g. the BOM, or the ESC byte itself) would
-    // fail this assertion even if it happened to decode the same.
-    const savedBuffer = readFileSync(join(saveDir, "run-3005-job-7005.log"));
-    expect(savedBuffer.equals(Buffer.from(jobLogWithEscapeSequence, "utf8"))).toBe(true);
-  });
-});
+      // Guard-on stub tests prove the gh >= 2.97 path: without the flag, this
+      // fixture's ESC byte would make the stub fail exactly like real gh.
+      const calls = readCalls(dir);
+      expect(calls).toContain(
+        "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/7005/logs",
+      );
+
+      // Byte-identical, not merely string-equal: compare raw Buffers so a
+      // silent encoding change (e.g. the BOM, or the ESC byte itself) would
+      // fail this assertion even if it happened to decode the same.
+      const savedBuffer = readFileSync(join(saveDir, "run-3005-job-7005.log"));
+      expect(savedBuffer.equals(Buffer.from(jobLogWithEscapeSequence, "utf8"))).toBe(true);
+    });
+  },
+);
