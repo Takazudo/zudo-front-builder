@@ -1704,8 +1704,8 @@ pub fn shadow_mirror_prunes_path(mirror_root: &Path, candidate_path: &Path) -> b
 /// This scans every absolute-import occurrence the project tier is about to
 /// rewrite and fails closed with an explicit diagnostic BEFORE the silent
 /// rewrite happens — leaving `stable_project_virtual_specifier` itself
-/// (also used for cache-key normalization) infallible and untouched. Two
-/// details codex-review caught in an earlier version:
+/// (also used for cache-key normalization) infallible and untouched. The
+/// exemption policy keeps these boundaries:
 ///
 /// - It checks the [`canonical_project_relative_target`] — the SAME
 ///   canonicalized, symlink-resolved target `stable_project_virtual_specifier`
@@ -1721,7 +1721,13 @@ pub fn shadow_mirror_prunes_path(mirror_root: &Path, candidate_path: &Path) -> b
 ///   allowlisted subtree — the staging pass walks it with the same
 ///   `is_pruned_infra_dir` filter, so a nested `.cache/`/`node_modules/`
 ///   inside it is still unstaged and still rejected here.
-fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path) -> Result<()> {
+/// - The SSR caller can also supply exact canonical project-relative files
+///   materialized by this invocation's explicit staging claims (#3037).
+fn reject_pruned_project_tier_virtual_imports(
+    source: &str,
+    project_root: &Path,
+    materialized_project_files: &BTreeSet<PathBuf>,
+) -> Result<()> {
     let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
     let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
         // An unparsable source is a no-op passthrough for the remap itself
@@ -1743,7 +1749,9 @@ fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path)
             // all) — no rewrite, no risk of a broken one.
             continue;
         };
-        if crate::bundler::is_first_party_staging_allowlist_target(&relative_target) {
+        if crate::bundler::is_first_party_staging_allowlist_target(&relative_target)
+            || materialized_project_files.contains(&relative_target)
+        {
             continue;
         }
         let candidate_dir = relative_target
@@ -1793,15 +1801,34 @@ fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path)
 /// explicit diagnostic instead of silently emitting a `"./rel"` spelling the
 /// shadow mirror can never resolve. `stable_project_virtual_specifier` itself
 /// stays infallible (it also serves cache-key normalization); only this
-/// wrapper gained the `Result`. The sole production caller is `run_esbuild`
-/// (`bundler.rs`), which already returns `Result` and propagates via `?`.
+/// wrapper gained the `Result`. The SSR caller uses the internal variant to
+/// add invocation-local materialized files; this public API keeps the default
+/// prune policy for callers without that staging capability.
 pub fn remap_virtual_module_project_imports_to_shadow(
     source: &str,
     project_root: &Path,
     first_party_root: &Path,
     work_root: &Path,
 ) -> Result<String> {
-    reject_pruned_project_tier_virtual_imports(source, project_root)?;
+    remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+        source,
+        project_root,
+        first_party_root,
+        work_root,
+        &BTreeSet::new(),
+    )
+}
+
+/// SSR-only capability: exact canonical project-relative destinations that
+/// this invocation materialized after filtering its explicit staging claims.
+pub(crate) fn remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+    source: &str,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+    materialized_project_files: &BTreeSet<PathBuf>,
+) -> Result<String> {
+    reject_pruned_project_tier_virtual_imports(source, project_root, materialized_project_files)?;
     Ok(remap_virtual_module_imports_to_shadow_inner(
         source,
         project_root,
@@ -1994,7 +2021,10 @@ fn stable_workspace_virtual_cache_specifier(
 /// project tier does not touch: a `?`/`#`-suffixed specifier, a bare
 /// package name, `node_modules`, an unresolvable target, or a target that
 /// canonicalizes outside the project.
-fn canonical_project_relative_target(specifier: &str, project_root: &Path) -> Option<PathBuf> {
+pub(crate) fn canonical_project_relative_target(
+    specifier: &str,
+    project_root: &Path,
+) -> Option<PathBuf> {
     if specifier.contains('?') || specifier.contains('#') {
         return None;
     }
@@ -3885,6 +3915,175 @@ mod tests {
             remapped.contains(&serde_json::to_string(&outside.path().to_string_lossy()).unwrap()),
             "{remapped}"
         );
+    }
+
+    #[test]
+    fn materialized_project_virtual_imports_accept_exact_entrypoint_and_helper() {
+        let project = tempfile::tempdir().unwrap();
+        let entrypoint = project.path().join(".example-package/routes-src/entry.tsx");
+        let helper = project
+            .path()
+            .join(".example-package/routes-src/helper.tsx");
+        write(&entrypoint, "export { helper } from './helper.tsx';\n");
+        write(&helper, "export const helper = 1;\n");
+        let materialized = BTreeSet::from([
+            PathBuf::from(".example-package/routes-src/entry.tsx"),
+            PathBuf::from(".example-package/routes-src/helper.tsx"),
+        ]);
+        let source = format!(
+            "export * from {};\nexport {{ helper }} from {};\n",
+            serde_json::to_string(&entrypoint.canonicalize().unwrap()).unwrap(),
+            serde_json::to_string(&helper.canonicalize().unwrap()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+            &materialized,
+        )
+        .unwrap();
+        assert_eq!(
+            remapped,
+            "export * from \"./.example-package/routes-src/entry.tsx\";\n\
+             export { helper } from \"./.example-package/routes-src/helper.tsx\";\n"
+        );
+        assert!(remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn materialized_project_virtual_imports_reject_unrelated_hidden_files() {
+        let project = tempfile::tempdir().unwrap();
+        let materialized = BTreeSet::from([
+            PathBuf::from(".example-package/routes-src/entry.tsx"),
+            PathBuf::from(".example-package/routes-src/helper.tsx"),
+        ]);
+        for relative in [
+            ".example-package/routes-src/unrelated.tsx",
+            ".example-package/routes-src/nested/helper.tsx",
+            ".other-package/helper.tsx",
+        ] {
+            let target = project.path().join(relative);
+            write(&target, "export const value = 1;\n");
+            let source = format!(
+                "export * from {};\n",
+                serde_json::to_string(&target).unwrap()
+            );
+            let error = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+                &source,
+                project.path(),
+                project.path(),
+                project.path(),
+                &materialized,
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("shadow mirror prunes"), "{message}");
+            assert!(message.contains(relative), "{message}");
+        }
+    }
+
+    #[test]
+    fn materialized_project_virtual_imports_preserve_suffix_and_external_boundaries() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let target = project.path().join(".example-package/helper.ts");
+        let dependency = project.path().join("node_modules/pkg/helper.ts");
+        write(&target, "export const value = 1;\n");
+        write(&dependency, "export const value = 2;\n");
+        let materialized = BTreeSet::from([
+            PathBuf::from(".example-package/helper.ts"),
+            PathBuf::from("node_modules/pkg/helper.ts"),
+        ]);
+        for specifier in [
+            format!("{}?raw", target.display()),
+            format!("{}#fragment", target.display()),
+            outside.path().to_string_lossy().into_owned(),
+            dependency.to_string_lossy().into_owned(),
+        ] {
+            let source = format!(
+                "export * from {};\n",
+                serde_json::to_string(&specifier).unwrap()
+            );
+            let remapped = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+                &source,
+                project.path(),
+                project.path(),
+                project.path(),
+                &materialized,
+            )
+            .unwrap();
+            assert_eq!(remapped, source);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialized_project_virtual_imports_use_canonical_symlink_membership() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let target = project.path().join(".example-package/helper.ts");
+        let alias = project.path().join("src/alias.ts");
+        let escape = project.path().join("src/escape.ts");
+        let dependency = project.path().join("node_modules/pkg/helper.ts");
+        let dependency_alias = project.path().join("src/dependency.ts");
+        write(&target, "export const value = 1;\n");
+        write(&dependency, "export const value = 2;\n");
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &escape).unwrap();
+        std::os::unix::fs::symlink(&dependency, &dependency_alias).unwrap();
+        let source = format!(
+            "export * from {};\n",
+            serde_json::to_string(&alias).unwrap()
+        );
+        let materialized = BTreeSet::from([PathBuf::from(".example-package/helper.ts")]);
+        let remapped = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+            &materialized,
+        )
+        .unwrap();
+        assert_eq!(
+            remapped,
+            "export * from \"./.example-package/helper.ts\";\n"
+        );
+
+        let lexical_only = BTreeSet::from([PathBuf::from("src/alias.ts")]);
+        let error = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+            &lexical_only,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("shadow mirror prunes"));
+
+        for target in [escape, dependency_alias] {
+            let source = format!(
+                "export * from {};\n",
+                serde_json::to_string(&target).unwrap()
+            );
+            let remapped = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
+                &source,
+                project.path(),
+                project.path(),
+                project.path(),
+                &materialized,
+            )
+            .unwrap();
+            assert_eq!(remapped, source);
+        }
     }
 
     #[test]
