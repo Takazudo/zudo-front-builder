@@ -903,6 +903,7 @@ fn build_job_resolver_inputs(
         virtual_modules,
         working_dir,
         &user_tsconfig_paths,
+        &[],
     )
     .context("zfb-islands: failed materializing per-entry plugin resolver inputs")?;
 
@@ -1388,6 +1389,7 @@ impl EsbuildSubprocessBundler {
             &self.config.virtual_modules,
             &self.config.working_dir,
             &user_tsconfig_paths,
+            &[],
         )
         .context("zfb-islands: failed materializing plugin resolver inputs")?;
 
@@ -3638,9 +3640,14 @@ mod tests {
             "@plugin/entry".to_string(),
             plugin_target.to_string_lossy().into_owned(),
         )];
-        let resolver_inputs =
-            zfb_plugin_resolver::build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new())
-                .expect("build resolver inputs with at least one plugin entry");
+        let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+            &aliases,
+            &[],
+            dir.path(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect("build resolver inputs with at least one plugin entry");
         assert!(
             !resolver_inputs.paths_entries.is_empty(),
             "the fixture must actually register a plugin path entry, or build_plugin_tsconfig \
