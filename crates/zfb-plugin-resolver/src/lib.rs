@@ -238,6 +238,22 @@ fn specifiers_slash_prefix_collide(a: &str, b: &str) -> bool {
     is_slash_prefix(a, b) || is_slash_prefix(b, a)
 }
 
+/// Whether esbuild accepts `name` as an `--alias` key. esbuild hard-fails
+/// the whole build with `Invalid alias name` unless the key is non-relative,
+/// non-absolute and already `path.Clean`-normalized (so `.foo`, `/foo`,
+/// `foo/`, `foo//bar`, `a/./b` are rejected). `=` is excluded too because
+/// the CLI splits `--alias:<from>=<to>` at the first `=`.
+fn esbuild_accepts_alias_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.starts_with('/')
+        && !name.contains(['\\', '='])
+        && !matches!(name.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
+        && name
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
 /// Build the per-call resolver inputs from plugin-registered aliases
 /// and virtual modules.
 ///
@@ -294,6 +310,13 @@ pub fn build_resolver_inputs(
                 alias = %from,
                 target = %to,
                 "plugin alias target is not an existing file; tsconfig paths only, no --alias"
+            );
+            continue;
+        }
+        if !esbuild_accepts_alias_name(from) {
+            tracing::debug!(
+                alias = %from,
+                "plugin alias name is not a valid esbuild --alias key; tsconfig paths only"
             );
             continue;
         }
@@ -1625,6 +1648,25 @@ mod tests {
         // Without the reservation the same alias qualifies.
         let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
         assert_eq!(r.plugin_alias_flags().count(), 1);
+    }
+
+    #[test]
+    fn alias_name_esbuild_rejects_emits_no_flag() {
+        let dir = TempDir::new().unwrap();
+        let target = write_file(dir.path(), "src/x.ts");
+        for from in [".x", "/x", "x/", "x//y", "x/./y", "x/../y", "a=b", "C:x"] {
+            let aliases = vec![(from.to_string(), target.clone())];
+            let r =
+                build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new(), &[]).unwrap();
+            assert!(
+                r.plugin_alias_args.is_empty(),
+                "{from} must not become a flag"
+            );
+            assert_eq!(r.paths_entries.len(), 1, "paths_entries is unchanged");
+        }
+        for from in ["@/x", "~/x", "#x", "$lib", "virtual:x"] {
+            assert!(esbuild_accepts_alias_name(from), "{from}");
+        }
     }
 
     #[test]
