@@ -436,6 +436,13 @@ pub async fn dispatch_plugin(
             // it and calling `Builder::header` (which *appends*) preserves
             // duplicate names, so multiple `Set-Cookie` entries from the
             // plugin each reach the wire instead of collapsing.
+            //
+            // A plugin that supplies its own valid `Cache-Control` wins —
+            // the framework default below is appended only when the
+            // plugin did not set one (or its value failed to convert, in
+            // which case a response with zero `Cache-Control` would be
+            // worse than the duplicate this guard exists to prevent).
+            let mut plugin_set_cache_control = false;
             for (k, v) in resp.headers {
                 // The body is reconstructed Rust-side (base64 decode /
                 // into_bytes), so any Content-Length / Transfer-Encoding the
@@ -456,13 +463,22 @@ pub async fn dispatch_plugin(
                     continue;
                 }
                 if let Ok(value) = HeaderValue::try_from(v) {
+                    if lower == "cache-control" {
+                        plugin_set_cache_control = true;
+                    }
                     builder = builder.header(k, value);
                 }
             }
             // Cache busting matches the rest of the dev server — plugin
             // responses are dev-only artefacts; never let a browser
-            // cache a stale plugin emission across reloads.
-            builder = builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            // cache a stale plugin emission across reloads. Only applied
+            // when the plugin did not already supply its own valid
+            // `Cache-Control` — otherwise the plugin's value would end up
+            // duplicated alongside the framework default.
+            if !plugin_set_cache_control {
+                builder =
+                    builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            }
             match builder.body(axum::body::Body::from(body_bytes)) {
                 Ok(resp) => PluginDispatchAttempt::Responded(resp),
                 Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(
