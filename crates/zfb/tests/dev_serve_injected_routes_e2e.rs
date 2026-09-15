@@ -13,6 +13,7 @@
 //! | `dev_e2e_injected_root_renders_without_user_index` | #1515 | An injected `/` renders when the fixture has no `pages/index.tsx`; a sibling injected route still renders |
 //! | `dev_e2e_user_root_wins_over_injected_root` | #1515 | A user `pages/index.tsx` wins over an injected `/` in dev |
 //! | `dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes` | #1518 | A true zero-pages consumer resolves compiled root + docs routes from real pnpm-shaped node_modules, virtual `paths()`, slash-first dev, and build |
+//! | `dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle` | #3011 | A package-owned injected route's `"use client"` component, reachable ONLY through the route's real entrypoint (no host `pages/` importer), is discovered by `rebundle_islands`'s seed: `/assets/islands.js` carries the component's marker and `/package-page`'s HTML references the islands bundle |
 //!
 //! ## Design decision — fixture reuse
 //!
@@ -572,6 +573,260 @@ async fn dev_e2e_static_injected_route_renders() {
                 "[watchdog] static-injected-route dev E2E did not finish within {}s — \
                  a hang, or a static injected route never rendered. Process group {pgid} \
                  will be killed.\n{}",
+                OVERALL_DEADLINE.as_secs(),
+                session.logs(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #3011 — package-owned injected-route islands seed
+// ---------------------------------------------------------------------------
+
+/// Write a preset that injects a static route (`/package-page`) whose
+/// entrypoint wraps a `"use client"` component in `<Island>` — with NO
+/// `pages/` file importing the island component at all, directly or
+/// transitively. Proves `rebundle_islands` seeds the islands scanner from
+/// the survivor `InjectedRouteSet` entrypoints (issue #3011: it used to pass
+/// `&[]`), not only from `project_root/pages`.
+fn write_islands_seed_preset(root: &Path) {
+    let preset = r#"
+export default {
+  name: "consumer-preset-3011",
+  setup({ injectRoute }) {
+    injectRoute("/package-page", "./pkg/island-page.tsx");
+  },
+};
+"#;
+    fs::write(root.join("preset.mjs"), preset).expect("write injected preset.mjs");
+
+    // The "use client" island — reachable ONLY through the injected route's
+    // entrypoint below, never through any file under `pages/`.
+    let island = r#""use client";
+
+export function PackageIsland() {
+  return (
+    <button type="button" data-package-island-marker="package-widget">
+      PACKAGE_ISLAND_WIDGET_MARKER
+    </button>
+  );
+}
+"#;
+    fs::write(root.join("pkg").join("package-island.tsx"), island)
+        .expect("write pkg/package-island.tsx");
+
+    // `<Island>` (from `@takazudo/zfb`) is what stamps the `data-zfb-island`
+    // marker the dev server's `body_has_islands` gate looks for
+    // (`zfb-server/src/routes.rs`) before it will inject the islands
+    // `<script type="module">` tag into the response HTML at all.
+    let island_page = r#"
+import { Island } from "@takazudo/zfb";
+import { PackageIsland } from "./package-island";
+
+export default function IslandPage() {
+  return (
+    <html lang="en">
+      <head><title>Package Island</title></head>
+      <body>
+        <h1>CONSUMER_PACKAGE_ISLAND_PAGE_MARKER</h1>
+        <Island when="load">
+          <PackageIsland />
+        </Island>
+      </body>
+    </html>
+  );
+}
+"#;
+    fs::write(root.join("pkg").join("island-page.tsx"), island_page)
+        .expect("write pkg/island-page.tsx");
+}
+
+/// The core #3011 acceptance: a package-owned injected route whose
+/// entrypoint imports a `"use client"` component with NO host `pages/`
+/// importer must still have that component discovered by the islands
+/// scanner — `GET /assets/islands.js` must contain the component's marker,
+/// and `GET /package-page`'s HTML must reference the islands bundle.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[islands_seed_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[islands_seed_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    write_islands_seed_preset(&root);
+
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
+        .expect("symlink node_modules");
+
+    let stdout_path = root.join(".zfb-dev-stdout-3011.log");
+    let stderr_path = root.join(".zfb-dev-stderr-3011.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(&root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut session = DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path: stdout_path.clone(),
+        stderr_path: stderr_path.clone(),
+    };
+    // `nm_handle` must outlive the dev session.
+    let _nm = nm_handle;
+
+    let body = async {
+        // Phase A: discover the port from the ready banner. A premature exit
+        // with a V8/esbuild skip indicator → skip the whole test.
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[islands_seed_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping.\n{}",
+                        session.logs(),
+                    );
+                    return Outcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready \
+                     banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("build reqwest client");
+
+        // Phase B: readiness — GET / answers 200.
+        {
+            let start = Instant::now();
+            loop {
+                if let Ok(resp) = client.get(format!("{base}/")).send().await {
+                    if resp.status().as_u16() == 200 {
+                        break;
+                    }
+                }
+                assert!(
+                    start.elapsed() < BOOT_DEADLINE,
+                    "GET / never answered 200 within {}s.\n{}",
+                    BOOT_DEADLINE.as_secs(),
+                    session.logs(),
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+
+        // The core #3011 acceptance, part 1: the served islands bundle
+        // contains the package-owned island's marker — proof the scanner
+        // discovered a component reachable ONLY through the injected
+        // route's real entrypoint, not through `project_root/pages`.
+        poll_until_contains(
+            &client,
+            &format!("{base}/assets/islands.js"),
+            "PACKAGE_ISLAND_WIDGET_MARKER",
+            ROUTE_DEADLINE,
+            "package-route island with no host importer reaches islands.js",
+            &session,
+        )
+        .await;
+
+        // The core #3011 acceptance, part 2: the injected page's own HTML
+        // references the islands bundle (the `<Island>` wrapper's
+        // `data-zfb-island` marker makes `serve_page` inject the `<script
+        // type="module" src="/assets/islands.js">` tag).
+        poll_until_contains(
+            &client,
+            &format!("{base}/package-page"),
+            "CONSUMER_PACKAGE_ISLAND_PAGE_MARKER",
+            ROUTE_DEADLINE,
+            "injected /package-page renders",
+            &session,
+        )
+        .await;
+        {
+            let body = client
+                .get(format!("{base}/package-page"))
+                .send()
+                .await
+                .expect("GET /package-page")
+                .text()
+                .await
+                .unwrap_or_default();
+            assert!(
+                body.contains("data-zfb-island"),
+                "the <Island> wrapper must stamp data-zfb-island on the rendered \
+                 page.\nbody:\n{body}\n{}",
+                session.logs(),
+            );
+            assert!(
+                body.contains("/assets/islands.js"),
+                "the served /package-page HTML must reference the islands bundle.\nbody:\n\
+                 {body}\n{}",
+                session.logs(),
+            );
+        }
+
+        Outcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] package-route-island dev E2E did not finish within {}s — a hang, \
+                 or the package-route island never reached the islands bundle. Process group \
+                 {pgid} will be killed.\n{}",
                 OVERALL_DEADLINE.as_secs(),
                 session.logs(),
             );
