@@ -314,6 +314,16 @@ export type ZfbSetupContext = {
    * `to` is resolved relative to the project root. Two plugins
    * registering the same `from` with different `to` raises
    * `AliasConflict` and aborts the build.
+   *
+   * A `to` that resolves to a single existing file is also applied
+   * to importers inside `node_modules`, via esbuild `--alias`. A
+   * directory-shaped or missing `to` is applied through tsconfig
+   * `paths` only, which esbuild does not honor for `node_modules`
+   * importers — packages that need an alias to work from inside
+   * `node_modules` should register one alias per file, or use
+   * `addVirtualModule`. A `from` that is a slash-prefix of another
+   * alias, of a virtual module specifier, or of a reserved name
+   * such as `zfb` gets no `--alias` flag.
    */
   addAlias(from: string, to: string): void;
 
