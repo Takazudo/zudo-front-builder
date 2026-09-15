@@ -391,3 +391,98 @@ fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_st
         );
     }
 }
+
+/// #3037: the real SSR remap must receive the filtered, materialized closure,
+/// including a helper that was never itself an injected entrypoint.
+#[test]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
+fn real_esbuild_virtual_imports_only_accept_materialized_injected_route_files() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_dot_path_staging_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (_ws_root, project) = write_workspace(tmp.path());
+    let entrypoint = write_injected_entrypoint_fixture(&project);
+    let helper_relative = ".example-package/routes-src/helper.tsx";
+    let helper = project.join(helper_relative);
+    fs::write(
+        project.join("pages/index.tsx"),
+        "import { render } from 'virtual:injected-route'; export default function Home() { return render(); }\n",
+    )
+    .unwrap();
+    let mut input = base_input(&project, esbuild);
+    input.tsconfig_paths.clear();
+    input.injected_route_entrypoints = vec![entrypoint.clone()];
+    input.plugin_virtual_modules = vec![(
+        "virtual:injected-route".into(),
+        format!(
+            "import InjectedRoute from {}; import {{ helper }} from {}; \
+             export function render() {{ return InjectedRoute() + ':' + helper; }}\n",
+            serde_json::to_string(&entrypoint.canonicalize().unwrap()).unwrap(),
+            serde_json::to_string(&helper.canonicalize().unwrap()).unwrap(),
+        ),
+    )];
+    let mut session = ShadowSession::new(&project).expect("shadow session");
+
+    for _ in 0..2 {
+        let out = bundle_with_session(input.clone(), Some(&mut session)).expect(
+            "an SSR virtual module must import the exact injected entrypoint AND its materialized helper on fresh and reused shadows",
+        );
+        let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+        for marker in ["INJECTED_ROUTE_MARKER", "INJECTED_HELPER_MARKER"] {
+            assert!(
+                body.contains(marker),
+                "missing {marker}: {}",
+                truncate(&body)
+            );
+        }
+        let shadow = fs::canonicalize(session.shadow_root())
+            .unwrap()
+            .join("sub-packages/host");
+        let keys = metafile_input_keys(&shadow);
+        for expected in [
+            ".example-package/routes-src/generated-route.tsx",
+            helper_relative,
+        ] {
+            assert!(
+                keys.iter().any(|key| key == expected),
+                "virtual imports must resolve the exact staged spelling {expected}; got {keys:?}"
+            );
+        }
+    }
+
+    let mut excluded = input.clone();
+    excluded.bundle_exclude = vec![helper_relative.into()];
+    let error = bundle_with_session(excluded, Some(&mut session))
+        .expect_err("an excluded helper must lose its capability on the next invocation");
+    let message = format!("{error:#}");
+    assert!(message.contains("shadow mirror prunes"), "{message}");
+    assert!(message.contains(helper_relative), "{message}");
+    assert!(!session
+        .shadow_root()
+        .join("sub-packages/host")
+        .join(helper_relative)
+        .exists());
+
+    let mut unregistered = input.clone();
+    unregistered.injected_route_entrypoints.clear();
+    let error = bundle_with_session(unregistered, Some(&mut session))
+        .expect_err("a virtual import alone must not grant staging capability");
+    let message = format!("{error:#}");
+    assert!(message.contains("shadow mirror prunes"), "{message}");
+    assert!(message.contains("generated-route.tsx"), "{message}");
+
+    let unrelated_relative = ".example-package/routes-src/unrelated.tsx";
+    let unrelated = project.join(unrelated_relative);
+    fs::write(&unrelated, "export const unrelated = 'UNRELATED_HIDDEN';\n").unwrap();
+    input.plugin_virtual_modules[0].1.push_str(&format!(
+        "export {{ unrelated }} from {};\n",
+        serde_json::to_string(&unrelated.canonicalize().unwrap()).unwrap(),
+    ));
+    let error = bundle_with_session(input, Some(&mut session))
+        .expect_err("staging an injected route must not authorize an unrelated hidden sibling");
+    let message = format!("{error:#}");
+    assert!(message.contains("shadow mirror prunes"), "{message}");
+    assert!(message.contains(unrelated_relative), "{message}");
+}
