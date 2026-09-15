@@ -8310,7 +8310,7 @@ fn assemble_and_bundle_dev(
     // injected modules without re-materialising them.
     injected_pages_root: Option<&Path>,
     // Issue #3004/#3021 (epic #3019) — absolute source paths of every
-    // registered injected route's entrypoint, mirroring `zfb build`'s
+    // materialized (post-precedence survivor) injected route's entrypoint, mirroring `zfb build`'s
     // `assemble_bundler_input` call. Threaded through unchanged on every
     // tick (boot and refresh both pass the same session-derived list) so a
     // hidden/gitignored entrypoint directory gets a staged spelling just
@@ -8377,9 +8377,9 @@ fn assemble_and_bundle_dev(
         // here — conventional dev scan + watcher identity remains untouched.
         // `None` on the parity path is byte-identical to today (sharp edge 8).
         injected_pages_root,
-        // #3004/#3021 — stage every registered injected route's entrypoint
-        // (plus its relative-import closure) regardless of survivor status;
-        // see this function's own parameter doc.
+        // #3004/#3021 — stage every surviving (materialized) injected route's
+        // entrypoint plus its relative-import closure; see this function's
+        // own parameter doc.
         injected_route_entrypoints,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
