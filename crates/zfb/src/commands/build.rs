@@ -6881,6 +6881,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // (the build overlay above already merges package routes into
         // `build_pages_root`); build passes `None`.
         None,
+        // #3004/#3021 — every MATERIALIZED (post-precedence survivor)
+        // package route's real absolute entrypoint, so the bundler stages
+        // each one as an exact file plus its relative-import closure even
+        // when it lives in a hidden/gitignored dir outside the
+        // `.zudo-doc/routes-src` compatibility allowlist. Reuses
+        // `package_route_entrypoints` (#1191 review) rather than the raw
+        // `setup_registries.injected_routes` list: a user-shadowed or
+        // package-vs-package-dropped route was never materialised into the
+        // overlay and is never imported, so staging its entrypoint would be
+        // pure overhead.
+        package_route_entrypoints.to_vec(),
     )?;
     emit_build_phase_timing("vendor-extraction-and-bundler-input", phase_started);
 
