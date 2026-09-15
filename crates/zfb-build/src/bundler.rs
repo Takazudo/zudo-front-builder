@@ -11641,26 +11641,18 @@ fn run_esbuild(
 
     // Plugin-registered aliases + virtual modules (#269). Both surface
     // through the synthetic `compilerOptions.paths` map esbuild reads
-    // via `--tsconfig=<tsconfig.json>` above. Plugin aliases (`@/foo`)
-    // are tsconfig-paths-ONLY.
+    // via `--tsconfig=<tsconfig.json>` above — a `paths` entry without the
+    // wildcard suffix is a literal exact match, the contract the embedded
+    // V8 host honors too (`zfb-render::BundleModuleLoader::resolve_alias`).
     //
-    // Why aliases avoid `--alias`: esbuild's `--alias:<from>=<to>` is
-    // prefix-with-slash — registering `@/foo` would silently also
-    // rewrite `@/foo/bar` (which can be a real file under a directory
-    // alias), contradicting the documented exact-match contract honored
-    // by the embedded V8 host
-    // (`zfb-render::BundleModuleLoader::resolve_alias`). A
-    // `compilerOptions.paths` entry without the wildcard suffix is a
-    // literal exact match in the TypeScript / esbuild path-mapping
-    // pipeline.
-    //
-    // Virtual modules ADDITIONALLY surface as `--alias` flags — see
-    // `resolver_inputs.virtual_module_alias_flags()` appended to `cmd`
-    // after the tsconfig is rewritten below (#1263). The tsconfig is not
-    // applied to source files under `node_modules`, so the alias is what
-    // resolves a `virtual:*` import from a node_modules route entrypoint;
-    // it is exact-match-safe because each virtual target is a single
-    // `.mjs` file.
+    // The tsconfig is not applied to source files under `node_modules`, so
+    // both ALSO surface as esbuild `--alias` flags appended after the
+    // tsconfig rewrite below: every virtual module (#1263), and each plugin
+    // alias whose target is a single existing file (#3002). `--alias` is
+    // prefix-with-slash, so it is exact-match-safe only for a file target —
+    // `@/foo/bar` remaps to `<file>/bar` and fails. `build_resolver_inputs`
+    // applies the file / user-wins / collision gates; `zfb` is reserved
+    // because this pass hardcodes `--alias:zfb=@takazudo/zfb` above.
     //
     // `zfb_plugin_resolver::build_resolver_inputs` materializes each
     // virtual module to a `.zfb-virtual-*.mjs` temp file inside
@@ -11807,7 +11799,7 @@ fn run_esbuild(
         &effective_plugin_virtual_modules,
         shadow,
         &input.tsconfig_paths,
-        &[],
+        &["zfb"],
     )
     .context("bundler: failed materializing plugin resolver inputs")?;
 
@@ -11868,6 +11860,23 @@ fn run_esbuild(
     // zero-virtual-module path, so the argv is unchanged there.
     for flag in resolver_inputs.virtual_module_alias_flags() {
         cmd.arg(flag);
+    }
+
+    // Plugin-alias `--alias` flags (#3002), from `effective_plugin_aliases`
+    // (shadow-remapped) — only for a target inside the stage root `work_root`
+    // (which contains `shadow`), the same boundary the #1706 stage-escape
+    // audit checks. A target that fell through to the live tree (empty
+    // `bundle.exclude` with no shadow copy, or outside the workspace) keeps
+    // today's tsconfig-only behaviour, where the dual-target `[shadow, real]`
+    // fallback still applies, so a flag can never introduce a stage escape.
+    let stage_root = normalize_path_lexical(work_root);
+    for (flag, (_, target)) in resolver_inputs
+        .plugin_alias_flags()
+        .zip(&resolver_inputs.plugin_alias_args)
+    {
+        if normalize_path_lexical(Path::new(target)).starts_with(&stage_root) {
+            cmd.arg(flag);
+        }
     }
 
     // Mode defines are always emitted and deliberately independent of minify.
