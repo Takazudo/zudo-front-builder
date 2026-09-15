@@ -202,7 +202,7 @@ pub(crate) struct AssembledBundlerInput {
 /// already process-lifetime there). Ignored when an explicit
 /// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
 /// existing precedence is preserved.
-#[allow(clippy::too_many_arguments)] // 10 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root; a struct would obscure the caller-keeps-alive contract documented above
+#[allow(clippy::too_many_arguments)] // 11 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root, #3021 added injected_route_entrypoints; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     config: &Config,
@@ -237,6 +237,22 @@ pub(crate) fn assemble_bundler_input(
     // this remains the additive injected-only root. Other paths preserve the
     // existing single-root behavior.
     injected_pages_root: Option<&Path>,
+    // Issue #3004/#3021 (epic #3019) — absolute source paths of every
+    // MATERIALIZED (post-precedence survivor) injected route's project-local
+    // entrypoint. The bundler stages each one under `project_root` as an
+    // exact file together with its relative-import closure
+    // (`BundlerInput::injected_route_entrypoints`), so a hidden or
+    // gitignored entrypoint directory (e.g. `.example-package/routes-src/`)
+    // gets the same staged spelling `.zudo-doc/routes-src` already gets from
+    // `KNOWN_FIRST_PARTY_STAGING_DIRS`. Both `zfb build`
+    // (`package_route_entrypoints`, #1191 review) and `zfb dev`
+    // (`resolution.materialized`) pass the SAME survivor-filtered list their
+    // overlay/staging resolution already computed — a user-shadowed or
+    // package-vs-package-dropped route is never materialised and never
+    // imported, so staging its entrypoint would be pure overhead. Empty (no
+    // surviving injected routes) is byte-identical to a bundle that never
+    // knew this field.
+    injected_route_entrypoints: Vec<PathBuf>,
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
@@ -269,6 +285,12 @@ pub(crate) fn assemble_bundler_input(
     // injected modules (B1 multi-root). `None` for `zfb build` and for dev
     // with no injected routes — byte-identical to today.
     bundler_input.injected_pages_root = injected_pages_root.map(|p| p.to_path_buf());
+
+    // Issue #3004/#3021 — thread the registered injected routes' absolute
+    // entrypoints so the bundler stages each as an exact file (plus its
+    // relative-import closure) under `project_root`, even when it lives in a
+    // hidden or gitignored directory the generic shadow walker would skip.
+    bundler_input.injected_route_entrypoints = injected_route_entrypoints;
 
     // Discover the Next-style root `mdx-components.tsx` convention (#616):
     // a project-wide element→component override map applied to every

@@ -5864,6 +5864,18 @@ struct DevRebuildInputs {
     /// directory contract without creating a user-visible `pages/` directory
     /// in the consumer project. `None` on every conventional-pages path.
     empty_user_pages_root: Option<(tempfile::TempDir, PathBuf)>,
+
+    /// Issue #3004/#3021 (epic #3019) — absolute entrypoints of every
+    /// MATERIALIZED (post-precedence survivor) injected route, mirroring
+    /// `injected_pages_root`'s own survivor filtering (a user-shadowed or
+    /// package-vs-package-dropped route is staged into neither). Frozen at
+    /// boot from `resolution.materialized` — the SAME survivor list
+    /// `injected_pages_root` above is built from — since that list never
+    /// changes after setup; threaded into
+    /// `BundlerInput::injected_route_entrypoints` on every tick so a
+    /// hidden/gitignored entrypoint directory gets a staged spelling.
+    /// Empty on the parity path.
+    injected_route_entrypoints: Vec<PathBuf>,
 }
 
 #[cfg(feature = "embed_v8")]
@@ -5908,6 +5920,13 @@ impl DevRebuildInputs {
         self.injected_pages_root
             .as_ref()
             .map(|(_, path)| path.as_path())
+    }
+
+    /// Fresh clone of the frozen injected-route entrypoint list (issue
+    /// #3004/#3021), for `assemble_bundler_input`'s
+    /// `injected_route_entrypoints` seam on every tick.
+    fn injected_route_entrypoints(&self) -> Vec<PathBuf> {
+        self.injected_route_entrypoints.clone()
     }
 
     /// The internal empty user-pages root for a true zero-pages project, if
@@ -7404,6 +7423,9 @@ impl DevRenderSession {
                 // from the SAME session-lifetime staging dir (not
                 // re-materialised). `None` on the parity path.
                 inputs.injected_pages_root(),
+                // #3004/#3021 — re-stage the same frozen entrypoint list
+                // every tick; see `DevRebuildInputs::injected_route_entrypoints`.
+                inputs.injected_route_entrypoints(),
             )
             .context("dev refresh: re-bundle failed")?
         };
@@ -8255,7 +8277,7 @@ struct AssembledBundleResult {
 /// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
 /// calls are made (zero overhead on the hot path).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 9 params: #1518 added empty_user_pages_root; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
+#[allow(clippy::too_many_arguments)] // 10 params: #1518 added empty_user_pages_root, #3021 added injected_route_entrypoints; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
 fn assemble_and_bundle_dev(
     project_root: &Path,
     cfg: &config::Config,
@@ -8287,6 +8309,13 @@ fn assemble_and_bundle_dev(
     // SAME root from `DevRebuildInputs`, so every tick re-includes the
     // injected modules without re-materialising them.
     injected_pages_root: Option<&Path>,
+    // Issue #3004/#3021 (epic #3019) — absolute source paths of every
+    // registered injected route's entrypoint, mirroring `zfb build`'s
+    // `assemble_bundler_input` call. Threaded through unchanged on every
+    // tick (boot and refresh both pass the same session-derived list) so a
+    // hidden/gitignored entrypoint directory gets a staged spelling just
+    // like `.zudo-doc/routes-src` does. Empty on the parity path.
+    injected_route_entrypoints: Vec<PathBuf>,
 ) -> Result<AssembledBundleResult> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
@@ -8348,6 +8377,10 @@ fn assemble_and_bundle_dev(
         // here — conventional dev scan + watcher identity remains untouched.
         // `None` on the parity path is byte-identical to today (sharp edge 8).
         injected_pages_root,
+        // #3004/#3021 — stage every registered injected route's entrypoint
+        // (plus its relative-import closure) regardless of survivor status;
+        // see this function's own parameter doc.
+        injected_route_entrypoints,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
@@ -9230,6 +9263,19 @@ fn boot_dev_renderer(
         // #1518 — retain the internal empty primary root when the real
         // consumer project deliberately has no `pages/` directory.
         empty_user_pages_root: empty_user_pages_guard.map(|guard| (guard, pages_dir.clone())),
+        // #3004/#3021 — every MATERIALIZED (post-precedence survivor)
+        // package route's real absolute entrypoint, mirroring `zfb build`'s
+        // `package_route_entrypoints` (#1191 review): a user-shadowed or
+        // package-vs-package-dropped route is never staged into
+        // `injected_pages_root` and never imported, so its entrypoint is
+        // excluded here too. Sourced from `resolution.materialized` (the
+        // SAME survivor list `static_injected_seeds`/`surviving_injected_routes`
+        // above already consult), not the raw `injected_routes` param.
+        injected_route_entrypoints: resolution
+            .materialized
+            .iter()
+            .map(|mr| mr.entrypoint.clone())
+            .collect(),
     };
 
     // Issue #2257 — reap stale sibling `zfb-shadow-session-*` dirs a
@@ -9326,6 +9372,9 @@ fn boot_dev_renderer(
             // S2 (#1230) — include the injected modules in the BOOT bundle from
             // the staging dir materialised above. `None` on the parity path.
             rebuild_inputs.injected_pages_root(),
+            // #3004/#3021 — stage the same frozen entrypoint list the BOOT
+            // bundle and every subsequent refresh tick share.
+            rebuild_inputs.injected_route_entrypoints(),
         )?
         .output;
         let (trace_token, trace_wrapper_source) =
@@ -10910,6 +10959,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
+                injected_route_entrypoints: Vec::new(),
             },
             // Default config carries no collections (#1550).
             collection_roots: Vec::new(),
@@ -12257,6 +12307,7 @@ mod tests {
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
+                injected_route_entrypoints: Vec::new(),
             },
             collection_roots,
             last_successful_skip_key: Mutex::new(None),
@@ -18920,6 +18971,7 @@ mod tests {
             esbuild: None,
             injected_pages_root: None,
             empty_user_pages_root: None,
+            injected_route_entrypoints: Vec::new(),
         };
 
         // Pre-refresh: all three consumers agree on the SEEDED value.

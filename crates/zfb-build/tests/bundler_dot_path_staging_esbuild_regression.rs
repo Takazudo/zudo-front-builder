@@ -59,6 +59,19 @@
 //! ```
 //!
 //! Restoring the two consts made the test pass again (GREEN).
+//!
+//! ## Issue #3004/#3021 (epic #3019) twin
+//!
+//! `real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit`
+//! below reuses this file's exact fixture shape (same 2-member pnpm
+//! workspace, same alias-reached generated route module) but roots the
+//! generated route + its relative helper under a hidden dir that is
+//! deliberately NOT in `KNOWN_FIRST_PARTY_STAGING_DIRS`
+//! (`.example-package/routes-src/`, mirroring the epic's own
+//! `injectRoute`-registered-plugin repro). The staged spelling can only come
+//! from `BundlerInput::injected_route_entrypoints` (#3004) — never from the
+//! dot-path allowlist above. Red-first evidence recorded on that test's own
+//! doc comment.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -238,6 +251,139 @@ fn real_esbuild_resolves_dot_path_staged_spellings_and_passes_stage_escape_audit
     for expected in [
         ".zudo-doc/routes-src/generated-route.tsx",
         ".zfb/doc-history-meta.json",
+    ] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "metafile inputs must record the EXACT staged spelling {expected}; got {keys:?}"
+        );
+    }
+}
+
+/// Issue #3004/#3021 fixture: an injected route's project-local entrypoint
+/// under a hidden dir that is deliberately NOT in
+/// `KNOWN_FIRST_PARTY_STAGING_DIRS` (`.example-package/routes-src/`, the
+/// epic's own repro shape), importing a relative helper, reached from
+/// `pages/index.tsx` through a tsconfig alias — the SAME dual-target
+/// alias-rebase escape mechanism `write_dot_path_fixture` above uses, so the
+/// only difference from that fixture is which allowlisting mechanism (const
+/// vs. `injected_route_entrypoints`) is expected to produce the staged
+/// spelling.
+fn write_injected_entrypoint_fixture(project: &Path) -> PathBuf {
+    fs::create_dir_all(project.join(".example-package/routes-src")).unwrap();
+    let entrypoint = project.join(".example-package/routes-src/generated-route.tsx");
+    fs::write(
+        &entrypoint,
+        r##"
+            import { helper } from "./helper.tsx";
+            export default function InjectedRoute() {
+              return "INJECTED_ROUTE_MARKER:" + helper;
+            }
+        "##,
+    )
+    .unwrap();
+    fs::write(
+        project.join(".example-package/routes-src/helper.tsx"),
+        "export const helper = 'INJECTED_HELPER_MARKER';\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r##"
+            import InjectedRoute from "#injected-route";
+            export default function Home() {
+              return InjectedRoute();
+            }
+        "##,
+    )
+    .unwrap();
+    // Same real-world shape as issue #1840's fixture: a conventionally
+    // gitignored dir the generic staging walker would otherwise skip.
+    fs::write(project.join(".gitignore"), ".example-package/\n").unwrap();
+    entrypoint
+}
+
+/// Issue #3004/#3021 (epic #3019): real-esbuild confirmation that
+/// `BundlerInput::injected_route_entrypoints` produces the same staged
+/// spelling + stage-escape-audit pass as the dot-path allowlist above, for a
+/// hidden dir the allowlist does not cover.
+///
+/// ## Red-first evidence
+///
+/// Verified by temporarily dropping the `input.injected_route_entrypoints =
+/// vec![entrypoint.clone()];` line below (leaving the field at its
+/// `BundlerInput::for_project` default, `Vec::new()`) and re-running
+/// `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test
+/// bundler_dot_path_staging_esbuild_regression -- --ignored --exact
+/// real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit`.
+/// This reproduced the same case-4 stage-escape shape the sibling test's own
+/// header documents — both the entrypoint and its relative helper resolve via
+/// the alias's live-tree dual-target fallback and are rejected as escapes
+/// (paths shortened for readability; the real message names the full
+/// absolute tempdir path esbuild's `..`-climbing metafile key resolves to,
+/// and case-4 also prints the workspace-sibling remediation paragraph, which
+/// does not apply here — omitted below):
+///
+/// ```text
+/// panicked: ...: bundler: SSR work-mirror stage-escape audit failed
+///
+/// Caused by:
+///     zfb bundler: stage-escape audit — the following metafile input(s)
+///     escaped their stage: ../../.../<tmp>/sub-packages/host/.example-package/routes-src/helper.tsx
+///     (first-party input resolved outside every stage root, no staged
+///     spelling), ../../.../<tmp>/sub-packages/host/.example-package/routes-src/generated-route.tsx
+///     (first-party input resolved outside every stage root, no staged
+///     spelling)
+/// ```
+///
+/// Restoring the `injected_route_entrypoints` assignment made the test pass
+/// again (GREEN).
+#[test]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
+fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_dot_path_staging_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (_ws_root, project) = write_workspace(tmp.path());
+    let entrypoint = write_injected_entrypoint_fixture(&project);
+
+    let mut session = ShadowSession::new(&project).expect("shadow session");
+    let mut input = base_input(&project, esbuild);
+    input.tsconfig_paths.insert(
+        "#injected-route".to_string(),
+        vec![entrypoint.to_string_lossy().into_owned()],
+    );
+    // The field under test: without this, the entrypoint has no staged
+    // spelling (see the red-first evidence above).
+    input.injected_route_entrypoints = vec![entrypoint.clone()];
+
+    let out = bundle_with_session(input, Some(&mut session)).expect(
+        "issue #3004/#3021: an injected route's project-local entrypoint under a \
+         hidden dir OUTSIDE the KNOWN_FIRST_PARTY_STAGING_DIRS allowlist, reached \
+         through a tsconfig alias, must build green AND pass the stage-escape audit \
+         once its absolute path is threaded through \
+         BundlerInput::injected_route_entrypoints",
+    );
+
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    for marker in ["INJECTED_ROUTE_MARKER", "INJECTED_HELPER_MARKER"] {
+        assert!(
+            body.contains(marker),
+            "the injected-entrypoint staged content must reach the bundle: {}",
+            truncate(&body)
+        );
+    }
+
+    // Same exact-match rationale as the sibling test above (codex review
+    // finding): a `.contains()` check would also accept a live-tree escape.
+    let shadow = fs::canonicalize(session.shadow_root())
+        .expect("canonicalize persistent shadow root")
+        .join("sub-packages/host");
+    let keys = metafile_input_keys(&shadow);
+    for expected in [
+        ".example-package/routes-src/generated-route.tsx",
+        ".example-package/routes-src/helper.tsx",
     ] {
         assert!(
             keys.iter().any(|k| k == expected),
