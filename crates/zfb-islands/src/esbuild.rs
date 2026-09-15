@@ -1346,24 +1346,35 @@ impl EsbuildSubprocessBundler {
 
         // Plugin-registered aliases + virtual modules (#269). Both
         // surface through a synthetic `compilerOptions.paths` map
-        // esbuild reads via `--tsconfig=<temp tsconfig>`. Plugin aliases
-        // (`@/foo`) are tsconfig-paths-ONLY: esbuild's
-        // `--alias:<from>=<to>` is prefix-with-slash, so registering
-        // `@/foo` would silently rewrite `@/foo/bar` (which can be a real
-        // file under a directory alias), contradicting the embedded V8
-        // host's exact-match contract
-        // (`zfb-render::BundleModuleLoader::resolve_alias`). A
+        // esbuild reads via `--tsconfig=<temp tsconfig>`. A plugin alias
+        // (`@/foo`) is tsconfig-paths-ONLY when its target is a
+        // *directory* (or missing): esbuild's `--alias:<from>=<to>` is
+        // prefix-with-slash, so registering `@/foo` there would silently
+        // rewrite `@/foo/bar` (which can be a real file under that
+        // directory), contradicting the embedded V8 host's exact-match
+        // contract (`zfb-render::BundleModuleLoader::resolve_alias`). A
         // wildcard-free `compilerOptions.paths` entry is a literal exact
         // match in TS / esbuild's path-mapping pipeline.
         //
+        // A single-FILE plugin alias target ALSO rides `--alias` (#3002)
+        // — a file has no children, so the same prefix-with-slash
+        // matching cannot capture a longer import and the exact-match
+        // contract holds — subject to the gates documented on
+        // `zfb_plugin_resolver::ResolverInputs::plugin_alias_args`
+        // (is_file, user-wins, no slash-prefix collision). This closes
+        // the node_modules gap below for `addAlias` the same way virtual
+        // modules already close it: a route entrypoint installed under
+        // `node_modules` (e.g. by a published preset) cannot resolve an
+        // alias via `compilerOptions.paths` alone, because esbuild does
+        // not apply tsconfig `paths` to a source file under
+        // `node_modules`.
+        //
         // Plugin virtual modules additionally surface as
-        // `--alias:<spec>=<tmp.mjs>` flags (#1263) — see where they are
-        // appended to `cmd` below. esbuild does not apply
-        // `compilerOptions.paths` to a source file under `node_modules`,
-        // so a route entrypoint installed there cannot resolve a
-        // `virtual:*` import via the tsconfig alone; `--alias` is not
-        // node_modules-gated and is exact-match-safe for virtual modules
-        // because their target is always a single `.mjs` file.
+        // `--alias:<spec>=<tmp.mjs>` flags (#1263) — see where they (and
+        // the plugin-alias flags above) are appended to `cmd` below.
+        // `--alias` is not node_modules-gated and is exact-match-safe for
+        // virtual modules because their target is always a single `.mjs`
+        // file.
         //
         // `zfb_plugin_resolver::build_resolver_inputs` materializes
         // each virtual module's source to a `.zfb-virtual-*.mjs` temp
@@ -1451,6 +1462,15 @@ impl EsbuildSubprocessBundler {
         // applied). Empty for the zero-virtual-module path, so the argv
         // stays byte-identical there.
         for flag in resolver_inputs.virtual_module_alias_flags() {
+            cmd.arg(OsString::from(flag));
+        }
+        // Single-file plugin-alias `--alias` flags (#3002): the same
+        // node_modules-gated tsconfig gap above applies to plugin aliases
+        // whose target is a single file, so they ALSO ride `--alias`
+        // (gated in `zfb_plugin_resolver::build_resolver_inputs` — see
+        // `ResolverInputs::plugin_alias_args`). Empty when no plugin
+        // alias qualifies, so the zero-plugin argv stays byte-identical.
+        for flag in resolver_inputs.plugin_alias_flags() {
             cmd.arg(OsString::from(flag));
         }
         for arg in &args {
@@ -1541,6 +1561,9 @@ impl EsbuildSubprocessBundler {
                     )));
                 }
                 for flag in worker_resolver.resolver_inputs.virtual_module_alias_flags() {
+                    worker_cmd.arg(OsString::from(flag));
+                }
+                for flag in worker_resolver.resolver_inputs.plugin_alias_flags() {
                     worker_cmd.arg(OsString::from(flag));
                 }
                 for arg in &worker_args {
@@ -3228,6 +3251,9 @@ impl EsbuildSubprocessBundler {
                 )));
             }
             for flag in job_resolver.resolver_inputs.virtual_module_alias_flags() {
+                cmd.arg(OsString::from(flag));
+            }
+            for flag in job_resolver.resolver_inputs.plugin_alias_flags() {
                 cmd.arg(OsString::from(flag));
             }
             for arg in &args {
