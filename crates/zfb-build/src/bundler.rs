@@ -151,11 +151,11 @@ use crate::adapter::run_capturing;
 // and `GlobCallCollector` have no other call sites left in `bundler.rs`.
 use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
-    collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
-    discover_module_preprocessing_with_tsconfig_paths,
+    canonical_project_relative_target, collect_runtime_import_specifiers_from_file,
+    discover_module_preprocessing_with_context, discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context,
-    remap_virtual_module_project_imports_to_shadow, rewrite_module_worker_urls_with_context,
-    ModuleWorkerBuildContext, ModuleWorkerDependency,
+    remap_virtual_module_project_imports_to_shadow_with_materialized_files,
+    rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
     expand_raw_imports_with_aliases, supported_raw_import_specifier_for_path,
@@ -2814,6 +2814,7 @@ pub fn bundle_with_session(
         .clone()
         .without_user_claimed_virtual_modules(&input.tsconfig_paths);
     let mut plugin_preprocessing_files = BTreeSet::new();
+    let mut exact_target_preprocessing_files = BTreeSet::new();
     let mut root_entry_dependency_seed_files = BTreeSet::new();
     let mut root_entry_dependency_logical_importers = BTreeMap::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
@@ -2888,6 +2889,7 @@ pub fn bundle_with_session(
         };
         let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
         let discovered_files = discovery.files;
+        exact_target_preprocessing_files.extend(discovered_files.iter().cloned());
         plugin_preprocessing_files.insert(target.clone());
         if root_level_entry {
             root_entry_dependency_seed_files.insert(target.clone());
@@ -4483,6 +4485,21 @@ pub fn bundle_with_session(
     //     `run_esbuild` AFTER this pass and self-delete — they never
     //     interact with the prune.
     writer.prune_stale()?;
+    // #3037: a virtual import alone must not authorize a pruned location.
+    // Only explicit exact targets and their eligible closure grant access,
+    // and only at the canonical destination the remap will actually use.
+    // Check after pruning so excluded/stale session files grant no capability.
+    let materialized_project_files = if input.plugin_virtual_modules.is_empty() {
+        BTreeSet::new()
+    } else {
+        exact_target_staging_files
+            .iter()
+            .chain(&exact_target_preprocessing_files)
+            .filter(|path| !is_plugin_preprocessing_excluded(path))
+            .filter_map(|path| canonical_project_relative_target(path.to_str()?, &project_root))
+            .filter(|relative| shadow.join(relative).is_file())
+            .collect::<BTreeSet<_>>()
+    };
     let materialise_ms = materialise_start.map(|t| t.elapsed().as_millis());
 
     // 6. Resolve and run esbuild (or the mock).
@@ -4532,6 +4549,7 @@ pub fn bundle_with_session(
             metafile_path.as_deref(),
             &bundle_exclude,
             node_modules_isolation_root,
+            &materialized_project_files,
         )?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
@@ -11564,6 +11582,7 @@ fn run_esbuild(
     metafile_path: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     node_modules_isolation_root: Option<&Path>,
+    materialized_project_files: &BTreeSet<PathBuf>,
 ) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
@@ -11820,11 +11839,12 @@ fn run_esbuild(
         .plugin_virtual_modules
         .iter()
         .map(|(specifier, source)| {
-            let remapped = remap_virtual_module_project_imports_to_shadow(
+            let remapped = remap_virtual_module_project_imports_to_shadow_with_materialized_files(
                 source,
                 &input.project_root,
                 first_party_root,
                 work_root,
+                materialized_project_files,
             )
             .with_context(|| {
                 format!("bundler: failed remapping virtual module {specifier:?} for the SSR shadow")
