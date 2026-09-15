@@ -1185,6 +1185,221 @@ export default function Page() {
 }
 
 // ---------------------------------------------------------------------------
+// 7c (#3013, #3005 repro): a `"use client"` component reachable ONLY through
+//    a registered plugin virtual module must still ship as an island.
+// ---------------------------------------------------------------------------
+
+/// The core #3013/#3005 acceptance: a host page's ONLY route to a
+/// `"use client"` `Widget` is `import { Widget } from "virtual:demo"` — no
+/// relative or bare import reaches `Widget` any other way. Before issue
+/// #3013 wired `FsResolver::with_virtual_modules` into
+/// `build_default_islands_payload_with_bundle_options`, the islands scanner
+/// never followed the `virtual:` edge, so `Widget` was invisible to the
+/// scanner: it still rendered a `data-zfb-island="Widget"` marker (the
+/// `<Island>` wrapper stamps that client-side of the render, independent of
+/// scanner discovery) but with no matching registry entry — a dead,
+/// unhydratable island shipped silently (issue #3005).
+///
+/// `Widget` also carries a `?raw` import, so this run exercises
+/// `materialise_islands_shadow_with_worker_context` — the integration proof
+/// that the shadow copies `Widget`'s REAL file (not the ephemeral
+/// `.zfb-virtual-scan-*` placeholder the scanner resolves `virtual:demo`
+/// to) is the raw payload appearing, byte-for-byte, in the emitted bundle.
+#[test]
+fn virtual_module_only_import_ships_as_island() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[vmodule_island] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[vmodule_island] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("components/widget-payload.frag"),
+        "VMODULE_ONLY_WIDGET_RAW_PAYLOAD",
+    )
+    .unwrap();
+    // The "use client" island — reachable ONLY through the registered
+    // virtual module below (no relative/bare import of this file exists
+    // anywhere else in the fixture). Its own `?raw` import forces the
+    // islands shadow to materialise.
+    fs::write(
+        root.join("components/widget.tsx"),
+        r#""use client";
+import payload from "./widget-payload.frag?raw";
+
+export function Widget() {
+  return (
+    <button type="button" data-island="widget">
+      {payload}
+    </button>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"import { Island } from "@takazudo/zfb";
+import { Widget } from "virtual:demo";
+
+export default function Page() {
+  return (
+    <html lang="en">
+      <head><title>vmodule-only</title></head>
+      <body>
+        <Island when="load">
+          <Widget />
+        </Island>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("preset.mjs"),
+        r#"import path from "node:path";
+
+export default {
+  name: "vmodule-demo-preset",
+  setup({ projectRoot, addVirtualModule }) {
+    const widgetPath = path.join(projectRoot, "components/widget.tsx");
+    addVirtualModule(
+      "virtual:demo",
+      () => `export { Widget } from ${JSON.stringify(widgetPath)};`,
+    );
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+
+    let output = run_zfb_build(root, &esbuild);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let combined = format!("{stdout}{stderr}");
+    if !output.status.success() {
+        if is_known_skip(&combined) {
+            eprintln!("[vmodule_island] known-skip indicator; skipping.\n{combined}");
+            return;
+        }
+        panic!(
+            "[vmodule_island] expected `zfb build` to succeed; status={:?}\n\
+             --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            output.status,
+        );
+    }
+    let dist = root.join("dist");
+
+    let js_assets = collect_files(&dist.join("assets"), "js");
+    let island_assets: Vec<PathBuf> = js_assets
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with("islands-") && n.ends_with(".js"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    assert!(
+        !island_assets.is_empty(),
+        "a `\"use client\"` component reachable ONLY through a registered virtual module must \
+         emit dist/assets/islands-<hash>.js. js assets: {js_assets:#?}"
+    );
+    let island_bundles: Vec<String> = island_assets
+        .iter()
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .collect();
+    assert!(
+        island_bundles.iter().any(|s| s.contains("Widget")),
+        "the islands bundle must contain the virtual-module-only `Widget` component. \
+         island assets: {island_assets:#?}"
+    );
+    assert!(
+        island_bundles
+            .iter()
+            .any(|s| s.contains("VMODULE_ONLY_WIDGET_RAW_PAYLOAD")),
+        "the islands bundle must contain `Widget`'s real `?raw` payload — proof the shadow \
+         materialised `components/widget.tsx` itself, not the ephemeral \
+         `.zfb-virtual-scan-*` placeholder `virtual:demo` resolves to. \
+         island assets: {island_assets:#?}"
+    );
+    assert!(
+        island_bundles.iter().all(|s| !s.contains("?raw")),
+        "the islands bundle must not ship an unexpanded `?raw` specifier. \
+         island assets: {island_assets:#?}"
+    );
+
+    let html = fs::read_to_string(dist.join("index.html")).unwrap();
+    assert!(
+        html.contains("data-zfb-island=\"Widget\""),
+        "the rendered page must stamp data-zfb-island=\"Widget\" for the <Island> wrapper.\n\
+         html:\n{html}"
+    );
+
+    // The SSR marker count equals the manifest entry count: with `Widget`
+    // now discovered and registered, the build emits no "has no matching
+    // registry entry" warning (see `crate::commands::island_marker_check`) —
+    // before the fix, this exact marker was orphaned.
+    assert!(
+        !combined.contains("has no matching registry entry"),
+        "the build must not warn about an orphaned `data-zfb-island` marker — `Widget` must be \
+         registered.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+
+    // No synthetic scanner placeholder ever gets fs-copied into the
+    // materialised shadow / emitted output.
+    for entry in walk_all_files(&dist) {
+        let name = entry.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        assert!(
+            !name.starts_with(".zfb-virtual-scan-"),
+            "the ephemeral virtual-scan placeholder must never be fs-copied into dist: {}",
+            entry.display()
+        );
+    }
+}
+
+/// Recursively collect every file under `dir` (any extension).
+fn walk_all_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if !dir.is_dir() {
+        return out;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // 8. Parity: a build with NO package routes is unaffected (overlay bypassed).
 // ---------------------------------------------------------------------------
 
