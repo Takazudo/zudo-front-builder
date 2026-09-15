@@ -1584,6 +1584,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .map(|session| session.injected_route_set())
         .filter(|set| !set.is_empty());
 
+    // #3011 — package-owned injected routes have real entrypoints (the
+    // survivor `InjectedRoute::entrypoint` records above), so seed the
+    // islands scanner with them the same way `zfb build` seeds its overlay's
+    // `materialized[].entrypoint` (build.rs's `package_route_entrypoints`).
+    // Derived once here, BEFORE `run_islands` and the deferred boot task are
+    // built below, and captured by both closures — the survivor set is
+    // frozen for the session (S3 limitation), so no per-tick recompute and
+    // no new watch root are needed.
+    let injected_route_seed_entrypoints: Vec<PathBuf> = injected_route_set
+        .iter()
+        .flat_map(|set| set.iter())
+        .map(|route| route.entrypoint.clone())
+        .collect();
+
     // 3. Build orchestrator setup.
     //
     // Issues #1166, #1170 — the manifest-digest + persisted-graph load +
@@ -2416,6 +2430,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let companion_ledger = Arc::clone(&islands_companion_ledger);
         let raw_invalidation = raw_import_invalidation.clone();
+        // #3011 — the survivor injected-route entrypoints derived above
+        // (frozen for the session; no per-tick recompute).
+        let package_route_entrypoints = injected_route_seed_entrypoints.clone();
         // The watcher tick and the deferred boot build (issue #1170) share
         // ONE implementation — `rebundle_islands` — so the boot-time bundle
         // and every rebundle tick write islands.js, prune companions, and
@@ -2438,6 +2455,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &url_handle,
                 &companion_ledger,
                 &raw_invalidation,
+                &package_route_entrypoints,
             )
         }))
     };
@@ -2913,6 +2931,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
     let framework_for_boot = cfg.framework;
     let bundle_config_for_boot = cfg.bundle.clone();
+    // #3011 — same survivor injected-route entrypoints the watcher-tick
+    // closure above captured; the boot task's own eager islands rebundle
+    // (issue #1170) must seed them identically.
+    let package_route_entrypoints_for_boot = injected_route_seed_entrypoints.clone();
     // Issue #1182 — the deferred boot task publishes the live SSR route handle
     // after the deferred bundle lands (`refresh_bundle_and_routes` swaps the
     // session's tables but NOT the server's `ssr_route_set` handle — its
@@ -3234,6 +3256,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &islands_url_handle_for_boot,
                 &islands_companion_ledger_for_boot,
                 &raw_import_invalidation_for_boot,
+                &package_route_entrypoints_for_boot,
             ) {
                 Ok(info) => info,
                 Err(e) => {
@@ -4080,14 +4103,22 @@ fn rebundle_islands(
     url_handle: &zfb_server::IslandsBundleUrl,
     companion_ledger: &Arc<Mutex<IslandsCompanionLedger>>,
     raw_invalidation: &zfb_build::RawImportInvalidation,
+    // #3011 — the POST-precedence survivor injected-route entrypoints (the
+    // same `InjectedRoute::entrypoint` records that back the static
+    // `url_index` seeds and the request-time `InjectedRouteSet`), so
+    // package-owned islands are discovered live the same way `zfb build`
+    // seeds them from its overlay's `materialized[].entrypoint`. Empty when
+    // no injected route survived precedence. Frozen for the session by the
+    // caller — this function does not recompute it per tick.
+    package_route_entrypoints: &[PathBuf],
 ) -> anyhow::Result<Option<IslandsBundleInfo>> {
     // Marker names are only needed by the production build pass; dev mode
     // already surfaces unknown-marker warnings in the browser console via
     // the runtime.ts warn path.
-    // Dev seeds the islands scanner from the conventional `pages/` root.
-    // (Package-owned build routes are a build-time concern; dev's
-    // injected routes are served live, not materialised — #1193.) No
-    // package-route entrypoints to seed in dev (codex P1 is build-only).
+    // Dev seeds the islands scanner from the conventional `pages/` root
+    // plus, since #3011, each survivor injected route's real entrypoint
+    // (dev's injected routes are served live, not materialised, but their
+    // islands still need discovering — #1193).
     // Issue #1404 — the islands-shadow `import.meta.glob` fix is applied
     // inside `build_default_islands_payload`, so the dev path gets it for
     // free by routing through the same function: a supported eager
@@ -4104,7 +4135,7 @@ fn rebundle_islands(
         crate::commands::build::build_default_islands_payload_with_bundle_options(
             project_root,
             &project_root.join("pages"),
-            &[],
+            package_route_entrypoints,
             assets_root,
             framework,
             bundle_config,

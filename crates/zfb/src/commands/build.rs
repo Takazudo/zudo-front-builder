@@ -4237,7 +4237,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // resolver, so this is a no-op on the conventional-pages path.
     let resolver = FsResolver::new()
         .with_project_root(project_root)
-        .with_injected_route_roots(package_route_entrypoints);
+        .with_injected_route_roots(package_route_entrypoints)
+        .with_virtual_modules(project_root, &plugin_config.virtual_modules);
     // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
     // by `materialise_islands_shadow_with_worker_context` below, via
     // `scan_meta.workspace_package_edges_from_islands`) to the first-party

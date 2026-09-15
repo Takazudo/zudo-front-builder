@@ -541,6 +541,14 @@ pub struct FsResolver {
     /// preserves the historical relative-only raw behavior until the
     /// production caller opts in with the project root.
     raw_alias_context: Option<FsRawAliasContext>,
+    /// Plugin virtual modules (issue #3005): `specifier → synthetic path`.
+    /// Consulted in the bare branch of [`Resolver::resolve`] after the
+    /// tsconfig-alias check. Empty unless
+    /// [`FsResolver::with_virtual_modules`] was called.
+    virtual_modules: Arc<HashMap<String, PathBuf>>,
+    /// `synthetic path → in-memory source`, served by [`Resolver::read`].
+    /// Synthetic paths are never written to disk.
+    virtual_sources: Arc<HashMap<PathBuf, String>>,
 }
 
 // TsConfigPaths and TsPathAlias are imported from zfb_plugin_resolver above.
@@ -564,6 +572,8 @@ impl Default for FsResolver {
             injected_route_roots: Vec::new(),
             tsconfig_cache: Arc::new(Mutex::new(HashMap::new())),
             raw_alias_context: None,
+            virtual_modules: Arc::new(HashMap::new()),
+            virtual_sources: Arc::new(HashMap::new()),
         }
     }
 }
@@ -629,6 +639,38 @@ impl FsResolver {
         let project_root = project_root.as_ref();
         let aliases = RawImportAliasContext::from_project_root(project_root);
         self.with_raw_alias_context(project_root, aliases)
+    }
+
+    /// Register plugin virtual modules (`ctx.addVirtualModule`) as
+    /// `(specifier, source text)` pairs so the scan follows edges through
+    /// them (issue #3005).
+    ///
+    /// Each specifier resolves to a synthetic
+    /// `<project_root>/.zfb-virtual-scan-<encoded specifier>.tsx` path that
+    /// is never written to disk; [`Resolver::read`] serves its source from
+    /// memory. Its importer dir is therefore `project_root` — the same
+    /// base esbuild resolves the materialised `.zfb-virtual-*.mjs` against.
+    /// The prefix is deliberately NOT the plugin resolver's `.zfb-virtual-`
+    /// temp class, which the in-project temp sweeper reaps.
+    ///
+    /// A tsconfig `paths` claim on the same specifier wins (user-wins, as
+    /// `zfb_plugin_resolver::user_claims_specifier`).
+    pub fn with_virtual_modules(
+        mut self,
+        project_root: impl AsRef<Path>,
+        pairs: &[(String, String)],
+    ) -> Self {
+        let project_root = canonicalize_or_self(project_root.as_ref());
+        let mut modules = HashMap::with_capacity(pairs.len());
+        let mut sources = HashMap::with_capacity(pairs.len());
+        for (specifier, source) in pairs {
+            let path = virtual_scan_path(&project_root, specifier);
+            modules.insert(specifier.clone(), path.clone());
+            sources.insert(path, source.clone());
+        }
+        self.virtual_modules = Arc::new(modules);
+        self.virtual_sources = Arc::new(sources);
+        self
     }
 
     /// Walk up from `start_dir` looking for the first ancestor that
@@ -1385,6 +1427,12 @@ impl Resolver for FsResolver {
             if let Some(found) = self.try_resolve_tsconfig_alias(importer_dir, specifier) {
                 return Some(canonicalize(found));
             }
+            // 2) Plugin virtual modules (issue #3005) — after the user's
+            //    alias claim, before baseUrl / node_modules probing. The
+            //    synthetic path does not exist, so it is not canonicalised.
+            if let Some(synthetic) = self.virtual_modules.get(specifier) {
+                return Some(synthetic.clone());
+            }
             if let Some(found) = self.try_resolve_tsconfig_base_url(importer_dir, specifier) {
                 return Some(canonicalize(found));
             }
@@ -1544,6 +1592,9 @@ impl Resolver for FsResolver {
         {
             return None;
         }
+        if self.virtual_modules.contains_key(specifier) {
+            return None;
+        }
         if !self.workspace_probe_enabled {
             return None;
         }
@@ -1556,6 +1607,9 @@ impl Resolver for FsResolver {
     }
 
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
+        if let Some(source) = self.virtual_sources.get(path) {
+            return Ok(source.clone());
+        }
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     }
 }
@@ -1833,7 +1887,10 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
         if !visited.insert(current.clone()) {
             continue;
         }
-        reachable.insert(current.clone());
+        let is_virtual = is_virtual_scan_path(&current);
+        if !is_virtual {
+            reachable.insert(current.clone());
+        }
 
         if !is_scannable_source(&current) {
             continue;
@@ -1859,7 +1916,9 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
         for edge in import_edges {
             match edge {
                 CollectedImportEdge::Module(specifier) => {
-                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                    if let Some(resolved) =
+                        resolve_module_edge(resolver, &current, &importer_dir, &specifier)
+                    {
                         if let Some(package_dir) =
                             resolver.workspace_package_root(&importer_dir, &specifier)
                         {
@@ -1878,6 +1937,9 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
                             stack.push(resolved);
                         }
                     }
+                }
+                CollectedImportEdge::Raw(_) if is_virtual => {
+                    warn_virtual_source_construct(&current, "a `?raw` import");
                 }
                 CollectedImportEdge::Raw(specifier) => {
                     let resolved =
@@ -2019,9 +2081,20 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         // `import.meta.glob(...)` call anywhere, keyed by its resolved
         // path — consumed by the island-reachability walk after the DFS
         // finishes.
-        glob_by_path.insert(current.clone(), contains_import_meta_glob(&module));
+        //
+        // Issue #3005: a virtual-module source has no on-disk path, so a
+        // glob or `"use client"` directly inside it cannot be staged or
+        // shipped — warn and skip rather than recording the synthetic path.
+        let is_virtual = is_virtual_scan_path(&current);
+        let contains_glob = contains_import_meta_glob(&module);
+        if is_virtual && contains_glob {
+            warn_virtual_source_construct(&current, "`import.meta.glob`");
+        }
+        glob_by_path.insert(current.clone(), contains_glob && !is_virtual);
 
-        if has_use_client_directive(&module) {
+        if is_virtual && has_use_client_directive(&module) {
+            warn_virtual_source_construct(&current, "a `\"use client\"` directive");
+        } else if has_use_client_directive(&module) {
             // Issue #1387: any module carrying a valid `"use client"`
             // directive is an island-reachability root, regardless of
             // whether it goes on to export a mountable component below —
@@ -2074,7 +2147,9 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         for edge in import_edges {
             match edge {
                 CollectedImportEdge::Module(specifier) => {
-                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                    if let Some(resolved) =
+                        resolve_module_edge(resolver, &current, &importer_dir, &specifier)
+                    {
                         // Issue #1387: record the edge regardless of whether
                         // `resolved` was already visited — the island-reachability
                         // walk below needs the full edge set, not just the edges
@@ -2104,6 +2179,9 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
                             stack.push(resolved);
                         }
                     }
+                }
+                CollectedImportEdge::Raw(_) if is_virtual => {
+                    warn_virtual_source_construct(&current, "a `?raw` import");
                 }
                 CollectedImportEdge::Raw(specifier) => {
                     let resolved =
@@ -2151,7 +2229,11 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         if !island_reach_visited.insert(node.clone()) {
             continue;
         }
-        island_reachable_modules.insert(node.clone());
+        // Issue #3005: a synthetic virtual-module path is traversed for its
+        // edges but never recorded — shadow staging fs-copies this set.
+        if !is_virtual_scan_path(&node) {
+            island_reachable_modules.insert(node.clone());
+        }
         if glob_by_path.get(&node).copied().unwrap_or(false) {
             glob_reachable_from_islands.insert(node.clone());
         }
@@ -2518,8 +2600,15 @@ fn discover_module_workers<R: Resolver>(
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        // Issue #3005: a worker edge's importer is rewritten on disk
+        // downstream, which a synthetic virtual-module path cannot be.
+        let is_virtual = is_virtual_scan_path(&current);
+        let constructors = collect_worker_constructors(&module, unresolved_ctxt);
+        if is_virtual && !constructors.is_empty() {
+            warn_virtual_source_construct(&current, "a module-worker constructor");
+        }
 
-        for constructor in collect_worker_constructors(&module, unresolved_ctxt) {
+        for constructor in constructors.into_iter().filter(|_| !is_virtual) {
             if constructor.kind == WorkerConstructorKind::SharedWorker {
                 return Err(ScanError::SharedWorker {
                     path: current.clone(),
@@ -2560,7 +2649,9 @@ fn discover_module_workers<R: Resolver>(
         for edge in import_edges {
             match edge {
                 CollectedImportEdge::Module(specifier) => {
-                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                    if let Some(resolved) =
+                        resolve_module_edge(resolver, &current, &importer_dir, &specifier)
+                    {
                         if let Some(package_dir) =
                             resolver.workspace_package_root(&importer_dir, &specifier)
                         {
@@ -2576,6 +2667,9 @@ fn discover_module_workers<R: Resolver>(
                             stack.push(resolved);
                         }
                     }
+                }
+                CollectedImportEdge::Raw(_) if is_virtual => {
+                    warn_virtual_source_construct(&current, "a `?raw` import");
                 }
                 CollectedImportEdge::Raw(specifier) => {
                     let target =
@@ -2886,6 +2980,106 @@ fn module_export_name(name: &ModuleExportName) -> String {
         ModuleExportName::Ident(id) => id.sym.to_string(),
         ModuleExportName::Str(s) => atom_to_string(&s.value),
     }
+}
+
+/// File-name prefix of [`FsResolver::with_virtual_modules`]'s synthetic
+/// paths. Deliberately distinct from the plugin resolver's `.zfb-virtual-`
+/// on-disk temp class (`IN_PROJECT_TEMP_CLASSES` in `esbuild.rs`).
+const VIRTUAL_SCAN_PREFIX: &str = ".zfb-virtual-scan-";
+const VIRTUAL_SCAN_SUFFIX: &str = ".tsx";
+
+/// `<project_root>/.zfb-virtual-scan-<encoded>.tsx`. The encoding keeps
+/// ASCII alphanumerics and `-`, and writes every other byte as `_xx` hex, so
+/// it is injective and [`virtual_scan_specifier`] can decode it.
+fn virtual_scan_path(project_root: &Path, specifier: &str) -> PathBuf {
+    let mut name = String::from(VIRTUAL_SCAN_PREFIX);
+    for byte in specifier.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            name.push(byte as char);
+        } else {
+            name.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    name.push_str(VIRTUAL_SCAN_SUFFIX);
+    project_root.join(name)
+}
+
+/// Whether `path` is a synthetic virtual-module scan path. These are
+/// traversed for edges but never enter a disk-backed [`ScanMeta`] /
+/// [`ReachableModulesMeta`] set, since downstream consumers copy or read
+/// those paths from disk.
+fn is_virtual_scan_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with(VIRTUAL_SCAN_PREFIX) && name.ends_with(VIRTUAL_SCAN_SUFFIX)
+        })
+}
+
+/// Decode the original specifier from a synthetic path, for diagnostics.
+fn virtual_scan_specifier(path: &Path) -> String {
+    let fallback = || path.display().to_string();
+    let Some(encoded) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(VIRTUAL_SCAN_PREFIX))
+        .and_then(|name| name.strip_suffix(VIRTUAL_SCAN_SUFFIX))
+    else {
+        return fallback();
+    };
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut iter = encoded.bytes();
+    while let Some(byte) = iter.next() {
+        if byte == b'_' {
+            let hex: Vec<u8> = iter.by_ref().take(2).collect();
+            match std::str::from_utf8(&hex)
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                Some(decoded) => bytes.push(decoded),
+                None => return fallback(),
+            }
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| fallback())
+}
+
+/// Warn that `construct` appears directly inside a virtual module's source,
+/// where it cannot be honoured because the source has no on-disk path.
+fn warn_virtual_source_construct(path: &Path, construct: &str) {
+    tracing::warn!(
+        "{construct} directly inside plugin virtual module {:?} is ignored by the islands \
+         scanner; move the code to a file and re-export it from the virtual module",
+        virtual_scan_specifier(path),
+    );
+}
+
+/// Resolve an ordinary module edge for all three DFS loops.
+///
+/// Inside a virtual-module source only relative imports and tsconfig-aliased
+/// ones are followed (issue #3005): a bare import that lands in
+/// `node_modules`, a workspace package, or another virtual module stays
+/// skipped, as it was before virtual sources were scanned at all.
+fn resolve_module_edge<R: Resolver>(
+    resolver: &R,
+    importer: &Path,
+    importer_dir: &Path,
+    specifier: &str,
+) -> Option<PathBuf> {
+    let resolved = resolver.resolve(importer_dir, specifier)?;
+    if is_virtual_scan_path(importer)
+        && is_bare_specifier(specifier)
+        && (path_is_inside_node_modules(&resolved)
+            || is_virtual_scan_path(&resolved)
+            || resolver
+                .workspace_package_root(importer_dir, specifier)
+                .is_some())
+    {
+        return None;
+    }
+    Some(resolved)
 }
 
 /// Return `true` if `path` has an extension that can plausibly carry a
@@ -9774,5 +9968,387 @@ mod tests {
             scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver).unwrap();
         assert_eq!(meta.modules, vec![entry]);
         assert!(meta.module_worker_edges.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Plugin virtual modules — FsResolver::with_virtual_modules (#3005)
+    // ------------------------------------------------------------------
+
+    fn virtual_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(s, src)| (s.to_string(), src.to_string()))
+            .collect()
+    }
+
+    fn canon(path: &Path) -> PathBuf {
+        path.canonicalize().expect("canonicalize")
+    }
+
+    fn assert_no_virtual_paths(meta: &ScanMeta) {
+        for path in meta
+            .island_reachable_modules
+            .iter()
+            .chain(&meta.glob_reachable_from_islands)
+        {
+            assert!(
+                !is_virtual_scan_path(path),
+                "synthetic path leaked: {path:?}"
+            );
+        }
+        for edge in &meta.raw_import_edges_from_islands {
+            assert!(
+                !is_virtual_scan_path(&edge.importer) && !is_virtual_scan_path(&edge.target),
+                "synthetic path leaked into raw edges: {edge:?}"
+            );
+        }
+        for edge in &meta.module_worker_edges_from_islands {
+            assert!(!is_virtual_scan_path(&edge.importer), "{edge:?}");
+        }
+    }
+
+    /// Page → `virtual:demo` → `./widget.tsx` (`"use client"`) →
+    /// `virtual:util` → `./helper.ts`, which spawns a module worker.
+    fn write_virtual_fixture(project: &Path) -> FsResolver {
+        use std::fs;
+        fs::create_dir_all(project.join("pages")).unwrap();
+        fs::write(
+            project.join("pages/home.tsx"),
+            r#"import { Widget } from "virtual:demo";
+               export default function Home() { return <Widget/>; }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join("widget.tsx"),
+            r#""use client";
+               import { helper } from "virtual:util";
+               export function Widget() { return helper; }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join("helper.ts"),
+            r#"export const helper = new Worker(new URL("./w.worker.ts", import.meta.url), { type: "module" });"#,
+        )
+        .unwrap();
+        fs::write(project.join("w.worker.ts"), "self.postMessage(1);").unwrap();
+        FsResolver::new().with_virtual_modules(
+            project,
+            &virtual_pairs(&[
+                ("virtual:demo", r#"export { Widget } from "./widget.tsx";"#),
+                ("virtual:util", r#"export { helper } from "./helper.ts";"#),
+            ]),
+        )
+    }
+
+    #[test]
+    fn virtual_scan_path_round_trips_specifier_and_avoids_temp_class() {
+        let path = virtual_scan_path(Path::new("/p"), "virtual:a/b_c-d");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(".zfb-virtual-scan-") && name.ends_with(".tsx"));
+        assert!(is_virtual_scan_path(&path));
+        assert!(is_scannable_source(&path));
+        assert_eq!(path.parent(), Some(Path::new("/p")));
+        assert_eq!(virtual_scan_specifier(&path), "virtual:a/b_c-d");
+        assert_ne!(
+            virtual_scan_path(Path::new("/p"), "virtual:a/b"),
+            virtual_scan_path(Path::new("/p"), "virtual:a_b"),
+        );
+        assert!(!is_virtual_scan_path(Path::new("/p/.zfb-virtual-abc.mjs")));
+    }
+
+    /// (a) + (h): the island behind a virtual re-export is found, and the
+    /// synthetic path never reaches a disk-backed ScanMeta set.
+    #[test]
+    fn virtual_module_reexport_reaches_island_and_stays_out_of_scan_meta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let resolver = write_virtual_fixture(project);
+
+        let (islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[project.join("pages/home.tsx")],
+            &resolver,
+            Some(project),
+        )
+        .unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Widget");
+        assert_eq!(islands[0].source_path, canon(&project.join("widget.tsx")));
+        assert!(meta
+            .island_reachable_modules
+            .contains(&canon(&project.join("widget.tsx"))));
+        assert!(
+            meta.island_reachable_modules
+                .contains(&canon(&project.join("helper.ts"))),
+            "a real file imported through a virtual module is island-reachable: {:?}",
+            meta.island_reachable_modules
+        );
+        assert_no_virtual_paths(&meta);
+    }
+
+    /// (b): the same reachability through `scan_reachable_modules`.
+    #[test]
+    fn virtual_module_reexport_is_followed_by_scan_reachable_modules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let resolver = write_virtual_fixture(project);
+
+        let meta = scan_reachable_modules_with_meta_and_first_party_root(
+            &[project.join("pages/home.tsx")],
+            &resolver,
+            Some(project),
+        )
+        .unwrap();
+        assert!(meta.modules.contains(&canon(&project.join("widget.tsx"))));
+        assert!(meta.modules.contains(&canon(&project.join("helper.ts"))));
+        assert!(
+            meta.modules.iter().all(|p| !is_virtual_scan_path(p)),
+            "{:?}",
+            meta.modules
+        );
+    }
+
+    /// (b): the same reachability through the module-worker discovery loop,
+    /// driven from a root whose only path to the worker is a virtual edge.
+    #[test]
+    fn virtual_module_reexport_is_followed_by_worker_discovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let resolver = write_virtual_fixture(project);
+
+        let discovery =
+            discover_module_workers(&[project.join("pages/home.tsx")], &resolver, Some(project))
+                .unwrap();
+        assert_eq!(
+            discovery.worker_edges,
+            vec![ModuleWorkerEdge {
+                importer: canon(&project.join("helper.ts")),
+                source_path: canon(&project.join("w.worker.ts")),
+            }]
+        );
+    }
+
+    /// (c): a user tsconfig `paths` claim on the same specifier wins.
+    #[test]
+    fn tsconfig_paths_claim_beats_virtual_module() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let resolver = write_virtual_fixture(project);
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "virtual:demo": ["./user-demo.tsx"] } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join("user-demo.tsx"),
+            r#""use client";
+               export function Widget() {}"#,
+        )
+        .unwrap();
+
+        let islands = scan_islands(&[project.join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(
+            islands[0].source_path,
+            canon(&project.join("user-demo.tsx"))
+        );
+    }
+
+    /// (d): a bare import inside a virtual source stays skipped — both a
+    /// pnpm-workspace package and a regular npm package, each of which IS
+    /// followed when a real page imports it (the control).
+    #[cfg(unix)]
+    #[test]
+    fn bare_import_inside_virtual_source_stays_skipped() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        fs::create_dir_all(project.join("pages")).unwrap();
+        let ws_pkg = project.join("workspace/ws-pkg");
+        fs::create_dir_all(&ws_pkg).unwrap();
+        fs::write(
+            ws_pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            ws_pkg.join("index.tsx"),
+            r#""use client"; export function WsIsland() {}"#,
+        )
+        .unwrap();
+        make_workspace_link(&ws_pkg, &project.join("node_modules/ws-pkg"));
+        let npm_pkg = project.join("node_modules/npm-pkg");
+        fs::create_dir_all(&npm_pkg).unwrap();
+        fs::write(
+            npm_pkg.join("package.json"),
+            r#"{ "name": "npm-pkg", "source": "index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            npm_pkg.join("index.tsx"),
+            r#""use client"; export function NpmIsland() {}"#,
+        )
+        .unwrap();
+        let reexports = r#"export { WsIsland } from "ws-pkg";
+                           export { NpmIsland } from "npm-pkg";"#;
+        fs::write(project.join("pages/direct.tsx"), reexports).unwrap();
+        fs::write(
+            project.join("pages/home.tsx"),
+            r#"import "virtual:demo"; export default function Home() {}"#,
+        )
+        .unwrap();
+        let resolver = FsResolver::new()
+            .with_virtual_modules(project, &virtual_pairs(&[("virtual:demo", reexports)]));
+
+        let control = scan_islands(&[project.join("pages/direct.tsx")], &resolver).unwrap();
+        assert_eq!(
+            control.len(),
+            2,
+            "control must reach both packages: {control:?}"
+        );
+        let islands = scan_islands(&[project.join("pages/home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// (e): `"use client"` directly inside a virtual source is warned about
+    /// and skipped; the scan still succeeds.
+    #[test]
+    fn use_client_directly_inside_virtual_source_is_skipped() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        fs::create_dir_all(project.join("pages")).unwrap();
+        fs::write(
+            project.join("pages/home.tsx"),
+            r#"import { Inline } from "virtual:inline"; export default function Home() {}"#,
+        )
+        .unwrap();
+        let resolver = FsResolver::new().with_virtual_modules(
+            project,
+            &virtual_pairs(&[(
+                "virtual:inline",
+                r#""use client"; export function Inline() {}"#,
+            )]),
+        );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[project.join("pages/home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+        assert!(meta.island_reachable_modules.is_empty());
+        assert_eq!(meta.near_miss_candidates, 0);
+    }
+
+    /// (f): a relative import escaping `project_root` resolves as a file and
+    /// records no WorkspacePackageImportEdge (pre-existing behaviour pinned).
+    #[test]
+    fn relative_escape_from_virtual_source_records_no_workspace_edge() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(project.join("pages")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("out.tsx"),
+            r#""use client"; export function Out() {}"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join("pages/home.tsx"),
+            r#"import { Out } from "virtual:escape"; export default function Home() {}"#,
+        )
+        .unwrap();
+        let resolver = FsResolver::new().with_virtual_modules(
+            &project,
+            &virtual_pairs(&[(
+                "virtual:escape",
+                r#"export { Out } from "../outside/out.tsx";"#,
+            )]),
+        );
+
+        let (islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[project.join("pages/home.tsx")],
+            &resolver,
+            Some(&project),
+        )
+        .unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].source_path, canon(&outside.join("out.tsx")));
+        assert!(meta.workspace_package_edges_from_islands.is_empty());
+        let reach = scan_reachable_modules_with_meta_and_first_party_root(
+            &[project.join("pages/home.tsx")],
+            &resolver,
+            Some(&project),
+        )
+        .unwrap();
+        assert!(reach.workspace_package_edges.is_empty());
+    }
+
+    /// (g): with no virtual modules registered, a `virtual:*` specifier is
+    /// dropped exactly as before and ordinary resolution is unchanged.
+    #[test]
+    fn no_virtual_modules_leaves_resolution_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let _ = write_virtual_fixture(project);
+        let plain = FsResolver::new();
+        let empty = FsResolver::new().with_virtual_modules(project, &[]);
+
+        for resolver in [&plain, &empty] {
+            assert_eq!(resolver.resolve(project, "virtual:demo"), None);
+            assert_eq!(
+                resolver.resolve(project, "./widget.tsx"),
+                Some(canon(&project.join("widget.tsx")))
+            );
+            assert_eq!(
+                resolver.workspace_package_root(project, "virtual:demo"),
+                None
+            );
+            let islands = scan_islands(&[project.join("pages/home.tsx")], resolver).unwrap();
+            assert!(islands.is_empty(), "got {islands:?}");
+        }
+    }
+
+    /// (i): `import.meta.glob` and `?raw` directly inside a virtual source
+    /// are handled without reading the synthetic path from disk (it does
+    /// not exist, so any disk read would fail the scan).
+    #[test]
+    fn glob_and_raw_inside_virtual_source_never_read_synthetic_path() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let _ = write_virtual_fixture(project);
+        fs::write(project.join("notes.txt"), "notes").unwrap();
+        fs::create_dir_all(project.join("data")).unwrap();
+        fs::write(project.join("data/a.ts"), "export const a = 1;").unwrap();
+        let resolver = FsResolver::new().with_virtual_modules(
+            project,
+            &virtual_pairs(&[
+                ("virtual:demo", r#"export { Widget } from "./widget.tsx";"#),
+                (
+                    "virtual:util",
+                    r#"import notes from "./notes.txt?raw";
+                       export const data = import.meta.glob("./data/*.ts");
+                       export { helper } from "./helper.ts";"#,
+                ),
+            ]),
+        );
+        let synthetic = virtual_scan_path(&canon(project), "virtual:util");
+        assert!(!synthetic.exists());
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[project.join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_no_virtual_paths(&meta);
+        assert!(meta.glob_reachable_from_islands.is_empty());
+        assert!(meta.raw_import_edges_from_islands.is_empty());
+        assert!(meta
+            .island_reachable_modules
+            .contains(&canon(&project.join("helper.ts"))));
+
+        let reach =
+            scan_reachable_modules_with_meta(&[project.join("pages/home.tsx")], &resolver).unwrap();
+        assert!(reach.raw_import_edges.is_empty());
+        assert!(reach.modules.iter().all(|p| !is_virtual_scan_path(p)));
     }
 }
