@@ -14,6 +14,7 @@
 //! | `dev_e2e_user_root_wins_over_injected_root` | #1515 | A user `pages/index.tsx` wins over an injected `/` in dev |
 //! | `dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes` | #1518 | A true zero-pages consumer resolves compiled root + docs routes from real pnpm-shaped node_modules, virtual `paths()`, slash-first dev, and build |
 //! | `dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle` | #3011 | A package-owned injected route's `"use client"` component, reachable ONLY through the route's real entrypoint (no host `pages/` importer), is discovered by `rebundle_islands`'s seed: `/assets/islands.js` carries the component's marker and `/package-page`'s HTML references the islands bundle |
+//! | `dev_e2e_package_route_only_utility_class_reaches_dev_css` | #3024 | A Tailwind utility class used ONLY inside a package-owned injected route's page (installed under `node_modules`, which Tailwind auto-detection never scans) reaches `/assets/styles.css` via the boot-frozen survivor entrypoints fed to `assemble_css_content_globs`, matching `zfb build`; self-skips without a tailwindcss v4 binary |
 //! | `dev_e2e_virtual_module_only_import_reaches_islands_bundle` | #3013 (#3005 repro) | A page whose ONLY route to a `"use client"` `Widget` component is a registered plugin virtual module (`import { Widget } from "virtual:…"`, no other static import) is discovered by the islands scanner now that `build_default_islands_payload_with_bundle_options`'s `FsResolver` is wired with `.with_virtual_modules(...)`: `/assets/islands.js` carries the component and the served page stamps a matching `data-zfb-island` marker |
 //!
 //! ## Design decision — fixture reuse
@@ -828,6 +829,241 @@ async fn dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bund
                 "[watchdog] package-route-island dev E2E did not finish within {}s — a hang, \
                  or the package-route island never reached the islands bundle. Process group \
                  {pgid} will be killed.\n{}",
+                OVERALL_DEADLINE.as_secs(),
+                session.logs(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #3024 — package-route entrypoints seed dev's Tailwind content globs
+// ---------------------------------------------------------------------------
+
+/// Locate a tailwindcss v4 binary, mirroring
+/// `mirror_css_scan_mdx_e2e.rs::locate_tailwind` (`ZFB_TAILWIND_BIN`, else
+/// the workspace-staged `crates/zfb/binaries/tailwindcss-v4` slot).
+fn locate_tailwind() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("ZFB_TAILWIND_BIN") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let slot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tailwindcss-v4");
+    slot.is_file().then_some(slot)
+}
+
+/// Arbitrary-value utility used nowhere in the fixture except the injected
+/// package page below; its hex survives into the compiled stylesheet.
+const PACKAGE_ONLY_UTILITY_CLASS: &str = "bg-[#5a7b3c]";
+const PACKAGE_ONLY_UTILITY_HEX: &str = "5a7b3c";
+
+/// Install a compiled package page under a real local `node_modules` (a copy
+/// of the embedded tree, as #1518's zero-pages fixture does) and inject it as
+/// `/css-page` by canonical path. Tailwind v4's automatic content detection
+/// never scans `node_modules`, so the only way the class can reach the
+/// stylesheet is the explicit `@source` glob derived from the package-route
+/// entrypoint. The `.gitignore` keeps dev's own staged/bundled copy of the
+/// page from leaking the class into auto-detection (the confound
+/// `sibling_css_module_command_layer_build.rs` guards against).
+fn write_package_css_preset(root: &Path) {
+    let (_node_modules_handle, embedded_node_modules) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    let node_modules = root.join("node_modules");
+    copy_dir(&embedded_node_modules, &node_modules).expect("copy embedded node_modules locally");
+
+    let package_dist = node_modules.join("css-preset-pkg").join("dist");
+    fs::create_dir_all(&package_dist).expect("create package dist dir");
+    fs::write(
+        node_modules.join("css-preset-pkg").join("package.json"),
+        r#"{ "name": "css-preset-pkg", "version": "0.0.0", "type": "module" }"#,
+    )
+    .expect("write package manifest");
+    let entrypoint = package_dist.join("css-page.js");
+    fs::write(
+        &entrypoint,
+        format!(
+            r#"import {{ jsx as _jsx }} from "preact/jsx-runtime";
+function CssPage() {{
+  return _jsx("html", {{
+    children: _jsx("body", {{
+      children: _jsx("h1", {{
+        class: "{PACKAGE_ONLY_UTILITY_CLASS}",
+        children: "CONSUMER_PACKAGE_CSS_PAGE_MARKER",
+      }}),
+    }}),
+  }});
+}}
+export {{ CssPage as default }};
+"#
+        ),
+    )
+    .expect("write compiled package page");
+
+    let entrypoint_json = serde_json::to_string(
+        &entrypoint
+            .canonicalize()
+            .expect("canonical package entrypoint")
+            .to_string_lossy(),
+    )
+    .expect("serialize package entrypoint");
+    fs::write(
+        root.join("preset.mjs"),
+        format!(
+            r#"export default {{
+  name: "consumer-preset-3024",
+  setup({{ injectRoute }}) {{
+    injectRoute("/css-page", {entrypoint_json});
+  }},
+}};
+"#
+        ),
+    )
+    .expect("write injected preset.mjs");
+    fs::write(
+        root.join(".gitignore"),
+        ".zfb/\n.zfb-build/\n.zfb-dev-assets/\ndist/\nnode_modules/\n",
+    )
+    .expect("write .gitignore");
+}
+
+/// #3024 acceptance: a Tailwind utility class used ONLY in a package-owned
+/// injected route's page is emitted in dev's served `/assets/styles.css`,
+/// because dev now feeds the boot-frozen survivor entrypoints into
+/// `assemble_css_content_globs` exactly as `zfb build` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_package_route_only_utility_class_reaches_dev_css() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[package_css_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    let Some(tailwind) = locate_tailwind() else {
+        eprintln!(
+            "[package_css_e2e] no tailwindcss v4 binary available; skipping. \
+             Set ZFB_TAILWIND_BIN or stage crates/zfb/binaries/tailwindcss-v4."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[package_css_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    write_package_css_preset(&root);
+
+    let stdout_path = root.join(".zfb-dev-stdout-3024.log");
+    let stderr_path = root.join(".zfb-dev-stderr-3024.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(&root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("ZFB_TAILWIND_BIN", tailwind)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut session = DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path: stdout_path.clone(),
+        stderr_path: stderr_path.clone(),
+    };
+
+    let body = async {
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[package_css_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping.\n{}",
+                        session.logs(),
+                    );
+                    return Outcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready \
+                     banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("build reqwest client");
+
+        // The injected route must survive and render, or the CSS assertion
+        // below would be meaningless (a dropped route seeds nothing).
+        poll_until_contains(
+            &client,
+            &format!("{base}/css-page"),
+            "CONSUMER_PACKAGE_CSS_PAGE_MARKER",
+            ROUTE_DEADLINE,
+            "injected /css-page renders",
+            &session,
+        )
+        .await;
+
+        poll_until_contains(
+            &client,
+            &format!("{base}/assets/styles.css"),
+            PACKAGE_ONLY_UTILITY_HEX,
+            ROUTE_DEADLINE,
+            "package-route-only utility class reaches dev /assets/styles.css",
+            &session,
+        )
+        .await;
+
+        Outcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] package-route CSS dev E2E did not finish within {}s — a hang, \
+                 or the package-route-only utility class never reached /assets/styles.css. \
+                 Process group {pgid} will be killed.\n{}",
                 OVERALL_DEADLINE.as_secs(),
                 session.logs(),
             );
