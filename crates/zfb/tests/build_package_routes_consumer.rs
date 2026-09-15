@@ -43,6 +43,7 @@
 //! | `prerender=false` rejection under `output: static` | `build_package_routes::output_static_rejects_ssr_shaped_package_route` |
 //! | user-vs-package collision | `build_package_routes::user_pages_wins_collision_including_shape_dup` |
 //! | package-only island route | `build_package_routes::package_route_with_use_client_emits_island_asset` |
+//! | package-only island route, dev mode | `dev_serve_injected_routes_e2e::dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle` (#3011 — the dev-side counterpart of the row above: `rebundle_islands` seeds package-route entrypoints too, not only `zfb build`'s overlay) |
 
 #![cfg(unix)]
 
