@@ -95,6 +95,7 @@ fn make_bundle_input(
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),

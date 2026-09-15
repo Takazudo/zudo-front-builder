@@ -89,6 +89,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
+        injected_route_entrypoints: Vec::new(),
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
@@ -192,6 +193,196 @@ fn dot_allowlist_paths_stage_at_workspace_relative_slot() {
     bundle_with_session(input, Some(&mut session)).expect("workspace dot-path bundle succeeds");
 
     assert_dot_path_staging(&work_mirror_root(&session).join("sub-packages/host"));
+}
+
+/// Issue #3004 fixture: an injected route's project-local entrypoint in a
+/// hidden, NON-allowlisted dir, importing a relative helper, plus neighbours
+/// that are never reached from the entrypoint.
+fn write_injected_entrypoint_fixture(project: &Path) -> PathBuf {
+    let entrypoint = project.join(".example-package/routes-src/route.tsx");
+    write(
+        &entrypoint,
+        "import { helper } from './helper.tsx';\nexport default function Route() { return helper; }\n",
+    );
+    write(
+        &project.join(".example-package/routes-src/helper.tsx"),
+        "export const helper = 'HELPER';\n",
+    );
+    write(
+        &project.join(".example-package/routes-src/unreferenced.tsx"),
+        "export const unreferenced = 1;\n",
+    );
+    write(
+        &project.join(".example-package/cache/private.txt"),
+        "private\n",
+    );
+    entrypoint
+}
+
+fn bundle_with_entrypoints(
+    project: &Path,
+    outdir_name: &str,
+    entrypoints: Vec<PathBuf>,
+) -> ShadowSession {
+    let input = BundlerInput {
+        injected_route_entrypoints: entrypoints,
+        ..make_bundle_input(project, outdir_name)
+    };
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("injected-entrypoint bundle succeeds");
+    session
+}
+
+/// Every regular file under `root`, as sorted root-relative paths.
+fn staged_file_listing(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            let file_type = entry.file_type().unwrap();
+            if file_type.is_dir() {
+                walk(&path, root, out);
+            } else if file_type.is_file() {
+                out.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+/// (a) + (b): the entrypoint and its relative-import closure gain their
+/// project-relative staged spellings; unreached neighbours do not.
+#[test]
+fn injected_entrypoint_and_its_relative_closure_are_staged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(tmp.path());
+    write_dot_path_fixture(&project);
+    let entrypoint = write_injected_entrypoint_fixture(&project);
+
+    let session = bundle_with_entrypoints(&project, "dist-inj", vec![entrypoint]);
+    let mirror = work_mirror_root(&session);
+
+    assert!(mirror
+        .join(".example-package/routes-src/route.tsx")
+        .is_file());
+    assert!(mirror
+        .join(".example-package/routes-src/helper.tsx")
+        .is_file());
+    assert!(
+        !mirror
+            .join(".example-package/routes-src/unreferenced.tsx")
+            .exists(),
+        "a sibling the entrypoint never imports must not be staged"
+    );
+    assert!(!mirror.join(".example-package/cache").exists());
+    assert_dot_path_staging(&mirror);
+}
+
+/// (c): an empty entrypoint list leaves the staged set exactly as a bundle
+/// that never knew the field — the hidden dir stays unstaged.
+#[test]
+fn empty_injected_entrypoints_leave_staging_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(tmp.path());
+    write_dot_path_fixture(&project);
+    write_injected_entrypoint_fixture(&project);
+
+    let session = bundle_with_entrypoints(&project, "dist-inj-empty", Vec::new());
+    let mirror = work_mirror_root(&session);
+
+    assert!(!mirror.join(".example-package").exists());
+    assert_dot_path_staging(&mirror);
+}
+
+/// (d): an entrypoint whose canonical path leaves `project_root` through a
+/// symlink is skipped at insertion — the build succeeds without it instead of
+/// hard-erroring in the closure walk.
+#[cfg(unix)]
+#[test]
+fn symlinked_entrypoint_escaping_project_root_is_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(&tmp.path().join("project"));
+    let outside = tmp.path().join("outside/route.tsx");
+    write(
+        &outside,
+        "export default function Route() { return null; }\n",
+    );
+    let entrypoint = project.join(".example-package/routes-src/route.tsx");
+    fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &entrypoint).unwrap();
+
+    let session = bundle_with_entrypoints(&project, "dist-inj-link", vec![entrypoint]);
+    let mirror = work_mirror_root(&session);
+
+    assert!(!mirror
+        .join(".example-package/routes-src/route.tsx")
+        .exists());
+}
+
+/// (e): exact-file staging consults no gitignore — a gitignored entrypoint
+/// dir still stages.
+#[test]
+fn gitignored_injected_entrypoint_still_stages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(tmp.path());
+    let entrypoint = write_injected_entrypoint_fixture(&project);
+    write(&project.join(".gitignore"), ".example-package/\n");
+
+    let session = bundle_with_entrypoints(&project, "dist-inj-ignored", vec![entrypoint]);
+    let mirror = work_mirror_root(&session);
+
+    assert!(mirror
+        .join(".example-package/routes-src/route.tsx")
+        .is_file());
+    assert!(mirror
+        .join(".example-package/routes-src/helper.tsx")
+        .is_file());
+}
+
+/// (f): a project-root-level (non-hidden) entrypoint stages with its closure,
+/// and seeds the root-entry dependency view exactly as the same file does
+/// when registered as an existing exact target (a plugin alias).
+#[test]
+fn root_level_injected_entrypoint_matches_exact_target_staging() {
+    fn write_root_level_fixture(project: &Path) -> PathBuf {
+        let entrypoint = project.join("injected-entry.tsx");
+        write(
+            &entrypoint,
+            "import { dep } from './lib/dep.ts';\nexport default function Route() { return dep; }\n",
+        );
+        write(&project.join("lib/dep.ts"), "export const dep = 'DEP';\n");
+        write(&project.join("lib/unused.ts"), "export const unused = 1;\n");
+        entrypoint
+    }
+
+    let via_entrypoint = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(via_entrypoint.path());
+    let entrypoint = write_root_level_fixture(&project);
+    let session = bundle_with_entrypoints(&project, "dist-root", vec![entrypoint]);
+    let entrypoint_mirror = work_mirror_root(&session);
+    assert!(entrypoint_mirror.join("injected-entry.tsx").is_file());
+    assert!(entrypoint_mirror.join("lib/dep.ts").is_file());
+
+    let via_alias = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(via_alias.path());
+    let entrypoint = write_root_level_fixture(&project);
+    let input = BundlerInput {
+        plugin_alias_entries: vec![(
+            "#injected-entry".to_string(),
+            entrypoint.to_string_lossy().into_owned(),
+        )],
+        ..make_bundle_input(&project, "dist-root")
+    };
+    let mut alias_session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut alias_session)).expect("alias bundle succeeds");
+
+    assert_eq!(
+        staged_file_listing(&entrypoint_mirror),
+        staged_file_listing(&work_mirror_root(&alias_session)),
+        "a root-level entrypoint must stage exactly what an exact alias target does"
+    );
 }
 
 /// Session prune bookkeeping: deleting the live dot dirs prunes the staged
