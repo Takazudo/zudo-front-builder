@@ -294,7 +294,18 @@ pub(crate) fn resolve_build_pages_root(
     // modules. (Dev keeps `pages_dir` = the real `pages/` for the scan +
     // watcher and stages ONLY the injected modules — `false`. See
     // research/1229-dev-staging-decision.md §1.)
-    resolve_pages_root(real_pages_dir, injected_routes, true)
+    //
+    // `ZFB_KEEP_BUILD_SHADOW` (issue #3044) is read HERE, the build-only
+    // caller, and passed down as an explicit `keep` param — never read
+    // inside the shared `resolve_pages_root` allocator, so the dev caller
+    // below (which may re-invoke `resolve_pages_root` once per rebuild
+    // tick) can never be gated by it.
+    resolve_pages_root(
+        real_pages_dir,
+        injected_routes,
+        true,
+        zfb_build::bundler::keep_build_shadow_enabled(),
+    )
 }
 
 /// Resolve the **dev** injected-route staging root — the B1 (multi-root)
@@ -328,7 +339,11 @@ pub(crate) fn resolve_dev_pages_root(
     // Keep route selection identical to build. `resolve_pages_root` scans the
     // user's real pages first, so `pages/index` shadows an injected `/`; when
     // no user index exists, the injected root is staged and seeded normally.
-    resolve_pages_root(real_pages_dir, injected_routes, false)
+    //
+    // `keep = false` unconditionally (issue #3044): `zfb dev` may
+    // re-invoke this per rebuild tick, and `ZFB_KEEP_BUILD_SHADOW` is
+    // scoped to `zfb build` only — see `resolve_build_pages_root`.
+    resolve_pages_root(real_pages_dir, injected_routes, false, false)
 }
 
 /// Shared survivor-selection + synthesis for the build overlay
@@ -359,10 +374,17 @@ pub(crate) fn resolve_dev_pages_root(
 /// synthesizer choice (static vs dynamic), and the materialized-route record
 /// — is identical, so the synthesized module for a pattern is byte-identical
 /// across dev and build.
+///
+/// `keep` (issue #3044, `ZFB_KEEP_BUILD_SHADOW`) is a caller-computed
+/// decision, never read from the environment here: [`resolve_build_pages_root`]
+/// passes the flag's live value, [`resolve_dev_pages_root`] always passes
+/// `false`. Threading it in rather than checking the env in this shared fn
+/// is what keeps a dev rebuild tick from leaking one overlay per tick.
 fn resolve_pages_root(
     real_pages_dir: &Path,
     injected_routes: &[InjectedRoute],
     copy_user_pages: bool,
+    keep: bool,
 ) -> Result<OverlayResolution> {
     if injected_routes.is_empty() {
         // Parity path: no overlay, byte-identical to a pre-#1193 build.
@@ -468,10 +490,17 @@ fn resolve_pages_root(
     // the scan's route derivation both key on that) into which we first
     // copy the user's real `pages/` (when present and `copy_user_pages`) and
     // then write the synthesized package modules.
-    let guard = tempfile::Builder::new()
-        .prefix("zfb-pkg-routes-")
-        .tempdir()
-        .context("creating overlay pages-root temp dir")?;
+    //
+    // `parent: None` keeps the pre-#3044 behaviour (the system default
+    // temp dir via `tempfile::Builder::tempdir()`) — only `keep` support
+    // is added here.
+    let guard = zfb_build::bundler::allocate_build_tempdir(
+        "zfb-pkg-routes-",
+        None,
+        keep,
+        "package-routes overlay",
+    )
+    .context("creating overlay pages-root temp dir")?;
     let overlay_pages = guard.path().join("pages");
     std::fs::create_dir_all(&overlay_pages)
         .with_context(|| format!("creating overlay pages dir {}", overlay_pages.display()))?;
@@ -1171,6 +1200,84 @@ fn json_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keep_test_route() -> InjectedRoute {
+        InjectedRoute {
+            pattern: "/preset-page".into(),
+            entrypoint: PathBuf::from("/pkg/preset-page.tsx"),
+            plugin: "preset".into(),
+            prerender: None,
+        }
+    }
+
+    // ── #3044 ZFB_KEEP_BUILD_SHADOW: `resolve_pages_root`'s explicit
+    // `keep` param. Drives the private shared allocator directly with an
+    // explicit `keep` bool — never mutates the process environment (the
+    // explicit param is exactly what makes that possible; see
+    // `crates/zfb-build/src/bundler.rs`'s `allocate_build_tempdir` tests
+    // for the flag-parse + Drop/error-exit coverage this builds on). ──
+
+    #[test]
+    fn resolve_pages_root_keep_true_survives_guard_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let routes = vec![keep_test_route()];
+
+        let res = resolve_pages_root(&pages, &routes, true, true).unwrap();
+        let overlay_root = res
+            .guard
+            .as_ref()
+            .expect("package routes present must allocate an overlay")
+            .path()
+            .to_path_buf();
+        assert!(overlay_root.exists());
+        drop(res.guard);
+        assert!(
+            overlay_root.exists(),
+            "keep=true must survive the overlay guard's Drop"
+        );
+        std::fs::remove_dir_all(&overlay_root).unwrap();
+    }
+
+    #[test]
+    fn resolve_pages_root_keep_false_cleans_up_on_guard_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let routes = vec![keep_test_route()];
+
+        let res = resolve_pages_root(&pages, &routes, true, false).unwrap();
+        let overlay_root = res.guard.as_ref().unwrap().path().to_path_buf();
+        assert!(overlay_root.exists());
+        drop(res.guard);
+        assert!(
+            !overlay_root.exists(),
+            "keep=false must behave exactly as before #3044"
+        );
+    }
+
+    #[test]
+    fn resolve_dev_pages_root_is_never_gated_by_keep() {
+        // `resolve_dev_pages_root` always threads `keep = false` into the
+        // shared allocator — `ZFB_KEEP_BUILD_SHADOW` is never read on
+        // this path (that read lives only in `resolve_build_pages_root`),
+        // so a `zfb dev` per-tick overlay always cleans up regardless of
+        // the flag's live value in the real process environment.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let routes = vec![keep_test_route()];
+
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let overlay_root = res.guard.as_ref().unwrap().path().to_path_buf();
+        assert!(overlay_root.exists());
+        drop(res.guard);
+        assert!(
+            !overlay_root.exists(),
+            "zfb dev's overlay must always clean up, independent of ZFB_KEEP_BUILD_SHADOW"
+        );
+    }
 
     #[test]
     fn pattern_to_pages_rel_static() {
