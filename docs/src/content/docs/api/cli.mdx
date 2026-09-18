@@ -82,6 +82,7 @@ To restore the pre-lazy behavior and re-render every affected route eagerly on e
 | `ZFB_DEV_BOOT_LAZY` | `cold` | Seedless boot-lazy: defers per-route rendering to the first request the same way, but without requiring a prebuilt `dist/` at all. A route with no fallback artifact on disk serves the dev 404 page (with livereload) until its own first request — tabs left open during that window self-heal via livereload once each route resolves. A `dist/` left over from an unrelated prior build is not required or checked here, but if one exists it still serves its (possibly stale) bytes ahead of the 404, same as Auto's checked seed does. Use when no `dist/` exists yet; `1` would warn and fall back to the eager boot render in that case instead. |
 | `ZFB_DEV_DEFER_BUNDLE` | `0` | Opt out of the boot-lazy bundle deferral (either variant): build the renderer before bind (no SSR-only 404 window) at the cost of a slower first-accept. On by default when boot-lazy is active. |
 | `ZFB_DEV_TIMING` | `1` or `true` | Emit per-tick timing lines for dev-mode profiling. Off by default. |
+| `ZFB_KEEP_SHADOW_SESSION` | `1` or `true` | Keep the dev server's persistent shadow tempdir on disk instead of deleting it when the process exits — for inspecting the generated shadow tree (injected-route shims, resolved `node_modules` layout). The kept path is logged once at shutdown. A later `zfb dev` boot with the flag unset reaps a previously-kept dir once it passes an internal age floor, so keep the flag exported for the whole debugging session, not just the boot that created the dir. See `ZFB_KEEP_BUILD_SHADOW` under [`zfb build`](#zfb-build) for the production-build counterpart — a different tempdir class with no such reap. Off by default. |
 
 ### Example
 
@@ -126,6 +127,12 @@ HTML minification is off by default unless `minifyHtml: true` is set or `--minif
 Strict broken-link gating is likewise off by default. `--strict-broken` and `--no-strict-broken` conflict — passing both is an error — and either one overrides the `strictBrokenLinks` config field, which in turn overrides the `false` default. Both flags affect `zfb build` only; `zfb dev` never sees the strict overlay and keeps whatever link-validation behavior your own `linkValidation` config gives it. See [Link validation — Strict mode](../markdown-features/link-validation.mdx) for the full behavior, including how this differs from `resolveMarkdownLinks.onBrokenLinks`.
 
 Render-artifact export is likewise off by default. `--emit-render-artifacts` and `--no-emit-render-artifacts` conflict — passing both is an error — and either one overrides the `emitRenderArtifacts` config field, which in turn overrides the `false` default. Both flags affect `zfb build` only; `zfb dev` never writes render artifacts. See [Render artifacts](../concepts/render-artifacts.mdx) for the full JSON contract, the region rule, and which routes participate.
+
+### Environment variables
+
+| Variable | Values | Description |
+|---|---|---|
+| `ZFB_KEEP_BUILD_SHADOW` | `1` or `true` | Leave this build's shadow tempdirs on disk after the process exits — on a failing build too — instead of deleting them, for inspecting the generated shadow tree (injected-route shims, resolved `node_modules` layout) without an external polling harness. Covers exactly three tempdir classes: the bundler's shadow root, its exact-`node_modules` isolation root, and the package-routes overlay (only allocated when the project registers package routes). Each kept path is printed once to stderr, naming its role. Other `zfb build` temp producers (config loading, islands/esbuild, CSS, plugin resolution) are **not** covered. A kept dir is never auto-reaped — cleaning it up is your responsibility (contrast `ZFB_KEEP_SHADOW_SESSION` under [`zfb dev`](#zfb-dev), which a later boot eventually reaps). `zfb dev` is entirely unaffected by this flag, even where it happens to share an allocator with `zfb build`. Off by default. |
 
 ### Example
 
