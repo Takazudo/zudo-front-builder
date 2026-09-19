@@ -1530,6 +1530,12 @@ pub fn keep_build_shadow_enabled() -> bool {
 /// promised to keep. Exactly one stderr line names the flag, `role`
 /// (the directory's purpose, e.g. "bundler shadow root"), and the kept
 /// path.
+///
+/// Attaches **no** error context of its own — a failed allocation comes
+/// back as the bare underlying error, converted to [`anyhow::Error`].
+/// Each caller owns the context that fits where it's calling from: see
+/// `allocate_bundler_tempdir` below for this module's own call sites,
+/// and `crates/zfb/src/commands/package_routes.rs` for the other one.
 pub fn allocate_build_tempdir(
     prefix: &str,
     parent: Option<&Path>,
@@ -1539,8 +1545,7 @@ pub fn allocate_build_tempdir(
     let mut dir = match parent {
         Some(parent) => tempfile::Builder::new().prefix(prefix).tempdir_in(parent),
         None => tempfile::Builder::new().prefix(prefix).tempdir(),
-    }
-    .with_context(|| format!("bundler: failed to allocate {role} tempdir"))?;
+    }?;
     if keep {
         dir.disable_cleanup(true);
         eprintln!(
@@ -1549,6 +1554,20 @@ pub fn allocate_build_tempdir(
         );
     }
     Ok(dir)
+}
+
+/// This module's own wrapper around [`allocate_build_tempdir`], attaching
+/// the `bundler: ` error context both of this file's call sites need.
+/// Text is byte-for-byte the helper's old built-in default, so bundler
+/// error messages are unchanged by callers owning their own context.
+fn allocate_bundler_tempdir(
+    prefix: &str,
+    parent: Option<&Path>,
+    keep: bool,
+    role: &str,
+) -> Result<tempfile::TempDir> {
+    allocate_build_tempdir(prefix, parent, keep, role)
+        .with_context(|| format!("bundler: failed to allocate {role} tempdir"))
 }
 
 /// Persistent dev shadow-tree session (issue #993).
@@ -2692,7 +2711,7 @@ pub fn bundle_with_session(
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
-            let work = allocate_build_tempdir(
+            let work = allocate_bundler_tempdir(
                 "zfb-bundler-",
                 Some(&parent),
                 keep_build_shadow_enabled(),
@@ -3194,7 +3213,7 @@ pub fn bundle_with_session(
     let node_modules_isolation = needs_tempdir_isolation
         .then(|| {
             let parent = shadow_parent_dir(&input.project_root)?;
-            allocate_build_tempdir(
+            allocate_bundler_tempdir(
                 "zfb-exact-node-modules-",
                 Some(&parent),
                 keep_exact_node_modules,
@@ -12588,6 +12607,45 @@ mod tests {
         assert!(
             !path.exists(),
             "keep=false behaves like an ordinary TempDir regardless of how the caller returns"
+        );
+    }
+
+    // --- #3052: `allocate_build_tempdir` attaches no context of its own;
+    // `allocate_bundler_tempdir` (this module's private wrapper) attaches
+    // the `bundler: ` context both bundler call sites need. The absence
+    // fixture below deliberately avoids the token "bundler" in its own
+    // parent path, prefix, and role so it can't trip its own
+    // "must not contain bundler:" assertion.
+
+    #[test]
+    fn allocate_build_tempdir_bare_error_carries_no_bundler_context() {
+        // A child path that is never created, inside a live tempdir —
+        // `tempdir_in` fails because that parent does not exist. The guard is
+        // bound (not a dropped temporary) so the failure is the missing child,
+        // not a tempdir that cleaned itself up mid-statement.
+        let root = tempfile::tempdir().unwrap();
+        let missing_parent = root.path().join("zfb-test-ctx-missing");
+        let err =
+            allocate_build_tempdir("zfb-test-ctx-", Some(&missing_parent), false, "test role")
+                .expect_err("allocation under a nonexistent parent must fail");
+        let rendered = format!("{err:#}");
+        assert!(
+            !rendered.contains("bundler:"),
+            "allocate_build_tempdir must attach no context of its own: {rendered}"
+        );
+    }
+
+    #[test]
+    fn allocate_bundler_tempdir_wraps_with_the_bundler_context() {
+        let root = tempfile::tempdir().unwrap();
+        let missing_parent = root.path().join("zfb-test-ctx-missing");
+        let err =
+            allocate_bundler_tempdir("zfb-test-ctx-", Some(&missing_parent), false, "test role")
+                .expect_err("allocation under a nonexistent parent must fail");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.starts_with("bundler: failed to allocate test role tempdir"),
+            "allocate_bundler_tempdir must prefix its own bundler context: {rendered}"
         );
     }
 

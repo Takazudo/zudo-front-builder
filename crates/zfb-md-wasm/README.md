@@ -258,6 +258,10 @@ stay correct under a hashed island bundle.
 
 ## Shipped artifact sizes and locked ceilings
 
+A Mac build of this crate measures different bytes than CI for reasons that
+have nothing to do with a regression; see `LOCAL-VS-CI-SIZES.md` in this
+directory for the current per-artifact comparison and the local workflow.
+
 ### Maintainer repair workflow
 
 These guarded size numbers use `crates/zfb-md-wasm/shipped-sizes.json` as their

@@ -190,6 +190,88 @@ function fmtBytes(n) {
   return `${n.toLocaleString("en-US")} bytes (${(n / 1024 / 1024).toFixed(2)} MB)`;
 }
 
+// The local Mac/CI codegen-drift escape hatch (zfb#3054): on some Macs the
+// render-only artifact's gzip-9 size lands a few KB over its ceiling while
+// CI's build of the same source is under it, which otherwise stops
+// `pnpm test:md-wasm` before it ever reaches the test half on a Mac.
+// `ZFB_MD_WASM_ALLOW_OVER_CEILING=1` downgrades ceiling breaches to loud
+// warnings -- but only outside CI. Inside CI it is refused outright (a hard
+// error naming the variable) so it can never be used to force a PR gate
+// green; CI's own build is, and stays, the authoritative oracle.
+export function ceilingPolicyFromEnv(env) {
+  return {
+    allowOver: env.ZFB_MD_WASM_ALLOW_OVER_CEILING === "1",
+    ci: typeof env.CI === "string" && env.CI !== "",
+  };
+}
+
+// Collect-then-fail: every over-ceiling artifact is reported in one pass,
+// never just the first one found.
+export function evaluateCeilings(stats, policy) {
+  if (policy.allowOver && policy.ci) {
+    return {
+      errors: [
+        "ZFB_MD_WASM_ALLOW_OVER_CEILING is refused when CI is set -- it exists for local " +
+          "Mac/CI codegen drift only and must never be used to force a PR gate green. Unset " +
+          "it, or run the strict `pnpm test:md-wasm` lane.",
+      ],
+      warnings: [],
+    };
+  }
+
+  const errors = [];
+  const warnings = [];
+  for (const { label, gzipSize, gzipCeiling } of stats) {
+    if (gzipSize <= gzipCeiling) continue;
+    const overBy = gzipSize - gzipCeiling;
+    if (policy.allowOver) {
+      warnings.push(
+        `${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling} (over by ${overBy} ` +
+          `bytes) -- allowed locally via ZFB_MD_WASM_ALLOW_OVER_CEILING=1; CI remains the oracle.`,
+      );
+    } else {
+      errors.push(`${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling}`);
+    }
+  }
+  return { errors, warnings };
+}
+
+/**
+ * Prints the complete four-artifact summary first, then any warnings, then
+ * throws once with every collected error -- so a Mac codegen-drift breach on
+ * one artifact never hides the other three artifacts' numbers.
+ */
+export function reportCeilings(stats, policy, log) {
+  log("");
+  log("== zfb-md-wasm build summary ==");
+  for (const {
+    label,
+    entry,
+    cdylibSize,
+    bindgenSize,
+    glueSize,
+    glueGzipSize,
+    finalSize,
+    gzipSize,
+  } of stats) {
+    log(`-- ${label} artifact (\`${entry}\` entry) --`);
+    log(`raw cdylib:                            ${fmtBytes(cdylibSize)}`);
+    log(`wasm-bindgen binary:                   ${fmtBytes(bindgenSize)}`);
+    log(`generated glue:                        ${fmtBytes(glueSize)}`);
+    log(`generated glue gzip -9:                ${fmtBytes(glueGzipSize)}`);
+    log(`wasm-opt ${WASM_OPT_LEVEL} (final):              ${fmtBytes(finalSize)}`);
+    log(`gzip -9 (final):                       ${fmtBytes(gzipSize)}`);
+  }
+
+  const { errors, warnings } = evaluateCeilings(stats, policy);
+  for (const warning of warnings) {
+    log(`WARNING: ${warning}`);
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join("\n"));
+  }
+}
+
 /**
  * Builds one wasm artifact end-to-end (cargo rustc -> wasm-bindgen ->
  * wasm-opt) into `srcOutDir`. `cargoFeatureArgs` is `[]` for the default
@@ -307,6 +389,12 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
 
 function main() {
   const env = envWithRustupPathFix();
+  // Refuse the local opt-in before the four-artifact build, not after it: the
+  // CI refusal in `evaluateCeilings` is a hard error either way, and reaching
+  // it via `reportCeilings` would first burn the full ~15-minute build.
+  const policy = ceilingPolicyFromEnv(env);
+  const refusal = evaluateCeilings([], policy).errors;
+  if (refusal.length > 0) throw new Error(refusal.join("\n"));
   checkWasmBindgenVersion(env);
 
   const distDir = resolve(pkgRoot, "dist");
@@ -332,24 +420,13 @@ function main() {
     cpSync(resolve(pkgRoot, "src", dirName), distSubDir, { recursive: true });
   }
 
-  console.log("");
-  console.log("== zfb-md-wasm build summary ==");
-  for (const { artifact, stats: artifactStats } of stats) {
-    console.log(`-- ${artifact.label} artifact (\`${artifact.entry}\` entry) --`);
-    console.log(`raw cdylib:                            ${fmtBytes(artifactStats.cdylibSize)}`);
-    console.log(`wasm-bindgen binary:                   ${fmtBytes(artifactStats.bindgenSize)}`);
-    console.log(`generated glue:                        ${fmtBytes(artifactStats.glueSize)}`);
-    console.log(`generated glue gzip -9:                ${fmtBytes(artifactStats.glueGzipSize)}`);
-    console.log(
-      `wasm-opt ${WASM_OPT_LEVEL} (final):              ${fmtBytes(artifactStats.finalSize)}`,
-    );
-    console.log(`gzip -9 (final):                       ${fmtBytes(artifactStats.gzipSize)}`);
-    if (artifactStats.gzipSize > artifact.gzipCeiling) {
-      throw new Error(
-        `${artifact.label} gzip-9 size ${artifactStats.gzipSize} exceeds ceiling ${artifact.gzipCeiling}`,
-      );
-    }
-  }
+  const records = stats.map(({ artifact, stats: artifactStats }) => ({
+    label: artifact.label,
+    entry: artifact.entry,
+    gzipCeiling: artifact.gzipCeiling,
+    ...artifactStats,
+  }));
+  reportCeilings(records, policy, (msg) => console.log(msg));
 }
 
 const argument = process.argv[1];
