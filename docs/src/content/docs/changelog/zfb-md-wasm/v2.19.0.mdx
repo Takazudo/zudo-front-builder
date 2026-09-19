@@ -1,0 +1,37 @@
+---
+title: v2.19.0
+sidebar_position: 15
+---
+
+# v2.19.0
+
+Released: 2026-09-19
+
+## Bug Fixes
+
+- realign the shipped-size manifest with the PR's own CI build (c708d85c)
+
+  The manifest and its eight synced documentation tables are back on CI-measured values after an
+  intermediate revision had briefly carried local macOS measurements, which the size gates reject
+  by design (both `finalWasm` columns compare with zero tolerance).
+
+## Other Changes
+
+- bump serde_yaml's package alias to noyalib-serde-yaml 0.0.44 (36046a83)
+
+  The YAML pin bump moves the compiled bytes slightly, in both directions. New shipped gzip-9
+  figures, measured on CI:
+
+  | Subpath | gzip-9 | Change |
+  | --- | ---: | ---: |
+  | `.` | 1,516,383 B | −243 B |
+  | `./highlight` | 817,951 B | +116 B |
+  | `./render` | 1,091,678 B | +63 B |
+  | `./parse` | 283,991 B | −274 B |
+
+  Every artifact remains under its ceiling; `./render` is narrowest at 1,091,678 B against
+  1,100,000 B.
+
+  **All four SHA-256 digests change in this release**, as they do in every release: each `.wasm`
+  embeds `ZFB_RELEASE_VERSION`, so the digests move even when the compiled code and the byte sizes
+  do not. If you pin digests, re-pin them.

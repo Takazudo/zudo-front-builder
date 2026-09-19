@@ -1,0 +1,37 @@
+---
+title: v2.19.0
+sidebar_position: 129
+---
+
+# v2.19.0
+
+Released: 2026-09-19
+
+## Features
+
+- add ZFB_KEEP_BUILD_SHADOW to keep zfb build's shadow tempdirs (93ff8d8d)
+
+  Setting `ZFB_KEEP_BUILD_SHADOW=1` leaves `zfb build`'s shadow tempdirs on disk after the
+  process exits — **on a failing build too** — so the generated injected-route shims and the
+  resolved `node_modules` layout can be inspected without an external polling harness. Each kept
+  directory prints one stderr line naming the flag, the directory's role, its path, and that
+  cleanup is manual.
+
+  Scope is exactly three classes: the bundler shadow root (`zfb-bundler-*`), the exact
+  `node_modules` isolation root (`zfb-exact-node-modules-*`), and the package-routes overlay
+  (`zfb-pkg-routes-*`). Other `zfb build` temp producers — config loading, islands/esbuild, CSS,
+  plugin resolution — are not covered.
+  `zfb dev` is unaffected by the flag: it would re-allocate the overlay per rebuild tick, so
+  gating it there would leak one directory per tick. Kept directories are never auto-reaped, so
+  remove them yourself.
+
+  The previously-undocumented `ZFB_KEEP_SHADOW_SESSION` is now documented alongside it in the
+  CLI reference and the troubleshooting guide.
+
+## Other Changes
+
+- bump serde_yaml's package alias to noyalib-serde-yaml 0.0.44 (36046a83)
+
+  The adopted lockstep YAML pair moves from `0.0.43` to `0.0.44`, authorized by a differential
+  harness evaluation (18/18 against the immutable baseline) recorded in `DEPENDENCIES.md`.
+  `noyalib 0.0.45` was passed over: its alias half is unpublished, so it is not a lockstep pair.
