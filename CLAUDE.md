@@ -115,6 +115,10 @@ A `zfb-md-wasm` note must never call shipped artifacts "unchanged" without sayin
 even when the compiled code and the byte sizes do not (#2885). Every file carrying a shipped-size
 table must keep the digest disclaimer that `scripts/assert-md-wasm-size-docs.mjs` asserts.
 
+Never refresh `shipped-sizes.json` (or its synced doc tables) from a Mac build — Mac and CI codegen
+produce different `finalWasm`/`gzip9` bytes for the same pin, and the manifest holds CI-measured
+values only. See `crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md` for the current gap and the local workflow.
+
 The GitHub Release body has five explicit package headings and independently extracts the body of
 the matching MDX source beneath each heading. Never reuse one lane's extracted notes for another.
 Before the direct release push, run the package/Rust focused checks plus docs check, strict docs
