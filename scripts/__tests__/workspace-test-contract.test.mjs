@@ -45,6 +45,10 @@ describe("workspace test contract", () => {
     expect(packageJson.scripts["test:md-wasm"]).toBe(
       "pnpm --filter @takazudo/zfb-md-wasm build && pnpm --filter @takazudo/zfb-md-wasm test",
     );
+    expect(packageJson.scripts["test:md-wasm"]).not.toContain("ZFB_MD_WASM_ALLOW_OVER_CEILING");
+    expect(packageJson.scripts["test:md-wasm:local"]).toBe(
+      "ZFB_MD_WASM_ALLOW_OVER_CEILING=1 pnpm test:md-wasm",
+    );
     expect(mdWasmPackageJson.scripts.pretest).toBe("node scripts/assert-consumer-artifacts.mjs");
     expect(mdWasmPackageJson.scripts["typecheck:consumer"]).toBe(
       "tsc --project test/tsconfig.consumer.json",
