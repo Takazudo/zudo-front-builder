@@ -467,39 +467,34 @@ declaration is removable even if its package remains in `Cargo.lock`.
   committed manifest for reasons unrelated to the pin (platform-specific
   `wasm-opt`/`wasm-bindgen` codegen, not a semantic regression — the #3045
   evaluation's Mac-measured deltas between 0.0.43 and 0.0.44 do not reproduce
-  byte-for-byte on CI), so `crates/zfb-md-wasm/shipped-sizes.json` and its
-  eight synced doc tables were provisionally refreshed from this Mac build
-  (`measuredOnVersion` stays `2.15.0`): root 3,473,330 / 1,553,887 B, highlight
-  1,543,455 / 825,579 B, render 2,241,085 / 1,113,318 B, parse 730,338 /
-  297,372 B (final wasm / gzip-9). Root, highlight, and parse ship with
-  46,113 B / 54,421 B / 27,628 B of gzip-9 headroom on this measurement.
+  byte-for-byte on CI). Measured locally on `Darwin arm64`: root 3,473,330 /
+  1,553,887 B, highlight 1,543,455 / 825,579 B, render 2,241,085 /
+  1,113,318 B, parse 730,338 / 297,372 B (final wasm / gzip-9) — and
   **`render-only` measures 13,318 B *over* its 1,100,000 B gzip-9 ceiling on
-  this Mac** — the same pre-existing Mac-vs-CI codegen gap #3045 already
+  this Mac**, the same pre-existing Mac-vs-CI codegen gap #3045 already
   documented at the committed 0.0.43 pin (which measures 1,113,363 B locally,
   45 B larger than 0.0.44's 1,113,318 B), now simply wider than the up-to-
   5,982 B gap the 0.0.31 record measured and the 4,106-B-under-ceiling gap the
-  0.0.43 record measured. The doc tables' "of headroom" prose could not
-  represent a negative render figure under the assert script's fixed template,
-  so that one sentence was hand-edited in all six affected files (both
-  READMEs, both `api/md-wasm.mdx` locales, both `guides/browser-markdown-
-  preview.mdx` locales) to state the local ceiling breach explicitly instead
-  of silently forcing a positive number; `assert-md-wasm-size-docs.mjs`
-  correctly still flags that one sentence as a stale-prose deviation in each
-  file (`headroom per artifact anchor expected N occurrence(s), found 0` plus
-  the `13,318 B` literal), which is the expected, non-blocking signature of
-  this documented gap. No ceiling was raised, no assertion was edited to
-  silence it, and the corpus was untouched. **Those Mac bytes — including
-  whether `render-only` actually clears its ceiling — are not the final
-  manifest.** As with the 0.0.31 and 0.0.43 bumps, the `wasm-md (default)` CI
-  job asserts equality against its own ubuntu build; before this PR merges,
-  the manifest must be aligned from the PR's own CI build summary, the doc
-  tables re-synced via `assert-md-wasm-size-docs.mjs --fix` (which will also
-  restore the standard "of headroom" wording for all four artifacts once
-  render's CI-aligned figure is back under ceiling — the #3045 evaluation
-  projects roughly 1,091,570 B, comfortably inside 1,100,000 B), and the six
-  hand-edited sentences replaced with the script's normal output. **Next
-  trigger:** unchanged from above — the next lockstep release beyond 0.0.44,
-  or a yank of either adopted version.
+  0.0.43 record measured.
+
+  **Those Mac bytes are recorded here only, and deliberately NOT written into
+  `crates/zfb-md-wasm/shipped-sizes.json`.** An earlier revision of this topic
+  did refresh the manifest and its eight synced doc tables from this Mac build
+  and hand-edited the six "of headroom" sentences to narrate the local ceiling
+  breach; that was reverted, because the manifest is the CI oracle, not a
+  local-measurement scratchpad. Two concrete consequences made it
+  unshippable: `node scripts/assert-md-wasm-size-docs.mjs` — a step in the
+  **required** `health` job, not an optional lane — exited 1 on the
+  hand-edited prose, and the `wasm-md (default)` job asserts manifest equality
+  against its own ubuntu build with zero tolerance on the two `finalWasm`
+  columns, so Mac bytes are a guaranteed `manifest-mismatch`. The manifest
+  therefore still carries `main`'s CI-measured 2.15.0 values; if the 0.0.44
+  pin genuinely moves the shipped bytes, the PR's own `wasm-md` CI summary is
+  the authority, and the manifest is realigned from it (doc tables re-synced
+  via `assert-md-wasm-size-docs.mjs --fix`). No ceiling was raised, no
+  assertion was edited to silence anything, and the corpus was untouched.
+  **Next trigger:** unchanged from above — the next lockstep release beyond
+  0.0.44, or a yank of either adopted version.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
