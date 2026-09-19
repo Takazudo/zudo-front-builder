@@ -817,6 +817,55 @@ declaration is removable even if its package remains in `Cargo.lock`.
     or any newly observed-open `noyalib` release PR. `pendingReleasePr` stayed
     `null` through #3045. That evidence opens a new evaluation topic; it is
     still not grounds to refresh this baseline again.
+
+    **Bumped to `0.0.44` on 2026-09-17** in the pin-bump topic
+    ([#3046](https://github.com/Takazudo/zudo-front-builder/issues/3046)),
+    following the 18/18 MIGRATE verdict of the released differential
+    evaluation ([#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045));
+    see the `serde_yaml 0.9.34+deprecated` summary bullet above for the
+    landed diff, checksums, and lock delta.
+
+    The confirm topic
+    ([#3047](https://github.com/Takazudo/zudo-front-builder/issues/3047))
+    then performed the single refresh for this round. A live check at
+    `2026-09-19T00:35:01.285Z` (config still pointing `pendingReleasePr` at
+    `null`) returned rc 10 with no errors and, versus the
+    `2026-09-13T21:40:41.816Z` baseline, exactly the following triage-severity
+    deltas: for `noyalib` — `version-published 0.0.44`, `version-published
+    0.0.45`, `tag-added v0.0.44`, `tag-added v0.0.45`, `release-added
+    v0.0.44`, `release-added v0.0.45`; for `noyalib-serde-yaml` —
+    `version-published 0.0.44`, `tag-added v0.0.44`, `release-added v0.0.44`.
+    Both crates also reported ordinary branch churn (`branch-added`,
+    `branch-deleted`, `branch-advanced`), including `noyalib-serde-yaml`
+    gaining a `release/v0.0.45` branch with no matching `version-published` —
+    branch movement is informational, not a trigger, so this is not the
+    lockstep pair appearing. Every triage-severity delta was already
+    evaluated: the `0.0.44` triple on both crates is the MIGRATE verdict
+    #3045 recorded and #3046 landed, and the bare `noyalib 0.0.45` triple is
+    the already-documented, deliberately-deferred half-pair from the
+    paragraph above (its alias, `noyalib-serde-yaml 0.0.45`, still has no
+    `version-published` delta, so the pair is still incomplete and this
+    round folds in no new unevaluated release). The five candidate-role
+    crates reported only informational drift (new versions/tags/branches),
+    none of it on the adopted pair. `gh api
+    "repos/sebastienrousseau/noyalib/pulls?state=open"` returned one open
+    pull request, [PR 445](https://github.com/sebastienrousseau/noyalib/pull/445)
+    (`feat/examples-autodiscovery`, an examples-discovery refactor, not a
+    release PR), so `CANDIDATE_CONFIG.noyalib.pendingReleasePr` correctly
+    remains `null` and needed no edit. The observed snapshot (`checkedAt`
+    `2026-09-19T00:35:01.285Z`) was installed as the new
+    `scripts/yaml-candidate-baseline.json` via the write-then-copy recipe. A
+    post-install re-run at `2026-09-19T00:35:25.788Z` returned exit 0,
+    `no-drift`, `errors: []` on every candidate including both adopted
+    crates. **This is the single refresh of this triage; further upstream
+    churn after it gets no second refresh** — the next `version-published`,
+    `tag-added`, or `release-added` delta for either crate **beyond
+    `0.0.44`** (for `noyalib` this means anything past the now-baselined
+    `0.0.45`), a yank of either adopted version, or any newly observed-open
+    `noyalib` release PR is fresh trigger-kind evidence for a new evaluation
+    topic — in particular, `noyalib-serde-yaml` publishing `0.0.45` would
+    complete the lockstep pair and open that topic — not grounds to refresh
+    this baseline again.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
