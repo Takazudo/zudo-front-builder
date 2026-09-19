@@ -46,8 +46,9 @@ describe("workspace test contract", () => {
       "pnpm --filter @takazudo/zfb-md-wasm build && pnpm --filter @takazudo/zfb-md-wasm test",
     );
     expect(packageJson.scripts["test:md-wasm"]).not.toContain("ZFB_MD_WASM_ALLOW_OVER_CEILING");
+    expect(packageJson.scripts["test:md-wasm"]).not.toContain("--allow-over-ceiling");
     expect(packageJson.scripts["test:md-wasm:local"]).toBe(
-      "ZFB_MD_WASM_ALLOW_OVER_CEILING=1 pnpm test:md-wasm",
+      "pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling && pnpm --filter @takazudo/zfb-md-wasm test",
     );
     expect(mdWasmPackageJson.scripts.pretest).toBe("node scripts/assert-consumer-artifacts.mjs");
     expect(mdWasmPackageJson.scripts["typecheck:consumer"]).toBe(

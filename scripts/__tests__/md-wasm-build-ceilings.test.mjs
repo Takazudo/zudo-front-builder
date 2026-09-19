@@ -1,27 +1,49 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ceilingPolicyFromEnv,
+  ceilingPolicyFromArgv,
   evaluateCeilings,
+  legacyEnvVarWarning,
   reportCeilings,
 } from "../../crates/zfb-md-wasm/npm/scripts/build.mjs";
 
-// Pure functions only -- no wasm build runs in this file (zfb#3054).
+// Pure functions only -- no wasm build runs in this file (zfb#3054, moved to
+// a CLI-argument opt-in by zfb#3060/#3057).
 
-describe("ceilingPolicyFromEnv", () => {
-  it("allows over-ceiling only for the exact string '1'", () => {
-    expect(ceilingPolicyFromEnv({ ZFB_MD_WASM_ALLOW_OVER_CEILING: "1" }).allowOver).toBe(true);
-    expect(ceilingPolicyFromEnv({ ZFB_MD_WASM_ALLOW_OVER_CEILING: "true" }).allowOver).toBe(false);
-    expect(ceilingPolicyFromEnv({ ZFB_MD_WASM_ALLOW_OVER_CEILING: "0" }).allowOver).toBe(false);
-    expect(ceilingPolicyFromEnv({ ZFB_MD_WASM_ALLOW_OVER_CEILING: "" }).allowOver).toBe(false);
-    expect(ceilingPolicyFromEnv({}).allowOver).toBe(false);
+describe("ceilingPolicyFromArgv", () => {
+  it("allows over-ceiling only when --allow-over-ceiling is present in argv", () => {
+    expect(ceilingPolicyFromArgv(["--allow-over-ceiling"], {}).allowOver).toBe(true);
+    expect(ceilingPolicyFromArgv([], {}).allowOver).toBe(false);
+    expect(ceilingPolicyFromArgv(["--other-flag"], {}).allowOver).toBe(false);
   });
 
-  it("treats any non-empty CI string as CI", () => {
-    expect(ceilingPolicyFromEnv({ CI: "true" }).ci).toBe(true);
-    expect(ceilingPolicyFromEnv({ CI: "1" }).ci).toBe(true);
-    expect(ceilingPolicyFromEnv({ CI: "" }).ci).toBe(false);
-    expect(ceilingPolicyFromEnv({}).ci).toBe(false);
+  it("never reads the retired env var for the opt-in", () => {
+    expect(ceilingPolicyFromArgv([], { ZFB_MD_WASM_ALLOW_OVER_CEILING: "1" }).allowOver).toBe(
+      false,
+    );
+  });
+
+  it("treats any non-empty CI string as CI (unchanged)", () => {
+    expect(ceilingPolicyFromArgv([], { CI: "true" }).ci).toBe(true);
+    expect(ceilingPolicyFromArgv([], { CI: "1" }).ci).toBe(true);
+    expect(ceilingPolicyFromArgv([], { CI: "" }).ci).toBe(false);
+    expect(ceilingPolicyFromArgv([], {}).ci).toBe(false);
+  });
+});
+
+describe("legacyEnvVarWarning", () => {
+  it("returns null when the retired env var is unset or empty", () => {
+    expect(legacyEnvVarWarning({})).toBeNull();
+    expect(legacyEnvVarWarning({ ZFB_MD_WASM_ALLOW_OVER_CEILING: "" })).toBeNull();
+  });
+
+  it("warns and names pnpm test:md-wasm:local for any non-empty value", () => {
+    for (const value of ["1", "0", "true", "anything"]) {
+      const warning = legacyEnvVarWarning({ ZFB_MD_WASM_ALLOW_OVER_CEILING: value });
+      expect(warning).toContain("ZFB_MD_WASM_ALLOW_OVER_CEILING");
+      expect(warning).toContain("no longer honored");
+      expect(warning).toContain("pnpm test:md-wasm:local");
+    }
   });
 });
 
@@ -62,10 +84,20 @@ describe("evaluateCeilings", () => {
     expect(warnings[1]).toContain("over by 50");
   });
 
-  it("refuses the opt-in outright when CI is set, naming the variable in a single error", () => {
+  it("refuses the opt-in outright when CI is set, naming the flag in a single error", () => {
     const { errors, warnings } = evaluateCeilings(twoOver, { allowOver: true, ci: true });
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("ZFB_MD_WASM_ALLOW_OVER_CEILING");
+    expect(errors[0]).toContain("--allow-over-ceiling");
+    expect(warnings).toEqual([]);
+  });
+
+  // zfb#3057 regression: an exported ZFB_MD_WASM_ALLOW_OVER_CEILING must
+  // never soften a breach again -- it is ignored, so policy.allowOver is
+  // false and over-ceiling stats still error out.
+  it("still errors on over-ceiling stats when only the retired env var is set", () => {
+    const policy = ceilingPolicyFromArgv([], { ZFB_MD_WASM_ALLOW_OVER_CEILING: "1" });
+    const { errors, warnings } = evaluateCeilings(twoOver, policy);
+    expect(errors).toHaveLength(2);
     expect(warnings).toEqual([]);
   });
 });
