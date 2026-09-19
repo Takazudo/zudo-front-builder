@@ -389,6 +389,12 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
 
 function main() {
   const env = envWithRustupPathFix();
+  // Refuse the local opt-in before the four-artifact build, not after it: the
+  // CI refusal in `evaluateCeilings` is a hard error either way, and reaching
+  // it via `reportCeilings` would first burn the full ~15-minute build.
+  const policy = ceilingPolicyFromEnv(env);
+  const refusal = evaluateCeilings([], policy).errors;
+  if (refusal.length > 0) throw new Error(refusal.join("\n"));
   checkWasmBindgenVersion(env);
 
   const distDir = resolve(pkgRoot, "dist");
@@ -420,7 +426,6 @@ function main() {
     gzipCeiling: artifact.gzipCeiling,
     ...artifactStats,
   }));
-  const policy = ceilingPolicyFromEnv(env);
   reportCeilings(records, policy, (msg) => console.log(msg));
 }
 

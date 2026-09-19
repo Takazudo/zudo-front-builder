@@ -12619,12 +12619,12 @@ mod tests {
 
     #[test]
     fn allocate_build_tempdir_bare_error_carries_no_bundler_context() {
-        // A parent path that is never created, under a fresh tempdir —
-        // `tempdir_in` fails because the parent does not exist.
-        let missing_parent = tempfile::tempdir()
-            .unwrap()
-            .path()
-            .join("zfb-test-ctx-missing");
+        // A child path that is never created, inside a live tempdir —
+        // `tempdir_in` fails because that parent does not exist. The guard is
+        // bound (not a dropped temporary) so the failure is the missing child,
+        // not a tempdir that cleaned itself up mid-statement.
+        let root = tempfile::tempdir().unwrap();
+        let missing_parent = root.path().join("zfb-test-ctx-missing");
         let err =
             allocate_build_tempdir("zfb-test-ctx-", Some(&missing_parent), false, "test role")
                 .expect_err("allocation under a nonexistent parent must fail");
@@ -12637,10 +12637,8 @@ mod tests {
 
     #[test]
     fn allocate_bundler_tempdir_wraps_with_the_bundler_context() {
-        let missing_parent = tempfile::tempdir()
-            .unwrap()
-            .path()
-            .join("zfb-test-ctx-missing");
+        let root = tempfile::tempdir().unwrap();
+        let missing_parent = root.path().join("zfb-test-ctx-missing");
         let err =
             allocate_bundler_tempdir("zfb-test-ctx-", Some(&missing_parent), false, "test role")
                 .expect_err("allocation under a nonexistent parent must fail");
