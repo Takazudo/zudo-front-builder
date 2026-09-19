@@ -1,0 +1,21 @@
+---
+title: v2.20.0
+sidebar_position: 130
+---
+
+# v2.20.0
+
+Released: 2026-09-20
+
+## Bug Fixes
+
+- let callers own `allocate_build_tempdir`'s error context (cf7992fb)
+
+  A failed tempdir allocation in the package-routes overlay no longer renders a misleading
+  `bundler:` segment in its error chain — that path has nothing to do with the bundler. The
+  shared helper now returns the bare underlying error, and each caller attaches the context
+  that fits where it is calling from.
+
+  Bundler error messages are unchanged byte-for-byte: `zfb build`'s two shadow-tempdir call
+  sites go through a private wrapper that reattaches the identical
+  `bundler: failed to allocate {role} tempdir` text.

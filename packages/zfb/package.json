@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb",
-  "version": "2.19.0",
+  "version": "2.20.0",
   "private": false,
   "type": "module",
   "description": "Content-site engine on the web's Request/Response model — prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. SDK with islands, content collections, pagination, and config helpers.",
@@ -74,11 +74,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@takazudo/zfb-darwin-arm64": "workspace:2.19.0",
-    "@takazudo/zfb-darwin-x64": "workspace:2.19.0",
-    "@takazudo/zfb-linux-arm64-gnu": "workspace:2.19.0",
-    "@takazudo/zfb-linux-x64-gnu": "workspace:2.19.0",
-    "@takazudo/zfb-win32-x64-msvc": "workspace:2.19.0"
+    "@takazudo/zfb-darwin-arm64": "workspace:2.20.0",
+    "@takazudo/zfb-darwin-x64": "workspace:2.20.0",
+    "@takazudo/zfb-linux-arm64-gnu": "workspace:2.20.0",
+    "@takazudo/zfb-linux-x64-gnu": "workspace:2.20.0",
+    "@takazudo/zfb-win32-x64-msvc": "workspace:2.20.0"
   },
   "publishConfig": {
     "access": "public",

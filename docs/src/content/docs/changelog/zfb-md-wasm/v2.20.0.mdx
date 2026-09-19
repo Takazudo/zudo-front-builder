@@ -1,0 +1,44 @@
+---
+title: v2.20.0
+sidebar_position: 16
+---
+
+# v2.20.0
+
+Released: 2026-09-20
+
+## Features
+
+- move the over-ceiling opt-in from an env var to `--allow-over-ceiling` (a358d48f)
+
+  The local escape hatch for Mac-vs-CI codegen drift is now a build argument rather than the
+  `ZFB_MD_WASM_ALLOW_OVER_CEILING` environment variable. An exported variable also softened this
+  package's `prepublishOnly` → `pnpm build`, so a hand-rolled local `pnpm publish` could ship
+  artifacts that had never been held to their ceilings — a build the opt-in was never aimed at.
+  The flag is read only from `build.mjs`'s own CLI entry, so it cannot be inherited from an
+  ambient environment.
+  `pnpm test:md-wasm:local` passes the flag for you; `pnpm test:md-wasm` stays strict and is
+  unchanged. The flag is still refused outright whenever `CI` is set, so it can never green a PR
+  gate. The retired env var is now ignored and emits a loud warning naming the replacement, so a
+  stale shell export fails visibly rather than silently doing nothing.
+
+## Bug Fixes
+
+- collect-then-fail on build ceilings instead of throwing on the first breach (6178015f)
+
+  The build summary threw as soon as one artifact exceeded its gzip-9 ceiling, hiding the other
+  three artifacts' numbers. The complete four-artifact summary now always prints first, then any
+  warnings, then a single failure naming every breach.
+- refuse the over-ceiling opt-in before the four-artifact build, not after it (6bc594e6)
+
+  A CI run carrying the opt-in previously burned the full ~15-minute build before hitting the
+  refusal. One policy object now feeds both the early refusal and the final report, so the two
+  messages cannot drift apart.
+
+## Other Changes
+
+- Shipped artifacts: sizes are unchanged in this release — `shipped-sizes.json` and its synced
+  documentation tables were not touched, and no code change here moves the compiled bytes.
+  **All four SHA-256 digests still change**, as they do in every release: each `.wasm` embeds
+  `ZFB_RELEASE_VERSION`, so the digests move even when the compiled code and the byte sizes do
+  not. If you pin digests, re-pin them.
