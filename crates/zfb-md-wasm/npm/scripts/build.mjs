@@ -190,19 +190,43 @@ function fmtBytes(n) {
   return `${n.toLocaleString("en-US")} bytes (${(n / 1024 / 1024).toFixed(2)} MB)`;
 }
 
-// The local Mac/CI codegen-drift escape hatch (zfb#3054): on some Macs the
-// render-only artifact's gzip-9 size lands a few KB over its ceiling while
-// CI's build of the same source is under it, which otherwise stops
-// `pnpm test:md-wasm` before it ever reaches the test half on a Mac.
-// `ZFB_MD_WASM_ALLOW_OVER_CEILING=1` downgrades ceiling breaches to loud
-// warnings -- but only outside CI. Inside CI it is refused outright (a hard
-// error naming the variable) so it can never be used to force a PR gate
-// green; CI's own build is, and stays, the authoritative oracle.
-export function ceilingPolicyFromEnv(env) {
+// The local Mac/CI codegen-drift escape hatch (zfb#3054, moved from an env
+// var to a CLI flag by zfb#3060/#3057): on some Macs the render-only
+// artifact's gzip-9 size lands a few KB over its ceiling while CI's build of
+// the same source is under it, which otherwise stops `pnpm test:md-wasm`
+// before it ever reaches the test half on a Mac. `--allow-over-ceiling`
+// downgrades ceiling breaches to loud warnings -- but only outside CI.
+// Inside CI it is refused outright (a hard error naming the flag) so it can
+// never be used to force a PR gate green; CI's own build is, and stays, the
+// authoritative oracle.
+//
+// The opt-in MUST be a CLI argument, not env-detected: inside this package's
+// `"prepublishOnly": "pnpm build"`, the nested `pnpm build` invocation sees
+// `npm_lifecycle_event=build` (pnpm rewrites it per script -- probed for
+// zfb#3059), so a publish can't be distinguished from an ordinary build from
+// inside this script, and any ambient env var would soften a publish it was
+// never aimed at. `argv` must come from build.mjs's own CLI entry (see the
+// bottom of this file) -- never from `process.argv` read elsewhere, which
+// could pick up an unrelated importing process's own arguments.
+export function ceilingPolicyFromArgv(argv, env) {
   return {
-    allowOver: env.ZFB_MD_WASM_ALLOW_OVER_CEILING === "1",
+    allowOver: argv.includes("--allow-over-ceiling"),
     ci: typeof env.CI === "string" && env.CI !== "",
   };
+}
+
+// ZFB_MD_WASM_ALLOW_OVER_CEILING is the retired env-var form of the opt-in
+// above (zfb#3054) -- no longer honored. Returns a warning string when a
+// stale export is still set, so a developer's old shell config doesn't
+// silently do nothing; null when unset.
+export function legacyEnvVarWarning(env) {
+  const value = env.ZFB_MD_WASM_ALLOW_OVER_CEILING;
+  if (typeof value !== "string" || value === "") return null;
+  return (
+    "ZFB_MD_WASM_ALLOW_OVER_CEILING is no longer honored and has no effect on this build -- " +
+    "the opt-in is now the --allow-over-ceiling build argument. Use `pnpm test:md-wasm:local`, " +
+    "which passes it for you, or unset the stale variable."
+  );
 }
 
 // Collect-then-fail: every over-ceiling artifact is reported in one pass,
@@ -211,9 +235,9 @@ export function evaluateCeilings(stats, policy) {
   if (policy.allowOver && policy.ci) {
     return {
       errors: [
-        "ZFB_MD_WASM_ALLOW_OVER_CEILING is refused when CI is set -- it exists for local " +
-          "Mac/CI codegen drift only and must never be used to force a PR gate green. Unset " +
-          "it, or run the strict `pnpm test:md-wasm` lane.",
+        "--allow-over-ceiling is refused when CI is set -- it exists for local Mac/CI codegen " +
+          "drift only and must never be used to force a PR gate green. Omit it, or run the " +
+          "strict `pnpm test:md-wasm` lane.",
       ],
       warnings: [],
     };
@@ -227,7 +251,7 @@ export function evaluateCeilings(stats, policy) {
     if (policy.allowOver) {
       warnings.push(
         `${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling} (over by ${overBy} ` +
-          `bytes) -- allowed locally via ZFB_MD_WASM_ALLOW_OVER_CEILING=1; CI remains the oracle.`,
+          `bytes) -- allowed locally via --allow-over-ceiling; CI remains the oracle.`,
       );
     } else {
       errors.push(`${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling}`);
@@ -387,12 +411,19 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
   return { cdylibSize, bindgenSize, glueSize, glueGzipSize, finalSize, gzipSize };
 }
 
-function main() {
+function main(argv) {
   const env = envWithRustupPathFix();
+
+  // Emitted before the build regardless of outcome -- including when
+  // nothing ends up over ceiling -- so a stale exported variable is never
+  // silently inert.
+  const legacyWarning = legacyEnvVarWarning(env);
+  if (legacyWarning) log(`WARNING: ${legacyWarning}`);
+
   // Refuse the local opt-in before the four-artifact build, not after it: the
   // CI refusal in `evaluateCeilings` is a hard error either way, and reaching
   // it via `reportCeilings` would first burn the full ~15-minute build.
-  const policy = ceilingPolicyFromEnv(env);
+  const policy = ceilingPolicyFromArgv(argv, env);
   const refusal = evaluateCeilings([], policy).errors;
   if (refusal.length > 0) throw new Error(refusal.join("\n"));
   checkWasmBindgenVersion(env);
@@ -431,5 +462,9 @@ function main() {
 
 const argument = process.argv[1];
 if (argument !== undefined && import.meta.url === pathToFileURL(argument).href) {
-  main();
+  // Only this CLI entry's own argv can supply --allow-over-ceiling -- never
+  // read process.argv from elsewhere in this module, so an importing process
+  // (e.g. scripts/run-zfb-md-wasm-build-timed.mjs) can't leak its own
+  // arguments into the flag.
+  main(process.argv.slice(2));
 }
