@@ -2,26 +2,26 @@
   "measuredOnVersion": "2.15.0",
   "measured": {
     "root": {
-      "finalWasm": 3400172,
-      "gzip9": 1516626,
+      "finalWasm": 3473330,
+      "gzip9": 1553887,
       "glue": 14998,
       "glueGzip9": 4199
     },
     "highlight": {
-      "finalWasm": 1538664,
-      "gzip9": 817835,
+      "finalWasm": 1543455,
+      "gzip9": 825579,
       "glue": 8758,
       "glueGzip9": 2637
     },
     "render": {
-      "finalWasm": 2196673,
-      "gzip9": 1091615,
+      "finalWasm": 2241085,
+      "gzip9": 1113318,
       "glue": 8772,
       "glueGzip9": 2661
     },
     "parse": {
-      "finalWasm": 701306,
-      "gzip9": 284265,
+      "finalWasm": 730338,
+      "gzip9": 297372,
       "glue": 11159,
       "glueGzip9": 3797
     }
