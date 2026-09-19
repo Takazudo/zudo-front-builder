@@ -17,6 +17,13 @@ export const GH_STUB_PATH = fileURLToPath(new URL("./gh-stub.sh", import.meta.ur
 
 const activeDirs = new Set();
 
+// A loaded host leaves just-SIGKILLed `gh` stub descendants holding files in the
+// fixture tree while the recursive walk is already inside it, and `force` does
+// not cover that -- Node retries ENOTEMPTY/EBUSY/EPERM only when given
+// maxRetries. Measured under #3058 (findings on #3061): removals here threw
+// ENOTEMPTY under one CPU burner per core, never on a quiet host.
+const REMOVE_TREE = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
+
 export function makeRun(overrides = {}) {
   return {
     databaseId: 1000,
@@ -139,7 +146,7 @@ export function setupFixtures({
     dir,
     stubPath: GH_STUB_PATH,
     cleanup() {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, REMOVE_TREE);
       activeDirs.delete(dir);
     },
   };
@@ -154,6 +161,6 @@ export function readCalls(dir) {
 }
 
 export function cleanupFixtures() {
-  for (const dir of activeDirs) rmSync(dir, { recursive: true, force: true });
+  for (const dir of activeDirs) rmSync(dir, REMOVE_TREE);
   activeDirs.clear();
 }
