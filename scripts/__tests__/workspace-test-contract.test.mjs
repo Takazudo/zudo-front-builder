@@ -50,6 +50,16 @@ describe("workspace test contract", () => {
     expect(packageJson.scripts["test:md-wasm:local"]).toBe(
       "pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling && pnpm --filter @takazudo/zfb-md-wasm test",
     );
+    // `test:md-wasm:local` inlines `test:md-wasm` rather than delegating to it
+    // (the flag has to land on the build half, not on the outer script), so
+    // pin it as the strict lane plus exactly that one flag -- otherwise a
+    // future edit to `test:md-wasm` silently leaves the local lane behind.
+    expect(packageJson.scripts["test:md-wasm:local"]).toBe(
+      packageJson.scripts["test:md-wasm"].replace(
+        "@takazudo/zfb-md-wasm build",
+        "@takazudo/zfb-md-wasm build --allow-over-ceiling",
+      ),
+    );
     expect(mdWasmPackageJson.scripts.pretest).toBe("node scripts/assert-consumer-artifacts.mjs");
     expect(mdWasmPackageJson.scripts["typecheck:consumer"]).toBe(
       "tsc --project test/tsconfig.consumer.json",

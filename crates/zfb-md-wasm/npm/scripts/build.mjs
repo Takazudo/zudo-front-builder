@@ -205,9 +205,9 @@ function fmtBytes(n) {
 // `npm_lifecycle_event=build` (pnpm rewrites it per script -- probed for
 // zfb#3059), so a publish can't be distinguished from an ordinary build from
 // inside this script, and any ambient env var would soften a publish it was
-// never aimed at. `argv` must come from build.mjs's own CLI entry (see the
-// bottom of this file) -- never from `process.argv` read elsewhere, which
-// could pick up an unrelated importing process's own arguments.
+// never aimed at. `argv` is supplied by the caller rather than read here, so
+// the policy is a pure function of what was actually passed on the command
+// line (see the CLI entry at the bottom of this file).
 export function ceilingPolicyFromArgv(argv, env) {
   return {
     allowOver: argv.includes("--allow-over-ceiling"),
@@ -462,9 +462,11 @@ function main(argv) {
 
 const argument = process.argv[1];
 if (argument !== undefined && import.meta.url === pathToFileURL(argument).href) {
-  // Only this CLI entry's own argv can supply --allow-over-ceiling -- never
-  // read process.argv from elsewhere in this module, so an importing process
-  // (e.g. scripts/run-zfb-md-wasm-build-timed.mjs) can't leak its own
-  // arguments into the flag.
+  // process.argv is read at this CLI entry only, and nowhere else in the
+  // module. Note that scripts/run-zfb-md-wasm-build-timed.mjs reaches this
+  // branch deliberately -- it rewrites process.argv[1] to this file's path
+  // before importing it -- so that wrapper's own trailing arguments are what
+  // main() sees, and passing it --allow-over-ceiling does opt in. That is the
+  // intended pass-through for a timed local Mac run; CI still refuses the flag.
   main(process.argv.slice(2));
 }

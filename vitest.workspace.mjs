@@ -31,11 +31,14 @@ const SUBPROCESS_SUITES = [
 // every non-subprocess suite would run twice. `exclude` is additive by nature,
 // so concatenation is the behaviour it wants. defaultExclude must be re-stated
 // for the same reason it always must -- vitest drops its defaults once the key
-// is present at all.
+// is present at all. The `**/` before the extglob mirrors the root config's
+// `scripts/**/__tests__/**/*.test.mjs`: without it the negation only covers
+// `__tests__`'s direct children, so a suite in a subdirectory would be excluded
+// from neither project and run twice.
 const SUBPROCESS_NAMES = SUBPROCESS_SUITES.map((path) =>
   path.replace(/^.*\//, "").replace(/\.test\.mjs$/, ""),
 );
-const EVERYTHING_ELSE = `scripts/**/__tests__/!(${SUBPROCESS_NAMES.join("|")}).test.mjs`;
+const EVERYTHING_ELSE = `scripts/**/__tests__/**/!(${SUBPROCESS_NAMES.join("|")}).test.mjs`;
 
 export default defineWorkspace([
   {

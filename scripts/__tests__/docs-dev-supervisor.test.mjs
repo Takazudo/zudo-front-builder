@@ -775,7 +775,13 @@ async function withSupervisor(scripts, run, { isExpectedFailure } = {}) {
     // retries ENOTEMPTY/EBUSY/EPERM only when given maxRetries. Measured under
     // #3058 (findings on #3061): this masked a real failure once in 18 loaded
     // runs and never fired on a quiet host.
-    rmSync(fixture.directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    try {
+      rmSync(fixture.directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    } catch (error) {
+      // maxRetries narrows the window but cannot close it; a throw here would
+      // still replace the test's real error. Report the leaked fixture instead.
+      process.stderr.write(`WARNING: could not remove fixture ${fixture.directory}: ${error}\n`);
+    }
   }
 }
 
