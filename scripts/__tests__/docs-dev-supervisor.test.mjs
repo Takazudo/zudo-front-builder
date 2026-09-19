@@ -42,7 +42,8 @@ const RUN_PARALLEL_PATH = join(
 // Budget calibrated 2026-09-07 (#2887, R-C) against measured pre-UP (spawn -> UP), case=up+boom:
 // ubuntu health.yml n=2 max=1757ms; macOS arm64 6-core/8GB real-condition replay n=20 max=2425ms.
 // R-B line = 0.75 x budget = 7500ms; observed max = 24% of budget. Change only by measurement.
-const PROCESS_TIMEOUT_MS = 10_000;
+// 2026-09 concurrent-workspace re-measure (#3067): K=1..4, 42 batches, 81 up+boom records (79 observed UP, 2 censored), max pre-UP=7553ms at K=4 (75.53% of old 10s; 47.21% of 16s); current R-B=12000ms.
+const PROCESS_TIMEOUT_MS = 16_000;
 const POLL_INTERVAL_MS = 20;
 
 // Deliberately short, and deliberately NOT PROCESS_TIMEOUT_MS: the pre-UP
@@ -830,11 +831,13 @@ describe("docs dev supervisor", () => {
     expect(docsPackage.devDependencies).not.toHaveProperty(legacySupervisorName);
   });
 
-  // Worst case is 41s of chained PROCESS_TIMEOUT_MS waits (SIGINT test) plus the
-  // 1s cleanup wait; 41s / 0.75 ~= 55s -> 60s so the inner waits fail first and
-  // name their phase instead of vitest's bare 5s "Test timed out" (#2874, #2869).
+  // Worst case is four sequential PROCESS_TIMEOUT_MS phase-naming waits in the
+  // SIGINT test (4 * 16000ms) plus the 1000ms cleanup wait = 65000ms;
+  // 65000ms / 0.75 ~= 86666.67ms, rounded up in the existing 10s sizing step
+  // -> 90000ms. This outer describe guard leaves the inner waits to fail first
+  // and name their phase instead of Vitest's bare 5s "Test timed out" (#2874, #2869).
   // Scoped to this describe: every other root suite keeps the 5s hang guardrail.
-  describe.skipIf(!supervisorRunnable)("supervisor process behaviour", { timeout: 60_000 }, () => {
+  describe.skipIf(!supervisorRunnable)("supervisor process behaviour", { timeout: 90_000 }, () => {
     it("aborts every sibling when a task exits non-zero", async () => {
       await withSupervisor(["up", "boom"], async (supervisor, childPids) => {
         const upLine = await supervisor.stdout.waitFor(

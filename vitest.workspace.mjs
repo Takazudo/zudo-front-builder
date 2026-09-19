@@ -53,17 +53,18 @@ export default defineWorkspace([
     test: {
       name: "scripts-subprocess",
       exclude: [...defaultExclude, EVERYTHING_ELSE],
-      // 60 s is 2.1x the 27.9 s worst case measured over 10 loaded runs of
-      // these suites (one `yes` burner per core on a 10-core Mac) -- #3058,
-      // findings on #3061. Sized from a run with a RAISED timeout already in
-      // place, not from the 10.9 s tail seen at the old 5 s default: aborting
-      // at 5 s truncated every run, so the pre-fix distribution understates
-      // the tail by roughly half. The loaded median is 3-10 s and the
-      // quiet-host max is 1.1 s, so this is a hang guardrail, not a budget.
-      // Tests under the two describe-level timeouts in these files (20 s in
-      // harvest-supervisor-timelines, 60 s in docs-dev-supervisor) keep their
-      // own value and stay the tighter, phase-naming bound.
-      testTimeout: 60_000,
+      // 90 s is the outer project guard for the four sequential 16 s
+      // phase-naming waits in docs-dev-supervisor's SIGINT test plus 1 s cleanup:
+      // 65 s / 0.75 ~= 86.7 s, rounded up in the existing 10 s sizing step.
+      // It stays above the inner waits so they name their phase rather than
+      // firing a bare project-level "Test timed out". The loaded 27.9 s worst
+      // case measured over 10 runs (one `yes` burner per core on a 10-core Mac)
+      // -- #3058, findings on #3061 -- remains below this outer guard. The
+      // loaded median is 3-10 s and the quiet-host max is 1.1 s, so this is a
+      // hang guardrail, not a budget. Harvest keeps its tighter 20 s
+      // describe-level timeout; docs-dev-supervisor's describe-level timeout
+      // matches this outer guard so its inner waits still name their phase.
+      testTimeout: 90_000,
     },
   },
 ]);
