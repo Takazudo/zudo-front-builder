@@ -46,8 +46,19 @@ describe("workspace test contract", () => {
       "pnpm --filter @takazudo/zfb-md-wasm build && pnpm --filter @takazudo/zfb-md-wasm test",
     );
     expect(packageJson.scripts["test:md-wasm"]).not.toContain("ZFB_MD_WASM_ALLOW_OVER_CEILING");
+    expect(packageJson.scripts["test:md-wasm"]).not.toContain("--allow-over-ceiling");
     expect(packageJson.scripts["test:md-wasm:local"]).toBe(
-      "ZFB_MD_WASM_ALLOW_OVER_CEILING=1 pnpm test:md-wasm",
+      "pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling && pnpm --filter @takazudo/zfb-md-wasm test",
+    );
+    // `test:md-wasm:local` inlines `test:md-wasm` rather than delegating to it
+    // (the flag has to land on the build half, not on the outer script), so
+    // pin it as the strict lane plus exactly that one flag -- otherwise a
+    // future edit to `test:md-wasm` silently leaves the local lane behind.
+    expect(packageJson.scripts["test:md-wasm:local"]).toBe(
+      packageJson.scripts["test:md-wasm"].replace(
+        "@takazudo/zfb-md-wasm build",
+        "@takazudo/zfb-md-wasm build --allow-over-ceiling",
+      ),
     );
     expect(mdWasmPackageJson.scripts.pretest).toBe("node scripts/assert-consumer-artifacts.mjs");
     expect(mdWasmPackageJson.scripts["typecheck:consumer"]).toBe(

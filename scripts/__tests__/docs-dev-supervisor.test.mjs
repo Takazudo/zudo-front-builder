@@ -768,7 +768,20 @@ async function withSupervisor(scripts, run, { isExpectedFailure } = {}) {
       process.stderr.write(`${supervisor.diagnostics.timelineLine(scripts.join("+"), outcome)}\n`);
     }
     await terminateForCleanup(supervisor, childPids);
-    rmSync(fixture.directory, { recursive: true, force: true });
+    // maxRetries, because this runs in a `finally` that a `catch` above has
+    // already re-thrown from: an ENOTEMPTY here REPLACES the test's real error.
+    // On a loaded host the just-SIGKILLed tree still holds files while the
+    // recursive walk is inside them, and `force` does not cover that -- Node
+    // retries ENOTEMPTY/EBUSY/EPERM only when given maxRetries. Measured under
+    // #3058 (findings on #3061): this masked a real failure once in 18 loaded
+    // runs and never fired on a quiet host.
+    try {
+      rmSync(fixture.directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    } catch (error) {
+      // maxRetries narrows the window but cannot close it; a throw here would
+      // still replace the test's real error. Report the leaked fixture instead.
+      process.stderr.write(`WARNING: could not remove fixture ${fixture.directory}: ${error}\n`);
+    }
   }
 }
 

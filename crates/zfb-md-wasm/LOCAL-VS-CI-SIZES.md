@@ -68,10 +68,17 @@ never from a local Mac build.
 `pnpm test:md-wasm` is strict by design: it fails on a Mac whenever any
 artifact's gzip-9 size is over its ceiling, because the plain script has no
 way to tell an intentional regression apart from this codegen gap. Use
-`pnpm test:md-wasm:local` instead — it sets `ZFB_MD_WASM_ALLOW_OVER_CEILING=1`,
-which downgrades a ceiling breach to a loud warning so the build+test can
-still complete locally. That opt-in variable is refused outright when `CI` is
+`pnpm test:md-wasm:local` instead — it passes `--allow-over-ceiling` to the
+build, which downgrades a ceiling breach to a loud warning so the build+test
+can still complete locally. That opt-in flag is refused outright when `CI` is
 set, so it cannot silently soften the real gate.
+
+The opt-in used to be the `ZFB_MD_WASM_ALLOW_OVER_CEILING` env var (zfb#3054);
+zfb#3060 moved it to the `--allow-over-ceiling` build argument, because an
+exported env var also softened `prepublishOnly` → `pnpm build` on a
+hand-rolled local `pnpm publish` (zfb#3057) — a build it was never aimed at.
+The env var is now ignored outright: setting it produces a loud warning
+naming `pnpm test:md-wasm:local` and has no effect on ceiling enforcement.
 
 ### `--fix` behaviour
 
