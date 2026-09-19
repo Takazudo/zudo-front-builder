@@ -487,12 +487,30 @@ declaration is removable even if its package remains in `Cargo.lock`.
   **required** `health` job, not an optional lane — exited 1 on the
   hand-edited prose, and the `wasm-md (default)` job asserts manifest equality
   against its own ubuntu build with zero tolerance on the two `finalWasm`
-  columns, so Mac bytes are a guaranteed `manifest-mismatch`. The manifest
-  therefore still carries `main`'s CI-measured 2.15.0 values; if the 0.0.44
-  pin genuinely moves the shipped bytes, the PR's own `wasm-md` CI summary is
-  the authority, and the manifest is realigned from it (doc tables re-synced
-  via `assert-md-wasm-size-docs.mjs --fix`). No ceiling was raised, no
-  assertion was edited to silence anything, and the corpus was untouched.
+  columns, so Mac bytes are a guaranteed `manifest-mismatch`. No ceiling was
+  raised, no assertion was edited to silence anything, and the corpus was
+  untouched.
+
+  **Reconciled from CI (PR #3048, run 35410352499).** The `wasm-md (default)`
+  job's own ubuntu build settled the numbers, and the manifest plus its eight
+  synced doc tables were realigned from that summary (doc tables re-synced via
+  `assert-md-wasm-size-docs.mjs --fix`). The 0.0.44 pin does move the shipped
+  bytes, slightly and in both directions:
+
+  | Artifact | final wasm | Δ | gzip-9 | Δ |
+  | --- | --- | ---: | --- | ---: |
+  | root (full) | 3,400,172 → 3,399,954 | −218 | 1,516,626 → 1,516,383 | −243 |
+  | highlight-only | 1,538,664 → 1,539,334 | +670 | 817,835 → 817,951 | +116 |
+  | render-only | 2,196,673 → 2,196,095 | −578 | 1,091,615 → 1,091,678 | +63 |
+  | parse-only | 701,306 → 700,364 | −942 | 284,265 → 283,991 | −274 |
+
+  Every artifact stays under its ceiling on CI, `render-only` most narrowly at
+  1,091,678 B against 1,100,000 B. `measuredOnVersion` stays `2.15.0`,
+  matching the precedent reconciliation in #2989 / PR #2992 — it labels the
+  measurement epoch the doc tables cite, and is deliberately not asserted
+  against the package version. The local Mac figures above therefore stand as
+  recorded evidence of the host gap (~21.7 KB on `render-only`), not as
+  shipped numbers; that widened gap is tracked separately in #3049.
   **Next trigger:** unchanged from above — the next lockstep release beyond
   0.0.44, or a yank of either adopted version.
 
