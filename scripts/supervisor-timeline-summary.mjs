@@ -22,7 +22,7 @@ import { parseEnvIdentity } from "./supervisor-env-identity.mjs";
  *         its diagnostic block and classify it (startup starvation, a
  *         stalled boot stage, or a fixture defect) rather than guessing.
  *   R-B — no failure, but the max pre-UP across sampled runs reaches
- *         `--threshold x --budget-ms` (default 75% of 10s): the budget is
+ *         `--threshold x --budget-ms` (default 75% of 16s): the budget is
  *         measured-too-tight and should be recomputed from the observed
  *         distribution, not bumped by feel.
  *   R-C — no failure and pre-UP stays comfortably under budget: nothing to
@@ -140,7 +140,7 @@ export const EXIT_USAGE = 64;
 export const DEFAULT_CASE = "up+boom";
 // Kept in sync with PROCESS_TIMEOUT_MS in scripts/__tests__/docs-dev-supervisor.test.mjs
 // by the drift-guard test in this script's own test file — see that test for why.
-export const DEFAULT_BUDGET_MS = 10_000;
+export const DEFAULT_BUDGET_MS = 16_000;
 export const DEFAULT_THRESHOLD = 0.75;
 
 /** The locked quantile definition — must match byte-for-byte so figures stay

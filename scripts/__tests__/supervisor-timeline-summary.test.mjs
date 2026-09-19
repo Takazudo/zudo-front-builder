@@ -785,8 +785,8 @@ describe("env identity contract cohorts (#2933)", () => {
   describe("4. R-B and the timing distributions are computed per cohort", () => {
     const records = [
       UP_BOOM_LINE, // v1, first-up-line=430
-      upBoomLine({ env: V2, "first-up-line": 7600, total: 7900 }),
-      upBoomLine({ env: V2, "first-up-line": 7700, total: 8000 }),
+      upBoomLine({ env: V2, "first-up-line": 12100, total: 12400 }),
+      upBoomLine({ env: V2, "first-up-line": 12200, total: 12500 }),
     ].map(parseTimelineLine);
 
     it("groups a case by version, ascending", () => {
@@ -802,16 +802,18 @@ describe("env identity contract cohorts (#2933)", () => {
       });
       expect(split).toBe(true);
       expect(cohorts[0].summary.preUp).toMatchObject({ n: 1, max: 430 });
-      expect(cohorts[1].summary.preUp).toMatchObject({ n: 2, min: 7600, max: 7700 });
+      expect(cohorts[1].summary.preUp).toMatchObject({ n: 2, min: 12100, max: 12200 });
       expect(cohorts[0].rb.tripped).toBe(false);
       expect(cohorts[1].rb.tripped).toBe(true);
 
       const s = sink();
       await runCli([], { ...s, stdin: records.map((record) => record.raw).join("\n") });
       expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=1 min=430ms .* max=430ms\n/);
-      expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=2 min=7600ms .* max=7700ms\n/);
+      expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=2 min=12100ms .* max=12200ms\n/);
       expect(s.out()).toMatch(/R-B verdict \[env contract v1\]: max pre-UP=430ms .* -> ok\n/);
-      expect(s.out()).toMatch(/R-B verdict \[env contract v2\]: max pre-UP=7700ms .* -> TRIPPED\n/);
+      expect(s.out()).toMatch(
+        /R-B verdict \[env contract v2\]: max pre-UP=12200ms .* -> TRIPPED\n/,
+      );
       // No pooled distribution anywhere: none of the four distribution lines
       // may carry the combined n=3. Deliberately NOT a bare /n=3/ -- the
       // required split report ("case ... (n=3) spans 2 env contract
@@ -828,7 +830,7 @@ describe("env identity contract cohorts (#2933)", () => {
       const s = sink();
       const code = await runCli(["--strict"], {
         ...s,
-        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2, "first-up-line": 7600, total: 7900 })].join(
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2, "first-up-line": 12100, total: 12400 })].join(
           "\n",
         ),
       });

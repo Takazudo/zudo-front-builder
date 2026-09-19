@@ -130,14 +130,14 @@ const verdictScenarios = [
     }),
   },
   {
-    label: "red R-B: pre-UP 7600ms >= 7500ms boundary",
+    label: "red R-B: pre-UP 12100ms >= 12000ms boundary",
     exitCode: 2,
     verdict: "red",
     fixtures: () => ({
       runs: [makeRun({ databaseId: 1001 })],
       jobsById: { 1001: jobsJson(5001) },
       logsByJobId: {
-        5001: jobLog({ outcome: "ok", firstUpLine: 7600, total: 7900, env: ENV_A }),
+        5001: jobLog({ outcome: "ok", firstUpLine: 12100, total: 12400, env: ENV_A }),
       },
     }),
   },
