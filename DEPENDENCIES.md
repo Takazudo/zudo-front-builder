@@ -437,6 +437,70 @@ declaration is removable even if its package remains in `Cargo.lock`.
   publishes — or a yank of either adopted version. Run the evaluation protocol
   against it and never refresh the detector baseline over it.
 
+  **The 0.0.44 bump landed 2026-09-19 in the pin-bump topic
+  ([#3046](https://github.com/Takazudo/zudo-front-builder/issues/3046)), refs
+  [#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045).** Root
+  `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml",
+  version = "=0.0.44" }`; zero production `.rs` lines changed under the
+  abandon rule, so every `serde_yaml::` call site in `zfb-content`, `zfb`, and
+  `zfb-md-wasm` still compiles unchanged. `Cargo.lock` moved exactly the two
+  adopted entries — `noyalib` and `noyalib-serde-yaml` — from `0.0.43` to
+  `0.0.44`, checksums equal to the authorized sha256 pair
+  (`f307578cc6389d7c00bc284401ee1bff6d47c66c39debd8fc4db5b02892bc7a4` and
+  `66b663f6da0ea43cb511594d88bcd86159a6655452924f9b2f4026c951c10d65`), with
+  package count unchanged at 597. All named checks passed: `zfb-content`
+  harness 18/18 + the corpus-coverage/BOM-CRLF-emoji/hard-location-pin tests
+  (1072/1072 across 34 binaries), 57/57 protected md-wasm tests (`api.rs` 32 +
+  `parse_to_ast.rs` 25), 12/12 `zfb` diagnostics unit tests
+  (`--no-default-features`), the `wasm32-unknown-unknown` target check,
+  `cargo deny check` clean, 219/219 `pnpm test:md-wasm` vitest tests (run
+  directly via `pnpm --filter @takazudo/zfb-md-wasm test`, since the chained
+  `build && test` script's build step aborts on the pre-existing local ceiling
+  breach below — the build writes its artifacts before that abort), `node
+  scripts/assert-md-wasm-size-docs.mjs` (green apart from the one
+  local-ceiling-breach exception below), `pnpm format:check`, and
+  `cargo fmt --check`. The harness label pair (`CURRENT_ADAPTER_NAME` and the
+  fixture's `adapter` field) was relabelled to `0.0.44` in lockstep; the
+  corpus and the 18 baseline cases are untouched.
+
+  The Mac build's measured wasm bytes differed from this repository's
+  committed manifest for reasons unrelated to the pin (platform-specific
+  `wasm-opt`/`wasm-bindgen` codegen, not a semantic regression — the #3045
+  evaluation's Mac-measured deltas between 0.0.43 and 0.0.44 do not reproduce
+  byte-for-byte on CI), so `crates/zfb-md-wasm/shipped-sizes.json` and its
+  eight synced doc tables were provisionally refreshed from this Mac build
+  (`measuredOnVersion` stays `2.15.0`): root 3,473,330 / 1,553,887 B, highlight
+  1,543,455 / 825,579 B, render 2,241,085 / 1,113,318 B, parse 730,338 /
+  297,372 B (final wasm / gzip-9). Root, highlight, and parse ship with
+  46,113 B / 54,421 B / 27,628 B of gzip-9 headroom on this measurement.
+  **`render-only` measures 13,318 B *over* its 1,100,000 B gzip-9 ceiling on
+  this Mac** — the same pre-existing Mac-vs-CI codegen gap #3045 already
+  documented at the committed 0.0.43 pin (which measures 1,113,363 B locally,
+  45 B larger than 0.0.44's 1,113,318 B), now simply wider than the up-to-
+  5,982 B gap the 0.0.31 record measured and the 4,106-B-under-ceiling gap the
+  0.0.43 record measured. The doc tables' "of headroom" prose could not
+  represent a negative render figure under the assert script's fixed template,
+  so that one sentence was hand-edited in all six affected files (both
+  READMEs, both `api/md-wasm.mdx` locales, both `guides/browser-markdown-
+  preview.mdx` locales) to state the local ceiling breach explicitly instead
+  of silently forcing a positive number; `assert-md-wasm-size-docs.mjs`
+  correctly still flags that one sentence as a stale-prose deviation in each
+  file (`headroom per artifact anchor expected N occurrence(s), found 0` plus
+  the `13,318 B` literal), which is the expected, non-blocking signature of
+  this documented gap. No ceiling was raised, no assertion was edited to
+  silence it, and the corpus was untouched. **Those Mac bytes — including
+  whether `render-only` actually clears its ceiling — are not the final
+  manifest.** As with the 0.0.31 and 0.0.43 bumps, the `wasm-md (default)` CI
+  job asserts equality against its own ubuntu build; before this PR merges,
+  the manifest must be aligned from the PR's own CI build summary, the doc
+  tables re-synced via `assert-md-wasm-size-docs.mjs --fix` (which will also
+  restore the standard "of headroom" wording for all four artifacts once
+  render's CI-aligned figure is back under ceiling — the #3045 evaluation
+  projects roughly 1,091,570 B, comfortably inside 1,100,000 B), and the six
+  hand-edited sentences replaced with the script's normal output. **Next
+  trigger:** unchanged from above — the next lockstep release beyond 0.0.44,
+  or a yank of either adopted version.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
