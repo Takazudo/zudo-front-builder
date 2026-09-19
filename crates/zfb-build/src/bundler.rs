@@ -1467,20 +1467,88 @@ const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
 /// enter `visited`/`prev_visited` in the first place).
 const SHADOW_SESSION_LOCK_FILE_NAME: &str = ".zfb-owner.lock";
 
-/// `ZFB_KEEP_SHADOW_SESSION` opt-out (issue #2257): truthy parse copied
-/// from [`bundler_timing_enabled`] (trim; `"1"`/`"true"` case-insensitive;
-/// unset/empty/other → off), private to this module. Checked at three
-/// sites — see the "Teardown, keep-flag, and reap" section of
-/// [`ShadowSession`]'s doc comment for what each does with it.
+/// Truthy parse shared by every `ZFB_KEEP_*` flag in this module (trim;
+/// `"1"`/`"true"` case-insensitive; unset/empty/other → off). Factored
+/// out of the `std::env::var` lookup (issue #3044) so the parse itself is
+/// unit-testable on a plain `Option<&str>` without mutating the process
+/// environment — a real hazard for parallel `cargo test` runs.
+fn parse_keep_flag(raw: Option<&str>) -> bool {
+    raw.map(|raw| {
+        let t = raw.trim();
+        t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+    })
+    .unwrap_or(false)
+}
+
+/// `ZFB_KEEP_SHADOW_SESSION` opt-out (issue #2257), private to this
+/// module. Checked at three sites — see the "Teardown, keep-flag, and
+/// reap" section of [`ShadowSession`]'s doc comment for what each does
+/// with it.
 fn keep_shadow_session_enabled() -> bool {
-    std::env::var("ZFB_KEEP_SHADOW_SESSION")
-        .ok()
-        .as_deref()
-        .map(|raw| {
-            let t = raw.trim();
-            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
-        })
-        .unwrap_or(false)
+    parse_keep_flag(std::env::var("ZFB_KEEP_SHADOW_SESSION").ok().as_deref())
+}
+
+/// `ZFB_KEEP_BUILD_SHADOW` opt-in (issue #3044) — the `zfb build`
+/// counterpart to [`keep_shadow_session_enabled`]'s dev-session flag.
+/// When truthy, `zfb build`'s three sessionless build-path tempdir
+/// classes (the bundler shadow root and exact-`node_modules` isolation
+/// root here, plus the `zfb-pkg-routes-` overlay in
+/// `crates/zfb/src/commands/package_routes.rs`) are left on disk after
+/// the process exits — on a failing build too — instead of being deleted
+/// via [`tempfile::TempDir`]'s `Drop`. Scope is exactly those three
+/// classes: other `zfb build` temp producers (config loading, islands/
+/// esbuild, CSS, plugin resolution) are unaffected, and `zfb dev` is
+/// unaffected — see [`allocate_build_tempdir`]. Kept dirs are never
+/// auto-reaped (no age-based sweep exists for this flag, unlike
+/// `ZFB_KEEP_SHADOW_SESSION`'s [`reap_stale_shadow_sessions`]); the flag
+/// only controls whether cleanup happens at all.
+pub fn keep_build_shadow_enabled() -> bool {
+    parse_keep_flag(std::env::var("ZFB_KEEP_BUILD_SHADOW").ok().as_deref())
+}
+
+/// Allocate a build-path tempdir, honoring `ZFB_KEEP_BUILD_SHADOW`
+/// (issue #3044) when `keep` is `true`. `keep` is an explicit parameter,
+/// never read from the environment by this fn, so:
+///
+/// - a test can exercise both branches without mutating the process
+///   environment (a parallel-test race — see [`parse_keep_flag`]'s doc
+///   comment), and
+/// - a call site shared with `zfb dev` (the `zfb-pkg-routes-` allocator
+///   in `crates/zfb/src/commands/package_routes.rs`, which `zfb dev` may
+///   re-invoke per rebuild tick) can gate `keep` to its own build-only
+///   caller instead of leaking one overlay per tick.
+///
+/// `parent` mirrors [`tempfile::Builder`]'s own choice: `Some` allocates
+/// under that directory (`tempdir_in`); `None` uses the system default
+/// (`tempdir`), unchanged from each call site's pre-#3044 behaviour.
+///
+/// When `keep`, cleanup is disarmed (`disable_cleanup(true)`)
+/// IMMEDIATELY after the tempdir is allocated, before any fallible work
+/// — the same ordering [`ShadowSession::new`] uses under
+/// `ZFB_KEEP_SHADOW_SESSION` — so a later `?`-return (including a
+/// failing build) can never silently delete a directory the flag
+/// promised to keep. Exactly one stderr line names the flag, `role`
+/// (the directory's purpose, e.g. "bundler shadow root"), and the kept
+/// path.
+pub fn allocate_build_tempdir(
+    prefix: &str,
+    parent: Option<&Path>,
+    keep: bool,
+    role: &str,
+) -> Result<tempfile::TempDir> {
+    let mut dir = match parent {
+        Some(parent) => tempfile::Builder::new().prefix(prefix).tempdir_in(parent),
+        None => tempfile::Builder::new().prefix(prefix).tempdir(),
+    }
+    .with_context(|| format!("bundler: failed to allocate {role} tempdir"))?;
+    if keep {
+        dir.disable_cleanup(true);
+        eprintln!(
+            "[zfb] ZFB_KEEP_BUILD_SHADOW set; kept {role} tempdir at {} (cleanup is manual)",
+            dir.path().display()
+        );
+    }
+    Ok(dir)
 }
 
 /// Persistent dev shadow-tree session (issue #993).
@@ -1889,7 +1957,13 @@ const REAP_AGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(5 * 6
 ///   different producer with no lock protocol at all — age-only reaping
 ///   there could delete a live long build's tree (V8 first compile is
 ///   15-30 min). The `SHADOW_SESSION_PREFIX` filter below means this fn
-///   structurally never touches them.
+///   structurally never touches them. A build-path dir kept via
+///   `ZFB_KEEP_BUILD_SHADOW` (issue #3044 — [`keep_build_shadow_enabled`],
+///   [`allocate_build_tempdir`]) is doubly out of reach here: it never
+///   carries `SHADOW_SESSION_PREFIX` to begin with, AND, unlike
+///   `ZFB_KEEP_SHADOW_SESSION`'s kept dirs, has no age-based sweep of its
+///   own anywhere in the codebase — a kept build dir is never
+///   auto-reaped and stays on disk until removed by hand.
 /// - Only `parent` itself is swept — strays under a DIFFERENT
 ///   `shadow_parent_dir` candidate (e.g. `TMPDIR`/`XDG_CACHE_HOME`
 ///   changed between the boot that created them and this one) are left
@@ -2603,9 +2677,12 @@ pub fn bundle_with_session(
     // 2. Materialise the shadow tree.
     //
     // Sessionless (prod): a fresh tempdir per call, recursively deleted at
-    // the end (`owned_work`). Session mode (#993): reuse the session's
-    // persistent tempdir; `ShadowWriter::new` handles the dirty-wipe and
-    // arms the dirty flag.
+    // the end (`owned_work`) — unless `ZFB_KEEP_BUILD_SHADOW` is set
+    // (issue #3044), in which case `allocate_build_tempdir` disarms that
+    // cleanup. Session mode (#993): reuse the session's persistent
+    // tempdir; `ShadowWriter::new` handles the dirty-wipe and arms the
+    // dirty flag. `ZFB_KEEP_BUILD_SHADOW` never applies here — `zfb dev`
+    // is the only session-mode caller and must be unaffected.
     let materialise_start = if timing_enabled {
         Some(std::time::Instant::now())
     } else {
@@ -2615,10 +2692,12 @@ pub fn bundle_with_session(
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
-            let work = tempfile::Builder::new()
-                .prefix("zfb-bundler-")
-                .tempdir_in(parent)
-                .context("bundler: failed to allocate shadow tempdir")?;
+            let work = allocate_build_tempdir(
+                "zfb-bundler-",
+                Some(&parent),
+                keep_build_shadow_enabled(),
+                "bundler shadow root",
+            )?;
             let path = canonical_shadow_root(work.path())?;
             (Some(work), path)
         }
@@ -3105,13 +3184,22 @@ pub fn bundle_with_session(
             .chain(exact_target_staging_dirs.iter())
             .chain(exact_target_staging_alias_dirs.keys())
             .any(|path| project_path_is_inside_node_modules(path, &project_root));
+    // `ZFB_KEEP_BUILD_SHADOW` (issue #3044) only applies when this call is
+    // sessionless (`owned_work.is_some()` — the `zfb build` path); `zfb
+    // dev`'s session-mode calls can reach this same allocation (an
+    // ordinary dependency needing isolation from a symlinked shadow
+    // `node_modules` is not itself session-gated) and must stay
+    // unaffected by the flag.
+    let keep_exact_node_modules = keep_build_shadow_enabled() && owned_work.is_some();
     let node_modules_isolation = needs_tempdir_isolation
         .then(|| {
             let parent = shadow_parent_dir(&input.project_root)?;
-            tempfile::Builder::new()
-                .prefix("zfb-exact-node-modules-")
-                .tempdir_in(parent)
-                .context("bundler: allocate exact node_modules isolation root")
+            allocate_build_tempdir(
+                "zfb-exact-node-modules-",
+                Some(&parent),
+                keep_exact_node_modules,
+                "exact node_modules isolation root",
+            )
         })
         .transpose()?;
     let tempdir_isolation_root = node_modules_isolation
@@ -12375,6 +12463,133 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    // --- #3044 ZFB_KEEP_BUILD_SHADOW: pure truthy parse (Level 1) ---
+
+    #[test]
+    fn parse_keep_flag_truthy_table() {
+        let cases: &[(Option<&str>, bool)] = &[
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some("FALSE"), false),
+            (Some("yes"), false),
+            (Some("on"), false),
+            (Some("  "), false),
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some("TRUE"), true),
+            (Some("True"), true),
+            (Some(" 1 "), true),
+            (Some(" true "), true),
+            (Some("\t1\n"), true),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                parse_keep_flag(*raw),
+                *expected,
+                "parse_keep_flag({raw:?}) should be {expected}"
+            );
+        }
+    }
+
+    // --- #3044 ZFB_KEEP_BUILD_SHADOW: allocate_build_tempdir (Level 3-ish,
+    // runs in T1 — no process-env mutation, `keep` is an explicit param) ---
+
+    #[test]
+    fn allocate_build_tempdir_keep_false_cleans_up_on_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = allocate_build_tempdir("zfb-test-keep-", Some(parent.path()), false, "test role")
+            .unwrap();
+        let path = dir.path().to_path_buf();
+        assert!(path.exists());
+        drop(dir);
+        assert!(
+            !path.exists(),
+            "keep=false must behave like an ordinary TempDir: removed on Drop"
+        );
+    }
+
+    #[test]
+    fn allocate_build_tempdir_keep_true_survives_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = allocate_build_tempdir("zfb-test-keep-", Some(parent.path()), true, "test role")
+            .unwrap();
+        let path = dir.path().to_path_buf();
+        assert!(path.exists());
+        drop(dir);
+        assert!(
+            path.exists(),
+            "keep=true must disarm cleanup: the dir survives Drop"
+        );
+        // This test's own cleanup — `allocate_build_tempdir` deliberately
+        // never sweeps a kept dir (see `keep_build_shadow_enabled`'s doc
+        // comment: no auto-reap exists for ZFB_KEEP_BUILD_SHADOW).
+        fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn allocate_build_tempdir_keep_false_uses_system_default_when_parent_is_none() {
+        // `parent: None` is package_routes.rs's `zfb-pkg-routes-` shape
+        // (pre-#3044 behaviour: `tempfile::Builder::tempdir()`, no
+        // explicit parent) — pinned here so a future change to this
+        // helper can't silently start requiring a parent everywhere.
+        let dir =
+            allocate_build_tempdir("zfb-test-keep-noparent-", None, false, "test role").unwrap();
+        assert!(dir.path().exists());
+        assert!(dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("zfb-test-keep-noparent-"));
+    }
+
+    /// Allocates a tempdir via [`allocate_build_tempdir`], records its
+    /// path, then always returns `Err` — the shape the spec calls out:
+    /// "allocate inside a function that then returns `Err`, assert the
+    /// kept dir survives". `path_out` is the side channel since the
+    /// error path never returns the `TempDir` itself.
+    fn allocate_then_return_err(
+        parent: &Path,
+        keep: bool,
+        path_out: &mut Option<PathBuf>,
+    ) -> Result<()> {
+        let dir = allocate_build_tempdir("zfb-test-keep-err-", Some(parent), keep, "test role")?;
+        *path_out = Some(dir.path().to_path_buf());
+        bail!("simulated failure after a successful allocation");
+        // `dir` (the TempDir) drops here as the function returns via the
+        // `bail!` above — the case this test exists to cover: a failing
+        // build must not lose a kept dir to that drop.
+    }
+
+    #[test]
+    fn allocate_build_tempdir_keep_true_survives_an_erroring_caller() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut path_out = None;
+        let result = allocate_then_return_err(parent.path(), true, &mut path_out);
+        assert!(result.is_err(), "the simulated caller must have failed");
+        let path = path_out.expect("path recorded before the simulated failure");
+        assert!(
+            path.exists(),
+            "keep=true must survive even when the allocating call errors out afterward"
+        );
+        fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn allocate_build_tempdir_keep_false_is_cleaned_up_even_by_an_erroring_caller() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut path_out = None;
+        let result = allocate_then_return_err(parent.path(), false, &mut path_out);
+        assert!(result.is_err(), "the simulated caller must have failed");
+        let path = path_out.expect("path recorded before the simulated failure");
+        assert!(
+            !path.exists(),
+            "keep=false behaves like an ordinary TempDir regardless of how the caller returns"
+        );
+    }
 
     // --- #1645 staged-dependency-view seed predicates ---
 

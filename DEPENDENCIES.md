@@ -330,6 +330,190 @@ declaration is removable even if its package remains in `Cargo.lock`.
   from above — the next lockstep release beyond 0.0.43, or a yank of either
   adopted version.
 
+  **Re-evaluated 2026-09-19 at `0.0.44` in
+  [#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045) —
+  MIGRATE.** The weekly lane's `CANDIDATE_DRIFT` was reproduced locally at
+  `2026-09-18T23:33:10.386Z` (rc 10, `errors: []`): on `noyalib`
+  `version-published 0.0.44`, `version-published 0.0.45`, `tag-added v0.0.44`,
+  `tag-added v0.0.45`, `release-added v0.0.44`, `release-added v0.0.45`, plus
+  informational `branch-added feat/examples-autodiscovery`, `branch-added
+  fix/kani-lint-conflict` and `branch-advanced main`
+  (`a939aae03cb142f09ea5b9476e70218065e8ca79` →
+  `bb63ec542e72a02a278308a93861af4fed63ea46`); on `noyalib-serde-yaml`
+  `version-published 0.0.44`, `tag-added v0.0.44`, `release-added v0.0.44`,
+  plus informational `branch-advanced main`
+  (`02bc46287a04e2e66bed90c4836b6afb8af359d0` →
+  `77d339e46532324482d68cf534a71709e0470fd6`), `branch-added
+  release/v0.0.44` (`707fd753991513753cfc96da97c9d626aeb0f8ab`),
+  `branch-added release/v0.0.45` (`8a6df29cadca2c4ae61981ca7114bfdc2d5f9702`),
+  `branch-added dependabot/github_actions/github-actions-275b0fd278`,
+  `branch-deleted ci/regression-gates`, and `branch-deleted` on the twelve
+  spent release branches `feat/v0.0.32` through `feat/v0.0.43`. The
+  non-adopted candidates carried informational deltas only (`saphyr`
+  `branch-diverged renovate/ordered-float-5.x-lockfile`; `serde-saphyr`
+  `version-published 1.3.0` and its tag/release), which trigger no
+  evaluation.
+
+  **Passed over: `noyalib 0.0.45`** (published 2026-09-18T18:05:28Z, sha256
+  `10912f3af95a00e49a000323539768b9209a5948d76389fc2795c09f4fa6ed7d`,
+  un-yanked). `noyalib-serde-yaml 0.0.45` does not exist on crates.io — only
+  an upstream `release/v0.0.45` branch does — so 0.0.45 is not a lockstep
+  pair and the newest-lockstep rule selects `0.0.44`. The authorized sha256
+  pair for that release is
+  `f307578cc6389d7c00bc284401ee1bff6d47c66c39debd8fc4db5b02892bc7a4`
+  (`noyalib 0.0.44`, published 2026-09-17T00:34:55Z) and
+  `66b663f6da0ea43cb511594d88bcd86159a6655452924f9b2f4026c951c10d65`
+  (`noyalib-serde-yaml 0.0.44`, published 2026-09-17T01:04:26Z); the alias's
+  own manifest pins exact `noyalib =0.0.44`. Re-checked immediately before
+  recording this verdict at `2026-09-18T23:56:15Z`: both versions still
+  published and un-yanked, both checksums unchanged, the alias pin still
+  exact, and `noyalib-serde-yaml 0.0.45` still absent.
+
+  **P1 — differential harness.** Under a temporary local pin to `=0.0.44`,
+  `cargo test -p zfb-content` passed 1072/1072 across 34 binaries, including
+  the immutable-baseline match **18/18**
+  (`current_serde_yaml_matches_immutable_baseline`), the category coverage
+  pin, the BOM/CRLF/emoji document contract, and the hard location pins. The
+  corpus, the 18 baseline observations, and every protected assertion were
+  left unedited, and the harness label pair (`CURRENT_ADAPTER_NAME` and the
+  fixture's `adapter` field) was deliberately left reading `0.0.43` — the
+  relabel belongs to the pin-bump topic, not to this evaluation.
+
+  **Phase 2.** Every named check passed: `cargo check -p zfb-md-wasm --target
+  wasm32-unknown-unknown` OK; 57/57 protected md-wasm tests (`api.rs` 32 +
+  `parse_to_ast.rs` 25, both files in full); 12/12 `zfb` diagnostics unit
+  tests under `--no-default-features`; `cargo deny check` clean with no new
+  exception (`advisories ok, bans ok, licenses ok, sources ok`); 219/219
+  `pnpm test:md-wasm` vitest tests across 12 files — its build step's
+  `render-only` ceiling check is red on this host at **both** pins, which the
+  finding below separates from the pin; `node
+  scripts/assert-md-wasm-size-docs.mjs` OK; `pnpm format:check` green. The
+  lock delta is the two adopted entries only — no transitive dependency
+  entered or left (`noyalib`'s own dependency list is byte-identical) and the
+  package set is unchanged at 597, name-for-name. No license-category change:
+  both crates stay `MIT OR Apache-2.0` at `rust-version 1.86.0`, edition
+  2024.
+
+  **Measured wasm bytes (local, `Darwin arm64`).** Unlike the 0.0.43 step,
+  this bump is effectively a size no-op — gzip-9 moves by at most 163 B and
+  mostly downward:
+
+  | artifact | `finalWasm` 0.0.43 → 0.0.44 | Δ | `gzip9` 0.0.43 → 0.0.44 | Δ |
+  | --- | --- | --- | --- | --- |
+  | root | 3,473,319 → 3,473,330 | +11 | 1,553,889 → 1,553,887 | −2 |
+  | highlight-only | 1,543,239 → 1,543,455 | +216 | 825,575 → 825,579 | +4 |
+  | render-only | 2,241,373 → 2,241,085 | −288 | 1,113,363 → 1,113,318 | −45 |
+  | parse-only | 730,672 → 730,338 | −334 | 297,535 → 297,372 | −163 |
+
+  Both glue columns (`glue`, `glueGzip9`) are byte-identical at both pins. The
+  pin bump must still refresh the size manifest from its own CI build summary
+  rather than from these numbers, for the reason the 0.0.31 and 0.0.43 records
+  already give.
+
+  **Finding, not a blocker: the local md-wasm build gate is red at HEAD on
+  this Mac, independent of the pin.** `pnpm test:md-wasm` fails its
+  `render-only gzip-9 ... exceeds ceiling 1100000` check at `0.0.44`
+  (1,113,318 B) — and reproduces at the **committed `0.0.43` pin**
+  (1,113,363 B, 45 B *larger*), so it is not a `0.0.44` regression. It is the
+  documented Mac-versus-CI codegen gap, wider here than the up-to-5,982 B the
+  0.0.31 record measured: local render-only gzip-9 runs 21,748 B above the
+  committed CI manifest's 1,091,615 B, and local parse-only 13,270 B above its
+  284,265 B. No ceiling was raised and no assertion was edited to get past it;
+  the 219 vitest tests above were run against the artifacts that build writes
+  before its summary aborts. Applying this evaluation's −45 B render-only
+  delta to CI's committed number leaves ~1,091,570 B, still inside the
+  1,100,000 B ceiling — `render-only` remains the artifact nearest its budget
+  and the CI build summary is the only authority on whether it clears.
+
+  **Toolchain:** rustc 1.93.1 (01f6ddf75 2026-02-11), cargo 1.93.1, wasm-bindgen
+  0.2.121, Node v24.13.0, pnpm 11.3.0, `Darwin arm64`.
+
+  **Verdict: MIGRATE to the lockstep `noyalib 0.0.44` /
+  `noyalib-serde-yaml 0.0.44` pair.** The pin bump is the next topic's job;
+  `Cargo.toml` and `Cargo.lock` are unchanged by this evaluation. **Next
+  trigger:** the next `version-published`, `tag-added`, or `release-added`
+  delta on a lockstep `noyalib` + `noyalib-serde-yaml` release beyond 0.0.44 —
+  `noyalib 0.0.45` already qualifies the moment `noyalib-serde-yaml 0.0.45`
+  publishes — or a yank of either adopted version. Run the evaluation protocol
+  against it and never refresh the detector baseline over it.
+
+  **The 0.0.44 bump landed 2026-09-19 in the pin-bump topic
+  ([#3046](https://github.com/Takazudo/zudo-front-builder/issues/3046)), refs
+  [#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045).** Root
+  `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml",
+  version = "=0.0.44" }`; zero production `.rs` lines changed under the
+  abandon rule, so every `serde_yaml::` call site in `zfb-content`, `zfb`, and
+  `zfb-md-wasm` still compiles unchanged. `Cargo.lock` moved exactly the two
+  adopted entries — `noyalib` and `noyalib-serde-yaml` — from `0.0.43` to
+  `0.0.44`, checksums equal to the authorized sha256 pair
+  (`f307578cc6389d7c00bc284401ee1bff6d47c66c39debd8fc4db5b02892bc7a4` and
+  `66b663f6da0ea43cb511594d88bcd86159a6655452924f9b2f4026c951c10d65`), with
+  package count unchanged at 597. All named checks passed: `zfb-content`
+  harness 18/18 + the corpus-coverage/BOM-CRLF-emoji/hard-location-pin tests
+  (1072/1072 across 34 binaries), 57/57 protected md-wasm tests (`api.rs` 32 +
+  `parse_to_ast.rs` 25), 12/12 `zfb` diagnostics unit tests
+  (`--no-default-features`), the `wasm32-unknown-unknown` target check,
+  `cargo deny check` clean, 219/219 `pnpm test:md-wasm` vitest tests (run
+  directly via `pnpm --filter @takazudo/zfb-md-wasm test`, since the chained
+  `build && test` script's build step aborts on the pre-existing local ceiling
+  breach below — the build writes its artifacts before that abort), `node
+  scripts/assert-md-wasm-size-docs.mjs` (green apart from the one
+  local-ceiling-breach exception below), `pnpm format:check`, and
+  `cargo fmt --check`. The harness label pair (`CURRENT_ADAPTER_NAME` and the
+  fixture's `adapter` field) was relabelled to `0.0.44` in lockstep; the
+  corpus and the 18 baseline cases are untouched.
+
+  The Mac build's measured wasm bytes differed from this repository's
+  committed manifest for reasons unrelated to the pin (platform-specific
+  `wasm-opt`/`wasm-bindgen` codegen, not a semantic regression — the #3045
+  evaluation's Mac-measured deltas between 0.0.43 and 0.0.44 do not reproduce
+  byte-for-byte on CI). Measured locally on `Darwin arm64`: root 3,473,330 /
+  1,553,887 B, highlight 1,543,455 / 825,579 B, render 2,241,085 /
+  1,113,318 B, parse 730,338 / 297,372 B (final wasm / gzip-9) — and
+  **`render-only` measures 13,318 B *over* its 1,100,000 B gzip-9 ceiling on
+  this Mac**, the same pre-existing Mac-vs-CI codegen gap #3045 already
+  documented at the committed 0.0.43 pin (which measures 1,113,363 B locally,
+  45 B larger than 0.0.44's 1,113,318 B), now simply wider than the up-to-
+  5,982 B gap the 0.0.31 record measured and the 4,106-B-under-ceiling gap the
+  0.0.43 record measured.
+
+  **Those Mac bytes are recorded here only, and deliberately NOT written into
+  `crates/zfb-md-wasm/shipped-sizes.json`.** An earlier revision of this topic
+  did refresh the manifest and its eight synced doc tables from this Mac build
+  and hand-edited the six "of headroom" sentences to narrate the local ceiling
+  breach; that was reverted, because the manifest is the CI oracle, not a
+  local-measurement scratchpad. Two concrete consequences made it
+  unshippable: `node scripts/assert-md-wasm-size-docs.mjs` — a step in the
+  **required** `health` job, not an optional lane — exited 1 on the
+  hand-edited prose, and the `wasm-md (default)` job asserts manifest equality
+  against its own ubuntu build with zero tolerance on the two `finalWasm`
+  columns, so Mac bytes are a guaranteed `manifest-mismatch`. No ceiling was
+  raised, no assertion was edited to silence anything, and the corpus was
+  untouched.
+
+  **Reconciled from CI (PR #3048, run 35410352499).** The `wasm-md (default)`
+  job's own ubuntu build settled the numbers, and the manifest plus its eight
+  synced doc tables were realigned from that summary (doc tables re-synced via
+  `assert-md-wasm-size-docs.mjs --fix`). The 0.0.44 pin does move the shipped
+  bytes, slightly and in both directions:
+
+  | Artifact | final wasm | Δ | gzip-9 | Δ |
+  | --- | --- | ---: | --- | ---: |
+  | root (full) | 3,400,172 → 3,399,954 | −218 | 1,516,626 → 1,516,383 | −243 |
+  | highlight-only | 1,538,664 → 1,539,334 | +670 | 817,835 → 817,951 | +116 |
+  | render-only | 2,196,673 → 2,196,095 | −578 | 1,091,615 → 1,091,678 | +63 |
+  | parse-only | 701,306 → 700,364 | −942 | 284,265 → 283,991 | −274 |
+
+  Every artifact stays under its ceiling on CI, `render-only` most narrowly at
+  1,091,678 B against 1,100,000 B. `measuredOnVersion` stays `2.15.0`,
+  matching the precedent reconciliation in #2989 / PR #2992 — it labels the
+  measurement epoch the doc tables cite, and is deliberately not asserted
+  against the package version. The local Mac figures above therefore stand as
+  recorded evidence of the host gap (~21.7 KB on `render-only`), not as
+  shipped numbers; that widened gap is tracked separately in #3049.
+  **Next trigger:** unchanged from above — the next lockstep release beyond
+  0.0.44, or a yank of either adopted version.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
@@ -634,6 +818,67 @@ declaration is removable even if its package remains in `Cargo.lock`.
     `noyalib` pull requests at check time were ordinary CST `fix/`/`feat/`
     branches. That evidence opens a new evaluation topic; it is still not
     grounds to refresh this baseline again.
+
+    **Superseded 2026-09-19 by
+    [#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045).** The
+    weekly lane paged on the adopted pair's `0.0.44` release (and on
+    `noyalib 0.0.45`, whose alias half is unpublished); `0.0.44` was evaluated
+    with verdict MIGRATE, so the standing next trigger now reads: the next
+    `version-published`, `tag-added`, or `release-added` delta for either
+    crate **beyond `0.0.44`** — including `noyalib 0.0.45` once
+    `noyalib-serde-yaml 0.0.45` publishes — a yank of either adopted version,
+    or any newly observed-open `noyalib` release PR. `pendingReleasePr` stayed
+    `null` through #3045. That evidence opens a new evaluation topic; it is
+    still not grounds to refresh this baseline again.
+
+    **Bumped to `0.0.44` on 2026-09-17** in the pin-bump topic
+    ([#3046](https://github.com/Takazudo/zudo-front-builder/issues/3046)),
+    following the 18/18 MIGRATE verdict of the released differential
+    evaluation ([#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045));
+    see the `serde_yaml 0.9.34+deprecated` summary bullet above for the
+    landed diff, checksums, and lock delta.
+
+    The confirm topic
+    ([#3047](https://github.com/Takazudo/zudo-front-builder/issues/3047))
+    then performed the single refresh for this round. A live check at
+    `2026-09-19T00:35:01.285Z` (config still pointing `pendingReleasePr` at
+    `null`) returned rc 10 with no errors and, versus the
+    `2026-09-13T21:40:41.816Z` baseline, exactly the following triage-severity
+    deltas: for `noyalib` — `version-published 0.0.44`, `version-published
+    0.0.45`, `tag-added v0.0.44`, `tag-added v0.0.45`, `release-added
+    v0.0.44`, `release-added v0.0.45`; for `noyalib-serde-yaml` —
+    `version-published 0.0.44`, `tag-added v0.0.44`, `release-added v0.0.44`.
+    Both crates also reported ordinary branch churn (`branch-added`,
+    `branch-deleted`, `branch-advanced`), including `noyalib-serde-yaml`
+    gaining a `release/v0.0.45` branch with no matching `version-published` —
+    branch movement is informational, not a trigger, so this is not the
+    lockstep pair appearing. Every triage-severity delta was already
+    evaluated: the `0.0.44` triple on both crates is the MIGRATE verdict
+    #3045 recorded and #3046 landed, and the bare `noyalib 0.0.45` triple is
+    the already-documented, deliberately-deferred half-pair from the
+    paragraph above (its alias, `noyalib-serde-yaml 0.0.45`, still has no
+    `version-published` delta, so the pair is still incomplete and this
+    round folds in no new unevaluated release). The five candidate-role
+    crates reported only informational drift (new versions/tags/branches),
+    none of it on the adopted pair. `gh api
+    "repos/sebastienrousseau/noyalib/pulls?state=open"` returned one open
+    pull request, [PR 445](https://github.com/sebastienrousseau/noyalib/pull/445)
+    (`feat/examples-autodiscovery`, an examples-discovery refactor, not a
+    release PR), so `CANDIDATE_CONFIG.noyalib.pendingReleasePr` correctly
+    remains `null` and needed no edit. The observed snapshot (`checkedAt`
+    `2026-09-19T00:35:01.285Z`) was installed as the new
+    `scripts/yaml-candidate-baseline.json` via the write-then-copy recipe. A
+    post-install re-run at `2026-09-19T00:35:25.788Z` returned exit 0,
+    `no-drift`, `errors: []` on every candidate including both adopted
+    crates. **This is the single refresh of this triage; further upstream
+    churn after it gets no second refresh** — the next `version-published`,
+    `tag-added`, or `release-added` delta for either crate **beyond
+    `0.0.44`** (for `noyalib` this means anything past the now-baselined
+    `0.0.45`), a yank of either adopted version, or any newly observed-open
+    `noyalib` release PR is fresh trigger-kind evidence for a new evaluation
+    topic — in particular, `noyalib-serde-yaml` publishing `0.0.45` would
+    complete the lockstep pair and open that topic — not grounds to refresh
+    this baseline again.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),

@@ -245,3 +245,18 @@ export default async function Handler() {
 ```
 
 `zfb check` flags this shape with a non-zero exit; `zfb dev` and `zfb build` warn about it without failing the build. If you landed here from one of those warnings rather than a live 405, the cause and fix above are the same explanation from the other side.
+
+## I need to inspect zfb's shadow build directory
+
+**Symptom:** `zfb build` or `zfb dev` fails, or behaves unexpectedly, in a way that points at what zfb generates before handing off to esbuild — a generated injected-route shim, the resolved `node_modules` layout, a synthetic `tsconfig.json`. By the time the process exits (even on a failing build), the temporary directory that held all of that is already gone.
+
+**Cause:** zfb builds by materialising a shadow copy of the relevant tree into a `tempfile`-managed directory and deleting it once the process exits — normal operation, and the reason you can't just find it afterward under `/tmp`.
+
+**Fix:** set one of two opt-in environment variables to keep the shadow tree on disk instead of deleting it. Each covers a different set of tempdirs and neither auto-reaps the dir it keeps — clean it up by hand once you're done inspecting it.
+
+| Variable | Scope | What it keeps |
+|---|---|---|
+| `ZFB_KEEP_BUILD_SHADOW=1` | `zfb build` only | The bundler's shadow root, its exact-`node_modules` isolation root, and the package-routes overlay (when the project registers package routes). Survives a failing build too. Each kept path is printed once to stderr. See [`zfb build`: Environment variables](../api/cli.mdx#zfb-build). |
+| `ZFB_KEEP_SHADOW_SESSION=1` | `zfb dev` only | The dev server's one persistent shadow session tempdir for the whole process. A later `zfb dev` boot without the flag reaps a previously-kept dir once it passes an internal age floor — keep the flag exported for the whole debugging session, not just the boot that created the dir. See [`zfb dev`: Environment variables](../api/cli.mdx#zfb-dev). |
+
+Both are narrowly scoped: neither covers every `zfb build`/`zfb dev` temp producer (config loading, islands/esbuild, CSS, plugin resolution are outside both), and setting one never affects the other subcommand — `ZFB_KEEP_BUILD_SHADOW` leaves `zfb dev` untouched, and `ZFB_KEEP_SHADOW_SESSION` leaves `zfb build` untouched.
