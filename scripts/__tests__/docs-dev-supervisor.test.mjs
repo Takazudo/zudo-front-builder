@@ -69,10 +69,9 @@ function isExpectedHiddenTimeout(error) {
   );
 }
 
-// Cleanup re-collects the descendant tree this many times. A mid-tier process can
-// exit and reparent its descendants between passes, so one pass is not enough;
-// more than a handful is gold-plating a teardown path that the product itself
-// ships as a single pass.
+// Cleanup signals the private group and re-collects known descendant trees this
+// many times. The group reaches children whose ancestry disappeared; the tree
+// passes retain the fallback for descendants already observed by the test.
 const CLEANUP_TREE_PASSES = 3;
 
 // How long the pre-UP regression polls for the reaped tree to actually disappear.
@@ -467,6 +466,10 @@ function spawnSupervisor(directory, scripts) {
   const diagnostics = createDiagnostics(captureSpawnInput(directory, scripts, env));
   const child = spawn(process.execPath, [RUN_PARALLEL_PATH, ...scripts], {
     cwd: directory,
+    // A private POSIX process group keeps descendants addressable even when a
+    // parent exits between cleanup's process-table snapshot and its signals.
+    // stdin is ignored, so this fixture does not need terminal job control.
+    detached: process.platform !== "win32",
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -485,7 +488,8 @@ function spawnSupervisor(directory, scripts) {
       resolvePromise({ code, signal });
     });
   });
-  return { child, close, diagnostics, stderr, stdout };
+  const processGroupId = process.platform === "win32" ? undefined : child.pid;
+  return { child, close, diagnostics, processGroupId, stderr, stdout };
 }
 
 async function waitForExit(supervisor, timeoutMs = PROCESS_TIMEOUT_MS) {
@@ -521,10 +525,11 @@ function processIsAlive(pid) {
 }
 
 /**
- * Poll every pid until `process.kill(pid, 0)` reports ESRCH, and return whatever
- * is still alive at the deadline. Polled rather than sampled once: killing a tree
- * bottom-up leaves each intermediate process a zombie until its own parent dies
- * and init reaps it, and a zombie still answers signal 0.
+ * Poll every pid (or negative process-group id) until `process.kill(pid, 0)`
+ * reports ESRCH, and return whatever is still alive at the deadline. Polled
+ * rather than sampled once: killing a tree bottom-up leaves each intermediate
+ * process a zombie until its own parent dies and init reaps it, and a zombie
+ * still answers signal 0.
  */
 async function waitForAllGone(pids, timeoutMs = REAP_CONFIRM_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
@@ -554,6 +559,21 @@ async function waitUntil(supervisor, label, predicate, timeoutMs = PROCESS_TIMEO
   }
   diagnostics.mark(label);
   return true;
+}
+
+async function waitForHiddenLeafPid(supervisor, fixture) {
+  let leafPid;
+  await waitUntil(supervisor, "hidden-pid-file", () => {
+    try {
+      leafPid = Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
+      // Creation and writing are not atomic. In particular, Number("") is 0,
+      // which process.kill would interpret as the test runner's process group.
+      return Number.isInteger(leafPid) && leafPid > 1;
+    } catch {
+      return false;
+    }
+  });
+  return leafPid;
 }
 
 function watchForMarker(diagnostics, markerPath) {
@@ -688,7 +708,7 @@ function killTree(rootPids, signal, seen) {
 }
 
 /**
- * Kill the supervisor AND every descendant it still owns.
+ * Kill the supervisor's private group AND every known descendant tree.
  *
  * `childPids` alone is not enough: it is only ever populated by parsing an `UP`
  * line, so a wait that times out BEFORE `UP` leaves it empty and the
@@ -696,13 +716,18 @@ function killTree(rootPids, signal, seen) {
  * the inherited stdout/stderr pipe open, so the supervisor's `close` never fires
  * and the `waitForExit` below always paid its full second.
  *
- * Bounded re-collect rather than one pass: a mid-tier process can exit and
- * reparent its descendants between passes, which would hide them from a tree
- * walked only once. Pids already seen are re-used as roots so a reparented
- * descendant is still reachable after its ancestor is gone.
+ * A process-table snapshot alone also misses children spawned between the
+ * snapshot and their parent's death (#3070). Repeating that walk cannot find an
+ * unseen child after it is reparented. Every fixture now has its own group, so a
+ * group signal reaches those children even after the supervisor is reaped.
+ * Known pids are still re-used as roots for bounded descendant cleanup.
  */
 async function terminateForCleanup(supervisor, childPids) {
   const seen = new Set();
+  const groupId = supervisor.processGroupId;
+  // Only spawnSupervisor's private group is eligible. Never signal group 0
+  // (our own group), init, or a group inferred from an arbitrary process table.
+  const ownsGroup = Number.isInteger(groupId) && groupId > 1 && groupId !== process.pid;
   for (let pass = 0; pass < CLEANUP_TREE_PASSES; pass += 1) {
     const roots = [];
     // Only walk from the supervisor while it is still ours. Once Node has reaped
@@ -718,7 +743,20 @@ async function terminateForCleanup(supervisor, childPids) {
     for (const pid of new Set([...childPids, ...seen])) {
       if (processIsAlive(pid)) roots.push(pid);
     }
-    if (roots.length === 0) break;
+    const groupIsAlive = ownsGroup && processIsAlive(-groupId);
+    if (roots.length === 0 && !groupIsAlive) break;
+    if (groupIsAlive) {
+      try {
+        process.kill(-groupId, "SIGKILL");
+      } catch (error) {
+        // As with killTree, teardown must preserve the original error.
+        if (error.code !== "ESRCH") {
+          process.stderr.write(
+            `docs-dev-supervisor cleanup: could not signal group ${groupId}: ${error.code ?? error.message}\n`,
+          );
+        }
+      }
+    }
     killTree(roots, "SIGKILL", seen);
     if (pass + 1 < CLEANUP_TREE_PASSES) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, POLL_INTERVAL_MS));
@@ -854,25 +892,7 @@ describe("docs dev supervisor", () => {
         await withSupervisor(
           ["hidden"],
           async (supervisor, childPids, fixture) => {
-            // Wait for a *parseable* pid rather than for the file to exist: the
-            // leaf's write is not atomic, and an empty read would make this test
-            // flaky instead of failing on the thing it guards. `> 0` is not
-            // decoration -- `Number("")` is 0, not NaN, so an integer check alone
-            // accepts the created-but-not-yet-written file, and pid 0 would then
-            // be handed to `process.kill`, which reads it as "this process group".
-            const readLeafPid = () => {
-              try {
-                return Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
-              } catch {
-                return Number.NaN;
-              }
-            };
-            const leafPidIsReadable = () => {
-              const pid = readLeafPid();
-              return Number.isInteger(pid) && pid > 0;
-            };
-            await waitUntil(supervisor, "hidden-pid-file", leafPidIsReadable);
-            observed.leafPid = readLeafPid();
+            observed.leafPid = await waitForHiddenLeafPid(supervisor, fixture);
             observed.tree = collectTree(supervisor.child.pid);
             observed.childPidsAtFailure = [...childPids];
             // `hidden` never prints an UP line, so this wait is guaranteed to be
@@ -913,46 +933,78 @@ describe("docs dev supervisor", () => {
     // to keep reporting outcome=failed -- otherwise the fix here would just
     // move the false positive from "always failed" to "always
     // expected-failure", re-poisoning the exact field rule R-A reads.
-    it("reports outcome=failed, not expected-failure, for an unrelated throw in the hidden case", async () => {
-      const timelineLines = [];
-      const originalWrite = process.stderr.write.bind(process.stderr);
-      const originalEnv = process.env.ZFB_SUPERVISOR_TIMELINE;
-      process.env.ZFB_SUPERVISOR_TIMELINE = "1";
-      process.stderr.write = (chunk, ...rest) => {
-        const text = chunk.toString();
-        // Swallow ONLY the captured [supervisor-timeline] line -- it is a real
-        // outcome=failed line, and letting it through to the real stderr would
-        // leak the exact false positive #2904 exists to remove into CI logs
-        // once ZFB_SUPERVISOR_TIMELINE is on there. Anything else (e.g. a
-        // cleanup-path error report) still passes through so a genuine
-        // failure in this test remains debuggable.
-        if (text.startsWith("[supervisor-timeline]")) {
-          timelineLines.push(text.trim());
-          return true;
+    it.each(["immediate throw", "throw after supervisor exit"])(
+      "reports outcome=failed and reaps descendants for an unrelated hidden-case error (%s)",
+      async (scenario) => {
+        const timelineLines = [];
+        const observed = { supervisor: null, childPidsAtFailure: null, tree: [] };
+        const originalError = new Error("unrelated assertion failure, not the pre-UP timeout");
+        const originalWrite = process.stderr.write.bind(process.stderr);
+        const originalEnv = process.env.ZFB_SUPERVISOR_TIMELINE;
+        process.env.ZFB_SUPERVISOR_TIMELINE = "1";
+        process.stderr.write = (chunk, ...rest) => {
+          const text = chunk.toString();
+          // Swallow ONLY the captured [supervisor-timeline] line -- it is a real
+          // outcome=failed line, and letting it through to the real stderr would
+          // leak the exact false positive #2904 exists to remove into CI logs
+          // once ZFB_SUPERVISOR_TIMELINE is on there. Anything else (e.g. a
+          // cleanup-path error report) still passes through so a genuine
+          // failure in this test remains debuggable.
+          if (text.startsWith("[supervisor-timeline]")) {
+            timelineLines.push(text.trim());
+            return true;
+          }
+          return originalWrite(chunk, ...rest);
+        };
+
+        try {
+          await expect(
+            withSupervisor(
+              ["hidden"],
+              async (supervisor, childPids, fixture) => {
+                observed.supervisor = supervisor;
+                if (scenario === "throw after supervisor exit") {
+                  const leafPid = await waitForHiddenLeafPid(supervisor, fixture);
+                  observed.tree = collectTree(supervisor.child.pid);
+                  expect(observed.tree).toContain(leafPid);
+                  // Deterministically reproduce the state reached by #3070's
+                  // race: a hidden descendant is alive but its parent has been
+                  // reaped, so ancestry-based cleanup cannot discover it.
+                  expect(supervisor.child.kill("SIGKILL")).toBe(true);
+                  await waitUntil(
+                    supervisor,
+                    "supervisor-exited-before-cleanup",
+                    () => supervisor.child.signalCode === "SIGKILL",
+                  );
+                  expect(processIsAlive(leafPid)).toBe(true);
+                  expect(collectTree(supervisor.child.pid)).not.toContain(leafPid);
+                }
+                observed.childPidsAtFailure = [...childPids];
+                throw originalError;
+              },
+              { isExpectedFailure: isExpectedHiddenTimeout },
+            ),
+          ).rejects.toBe(originalError);
+        } finally {
+          process.stderr.write = originalWrite;
+          if (originalEnv === undefined) delete process.env.ZFB_SUPERVISOR_TIMELINE;
+          else process.env.ZFB_SUPERVISOR_TIMELINE = originalEnv;
         }
-        return originalWrite(chunk, ...rest);
-      };
 
-      try {
-        await expect(
-          withSupervisor(
-            ["hidden"],
-            async () => {
-              throw new Error("unrelated assertion failure, not the pre-UP timeout");
-            },
-            { isExpectedFailure: isExpectedHiddenTimeout },
-          ),
-        ).rejects.toThrow("unrelated assertion failure, not the pre-UP timeout");
-      } finally {
-        process.stderr.write = originalWrite;
-        if (originalEnv === undefined) delete process.env.ZFB_SUPERVISOR_TIMELINE;
-        else process.env.ZFB_SUPERVISOR_TIMELINE = originalEnv;
-      }
-
-      expect(timelineLines).toHaveLength(1);
-      expect(timelineLines[0]).toContain("case=hidden");
-      expect(timelineLines[0]).toContain("outcome=failed");
-      expect(timelineLines[0]).not.toContain("outcome=expected-failure");
-    });
+        expect(timelineLines).toHaveLength(1);
+        expect(timelineLines[0]).toContain("case=hidden");
+        expect(timelineLines[0]).toContain("outcome=failed");
+        expect(timelineLines[0]).not.toContain("outcome=expected-failure");
+        expect(observed.childPidsAtFailure).toEqual([]);
+        // The immediate throw must stay immediate: don't wait for a pid file or
+        // UP line before cleanup. A private group also exposes descendants that
+        // started after the last ancestry snapshot, even after reparenting.
+        const survivors = await waitForAllGone([
+          ...observed.tree,
+          -observed.supervisor.processGroupId,
+        ]);
+        expect(survivors).toEqual([]);
+      },
+    );
   });
 });
