@@ -746,6 +746,31 @@ export function validateAllowanceScopes(
   return findings;
 }
 
+// #3049/#3053: a Mac build of `render-only` produced a manifest value over its ceiling. Downstream
+// headroom math (`derivedValues`) goes negative in that state, the `[\d,]+` prose patterns stop
+// matching on re-validation, and the run fails with an anchor-count cascade that never names the
+// real cause. This preflight catches the actual problem — an invalid manifest — and reports it
+// alone; see the short-circuit in `validateMdWasmSizeDocs`/`fixMdWasmSizeDocs` below.
+export function validateManifestUnderCeilings(manifest, ceilings) {
+  const findings = [];
+  for (const artifact of ARTIFACTS) {
+    const measured = manifest.measured[artifact].gzip9;
+    const ceiling = ceilings[artifact];
+    if (measured > ceiling) {
+      const over = measured - ceiling;
+      findings.push(
+        finding(
+          "manifest-over-ceiling",
+          "crates/zfb-md-wasm/shipped-sizes.json",
+          `${artifact} measured gzip-9 is ${format(measured)} B, exceeding its ${format(ceiling)} B ceiling by ${format(over)} B; crates/zfb-md-wasm/shipped-sizes.json must hold CI-measured values — a local Mac build cannot be used to refresh it (see #3049)`,
+          { artifact, measured, ceiling, over },
+        ),
+      );
+    }
+  }
+  return findings;
+}
+
 export function validateCeilingTable(manifest, ceilings) {
   const findings = [];
   for (const key of [...ARTIFACTS, "tarball"]) {
@@ -763,6 +788,8 @@ export function validateCeilingTable(manifest, ceilings) {
 }
 
 export function validateMdWasmSizeDocs({ files, manifest, ceilings }) {
+  const ceilingFindings = validateManifestUnderCeilings(manifest, ceilings);
+  if (ceilingFindings.length > 0) return ceilingFindings;
   const findings = [...validateCeilingTable(manifest, ceilings)];
   DOC_FILES.forEach((file, index) => {
     const content = files[file];
@@ -807,6 +834,7 @@ export function validateMdWasmSizeDocs({ files, manifest, ceilings }) {
 }
 
 export function fixMdWasmSizeDocs({ files, manifest, ceilings }) {
+  if (validateManifestUnderCeilings(manifest, ceilings).length > 0) return files;
   const fixedFiles = { ...files };
   DOC_FILES.forEach((file, index) => {
     const content = fixedFiles[file];

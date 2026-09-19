@@ -12,6 +12,7 @@ import {
   validateHighlightRootPair,
   fixMdWasmSizeDocs,
   fixTableProse,
+  validateManifestUnderCeilings,
   validateMdWasmSizeDocs,
   validateShippedTables,
   validateTableProse,
@@ -324,5 +325,55 @@ raw バイトの約 9%、gzip 後のバイトの約 8% に収まります。`;
     const fixed = fixMdWasmSizeDocs({ files, manifest, ceilings });
     expect(fixed[DOC_FILES[0]]).toBe(files[DOC_FILES[0]]);
     expect(validateMdWasmSizeDocs({ files: fixed, manifest, ceilings })).toEqual([]);
+  });
+});
+
+describe("manifest-over-ceiling preflight", () => {
+  function overCeilingManifest(overridesByArtifact) {
+    const next = structuredClone(manifest);
+    for (const [artifact, gzip9] of Object.entries(overridesByArtifact)) {
+      next.measured[artifact].gzip9 = gzip9;
+    }
+    return next;
+  }
+
+  it("reports exactly one manifest-over-ceiling finding when render exceeds its ceiling", () => {
+    const overManifest = overCeilingManifest({ render: ceilings.render + 13_318 });
+    const findings = validateMdWasmSizeDocs({
+      files: correctFiles(),
+      manifest: overManifest,
+      ceilings,
+    });
+    expect(findings).toEqual([
+      expect.objectContaining({ code: "manifest-over-ceiling", artifact: "render", over: 13_318 }),
+    ]);
+    expect(findings[0].message).toContain("13,318 B");
+  });
+
+  it("reports one finding per over-ceiling artifact and nothing else", () => {
+    const overManifest = overCeilingManifest({
+      render: ceilings.render + 13_318,
+      parse: ceilings.parse + 1,
+    });
+    const findings = validateMdWasmSizeDocs({
+      files: correctFiles(),
+      manifest: overManifest,
+      ceilings,
+    });
+    expect(findings).toHaveLength(2);
+    expect(findings.every((item) => item.code === "manifest-over-ceiling")).toBe(true);
+    expect(findings.map((item) => item.artifact).sort()).toEqual(["parse", "render"]);
+  });
+
+  it("--fix writes nothing when the manifest is over ceiling", () => {
+    const overManifest = overCeilingManifest({ render: ceilings.render + 13_318 });
+    const files = staleTableFiles();
+    const fixed = fixMdWasmSizeDocs({ files, manifest: overManifest, ceilings });
+    expect(fixed).toEqual(files);
+  });
+
+  it("leaves an all-under manifest unaffected", () => {
+    expect(validateManifestUnderCeilings(manifest, ceilings)).toEqual([]);
+    expect(validateMdWasmSizeDocs({ files: correctFiles(), manifest, ceilings })).toEqual([]);
   });
 });
