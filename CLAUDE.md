@@ -202,7 +202,7 @@ Root-level vitest suites (`scripts/**/__tests__`, configured by the root `vitest
 5. **Report what was NOT tested** — state the blind spots.
 6. **Verification specs don't self-graduate.** A one-time "it was done" proof is tagged `#[ignore = "verification: <why>"]` (Rust) / `@verification` (TS) and excluded from gates. Propose promotion to a tier in the PR description; never self-promote.
 7. **Red checks block the author.** Any red check on a PR you authored blocks you, *even if it is not a required check* — the only exception is a test carrying a `flaky: <issue-url>` quarantine tag (Rust `#[ignore = "flaky: <url>"]`; TS `// flaky: <url>` above `it.skip(...)`) with a linked open issue.
-8. **Never game the gate.** Do not add `#[ignore]` / `test.skip`, a flaky tag, a loosened tolerance, or a deleted assertion **without a linked open issue**. Making a gate pass by editing existing assertions needs a fresh-context review — not the same session that wrote the change.
+8. **Never game the gate.** Never weaken a gate without a linked open issue; require fresh-context review for assertion changes made to pass the gate and all edits to gate-defining files; and treat runner timeouts and liveness deadlines as guardrails, not assertions, raising them only with a linked open issue and a value derived either from a measured latency distribution (baseline versus under load) or from the child deadline the budget must contain.
 9. **Scoped heavy verification.** When a change touches code covered only by a heavy/quarantined lane, run those tests on a capable host before declaring the work done.
 
 ### Flaky tests
