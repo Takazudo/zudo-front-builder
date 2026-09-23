@@ -592,6 +592,8 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
             host.join("package.json"),
             if ui_mode == "direct" {
                 r#"{ "name": "catalog", "dependencies": { "@fixture/ui": "workspace:*" } }"#
+            } else if ui_mode == "none" {
+                r#"{ "name": "catalog", "dependencies": { "@fixture/route-helper": "1.0.0" } }"#
             } else {
                 r#"{ "name": "catalog" }"#
             },
@@ -661,6 +663,13 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         let routes_install =
             workspace.join("node_modules/.pnpm/@fixture+routes@1.0.0/node_modules");
         std::os::unix::fs::symlink(&helper, routes_install.join("@fixture/route-helper")).unwrap();
+        if ui_mode == "none" {
+            // The control keeps the live node_modules link, so its declared
+            // helper resolves at the host install root. Workspace cases omit
+            // this link and require the staged pnpm package-local copy.
+            std::os::unix::fs::symlink(&helper, host.join("node_modules/@fixture/route-helper"))
+                .unwrap();
+        }
         fs::write(
             helper.join("package.json"),
             r#"{ "name": "@fixture/route-helper", "version": "1.0.0", "main": "index.js" }"#,
