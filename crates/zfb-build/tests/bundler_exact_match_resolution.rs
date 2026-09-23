@@ -1119,6 +1119,98 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
 
 #[cfg(unix)]
 #[test]
+fn workspace_isolation_only_falls_back_to_pnpm_store_without_explicit_preserve() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace = tmp.path();
+    fs::write(
+        workspace.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n",
+    )
+    .unwrap();
+    let root = workspace.join("packages/host");
+    write_fixture_project(&root, "project:pnpm-package", "unused.tsx");
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"host","dependencies":{"workspace-ui":"workspace:*"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        "import value from 'project:pnpm-package';\nimport ui from 'workspace-ui';\nexport default function Page() { return <div>{ui}{value}</div>; }\n",
+    )
+    .unwrap();
+    let ui = workspace.join("packages/ui");
+    fs::create_dir_all(&ui).unwrap();
+    fs::write(
+        ui.join("package.json"),
+        r#"{"name":"workspace-ui","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        ui.join("index.js"),
+        "export default 'WORKSPACE_ISOLATION_MARKER';\n",
+    )
+    .unwrap();
+
+    let virtual_store = workspace.join("node_modules/.pnpm/context@1/node_modules");
+    let package = write_first_party_bare_importer(
+        &virtual_store,
+        "context-order-probe",
+        "non-hoisted-dependency",
+    );
+    write_bare_package_in(
+        &virtual_store,
+        "non-hoisted-dependency",
+        "WORKSPACE_PNPM_FALLBACK_MARKER",
+    );
+    fs::create_dir_all(root.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(&ui, root.join("node_modules/workspace-ui")).unwrap();
+    std::os::unix::fs::symlink(&package, root.join("node_modules/context-order-probe")).unwrap();
+
+    for preserve in [false, true] {
+        let mut input = make_input(
+            &root,
+            &esbuild,
+            &format!("dist-workspace-preserve-{preserve}"),
+            BTreeMap::new(),
+            vec![(
+                "project:pnpm-package".to_string(),
+                root.join("node_modules/context-order-probe/entry.js")
+                    .to_string_lossy()
+                    .into_owned(),
+            )],
+            vec![],
+        );
+        input.node_modules_dir = Some(root.join("node_modules"));
+        input.node_modules_preserve_symlinks = preserve;
+        // Empty tsconfig paths automatically enable esbuild's preserve flag.
+        // Only explicitly requesting it must retain the lexical failure.
+        let result = bundle(input);
+        if preserve {
+            let error = result.expect_err("explicit preserve must keep lexical resolution");
+            assert!(
+                format!("{error:#}").contains("non-hoisted-dependency"),
+                "{error:#}"
+            );
+        } else {
+            result.expect("automatic workspace isolation must complete the pnpm dependency view");
+            let body = fs::read_to_string(
+                root.join(format!("dist-workspace-preserve-{preserve}/bundle.mjs")),
+            )
+            .unwrap();
+            assert!(body.contains("WORKSPACE_ISOLATION_MARKER"), "{body}");
+            assert!(body.contains("WORKSPACE_PNPM_FALLBACK_MARKER"), "{body}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn cyclic_pnpm_dependencies_reach_a_fixed_point_with_bundle_exclude() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");

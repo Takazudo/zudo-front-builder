@@ -3120,11 +3120,9 @@ pub fn bundle_with_session(
         // covers the hydration shim's bare framework import) appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
-        if !bundle_exclude.is_empty() {
-            synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-            synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-            synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
-        }
+        synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
+        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
+        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -3153,6 +3151,7 @@ pub fn bundle_with_session(
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
+        bundle_exclude.is_empty() && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
         &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
@@ -10308,6 +10307,7 @@ fn extend_node_modules_dependency_staging(
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
+    allow_workspace_physical_fallback: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
     root_entry_dependency_logical_importers: &BTreeMap<PathBuf, PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
@@ -10320,6 +10320,9 @@ fn extend_node_modules_dependency_staging(
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let first_party_root = zfb_types::first_party_root_for(project_root);
+    let canonical_first_party_root = first_party_root
+        .canonicalize()
+        .unwrap_or_else(|_| first_party_root.clone());
     let workspace_node_modules_dir = (first_party_root != project_root)
         .then(|| first_party_root.join("node_modules"))
         .filter(|candidate| candidate.is_dir());
@@ -10364,6 +10367,11 @@ fn extend_node_modules_dependency_staging(
     // `bare_package_name`, so `@takazudo/zfb-runtime/server` also stages the
     // `/client-router` subpath the islands runtime injects.
     let synthetic_importer = project_root.join(SHADOW_ENTRY_FILENAME);
+    // With empty excludes, ordinary packages normally resolve through the live
+    // node_modules link. Keep their candidates until workspace staging has
+    // been discovered from every root source: that staging replaces the live
+    // link with an isolated dependency view, including for injected wrappers.
+    let mut deferred_live_dependencies = Vec::new();
     for specifier in synthetic_entry_import_specifiers {
         // Even a generated import must not resurrect an excluded alias target's
         // same-named installed package (#1557), and an externalized framework
@@ -10389,6 +10397,15 @@ fn extend_node_modules_dependency_staging(
         } else {
             continue;
         };
+        if bundle_exclude.is_empty() {
+            deferred_live_dependencies.push((
+                synthetic_importer.clone(),
+                package_name,
+                logical_dependency,
+                source_dependency,
+            ));
+            continue;
+        }
         stage_dependency_candidate(
             &synthetic_importer,
             &synthetic_importer,
@@ -10467,6 +10484,12 @@ fn extend_node_modules_dependency_staging(
                     canonical_workspace_package_logical_path(&canonical, project_root).is_some()
                 })
             {
+                deferred_live_dependencies.push((
+                    logical_importer.to_path_buf(),
+                    package_name,
+                    logical_dependency,
+                    source_dependency,
+                ));
                 continue;
             }
             stage_dependency_candidate(
@@ -10486,142 +10509,234 @@ fn extend_node_modules_dependency_staging(
         }
     }
 
-    while let Some((logical_root, source_root)) = pending.pop_first() {
-        if !visited.insert(logical_root.clone()) || !source_root.is_dir() {
-            continue;
-        }
-        let Ok(physical_root) = source_root.canonicalize() else {
-            continue;
-        };
-        let source_relative = source_root
-            .strip_prefix(project_root)
-            .or_else(|_| source_root.strip_prefix(&canonical_project_root))
-            .ok();
-        let expected_physical = source_relative
-            .map(|relative| canonical_project_root.join(relative))
-            .unwrap_or_else(|| source_root.clone());
-        let package_was_symlinked = logical_root != source_root
-            || normalize_path_lexical(&expected_physical) != physical_root;
-        let mut importers = Vec::new();
-        for entry in WalkDir::new(&physical_root)
-            .follow_links(true)
-            .into_iter()
-            .filter_entry(|entry| {
-                entry.depth() == 0
-                    || !entry.file_type().is_dir()
-                    || !matches!(
-                        entry.file_name().to_string_lossy().as_ref(),
-                        "node_modules" | ".git"
-                    )
-            })
-            .filter_map(std::result::Result::ok)
-        {
-            let path = entry.path();
-            let dependency_source = raw_source_extension(path)
-                || path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
-            if !entry.file_type().is_file() || !dependency_source {
+    // Only the automatic workspace-isolated view may fill lexical misses
+    // from a package's physical store. Keep these candidates deferred until
+    // workspace staging is confirmed, including when it is discovered late
+    // in the closure. Explicit preserve-symlinks keeps lexical resolution.
+    let mut deferred_physical_dependencies = Vec::new();
+    loop {
+        while let Some((logical_root, source_root)) = pending.pop_first() {
+            if !visited.insert(logical_root.clone()) || !source_root.is_dir() {
                 continue;
             }
-            let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
-                // An unused invalid alternative must remain esbuild-contextual.
+            let Ok(physical_root) = source_root.canonicalize() else {
                 continue;
             };
-            let Ok(relative) = path.strip_prefix(&physical_root) else {
-                continue;
-            };
-            importers.push((logical_root.join(relative), path.to_path_buf(), specifiers));
-        }
-        let external_imports = package_external_import_names(&physical_root);
-        if !external_imports.is_empty() {
-            importers.push((
-                logical_root.join("package.json"),
-                physical_root.join("package.json"),
-                external_imports,
-            ));
-        }
-
-        for (logical_importer, physical_importer, specifiers) in importers {
-            for package_name in specifiers
-                .iter()
-                .filter_map(|specifier| bare_package_name(specifier))
+            let source_relative = source_root
+                .strip_prefix(project_root)
+                .or_else(|_| source_root.strip_prefix(&canonical_project_root))
+                .ok();
+            let expected_physical = source_relative
+                .map(|relative| canonical_project_root.join(relative))
+                .unwrap_or_else(|| source_root.clone());
+            let package_was_symlinked = logical_root != source_root
+                || normalize_path_lexical(&expected_physical) != physical_root;
+            let mut importers = Vec::new();
+            for entry in WalkDir::new(&physical_root)
+                .follow_links(true)
+                .into_iter()
+                .filter_entry(|entry| {
+                    entry.depth() == 0
+                        || !entry.file_type().is_dir()
+                        || !matches!(
+                            entry.file_name().to_string_lossy().as_ref(),
+                            "node_modules" | ".git"
+                        )
+                })
+                .filter_map(std::result::Result::ok)
             {
-                // A fully-external dependency is never resolved by esbuild, so
-                // there is nothing to stage or closure-walk (#1645).
-                if package_is_external(&package_name, external_specifiers) {
+                let path = entry.path();
+                let dependency_source = raw_source_extension(path)
+                    || path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
+                if !entry.file_type().is_file() || !dependency_source {
                     continue;
                 }
-                let canonical_dependency = (resolve_from_canonical_package
-                    && package_was_symlinked)
-                    .then(|| {
-                        resolve_installed_package_dir(
-                            &physical_importer,
-                            &package_name,
-                            &canonical_project_root,
-                        )
-                    })
-                    .flatten();
-                let (mut logical_dependency, source_dependency) = if let Some(dependency) =
-                    canonical_dependency
-                {
-                    (
-                        logical_root.join("node_modules").join(&package_name),
-                        dependency,
-                    )
-                } else if let Some(dependency) =
-                    resolve_installed_package_dir(&logical_importer, &package_name, project_root)
-                {
-                    (dependency.clone(), dependency)
-                } else if let Some(dependency) = resolve_configured_package(&package_name) {
-                    // The configured EXTERNAL vendored node_modules
-                    // (`BundlerInput::node_modules_dir`) is a closure source too:
-                    // a bare dep that lives only in the vendor tree (outside
-                    // `project_root`) is aliased to a logical node_modules path so
-                    // materialisation routes the staged copy through the isolation
-                    // root, keeping it out of the live `<shadow>/node_modules`
-                    // symlink.
-                    (
-                        logical_root.join("node_modules").join(&package_name),
-                        dependency,
-                    )
-                } else {
+                let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
+                    // An unused invalid alternative must remain esbuild-contextual.
                     continue;
                 };
-                if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+                let Ok(relative) = path.strip_prefix(&physical_root) else {
                     continue;
-                }
-                // A transitive package may be physically hoisted even though
-                // its importer genuinely depends on it. If its namespace is
-                // alias-owned, copying that hoisted location into the shadow
-                // would let an excluded first-party alias fall back to the npm
-                // package. Keep the physical source, but expose it only beneath
-                // this importer package so ordinary Node resolution still finds
-                // it for the dependency that requested it (#1646).
-                if !bundle_exclude.is_empty()
-                    && package_namespace_is_alias_claimed(
-                        &package_name,
-                        alias_claimed_specifier_keys,
-                    )
-                {
-                    logical_dependency = logical_root.join("node_modules").join(&package_name);
-                }
-                stage_dependency_candidate(
-                    &logical_importer,
-                    &physical_importer,
-                    &package_name,
-                    logical_dependency,
-                    source_dependency,
-                    project_root,
-                    bundle_exclude,
-                    staging_dirs,
-                    staging_alias_dirs,
-                    &mut staged_package_sources,
-                    &visited,
-                    &mut pending,
-                );
+                };
+                importers.push((logical_root.join(relative), path.to_path_buf(), specifiers));
             }
+            let external_imports = package_external_import_names(&physical_root);
+            if !external_imports.is_empty() {
+                importers.push((
+                    logical_root.join("package.json"),
+                    physical_root.join("package.json"),
+                    external_imports,
+                ));
+            }
+
+            for (logical_importer, physical_importer, specifiers) in importers {
+                for package_name in specifiers
+                    .iter()
+                    .filter_map(|specifier| bare_package_name(specifier))
+                {
+                    // A fully-external dependency is never resolved by esbuild, so
+                    // there is nothing to stage or closure-walk (#1645).
+                    if package_is_external(&package_name, external_specifiers) {
+                        continue;
+                    }
+                    let physical_dependency = (package_was_symlinked
+                        && (resolve_from_canonical_package || allow_workspace_physical_fallback))
+                        .then(|| {
+                            resolve_installed_package_dir(
+                                &physical_importer,
+                                &package_name,
+                                &canonical_first_party_root,
+                            )
+                        })
+                        .flatten();
+                    let (mut logical_dependency, source_dependency) = if let Some(dependency) =
+                        resolve_from_canonical_package
+                            .then(|| physical_dependency.clone())
+                            .flatten()
+                    {
+                        (
+                            logical_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else if let Some(dependency) = resolve_installed_package_dir(
+                        &logical_importer,
+                        &package_name,
+                        project_root,
+                    ) {
+                        (dependency.clone(), dependency)
+                    } else if let Some(dependency) = resolve_configured_package(&package_name) {
+                        // The configured EXTERNAL vendored node_modules
+                        // (`BundlerInput::node_modules_dir`) is a closure source too:
+                        // a bare dep that lives only in the vendor tree (outside
+                        // `project_root`) is aliased to a logical node_modules path so
+                        // materialisation routes the staged copy through the isolation
+                        // root, keeping it out of the live `<shadow>/node_modules`
+                        // symlink.
+                        (
+                            logical_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else if let Some(dependency) = physical_dependency {
+                        // pnpm can install a dependency only beside the
+                        // package's real store directory. Defer the fallback
+                        // until workspace staging replaces the live link,
+                        // without displacing any existing lexical/configured
+                        // resolution candidate.
+                        let logical_dependency =
+                            logical_root.join("node_modules").join(&package_name);
+                        deferred_physical_dependencies.push((
+                            logical_importer.clone(),
+                            physical_importer.clone(),
+                            package_name,
+                            logical_dependency,
+                            dependency,
+                        ));
+                        continue;
+                    } else {
+                        continue;
+                    };
+                    if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+                        continue;
+                    }
+                    // A transitive package may be physically hoisted even though
+                    // its importer genuinely depends on it. If its namespace is
+                    // alias-owned, copying that hoisted location into the shadow
+                    // would let an excluded first-party alias fall back to the npm
+                    // package. Keep the physical source, but expose it only beneath
+                    // this importer package so ordinary Node resolution still finds
+                    // it for the dependency that requested it (#1646).
+                    if !bundle_exclude.is_empty()
+                        && package_namespace_is_alias_claimed(
+                            &package_name,
+                            alias_claimed_specifier_keys,
+                        )
+                    {
+                        logical_dependency = logical_root.join("node_modules").join(&package_name);
+                    }
+                    stage_dependency_candidate(
+                        &logical_importer,
+                        &physical_importer,
+                        &package_name,
+                        logical_dependency,
+                        source_dependency,
+                        project_root,
+                        bundle_exclude,
+                        staging_dirs,
+                        staging_alias_dirs,
+                        &mut staged_package_sources,
+                        &visited,
+                        &mut pending,
+                    );
+                }
+            }
+        }
+        // A workspace package may first appear in the closure of an exact
+        // target, so decide only after draining pending. If present, complete
+        // the isolated view with deferred root imports (including injected
+        // wrappers) and generated-entry dependencies, then walk their closure.
+        // Otherwise the build retains its live node_modules link.
+        let workspace_staging_active = staging_alias_dirs
+            .values()
+            .chain(
+                staging_dirs
+                    .iter()
+                    .filter(|path| project_path_is_inside_node_modules(path, project_root)),
+            )
+            .any(|source_root| {
+                source_root.canonicalize().is_ok_and(|canonical| {
+                    canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+                })
+            });
+        if !workspace_staging_active {
+            break;
+        }
+        for (
+            logical_importer,
+            physical_importer,
+            package_name,
+            logical_dependency,
+            source_dependency,
+        ) in std::mem::take(&mut deferred_physical_dependencies)
+        {
+            stage_dependency_candidate(
+                &logical_importer,
+                &physical_importer,
+                &package_name,
+                logical_dependency,
+                source_dependency,
+                project_root,
+                bundle_exclude,
+                staging_dirs,
+                staging_alias_dirs,
+                &mut staged_package_sources,
+                &visited,
+                &mut pending,
+            );
+        }
+        for (logical_importer, package_name, logical_dependency, source_dependency) in
+            std::mem::take(&mut deferred_live_dependencies)
+        {
+            stage_dependency_candidate(
+                &logical_importer,
+                &logical_importer,
+                &package_name,
+                logical_dependency,
+                source_dependency,
+                project_root,
+                bundle_exclude,
+                staging_dirs,
+                staging_alias_dirs,
+                &mut staged_package_sources,
+                &visited,
+                &mut pending,
+            );
+        }
+
+        if pending.is_empty() {
+            break;
         }
     }
 }
