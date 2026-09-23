@@ -3120,11 +3120,9 @@ pub fn bundle_with_session(
         // covers the hydration shim's bare framework import) appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
-        if !bundle_exclude.is_empty() {
-            synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-            synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-            synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
-        }
+        synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
+        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
+        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -10364,6 +10362,11 @@ fn extend_node_modules_dependency_staging(
     // `bare_package_name`, so `@takazudo/zfb-runtime/server` also stages the
     // `/client-router` subpath the islands runtime injects.
     let synthetic_importer = project_root.join(SHADOW_ENTRY_FILENAME);
+    // With empty excludes, ordinary packages normally resolve through the live
+    // node_modules link. Keep their candidates until workspace staging has
+    // been discovered from every root source: that staging replaces the live
+    // link with an isolated dependency view, including for injected wrappers.
+    let mut deferred_live_dependencies = Vec::new();
     for specifier in synthetic_entry_import_specifiers {
         // Even a generated import must not resurrect an excluded alias target's
         // same-named installed package (#1557), and an externalized framework
@@ -10389,6 +10392,15 @@ fn extend_node_modules_dependency_staging(
         } else {
             continue;
         };
+        if bundle_exclude.is_empty() {
+            deferred_live_dependencies.push((
+                synthetic_importer.clone(),
+                package_name,
+                logical_dependency,
+                source_dependency,
+            ));
+            continue;
+        }
         stage_dependency_candidate(
             &synthetic_importer,
             &synthetic_importer,
@@ -10467,11 +10479,54 @@ fn extend_node_modules_dependency_staging(
                     canonical_workspace_package_logical_path(&canonical, project_root).is_some()
                 })
             {
+                deferred_live_dependencies.push((
+                    logical_importer.to_path_buf(),
+                    package_name,
+                    logical_dependency,
+                    source_dependency,
+                ));
                 continue;
             }
             stage_dependency_candidate(
                 logical_importer,
                 logical_importer,
+                &package_name,
+                logical_dependency,
+                source_dependency,
+                project_root,
+                bundle_exclude,
+                staging_dirs,
+                staging_alias_dirs,
+                &mut staged_package_sources,
+                &visited,
+                &mut pending,
+            );
+        }
+    }
+
+    // A workspace package forces real staged node_modules copies in place of
+    // the live link. Complete that view with root imports (including relative
+    // imports from generated package-route wrappers) and generated-entry
+    // dependencies. A build without workspace staging retains its live link.
+    let workspace_staging_active = staging_alias_dirs
+        .values()
+        .chain(
+            staging_dirs
+                .iter()
+                .filter(|path| project_path_is_inside_node_modules(path, project_root)),
+        )
+        .any(|source_root| {
+            source_root.canonicalize().is_ok_and(|canonical| {
+                canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+            })
+        });
+    if workspace_staging_active {
+        for (logical_importer, package_name, logical_dependency, source_dependency) in
+            deferred_live_dependencies
+        {
+            stage_dependency_candidate(
+                &logical_importer,
+                &logical_importer,
                 &package_name,
                 logical_dependency,
                 source_dependency,
