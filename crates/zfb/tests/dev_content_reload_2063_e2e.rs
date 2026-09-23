@@ -108,9 +108,8 @@ use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zfb_test_utils::{
     decode_utf8_incremental, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
@@ -150,8 +149,8 @@ const DRAIN_QUIET_WINDOW: Duration = Duration::from_millis(1500);
 /// why one window is not enough (silent gaps inside a running tick).
 const DRAIN_STABLE_ROUNDS: u32 = 2;
 
-/// Overall bound on `drain_ticks_until_quiescent` (it falls through with
-/// a loud diagnostic rather than hanging).
+/// Overall bound on `drain_ticks_until_quiescent` (failure to settle is
+/// a readiness failure, never permission to start measuring an edit).
 const DRAIN_DEADLINE: Duration = Duration::from_secs(20);
 
 fn fixture_dir() -> PathBuf {
@@ -289,44 +288,16 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
     response
 }
 
-/// Wait until the dev server's tick pipeline is genuinely idle before the
-/// caller subscribes for its assertion window.
+/// Additional settling window AFTER the single warmup edit has been
+/// delivered, completed, and served. This is not a readiness proof by
+/// itself: silence cannot rule out delayed native notifications (#3091).
 ///
-/// An SSE quiet window alone cannot see an IN-FLIGHT tick: on a loaded
-/// machine a tick runs longer than any reasonable quiet threshold (2.1s
-/// observed vs a 1.5s window), so the handshake's trailing warmup tick
-/// could complete AFTER quiescence was declared and leak its `page` event
-/// into the caller's assertion subscription — the exact `["page", "page"]`
-/// duplicate this guard closes (observed on macOS, 2026-08; the product
-/// emits one `page` per tick by construction, see
-/// `zfb-server/src/livereload.rs`).
-///
-/// Quiescence therefore requires [`DRAIN_STABLE_ROUNDS`] CONSECUTIVE
-/// iterations in which BOTH hold:
-///
-/// 1. **SSE quiet:** a subscription observes no event for
-///    [`DRAIN_QUIET_WINDOW`] (an observed event drains it and resets the
-///    streak — the pre-existing behavior).
-/// 2. **stderr stable:** the dev server's stderr did not grow during that
-///    window. An in-flight tick keeps writing `[zfb-timing]` lines
-///    (`tick(): kinds=`, `bundle():`, `tick=<ms>`, `lazy-render …`), so
-///    growth is read as pipeline activity and extends draining. This is a
-///    LENGTH DELTA per iteration, deliberately not a start/completion
-///    line-count balance: the timing lines are not a matched pair (a
-///    no-op tick prints a start with no completion, the deferred boot
-///    publish prints a completion with no start), so any cumulative
-///    balance check wedges permanently on the first mismatch. A delta
-///    heuristic's worst failure mode is only a longer drain, and the SSE
-///    drain itself runs on every iteration regardless.
-///
-/// Requiring [`DRAIN_STABLE_ROUNDS`] consecutive quiet+stable windows puts
-/// the effective quiet horizon (>= 3s) above the longest observed silent
-/// gap inside a running tick (~1.1s, the bundle `asm` phase).
-///
-/// Bounded by [`DRAIN_DEADLINE`]; on timeout a loud diagnostic is printed
-/// and the caller proceeds — the scenario's own assertions then fail with
-/// full logs rather than hanging, and the diagnostic distinguishes a
-/// degraded drain from a healthy one.
+/// Require consecutive windows with both no SSE and no stderr growth.
+/// This catches trailing publication activity without adding more writes.
+/// The explicit warmup delivery/outcome/content handshake is load-bearing:
+/// even several seconds of silence can occur inside a running tick.
+/// Bounded by [`DRAIN_DEADLINE`]; timeout fails with full logs rather than
+/// allowing an unsettled warmup into the measured event window.
 async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
     let start = Instant::now();
     let mut stable_rounds = 0u32;
@@ -356,13 +327,13 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
             return;
         }
     }
-    eprintln!(
+    panic!(
         "[dev_content_reload_2063_e2e] drain_ticks_until_quiescent: pipeline never went \
          quiet+stable for {DRAIN_STABLE_ROUNDS} consecutive {}ms windows within {}s \
-         (stable_rounds={stable_rounds} at deadline) — proceeding anyway; a duplicate-`page` \
-         assertion failure after this line may be a drain shortfall rather than a product bug.",
+         (stable_rounds={stable_rounds} at deadline).\n{}",
         DRAIN_QUIET_WINDOW.as_millis(),
         DRAIN_DEADLINE.as_secs(),
+        session.logs(),
     );
 }
 
@@ -472,6 +443,122 @@ async fn collect_tick_events(
     Ok(events)
 }
 
+fn tick_line_mentions(line: &str, filename: &str) -> bool {
+    line.strip_prefix("[zfb-timing] tick(): kinds=[")
+        .and_then(|rest| rest.rsplit_once(']'))
+        .is_some_and(|(kinds, _)| {
+            kinds.split(", ").any(|kind| {
+                kind.split_once(':')
+                    .is_some_and(|(name, _)| name == filename)
+            })
+        })
+}
+
+/// Only complete lines written after the pre-edit byte offset can prove
+/// delivery. A startup batch may already mention alpha.mdx (#3091).
+fn log_line_since(
+    stderr: &str,
+    offset: usize,
+    matches: impl Fn(&str) -> bool,
+) -> Option<(String, usize)> {
+    let mut end = offset;
+    for line in stderr.get(offset..)?.split_inclusive('\n') {
+        end += line.len();
+        if line.ends_with('\n') && matches(line.trim_end()) {
+            return Some((line.trim_end().to_string(), end));
+        }
+    }
+    None
+}
+
+#[test]
+fn delivery_evidence_rejects_boot_history_and_unrelated_ticks() {
+    // #3091's out-of-root failure had alpha only in its startup batch;
+    // subsequent warmup ticks must not prove delivery of the actual edit.
+    let boot =
+        "[zfb-timing] tick(): kinds=[[slug].tsx:Created, alpha.mdx:Modified] eager_hint=true\n\
+                [zfb-timing] stale probe: drained pages_stale=1\n";
+    let warmup = "[zfb-timing] tick(): kinds=[__warmup.mdx:Modified] eager_hint=true\n";
+    let mut log = format!("{boot}{warmup}");
+    let matches_alpha = |line: &str| tick_line_mentions(line, "alpha.mdx");
+    assert!(log_line_since(&log, 0, matches_alpha).is_some());
+    assert!(log_line_since(&log, boot.len(), matches_alpha).is_none());
+    log.push_str("[zfb-timing] tick(): kinds=[not-alpha.mdx:Modified] eager_hint=true\n");
+    assert!(log_line_since(&log, boot.len(), matches_alpha).is_none());
+    let alpha = "[zfb-timing] tick(): kinds=[[slug].tsx:Created, __warmup.mdx:Modified, alpha.mdx:Modified] eager_hint=true\n";
+    log.push_str(alpha);
+    assert_eq!(
+        log_line_since(&log, boot.len(), matches_alpha),
+        Some((alpha.trim_end().to_string(), log.len())),
+    );
+}
+
+#[test]
+fn warmup_completion_evidence_requires_a_complete_line_after_its_tick() {
+    let boot = "[zfb-timing] stale probe: drained pages_stale=0\n";
+    let tick = "[zfb-timing] tick(): kinds=[__warmup.mdx:Modified] eager_hint=true\n";
+    let mut log = format!("{boot}{tick}");
+    let (_, tick_end) = log_line_since(&log, boot.len(), |line| {
+        tick_line_mentions(line, "__warmup.mdx")
+    })
+    .expect("new warmup delivery");
+    let completed = |line: &str| line.starts_with("[zfb-timing] stale probe: drained pages_stale=");
+    assert!(log_line_since(&log, tick_end, completed).is_none());
+    log.push_str("[zfb-timing] tick=9095ms P0(router)=0ms\n");
+    assert!(log_line_since(&log, tick_end, completed).is_none());
+    log.push_str("[zfb-timing] stale probe: drained pages_stale=1");
+    assert!(log_line_since(&log, tick_end, completed).is_none());
+    log.push('\n');
+    assert!(log_line_since(&log, tick_end, completed).is_some());
+}
+
+/// Record the boundary immediately before a scenario writes its file. The
+/// wall clock lets a captured process log be correlated with native-watcher
+/// diagnostics; only the stderr byte offset is used by the assertions.
+fn edit_log_offset(session: &DevSession, path: &Path) -> usize {
+    let offset = read_log(&session.stderr_path).len();
+    eprintln!(
+        "[dev_content_reload_2063_e2e] edit checkpoint unix_ms={} stderr_offset={offset} file={}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_millis(),
+        path.display(),
+    );
+    offset
+}
+
+async fn wait_for_log_line_since(
+    session: &DevSession,
+    offset: usize,
+    deadline: Duration,
+    description: &str,
+    matches: impl Fn(&str) -> bool,
+) -> (String, usize) {
+    let started = Instant::now();
+    while started.elapsed() < deadline {
+        if let Some(found) = log_line_since(&read_log(&session.stderr_path), offset, &matches) {
+            eprintln!(
+                "[dev_content_reload_2063_e2e] observed {description} after {}ms \
+                 stderr_offset={offset} line_end={}",
+                started.elapsed().as_millis(),
+                found.1,
+            );
+            return found;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "no {description} observed after stderr byte {offset} within {}s (elapsed={}ms). \
+         Missing edit-delivery evidence does not establish #2063's SSE-dark delivery: \
+         the event may be delayed before the orchestrator or its tick log. \
+         The log snapshot below is taken after the deadline and may include later activity.\n{}",
+        deadline.as_secs(),
+        started.elapsed().as_millis(),
+        session.logs(),
+    );
+}
+
 /// Wait until a `[zfb-timing] tick(): kinds=[...]` line whose `kinds` list
 /// mentions `filename` appears in the dev server's stderr — proof a
 /// filesystem event for that file reached the orchestrator (delivery),
@@ -490,25 +577,20 @@ async fn collect_tick_events(
 /// `src/` are). This helper instead proves delivery from the SAME tick the
 /// content-edit assertion below observes, via a channel (`ZFB_DEV_TIMING`
 /// stderr tracing) that is unaffected by the SSE-dark bug under test.
-async fn wait_for_tick_mentioning(session: &DevSession, filename: &str) -> String {
-    let started = Instant::now();
-    while started.elapsed() < SSE_FIRST_EVENT_DEADLINE {
-        let stderr = read_log(&session.stderr_path);
-        if let Some(line) = stderr
-            .lines()
-            .find(|line| line.contains("tick(): kinds=[") && line.contains(filename))
-        {
-            return line.to_string();
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-    panic!(
-        "no `[zfb-timing] tick(): kinds=[...]` line mentioning {filename:?} within {}s — the \
-         filesystem event for the content edit never reached the orchestrator at all, which \
-         would be a DIFFERENT bug than #2063 (no delivery vs. SSE-dark delivery)\n{}",
-        SSE_FIRST_EVENT_DEADLINE.as_secs(),
-        session.logs(),
-    );
+/// Only the log suffix captured immediately before this edit is eligible.
+async fn wait_for_tick_mentioning(
+    session: &DevSession,
+    filename: &str,
+    offset: usize,
+) -> (String, usize) {
+    wait_for_log_line_since(
+        session,
+        offset,
+        SSE_FIRST_EVENT_DEADLINE,
+        &format!("tick(): kinds=[...] line mentioning {filename:?}"),
+        |line| tick_line_mentions(line, filename),
+    )
+    .await
 }
 
 async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
@@ -549,56 +631,81 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
     }
 }
 
-/// Repeated edits of a dedicated warmup entry (never touched by the test's
-/// own assertions later) prove the watch stream is live without racing
-/// the fixture's real entry the scenario edits later.
+/// A SINGLE edit of the dedicated warmup entry must be delivered and
+/// completed before the real edit. The old 400ms writer queued many ticks
+/// and accepted even an unrelated boot SSE as success (#3091).
 ///
-/// Used by the baseline (`__warmup.mdx`) and out-of-root/cell-(c1)
-/// (`shared-content/posts/__warmup.mdx`) scenarios ONLY. The injected-route
-/// matrix cell (a)+(c2) does NOT use this handshake at all — see
-/// `run_injected_matrix_scenario`'s own header comment for why an
-/// SSE-based liveness probe is the wrong instrument there, and
-/// `wait_for_tick_mentioning` for the delivery-proof mechanism it uses
-/// instead (manager finding, 2026-07: `pkg/` is not a watch root, so no
-/// warmup edit under it — at any interval — would ever be observed).
-///
-/// `warmup_path` is an ABSOLUTE path to the file this handshake edits
-/// repeatedly; `render_revision` generates each revision's bytes;
-/// `warmup_interval` is the delay between successive rewrites — see
-/// `MatrixFixture`'s doc comments for why these are still fields on that
-/// struct even though only one matrix cell (c1) uses it today.
+/// Boot's publication marker follows watcher registration. After it, keep
+/// one subscription open, write once, and require a new filename-scoped
+/// tick, its stale-outcome drain, SSE, and the rendered warmup revision.
+/// The injected-route cells deliberately do not use this SSE handshake:
+/// their premise is that delivery may be SSE-dark.
 async fn confirm_watcher_live(
     session: &DevSession,
     base: &str,
+    client: &reqwest::Client,
     warmup_path: &Path,
-    render_revision: fn(u32) -> String,
-    warmup_interval: Duration,
 ) {
+    wait_for_log_line_since(
+        session,
+        0,
+        BOOT_DEADLINE,
+        "boot render completion",
+        |line| line == "[zfb-timing] boot: render complete",
+    )
+    .await;
+
     let sse = subscribe_sse(base).await;
-    let stop = Arc::new(AtomicBool::new(false));
-    let writer = {
-        let warmup = warmup_path.to_path_buf();
-        let stop = Arc::clone(&stop);
-        tokio::spawn(async move {
-            let mut revision = 0u32;
-            while !stop.load(Ordering::SeqCst) {
-                fs::write(&warmup, render_revision(revision)).expect("edit existing warmup entry");
-                revision += 1;
-                tokio::time::sleep(warmup_interval).await;
-            }
-        })
-    };
-    let first = next_sse_event_name(sse, SSE_FIRST_EVENT_DEADLINE)
-        .await
-        .expect("read SSE stream during watcher-live handshake");
-    stop.store(true, Ordering::SeqCst);
-    let _ = writer.await;
+    let offset = edit_log_offset(session, warmup_path);
+    fs::write(warmup_path, render_mdx_warmup_revision(1)).expect("edit existing warmup entry");
+
+    // Start SSE observation at the edit, concurrently with correlation.
+    // Its 30s first-event budget and subsequent 3s quiet window are
+    // separate phases. Wrapping their sum in another 30s timeout rejects
+    // a valid first event near that deadline while draining its quiet
+    // window, and hides which readiness condition actually failed.
+    let started = Instant::now();
+    let (tick, events) = tokio::join!(
+        async {
+            let (tick, tick_end) = wait_for_tick_mentioning(session, "__warmup.mdx", offset).await;
+            eprintln!(
+                "[dev_content_reload_2063_e2e] warmup delivered at {}ms: {tick}",
+                started.elapsed().as_millis(),
+            );
+            // This marker is emitted at the pipeline's outcome drain after
+            // page publication. `tick=<ms>` is only a renderer phase and is
+            // also emitted by boot, so it cannot establish this boundary.
+            wait_for_log_line_since(
+                session,
+                tick_end,
+                SSE_FIRST_EVENT_DEADLINE,
+                "warmup tick outcome drain",
+                |line| line.starts_with("[zfb-timing] stale probe: drained pages_stale="),
+            )
+            .await;
+            eprintln!(
+                "[dev_content_reload_2063_e2e] warmup outcome drained at {}ms",
+                started.elapsed().as_millis(),
+            );
+            tick
+        },
+        collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW),
+    );
+    let events = events.expect("read SSE stream during watcher-live handshake");
     assert!(
-        first.is_some(),
-        "watcher never became live: no edit-induced SSE event within {}s.\n{}",
-        SSE_FIRST_EVENT_DEADLINE.as_secs(),
+        events.iter().any(|event| event == "page"),
+        "warmup tick produced no page SSE: {events:?}\n{}",
         session.logs(),
     );
+    eprintln!("[dev_content_reload_2063_e2e] warmup delivery: {tick}; SSE: {events:?}");
+    poll_until_response_contains(
+        client,
+        &format!("{base}/posts/__warmup"),
+        "Warmup revision 1.",
+        "watcher warmup rendered revision",
+        session,
+    )
+    .await;
 }
 
 fn build_reqwest_client() -> reqwest::Client {
@@ -609,15 +716,9 @@ fn build_reqwest_client() -> reqwest::Client {
         .expect("build reqwest client")
 }
 
-/// Default warmup-rewrite cadence — the baseline/out-of-root fixtures'
-/// cheap MDX warmup always lands well under this.
-const WARMUP_INTERVAL_DEFAULT: Duration = Duration::from_millis(400);
-
 async fn boot_and_handshake(
     session: &mut DevSession,
     warmup_path: &Path,
-    render_revision: fn(u32) -> String,
-    warmup_interval: Duration,
 ) -> Option<(String, reqwest::Client)> {
     let port = wait_for_ready_port(session).await?;
     let base = format!("http://localhost:{port}");
@@ -640,14 +741,7 @@ async fn boot_and_handshake(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    confirm_watcher_live(
-        session,
-        &base,
-        warmup_path,
-        render_revision,
-        warmup_interval,
-    )
-    .await;
+    confirm_watcher_live(session, &base, &client, warmup_path).await;
 
     Some((base, client))
 }
@@ -719,14 +813,7 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
     let pgid = session.guard.pgid;
     let body = async {
         let warmup_path = session.root.join("content/posts/__warmup.mdx");
-        let Some((base, client)) = boot_and_handshake(
-            &mut session,
-            &warmup_path,
-            render_mdx_warmup_revision,
-            WARMUP_INTERVAL_DEFAULT,
-        )
-        .await
-        else {
+        let Some((base, client)) = boot_and_handshake(&mut session, &warmup_path).await else {
             return ScenarioOutcome::Skipped;
         };
 
@@ -747,15 +834,20 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
+        let entry_path = session.root.join("content/posts/alpha.mdx");
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(
-            session.root.join("content/posts/alpha.mdx"),
+            &entry_path,
             "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA updated markdown body.\n",
         )
         .expect("edit the alpha content entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
-            .await
-            .expect("read SSE stream after content edit");
+        let ((tick_line, _), events) = tokio::join!(
+            wait_for_tick_mentioning(&session, "alpha.mdx", edit_log_offset),
+            collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW),
+        );
+        eprintln!("[dev_content_reload_2063_e2e] [{label}] observed delivery: {tick_line}");
+        let events = events.expect("read SSE stream after content edit");
         // The deliverable: the observed SSE sequence is printed regardless
         // of pass/fail so a healthy-baseline PASS is still recorded data
         // for sub #2094's variant hunt.
@@ -885,11 +977,6 @@ async fn content_edit_emits_exactly_one_page_event_cold_boot() {
 /// has its own dedicated `run_injected_matrix_scenario` (manager finding,
 /// 2026-07: that fixture cannot use this struct's `confirm_watcher_live`-
 /// based liveness handshake at all; see that function's header comment).
-/// The `warmup_render_revision`/`warmup_interval` fields stay generalized
-/// (fn pointer / configurable cadence, not hardcoded to the baseline's
-/// plain MDX rewrite) in case a future matrix cell needs a different
-/// warmup shape, rather than narrowing back to what only cell (c1) needs
-/// today.
 struct MatrixFixture {
     /// Directory name under `tests/fixtures/`.
     family_dir: &'static str,
@@ -897,12 +984,8 @@ struct MatrixFixture {
     /// spawned in.
     project_subdir: &'static str,
     /// Path (relative to the copied family root) of the warmup entry
-    /// `confirm_watcher_live` edits repeatedly.
+    /// `confirm_watcher_live` edits once.
     warmup_rel: &'static str,
-    /// Generates each revision's bytes for `warmup_rel`.
-    warmup_render_revision: fn(u32) -> String,
-    /// Delay between successive warmup rewrites.
-    warmup_interval: Duration,
     /// Path (relative to the copied family root) of the entry this
     /// scenario edits for its own assertion.
     entry_rel: &'static str,
@@ -954,14 +1037,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
     let mut session = spawn_dev(project_root, &esbuild, boot_lazy);
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) = boot_and_handshake(
-            &mut session,
-            &warmup_path,
-            fixture.warmup_render_revision,
-            fixture.warmup_interval,
-        )
-        .await
-        else {
+        let Some((base, client)) = boot_and_handshake(&mut session, &warmup_path).await else {
             return ScenarioOutcome::Skipped;
         };
 
@@ -992,16 +1068,20 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
         drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
-                    session.logs(),
-                )
-            });
+        let ((tick_line, _), events) = tokio::join!(
+            wait_for_tick_mentioning(&session, "alpha.mdx", edit_log_offset),
+            collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW),
+        );
+        eprintln!("[dev_content_reload_2063_e2e] [{label}] observed delivery: {tick_line}");
+        let events = events.unwrap_or_else(|error| {
+            panic!(
+                "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                session.logs(),
+            )
+        });
         // The deliverable for every matrix cell: the observed SSE sequence
         // is printed regardless of pass/fail, so a red cell's exact
         // symptom (and a healthy cell's confirmation) both become
@@ -1220,6 +1300,7 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
         .await;
 
         let sse = subscribe_sse(&base).await;
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(
             &entry_path,
             "---\ntitle: Alpha V2 Frontmatter Injected\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA-INJECTED updated markdown body.\n",
@@ -1230,7 +1311,10 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
         // SAME edit the SSE-collection/freshness assertions below
         // observe, so a delivery regression can never be misread as the
         // #2063 SSE-dark regression under test.
-        let tick_line = wait_for_tick_mentioning(&session, "alpha.mdx").await;
+        let ((tick_line, _), events) = tokio::join!(
+            wait_for_tick_mentioning(&session, "alpha.mdx", edit_log_offset),
+            collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW),
+        );
         eprintln!("[dev_content_reload_2063_e2e] [{label}] observed delivery: {tick_line}");
         assert!(
             tick_line.contains("Modified") || tick_line.contains("Created"),
@@ -1239,14 +1323,12 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
             session.logs(),
         );
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
-                    session.logs(),
-                )
-            });
+        let events = events.unwrap_or_else(|error| {
+            panic!(
+                "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                session.logs(),
+            )
+        });
         eprintln!(
             "[dev_content_reload_2063_e2e] [{label}] observed SSE event sequence after the \
              content edit: {events:?}"
@@ -1341,8 +1423,6 @@ fn out_of_root_matrix_fixture() -> MatrixFixture {
         family_dir: "dev-content-reload-2063-outofroot",
         project_subdir: "project",
         warmup_rel: "shared-content/posts/__warmup.mdx",
-        warmup_render_revision: render_mdx_warmup_revision,
-        warmup_interval: WARMUP_INTERVAL_DEFAULT,
         entry_rel: "shared-content/posts/alpha.mdx",
         home_route: "/",
         home_marker: "dev-content-reload-2063-outofroot",
