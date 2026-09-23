@@ -570,10 +570,30 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         let host = workspace.join("sub-packages/catalog");
         fs::create_dir_all(host.join("pages")).unwrap();
         materialize_embedded_node_modules(&host);
+        // The embedded runtime carries its source-workspace peer specifier.
+        // This fixture installs it as an ordinary npm package, so give that
+        // peer the version a published manifest has. Otherwise the workspace
+        // link guard correctly rejects its ordinary installed zfb peer.
+        let runtime_manifest = host.join("node_modules/@takazudo/zfb-runtime/package.json");
+        let mut runtime_package: serde_json::Value =
+            serde_json::from_slice(&fs::read(&runtime_manifest).unwrap()).unwrap();
+        let zfb_version = runtime_package["version"].as_str().unwrap().to_string();
+        assert_eq!(
+            runtime_package["peerDependencies"]["@takazudo/zfb"],
+            "workspace:*"
+        );
+        runtime_package["peerDependencies"]["@takazudo/zfb"] = zfb_version.into();
+        fs::write(
+            &runtime_manifest,
+            serde_json::to_vec(&runtime_package).unwrap(),
+        )
+        .unwrap();
         fs::write(
             host.join("package.json"),
             if ui_mode == "direct" {
                 r#"{ "name": "catalog", "dependencies": { "@fixture/ui": "workspace:*" } }"#
+            } else if ui_mode == "none" {
+                r#"{ "name": "catalog", "dependencies": { "@fixture/route-helper": "1.0.0" } }"#
             } else {
                 r#"{ "name": "catalog" }"#
             },
@@ -627,15 +647,29 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         )
         .unwrap();
 
-        let routes = host.join("node_modules/@fixture/routes");
+        let routes =
+            workspace.join("node_modules/.pnpm/@fixture+routes@1.0.0/node_modules/@fixture/routes");
         fs::create_dir_all(&routes).unwrap();
+        std::os::unix::fs::symlink(&routes, host.join("node_modules/@fixture/routes")).unwrap();
         fs::write(
             routes.join("package.json"),
             r#"{ "name": "@fixture/routes", "version": "1.0.0", "type": "module" }"#,
         )
         .unwrap();
-        let helper = host.join("node_modules/@fixture/route-helper");
+        let helper = workspace.join(
+            "node_modules/.pnpm/@fixture+route-helper@1.0.0/node_modules/@fixture/route-helper",
+        );
         fs::create_dir_all(&helper).unwrap();
+        let routes_install =
+            workspace.join("node_modules/.pnpm/@fixture+routes@1.0.0/node_modules");
+        std::os::unix::fs::symlink(&helper, routes_install.join("@fixture/route-helper")).unwrap();
+        if ui_mode == "none" {
+            // The control keeps the live node_modules link, so its declared
+            // helper resolves at the host install root. Workspace cases omit
+            // this link and require the staged pnpm package-local copy.
+            std::os::unix::fs::symlink(&helper, host.join("node_modules/@fixture/route-helper"))
+                .unwrap();
+        }
         fs::write(
             helper.join("package.json"),
             r#"{ "name": "@fixture/route-helper", "version": "1.0.0", "main": "index.js" }"#,
