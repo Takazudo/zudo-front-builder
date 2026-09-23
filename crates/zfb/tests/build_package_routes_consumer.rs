@@ -545,6 +545,175 @@ export { DocsPage as default, paths };
     }
 }
 
+/// A nested host loses its live node_modules link when a source workspace
+/// package is staged. Generated injectRoute wrappers must still find an
+/// ordinary installed route package, its dependency, and a virtual module.
+#[test]
+fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[nested_npm_routes] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[nested_npm_routes] node not on PATH; skipping.");
+        return;
+    }
+
+    for ui_mode in ["none", "direct", "closure"] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let host = workspace.join("sub-packages/catalog");
+        fs::create_dir_all(host.join("pages")).unwrap();
+        materialize_embedded_node_modules(&host);
+        fs::write(
+            host.join("package.json"),
+            if ui_mode == "direct" {
+                r#"{ "name": "catalog", "dependencies": { "@fixture/ui": "workspace:*" } }"#
+            } else {
+                r#"{ "name": "catalog" }"#
+            },
+        )
+        .unwrap();
+        fs::write(
+            host.join("zfb.config.json"),
+            r#"{ "framework": "preact", "bundle": { "mainFields": ["main", "module"], "exclude": [] }, "plugins": [{ "name": "./preset.mjs" }] }"#,
+        )
+        .unwrap();
+
+        let ui = workspace.join("sub-packages/ui");
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(
+            ui.join("package.json"),
+            r#"{ "name": "@fixture/ui", "exports": { ".": "./index.ts" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            ui.join("index.ts"),
+            "export const ui = 'WORKSPACE_UI_MARKER';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(host.join("node_modules/@fixture")).unwrap();
+        std::os::unix::fs::symlink(&ui, host.join("node_modules/@fixture/ui")).unwrap();
+        fs::write(
+            host.join("pages/index.tsx"),
+            if ui_mode == "direct" {
+                r#"import { ui } from '@fixture/ui'; export default function Home() { return <html><body>{ui}</body></html>; }"#
+            } else if ui_mode == "closure" {
+                r#"import { bridge } from 'fixture:bridge'; export default function Home() { return <html><body>{bridge}</body></html>; }"#
+            } else {
+                r#"export default function Home() { return <html><body>CONTROL_HOME_MARKER</body></html>; }"#
+            },
+        )
+        .unwrap();
+
+        // A plugin alias stages this npm package before source-graph seeding.
+        // Its workspace dependency is discovered only while walking pending
+        // package closure, after the ordinary route candidate was deferred.
+        let bridge = host.join("node_modules/@fixture/bridge");
+        fs::create_dir_all(&bridge).unwrap();
+        fs::write(
+            bridge.join("package.json"),
+            r#"{ "name": "@fixture/bridge", "dependencies": { "@fixture/ui": "workspace:*" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            bridge.join("index.ts"),
+            "import { ui } from '@fixture/ui'; export const bridge = ui + '_BRIDGE_MARKER';\n",
+        )
+        .unwrap();
+
+        let routes = host.join("node_modules/@fixture/routes");
+        fs::create_dir_all(&routes).unwrap();
+        fs::write(
+            routes.join("package.json"),
+            r#"{ "name": "@fixture/routes", "version": "1.0.0", "type": "module" }"#,
+        )
+        .unwrap();
+        let helper = host.join("node_modules/@fixture/route-helper");
+        fs::create_dir_all(&helper).unwrap();
+        fs::write(
+            helper.join("package.json"),
+            r#"{ "name": "@fixture/route-helper", "version": "1.0.0", "main": "index.js" }"#,
+        )
+        .unwrap();
+        fs::write(
+            helper.join("index.js"),
+            "export const helper = 'HELPER_MARKER';\n",
+        )
+        .unwrap();
+        fs::write(
+            routes.join("shared.ts"),
+            "import { helper } from '@fixture/route-helper';\nimport { virtualValue } from 'virtual:route-value';\nexport const suffix = helper + '_' + virtualValue;\n",
+        )
+        .unwrap();
+        for name in ["catalog", "detail", "preview", "tokens"] {
+            fs::write(
+                routes.join(format!("{name}.tsx")),
+                format!(
+                    "import {{ suffix }} from './shared';\nexport default function Page() {{ return <html><body>{name}_{{suffix}}</body></html>; }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            host.join("preset.mjs"),
+            r#"import { realpathSync } from 'node:fs';
+export default {
+  name: 'installed-routes',
+  setup(ctx) {
+    OPTIONAL_ALIAS
+    ctx.addVirtualModule('virtual:route-value', () => "export const virtualValue = 'VIRTUAL_MARKER';");
+    for (const name of ['catalog', 'detail', 'preview', 'tokens']) {
+      ctx.injectRoute('/' + name, realpathSync(ctx.projectRoot + '/node_modules/@fixture/routes/' + name + '.tsx'));
+    }
+  },
+};
+"#
+            .replace(
+                "OPTIONAL_ALIAS",
+                if ui_mode == "closure" {
+                    "ctx.addAlias('fixture:bridge', './node_modules/@fixture/bridge/index.ts');"
+                } else {
+                    ""
+                },
+            ),
+        )
+        .unwrap();
+
+        let label = ui_mode;
+        let Some(dist) = build_and_collect(&host, &esbuild, label) else {
+            return;
+        };
+        for name in ["catalog", "detail", "preview", "tokens"] {
+            let path = format!("{name}/index.html");
+            let body = String::from_utf8(
+                dist.get(&path)
+                    .unwrap_or_else(|| {
+                        panic!("{label}: missing {path}; emitted: {:#?}", dist.keys())
+                    })
+                    .clone(),
+            )
+            .unwrap();
+            assert!(
+                body.contains(&format!("{name}_HELPER_MARKER_VIRTUAL_MARKER")),
+                "{label}: {path} did not render the installed route closure: {body}"
+            );
+        }
+        let home = String::from_utf8(dist.get("index.html").unwrap().clone()).unwrap();
+        let home_marker = match ui_mode {
+            "direct" => "WORKSPACE_UI_MARKER",
+            "closure" => "WORKSPACE_UI_MARKER_BRIDGE_MARKER",
+            _ => "CONTROL_HOME_MARKER",
+        };
+        assert!(home.contains(home_marker), "{label}: {home}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test 4 — Project-local generated package routes stay inside the stage
 // ---------------------------------------------------------------------------
