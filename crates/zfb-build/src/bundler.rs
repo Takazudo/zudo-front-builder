@@ -3151,6 +3151,7 @@ pub fn bundle_with_session(
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
+        bundle_exclude.is_empty() && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
         &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
@@ -10306,6 +10307,7 @@ fn extend_node_modules_dependency_staging(
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
+    allow_workspace_physical_fallback: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
     root_entry_dependency_logical_importers: &BTreeMap<PathBuf, PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
@@ -10507,6 +10509,11 @@ fn extend_node_modules_dependency_staging(
         }
     }
 
+    // Only the automatic workspace-isolated view may fill lexical misses
+    // from a package's physical store. Keep these candidates deferred until
+    // workspace staging is confirmed, including when it is discovered late
+    // in the closure. Explicit preserve-symlinks keeps lexical resolution.
+    let mut deferred_physical_dependencies = Vec::new();
     loop {
         while let Some((logical_root, source_root)) = pending.pop_first() {
             if !visited.insert(logical_root.clone()) || !source_root.is_dir() {
@@ -10575,7 +10582,8 @@ fn extend_node_modules_dependency_staging(
                     if package_is_external(&package_name, external_specifiers) {
                         continue;
                     }
-                    let physical_dependency = package_was_symlinked
+                    let physical_dependency = (package_was_symlinked
+                        && (resolve_from_canonical_package || allow_workspace_physical_fallback))
                         .then(|| {
                             resolve_installed_package_dir(
                                 &physical_importer,
@@ -10599,14 +10607,6 @@ fn extend_node_modules_dependency_staging(
                         project_root,
                     ) {
                         (dependency.clone(), dependency)
-                    } else if let Some(dependency) = physical_dependency {
-                        // pnpm can install a dependency only beside the
-                        // package's real store directory. A staged copy
-                        // needs it under the logical package root too.
-                        (
-                            logical_root.join("node_modules").join(&package_name),
-                            dependency,
-                        )
                     } else if let Some(dependency) = resolve_configured_package(&package_name) {
                         // The configured EXTERNAL vendored node_modules
                         // (`BundlerInput::node_modules_dir`) is a closure source too:
@@ -10619,6 +10619,22 @@ fn extend_node_modules_dependency_staging(
                             logical_root.join("node_modules").join(&package_name),
                             dependency,
                         )
+                    } else if let Some(dependency) = physical_dependency {
+                        // pnpm can install a dependency only beside the
+                        // package's real store directory. Defer the fallback
+                        // until workspace staging replaces the live link,
+                        // without displacing any existing lexical/configured
+                        // resolution candidate.
+                        let logical_dependency =
+                            logical_root.join("node_modules").join(&package_name);
+                        deferred_physical_dependencies.push((
+                            logical_importer.clone(),
+                            physical_importer.clone(),
+                            package_name,
+                            logical_dependency,
+                            dependency,
+                        ));
+                        continue;
                     } else {
                         continue;
                     };
@@ -10676,6 +10692,29 @@ fn extend_node_modules_dependency_staging(
             });
         if !workspace_staging_active {
             break;
+        }
+        for (
+            logical_importer,
+            physical_importer,
+            package_name,
+            logical_dependency,
+            source_dependency,
+        ) in std::mem::take(&mut deferred_physical_dependencies)
+        {
+            stage_dependency_candidate(
+                &logical_importer,
+                &physical_importer,
+                &package_name,
+                logical_dependency,
+                source_dependency,
+                project_root,
+                bundle_exclude,
+                staging_dirs,
+                staging_alias_dirs,
+                &mut staged_package_sources,
+                &visited,
+                &mut pending,
+            );
         }
         for (logical_importer, package_name, logical_dependency, source_dependency) in
             std::mem::take(&mut deferred_live_dependencies)
