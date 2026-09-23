@@ -10318,6 +10318,9 @@ fn extend_node_modules_dependency_staging(
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let first_party_root = zfb_types::first_party_root_for(project_root);
+    let canonical_first_party_root = first_party_root
+        .canonicalize()
+        .unwrap_or_else(|_| first_party_root.clone());
     let workspace_node_modules_dir = (first_party_root != project_root)
         .then(|| first_party_root.join("node_modules"))
         .filter(|candidate| candidate.is_dir());
@@ -10572,43 +10575,53 @@ fn extend_node_modules_dependency_staging(
                     if package_is_external(&package_name, external_specifiers) {
                         continue;
                     }
-                    let canonical_dependency = (resolve_from_canonical_package
-                        && package_was_symlinked)
+                    let physical_dependency = package_was_symlinked
                         .then(|| {
                             resolve_installed_package_dir(
                                 &physical_importer,
                                 &package_name,
-                                &canonical_project_root,
+                                &canonical_first_party_root,
                             )
                         })
                         .flatten();
-                    let (mut logical_dependency, source_dependency) =
-                        if let Some(dependency) = canonical_dependency {
-                            (
-                                logical_root.join("node_modules").join(&package_name),
-                                dependency,
-                            )
-                        } else if let Some(dependency) = resolve_installed_package_dir(
-                            &logical_importer,
-                            &package_name,
-                            project_root,
-                        ) {
-                            (dependency.clone(), dependency)
-                        } else if let Some(dependency) = resolve_configured_package(&package_name) {
-                            // The configured EXTERNAL vendored node_modules
-                            // (`BundlerInput::node_modules_dir`) is a closure source too:
-                            // a bare dep that lives only in the vendor tree (outside
-                            // `project_root`) is aliased to a logical node_modules path so
-                            // materialisation routes the staged copy through the isolation
-                            // root, keeping it out of the live `<shadow>/node_modules`
-                            // symlink.
-                            (
-                                logical_root.join("node_modules").join(&package_name),
-                                dependency,
-                            )
-                        } else {
-                            continue;
-                        };
+                    let (mut logical_dependency, source_dependency) = if let Some(dependency) =
+                        resolve_from_canonical_package
+                            .then(|| physical_dependency.clone())
+                            .flatten()
+                    {
+                        (
+                            logical_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else if let Some(dependency) = resolve_installed_package_dir(
+                        &logical_importer,
+                        &package_name,
+                        project_root,
+                    ) {
+                        (dependency.clone(), dependency)
+                    } else if let Some(dependency) = physical_dependency {
+                        // pnpm can install a dependency only beside the
+                        // package's real store directory. A staged copy
+                        // needs it under the logical package root too.
+                        (
+                            logical_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else if let Some(dependency) = resolve_configured_package(&package_name) {
+                        // The configured EXTERNAL vendored node_modules
+                        // (`BundlerInput::node_modules_dir`) is a closure source too:
+                        // a bare dep that lives only in the vendor tree (outside
+                        // `project_root`) is aliased to a logical node_modules path so
+                        // materialisation routes the staged copy through the isolation
+                        // root, keeping it out of the live `<shadow>/node_modules`
+                        // symlink.
+                        (
+                            logical_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else {
+                        continue;
+                    };
                     if bundle_exclude.is_excluded(&logical_dependency, project_root) {
                         continue;
                     }
