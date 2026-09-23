@@ -77,6 +77,7 @@ set -uo pipefail
 #                            freshness gate, full workspace test,
 #                            zfb-md-extras test-utils lane, no-V8 cargo check,
 #                            esbuild + tailwindcss env-gate suites)
+#   HEAVY_GUARD=/path      — override the machine-wide heavy-guard executable
 
 START_TIME=$(date +%s)
 FAILURES=()
@@ -86,6 +87,8 @@ STEP_START_TIME=0
 LAST_DURATION=0
 STEP_NAMES=()
 STEP_DURATIONS=()
+CONTENTIONS=()
+HEAVY_GUARD_ACTIVE=0
 
 step() {
   CURRENT_STEP=$((CURRENT_STEP + 1))
@@ -110,6 +113,68 @@ record_duration() {
 pass() { record_duration; echo "✅ $1 (${LAST_DURATION}s)"; }
 fail() { record_duration; echo "❌ $1 (${LAST_DURATION}s)"; FAILURES+=("$1"); }
 skip() { record_duration; echo "⏭  $1 (skipped, ${LAST_DURATION}s)"; }
+
+# Queue only full Rust suites and heavy integration/asset lanes. The guard is
+# optional: CI and machines without an installed guard run commands directly.
+# An explicit HEAVY_GUARD wins over the installed Claude/Codex paths; if it is
+# configured but cannot execute, preserve its status instead of silently
+# falling back to an unguarded run.
+run_heavy() {
+  local guard="${HEAVY_GUARD:-}"
+  local candidate
+  local status
+
+  HEAVY_GUARD_ACTIVE=0
+
+  if [ -z "$guard" ] && [ -n "${HOME:-}" ]; then
+    for candidate in "$HOME/.claude/scripts/heavy-guard.sh" "$HOME/.codex/scripts/heavy-guard.sh"; do
+      if [ -x "$candidate" ]; then
+        guard="$candidate"
+        break
+      fi
+    done
+  fi
+
+  if [ -n "${CI:-}" ] || [ -z "$guard" ]; then
+    "$@"
+    status=$?
+  else
+    HEAVY_GUARD_ACTIVE=1
+    "$guard" -- "$@"
+    status=$?
+  fi
+  return "$status"
+}
+
+heavy() { run_heavy "$@"; }
+
+# Run an environment-injected command through the same queue without using an
+# assignment prefix on the function call (Bash would scope state set by the
+# function and hide whether a guard actually returned exit 75).
+heavy_env() {
+  local -a command_env=()
+  while [ "$1" != "--" ]; do
+    command_env+=("$1")
+    shift
+  done
+  shift
+  run_heavy env "${command_env[@]}" "$@"
+}
+
+# Exit 75 means queue contention and the command never ran. Keep it out of the
+# check-failure list and make the overall b4push result non-green below.
+heavy_failure() {
+  local label="$1"
+  local status="$2"
+
+  if [ "$status" -eq 75 ] && [ "$HEAVY_GUARD_ACTIVE" -eq 1 ]; then
+    record_duration
+    echo "⏸ heavy-guard contention: $label was not run (exit 75)"
+    CONTENTIONS+=("$label")
+  else
+    fail "$label"
+  fi
+}
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -262,11 +327,14 @@ fi
 # so the tracked dump stays byte-identical across checkout locations.
 step "Syntect syntax-set.packdump freshness gate"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump && \
-    git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump; then
-    pass "Syntect syntax-set.packdump freshness gate"
+  if heavy cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump; then
+    if git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump; then
+      pass "Syntect syntax-set.packdump freshness gate"
+    else
+      fail "Syntect syntax-set.packdump freshness gate"
+    fi
   else
-    fail "Syntect syntax-set.packdump freshness gate"
+    heavy_failure "Syntect syntax-set.packdump freshness gate" "$?"
   fi
 else
   skip "Syntect syntax-set.packdump freshness gate (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
@@ -283,10 +351,10 @@ else
 fi
 step "Full Rust test suite (${WS_TEST_CMD[*]})"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if "${WS_TEST_CMD[@]}"; then
+  if heavy "${WS_TEST_CMD[@]}"; then
     pass "${WS_TEST_CMD[*]}"
   else
-    fail "${WS_TEST_CMD[*]}"
+    heavy_failure "${WS_TEST_CMD[*]}" "$?"
   fi
 else
   skip "${WS_TEST_CMD[*]} (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
@@ -303,10 +371,10 @@ fi
 if [ "$HAVE_NEXTEST" = "1" ]; then
   step "Rust doctests (cargo test --workspace --doc)"
   if [ "${B4PUSH_FULL:-}" = "1" ]; then
-    if cargo test --workspace --doc; then
+    if heavy cargo test --workspace --doc; then
       pass "cargo test --workspace --doc"
     else
-      fail "cargo test --workspace --doc"
+      heavy_failure "cargo test --workspace --doc" "$?"
     fi
   else
     skip "cargo test --workspace --doc (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
@@ -327,10 +395,10 @@ else
 fi
 step "zfb-md-extras test-utils suite (${MDX_TEST_CMD[*]})"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if "${MDX_TEST_CMD[@]}"; then
+  if heavy "${MDX_TEST_CMD[@]}"; then
     pass "${MDX_TEST_CMD[*]}"
   else
-    fail "${MDX_TEST_CMD[*]}"
+    heavy_failure "${MDX_TEST_CMD[*]}" "$?"
   fi
 else
   skip "zfb-md-extras test-utils suite (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
@@ -374,10 +442,10 @@ ESBUILD_SLOT="${ROOT_DIR}/crates/zfb/binaries/esbuild/esbuild"
 step "zfb-islands esbuild env-gate suite (cargo test -p zfb-islands --tests -- --ignored)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
   if [ -x "$ESBUILD_SLOT" ]; then
-    if ZFB_ESBUILD_BIN="$ESBUILD_SLOT" cargo test -p zfb-islands --tests -- --ignored; then
+    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb-islands --tests -- --ignored; then
       pass "zfb-islands esbuild env-gate suite"
     else
-      fail "zfb-islands esbuild env-gate suite"
+      heavy_failure "zfb-islands esbuild env-gate suite" "$?"
     fi
   else
     skip "zfb-islands esbuild env-gate suite ($ESBUILD_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
@@ -393,10 +461,10 @@ fi
 step "zfb client-bundling cross-pipeline acceptance test"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
   if [ -x "$ESBUILD_SLOT" ]; then
-    if ZFB_ESBUILD_BIN="$ESBUILD_SLOT" cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored; then
+    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored; then
       pass "zfb client-bundling cross-pipeline acceptance test"
     else
-      fail "zfb client-bundling cross-pipeline acceptance test"
+      heavy_failure "zfb client-bundling cross-pipeline acceptance test" "$?"
     fi
   else
     skip "zfb client-bundling cross-pipeline acceptance test ($ESBUILD_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
@@ -415,10 +483,10 @@ TAILWIND_SLOT="${ROOT_DIR}/crates/zfb/binaries/tailwindcss-v4"
 step "zfb-css tailwindcss-v4 env-gate test (cargo test -p zfb-css --test integration -- --ignored)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
   if [ -x "$TAILWIND_SLOT" ]; then
-    if ZFB_TAILWIND_BIN="$TAILWIND_SLOT" cargo test -p zfb-css --test integration -- --ignored; then
+    if heavy_env "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb-css --test integration -- --ignored; then
       pass "zfb-css tailwindcss-v4 env-gate test"
     else
-      fail "zfb-css tailwindcss-v4 env-gate test"
+      heavy_failure "zfb-css tailwindcss-v4 env-gate test" "$?"
     fi
   else
     skip "zfb-css tailwindcss-v4 env-gate test ($TAILWIND_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
@@ -430,10 +498,10 @@ fi
 step "zfb-build tailwindcss-v4 env-gate test (cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
   if [ -x "$TAILWIND_SLOT" ]; then
-    if ZFB_TAILWIND_BIN="$TAILWIND_SLOT" cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored; then
+    if heavy_env "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored; then
       pass "zfb-build tailwindcss-v4 env-gate test"
     else
-      fail "zfb-build tailwindcss-v4 env-gate test"
+      heavy_failure "zfb-build tailwindcss-v4 env-gate test" "$?"
     fi
   else
     skip "zfb-build tailwindcss-v4 env-gate test ($TAILWIND_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
@@ -445,10 +513,10 @@ fi
 step "zfb command-layer env-gates (cargo test -p zfb --lib commands::build:: -- --ignored)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
   if [ -x "$ESBUILD_SLOT" ] && [ -x "$TAILWIND_SLOT" ]; then
-    if ZFB_ESBUILD_BIN="$ESBUILD_SLOT" ZFB_TAILWIND_BIN="$TAILWIND_SLOT" cargo test -p zfb --lib commands::build:: -- --ignored; then
+    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb --lib commands::build:: -- --ignored; then
       pass "zfb command-layer env-gates"
     else
-      fail "zfb command-layer env-gates"
+      heavy_failure "zfb command-layer env-gates" "$?"
     fi
   else
     skip "zfb command-layer env-gates (esbuild and/or tailwind slot not staged — run \`cargo build --workspace --all-targets\` first)"
@@ -472,14 +540,28 @@ for i in "${!STEP_NAMES[@]}"; do
 done
 echo ""
 
-if [ ${#FAILURES[@]} -eq 0 ]; then
+if [ ${#FAILURES[@]} -eq 0 ] && [ ${#CONTENTIONS[@]} -eq 0 ]; then
   echo "✅ All checks passed (or skipped). Safe to push."
   echo "   Reminder: health.yml is the authoritative gate — b4push is the fast subset."
   exit 0
-else
+fi
+
+if [ ${#FAILURES[@]} -gt 0 ]; then
   echo "❌ ${#FAILURES[@]} check(s) failed:"
   for f in "${FAILURES[@]}"; do
     echo "   - $f"
   done
-  exit 1
 fi
+
+if [ ${#CONTENTIONS[@]} -gt 0 ]; then
+  echo "⏸ ${#CONTENTIONS[@]} heavy step(s) were not run because the heavy-guard queue was contended (exit 75):"
+  for c in "${CONTENTIONS[@]}"; do
+    echo "   - $c"
+  done
+fi
+
+if [ ${#FAILURES[@]} -eq 0 ] && [ ${#CONTENTIONS[@]} -gt 0 ]; then
+  exit 75
+fi
+
+exit 1
