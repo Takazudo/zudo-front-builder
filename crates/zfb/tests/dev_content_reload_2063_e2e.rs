@@ -635,37 +635,45 @@ async fn confirm_watcher_live(
     let offset = read_log(&session.stderr_path).len();
     fs::write(warmup_path, render_mdx_warmup_revision(1)).expect("edit existing warmup entry");
 
-    let acknowledged = tokio::time::timeout(SSE_FIRST_EVENT_DEADLINE, async {
-        let (tick, tick_end) = wait_for_tick_mentioning(session, "__warmup.mdx", offset).await;
-        // This marker is emitted at the pipeline's outcome drain after
-        // page publication. `tick=<ms>` is only a renderer phase and is
-        // also emitted by boot, so it cannot establish this boundary.
-        wait_for_log_line_since(
-            session,
-            tick_end,
-            SSE_FIRST_EVENT_DEADLINE,
-            "warmup tick outcome drain",
-            |line| line.starts_with("[zfb-timing] stale probe: drained pages_stale="),
-        )
-        .await;
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
-            .await
-            .expect("read SSE stream during watcher-live handshake");
-        assert!(
-            events.iter().any(|event| event == "page"),
-            "warmup tick produced no page SSE: {events:?}\n{}",
-            session.logs(),
-        );
-        eprintln!("[dev_content_reload_2063_e2e] warmup delivery: {tick}; SSE: {events:?}");
-    })
-    .await;
+    // Start SSE observation at the edit, concurrently with correlation.
+    // Its 30s first-event budget and subsequent 3s quiet window are
+    // separate phases. Wrapping their sum in another 30s timeout rejects
+    // a valid first event near that deadline while draining its quiet
+    // window, and hides which readiness condition actually failed.
+    let started = Instant::now();
+    let (tick, events) = tokio::join!(
+        async {
+            let (tick, tick_end) = wait_for_tick_mentioning(session, "__warmup.mdx", offset).await;
+            eprintln!(
+                "[dev_content_reload_2063_e2e] warmup delivered at {}ms: {tick}",
+                started.elapsed().as_millis(),
+            );
+            // This marker is emitted at the pipeline's outcome drain after
+            // page publication. `tick=<ms>` is only a renderer phase and is
+            // also emitted by boot, so it cannot establish this boundary.
+            wait_for_log_line_since(
+                session,
+                tick_end,
+                SSE_FIRST_EVENT_DEADLINE,
+                "warmup tick outcome drain",
+                |line| line.starts_with("[zfb-timing] stale probe: drained pages_stale="),
+            )
+            .await;
+            eprintln!(
+                "[dev_content_reload_2063_e2e] warmup outcome drained at {}ms",
+                started.elapsed().as_millis(),
+            );
+            tick
+        },
+        collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW),
+    );
+    let events = events.expect("read SSE stream during watcher-live handshake");
     assert!(
-        acknowledged.is_ok(),
-        "single warmup edit was not delivered, completed, and SSE-acknowledged within {}s \
-         after stderr byte {offset}.\n{}",
-        SSE_FIRST_EVENT_DEADLINE.as_secs(),
+        events.iter().any(|event| event == "page"),
+        "warmup tick produced no page SSE: {events:?}\n{}",
         session.logs(),
     );
+    eprintln!("[dev_content_reload_2063_e2e] warmup delivery: {tick}; SSE: {events:?}");
     poll_until_response_contains(
         client,
         &format!("{base}/posts/__warmup"),
