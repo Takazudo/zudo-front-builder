@@ -109,7 +109,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zfb_test_utils::{
     decode_utf8_incremental, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
@@ -512,6 +512,22 @@ fn warmup_completion_evidence_requires_a_complete_line_after_its_tick() {
     assert!(log_line_since(&log, tick_end, completed).is_some());
 }
 
+/// Record the boundary immediately before a scenario writes its file. The
+/// wall clock lets a captured process log be correlated with native-watcher
+/// diagnostics; only the stderr byte offset is used by the assertions.
+fn edit_log_offset(session: &DevSession, path: &Path) -> usize {
+    let offset = read_log(&session.stderr_path).len();
+    eprintln!(
+        "[dev_content_reload_2063_e2e] edit checkpoint unix_ms={} stderr_offset={offset} file={}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_millis(),
+        path.display(),
+    );
+    offset
+}
+
 async fn wait_for_log_line_since(
     session: &DevSession,
     offset: usize,
@@ -522,15 +538,23 @@ async fn wait_for_log_line_since(
     let started = Instant::now();
     while started.elapsed() < deadline {
         if let Some(found) = log_line_since(&read_log(&session.stderr_path), offset, &matches) {
+            eprintln!(
+                "[dev_content_reload_2063_e2e] observed {description} after {}ms \
+                 stderr_offset={offset} line_end={}",
+                started.elapsed().as_millis(),
+                found.1,
+            );
             return found;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     panic!(
-        "no {description} after stderr byte {offset} within {}s. \
-         A missing edit-delivery line means the filesystem event never reached the \
-         orchestrator, distinct from #2063's SSE-dark delivery.\n{}",
+        "no {description} observed after stderr byte {offset} within {}s (elapsed={}ms). \
+         Missing edit-delivery evidence does not establish #2063's SSE-dark delivery: \
+         the event may be delayed before the orchestrator or its tick log. \
+         The log snapshot below is taken after the deadline and may include later activity.\n{}",
         deadline.as_secs(),
+        started.elapsed().as_millis(),
         session.logs(),
     );
 }
@@ -632,7 +656,7 @@ async fn confirm_watcher_live(
     .await;
 
     let sse = subscribe_sse(base).await;
-    let offset = read_log(&session.stderr_path).len();
+    let offset = edit_log_offset(session, warmup_path);
     fs::write(warmup_path, render_mdx_warmup_revision(1)).expect("edit existing warmup entry");
 
     // Start SSE observation at the edit, concurrently with correlation.
@@ -810,9 +834,10 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
-        let edit_log_offset = read_log(&session.stderr_path).len();
+        let entry_path = session.root.join("content/posts/alpha.mdx");
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(
-            session.root.join("content/posts/alpha.mdx"),
+            &entry_path,
             "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA updated markdown body.\n",
         )
         .expect("edit the alpha content entry");
@@ -1043,7 +1068,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
         drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
-        let edit_log_offset = read_log(&session.stderr_path).len();
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
 
         let ((tick_line, _), events) = tokio::join!(
@@ -1275,7 +1300,7 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
         .await;
 
         let sse = subscribe_sse(&base).await;
-        let edit_log_offset = read_log(&session.stderr_path).len();
+        let edit_log_offset = edit_log_offset(&session, &entry_path);
         fs::write(
             &entry_path,
             "---\ntitle: Alpha V2 Frontmatter Injected\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA-INJECTED updated markdown body.\n",
