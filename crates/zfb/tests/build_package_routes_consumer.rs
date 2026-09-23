@@ -559,7 +559,7 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         return;
     }
 
-    for with_workspace_ui in [false, true] {
+    for ui_mode in ["none", "direct", "closure"] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace = tmp.path();
         fs::write(
@@ -572,7 +572,7 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         materialize_embedded_node_modules(&host);
         fs::write(
             host.join("package.json"),
-            if with_workspace_ui {
+            if ui_mode == "direct" {
                 r#"{ "name": "catalog", "dependencies": { "@fixture/ui": "workspace:*" } }"#
             } else {
                 r#"{ "name": "catalog" }"#
@@ -601,11 +601,29 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         std::os::unix::fs::symlink(&ui, host.join("node_modules/@fixture/ui")).unwrap();
         fs::write(
             host.join("pages/index.tsx"),
-            if with_workspace_ui {
+            if ui_mode == "direct" {
                 r#"import { ui } from '@fixture/ui'; export default function Home() { return <html><body>{ui}</body></html>; }"#
+            } else if ui_mode == "closure" {
+                r#"import { bridge } from 'fixture:bridge'; export default function Home() { return <html><body>{bridge}</body></html>; }"#
             } else {
                 r#"export default function Home() { return <html><body>CONTROL_HOME_MARKER</body></html>; }"#
             },
+        )
+        .unwrap();
+
+        // A plugin alias stages this npm package before source-graph seeding.
+        // Its workspace dependency is discovered only while walking pending
+        // package closure, after the ordinary route candidate was deferred.
+        let bridge = host.join("node_modules/@fixture/bridge");
+        fs::create_dir_all(&bridge).unwrap();
+        fs::write(
+            bridge.join("package.json"),
+            r#"{ "name": "@fixture/bridge", "dependencies": { "@fixture/ui": "workspace:*" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            bridge.join("index.ts"),
+            "import { ui } from '@fixture/ui'; export const bridge = ui + '_BRIDGE_MARKER';\n",
         )
         .unwrap();
 
@@ -648,21 +666,26 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
 export default {
   name: 'installed-routes',
   setup(ctx) {
+    OPTIONAL_ALIAS
     ctx.addVirtualModule('virtual:route-value', () => "export const virtualValue = 'VIRTUAL_MARKER';");
     for (const name of ['catalog', 'detail', 'preview', 'tokens']) {
       ctx.injectRoute('/' + name, realpathSync(ctx.projectRoot + '/node_modules/@fixture/routes/' + name + '.tsx'));
     }
   },
 };
-"#,
+"#
+            .replace(
+                "OPTIONAL_ALIAS",
+                if ui_mode == "closure" {
+                    "ctx.addAlias('fixture:bridge', './node_modules/@fixture/bridge/index.ts');"
+                } else {
+                    ""
+                },
+            ),
         )
         .unwrap();
 
-        let label = if with_workspace_ui {
-            "workspace"
-        } else {
-            "control"
-        };
+        let label = ui_mode;
         let Some(dist) = build_and_collect(&host, &esbuild, label) else {
             return;
         };
@@ -682,11 +705,12 @@ export default {
             );
         }
         let home = String::from_utf8(dist.get("index.html").unwrap().clone()).unwrap();
-        assert!(home.contains(if with_workspace_ui {
-            "WORKSPACE_UI_MARKER"
-        } else {
-            "CONTROL_HOME_MARKER"
-        }));
+        let home_marker = match ui_mode {
+            "direct" => "WORKSPACE_UI_MARKER",
+            "closure" => "WORKSPACE_UI_MARKER_BRIDGE_MARKER",
+            _ => "CONTROL_HOME_MARKER",
+        };
+        assert!(home.contains(home_marker), "{label}: {home}");
     }
 }
 
