@@ -2237,6 +2237,304 @@ The `render-only` headroom observation is a zfb-side budget matter, not an
 upstream defect. Acknowledging the release upstream would be an outward-facing
 action and remains the owner's call; it was not performed.
 
+##### `noyalib 0.0.51` / `noyalib-serde-yaml 0.0.51` released differential evaluation (#3105) — KEEP
+
+**Terminal verdict, recorded after the final release-race check at
+2026-09-24T12:50:10Z: KEEP the production 0.0.44 pair.** Phase 1 passes,
+but the candidate render-only gzip-9 artifact is 1,107,017 B against the
+unchanged 1,100,000 B ceiling. A same-toolchain 0.0.44 control is also over
+that ceiling (1,106,527 B); 0.0.51 adds 490 B. This is not a YAML semantic
+regression, and the control proves the host already misses the budget, but
+this epic requires a green Phase 2 gate before MIGRATE. Projecting a local
+delta onto older CI numbers is not that evidence. No migration is authorized.
+
+This evaluation starts from zfb commit
+`1ea185c61c3bcdff79ff295a1e797745b82d4e34`, after the independent SSR identity
+repair. The production pair is `0.0.44`; the candidate selected at
+`2026-09-24T12:27:24Z` is the newest complete, released, non-yanked pair,
+**0.0.51**. [#3045](https://github.com/Takazudo/zudo-front-builder/issues/3045)
+and the detailed [#2988](https://github.com/Takazudo/zudo-front-builder/issues/2988)
+record supplied the procedure, not results for this candidate.
+
+**Independent trigger corroboration.** The evaluator downloaded and read
+[workflow 35960495279](https://github.com/Takazudo/zudo-front-builder/actions/runs/35960495279)
+with `gh run view 35960495279 --repo Takazudo/zudo-front-builder --log`.
+Its `2026-09-24T05:33:54Z` report is `CANDIDATE_DRIFT`, exit 10, with
+`errors: []`. An authenticated local `GITHUB_TOKEN=$(gh auth token) node
+scripts/check-yaml-candidate-drift.mjs` at `2026-09-24T12:27:05.277Z` also
+returned 10. All **39 adopted-pair triage deltas** were inspected: `noyalib`
+adds versions, tags, and Releases for 0.0.46–0.0.51 (18 deltas), and
+`noyalib-serde-yaml` adds those three surfaces for 0.0.45–0.0.51 (21).
+The earlier bare core 0.0.45 was already observed in the committed baseline;
+its alias has since shipped, completing that formerly incomplete pair.
+There is no adopted yank, unyank, archive, or release-PR-state delta.
+
+Informational changes were also read: core deletes `feat/examples-autodiscovery`,
+adds `feat/v0.0.52`, and advances `main`; the alias deletes the old dependabot
+branch, adds `feat/v0.0.46` through `feat/v0.0.52`, and advances `main` and
+`release/v0.0.45`. Fallback `saphyr` adds 0.1.0 and its tag, advances `master`,
+and deletes its renovate branch; `serde-saphyr` adds `bw/from_str_multiple`
+and advances `master`. The other three fallback crates show no drift. The
+role-aware policy makes those fallback and branch changes informational.
+No snapshot or detector classification was changed.
+
+The GitHub Releases for each skipped intermediate version were read. Core
+0.0.45 contains CST/reader and parser-toggle fixes; 0.0.46 contains parser
+contract, include-limit, parallel-work and atomic-CST changes; 0.0.47 is
+release/CI maintenance; 0.0.48 adds strict query paths; 0.0.49 adds caller-owned
+Rayon pools and fixes a duplicate-key fuzz oracle; 0.0.50 adds backpressured
+async streams; 0.0.51 adds named parser profiles. The alias Release notes describe
+the matching core-version updates. The newest-pair policy tests their accumulated
+production behavior at 0.0.51, rather than shipping any intervening pin.
+The passed-over pairs are recorded individually below; **both crates in
+every row are non-yanked**:
+
+| Skipped pair | Core published (UTC) | Alias published (UTC) | Reason |
+| --- | --- | --- | --- |
+| 0.0.45 | 2026-09-18T18:05:28.349263Z | 2026-09-19T07:41:27.464727Z | Superseded by complete 0.0.51 |
+| 0.0.46 | 2026-09-21T15:04:50.854459Z | 2026-09-21T22:31:50.381115Z | Superseded by complete 0.0.51 |
+| 0.0.47 | 2026-09-21T22:54:39.552783Z | 2026-09-21T23:10:08.420790Z | Superseded by complete 0.0.51 |
+| 0.0.48 | 2026-09-22T00:59:43.932787Z | 2026-09-22T07:23:53.360055Z | Superseded by complete 0.0.51 |
+| 0.0.49 | 2026-09-22T09:31:12.915663Z | 2026-09-22T09:49:53.603529Z | Superseded by complete 0.0.51 |
+| 0.0.50 | 2026-09-22T12:02:45.101054Z | 2026-09-22T12:21:53.235495Z | Superseded by complete 0.0.51 |
+
+**Candidate provenance.**
+
+| Field | `noyalib 0.0.51` | `noyalib-serde-yaml 0.0.51` |
+| --- | --- | --- |
+| Published (UTC) | `2026-09-22T14:47:58.355202Z` | `2026-09-22T15:04:44.656167Z` |
+| Archive SHA-256 | `77d00fc12936a62c370ddaaba83218c753ba110b34a60ed6e278fd7b7389e350` | `dac0eb0d33c4def47b63dcbad6024ce2b5b2cb212af8de155224585a126081bb` |
+| Archive bytes | `1214177` | `69286` |
+| License | `MIT OR Apache-2.0` | `MIT OR Apache-2.0` |
+| Minimum Rust | `1.86.0` | `1.86.0` |
+
+The corresponding [core registry record](https://crates.io/api/v1/crates/noyalib/0.0.51)
+and [alias registry record](https://crates.io/api/v1/crates/noyalib-serde-yaml/0.0.51)
+were checked against the actual downloaded `.crate` archives and, **before
+any candidate compilation**, the checksums written by Cargo. All agree.
+The core annotated tag object `8235291f76bc63a3a5407f57d69540af442a6a05`
+(tagged `2026-09-22T18:50:07Z`) dereferences to
+[`c2646cdc`](https://github.com/sebastienrousseau/noyalib/commit/c2646cdc88ae816711f06646020201b50e4cb99b);
+its [Release](https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.51)
+was published `2026-09-22T14:46:54Z`. The alias tag object
+`48676fd3d90e0857031b38d1874c43254dbbbec1` (tagged `2026-09-22T18:50:23Z`)
+dereferences to
+[`3cd031df`](https://github.com/sebastienrousseau/noyalib-serde-yaml/commit/3cd031df4365b14fdb4f92aee317495e7de394fc);
+its [Release](https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/tag/v0.0.51)
+was published `2026-09-22T18:53:06Z`. Both Release bodies publish the matching
+archive checksum. These are the observed API dates, including the core tag's
+later timestamp than its Release; no inferred chronology substitutes for them.
+
+The published alias's manifest and source were inspected: `build = false`, no build script,
+`#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`, and the sole implementation
+`pub use noyalib::compat::serde_yaml::*;`. Its only normal dependency is exact
+`noyalib =0.0.51`, `default-features = false`, features `std` and
+`compat-serde-yaml`. The published core moved its test into
+`tests/integrations/serde_yaml_contract.rs`; that source still predicts the
+custom-tag error at `(1, 8, 7)` with Display column 8. No upstream test,
+example, benchmark, or unreleased branch was executed.
+
+**Open release work is a separate future trigger.** Independent API inspection found
+[core PR #459](https://github.com/sebastienrousseau/noyalib/pull/459) and
+[alias PR #28](https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/28),
+both open on `feat/v0.0.52`. They are explicitly dispositioned as unreleased
+future work, not included in the evaluated 0.0.51 package. Both watcher
+`pendingReleasePr` entries are currently `null`, so discovering those PRs was
+an independent triage observation, not an automated release-PR-state delta.
+The final confirmation topic must revisit them and any completed 0.0.52 pair
+before deciding what its late snapshot may acknowledge.
+
+**Phase 1, P1 only.** The temporary root manifest changed the package alias
+pin from `=0.0.44` to `=0.0.51`. There were **zero production source lines**,
+zero corrective rounds, and no unsafe, FFI, OS-specific branches, polling,
+signal supervision, or Unicode tables. The alias and the direct compatibility
+module are the same implementation, and P1 matched all 18 cases, so the
+conditional P3 direct-shim experiment was not needed. Neither the immutable
+corpus nor baseline nor harness was edited; `CURRENT_ADAPTER_NAME` and the
+fixture's adapter metadata deliberately continued to agree at `0.0.44`.
+KEEP leaves both strings unchanged; only a separately authorized migration
+may relabel them together. In this matrix,
+`match` means complete JSON equality or exact error Display plus optional
+line, column, and byte-index equality:
+
+| Category | Corpus case | P1 package alias |
+| --- | --- | --- |
+| anchors-aliases | `anchors-and-aliases` | match |
+| merge-keys | `merge-key-is-an-ordinary-json-key` | match |
+| non-string-keys | `non-string-scalar-keys` | match |
+| non-string-keys | `non-string-composite-key` | match |
+| scalar-edge-cases | `yaml-11-boolean-spellings` | match |
+| scalar-edge-cases | `octals-sexagesimals-and-numbers` | match |
+| scalar-edge-cases | `null-and-date-scalars` | match |
+| unicode-bom-crlf-emoji | `unicode-crlf-and-emoji` | match |
+| malformed-input | `malformed-unicode-location` | match |
+| malformed-input | `malformed-flow-sequence-at-eof` | match |
+| malformed-input | `malformed-indentation` | match |
+| explicit-tags | `built-in-explicit-tags` | match |
+| explicit-tags | `custom-explicit-tag` | match |
+| duplicate-keys | `duplicate-map-keys-last-wins` | match |
+| non-finite-overflowing-numbers | `non-finite-and-overflowing-numbers` | match |
+| non-finite-overflowing-numbers | `integer-boundaries` | match |
+| non-finite-overflowing-numbers | `integer-overflow` | match |
+| alias-anchor-resource-limits | `alias-anchor-repetition-limit` | match |
+
+`cargo test -p zfb-content --test yaml_differential_harness` passed 4/4,
+including the single assertion comparing all 18 observations. The complete
+`cargo test -p zfb-content` then passed **1,072/1,072** across 34 test/doc-test
+groups, including `error_messages.rs` 2/2, with zero ignored tests.
+`cargo test -p zfb-md-wasm --test api --test parse_to_ast` passed **57/57**
+(32 + 25), including the protected EOF frontmatter diagnostic (original
+source line 3, column 1) and original-source UTF-16 column 9. All three
+separate native checks passed: `cargo check -p zfb-content`, `cargo check -p
+zfb-md-wasm`, and `cargo check -p zfb --no-default-features`. Keeping them
+separate avoids feature unification enabling V8 in the CLI check. The last
+command emits the same 28 feature-gated warnings already recorded in #2988.
+
+`cargo test -p zfb --no-default-features --lib diagnostics::tests` passed
+**11/11**, including `frontmatter_yaml_error_locates_within_user_file`, with
+zero ignored tests. An initial invocation with `--bin zfb` selected zero
+tests; that invocation is explicitly **not coverage**. The corrected library
+selection above provides the evidence. No expectation or source change was
+needed. Phase 1 therefore permits Phase 2.
+
+**Phase 2 toolchain and commands.** This round uses Linux x86_64 (WSL),
+`rustc 1.95.0 (59807616e 2026-04-14)`, `cargo 1.95.0 (f2d3ce0bd
+2026-03-21)`, `wasm-bindgen 0.2.121`, `wasm-opt version 130
+(version_130)`, Node `v24.13.1`, pnpm `11.3.0`, and `cargo-deny 0.19.9`.
+The wasm32 standard library and exact bindgen CLI were already installed.
+The rustup stable toolchain is used throughout; this evaluation provides no
+Mac, Windows, or different-compiler observation. Native commands reuse
+`/home/takazudo/.cargo-target` from the existing Cargo configuration; no
+shared target was cleaned. `pnpm install --frozen-lockfile` supplied the CLI
+build-script prerequisites and changed no tracked files.
+
+Every Rust build/test ran through
+`bash "$HOME/.codex/scripts/heavy-guard.sh" -- <command>`; the protected
+native checks were sequential inside one guarded shell script. The manager
+ran the two long artifact builds through the same guard. All Phase 1 and
+wasm32-check guards reported PASS. The candidate artifact build reported
+**FAIL**, exit 1, in 118 seconds, with a real size assertion; it was not
+ENV_SUSPECT or contention. The follow-up script completed and its outer guard
+reported PASS, but its individual control-build status was **exit 1**, which
+is the status used here. No deferred check counts as a pass. The disk gate
+was rechecked immediately before Phase 2: **451 GiB free**, above 30 GiB.
+
+`cargo check -p zfb-md-wasm --target wasm32-unknown-unknown` passed. These
+were the exact artifact and package-test commands, in execution order:
+
+```sh
+CARGO_TARGET_DIR=/tmp/zfb-3105-wasm-candidate node scripts/run-zfb-md-wasm-build-timed.mjs
+pnpm --filter @takazudo/zfb-md-wasm test
+# Restore the original 0.0.44 manifest/lock for the control measurement.
+CARGO_TARGET_DIR=/tmp/zfb-3105-wasm-control node scripts/run-zfb-md-wasm-build-timed.mjs
+cargo deny list
+cargo deny check
+```
+
+Both timed target directories were initially absent. Both builds emitted all
+four artifacts, ran TypeScript compilation, printed the sixteen-field summary,
+and then failed at the existing render-only gzip ceiling. The candidate's
+emitted artifacts passed **219/219 tests in 12 files** under the direct
+package-test command above. The composite `pnpm test:md-wasm` was **not run**:
+its same build step had already failed; running its test half independently
+does not make the composite gate green. Likewise, the planned
+`node scripts/assert-zfb-md-wasm-budgets.mjs --build-log <log> --dist
+crates/zfb-md-wasm/npm/dist --update-manifest` steps were **not reached**
+after the build failure. The table records the actual production build
+summaries at each pin, not a successful manifest refresh. The committed size
+manifest and every ceiling remain byte-identical to the starting revision.
+
+| Artifact | Field | `0.0.44` control | `0.0.51` candidate | Delta |
+| --- | --- | --- | --- | --- |
+| default | `finalWasm` | 3,421,204 | 3,422,238 | +1,034 |
+| default | `gzip9` | 1,541,847 | 1,542,918 | +1,071 |
+| default | `glue` | 14,998 | 14,998 | +0 |
+| default | `glueGzip9` | 4,199 | 4,199 | +0 |
+| highlight-only | `finalWasm` | 1,533,609 | 1,533,609 | +0 |
+| highlight-only | `gzip9` | 822,251 | 822,265 | +14 |
+| highlight-only | `glue` | 8,758 | 8,758 | +0 |
+| highlight-only | `glueGzip9` | 2,637 | 2,637 | +0 |
+| render-only | `finalWasm` | 2,215,286 | 2,216,153 | +867 |
+| render-only | `gzip9` | 1,106,527 | 1,107,017 | +490 |
+| render-only | `glue` | 8,772 | 8,772 | +0 |
+| render-only | `glueGzip9` | 2,661 | 2,661 | +0 |
+| parse-only | `finalWasm` | 723,818 | 724,614 | +796 |
+| parse-only | `gzip9` | 296,318 | 296,583 | +265 |
+| parse-only | `glue` | 11,159 | 11,159 | +0 |
+| parse-only | `glueGzip9` | 3,797 | 3,797 | +0 |
+
+| Artifact | Gzip-9 ceiling | Candidate headroom | Result |
+| --- | --- | --- | --- |
+| default | 1,600,000 | 57,082 | PASS |
+| highlight-only | 880,000 | 57,735 | PASS |
+| render-only | 1,100,000 | -7,017 | FAIL |
+| parse-only | 325,000 | 28,417 | PASS |
+
+The unchanged root/render/parse glue columns corroborate that this is a
+parser-code size comparison. The highlight wasm byte count is unchanged
+while gzip differs by 14 B; same-length binaries need not have identical
+bytes, and no byte-identity claim is made. The control proves that the local
+budget breach predates the candidate. The candidate increases render-only
+by 490 B gzip, so it does not repair that failed gate. No ceiling exception,
+`--allow-over-ceiling`, updated expectation, or CI projection was used.
+
+**Dependency and license audit.** `cargo tree -e normal -i noyalib` shows the
+single edge through `noyalib-serde-yaml` and `zfb-content`; `cargo tree -e
+features -i noyalib` confirms the alias's `std`/`compat-serde-yaml` feature
+closure. The lockfile has **597 packages before and after**, and the exact
+delta is the two adopted entries' version/checksum fields only. Both
+normal-dependency arrays and every other entry are unchanged. No optional
+package, transitive package, or dependency exception entered the graph.
+`cargo deny list` at both pins is byte-identical after normalizing only the
+two YAML version strings; all sixteen license-category counts are unchanged
+(including Apache-2.0 288 and MIT 430). `cargo deny check` passes at both
+pins: `advisories ok, bans ok, licenses ok, sources ok`. Existing wildcard
+and duplicate-version warnings require no new exception.
+
+**Final release-race guard.** Immediately before recording KEEP, the registry,
+actual archive SHA-256 values, exact alias dependency, selected tag objects
+and commits, GitHub Releases/checksums, and open release PRs were rechecked
+from `2026-09-24T12:50:03Z` through `2026-09-24T12:50:10Z`. Both crates still
+top out at 0.0.51, remain non-yanked, retain the two checksums above, and the
+alias still pins `noyalib =0.0.51` with the same features. Tags/commits match
+the initial observation; the two 0.0.52 PRs remain open and unreleased.
+A final authenticated `node scripts/check-yaml-candidate-drift.mjs --json`
+at `2026-09-24T12:50:03.495Z` returned **10**, `errors: []`, with the same
+39 triage deltas and informational changes. There is no newly published pair
+to add to this evaluation; a later complete release remains a new trigger.
+
+**Downstream contract and next trigger.** Issue
+[#3106](https://github.com/Takazudo/zudo-front-builder/issues/3106) is locked
+to KEEP: preserve `serde_yaml = { package = "noyalib-serde-yaml", version =
+"=0.0.44" }`, its two existing lock entries, `CURRENT_ADAPTER_NAME`, and the
+baseline's adapter metadata. No candidate pin, production source, fixture,
+size manifest, or ceiling update is authorized. All 18 observations, the
+corpus, error Display/byte coordinates, original-source UTF-16 diagnostic
+pins, and the SSR identity repair remain protected. Applying KEEP records the
+reason and next trigger without repeating this rejected migration. The late
+confirmation topic alone may refresh the watcher snapshot after checking
+this disposition and any new deltas. This topic never refreshes it.
+
+A completed non-yanked pair beyond 0.0.51, a yank of the adopted 0.0.44 pair,
+or fresh green budget evidence for 0.0.51 can open a new bounded evaluation.
+Open 0.0.52 PRs are explicitly pending; neither their branch existence nor
+this KEEP permits a future completed release to be silently acknowledged.
+The failed local budget remains a limitation, not deferred passing evidence.
+No upstream bug report is warranted from these results: all semantic and
+location contracts pass, and the size breach also exists on the control.
+
+**Restoration and final verification.** The temporary root manifest and lockfile
+were restored, and SHA-256 checks over 15 protected files found zero changes:
+the two manifests, lockfile, harness, corpus, immutable baseline, protected
+content/md-wasm tests and production sources, CLI diagnostics, shipped-size
+manifest, watcher baseline, and the preceding SSR repair's bundler source.
+The restored 0.0.44 harness passed **4/4** again (all 18 observations match),
+with no skipped tests. `pnpm format:check` and `git diff --check` pass. The
+two isolated wasm targets were removed; shared native build caches were kept.
+The only committed file is `DEPENDENCIES.md`; there are no package/source
+changes that require committed generated artifacts. No browser or visual
+check applies to this evidence-only change. No upstream message was sent.
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports
