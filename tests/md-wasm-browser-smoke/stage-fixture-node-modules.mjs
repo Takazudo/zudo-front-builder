@@ -13,7 +13,7 @@
  * md-wasm source path, copied glue, or copied wasm file is involved.
  */
 
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,25 +29,11 @@ function requireDirectory(path, label) {
   return realpathSync(path);
 }
 
-function findPnpmPackage(packageName) {
-  const store = resolve(repoRoot, "node_modules", ".pnpm");
-  const candidates = [
-    ...new Set(
-      readdirSync(store)
-        .map((entry) => join(store, entry, "node_modules", packageName))
-        .filter(existsSync)
-        // A pnpm dependent's nested link and its direct store package can
-        // name the same physical dependency. Deduplicate those links before
-        // rejecting genuinely different installed versions.
-        .map((path) => realpathSync(path)),
-    ),
-  ];
-  if (candidates.length !== 1) {
-    throw new Error(
-      `expected exactly one root pnpm store entry for ${packageName}, found ${candidates.length}`,
-    );
-  }
-  return candidates[0];
+function installedDependency(owner, packageName) {
+  return requireDirectory(
+    resolve(repoRoot, "packages", owner, "node_modules", packageName),
+    `${owner}'s installed ${packageName}`,
+  );
 }
 
 function linkDirectory(target, destination) {
@@ -64,9 +50,12 @@ const frameworkLinks = [
     "@takazudo/zfb-runtime",
     requireDirectory(resolve(repoRoot, "packages", "zfb-runtime"), "zfb runtime package"),
   ],
-  ["preact", findPnpmPackage("preact")],
-  ["preact-render-to-string", findPnpmPackage("preact-render-to-string")],
-  ["hono", findPnpmPackage("hono")],
+  // Resolve through the consuming workspace packages. Another test fixture
+  // may install a different version in pnpm's shared store; this fixture
+  // needs the exact dependency identities used by zfb and its runtime.
+  ["preact", installedDependency("zfb", "preact")],
+  ["preact-render-to-string", installedDependency("zfb", "preact-render-to-string")],
+  ["hono", installedDependency("zfb-runtime", "hono")],
 ];
 
 rmSync(fixtureNodeModules, { recursive: true, force: true });
