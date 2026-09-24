@@ -2639,6 +2639,31 @@ four local-mode smoke jobs, packed-tarball Scaffold E2E, `pnpm audit (prod)`,
 and `Docs gate`. In particular, compare the real public `withZudoSg` result
 against the merged-base health run before treating the timeout as resolved.
 
+**Plugin init follow-up (#3120, 2026-09-25).** The exact public fixture passed
+in [PR #3111 health run 36018785652](https://github.com/Takazudo/zudo-front-builder/actions/runs/36018785652)
+at head `7cef707728a9a1d889cb1422f2ce6eed77608419` (10.234s), in the
+[merged-base run 36021760259](https://github.com/Takazudo/zudo-front-builder/actions/runs/36021760259)
+at `06f8b23372a3faf089c8ff90a3413cad3c374511` (10.467s), and in the
+[later main run 36027839583](https://github.com/Takazudo/zudo-front-builder/actions/runs/36027839583)
+at `89463b33362647c0d922dcdef61b280ac5ad8cfd` (10.194s). These exact
+health-log outcomes, plus the later
+[super-base run 36044799357](https://github.com/Takazudo/zudo-front-builder/actions/runs/36044799357)
+at `39d6ba7b9f1bb3886aadc1d66e7829a807f09f1a` (9.879s), establish
+recurrence was not observed on those runs;
+they do not supply a trace for the initial local 120s failure or identify its
+cause. The 144.80s failure and 4,279 MiB minimum free memory above remain
+part of the evidence, with memory causation unproven.
+
+`ZFB_PLUGIN_INIT_TRACE=1` now adds bounded stderr phase lines with a per-host
+and request ID plus elapsed milliseconds. The parent records request write
+start/completion, reply read, timeout, and child reaping; the child records
+receipt, each numbered module import start/end, and reply write completion.
+The real public fixture enables it only for its subprocess, so a future
+captured assertion failure can distinguish a write delay, an import stall,
+and a missing reply without printing module URLs, options, or source. The
+120s deadline and fixture assertions are unchanged. A pass with tracing is
+evidence only for that attempt; the intermittent init risk remains open.
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports

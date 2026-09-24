@@ -107,6 +107,19 @@ import readline from "node:readline";
 import { Writable } from "node:stream";
 
 const { stdin, stdout, exit } = process;
+const initTraceEnabled = process.env.ZFB_PLUGIN_INIT_TRACE === "1";
+const initTraceHostId = process.env.ZFB_PLUGIN_INIT_HOST_ID ?? "standalone";
+const initTraceStart = performance.now();
+
+// Only fixed phase names and module indexes go to stderr. In particular,
+// never print the init request, module URL, options, or imported source.
+function initTrace(id, phase) {
+  if (!initTraceEnabled) return;
+  process.stderr.write(
+    `[zfb-plugin-init] host=${initTraceHostId} request=${id} role=child ` +
+      `elapsed_ms=${Math.floor(performance.now() - initTraceStart)} phase=${phase}\n`,
+  );
+}
 
 let plugins = []; // [{ module, name, options, mod }] after init.
 const devHandlers = new Map(); // handlerId -> { plugin, handler }
@@ -140,8 +153,8 @@ let nextLoaderId = 0;
 // reset alongside `virtualLoaders`/`virtualCache` in `handleSetup`.
 const virtualLoadQueues = new Map(); // loaderId -> Promise<void>, the queue tail
 
-function send(envelope) {
-  stdout.write(JSON.stringify(envelope) + "\n");
+function send(envelope, callback) {
+  stdout.write(JSON.stringify(envelope) + "\n", callback);
 }
 
 function sendOk(id, result) {
@@ -150,7 +163,13 @@ function sendOk(id, result) {
 
 function sendErr(id, plugin, hook, err) {
   const message = err && err.stack ? err.stack : err && err.message ? err.message : String(err);
-  send({ id, ok: false, error: { plugin, hook, message } });
+  const reply = { id, ok: false, error: { plugin, hook, message } };
+  if (hook === "init" && initTraceEnabled) {
+    initTrace(id, "reply_write_start");
+    send(reply, () => initTrace(id, "reply_write_complete"));
+  } else {
+    send(reply);
+  }
 }
 
 // #2373: attributes every `console.*` call made while a plugin's code is
@@ -227,11 +246,14 @@ async function handleInit(id, msg) {
   // Load every plugin module up front. A failure on any one is fatal —
   // the build cannot run with a partially-initialised plugin set.
   plugins = [];
-  for (const entry of msg.plugins ?? []) {
+  for (const [index, entry] of (msg.plugins ?? []).entries()) {
     let mod;
     try {
+      initTrace(id, `import_${index}_start`);
       mod = await runAsPlugin(entry.name ?? entry.module, () => import(entry.module));
+      initTrace(id, `import_${index}_end`);
     } catch (err) {
+      initTrace(id, `import_${index}_failed`);
       sendErr(id, entry.name ?? entry.module, "init", err);
       return;
     }
@@ -256,7 +278,10 @@ async function handleInit(id, msg) {
       mod: def,
     });
   }
-  sendOk(id, { loaded: plugins.length });
+  initTrace(id, "reply_write_start");
+  send({ id, ok: true, result: { loaded: plugins.length } }, () =>
+    initTrace(id, "reply_write_complete"),
+  );
 }
 
 async function runBuildHook(id, hookName, ctx) {
@@ -739,6 +764,7 @@ rl.on("line", (line) => {
   // keyed by `id`.
   switch (msg.kind) {
     case "init":
+      initTrace(msg.id, "received");
       handleInit(msg.id, msg);
       break;
     case "setup":
