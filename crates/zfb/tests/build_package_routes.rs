@@ -62,6 +62,29 @@ fn materialize_embedded_node_modules(root: &Path) {
     copy_dir(&embedded_nm_path, &root.join("node_modules"));
 }
 
+/// Model pnpm's package-local install roots without copying the physical
+/// packages. Each link has its own lexical location, while all links to a
+/// given version canonicalise to one package in the workspace install store.
+fn link_package_local_node_modules(source_nm: &Path, dest_nm: &Path) {
+    fs::create_dir_all(dest_nm).unwrap();
+    for entry in fs::read_dir(source_nm).unwrap().flatten() {
+        let name = entry.file_name();
+        if name == ".pnpm" {
+            continue;
+        }
+        if name.to_string_lossy().starts_with('@') && entry.path().is_dir() {
+            let scope = dest_nm.join(&name);
+            fs::create_dir_all(&scope).unwrap();
+            for package in fs::read_dir(entry.path()).unwrap().flatten() {
+                std::os::unix::fs::symlink(package.path(), scope.join(package.file_name()))
+                    .unwrap();
+            }
+        } else if entry.path().is_dir() {
+            std::os::unix::fs::symlink(entry.path(), dest_nm.join(name)).unwrap();
+        }
+    }
+}
+
 fn copy_dir(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).expect("create_dir_all");
     for entry in fs::read_dir(src).expect("read_dir").flatten() {
@@ -2176,5 +2199,288 @@ fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
         fs::read_to_string(&user_client).unwrap(),
         user_body,
         "user's real pages/widget.client.tsx must not be clobbered"
+    );
+}
+
+/// A nested pnpm host stages a linked workspace UI package while external
+/// story/component roots resolve through the workspace install root. Every
+/// path reaches the same physical Preact package, so hook and context values
+/// must survive the actual `zfb build` render without fallback notes (#3104).
+#[test]
+fn nested_workspace_external_story_and_package_route_share_preact_identity() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[ssr_identity_3104] no esbuild; skipping.");
+        return;
+    };
+    assert!(
+        node_available(),
+        "CI needs node for the package-route plugin"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    materialize_embedded_node_modules(ws);
+    fs::write(
+        ws.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    .unwrap();
+
+    // Model pnpm's physical store and its public install spelling. The
+    // renderer and every external source see this very same physical tree.
+    let installed = ws.join("node_modules/preact");
+    let physical = ws.join("node_modules/.pnpm/preact@10.29.1/node_modules/preact");
+    fs::create_dir_all(physical.parent().unwrap()).unwrap();
+    fs::rename(&installed, &physical).unwrap();
+    std::os::unix::fs::symlink(&physical, &installed).unwrap();
+
+    let site = ws.join("apps/site");
+    fs::create_dir_all(site.join("pages")).unwrap();
+    fs::write(site.join("package.json"), r#"{"name":"@fixture/site","type":"module","dependencies":{"@fixture/ui":"workspace:*","preact":"10.29.1"}}"#).unwrap();
+
+    let ui = ws.join("packages/ui");
+    fs::create_dir_all(ui.join("src")).unwrap();
+    fs::write(ui.join("package.json"), r#"{"name":"@fixture/ui","type":"module","exports":{".":"./src/index.tsx"},"dependencies":{"preact":"10.29.1"}}"#).unwrap();
+    fs::write(ui.join("src/index.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+export function Ui({ Context }) { const [v] = useState('UI_STATE'); const ref = useRef('UI_REF'); const ctx = useContext(Context); return <p>{v}:{ref.current}:{ctx}</p>; }
+"#).unwrap();
+    fs::create_dir_all(ws.join("node_modules/@fixture")).unwrap();
+    std::os::unix::fs::symlink(&ui, ws.join("node_modules/@fixture/ui")).unwrap();
+    link_package_local_node_modules(&ws.join("node_modules"), &site.join("node_modules"));
+    link_package_local_node_modules(&ws.join("node_modules"), &ui.join("node_modules"));
+    fs::write(site.join("pages/index.tsx"), r#"import { Ui } from '@fixture/ui';
+import { Shared } from '@external/context';
+export default function Page() { return <html><body><Shared.Provider value="HOME_PROVIDER"><Ui Context={Shared} /></Shared.Provider></body></html>; }
+"#).unwrap();
+
+    fs::create_dir_all(ws.join("components")).unwrap();
+    fs::write(ws.join("components/context.ts"), "import { createContext } from 'preact'; export const Shared = createContext('FALLBACK_CONTEXT');\n").unwrap();
+    fs::write(ws.join("components/hooked.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+import { Shared } from './context';
+export function Hooked() { const [v] = useState('EXTERNAL_STATE'); const ref = useRef('EXTERNAL_REF'); const ctx = useContext(Shared); return <p>{v}:{ref.current}:{ctx}</p>; }
+"#).unwrap();
+    fs::create_dir_all(ws.join("stories")).unwrap();
+    fs::write(ws.join("stories/demo.tsx"), "import { Hooked } from '@external/hooked'; export function Story() { return <Hooked />; }\n").unwrap();
+
+    let preset = ws.join("packages/preset");
+    fs::create_dir_all(preset.join("src")).unwrap();
+    fs::write(preset.join("package.json"), r#"{"name":"@fixture/preset","type":"module","exports":{"./catalog":"./src/catalog.tsx"},"dependencies":{"@fixture/ui":"workspace:*","preact":"10.29.1"}}"#).unwrap();
+    link_package_local_node_modules(&ws.join("node_modules"), &preset.join("node_modules"));
+    for local in [&site, &ui, &preset] {
+        assert_eq!(
+            local.join("node_modules/preact").canonicalize().unwrap(),
+            physical,
+            "every fixture importer must resolve the same physical Preact"
+        );
+    }
+    fs::write(preset.join("src/catalog.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+import { Shared } from '@external/context';
+import { Story } from '@stories/demo';
+import { Ui } from '@fixture/ui';
+function RouteHook() { const [v] = useState('ROUTE_STATE'); const ref = useRef('ROUTE_REF'); const ctx = useContext(Shared); return <p>{v}:{ref.current}:{ctx}</p>; }
+export default function Page() { return <html><body><Shared.Provider value="PROVIDER_VALUE"><RouteHook /><Story /><Ui Context={Shared} /></Shared.Provider></body></html>; }
+"#).unwrap();
+    let entry = serde_json::to_string(&preset.join("src/catalog.tsx").to_string_lossy()).unwrap();
+    fs::write(preset.join("preset.mjs"), format!("export default {{ name: 'identity-preset', setup({{ injectRoute }}) {{ injectRoute('/catalog', {entry}); }} }};\n")).unwrap();
+    fs::write(site.join("zfb.config.json"), r#"{"framework":"preact","plugins":[{"name":"../../packages/preset/preset.mjs"}],"bundle":{"exclude":[],"mainFields":["main","module"]}}"#).unwrap();
+    let context = serde_json::to_string(&ws.join("components/*").to_string_lossy()).unwrap();
+    let stories = serde_json::to_string(&ws.join("stories/*").to_string_lossy()).unwrap();
+    let preset_src = serde_json::to_string(&preset.join("src/*").to_string_lossy()).unwrap();
+    fs::write(site.join("tsconfig.json"), format!(r#"{{"compilerOptions":{{"baseUrl":".","paths":{{"@external/*":[{context}],"@stories/*":[{stories}],"@preset/*":[{preset_src}]}}}}}}"#)).unwrap();
+
+    let output = run_zfb_build(&site, &esbuild);
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "real build failed:\n{log}");
+    let html = fs::read_to_string(site.join("dist/catalog/index.html")).unwrap();
+    for value in [
+        "ROUTE_STATE:ROUTE_REF:PROVIDER_VALUE",
+        "EXTERNAL_STATE:EXTERNAL_REF:PROVIDER_VALUE",
+        "UI_STATE:UI_REF:PROVIDER_VALUE",
+    ] {
+        assert!(
+            html.contains(value),
+            "missing {value} in rendered catalog: {html}\n{log}"
+        );
+    }
+    assert!(
+        !html.contains("data-zfb-content-fallback"),
+        "render fell back: {html}"
+    );
+    assert!(
+        !log.contains("fallback note"),
+        "build emitted fallback note: {log}"
+    );
+}
+
+/// The reported consumer route path, using the pinned public `withZudoSg`
+/// package and its own `/components` route. The generic fixture above keeps
+/// the identity boundary isolated; this fixture proves the published plugin,
+/// registry, catalog renderer, and external story all exercise that boundary.
+#[test]
+fn public_zudo_sg_catalog_renders_external_hook_story() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[public_sg_identity_3104] no esbuild; skipping.");
+        return;
+    };
+    assert!(node_available(), "CI needs node for withZudoSg");
+
+    let fixture_nm = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/zfb-ssr-identity-fixture/node_modules");
+    assert!(
+        fixture_nm.join("@takazudo/zudo-sg/package.json").is_file(),
+        "run pnpm install --frozen-lockfile before this test"
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    // These roots are external to the nested host, but remain inside its
+    // claimed pnpm workspace so the first-party stage-escape audit applies.
+    let external_root = tmp.path();
+    let ws = external_root;
+    fs::write(
+        ws.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    .unwrap();
+    fs::write(
+        ws.join("package.json"),
+        r#"{"name":"@fixture/story-root","type":"module","dependencies":{"@fixture/ui":"workspace:*","preact":"10.29.8"}}"#,
+    )
+    .unwrap();
+    let nm = ws.join("node_modules");
+    fs::create_dir_all(&nm).unwrap();
+    for entry in fs::read_dir(&fixture_nm).unwrap().flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('@') && entry.path().is_dir() {
+            let scope = nm.join(&name);
+            fs::create_dir_all(&scope).unwrap();
+            for package in fs::read_dir(entry.path()).unwrap().flatten() {
+                let source = package.path().canonicalize().unwrap();
+                std::os::unix::fs::symlink(source, scope.join(package.file_name())).unwrap();
+            }
+        } else if entry.path().is_dir() {
+            let source = entry.path().canonicalize().unwrap();
+            std::os::unix::fs::symlink(source, nm.join(name)).unwrap();
+        }
+    }
+    let public_preact = nm.join("preact").canonicalize().unwrap();
+    let sg_store_root = nm.join("@takazudo/zudo-sg").canonicalize().unwrap();
+    let sg_peer = sg_store_root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("preact")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(
+        public_preact, sg_peer,
+        "published renderer and host must use one physical Preact"
+    );
+
+    let site = ws.join("apps/site");
+    fs::create_dir_all(site.join("pages")).unwrap();
+    fs::create_dir_all(site.join("src/content/docs")).unwrap();
+    fs::create_dir_all(site.join("src/styles")).unwrap();
+    fs::write(
+        site.join("src/styles/preview-entry.css"),
+        ":root { --fixture: 1; }\n",
+    )
+    .unwrap();
+    fs::write(site.join("package.json"), r#"{"name":"@fixture/public-site","type":"module","dependencies":{"@fixture/ui":"workspace:*","@takazudo/zudo-sg":"0.3.4","preact":"10.29.8"}}"#).unwrap();
+
+    let ui = ws.join("packages/ui");
+    fs::create_dir_all(ui.join("src")).unwrap();
+    fs::write(ui.join("package.json"), r#"{"name":"@fixture/ui","type":"module","exports":{".":"./src/index.tsx"},"dependencies":{"preact":"10.29.8"}}"#).unwrap();
+    fs::write(ui.join("src/index.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+export function Ui({ Context }) { const [v] = useState('PUBLIC_UI_STATE'); const ref = useRef('PUBLIC_UI_REF'); const ctx = useContext(Context); return <span>{v}:{ref.current}:{ctx}</span>; }
+"#).unwrap();
+    fs::create_dir_all(nm.join("@fixture")).unwrap();
+    std::os::unix::fs::symlink(&ui, nm.join("@fixture/ui")).unwrap();
+    link_package_local_node_modules(&nm, &site.join("node_modules"));
+    link_package_local_node_modules(&nm, &ui.join("node_modules"));
+    for local in [&site, &ui] {
+        assert_eq!(
+            local.join("node_modules/preact").canonicalize().unwrap(),
+            public_preact,
+            "every fixture importer must resolve the published peer's physical Preact"
+        );
+    }
+    fs::write(site.join("pages/index.tsx"), r#"import { Ui } from '@fixture/ui';
+import { Shared } from '@external/context';
+export default function Page() { return <html><body><Shared.Provider value="HOME_PROVIDER"><Ui Context={Shared} /></Shared.Provider></body></html>; }
+"#).unwrap();
+
+    fs::create_dir_all(external_root.join("components")).unwrap();
+    fs::write(external_root.join("components/context.ts"), "import { createContext } from 'preact'; export const Shared = createContext('FALLBACK_CONTEXT');\n").unwrap();
+    fs::write(external_root.join("components/hooked.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+import { Shared } from './context';
+export function Hooked() { const [v] = useState('PUBLIC_EXTERNAL_STATE'); const ref = useRef('PUBLIC_EXTERNAL_REF'); const ctx = useContext(Shared); return <span>{v}:{ref.current}:{ctx}</span>; }
+"#).unwrap();
+    fs::create_dir_all(external_root.join("stories")).unwrap();
+    fs::write(external_root.join("stories/hooked.stories.tsx"), r#"import { Shared } from '@external/context';
+import { Hooked } from '@external/hooked';
+import { Ui } from '@fixture/ui';
+export default { title: 'Identity Story', category: 'Actions', description: 'hook identity' };
+export const Default = { name: 'Default', render: () => <Shared.Provider value="PUBLIC_PROVIDER"><Hooked /><Ui Context={Shared} /></Shared.Provider> };
+"#).unwrap();
+    fs::create_dir_all(site.join("src")).unwrap();
+    fs::write(
+        site.join("src/sg-registry.ts"),
+        r#"import * as identity from '@stories/hooked.stories';
+export const storyModules = { 'stories/hooked.stories.tsx': identity };
+export const storyExportOrder = { 'stories/hooked.stories.tsx': ['Default'] };
+"#,
+    )
+    .unwrap();
+    let external =
+        serde_json::to_string(&external_root.join("components/*").to_string_lossy()).unwrap();
+    let stories =
+        serde_json::to_string(&external_root.join("stories/*").to_string_lossy()).unwrap();
+    fs::write(site.join("tsconfig.json"), format!(r#"{{"compilerOptions":{{"baseUrl":".","paths":{{"@external/*":[{external}],"@stories/*":[{stories}]}}}}}}"#)).unwrap();
+    fs::write(site.join("zfb.config.ts"), r#"import { zudoDoc } from '@takazudo/zudo-doc/config';
+import { withZudoSg } from '@takazudo/zudo-sg/config';
+const config = withZudoSg(zudoDoc({ siteName: 'Identity', siteUrl: 'https://example.invalid', packageOwnedRoutes: true, bundle: { exclude: [], mainFields: ['main', 'module'] } }), { componentsRoots: [], registryOut: './src/sg-registry.ts', previewStyles: './src/styles/preview-entry.css', chromeDefaults: false, headerTokenTrigger: false });
+export default { ...config, tailwind: { enabled: false } };
+"#).unwrap();
+
+    let output = run_zfb_build(&site, &esbuild);
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "public withZudoSg build failed:\n{log}"
+    );
+    let dist = site.join("dist");
+    let catalog = [
+        dist.join("components.html"),
+        dist.join("components/index.html"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .unwrap_or_else(|| {
+        panic!(
+            "public catalog route missing; HTML: {:?}\n{log}",
+            collect_files(&dist, "html")
+        )
+    });
+    let html = fs::read_to_string(catalog).unwrap();
+    for value in [
+        "PUBLIC_EXTERNAL_STATE:PUBLIC_EXTERNAL_REF:PUBLIC_PROVIDER",
+        "PUBLIC_UI_STATE:PUBLIC_UI_REF:PUBLIC_PROVIDER",
+    ] {
+        assert!(
+            html.contains(value),
+            "missing {value} in public catalog: {html}\n{log}"
+        );
+    }
+    assert!(
+        !html.contains("Preview unavailable"),
+        "public catalog rendered a fallback note: {html}"
     );
 }

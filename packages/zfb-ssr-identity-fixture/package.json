@@ -1,0 +1,21 @@
+{
+  "name": "@zfb-test/ssr-identity-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinned installed dependencies for the public zudo-sg SSR identity regression",
+  "dependencies": {
+    "@takazudo/zfb": "2.20.2",
+    "@takazudo/zfb-runtime": "2.20.2",
+    "@takazudo/zfb-md-wasm": "2.20.2",
+    "@takazudo/zudo-doc": "5.27.0",
+    "@takazudo/zudo-sg": "0.3.4",
+    "@takazudo/zdtp": "0.8.2",
+    "diff": "8.0.4",
+    "katex": "0.16.45",
+    "preact": "10.29.8",
+    "preact-render-to-string": "6.6.7",
+    "tailwindcss": "4.2.0",
+    "zod": "4.4.3"
+  }
+}
