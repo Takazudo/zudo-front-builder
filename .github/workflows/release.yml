@@ -107,6 +107,7 @@ jobs:
       contents: read
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_version: ${{ steps.verify.outputs.release_version }}
       checkout_sha: ${{ steps.verify.outputs.checkout_sha }}
       is_recovery: ${{ steps.resolve.outputs.is_recovery }}
     steps:
@@ -205,6 +206,7 @@ jobs:
             echo "::error::packages/zfb version '${ACTUAL_VERSION}' does not match tag '${RELEASE_TAG}'."
             exit 1
           fi
+          echo "release_version=$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"
 
           if ! RELEASE_JSON=$(gh release view "$RELEASE_TAG" \
             --json tagName,isDraft,publishedAt,targetCommitish,url); then
@@ -1127,18 +1129,16 @@ jobs:
     # esbuild reaches the build transitively via @takazudo/zfb-runtime, so a
     # clean-room pnpm install still resolves it through the dependency tree.
     #
-    # The shell logic itself lives in scripts/smoke-clean-room.sh, wrapped in
-    # the reusable-smoke-clean-room.yml workflow_call (issue #1342, stage 2)
-    # so .github/workflows/drift-net.yml's weekly off-release exam can call
-    # the exact same smoke. dist_tag and runner below are the SAME parameters
-    # this job always used (needs.publish.outputs.dist_tag, ubuntu-latest) —
-    # only the invocation mechanism changed, not the behavior.
-    needs: publish
+    # The shell logic also serves drift-net's scheduled moving-channel exam.
+    # This release invocation passes the version verified from the release
+    # tag, including workflow_dispatch recovery runs from main.
+    needs: [publish, release-context]
     # Skip on dry_run — nothing was published, so no registry smoke to run.
     if: ${{ inputs.dry_run != true }}
     uses: ./.github/workflows/reusable-smoke-clean-room.yml
     with:
       dist_tag: ${{ needs.publish.outputs.dist_tag }}
+      expected_version: ${{ needs.release-context.outputs.release_version }}
       runner: ubuntu-latest
 
   notify:

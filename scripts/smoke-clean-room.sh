@@ -3,8 +3,9 @@ set -euo pipefail
 
 # scripts/smoke-clean-room.sh
 #
-# Post-publish clean-room smoke: installs create-zfb@<dist-tag> from the real
-# registry in a temp dir (no workspace context), scaffolds a project, runs
+# Post-publish clean-room smoke: resolves create-zfb@<dist-tag> from the real
+# registry, then installs that exact version in the clean-room project.
+# In a temp dir (no workspace context), it scaffolds a project, runs
 # `pnpm build` (which calls `zfb build`), and asserts dist/ is populated.
 #
 # Extracted from release.yml's `smoke-clean-room` job (issue #1342) so the
@@ -25,12 +26,18 @@ set -euo pipefail
 # clean-room pnpm install still resolves it through the dependency tree.
 #
 # Usage:
-#   DIST_TAG=next scripts/smoke-clean-room.sh
+#   DIST_TAG=next EXPECTED_VERSION=2.20.3 scripts/smoke-clean-room.sh
 #
 # Required env:
-#   DIST_TAG — npm dist-tag to install (e.g. "latest" or "next").
+#   DIST_TAG — npm dist-tag to resolve (e.g. "latest" or "next").
+# Optional EXPECTED_VERSION pins a release smoke to the verified release tag.
 
 : "${DIST_TAG:?DIST_TAG env var is required (e.g. DIST_TAG=next)}"
+semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+if [[ -n "${EXPECTED_VERSION:-}" && ! "$EXPECTED_VERSION" =~ $semver_re ]]; then
+  echo "::error::Invalid EXPECTED_VERSION: ${EXPECTED_VERSION}" >&2
+  exit 1
+fi
 
 # ── Wait for registry propagation and verify dist-tag resolves ─────────────
 
@@ -38,19 +45,22 @@ echo "Waiting for create-zfb@${DIST_TAG} to appear on the registry..."
 max_attempts=6
 delay=10
 for attempt in $(seq 1 $max_attempts); do
-  RESOLVED=$(npm view "create-zfb@${DIST_TAG}" version 2>/dev/null || echo "")
-  if [[ -n "$RESOLVED" ]]; then
+  if ! RESOLVED=$(npm view "create-zfb@${DIST_TAG}" version 2>/dev/null); then
+    RESOLVED=""
+  fi
+  if [[ "$RESOLVED" =~ $semver_re && ( -z "${EXPECTED_VERSION:-}" || "$RESOLVED" == "$EXPECTED_VERSION" ) ]]; then
     echo "Registry resolved create-zfb@${DIST_TAG} -> ${RESOLVED} (attempt ${attempt})"
     break
   fi
   if [[ "$attempt" -eq "$max_attempts" ]]; then
-    echo "::error::create-zfb@${DIST_TAG} did not appear on the registry after ${max_attempts} attempts."
+    echo "::error::create-zfb@${DIST_TAG} did not resolve to ${EXPECTED_VERSION:-a valid version} after ${max_attempts} attempts (last response: ${RESOLVED:-unavailable})."
     exit 1
   fi
-  echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+  echo "  Not at ${EXPECTED_VERSION:-a valid version} (attempt ${attempt}/${max_attempts}, resolved ${RESOLVED:-unavailable}); retrying in ${delay}s..."
   sleep "$delay"
   delay=$(( delay * 2 ))
 done
+VERSION=${EXPECTED_VERSION:-$RESOLVED}
 
 # Wait until EVERY platform's optionalDependency tarball is actually
 # fetchable — not just the tarball the current runner needs. npm metadata
@@ -73,16 +83,16 @@ PLATFORM_PACKAGES=(
   "@takazudo/zfb-win32-x64-msvc"
 )
 for pkg in "${PLATFORM_PACKAGES[@]}"; do
-  echo "Waiting for ${pkg}@${DIST_TAG} tarball to be fetchable..."
+  echo "Waiting for ${pkg}@${VERSION} tarball to be fetchable..."
   max_attempts=6
   delay=10
   for attempt in $(seq 1 $max_attempts); do
-    if npm pack --dry-run "${pkg}@${DIST_TAG}" > /dev/null 2>&1; then
-      echo "Registry resolved ${pkg}@${DIST_TAG} tarball (attempt ${attempt})"
+    if npm pack --dry-run "${pkg}@${VERSION}" > /dev/null 2>&1; then
+      echo "Registry resolved ${pkg}@${VERSION} tarball (attempt ${attempt})"
       break
     fi
     if [[ "$attempt" -eq "$max_attempts" ]]; then
-      echo "::error::${pkg}@${DIST_TAG} tarball did not become fetchable after ${max_attempts} attempts."
+      echo "::error::${pkg}@${VERSION} tarball did not become fetchable after ${max_attempts} attempts."
       exit 1
     fi
     echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
@@ -91,7 +101,7 @@ for pkg in "${PLATFORM_PACKAGES[@]}"; do
   done
 done
 
-# ── Scaffold project with create-zfb@<dist-tag> ─────────────────────────────
+# ── Scaffold project with the pinned create-zfb version ─────────────────────
 
 # Work in a temp dir completely outside the checked-out workspace to
 # avoid pnpm picking up the monorepo's pnpm-workspace.yaml.
@@ -104,11 +114,11 @@ cd "$SMOKE_DIR"
 # --yes suppresses any interactive npm/npx prompts.
 scaffold_delay=15
 for scaffold_attempt in 1 2 3; do
-  if npx --yes "create-zfb@${DIST_TAG}" smoke-site; then
+  if npx --yes "create-zfb@${VERSION}" smoke-site; then
     break
   fi
   if [[ "$scaffold_attempt" -eq 3 ]]; then
-    echo "::error::npx create-zfb@${DIST_TAG} failed after 3 attempts."
+    echo "::error::npx create-zfb@${VERSION} failed after 3 attempts."
     exit 1
   fi
   echo "  Scaffold attempt ${scaffold_attempt}/3 failed; retrying in ${scaffold_delay}s..."
@@ -122,6 +132,26 @@ ls -la "$SMOKE_DIR/smoke-site"
 
 cd "$SMOKE_DIR/smoke-site"
 pnpm install
+
+# The generated manifest and registry may have drifted independently of the
+# pinned generator. Check the installed packages and the binary we will run.
+for pkg in @takazudo/zfb @takazudo/zfb-runtime; do
+  manifest="node_modules/${pkg}/package.json"
+  if [[ ! -f "$manifest" ]]; then
+    echo "::error::Missing installed ${pkg} package." >&2
+    exit 1
+  fi
+  installed=$(node -p "require('./${manifest}').version")
+  if [[ "$installed" != "$VERSION" ]]; then
+    echo "::error::Installed ${pkg}@${installed}; expected ${VERSION}." >&2
+    exit 1
+  fi
+done
+cli_version=$(pnpm exec zfb -V)
+if [[ "$cli_version" != "zfb ${VERSION}" ]]; then
+  echo "::error::Installed zfb CLI reports '${cli_version}'; expected 'zfb ${VERSION}'." >&2
+  exit 1
+fi
 
 # ── Build scaffolded project ────────────────────────────────────────────────
 
