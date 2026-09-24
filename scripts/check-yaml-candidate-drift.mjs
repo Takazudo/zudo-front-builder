@@ -267,12 +267,13 @@ export const CANDIDATE_CONFIG = Object.freeze({
     crate: "noyalib",
     repo: "sebastienrousseau/noyalib",
     role: ADOPTED_ROLE,
-    pendingReleasePr: null,
+    pendingReleasePr: 459,
   },
   "noyalib-serde-yaml": {
     crate: "noyalib-serde-yaml",
     repo: "sebastienrousseau/noyalib-serde-yaml",
     role: ADOPTED_ROLE,
+    pendingReleasePr: 28,
   },
   "serde-saphyr": {
     crate: "serde-saphyr",

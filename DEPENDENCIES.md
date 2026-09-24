@@ -2535,6 +2535,110 @@ The only committed file is `DEPENDENCIES.md`; there are no package/source
 changes that require committed generated artifacts. No browser or visual
 check applies to this evidence-only change. No upstream message was sent.
 
+##### Epic #3103 wave 4 final confirmation (#3107) — KEEP, one snapshot refresh
+
+The installed YAML pair remains **0.0.44**, as required by #3106. `Cargo.toml`
+still pins `noyalib-serde-yaml =0.0.44`; both lock entries and the harness's
+`CURRENT_ADAPTER_NAME` still identify 0.0.44. No production manifest, lockfile,
+corpus, harness, or adapter metadata changed.
+
+**Late adopted-pair classification.** The authenticated detector report at
+`2026-09-24T13:04:30.295Z` returned `CANDIDATE_DRIFT`, report `exitCode: 10`,
+and `errors: []`. Its JSON contains exactly the already-evaluated 39 triage
+deltas from #3105: `noyalib` publishes, tags, and releases 0.0.46–0.0.51
+(18 deltas); `noyalib-serde-yaml` publishes, tags, and releases 0.0.45–0.0.51
+(21 deltas). The first shell wrapper itself returned 1 because zsh reserves
+`status`; the JSON report was written before that wrapper error. A corrected
+authenticated invocation at `2026-09-24T13:08:06.809Z` captured the detector's
+actual exit 10 and the same `CANDIDATE_DRIFT` report with `errors: []`.
+Neither observation contains a publish, tag, Release, yank/unyank, archive, or
+unarchive delta beyond the versions already evaluated at
+`2026-09-24T12:50:03.495Z` in #3105. Both crates still top out at 0.0.51 and
+have no yanked versions. No new release or yank needed evaluation before the
+snapshot.
+
+The other adopted-pair changes are informational branch movement already
+recorded by #3105: `noyalib` deleted `feat/examples-autodiscovery`, added
+`feat/v0.0.52`, and advanced `main`; the alias deleted its old dependabot
+branch, added `feat/v0.0.46` through `feat/v0.0.52`, and advanced `main` and
+`release/v0.0.45`. The fallback candidate changes remain informational under
+the role-aware policy, including `saphyr 0.1.0` and ordinary branch movement.
+
+**Evidence-backed release-PR tracking.** Authenticated GitHub reads confirmed
+core PR [#459](https://github.com/sebastienrousseau/noyalib/pull/459) and alias
+PR [#28](https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/28) are
+both still OPEN on `feat/v0.0.52`. PR #459 advances core release and installation
+surfaces to 0.0.52; PR #28 prepares the alias's exact core pin for 0.0.52 and
+states its temporary Git override is removed after publication. Neither crate
+has published 0.0.52, so these are pending future work, not evaluated packages.
+The watcher now tracks these specific, evidenced PRs as
+`noyalib.pendingReleasePr = 459` and
+`noyalib-serde-yaml.pendingReleasePr = 28`. The snapshot records both as OPEN;
+future state changes are visible to the detector. This pointer update is the
+recorded disposition of the previously human-observed PRs, not a completed
+release or a change to the KEEP verdict.
+
+**Single late refresh and live confirmation.** Following the documented
+write-to-temp-then-copy recipe, the one generated snapshot has
+`checkedAt = 2026-09-24T13:11:22.016Z`, `schemaVersion: 3`, and the original
+anti-gaming comment. It includes the evaluated 0.0.46–0.0.51 release set, the
+informational candidate/branch observations, and the two OPEN PR pointers.
+Prettier formatted the snapshot. The post-refresh authenticated detector at
+`2026-09-24T13:13:08.512Z` returned exit 0, `no-drift`, and `errors: []` for all
+seven candidates. No further refresh was made.
+
+**Confirmation checks.** The detector unit suite passed **77/77**; Prettier
+check and `git diff --check` passed for the detector, unit test, and snapshot.
+The guarded distinct-physical-version unit test passed 1/1. The generic
+nested-workspace SSR identity build passed 1/1. The public
+`public_zudo_sg_catalog_renders_external_hook_story` fixture was run four
+times under `heavy-guard`. The initial uninstrumented run failed 1/1 before
+rendering: plugin-host `init` exceeded its 120-second deadline (test duration
+144.80 seconds), and the guard recorded `FAIL exit=101`, with minimum free
+memory of 4,279 MiB. This is a real first-run failure and remains in the
+record.
+
+Two diagnostic reruns passed 1/1 under the guard, with minimum free memory of
+8,581 MiB and 8,112 MiB. The first used `NODE_DEBUG=esm`; the second wrapped
+Node externally to capture the plugin-host exchange while preserving the
+fixture and product behavior. The captured init request contained all eight
+resolved module URLs actually sent by `PluginSpec.module`, covering the five
+zudo-doc and three zudo-sg plugins; the host replied `loaded: 8`, then completed
+virtual loads, `preBuild`, `postBuild`, and shutdown. The 17.6 MB ESM stderr
+capture contained no module-import or plugin-host error. These runs verify the
+exact resolved imports and successful host reply for that attempt, but they do
+not reproduce or explain the initial timeout.
+
+The final uninstrumented/default fixture run passed 1/1 under the guard
+(8.60 seconds test time; 54 seconds total; minimum free memory 7,954 MiB).
+Across the four public runs, the single timeout coincided with a lower recorded
+minimum-free-memory value than all three passing attempts. This correlation is
+not proof that memory caused the timeout, and a later pass does not erase the
+initial FAIL. No timeout or test expectation was changed; classify the public
+fixture result as an intermittent plugin-host-init risk until the receiving
+manager compares it against the merged-base health run.
+
+The guarded package-route controls passed 6/6:
+`user_page_bare_import_is_staged_from_package_route_overlay`,
+`workspace_package_routes_and_virtual_host_hooks_share_staged_preact_identity`,
+`user_page_relative_import_resolves_with_package_route_present`,
+`nested_package_route_imports_correct_module`,
+`package_route_with_relative_import_bundles`, and
+`no_package_routes_build_is_unaffected`. With the pinned esbuild explicitly
+supplied, the two ignored stage-escape controls passed 2/2:
+`real_esbuild_now_rejects_root_workspace_child_package_escape_through_node_modules_symlink`
+and
+`empty_exclude_workspace_package_exact_staging_does_not_disarm_the_audit_at_root_claimed_workspace`.
+An earlier unqualified `--exact` invocation selected zero unit tests, and the
+first stage-escape invocations were ignored without `--ignored`; none of those
+zero-test invocations counts as coverage. No browser or visual check applies.
+
+The receiving manager still owns `pnpm b4push` on the merged base and the T1
+required GitHub gate: `health`, `build (no-v8)`, both Linux binary builds, the
+four local-mode smoke jobs, packed-tarball Scaffold E2E, `pnpm audit (prod)`,
+and `Docs gate`. In particular, compare the real public `withZudoSg` result
+against the merged-base health run before treating the timeout as resolved.
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports
