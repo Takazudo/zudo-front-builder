@@ -2446,7 +2446,15 @@ const config = withZudoSg(zudoDoc({ siteName: 'Identity', siteUrl: 'https://exam
 export default { ...config, tailwind: { enabled: false } };
 "#).unwrap();
 
-    let output = run_zfb_build(&site, &esbuild);
+    // Scope tracing to the public fixture whose init deadline failed once in
+    // #3112. Its captured stderr is included in the failure assertion.
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&site)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .env("ZFB_PLUGIN_INIT_TRACE", "1")
+        .output()
+        .expect("spawn traced `zfb build`");
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
