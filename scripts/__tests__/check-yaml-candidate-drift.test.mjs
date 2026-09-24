@@ -984,11 +984,28 @@ describe("observation and CLI", () => {
     });
   });
 
+  it("observes the evidence-backed open core and alias release-preparation PRs", async () => {
+    const requests = [];
+    const observed = await observeSnapshot({
+      clients: completeClients({
+        pullRequest: async (repo, number) => {
+          requests.push({ repo, number });
+          return { state: "open", merged_at: null };
+        },
+      }),
+    });
+    expect(requests).toContainEqual({ repo: "sebastienrousseau/noyalib", number: 459 });
+    expect(requests).toContainEqual({ repo: "sebastienrousseau/noyalib-serde-yaml", number: 28 });
+    expect(observed.candidates.noyalib.pendingReleasePr).toEqual({ number: 459, state: "OPEN" });
+    expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toEqual({
+      number: 28,
+      state: "OPEN",
+    });
+  });
+
   it("treats a malformed pending-release PR response as operational failure", async () => {
-    // noyalib.pendingReleasePr is null now that PR 371 merged (#2853's release-PR
-    // re-point), so observeSnapshot no longer calls clients.pullRequest for it under
-    // the real config. CANDIDATE_CONFIG is only shallow-frozen, so temporarily give
-    // noyalib a truthy pendingReleasePr to keep exercising this validation branch.
+    // Temporarily point at an invalidly-shaped response to keep exercising this
+    // validation branch while both adopted candidates have real tracked PRs.
     const originalPendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
     CANDIDATE_CONFIG.noyalib.pendingReleasePr = 999;
     try {
@@ -1153,7 +1170,9 @@ describe("committed baseline guard", () => {
       crate: "noyalib-serde-yaml",
       repo: "sebastienrousseau/noyalib-serde-yaml",
       role: "adopted",
+      pendingReleasePr: 28,
     });
+    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBe(459);
   });
 
   it("is a valid, self-consistent schemaVersion 3 baseline with no drift against itself", async () => {
