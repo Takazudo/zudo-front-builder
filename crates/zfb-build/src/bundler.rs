@@ -4192,6 +4192,19 @@ pub fn bundle_with_session(
         let prune_workspace_infra = logical_root.canonicalize().is_ok_and(|canonical| {
             canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
         });
+        if bundle_exclude.is_empty()
+            && workspace_package_staging_active
+            && !esbuild_will_preserve_symlinks(&input)
+            && link_ordinary_dependency_to_canonical_source(
+                logical_root,
+                logical_root,
+                &dest,
+                &project_root,
+                target_writer,
+            )?
+        {
+            continue;
+        }
         materialise_isolated_exact_dir(
             logical_root,
             logical_root,
@@ -4224,6 +4237,19 @@ pub fn bundle_with_session(
         let prune_workspace_infra = source_root.canonicalize().is_ok_and(|canonical| {
             canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
         });
+        if bundle_exclude.is_empty()
+            && workspace_package_staging_active
+            && !esbuild_will_preserve_symlinks(&input)
+            && link_ordinary_dependency_to_canonical_source(
+                logical_root,
+                source_root,
+                &dest,
+                &project_root,
+                target_writer,
+            )?
+        {
+            continue;
+        }
         materialise_isolated_exact_dir(
             source_root,
             logical_root,
@@ -7105,6 +7131,54 @@ fn materialise_symlinked_dir(
         }
     }
     Ok(())
+}
+
+/// Keep an ordinary installed package's physical identity when a workspace
+/// source is staged beside it. The sibling mirror resolves through the live
+/// workspace install root; copying the same pnpm package under the project
+/// mirror gives esbuild two module instances (and two Preact options objects).
+/// With symlink preservation disabled, both spellings resolve to this one
+/// canonical source. Workspace packages remain real staged copies, and active
+/// exclusions retain the existing bounded-copy and audit path.
+fn link_ordinary_dependency_to_canonical_source(
+    logical_root: &Path,
+    source_root: &Path,
+    dest: &Path,
+    project_root: &Path,
+    writer: &ShadowWriter<'_>,
+) -> Result<bool> {
+    #[cfg(not(unix))]
+    {
+        let _ = (logical_root, source_root, dest, project_root, writer);
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        if !project_path_is_inside_node_modules(logical_root, project_root) {
+            return Ok(false);
+        }
+        let canonical = source_root
+            .canonicalize()
+            .with_context(|| format!("canonicalize dependency {}", source_root.display()))?;
+        if !path_is_inside_node_modules(&canonical)
+            || canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+        {
+            return Ok(false);
+        }
+        if let Some(parent) = dest.parent() {
+            writer.ensure_dir(parent)?;
+        }
+        writer
+            .symlink_if_absent(&canonical, dest)
+            .with_context(|| {
+                format!(
+                    "link dependency identity {} -> {}",
+                    dest.display(),
+                    canonical.display()
+                )
+            })?;
+        Ok(true)
+    }
 }
 
 /// Copy an exact alias/package directory into its isolated shadow spelling.
@@ -12597,6 +12671,41 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_dependency_identity_links_preserve_distinct_physical_versions() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().join("apps/site");
+        fs::create_dir_all(&root).unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let writer = ShadowWriter::new(stage.path().to_path_buf(), None, true, None).unwrap();
+
+        let mut staged = Vec::new();
+        for version in ["1.0.0", "2.0.0"] {
+            let source = project.path().join(format!(
+                "node_modules/.pnpm/preact@{version}/node_modules/preact"
+            ));
+            fs::create_dir_all(&source).unwrap();
+            fs::write(
+                source.join("package.json"),
+                format!("{{\"version\":\"{version}\"}}"),
+            )
+            .unwrap();
+            let logical = root.join(format!("node_modules/{version}/node_modules/preact"));
+            let dest = stage.path().join(format!("{version}/node_modules/preact"));
+            assert!(link_ordinary_dependency_to_canonical_source(
+                &logical, &source, &dest, &root, &writer
+            )
+            .unwrap());
+            assert_eq!(dest.canonicalize().unwrap(), source);
+            staged.push(dest.canonicalize().unwrap());
+        }
+        assert_ne!(
+            staged[0], staged[1],
+            "distinct installs must retain distinct identities"
+        );
+    }
 
     // --- #3044 ZFB_KEEP_BUILD_SHADOW: pure truthy parse (Level 1) ---
 
