@@ -2233,6 +2233,7 @@ fn nested_workspace_external_story_and_package_route_share_preact_identity() {
     fs::create_dir_all(physical.parent().unwrap()).unwrap();
     fs::rename(&installed, &physical).unwrap();
     std::os::unix::fs::symlink(&physical, &installed).unwrap();
+    let physical_canonical = physical.canonicalize().unwrap();
 
     let site = ws.join("apps/site");
     fs::create_dir_all(site.join("pages")).unwrap();
@@ -2269,7 +2270,7 @@ export function Hooked() { const [v] = useState('EXTERNAL_STATE'); const ref = u
     for local in [&site, &ui, &preset] {
         assert_eq!(
             local.join("node_modules/preact").canonicalize().unwrap(),
-            physical,
+            physical_canonical,
             "every fixture importer must resolve the same physical Preact"
         );
     }
