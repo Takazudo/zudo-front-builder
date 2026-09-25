@@ -781,7 +781,7 @@ async fn measure_control_dev_ready_distribution() {
 /// though `zfb dev` still becomes ready within the deadline (the extra work
 /// is invisible to a bare readiness check on this toy-scale fixture, which
 /// is exactly why the stats assertion, not just the deadline, is
-/// load-bearing here — see the #3143 sub-issue and decision-3141.md's
+/// load-bearing here — see the #3143 sub-issue and the #3141 decision comment
 /// "Target stats" section).
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
