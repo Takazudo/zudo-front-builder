@@ -598,6 +598,20 @@ pub(crate) fn normalize_macos_var_alias(path: &Path) -> PathBuf {
     }
 }
 
+/// Re-spell `path` under `root`'s own spelling when the two differ only by the
+/// macOS `/var` ↔ `/private/var` alias, so later `strip_prefix(root)` calls agree.
+pub(crate) fn respell_under_root(path: &Path, root: &Path) -> PathBuf {
+    if path.starts_with(root) {
+        return path.to_path_buf();
+    }
+    let aliased_path = normalize_macos_var_alias(&normalize_path_lexical(path));
+    let aliased_root = normalize_macos_var_alias(&normalize_path_lexical(root));
+    match aliased_path.strip_prefix(&aliased_root) {
+        Ok(relative) => root.join(relative),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) -> Result<PathBuf> {
     // Issue #1664: in a pnpm workspace the first-party boundary is the
     // workspace, not the single package dir — sibling-workspace source
@@ -2425,11 +2439,14 @@ fn inspect_worker_graph(
     // relative path behind a NUL-prefixed scope tag — a real path component
     // can never contain NUL, so the tag cannot collide with a project file,
     // and project-local keys stay byte-identical to the pre-#1664 form.
-    let root = normalize_path_lexical(project_root);
-    let first_party_root = normalize_path_lexical(&zfb_types::first_party_root_for(project_root));
+    let root = normalize_macos_var_alias(&normalize_path_lexical(project_root));
+    let first_party_root = normalize_macos_var_alias(&normalize_path_lexical(
+        &zfb_types::first_party_root_for(project_root),
+    ));
     let mut aggregate = Vec::new();
     context.append_cache_envelope(&mut aggregate, project_root);
     for (path, bytes) in &file_bytes {
+        let path = &normalize_macos_var_alias(&normalize_path_lexical(path));
         let (scope_root, workspace_scoped) = match path.strip_prefix(&root) {
             Ok(_) => (&root, false),
             Err(_) => (&first_party_root, true),

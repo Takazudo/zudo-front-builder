@@ -154,7 +154,7 @@ use crate::module_worker::{
     canonical_project_relative_target, collect_runtime_import_specifiers_from_file,
     discover_module_preprocessing_with_context, discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context, normalize_macos_var_alias,
-    remap_virtual_module_project_imports_to_shadow_with_materialized_files,
+    remap_virtual_module_project_imports_to_shadow_with_materialized_files, respell_under_root,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
@@ -4325,6 +4325,7 @@ pub fn bundle_with_session(
         if excluded_plugin_preprocessing_files.contains(physical) {
             continue;
         }
+        let physical = &respell_under_root(physical, &first_party_root);
         let under_project = physical.strip_prefix(&input.project_root).is_ok();
         // Issue #1668 part 2: a workspace-sibling first-party file (outside the
         // project but inside the widened first-party root) is now STAGED
@@ -5894,11 +5895,18 @@ fn resolve_mirror_root(
     project_root: &Path,
     first_party_root: &Path,
 ) -> Option<PathBuf> {
+    let spelled_first_party_root = normalize_path_lexical(first_party_root);
     let project_root = normalize_macos_var_alias(&normalize_path_lexical(project_root));
-    let first_party_root = normalize_macos_var_alias(&normalize_path_lexical(first_party_root));
+    let first_party_root = normalize_macos_var_alias(&spelled_first_party_root);
     if first_party_root == project_root {
         return None;
     }
+    // Compare in the alias-normalized form, but hand back the caller's
+    // spelling so the root still prefixes the caller's other paths.
+    let respell = |root: PathBuf| match root.strip_prefix(&first_party_root) {
+        Ok(relative) => spelled_first_party_root.join(relative),
+        Err(_) => root,
+    };
     let claim = normalize_macos_var_alias(&normalize_path_lexical(claim));
     if path_is_inside_node_modules(&claim) {
         return None;
@@ -5927,14 +5935,14 @@ fn resolve_mirror_root(
             break;
         }
         if dir.join("package.json").is_file() {
-            return mirror_root_is_stageable(dir).then(|| dir.to_path_buf());
+            return mirror_root_is_stageable(dir).then(|| respell(dir.to_path_buf()));
         }
         match dir.parent() {
             Some(parent) => dir = parent,
             None => break,
         }
     }
-    mirror_root_is_stageable(&claim_dir).then_some(claim_dir)
+    mirror_root_is_stageable(&claim_dir).then(|| respell(claim_dir))
 }
 
 fn mirror_root_is_stageable(root: &Path) -> bool {
@@ -5981,9 +5989,9 @@ impl SiblingMirrorPlan {
         plugin_alias_entries: &[(String, String)],
     ) -> Self {
         let mut mirror_roots = BTreeSet::new();
-        let project_root = normalize_macos_var_alias(&normalize_path_lexical(project_root));
-        let first_party_root = normalize_macos_var_alias(&normalize_path_lexical(first_party_root));
-        if first_party_root == project_root {
+        if normalize_macos_var_alias(&normalize_path_lexical(first_party_root))
+            == normalize_macos_var_alias(&normalize_path_lexical(project_root))
+        {
             return Self { mirror_roots };
         }
         // (a) + (c): discovered graph files (project and sibling); only the
@@ -6031,7 +6039,9 @@ impl SiblingMirrorPlan {
     /// every match unconditionally instead.
     pub fn claims_path(&self, path: &Path) -> bool {
         let path = normalize_macos_var_alias(&normalize_path_lexical(path));
-        self.mirror_roots.iter().any(|root| path.starts_with(root))
+        self.mirror_roots
+            .iter()
+            .any(|root| path.starts_with(normalize_macos_var_alias(root)))
     }
 }
 
@@ -12708,7 +12718,7 @@ mod tests {
                 &logical, &source, &dest, &root, &writer
             )
             .unwrap());
-            assert_eq!(dest.canonicalize().unwrap(), source);
+            assert_eq!(dest.canonicalize().unwrap(), source.canonicalize().unwrap());
             staged.push(dest.canonicalize().unwrap());
         }
         assert_ne!(
