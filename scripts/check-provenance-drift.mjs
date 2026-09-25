@@ -49,13 +49,21 @@ import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
 
 const REGISTRY = "https://registry.npmjs.org";
 
-/** True when this packument version record carries a provenance attestation. */
-function hasAttestation(versionRecord) {
+/**
+ * True when this packument version record carries a provenance attestation.
+ * Exported: check-provenance-preflight.mjs reuses this rather than
+ * duplicating the `dist.attestations` shape.
+ */
+export function hasAttestation(versionRecord) {
   return Boolean(versionRecord?.dist?.attestations);
 }
 
-/** A version is a prerelease when its semver carries a `-` suffix. */
-function isPrerelease(version) {
+/**
+ * A version is a prerelease when its semver carries a `-` suffix.
+ * Exported: check-provenance-preflight.mjs reuses pnpm's prerelease-exclusion
+ * rule (see the file header) rather than reimplementing it.
+ */
+export function isPrerelease(version) {
   return String(version).includes("-");
 }
 
@@ -146,6 +154,10 @@ export async function fetchPackument(
     }
     if (response.ok) return response.json();
     lastError = new Error(`${name}: registry responded ${response.status} ${response.statusText}`);
+    // Attached so callers (e.g. check-provenance-preflight.mjs, which treats a
+    // 404 as "never published" rather than a registry failure) can tell a 404
+    // apart from every other terminal status without re-parsing the message.
+    lastError.status = response.status;
     if (response.status < 500 && response.status !== 429) break;
     if (attempt < attempts) await sleepImpl(attempt);
   }
