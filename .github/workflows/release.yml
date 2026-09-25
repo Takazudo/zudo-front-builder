@@ -91,6 +91,18 @@ on:
         type: string
         required: false
         default: ""
+      allow_provenance_downgrade:
+        # A2 (#3140): acknowledges that this run's fast-Mac or recovery publish
+        # mode omits npm provenance for at least one package that an earlier
+        # version attested — a permanent trust downgrade for consumers with
+        # pnpm's trustPolicy=no-downgrade. Default-deny: the preflight blocks
+        # the run unless this is explicitly set true. On a `release: published`
+        # trigger the equivalent acknowledgement is a release-body marker
+        # instead (see release-context's "Resolve provenance-downgrade
+        # acknowledgement" step).
+        description: "Recovery/fast-Mac only: acknowledge an npm provenance trust downgrade for this publish (consumers with pnpm trustPolicy=no-downgrade will fail to install)"
+        type: boolean
+        default: false
 
 jobs:
   # Resolve every trigger to one immutable source commit before any build starts.
@@ -110,6 +122,7 @@ jobs:
       release_version: ${{ steps.verify.outputs.release_version }}
       checkout_sha: ${{ steps.verify.outputs.checkout_sha }}
       is_recovery: ${{ steps.resolve.outputs.is_recovery }}
+      allow_downgrade: ${{ steps.ack.outputs.allow_downgrade }}
     steps:
       - name: Resolve requested release context
         id: resolve
@@ -236,6 +249,41 @@ jobs:
           echo "checkout_sha=$CHECKOUT_SHA" >> "$GITHUB_OUTPUT"
           echo "Verified ${RELEASE_TAG} -> ${CHECKOUT_SHA} | version ${ACTUAL_VERSION} | ${RELEASE_URL}"
 
+      # A2 (#3140): resolve whether an npm provenance trust downgrade (fast-Mac
+      # or main-based recovery publish, neither of which can carry OIDC
+      # provenance for every package) has been explicitly acknowledged for this
+      # run. Default-deny — anything other than an exact marker/input match
+      # leaves allow_downgrade=false, and the preflight steps below then block
+      # the run on any detected downgrade.
+      - name: Resolve provenance-downgrade acknowledgement
+        id: ack
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # Read via env, never interpolated into the script body below —
+          # github.event.release.body is release-author-controlled text and
+          # must not be spliced into a shell command (script injection).
+          RELEASE_BODY: ${{ github.event.release.body }}
+          DISPATCH_ALLOW: ${{ inputs.allow_provenance_downgrade }}
+        run: |
+          ALLOW=false
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            # Web-UI release bodies are CRLF; strip \r before an exact-line
+            # match so the marker matches regardless of line-ending style.
+            # This reads the event payload snapshot, not a live `gh release
+            # view` — the body is fixed at the moment the event fired, so a
+            # post-publish edit cannot race the check.
+            if printf '%s' "$RELEASE_BODY" | tr -d '\r' | grep -Fxq '<!-- zfb-release: allow-provenance-downgrade -->'; then
+              ALLOW=true
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$DISPATCH_ALLOW" == "true" ]]; then
+              ALLOW=true
+            fi
+          fi
+          echo "allow_downgrade=$ALLOW" >> "$GITHUB_OUTPUT"
+          echo "Provenance-downgrade acknowledgement: $ALLOW"
+
   # A2: detect whether a locally-built macOS-x64 archive has been pre-uploaded
   # to the GH Release. Runs before prepare-matrix so the result can gate the
   # darwin-x64 build leg. On workflow_dispatch with skip_macos_x64=true the
@@ -249,6 +297,7 @@ jobs:
       contents: read
     outputs:
       mac_local_present: ${{ steps.detect.outputs.mac_local_present }}
+      preflight_cleared: ${{ steps.preflight.outputs.cleared }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -305,6 +354,57 @@ jobs:
           else
             echo "macOS-x64 archive not found on the Release — reporting mac_local_present=false"
             echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A2 (#3140): the checkout above is pinned to checkout_sha, which for a
+      # recovery run is an old release-tag tree that predates this preflight
+      # script. Mirror the publish job's `.release-control` pattern — check out
+      # the workflow's own commit separately, without replacing the release
+      # source tree, so the script always exists regardless of which tag is
+      # being built.
+      - name: Checkout provenance preflight control script
+        if: ${{ inputs.dry_run != true && steps.detect.outputs.mac_local_present == 'true' }}
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+
+      # A2 (#3140): before any build leg runs, block a fast-Mac publish that
+      # would be an npm provenance trust downgrade for @takazudo/zfb-darwin-x64
+      # unless explicitly acknowledged. Skipped on dry runs (no release_version
+      # is resolved for a tag-less dry run, and nothing is actually published).
+      - name: Provenance downgrade preflight (fast-Mac)
+        id: preflight
+        if: ${{ inputs.dry_run != true && steps.detect.outputs.mac_local_present == 'true' }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ALLOW_DOWNGRADE: ${{ needs.release-context.outputs.allow_downgrade }}
+        run: |
+          set +e
+          node .release-control/scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" --mode mac-local
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -eq 0 ]]; then
+            echo "cleared=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$STATUS" -eq 1 ]]; then
+            if [[ "$ALLOW_DOWNGRADE" == "true" ]]; then
+              echo "::warning::Publishing @takazudo/zfb-darwin-x64 via the fast-Mac path would be an npm provenance trust downgrade (an earlier version carries an attestation). Acknowledged for this run — proceeding. Consumers with pnpm's trustPolicy=no-downgrade will fail to install @takazudo/zfb-darwin-x64@<this version>."
+              {
+                echo "### :warning: npm provenance trust downgrade acknowledged (fast-Mac)"
+                echo
+                echo "\`@takazudo/zfb-darwin-x64\` is published without provenance via the fast-Mac path in this run, and an earlier version already carries an attestation — a provenance trust downgrade. This was explicitly acknowledged."
+                echo
+                echo "**Consumers with npm/pnpm \`trust-policy=no-downgrade\` will fail to install this version of \`@takazudo/zfb-darwin-x64\`.**"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "cleared=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Provenance trust downgrade detected for the fast-Mac publish and not acknowledged. Add '<!-- zfb-release: allow-provenance-downgrade -->' as its own line in the Release body, or re-run workflow_dispatch with allow_provenance_downgrade=true, to proceed anyway."
+              exit 1
+            fi
+          else
+            echo "::error::Provenance preflight (mac-local) failed with a registry error (exit ${STATUS}) — failing closed. Retry the release."
+            exit 1
           fi
 
   # Emits the build matrix as JSON so the darwin-x64 leg can be conditionally
@@ -1080,6 +1180,52 @@ jobs:
         run: bash scripts/publish-npm-packages.sh mac-local
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Defense in depth (A2, #3140): publish-npm-packages.sh refuses to
+          # publish in mac-local mode without this set. detect-mac-local's own
+          # preflight step already blocked the run above unless the downgrade
+          # was cleared (no downgrade, or acknowledged) — mirror that verdict
+          # here rather than re-deriving it from the raw acknowledgement, so a
+          # downgrade that was detected but never acknowledged still cannot
+          # reach this step even if the job-level gate above were bypassed.
+          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ needs.detect-mac-local.outputs.preflight_cleared == 'true' && '1' || '' }}
+
+      # A2 (#3140): main-based recovery always omits provenance for every
+      # package (see below), which is always a trust downgrade for any package
+      # that already carries an attestation. Block it here, before the
+      # recovery publish step, unless explicitly acknowledged.
+      - name: Provenance downgrade preflight (recovery)
+        id: preflight-recovery
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery == 'true' }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ALLOW_DOWNGRADE: ${{ needs.release-context.outputs.allow_downgrade }}
+        run: |
+          set +e
+          node .release-control/scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" --mode recovery-no-provenance
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -eq 0 ]]; then
+            echo "cleared=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$STATUS" -eq 1 ]]; then
+            if [[ "$ALLOW_DOWNGRADE" == "true" ]]; then
+              echo "::warning::Recovery publish (no provenance) would be an npm provenance trust downgrade for at least one package (an earlier version carries an attestation). Acknowledged for this run — proceeding. Consumers with pnpm's trustPolicy=no-downgrade will fail to install one or more packages from this release."
+              {
+                echo "### :warning: npm provenance trust downgrade acknowledged (recovery)"
+                echo
+                echo "Recovery publishes every package without provenance in this run, and at least one already carries an earlier attestation — a provenance trust downgrade. This was explicitly acknowledged."
+                echo
+                echo "**Consumers with npm/pnpm \`trust-policy=no-downgrade\` will fail to install one or more packages from this release.**"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "cleared=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Provenance trust downgrade detected for the recovery publish and not acknowledged. Add '<!-- zfb-release: allow-provenance-downgrade -->' as its own line in the Release body, or re-run workflow_dispatch with allow_provenance_downgrade=true, to proceed anyway."
+              exit 1
+            fi
+          else
+            echo "::error::Provenance preflight (recovery) failed with a registry error (exit ${STATUS}) — failing closed. Retry the release."
+            exit 1
+          fi
 
       # Main-based recovery deliberately omits provenance for every package.
       # GitHub's OIDC subject identifies github.sha (the main commit containing
@@ -1091,6 +1237,8 @@ jobs:
         run: bash .release-control/scripts/publish-npm-packages.sh recovery-no-provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Defense in depth (A2, #3140): see the mac-local step's comment above.
+          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ steps.preflight-recovery.outputs.cleared == 'true' && '1' || '' }}
 
       # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
       # The ALSO_LATEST block above is the FORWARD half of the prerelease

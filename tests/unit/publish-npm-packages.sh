@@ -254,6 +254,7 @@ if PATH="$MOCK_BIN:$PATH" \
    MOCK_PUBLISH_LOG="$PUB_LOG" \
    MOCK_ARGS_LOG="$ARGS_LOG" \
    MOCK_EXISTING="" \
+   ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
    bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1; then
   COUNT=$(grep -c . "$PUB_LOG" || true)
   if [ "$COUNT" -eq 10 ] && ! grep -q -- '--provenance' "$ARGS_LOG"; then
@@ -280,6 +281,7 @@ assert_advisory() {
   MOCK_PUBLISH_LOG=/dev/null \
   MOCK_EXISTING="$ALL_SPECS" \
   GITHUB_STEP_SUMMARY="$AD_SUMMARY" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
     bash "$SCRIPT" "$AD_MODE" >"$AD_OUT" 2>&1 || true
 
   if grep -q '::warning title=npm provenance trust downgrade::' "$AD_OUT"; then
@@ -314,6 +316,54 @@ assert_advisory "advisory: mac-local warns, scoped to zfb-darwin-x64" \
   mac-local yes "@takazudo/zfb-darwin-x64"
 assert_advisory "advisory: all-provenance stays silent" \
   all-provenance no ""
+
+# ── ZFB_ALLOW_PROVENANCE_DOWNGRADE gate (A2, #3140) ─────────────────────────────
+# Defense in depth: mac-local / recovery-no-provenance modes must refuse to
+# publish ANYTHING unless the release.yml preflight has cleared them and set
+# this env var to exactly "1". No mock npm/pnpm call may happen — the gate must
+# fire before any publish, not merely alongside one.
+# assert_downgrade_gate <desc> <mode> <env-assignment-or-empty> <want: blocked|allowed>
+assert_downgrade_gate() {
+  DG_DESC="$1"; DG_MODE="$2"; DG_ENV="$3"; DG_WANT="$4"
+  DG_PUB_LOG=$(mktemp)
+  : >"$DG_PUB_LOG"
+  DG_RC=0
+  if [ -n "$DG_ENV" ]; then
+    PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$DG_PUB_LOG" MOCK_EXISTING="" \
+      env "$DG_ENV" bash "$SCRIPT" "$DG_MODE" >/dev/null 2>&1 || DG_RC=$?
+  else
+    PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$DG_PUB_LOG" MOCK_EXISTING="" \
+      bash "$SCRIPT" "$DG_MODE" >/dev/null 2>&1 || DG_RC=$?
+  fi
+
+  if [ "$DG_WANT" = blocked ]; then
+    if [ "$DG_RC" -ne 0 ] && [ ! -s "$DG_PUB_LOG" ]; then
+      pass "$DG_DESC"
+    else
+      fail "$DG_DESC (exit=$DG_RC, publish log $([ -s "$DG_PUB_LOG" ] && echo non-empty || echo empty))"
+    fi
+  else
+    if [ "$DG_RC" -eq 0 ] && [ -s "$DG_PUB_LOG" ]; then
+      pass "$DG_DESC"
+    else
+      fail "$DG_DESC (exit=$DG_RC, publish log $([ -s "$DG_PUB_LOG" ] && echo non-empty || echo empty))"
+    fi
+  fi
+  rm -f "$DG_PUB_LOG"
+}
+
+assert_downgrade_gate "gate: mac-local WITHOUT the env var is blocked before any publish" \
+  mac-local "" blocked
+assert_downgrade_gate "gate: mac-local with the env var set to a non-1 value is blocked" \
+  mac-local "ZFB_ALLOW_PROVENANCE_DOWNGRADE=true" blocked
+assert_downgrade_gate "gate: mac-local WITH ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 proceeds" \
+  mac-local "ZFB_ALLOW_PROVENANCE_DOWNGRADE=1" allowed
+assert_downgrade_gate "gate: recovery-no-provenance WITHOUT the env var is blocked before any publish" \
+  recovery-no-provenance "" blocked
+assert_downgrade_gate "gate: recovery-no-provenance WITH ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 proceeds" \
+  recovery-no-provenance "ZFB_ALLOW_PROVENANCE_DOWNGRADE=1" allowed
+assert_downgrade_gate "gate: all-provenance is unaffected (no env var needed)" \
+  all-provenance "" allowed
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
