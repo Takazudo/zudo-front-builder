@@ -1,52 +1,91 @@
-//! Repro fixture + baseline harness for issue #3133 (epic #3135, sub-issue
-//! #3138 / Track B0) — "Out-of-root content collection seeds whole source
-//! dir, triggering full node_modules staging walk".
+//! Repro fixture + staging-stats harness for issue #3133 (epic #3135,
+//! sub-issues #3138 / Track B0 and #3141 / Track D) — "Out-of-root content
+//! collection seeds whole source dir, triggering full node_modules staging
+//! walk".
 //!
-//! ## What this proves today (pre-fix)
+//! ## What this proves
 //!
 //! Runs a real `zfb build` over `tests/fixtures/collection-seeds-3133/` in
 //! two variants — `with-collection` (a `componentDocs` collection at
 //! `../../packages/ui/src/components`, `include: ["**/*.mdx"]`,
 //! `allowOutsideRoot: true`, mirroring the issue's repro exactly) and
 //! `control` (identical workspace, same `apps/site` cwd, but the config has
-//! no `collections` key at all) — and prints the wall-clock delta between
-//! them. Both builds must succeed either way; #3133 is a *performance* bug
-//! (dev never becomes ready / build OOMs on a large real dependency tree),
-//! not a correctness bug, and this fixture's synthetic `node_modules` tree
-//! is deliberately tiny (a handful of files) so it stays fast and commit-
-//! able — it cannot itself reproduce a multi-minute hang. What it DOES
-//! reproduce structurally is the exact shape the root cause needs: a
-//! `.tsx` sibling of the included `.mdx` that imports a workspace package
-//! (`button.tsx`), a second sibling `.tsx` that NO `.mdx` imports and that
-//! also imports a workspace package (`orphan.tsx` — proves code merely
-//! sitting next to the `.mdx` must not matter), and a pnpm-private
-//! transitive dependency (`leftpad-priv`) reachable along >= 3 distinct
-//! *logical* `node_modules/leftpad-priv` paths (`packages/ui`,
-//! `packages/shared-utils`, `packages/shared-icons`) that all resolve to
-//! ONE physical pnpm-store directory — the exact multiplier
-//! `extend_node_modules_dependency_staging`'s logical-root-keyed `visited`
-//! set re-scans today (bundler.rs, see the code-map in
-//! `_temp-resource/3135-provenance-guard-and-collection-seeds/code-map.md`).
+//! no `collections` key at all) — and asserts the `[zfb-staging-stats]`
+//! line (#3139's `ZFB_STAGING_STATS=1` hook in
+//! `extend_node_modules_dependency_staging`, `crates/zfb-build/src/bundler.rs`)
+//! for each:
 //!
-//! ## The staging-stats hook (owned by sibling issue #3139, NOT this file)
+//! - `control`: no package is closure-walked at all and workspace staging
+//!   never activates — the site's own pages import nothing.
+//! - `with-collection`: workspace staging ACTIVATES and the pnpm-private
+//!   `leftpad-priv` is visited along its 3 logical paths while being
+//!   physically scanned once (B1's memoization, #3139). This is #3133's
+//!   mechanism: the ONLY difference between the two variants is the
+//!   out-of-root collection, whose non-included sibling `.tsx` files
+//!   (`button.tsx`, `orphan.tsx`) become module-graph seeds, reach a
+//!   workspace package, flip staging on, and drag every deferred live
+//!   dependency (preact, preact-render-to-string, the zfb runtime, hono)
+//!   plus the workspace packages' pnpm-private closure through the
+//!   import-parsing walk.
 //!
-//! #3139 (parallel Track B1, working in `crates/zfb-build/src/bundler.rs`)
-//! adds a `ZFB_STAGING_STATS=1`-gated stderr line to
-//! `extend_node_modules_dependency_staging`:
+//! ## Why the fixture needs a real `apps/site/node_modules` + `tsconfig.json`
 //!
-//! ```text
-//! [zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool
-//! ```
+//! Diagnosed in #3141. #3138's first cut had NO `apps/site/node_modules` and
+//! no `tsconfig.json`, and never reproduced the flip:
 //!
-//! This file does NOT touch `bundler.rs` (worktree coordination rule) and
-//! the hook does not exist yet on this branch. Both build invocations below
-//! set `ZFB_STAGING_STATS=1` and scan captured stderr for that line: when
-//! present it's parsed and printed (a future revision, once #3139 merges,
-//! can promote the printed counts into hard assertions — e.g.
-//! `logical_visits >= 3` and `physical_scans == 1` after B1's memoization,
-//! `workspace_staging_activated == false` for `control`); when absent
-//! (this tree, today) the harness prints a note and does not fail — the
-//! manager re-runs this file after both Wave-1 topics merge.
+//! 1. Without a project-local `node_modules`, `commands::bundler_input`
+//!    falls back to the binary-embedded vendor tree and sets
+//!    `node_modules_preserve_symlinks = true`, which disables BOTH the
+//!    canonical-package resolution (`resolve_from_canonical_package`) and
+//!    the workspace physical fallback in `extend_node_modules_dependency_staging`,
+//!    so a workspace package's pnpm-private siblings are never reached.
+//! 2. With a project-local `node_modules` but an EMPTY `tsconfig` `paths`
+//!    map, `esbuild_will_preserve_symlinks` is true, so pnpm-private
+//!    siblings are only DEFERRED (`deferred_physical_dependencies`) until
+//!    staging flips — and out-of-root staged dirs (`packages/ui/node_modules/…`)
+//!    are invisible to the flip predicate (it only inspects `staging_dirs`
+//!    entries under `project_root`). Nothing flips, nothing is walked.
+//!
+//! A non-empty `paths` map (`apps/site/tsconfig.json`, the same gate
+//! `bundler_staging_scan_memo.rs` documents) makes esbuild — and therefore
+//! the closure walk — resolve through canonical package dirs, which is what
+//! follows a store dir's private siblings and lands the workspace-package
+//! ALIASES (`…/shared-utils/node_modules/shared-icons`) in
+//! `staging_alias_dirs`, where the flip predicate does see them. A second,
+//! independent real-world trigger — any in-root source importing a
+//! workspace package — also flips staging (measured in #3141's decision
+//! record) but would flip the `control` variant too, so the fixture uses
+//! the `tsconfig` gate to keep the control at zero.
+//!
+//! Also learned there: the collection root is joined onto the project root
+//! UNNORMALISED (`<ws>/apps/site/../../packages/ui/src/components`), so the
+//! out-of-root seeds pass `seed.starts_with(project_root)` lexically and
+//! resolve their bare imports from their own physical location (walking up
+//! through the `..` into `packages/ui/node_modules/`) — that is how an
+//! out-of-root seed reaches a workspace package at all.
+//!
+//! ## node_modules layout (built at setup time, never committed)
+//!
+//! `materialise_fixture` lays the tree down in a tempdir per variant:
+//!
+//! - `<ws>/node_modules/.pnpm/leftpad-priv@1.0.0/node_modules/leftpad-priv/`
+//!   — the ONE physical `leftpad-priv`, linked from `packages/ui`,
+//!   `packages/shared-utils` and `packages/shared-icons` (3 logical paths).
+//! - `<ws>/node_modules/.pnpm/@takazudo+zfb-runtime@embedded/node_modules/`
+//!   — `@takazudo/zfb-runtime` + `@takazudo/zfb` copied from the binary's
+//!   own vendor snapshot (`ZFB_VENDOR_DIR`, the same bytes the embedded
+//!   fallback would serve) so they canonicalise INSIDE a `node_modules`
+//!   like a real install, plus a `hono` link to this monorepo's installed
+//!   copy. The runtime's server router imports `hono` and
+//!   `@takazudo/zfb/content`, and after the flip every dependency must be
+//!   present in the isolated staged view — a symlink to the repo's
+//!   `packages/zfb-runtime` workspace package would canonicalise OUTSIDE
+//!   any `node_modules` and be rejected by `workspace_package_source_is_eligible`.
+//! - `<ws>/apps/site/node_modules/` — `preact`, `preact-render-to-string`
+//!   (this monorepo's installed store copies, found by prefix so a version
+//!   bump cannot strand the test), `@takazudo/{zfb,zfb-runtime}` (the store
+//!   copies above), and the `shared-utils` / `ui` workspace links
+//!   `apps/site/package.json` declares.
 //!
 //! ## Level / tier
 //!
@@ -81,6 +120,50 @@ fn pnpm_store_template_dir() -> PathBuf {
     fixture_root()
         .join("pnpm-store-template")
         .join("leftpad-priv")
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/ dir")
+        .parent()
+        .expect("repo root")
+        .to_path_buf()
+}
+
+/// The binary-embedded vendor snapshot (`crates/zfb/build.rs` exports it as
+/// `ZFB_VENDOR_DIR`; `render_pipeline.rs` embeds it with `include_dir!`).
+/// Its `@takazudo/{zfb,zfb-runtime}` entries are `package.json` + `src`
+/// only, so copying them is cheap and version-consistent with the binary
+/// under test.
+fn vendor_dir() -> PathBuf {
+    PathBuf::from(env!("ZFB_VENDOR_DIR"))
+}
+
+/// The first `node_modules/.pnpm/<prefix>*/node_modules/<package_name>`
+/// entry of this monorepo's own install — same helper shape as
+/// `client_bundling_cross_pipeline.rs`, so a dependency bump never strands
+/// this test on a pinned version string.
+fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = fs::read_dir(pnpm_dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", pnpm_dir.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix))
+        })
+        .collect();
+    candidates.sort();
+    let chosen = candidates.into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "no node_modules/.pnpm entry starting with {prefix:?} under {} — run `pnpm install` \
+             at the repo root",
+            pnpm_dir.display()
+        )
+    });
+    chosen.join("node_modules").join(package_name)
 }
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
@@ -136,14 +219,51 @@ impl Variant {
             Variant::Control => "control",
         }
     }
+
+    /// The staging stats each variant must produce on the merged #3139 +
+    /// #3138 base (measured in #3141; see the file header for the
+    /// mechanism and the fixture README for the per-package derivation).
+    ///
+    /// `with-collection` — 9 logical visits, in closure order:
+    /// `packages/ui/node_modules/shared-utils` (seeded by `button.tsx` /
+    /// `orphan.tsx`), then its pnpm-private `leftpad-priv` and
+    /// `shared-icons` aliases, then `shared-icons`' own `leftpad-priv`
+    /// alias — at which point the workspace aliases flip staging on and
+    /// the deferred live dependencies are drained: `@takazudo/zfb-runtime`,
+    /// its `hono` sibling, `preact`, `preact-render-to-string`, and
+    /// `packages/ui/node_modules/leftpad-priv` (deferred from `button.tsx`
+    /// as an ordinary dependency). That is 3 logical visits of the ONE
+    /// physical `leftpad-priv`. 7 physical scans, one per distinct
+    /// canonical dir: `leftpad-priv` is scanned once across its 3 logical
+    /// paths (#3139's memoization; 9 scans with it reverted — measured in
+    /// #3141). `@takazudo/zfb` is never closure-walked: the vendored
+    /// runtime's `package.json` still declares it `workspace:*`, which
+    /// `workspace_package_source_is_eligible` refuses for a package that is
+    /// not a member of THIS workspace (a fixture artefact — a registry
+    /// install declares a version range); esbuild still resolves it
+    /// through the staged symlink into the store.
+    fn expected_stats(&self) -> StagingStats {
+        match self {
+            Variant::WithCollection => StagingStats {
+                physical_scans: 7,
+                logical_visits: 9,
+                workspace_staging_activated: true,
+            },
+            Variant::Control => StagingStats {
+                physical_scans: 0,
+                logical_visits: 0,
+                workspace_staging_activated: false,
+            },
+        }
+    }
 }
 
 /// Materialises one fixture variant into a fresh tempdir: copies the
 /// checked-in workspace template, selects the variant's `zfb.config.json`,
 /// and lays down the synthetic pnpm-store node_modules tree (workspace
-/// package symlinks + >= 3 logical paths to the same physical
-/// `leftpad-priv` directory) that both variants share. Returns
-/// `(tempdir_guard, apps/site project root)`.
+/// package symlinks + 3 logical paths to the same physical `leftpad-priv`
+/// directory + the site's own real `node_modules`) that both variants
+/// share. Returns `(tempdir_guard, apps/site project root)`.
 #[cfg(unix)]
 fn materialise_fixture(variant: &Variant) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("create tempdir");
@@ -206,7 +326,91 @@ fn materialise_fixture(variant: &Variant) -> (tempfile::TempDir, PathBuf) {
         &shared_icons_node_modules.join("leftpad-priv"),
     );
 
+    // ---- the zfb runtime as a pnpm-store package ----
+    // `@takazudo/zfb-runtime` + its `@takazudo/zfb` peer, copied from the
+    // binary's vendor snapshot, beside a `hono` link — pnpm's
+    // `.pnpm/<pkg>@<ver>/node_modules/{<pkg>,<deps…>}` sibling layout, so the
+    // closure walk resolves the runtime's bare imports from its canonical
+    // dir exactly as it would for a real install.
+    let runtime_store = workspace_root.join("node_modules/.pnpm/@takazudo+zfb-runtime@embedded");
+    let runtime_store_node_modules = runtime_store.join("node_modules");
+    for package in ["zfb-runtime", "zfb"] {
+        copy_dir(
+            &vendor_dir().join("@takazudo").join(package),
+            &runtime_store_node_modules.join("@takazudo").join(package),
+        )
+        .unwrap_or_else(|e| {
+            panic!("copy vendored @takazudo/{package} into the fixture store: {e}")
+        });
+    }
+    let repo_pnpm_dir = repo_root().join("node_modules/.pnpm");
+    symlink(
+        &find_pnpm_store_package(&repo_pnpm_dir, "hono@", "hono"),
+        &runtime_store_node_modules.join("hono"),
+    );
+
+    // ---- the site's own node_modules (what `pnpm install` gives `apps/site`) ----
+    let site_node_modules = site_root.join("node_modules");
+    fs::create_dir_all(site_node_modules.join("@takazudo")).unwrap();
+    for package in ["zfb-runtime", "zfb"] {
+        symlink(
+            &runtime_store_node_modules.join("@takazudo").join(package),
+            &site_node_modules.join("@takazudo").join(package),
+        );
+    }
+    symlink(
+        &find_pnpm_store_package(&repo_pnpm_dir, "preact@", "preact"),
+        &site_node_modules.join("preact"),
+    );
+    symlink(
+        &find_pnpm_store_package(
+            &repo_pnpm_dir,
+            "preact-render-to-string@",
+            "preact-render-to-string",
+        ),
+        &site_node_modules.join("preact-render-to-string"),
+    );
+    symlink(
+        &workspace_root.join("packages/shared-utils"),
+        &site_node_modules.join("shared-utils"),
+    );
+    symlink(
+        &workspace_root.join("packages/ui"),
+        &site_node_modules.join("ui"),
+    );
+
     (tmp, site_root)
+}
+
+/// The parsed `[zfb-staging-stats] physical_scans=N logical_visits=M
+/// workspace_staging_activated=bool` line (`NodeModulesStagingStats` in
+/// `crates/zfb-build/src/bundler.rs`, #3139).
+#[derive(Debug, PartialEq, Eq)]
+struct StagingStats {
+    physical_scans: usize,
+    logical_visits: usize,
+    workspace_staging_activated: bool,
+}
+
+fn parse_staging_stats(line: &str) -> Option<StagingStats> {
+    let rest = line.split("[zfb-staging-stats]").nth(1)?;
+    let mut physical_scans = None;
+    let mut logical_visits = None;
+    let mut workspace_staging_activated = None;
+    for token in rest.split_whitespace() {
+        let (key, value) = token.split_once('=')?;
+        match key {
+            "physical_scans" => physical_scans = value.parse().ok(),
+            "logical_visits" => logical_visits = value.parse().ok(),
+            "workspace_staging_activated" => workspace_staging_activated = value.parse().ok(),
+            _ => {}
+        }
+    }
+    Some(StagingStats {
+        physical_scans: physical_scans?,
+        logical_visits: logical_visits?,
+        workspace_staging_activated: workspace_staging_activated?,
+    })
 }
 
 struct RunOutcome {
@@ -243,14 +447,15 @@ fn run_zfb_build(project_root: &Path) -> RunOutcome {
     }
 }
 
-/// Baseline pre-fix measurement (issue #3138 / Track B0): runs real
-/// `zfb build` over both fixture variants, prints wall-clock time and the
-/// staging-stats line (when present) for each, and asserts both builds
-/// succeed. See the file header for what is (and is not) proved by this
-/// synthetic-scale fixture, and for the staging-stats hook's ownership.
+/// Runs real `zfb build` over both fixture variants, prints each
+/// wall-clock time, and asserts both builds succeed AND that the staging
+/// stats match each variant's expectation — `with-collection` flips
+/// workspace staging on and visits the 3-logical-path `leftpad-priv` (one
+/// physical scan); `control` walks nothing. See the file header for what
+/// is (and is not) proved by this synthetic-scale fixture.
 #[cfg(unix)]
 #[test]
-fn zfb_build_succeeds_for_both_fixture_variants_and_prints_baseline() {
+fn zfb_build_staging_stats_match_expectation_for_both_fixture_variants() {
     let mut outcomes = Vec::new();
     for variant in [Variant::WithCollection, Variant::Control] {
         let (_tmp, project_root) = materialise_fixture(&variant);
@@ -271,17 +476,49 @@ fn zfb_build_succeeds_for_both_fixture_variants_and_prints_baseline() {
             );
         }
 
+        let stats_line = outcome.staging_stats_line.clone().unwrap_or_else(|| {
+            panic!(
+                "no [zfb-staging-stats] line for the {} variant (ZFB_STAGING_STATS=1 was set; \
+                 #3139's hook must be present).\n--- combined output ---\n{}",
+                variant.label(),
+                outcome.combined
+            )
+        });
+        let stats = parse_staging_stats(&stats_line)
+            .unwrap_or_else(|| panic!("unparseable staging stats line: {stats_line}"));
         eprintln!(
-            "[collection-seeds-3133 baseline] variant={} elapsed_ms={} staging_stats={}",
+            "[collection-seeds-3133 baseline] variant={} elapsed_ms={} {}",
             variant.label(),
             outcome.elapsed_ms,
-            outcome
-                .staging_stats_line
-                .as_deref()
-                .unwrap_or("<absent: ZFB_STAGING_STATS hook not present on this tree — #3139>"),
+            stats_line.trim(),
+        );
+        assert_eq!(
+            stats,
+            variant.expected_stats(),
+            "staging stats for the {} variant drifted from #3141's measured expectation \
+             (see this file's header and the fixture README)",
+            variant.label()
         );
         outcomes.push((variant.label(), outcome));
     }
 
     assert_eq!(outcomes.len(), 2, "expected exactly 2 baseline runs");
+}
+
+#[test]
+fn parse_staging_stats_reads_the_hook_line() {
+    assert_eq!(
+        parse_staging_stats(
+            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true"
+        ),
+        Some(StagingStats {
+            physical_scans: 4,
+            logical_visits: 6,
+            workspace_staging_activated: true,
+        })
+    );
+    assert_eq!(
+        parse_staging_stats("[zfb-staging-stats] physical_scans=4"),
+        None
+    );
 }
