@@ -90,6 +90,32 @@ pnpm 11.2 で、解決済みロックファイルの各エントリに対して�
 
 `trustPolicy` 自体を無効化しても回避できますが、これら 5 つではなく**すべての**依存関係についてガードが外れます。範囲を限定した除外を優先してください。
 
+## `@takazudo/zfb-darwin-x64` 2.20.3 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
+
+**症状:** pnpm のオプトイン設定 [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) を `no-downgrade` にしていると、`@takazudo/zfb-darwin-x64` を `2.20.3` でインストール／アップグレードする際に失敗します。
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb-darwin-x64@2.20.3" (possible package takeover)
+```
+
+pnpm はホストの OS に関係なくすべての `optionalDependencies` を解決するため、macOS x64 ホストに限らず、どの OS の利用者にも影響します。
+
+**原因:** `2.20.3` は `--fast-mac` エスケープハッチを使ってリリースされ、`zfb-darwin-x64` に `--provenance` なしで公開されました。この パッケージの attestation の欠落が最初に解消された `2.13.0`（上記の `2.12.0` の項を参照）以降、`2.20.2` まではすべて attestation が付いていたため、`2.20.3` は恒常的なギャップではなく、正真正銘のダウングレードです。当時はこれを公開前に検知できませんでした。このケースをブロックする preflight チェックとリリーススキル側のゲートは、まだ存在していなかったためです。
+
+**対処:** npm のバージョンはイミュータブルなので、`2.20.3` 自体が後から attestation を得ることはありません。次の順で検討してください。
+
+1. **`2.20.4` 以降に上げる**。それらのリリースは通常の provenance-first な CI パスを通り attestation が復活するため、ダウングレード判定が解消されます。これが本来の修正です。
+2. まだアップグレードできない場合は **`2.20.2` に留まる**。こちらは attestation があり、影響を受ける `2.20.3` を回避できます。
+3. どうしても今 `2.20.3` が必要な場合は、`pnpm-workspace.yaml` の [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) で**このパッケージだけを除外する**。
+
+   ```yaml
+   trustPolicy: no-downgrade
+   trustPolicyExclude:
+     - "@takazudo/zfb-darwin-x64@2.20.3"
+   ```
+
+`trustPolicy` 自体を無効化しても回避できますが、このパッケージだけでなく**すべての**依存関係についてガードが外れます。範囲を限定した除外を優先してください。
+
 ## `import.meta.glob(...)` のビルドエラー
 
 **症状**（`zfb build` から。または `zfb dev` からは警告 + リバンドルのスキップ）:
