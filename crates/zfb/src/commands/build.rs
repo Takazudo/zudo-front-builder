@@ -1910,6 +1910,27 @@ pub(crate) fn compute_css_module_class_maps(
     let out = processor
         .process(&module_files)
         .context("CSS Modules compilation failed")?;
+    #[cfg(target_os = "macos")]
+    {
+        // SiblingMirrorPlan walks the physical /private/var tree on macOS,
+        // while the project and bundler may still use its /var spelling.
+        // Keep map keys in the caller's root spelling for shadow lookups.
+        if first_party_root.starts_with("/var")
+            && Path::new("/var").canonicalize().ok().as_deref() == Some(Path::new("/private/var"))
+        {
+            return Ok(out
+                .class_maps
+                .into_iter()
+                .map(|(path, names)| {
+                    let logical = path
+                        .strip_prefix("/private/var")
+                        .map(|relative| Path::new("/var").join(relative))
+                        .unwrap_or(path);
+                    (logical, names)
+                })
+                .collect());
+        }
+    }
     Ok(out.class_maps)
 }
 

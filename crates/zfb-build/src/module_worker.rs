@@ -626,7 +626,9 @@ fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) ->
             canonical.display()
         );
     }
-    Ok(logical)
+    // Keep the caller's spelling after validation. The graph and cache roots
+    // may still use /var, so returning /private/var would split their paths.
+    Ok(normalize_path_lexical(path))
 }
 
 fn resolve_worker_target(importer: &Path, specifier: &str, project_root: &Path) -> Result<PathBuf> {
@@ -3206,6 +3208,7 @@ mod tests {
 
         let accepted =
             validate_first_party_path(&file, &canonical_root, "module-worker dependency").unwrap();
+        assert_eq!(accepted, normalize_path_lexical(&file));
         assert_eq!(
             accepted.canonicalize().unwrap(),
             file.canonicalize().unwrap()
