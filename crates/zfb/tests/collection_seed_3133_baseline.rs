@@ -8,8 +8,9 @@
 //! - **`zfb build`** (below): asserts the `[zfb-staging-stats]` line for
 //!   both fixture variants — the ORIGINAL #3138/#3141 baseline.
 //! - **`zfb dev`** (#3143, the "Dev confirmation" section further down):
-//!   asserts a real `zfb dev --port 0` becomes ready within a deadline derived from a
-//!   measured `control` distribution, AND that the same staging-stats line
+//!   asserts a real `zfb dev --port 0` becomes ready (liveness only —
+//!   `DEV_BOOT_DEADLINE`; the per-variant 10 s bound was removed in #3149,
+//!   see #3146), AND that the same staging-stats line
 //!   holds for a dev boot, not just a build. This binary now spawns `zfb
 //!   dev`, so it moved from nextest's `e2e-heavy-unlocked` group into
 //!   `e2e-heavy-locked` and adopts issue #1339's cross-binary flock — see
@@ -540,11 +541,12 @@ fn parse_staging_stats_reads_the_hook_line() {
 
 // ---------------------------------------------------------------------------
 // Dev confirmation (#3143, Track B3): `zfb dev --port 0` becomes ready
-// within a deadline derived from a measured `control` distribution, and the
-// SAME `[zfb-staging-stats]` line holds for a dev boot, not just `zfb
-// build`. This binary now spawns `zfb dev`, so it lives in nextest's
-// `e2e-heavy-locked` group and adopts issue #1339's cross-binary flock — see
-// this file's header and `crates/CLAUDE.md`'s manifest.
+// (bounded only by the `DEV_BOOT_DEADLINE` liveness guardrail; elapsed ms is
+// printed telemetry — #3146/#3149), and the SAME `[zfb-staging-stats]` line
+// holds for a dev boot, not just `zfb build`. This binary now spawns `zfb
+// dev`, so it lives in nextest's `e2e-heavy-locked` group and adopts issue
+// #1339's cross-binary flock — see this file's header and
+// `crates/CLAUDE.md`'s manifest.
 // ---------------------------------------------------------------------------
 
 /// Cross-binary flock guard's in-binary serial companion — acquired AFTER
@@ -556,33 +558,21 @@ static DEV_SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sy
 #[cfg(unix)]
 const DEV_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// The liveness guardrail for `zfb dev --port 0` becoming ready (first
+/// `GET /` 200) — it turns a hung boot into a diagnosable failure and
+/// asserts nothing about product latency (root `CLAUDE.md` rule 8;
+/// zudo-test-wisdom "A fixed deadline as a failure guardrail on an already
+/// event-keyed wait"). No tighter per-variant bound exists since #3149: the
+/// measured macOS arm64 debug distribution (#3148 on #3146, 2026-09-26,
+/// Apple A18 Pro, `cf37d4d9`) is 5.2–7.8 s steady at idle, 11.3–12.0 s on
+/// the first boot after a cargo relink, and 12.4–70.3 s under 6x `yes`
+/// load — dominated by a debug-profile software SHA-256 of the 76 MB
+/// Tailwind binary (#3151) and a `build.rs`-forced relink (#3152), neither
+/// of which this test guards. See
+/// <https://github.com/Takazudo/zudo-front-builder/issues/3146> and
+/// <https://github.com/Takazudo/zudo-front-builder/issues/3146#issuecomment-5837783674>.
 #[cfg(unix)]
 const DEV_BOOT_DEADLINE: Duration = Duration::from_secs(90);
-
-/// `zfb dev --port 0` "dev-ready" deadline (first `GET /` 200) for BOTH
-/// fixture variants.
-///
-/// Derivation (CLAUDE.md rule 8 — from a measured latency distribution, not
-/// a guess): 5 fresh `control`-variant boots were timed on this container
-/// (shared 4 CPUs; other worktrees' `cargo`/`rustc` work contends for the
-/// same cores) by `measure_control_dev_ready_distribution` below
-/// (`#[ignore = "verification: ..."]`, run once by hand with `--ignored
-/// --exact --nocapture`, 2026-09-25):
-///
-/// 2943 / 2982 / 2835 / 2933 / 2831 ms — mean 2904 ms, max 2982 ms.
-///
-/// `with-collection` costs no more than `control` since #3142 (both
-/// variants seed zero packages and flip no staging — see the file header),
-/// so the SAME deadline covers both variants. `DEV_READY_DEADLINE` is the
-/// measured max (2982 ms) rounded up and given roughly 3.4x headroom (10s)
-/// to absorb this container's shared-CPU noise (other worktrees' cargo/
-/// rustc contending for the same 4 cores) rather than pin a tight per-run
-/// bound — the same generous-multiplier convention
-/// `dev_out_of_root_collection_e2e.rs`'s `BOOT_DEADLINE` (90s against
-/// sub-second real boots) and this file's own `zfb build` numbers
-/// (#3138/#3141's 3-run spreads) already use.
-#[cfg(unix)]
-const DEV_READY_DEADLINE: Duration = Duration::from_secs(10);
 
 #[cfg(unix)]
 struct DevGuard {
@@ -640,8 +630,8 @@ struct DevReadyOutcome {
 }
 
 /// Boots a real `zfb dev --port 0` over `project_root` and waits for the
-/// FIRST `GET /` 200 — the "dev-ready" instant `DEV_READY_DEADLINE` is
-/// measured against. Returns `None` when the process exits with a known
+/// FIRST `GET /` 200 — the "dev-ready" instant reported as `elapsed_ms`
+/// telemetry (no latency bound — #3146). Returns `None` when the process exits with a known
 /// environmental skip indicator (no V8 / no esbuild / no tailwind),
 /// matching `is_known_skip`'s convention above and
 /// `dev_out_of_root_collection_e2e.rs`'s `boot_and_handshake`.
@@ -735,10 +725,11 @@ async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<
     })
 }
 
-/// One-time measurement of the `control`-variant dev-ready distribution used
-/// to derive [`DEV_READY_DEADLINE`]'s doc comment above. NOT a regression
-/// guard (CLAUDE.md rule 6) — run once by hand whenever the deadline needs
-/// re-deriving (e.g. after a change that legitimately shifts dev-boot cost):
+/// One-time measurement of the `control`-variant dev-ready distribution —
+/// the evidence behind #3146's decision (#3150) to carry no per-variant
+/// latency bound. NOT a regression guard (CLAUDE.md rule 6) — run once by
+/// hand only when proposing a latency bound (e.g. after a change that
+/// legitimately shifts dev-boot cost):
 ///
 /// ```text
 /// cargo test -p zfb --test collection_seed_3133_baseline \
@@ -746,8 +737,8 @@ async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<
 /// ```
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "verification: one-time measurement of the control dev-ready distribution used to \
-            derive DEV_READY_DEADLINE (#3143)"]
+#[ignore = "verification: one-time measurement of the control dev-ready distribution recorded \
+            on #3146 (#3143, #3149); re-run only when proposing a latency bound"]
 async fn measure_control_dev_ready_distribution() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -778,11 +769,11 @@ async fn measure_control_dev_ready_distribution() {
 /// -R`, see this file's header and the fixture README) makes
 /// `with-collection` walk the whole sibling package's closure again — the
 /// staging-stats assertion below fails (`0/0/false` -> `7/9/true`) even
-/// though `zfb dev` still becomes ready within the deadline (the extra work
-/// is invisible to a bare readiness check on this toy-scale fixture, which
-/// is exactly why the stats assertion, not just the deadline, is
-/// load-bearing here — see the #3143 sub-issue and the #3141 decision comment
-/// "Target stats" section).
+/// though `zfb dev` still becomes ready in the same ~3 s (the extra work is
+/// invisible to readiness latency on this toy-scale fixture — which is
+/// exactly why the stats assertion, not any latency bound, is load-bearing
+/// here; the former 10 s bound was removed in #3149, see #3146 — see the
+/// #3143 sub-issue and the #3141 decision comment "Target stats" section).
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn zfb_dev_becomes_ready_within_deadline_and_matches_staging_stats() {
@@ -808,18 +799,6 @@ async fn zfb_dev_becomes_ready_within_deadline_and_matches_staging_stats() {
             );
             return;
         };
-
-        assert!(
-            outcome.elapsed_ms <= DEV_READY_DEADLINE.as_millis(),
-            "zfb dev for the {} variant took {} ms to become ready, over the {} ms deadline \
-             derived from the measured control distribution (see DEV_READY_DEADLINE's doc \
-             comment).\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            variant.label(),
-            outcome.elapsed_ms,
-            DEV_READY_DEADLINE.as_millis(),
-            read_log(&outcome.stdout_path),
-            read_log(&outcome.stderr_path),
-        );
 
         let stats_line = outcome.staging_stats_line.clone().unwrap_or_else(|| {
             panic!(
