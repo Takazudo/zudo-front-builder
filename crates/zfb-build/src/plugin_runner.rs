@@ -83,6 +83,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,38 @@ use crate::plugin_registries::{
 /// JS payload that the Rust side stages into a tempfile and runs via
 /// `node`. Embedded so we don't have to ship a sidecar at runtime.
 const PLUGIN_HOST_MJS: &str = include_str!("../../zfb/js/plugin-host.mjs");
+static NEXT_TRACE_HOST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Opt-in `ZFB_PLUGIN_INIT_TRACE=1` evidence for one host boot. The child
+/// writes fixed phase names to its existing stderr pipe; no request body,
+/// module URL, options, or source is copied into this state.
+struct InitTrace {
+    host_id: String,
+    started: Instant,
+    last_phase: Mutex<String>,
+}
+
+impl InitTrace {
+    async fn phase(&self, request_id: u64, phase: &str) {
+        let mut last = self.last_phase.lock().await;
+        // The child can consume stdin before the parent's flush returns.
+        // Preserve a later child observation over an earlier parent write.
+        if !last.starts_with("child:") || phase == "reply_read" {
+            *last = format!("parent:{phase}");
+        }
+        drop(last);
+        self.event(request_id, phase);
+    }
+
+    fn event(&self, request_id: u64, phase: &str) {
+        eprintln!(
+            "[zfb-plugin-init] host={} request={} role=parent elapsed_ms={} phase={phase}",
+            self.host_id,
+            request_id,
+            self.started.elapsed().as_millis()
+        );
+    }
+}
 
 /// One declared plugin in the loaded `Config`. Carries only the data
 /// the JS host needs at `init` time.
@@ -293,6 +326,7 @@ pub struct PluginHost {
 }
 
 struct HostInner {
+    init_trace: Option<InitTrace>,
     /// Pending in-flight requests keyed by id. The reader task pops
     /// the matching sender when a reply arrives.
     pending: Mutex<HashMap<u64, oneshot::Sender<HostReply>>>,
@@ -391,6 +425,8 @@ enum HostLine {
 #[derive(Debug, Deserialize)]
 struct HostReply {
     id: u64,
+    #[serde(skip)]
+    synthetic: bool,
     #[serde(default)]
     ok: bool,
     #[serde(default)]
@@ -485,10 +521,28 @@ impl PluginHost {
     /// embedded getter is available — the env var / workspace binary slot
     /// tiers still apply (see [`plugin_bundler::resolve_esbuild_for_plugins`]).
     pub async fn spawn_with_timeout(
+        plugins: Vec<PluginSpec>,
+        node_binary: Option<OsString>,
+        hook_timeout_secs: Option<u64>,
+        embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
+    ) -> Result<Self> {
+        let trace = std::env::var("ZFB_PLUGIN_INIT_TRACE").as_deref() == Ok("1");
+        Self::spawn_with_timeout_trace(
+            plugins,
+            node_binary,
+            hook_timeout_secs,
+            embedded_esbuild_getter,
+            trace,
+        )
+        .await
+    }
+
+    async fn spawn_with_timeout_trace(
         mut plugins: Vec<PluginSpec>,
         node_binary: Option<OsString>,
         hook_timeout_secs: Option<u64>,
         embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
+        trace_enabled: bool,
     ) -> Result<Self> {
         let hook_timeout = resolve_hook_timeout(hook_timeout_secs);
 
@@ -561,8 +615,22 @@ impl PluginHost {
             .await
             .context("plugin host: failed to stage plugin-host.mjs")?;
 
+        let init_trace = trace_enabled.then(|| InitTrace {
+            host_id: format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT_TRACE_HOST_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            started: Instant::now(),
+            last_phase: Mutex::new("parent:spawn".to_string()),
+        });
         let node_bin = node_binary.unwrap_or_else(|| OsString::from("node"));
-        let mut child = Command::new(&node_bin)
+        let mut command = Command::new(&node_bin);
+        if let Some(trace) = &init_trace {
+            command.env("ZFB_PLUGIN_INIT_TRACE", "1");
+            command.env("ZFB_PLUGIN_INIT_HOST_ID", &trace.host_id);
+        }
+        let mut child = command
             // Bundled entries carry `--sourcemap=inline` (#2308) so a
             // bundled plugin's *runtime* throw maps back to its original
             // `.ts` source in stack traces. Harmless for plain `.mjs`
@@ -595,6 +663,7 @@ impl PluginHost {
             .ok_or_else(|| anyhow!("plugin host: child stderr missing after spawn"))?;
 
         let inner = Arc::new(HostInner {
+            init_trace,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(1),
@@ -1011,7 +1080,13 @@ impl PluginHost {
         let mut guard = self.inner.child.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.kill().await;
+            if let Some(trace) = &self.inner.init_trace {
+                trace.event(1, "child_killed_reaped");
+            }
         }
+        drop(guard);
+        Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
+        Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
     }
 
     /// Send a `shutdown` command and wait for the child to exit.
@@ -1134,27 +1209,58 @@ impl PluginHost {
         let mut line =
             serde_json::to_string(&envelope).context("plugin host: serialise request")?;
         line.push('\n');
-        let write_outcome: Result<()> = {
+        if kind == "init" {
+            if let Some(trace) = &self.inner.init_trace {
+                trace.phase(id, "write_start").await;
+            }
+        }
+        let write_outcome: Result<()> = async {
             let mut stdin = self.inner.stdin.lock().await;
-            let r = stdin
+            stdin
                 .write_all(line.as_bytes())
                 .await
-                .context("plugin host: write request");
-            stdin.flush().await.ok();
-            r
-        };
+                .context("plugin host: write request")?;
+            if kind == "init" {
+                if let Some(trace) = &self.inner.init_trace {
+                    trace.phase(id, "write_complete").await;
+                }
+            }
+            stdin.flush().await.context("plugin host: flush request")
+        }
+        .await;
         // If the stdin write fails the host will never produce a reply
         // for `id`, so we must evict the `pending` entry inserted
         // above. Without this cleanup the map grows unboundedly across
         // transient hiccups (broken pipe, full buffer, etc.).
         if let Err(e) = write_outcome {
+            if kind == "init" {
+                if let Some(trace) = &self.inner.init_trace {
+                    trace.phase(id, "write_or_flush_failed").await;
+                }
+            }
             let mut pend = self.inner.pending.lock().await;
             pend.remove(&id);
             return Err(e);
         }
+        if kind == "init" {
+            if let Some(trace) = &self.inner.init_trace {
+                trace.phase(id, "flush_complete").await;
+            }
+        }
 
         let reply = match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(reply)) => reply,
+            Ok(Ok(reply)) => {
+                if kind == "init" {
+                    if let Some(trace) = &self.inner.init_trace {
+                        if reply.synthetic {
+                            trace.event(id, "reply_synthesized_after_exit");
+                        } else {
+                            trace.phase(id, "reply_read").await;
+                        }
+                    }
+                }
+                reply
+            }
             Ok(Err(_)) => {
                 return Err(anyhow!("plugin host: reply channel dropped"));
             }
@@ -1166,15 +1272,32 @@ impl PluginHost {
                     let mut pend = self.inner.pending.lock().await;
                     pend.remove(&id);
                 }
+                if kind == "init" {
+                    if let Some(trace) = &self.inner.init_trace {
+                        trace.event(id, "timeout");
+                    }
+                }
                 self.force_kill_child().await;
+                let last_phase = if kind == "init" {
+                    if let Some(trace) = &self.inner.init_trace {
+                        Some(trace.last_phase.lock().await.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let secs = timeout.as_secs();
                 return Err(anyhow!(
                     "`{}` hook did not complete within {}s — \
                      check for an unresolved promise / open handle / setInterval \
-                     in a plugin's `{}` implementation",
+                     in a plugin's `{}` implementation{}",
                     kind,
                     secs,
                     kind,
+                    last_phase
+                        .map(|p| format!(" (last init phase: {p})"))
+                        .unwrap_or_default(),
                 ));
             }
         };
@@ -1244,18 +1367,40 @@ impl PluginHost {
             error!("{msg}");
             eprintln!("zfb error: {msg}");
         }
+        if unexpected_eof {
+            if let Some(trace) = &inner.init_trace {
+                eprintln!(
+                    "[zfb-plugin-init] host={} request=1 role=parent elapsed_ms={} phase=stdout_closed_unexpectedly",
+                    trace.host_id,
+                    trace.started.elapsed().as_millis()
+                );
+            }
+        }
         // Wake every still-pending caller with a synthetic close error so
         // we don't deadlock on a child that died early.
         let mut pend = inner.pending.lock().await;
         for (id, tx) in pend.drain() {
+            let message = if id == 1 {
+                if let Some(trace) = &inner.init_trace {
+                    format!(
+                        "plugin host stdout closed before reply (last init phase: {})",
+                        *trace.last_phase.lock().await
+                    )
+                } else {
+                    "plugin host stdout closed before reply".to_string()
+                }
+            } else {
+                "plugin host stdout closed before reply".to_string()
+            };
             let _ = tx.send(HostReply {
                 id,
+                synthetic: true,
                 ok: false,
                 result: serde_json::Value::Null,
                 error: Some(HostErrorPayload {
                     plugin: "(host)".into(),
                     hook: "(none)".into(),
-                    message: "plugin host stdout closed before reply".into(),
+                    message,
                 }),
             });
         }
@@ -1274,6 +1419,38 @@ impl PluginHost {
             match lines.next_line().await {
                 Ok(Some(line)) => {
                     if !line.trim().is_empty() {
+                        if let Some(trace) = &inner.init_trace {
+                            let prefix = format!(
+                                "[zfb-plugin-init] host={} request=1 role=child ",
+                                trace.host_id
+                            );
+                            if let Some(rest) =
+                                line.strip_prefix(&prefix).filter(|_| line.len() <= 256)
+                            {
+                                if let Some((elapsed, phase)) = rest.split_once(" phase=") {
+                                    let valid_elapsed =
+                                        elapsed.strip_prefix("elapsed_ms=").is_some_and(|ms| {
+                                            !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit())
+                                        });
+                                    let valid_phase = matches!(
+                                        phase,
+                                        "received" | "reply_write_start" | "reply_write_complete"
+                                    ) || phase
+                                        .strip_prefix("import_")
+                                        .and_then(|rest| rest.split_once('_'))
+                                        .is_some_and(|(index, suffix)| {
+                                            !index.is_empty()
+                                                && index.bytes().all(|b| b.is_ascii_digit())
+                                                && matches!(suffix, "start" | "end" | "failed")
+                                        });
+                                    if valid_elapsed && valid_phase {
+                                        *trace.last_phase.lock().await = format!("child:{phase}");
+                                        eprintln!("{line}");
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         warn!(target: "zfb_plugin", "{line}");
                         eprintln!("{}", Self::format_plugin_host_warn_line("stderr", &line));
                     }
@@ -3073,6 +3250,7 @@ mod tests {
         // We need a valid tempdir even though the host script is never run.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let inner = Arc::new(HostInner {
+            init_trace: None,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(1),
@@ -3297,6 +3475,7 @@ mod tests {
         let stderr = child.stderr.take().expect("stderr");
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let inner = Arc::new(HostInner {
+            init_trace: None,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(1),
@@ -4757,5 +4936,109 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
             "two specs sharing one staged bundle URL must hit Node's module cache and evaluate \
              the module's top level exactly once, matching the .mjs baseline: {written}"
         );
+    }
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn traced_init_reaps_stalled_child_and_keeps_success_compatible() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let success = tmp.path().join("success.mjs");
+        tokio::fs::write(
+            &success,
+            "await new Promise(resolve => setTimeout(resolve, 30)); export default { name: 'ok' };",
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn_with_timeout_trace(
+            vec![PluginSpec {
+                name: "ok".into(),
+                module: file_url_for_test(&success),
+                options: serde_json::json!({ "secret": "must-not-appear-in-trace" }),
+            }],
+            None,
+            Some(3),
+            None,
+            true,
+        )
+        .await
+        .expect("delayed module loads through traced protocol");
+        assert!(host
+            .inner
+            .init_trace
+            .as_ref()
+            .unwrap()
+            .last_phase
+            .lock()
+            .await
+            .contains("reply"));
+        host.shutdown().await.unwrap();
+        assert!(host.inner.reader_handle.lock().await.is_none());
+        assert!(host.inner.stderr_reader_handle.lock().await.is_none());
+
+        let pid_file = tmp.path().join("stalled.pid");
+        let stalled = tmp.path().join("stalled.mjs");
+        tokio::fs::write(
+            &stalled,
+            format!(
+                "import {{ writeFileSync }} from 'node:fs'; writeFileSync({}, String(process.pid)); setInterval(() => {{}}, 1000); await new Promise(() => {{}}); export default {{}};",
+                serde_json::to_string(&pid_file.to_string_lossy().to_string()).unwrap()
+            ),
+        ).await.unwrap();
+        let error = match PluginHost::spawn_with_timeout_trace(
+            vec![PluginSpec {
+                name: "stalled".into(),
+                module: file_url_for_test(&stalled),
+                options: serde_json::Value::Null,
+            }],
+            None,
+            Some(2),
+            None,
+            true,
+        )
+        .await
+        {
+            Ok(_) => panic!("unresolved import must time out"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("last init phase: child:import_0_start"),
+            "{message}"
+        );
+        let pid = tokio::fs::read_to_string(&pid_file).await.unwrap();
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "timed-out child {pid} must be killed and reaped"
+        );
+
+        let exited = tmp.path().join("exited.mjs");
+        tokio::fs::write(&exited, "process.exit(17);")
+            .await
+            .unwrap();
+        let error = match PluginHost::spawn_with_timeout_trace(
+            vec![PluginSpec {
+                name: "exited".into(),
+                module: file_url_for_test(&exited),
+                options: serde_json::Value::Null,
+            }],
+            None,
+            Some(2),
+            None,
+            true,
+        )
+        .await
+        {
+            Ok(_) => panic!("exited child cannot complete init"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("last init phase:"), "{error}");
     }
 }
