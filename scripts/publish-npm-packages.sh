@@ -65,6 +65,13 @@
 #   PUBLISH_RECHECK_ATTEMPTS / PUBLISH_RECHECK_DELAY
 #                     post-failure registry-recheck tuning (defaults 3 / 2s);
 #                     the test suite sets DELAY=0 to stay fast.
+#   ZFB_ALLOW_PROVENANCE_DOWNGRADE
+#                     Required, set to "1", for the mac-local and
+#                     recovery-no-provenance modes (A2, #3140) — release.yml
+#                     sets it only after its provenance-downgrade preflight
+#                     passed (no downgrade, or an explicitly acknowledged one).
+#                     Not required for all-provenance, and refusing to publish
+#                     without it does not change the all-provenance path.
 #
 # Must be run from the repository root (it `cd`s into packages/* and calls
 # scripts/advance-latest-dist-tag.sh by relative path).
@@ -343,6 +350,24 @@ main() {
     echo "::error::must be run from the repo root (packages/zfb/package.json not found in $(pwd))"
     return 2
   fi
+
+  # Defense in depth (A2, #3140): these two modes publish at least one package
+  # WITHOUT provenance, which is a permanent trust downgrade for a package that
+  # already carries an earlier attestation. release.yml runs a preflight
+  # (scripts/check-provenance-preflight.mjs) before any build leg / before this
+  # script runs, and sets this env var only when that preflight passed — no
+  # downgrade found, or a downgrade found and explicitly acknowledged. Refuse
+  # to publish anything if it is missing, so a caller that bypasses the
+  # workflow's preflight (a hand-run invocation, a future refactor that drops
+  # the wiring) cannot silently ship an unacknowledged downgrade.
+  case "$mode" in
+    mac-local | recovery-no-provenance)
+      if [[ "${ZFB_ALLOW_PROVENANCE_DOWNGRADE:-}" != "1" ]]; then
+        echo "::error::mode '${mode}' publishes at least one package WITHOUT npm provenance, which is a permanent trust downgrade for consumers with pnpm's trustPolicy=no-downgrade. Set ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 only after that downgrade has been explicitly acknowledged (see release.yml's provenance-downgrade preflight). Refusing to publish."
+        return 1
+      fi
+      ;;
+  esac
 
   echo "== Publishing all workspace packages (mode=${mode}, dist-tag=${DIST_TAG}) =="
   emit_trust_downgrade_advisory "$mode"
