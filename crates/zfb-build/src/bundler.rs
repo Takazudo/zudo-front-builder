@@ -5997,7 +5997,7 @@ impl SiblingMirrorPlan {
         // (a) + (c): discovered graph files (project and sibling); only the
         // siblings survive `resolve_mirror_root`.
         for file in discovered_graph_files {
-            if let Some(root) = resolve_mirror_root(file, &project_root, &first_party_root) {
+            if let Some(root) = resolve_mirror_root(file, project_root, first_party_root) {
                 mirror_roots.insert(root);
             }
         }
@@ -6008,7 +6008,7 @@ impl SiblingMirrorPlan {
                 .map(|(_, target)| target.as_str()),
         ) {
             let claim = alias_target_claim_path(target);
-            if let Some(root) = resolve_mirror_root(&claim, &project_root, &first_party_root) {
+            if let Some(root) = resolve_mirror_root(&claim, project_root, first_party_root) {
                 mirror_roots.insert(root);
             }
         }
