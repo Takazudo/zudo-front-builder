@@ -3120,11 +3120,25 @@ pub fn bundle_with_session(
         // so a synthesized relative `../node_modules/<package>/...` import can
         // seed the package at the same staged location esbuild will resolve.
         let mut logical_source_roots = vec![(pages_dir.clone(), project_root.join("pages"))];
+        // A collection root is seeded through the same include/exclude
+        // predicate `materialise_collection` applies (#3142): a file the
+        // filter drops is never copied into the shadow, so esbuild can never
+        // see it and its imports must not seed the staging closure. The root
+        // is normalised so an out-of-root `../..` spelling cannot pass the
+        // lexical `starts_with(project_root)` test; its matched files resolve
+        // from the logical `<project>/content/<name>/<rel>` location instead,
+        // which is where esbuild meets their shadow copies.
+        let mut collection_seed_roots = Vec::new();
         if input.content_collections.is_empty() {
             source_graph_roots.push(content_dir.clone());
         } else {
             for collection in &input.content_collections {
-                source_graph_roots.push(resolver.resolve(&collection.root));
+                let physical_root = normalize_path_lexical(&resolver.resolve(&collection.root));
+                logical_source_roots.push((
+                    physical_root.clone(),
+                    project_root.join("content").join(&collection.name),
+                ));
+                collection_seed_roots.push(CollectionSeedRoot::new(physical_root, collection)?);
             }
         }
         if let Some(injected) = input.injected_pages_root.as_ref() {
@@ -3148,6 +3162,7 @@ pub fn bundle_with_session(
         );
         collect_project_source_module_graph_seed_files(
             &source_graph_roots,
+            &collection_seed_roots,
             &project_root,
             &bundle_exclude,
             &logical_source_roots,
@@ -8826,6 +8841,32 @@ fn decide_content_bridge_import(
     })
 }
 
+fn collection_has_glob_filter(include: Option<&[String]>, exclude: Option<&[String]>) -> bool {
+    include.is_some_and(|p| !p.is_empty()) || exclude.is_some_and(|p| !p.is_empty())
+}
+
+/// The collection include/exclude predicate for one file at `rel` (relative to
+/// the collection root). Globs apply to recognised content extensions only
+/// (md / mdx / tsx); non-content siblings (images, css, json, helper `.ts`, …)
+/// pass through unchanged — they live in the shadow tree purely for esbuild's
+/// resolver and never reach the snapshot or bridge map, so filtering them
+/// would just diverge from the walker's coverage. Shared by
+/// `materialise_collection` and the staging seed walk so the seed set is the
+/// shadow's set by construction (#3142).
+fn collection_glob_filter_admits(
+    filter: &zfb_content::collection::CollectionFilter,
+    has_glob_filter: bool,
+    rel: &Path,
+) -> bool {
+    let is_content_ext = matches!(
+        rel.extension().and_then(|s| s.to_str()),
+        // page-extension-drift-guard: allow — CONTENT-collection extensions
+        // for the shadow-tree glob filter, not the routable page allowlist.
+        Some("md") | Some("mdx") | Some("tsx")
+    );
+    !(is_content_ext && has_glob_filter) || filter.matches_relative(&path_to_posix_string(rel))
+}
+
 /// Walk one content collection's source root and materialise its
 /// entries into `dest`, compiling MDX to JSX on the fly via
 /// [`compile_mdx_to_jsx_module_cached`] and recording every entry in
@@ -8885,8 +8926,7 @@ fn materialise_collection(
                 collection_name
             )
         })?;
-    let has_glob_filter = include.map(|p| !p.is_empty()).unwrap_or(false)
-        || exclude.map(|p| !p.is_empty()).unwrap_or(false);
+    let has_glob_filter = collection_has_glob_filter(include, exclude);
     // `bundle.exclude` is global to the SSR graph and separate from the
     // collection's snapshot/bridge include-exclude filter above. Keep one
     // predicate for every non-Markdown collection materialisation seam so a
@@ -8958,28 +8998,16 @@ fn materialise_collection(
             continue;
         }
 
-        // Apply include / exclude globs to recognised content extensions
-        // only (md / mdx / tsx). Non-content siblings (images, css,
-        // json, …) pass through unchanged — they live in the shadow
-        // tree purely for esbuild's resolver and never reach the
-        // snapshot or bridge map, so filtering them would just diverge
-        // from the walker's coverage.
-        let is_content_ext = matches!(
-            from.extension().and_then(|s| s.to_str()),
-            // page-extension-drift-guard: allow — CONTENT-collection extensions
-            // for the shadow-tree glob filter, not the routable page allowlist.
-            Some("md") | Some("mdx") | Some("tsx")
-        );
-        if is_content_ext && has_glob_filter {
-            let rel_posix = path_to_posix_string(rel);
-            if !filter.matches_relative(&rel_posix) {
-                // Filtered out — neither materialise the shadow file
-                // nor record a bridge import. The walker on the
-                // snapshot side reaches the identical decision via
-                // `CollectionFilter::matches`, keeping the two
-                // surfaces in lock-step.
-                continue;
-            }
+        // Apply the collection include / exclude globs (content
+        // extensions only — see `collection_glob_filter_admits`).
+        if !collection_glob_filter_admits(&filter, has_glob_filter, rel) {
+            // Filtered out — neither materialise the shadow file nor
+            // record a bridge import. The walker on the snapshot side
+            // reaches the identical decision via
+            // `CollectionFilter::matches`, keeping the two surfaces in
+            // lock-step; the staging seed walk shares this predicate
+            // (#3142).
+            continue;
         }
 
         let is_markdown = matches!(
@@ -10383,9 +10411,12 @@ fn stage_dependency_candidate(
 /// discovery is needed. Explicitly supplied roots may live outside the project
 /// (notably the build package-route overlay); their files still seed project
 /// dependencies, while `node_modules`, infra dirs, and excluded paths are
-/// skipped.
+/// skipped. A content collection's root seeds only the files its
+/// include/exclude filter materialises into the shadow (#3142); MDX never
+/// seeds, because the MDX compiler drops MDX-level imports.
 fn collect_project_source_module_graph_seed_files(
     roots: &[PathBuf],
+    collection_roots: &[CollectionSeedRoot],
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
     logical_source_roots: &[(PathBuf, PathBuf)],
@@ -10399,7 +10430,11 @@ fn collect_project_source_module_graph_seed_files(
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("css"))
     };
-    for root in roots {
+    let walked_roots = roots
+        .iter()
+        .map(|root| (root, None))
+        .chain(collection_roots.iter().map(|c| (&c.physical_root, Some(c))));
+    for (root, collection) in walked_roots {
         for entry in WalkDir::new(root)
             .follow_links(true)
             .into_iter()
@@ -10409,6 +10444,14 @@ fn collect_project_source_module_graph_seed_files(
             let path = entry.path();
             if !entry.file_type().is_file() || !is_seed_source(path) {
                 continue;
+            }
+            if let Some(collection) = collection {
+                let admitted = path
+                    .strip_prefix(root)
+                    .is_ok_and(|rel| collection.admits(rel));
+                if !admitted {
+                    continue;
+                }
             }
             if path_is_inside_node_modules(path) || bundle_exclude.is_excluded(path, project_root) {
                 continue;
@@ -10428,6 +10471,42 @@ fn collect_project_source_module_graph_seed_files(
                 }
             }
         }
+    }
+}
+
+/// A content collection's source root as the staging seed walk sees it: the
+/// normalised physical root plus the include/exclude filter
+/// `materialise_collection` applies to the same files (#3142).
+struct CollectionSeedRoot {
+    physical_root: PathBuf,
+    filter: zfb_content::collection::CollectionFilter,
+    has_glob_filter: bool,
+}
+
+impl CollectionSeedRoot {
+    fn new(physical_root: PathBuf, collection: &ContentCollectionSpec) -> Result<Self> {
+        let include = collection.include.as_deref();
+        let exclude = collection.exclude.as_deref();
+        let filter = zfb_content::collection::CollectionFilter::new(
+            include,
+            exclude,
+            collection.id_strip_suffix.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "bundler: failed to compile collection filter for `{}`",
+                collection.name
+            )
+        })?;
+        Ok(Self {
+            physical_root,
+            filter,
+            has_glob_filter: collection_has_glob_filter(include, exclude),
+        })
+    }
+
+    fn admits(&self, rel: &Path) -> bool {
+        collection_glob_filter_admits(&self.filter, self.has_glob_filter, rel)
     }
 }
 
