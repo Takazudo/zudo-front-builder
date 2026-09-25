@@ -1,19 +1,15 @@
 # reusable-smoke-clean-room.yml
 #
 # Reusable `workflow_call` wrapper around scripts/smoke-clean-room.sh (issue
-# #1342, stage 2). Parameterized by dist_tag (npm dist-tag to install) and
-# runner (OS/arch to run the smoke on) so the SAME clean-room smoke logic
+# #1342, stage 2). Parameterized by dist_tag (npm dist-tag to resolve), an
+# optional expected_version for release identity, and runner so the same logic
 # serves two callers:
 #
 #   - release.yml's smoke-clean-room job — dist_tag from the just-run publish
-#     job's output, runner=ubuntu-latest. SAME parameters that job always used;
-#     this stage only changes HOW it is invoked (workflow_call vs inline
-#     steps), not WHAT runs.
+#     job's output and expected_version from the verified release tag.
 #   - drift-net.yml's weekly off-release exam — dist_tag=latest on both
 #     ubuntu-latest and a pinned macOS runner (the leg release.yml never runs),
-#     plus a dist_tag=next leg on ubuntu-latest. It smoked only `next` until
-#     v1.0.0, when the dual-tag gate self-disabled and `latest` stopped being
-#     covered incidentally; see drift-net.yml's header for the full rationale.
+#     with no expected_version, resolving the moving channel once per run.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -30,6 +26,11 @@ on:
         description: "npm dist-tag to install create-zfb (and its platform deps) from, e.g. latest or next."
         required: true
         type: string
+      expected_version:
+        description: "Verified release version; omit for a scheduled moving-channel smoke."
+        required: false
+        type: string
+        default: ""
       runner:
         description: "Runner label to execute the smoke on, e.g. ubuntu-latest or a pinned macos-* version."
         required: false
@@ -68,4 +69,5 @@ jobs:
         shell: bash
         env:
           DIST_TAG: ${{ inputs.dist_tag }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: bash scripts/smoke-clean-room.sh
