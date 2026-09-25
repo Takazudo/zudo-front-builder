@@ -6,7 +6,7 @@ argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 
 # /l-make-mac-release-binary
 
-Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested; because `2.13.0` established its attestation, the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug).
+Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested — **consumer-breaking** for `trust-policy=no-downgrade` whenever an earlier version is attested (true since 2.13.0). Before publishing, run `node scripts/check-provenance-preflight.mjs --version <version> --mode mac-local` to confirm whether this would be a downgrade; if it would, the draft Release body must carry the acknowledgement line `<!-- zfb-release: allow-provenance-downgrade -->` (add it via `gh release edit <tag> --notes ...`) before the draft is published, or `release.yml`'s publish step refuses to run.
 
 ## When to use this standalone escape hatch
 
@@ -109,6 +109,30 @@ After verifying the upload, read the hash from the `.sha256` file to include in 
 awk '{print $1}' "zfb-<semver>-x86_64-apple-darwin.tar.gz.sha256"
 ```
 
+## Provenance acknowledgement (before the draft is published)
+
+Run the preflight to check whether this upload would downgrade `zfb-darwin-x64`'s trust:
+
+```bash
+node scripts/check-provenance-preflight.mjs --version <semver> --mode mac-local
+```
+
+- **Exit 0** — no earlier version is attested; nothing to acknowledge.
+- **Exit 1** — a downgrade (the script prints `DOWNGRADE zfb-darwin-x64@<semver> (earlier attested: <ver>)`).
+  Surface this to the user and get an explicit decision before doing anything else — do not add the
+  marker automatically. Once they decide to proceed anyway, add the acknowledgement line to the
+  draft Release body:
+
+  ```bash
+  NOTES=$(gh release view <tag> --json body --jq .body)
+  printf '%s\n\n<!-- zfb-release: allow-provenance-downgrade -->' "$NOTES" | gh release edit <tag> --notes-file -
+  ```
+
+  Without this line present when the draft is published, `release.yml`'s publish step refuses to
+  run the mac-local lane.
+- **Exit 2** — registry error (fail closed). Do not add the marker; surface the error and retry the
+  preflight before publishing.
+
 ## Report
 
 Print this exact message (substituting `<version>` with the semver string without the leading `v`, and `<hash>` with the 64-character hex SHA-256 hash):
@@ -127,9 +151,10 @@ Next: publish the draft Release (from any host) to trigger CI publish:
 
 release.yml will auto-detect the pre-uploaded archive,
 skip the macos-15-intel build leg, and publish all 10 packages. Because this is the explicit
-`--fast-mac` escape hatch, `zfb-darwin-x64` publishes unattested; because `2.13.0` established its
-attestation, the weekly drift guard will correctly fail on any later fast-Mac release. That is
-intended supervision, not a bug.
+`--fast-mac` escape hatch, `zfb-darwin-x64` publishes unattested — consumer-breaking for
+trust-policy=no-downgrade whenever an earlier version is attested (true since 2.13.0). Make sure
+the draft Release body carries `<!-- zfb-release: allow-provenance-downgrade -->` before publishing
+if the preflight found a downgrade, or release.yml refuses to publish the mac-local lane.
 
 After publishing, WAIT for the Release workflow run to finish (gh run watch) — it uploads the
 remaining platform archives (linux + windows) and their .sha256 files.

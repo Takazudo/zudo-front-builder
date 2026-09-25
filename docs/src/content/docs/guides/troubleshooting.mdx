@@ -93,6 +93,32 @@ Five of the six packages a default install pulls are affected. `@takazudo/zfb-da
 
 Disabling `trustPolicy` outright also works, but drops the guard for **every** dependency rather than these five — prefer the scoped exemption.
 
+## `ERR_PNPM_TRUST_DOWNGRADE` installing `@takazudo/zfb-darwin-x64` 2.20.3
+
+**Symptom:** installing or upgrading `@takazudo/zfb-darwin-x64` at `2.20.3` fails under pnpm's opt-in [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) set to `no-downgrade`:
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb-darwin-x64@2.20.3" (possible package takeover)
+```
+
+Because pnpm resolves all `optionalDependencies` regardless of the host platform, this affects consumers on any OS, not just macOS x64 hosts.
+
+**Cause:** `2.20.3` was released using the `--fast-mac` escape hatch, which publishes `zfb-darwin-x64` without `--provenance`. Every version from `2.13.0` onward (when this package's attestation gap was first closed — see the `2.12.0` entry above) through `2.20.2` carried provenance, so `2.20.3` is a genuine trust downgrade for pnpm's date-based comparison, not a standing gap. This was not caught before publishing; the preflight check and release-skill gating that now block this case did not exist yet.
+
+**Fix:** npm versions are immutable, so `2.20.3` itself can never gain an attestation. Prefer, in order:
+
+1. **Upgrade to `2.20.4` or later.** Those releases go out through the normal provenance-first CI path with attestation restored, which clears the downgrade. This is the real fix.
+2. **Pin `2.20.2`** if upgrading is not yet possible — it remains attested and avoids the affected `2.20.3` release.
+3. **Exempt just this package**, if you need `2.20.3` now, with [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) in `pnpm-workspace.yaml`:
+
+   ```yaml
+   trustPolicy: no-downgrade
+   trustPolicyExclude:
+     - "@takazudo/zfb-darwin-x64@2.20.3"
+   ```
+
+Disabling `trustPolicy` outright also works, but drops the guard for **every** dependency rather than this one — prefer the scoped exemption.
+
 ## `import.meta.glob(...)` build error
 
 **Symptom**, from `zfb build` (or a warning + skipped rebundle from `zfb dev`):
