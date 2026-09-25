@@ -153,7 +153,7 @@ use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
     canonical_project_relative_target, collect_runtime_import_specifiers_from_file,
     discover_module_preprocessing_with_context, discover_module_preprocessing_with_tsconfig_paths,
-    discover_registered_virtual_preprocessing_with_context,
+    discover_registered_virtual_preprocessing_with_context, normalize_macos_var_alias,
     remap_virtual_module_project_imports_to_shadow_with_materialized_files,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
@@ -5894,14 +5894,16 @@ fn resolve_mirror_root(
     project_root: &Path,
     first_party_root: &Path,
 ) -> Option<PathBuf> {
+    let project_root = normalize_macos_var_alias(&normalize_path_lexical(project_root));
+    let first_party_root = normalize_macos_var_alias(&normalize_path_lexical(first_party_root));
     if first_party_root == project_root {
         return None;
     }
-    let claim = normalize_path_lexical(claim);
+    let claim = normalize_macos_var_alias(&normalize_path_lexical(claim));
     if path_is_inside_node_modules(&claim) {
         return None;
     }
-    if !claim.starts_with(first_party_root) || claim.starts_with(project_root) {
+    if !claim.starts_with(&first_party_root) || claim.starts_with(&project_root) {
         return None;
     }
     let claim_dir = if claim.is_dir() {
@@ -5909,7 +5911,7 @@ fn resolve_mirror_root(
     } else {
         claim.parent()?.to_path_buf()
     };
-    if claim_dir == first_party_root || !claim_dir.starts_with(first_party_root) {
+    if claim_dir == first_party_root || !claim_dir.starts_with(&first_party_root) {
         return None;
     }
     // A claim whose own directory is an ancestor of the project is not a
@@ -5979,13 +5981,15 @@ impl SiblingMirrorPlan {
         plugin_alias_entries: &[(String, String)],
     ) -> Self {
         let mut mirror_roots = BTreeSet::new();
+        let project_root = normalize_macos_var_alias(&normalize_path_lexical(project_root));
+        let first_party_root = normalize_macos_var_alias(&normalize_path_lexical(first_party_root));
         if first_party_root == project_root {
             return Self { mirror_roots };
         }
         // (a) + (c): discovered graph files (project and sibling); only the
         // siblings survive `resolve_mirror_root`.
         for file in discovered_graph_files {
-            if let Some(root) = resolve_mirror_root(file, project_root, first_party_root) {
+            if let Some(root) = resolve_mirror_root(file, &project_root, &first_party_root) {
                 mirror_roots.insert(root);
             }
         }
@@ -5996,7 +6000,7 @@ impl SiblingMirrorPlan {
                 .map(|(_, target)| target.as_str()),
         ) {
             let claim = alias_target_claim_path(target);
-            if let Some(root) = resolve_mirror_root(&claim, project_root, first_party_root) {
+            if let Some(root) = resolve_mirror_root(&claim, &project_root, &first_party_root) {
                 mirror_roots.insert(root);
             }
         }
@@ -6026,7 +6030,7 @@ impl SiblingMirrorPlan {
     /// is a raw byte copy with no macro expansion. The queue now stages
     /// every match unconditionally instead.
     pub fn claims_path(&self, path: &Path) -> bool {
-        let path = normalize_path_lexical(path);
+        let path = normalize_macos_var_alias(&normalize_path_lexical(path));
         self.mirror_roots.iter().any(|root| path.starts_with(root))
     }
 }
@@ -11066,6 +11070,12 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     // provably-disjoint carve-out — so the seam has a single, decidable rule.
     // A workspace-sibling target obeys the SAME rule against the work mirror.
     let exclusions_active = bundle_exclude.is_some_and(|matcher| !matcher.is_empty());
+    // macOS may spell an absolute tsconfig target through /var while the
+    // project and staged roots use the same tree through /private/var.
+    let project_root = normalize_macos_var_alias(project_root);
+    let first_party_root = normalize_macos_var_alias(first_party_root);
+    let shadow = normalize_macos_var_alias(shadow);
+    let work_root = normalize_macos_var_alias(work_root);
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, targets) in paths {
         let mut new_targets: Vec<String> = Vec::with_capacity(targets.len() + 1);
@@ -11075,11 +11085,11 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 Some((p, "")) => (p, "/*"),
                 _ => (target.as_str(), ""),
             };
-            let prefix_path = Path::new(prefix);
+            let prefix_path = normalize_macos_var_alias(Path::new(prefix));
             // Already under the shadow tree (re-entrant call, or a plugin
             // temp file materialised inside `shadow`) — leave untouched.
-            let already_shadowed = prefix_path.starts_with(shadow);
-            if !already_shadowed && prefix_path.strip_prefix(project_root).is_ok() {
+            let already_shadowed = prefix_path.starts_with(&shadow);
+            if !already_shadowed && prefix_path.strip_prefix(&project_root).is_ok() {
                 // Under project_root → shadow-first.
                 // `rel` is empty for the whole-root `@/* -> /root/*`
                 // (baseUrl ".") case — the most common alias shape.
@@ -11090,11 +11100,11 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // above), so the first-party tier is inert: pass the project
                 // mirror as its own first-party/work root.
                 let shadow_prefix = shadow_path_for_project_path(
-                    prefix_path,
-                    project_root,
-                    project_root,
-                    shadow,
-                    shadow,
+                    &prefix_path,
+                    &project_root,
+                    &project_root,
+                    &shadow,
+                    &shadow,
                     node_modules_isolation_root,
                 );
                 let mut shadow_target = preserve_trailing_path_separator(
@@ -11110,7 +11120,7 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 }
             } else if !already_shadowed
                 && first_party_root != project_root
-                && prefix_path.strip_prefix(first_party_root).is_ok()
+                && prefix_path.strip_prefix(&first_party_root).is_ok()
             {
                 // Issue #1668 part 2: a workspace-sibling alias target (outside
                 // project_root, inside first_party_root) rebases to its
@@ -11124,14 +11134,14 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // its concrete runtime claims were staged into `work_root`, so
                 // the wildcard must resolve against that staged view first.
                 let work_prefix = if prefix_path == first_party_root {
-                    work_root.to_path_buf()
+                    work_root.clone()
                 } else {
                     shadow_path_for_project_path(
-                        prefix_path,
-                        project_root,
-                        first_party_root,
-                        shadow,
-                        work_root,
+                        &prefix_path,
+                        &project_root,
+                        &first_party_root,
+                        &shadow,
+                        &work_root,
                         node_modules_isolation_root,
                     )
                 };
@@ -13717,6 +13727,36 @@ mod tests {
             "under exclusions a workspace-sibling alias is work-mirror-only (no live-real fallback)"
         );
         assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rebase_tsconfig_paths_accepts_macos_var_alias_for_workspace_sources() {
+        let project = Path::new("/private/var/tmp/zfb-alias/site");
+        let first_party = Path::new("/private/var/tmp/zfb-alias");
+        let shadow = Path::new("/private/var/tmp/zfb-alias-work/site");
+        let work = Path::new("/private/var/tmp/zfb-alias-work");
+        let paths = BTreeMap::from([(
+            "@external/*".to_string(),
+            vec!["/var/tmp/zfb-alias/components/*".to_string()],
+        )]);
+        let empty = BundleExcludeMatcher::new(&[]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&empty),
+            None,
+        );
+        assert_eq!(
+            out["@external/*"],
+            vec![
+                "/private/var/tmp/zfb-alias-work/components/*",
+                "/var/tmp/zfb-alias/components/*",
+            ],
+        );
     }
 
     #[test]
@@ -21986,6 +22026,33 @@ mod tests {
             "a genuine sibling must still resolve — this test must not pass by \
              rejecting everything"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sibling_mirror_plan_accepts_var_alias_claim_without_widening_root() {
+        let workspace = tempfile::tempdir_in("/var/tmp").unwrap();
+        let first_party = workspace.path().canonicalize().unwrap();
+        let project = first_party.join("apps/site");
+        fs::create_dir_all(&project).unwrap();
+        let claim = workspace.path().join("components/hooked.tsx");
+        fs::create_dir_all(claim.parent().unwrap()).unwrap();
+        fs::write(&claim, "export const hooked = true;\n").unwrap();
+
+        let plan = SiblingMirrorPlan::compute(
+            &project,
+            &first_party,
+            &BTreeSet::from([claim.clone()]),
+            &BTreeMap::new(),
+            &[],
+        );
+        let expected_root = first_party.join("components");
+        assert_eq!(
+            plan.mirror_roots().collect::<Vec<_>>(),
+            vec![expected_root.as_path()]
+        );
+        assert!(plan.claims_path(&claim));
+        assert!(!plan.claims_path(&project.join("pages/index.tsx")));
     }
 
     #[test]

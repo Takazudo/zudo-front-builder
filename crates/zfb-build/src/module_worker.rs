@@ -14,6 +14,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use swc_core::common::sync::Lrc;
@@ -573,13 +575,36 @@ fn is_inside_node_modules(path: &Path) -> bool {
     zfb_types::has_node_modules_segment(path)
 }
 
+pub(crate) fn normalize_macos_var_alias(path: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let path = normalize_path_lexical(path);
+        static VAR_POINTS_TO_PRIVATE_VAR: OnceLock<bool> = OnceLock::new();
+        if path.starts_with("/var")
+            && *VAR_POINTS_TO_PRIVATE_VAR.get_or_init(|| {
+                Path::new("/var").canonicalize().ok().as_deref() == Some(Path::new("/private/var"))
+            })
+        {
+            // macOS spells the same temp tree as /var and /private/var.
+            // Normalize this OS alias before the logical boundary check;
+            // the canonical boundary check below still rejects real escapes.
+            return Path::new("/private/var").join(path.strip_prefix("/var").unwrap());
+        }
+        path
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        path.to_path_buf()
+    }
+}
+
 fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) -> Result<PathBuf> {
     // Issue #1664: in a pnpm workspace the first-party boundary is the
     // workspace, not the single package dir — sibling-workspace source
     // reached through tsconfig aliases is first-party, not an escape.
     let first_party_root = zfb_types::first_party_root_for(project_root);
-    let root = normalize_path_lexical(&first_party_root);
-    let logical = normalize_path_lexical(path);
+    let root = normalize_macos_var_alias(&normalize_path_lexical(&first_party_root));
+    let logical = normalize_macos_var_alias(&normalize_path_lexical(path));
     if !logical.starts_with(&root) || is_inside_node_modules(&logical) {
         bail!(
             "zfb bundler: {context} {} is outside the first-party project root {} or under node_modules",
@@ -3168,6 +3193,32 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
+        assert!(error.contains("escapes project root"), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_var_alias_keeps_first_party_boundary() {
+        let project = tempfile::tempdir_in("/var/tmp").unwrap();
+        let canonical_root = project.path().canonicalize().unwrap();
+        let file = project.path().join("src/worker.ts");
+        write(&file, "self.postMessage(1);");
+
+        let accepted =
+            validate_first_party_path(&file, &canonical_root, "module-worker dependency").unwrap();
+        assert_eq!(
+            accepted.canonicalize().unwrap(),
+            file.canonicalize().unwrap()
+        );
+
+        let outside = tempfile::tempdir_in("/var/tmp").unwrap();
+        let escaped = outside.path().join("worker.ts");
+        write(&escaped, "self.postMessage(2);");
+        let alias = project.path().join("src/escape.ts");
+        std::os::unix::fs::symlink(&escaped, &alias).unwrap();
+        let error = validate_first_party_path(&alias, &canonical_root, "module-worker dependency")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("escapes project root"), "{error}");
     }
 
