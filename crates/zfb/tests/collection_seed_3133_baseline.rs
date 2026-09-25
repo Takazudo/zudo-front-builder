@@ -1,9 +1,21 @@
 //! Repro fixture + staging-stats harness for issue #3133 (epic #3135,
-//! sub-issues #3138 / Track B0 and #3141 / Track D) — "Out-of-root content
-//! collection seeds whole source dir, triggering full node_modules staging
-//! walk".
+//! sub-issues #3138 / Track B0, #3141 / Track D, #3142 / Track B2, and #3143
+//! / Track B3) — "Out-of-root content collection seeds whole source dir,
+//! triggering full node_modules staging walk".
 //!
-//! ## What this proves
+//! ## Two confirmations
+//!
+//! - **`zfb build`** (below): asserts the `[zfb-staging-stats]` line for
+//!   both fixture variants — the ORIGINAL #3138/#3141 baseline.
+//! - **`zfb dev`** (#3143, the "Dev confirmation" section further down):
+//!   asserts a real `zfb dev --port 0` becomes ready within a deadline derived from a
+//!   measured `control` distribution, AND that the same staging-stats line
+//!   holds for a dev boot, not just a build. This binary now spawns `zfb
+//!   dev`, so it moved from nextest's `e2e-heavy-unlocked` group into
+//!   `e2e-heavy-locked` and adopts issue #1339's cross-binary flock — see
+//!   `crates/CLAUDE.md`'s manifest.
+//!
+//! ## What this proves (`zfb build`)
 //!
 //! Runs a real `zfb build` over `tests/fixtures/collection-seeds-3133/` in
 //! two variants — `with-collection` (a `componentDocs` collection at
@@ -94,14 +106,18 @@
 //!
 //! ## Level / tier
 //!
-//! Level 4 (real `zfb build` process). Registered in nextest's
-//! `e2e-heavy-unlocked` build-only test-group (`.config/nextest.toml`) —
-//! see `crates/CLAUDE.md`'s heavy-binary manifest. Not `#[ignore]`d: the
-//! embedded V8 / esbuild toolchain built into the `zfb` binary itself means
-//! no external esbuild slot is needed (unlike the `locate_esbuild()`-gated
-//! tests), matching `end_to_end_basic_blog_build`'s self-skip convention
-//! for the one exceptional environment (no `embed_v8` feature / stripped
-//! CI image) via [`is_known_skip`].
+//! Level 4 (real `zfb build` / `zfb dev` process). Registered in nextest's
+//! `e2e-heavy-locked` test-group (`.config/nextest.toml`) since #3143 added
+//! the dev test — see `crates/CLAUDE.md`'s heavy-binary manifest. The `zfb
+//! build` test is not `#[ignore]`d: the embedded V8 / esbuild toolchain
+//! built into the `zfb` binary itself means no external esbuild slot is
+//! needed (unlike the `locate_esbuild()`-gated tests), matching
+//! `end_to_end_basic_blog_build`'s self-skip convention for the one
+//! exceptional environment (no `embed_v8` feature / stripped CI image) via
+//! [`is_known_skip`]. The `zfb dev` test self-skips the same way it does in
+//! `dev_out_of_root_collection_e2e.rs`: via [`locate_esbuild`] returning
+//! `None`, not an `#[ignore]` attribute — `zfb dev`'s client bundling always
+//! shells out to esbuild, unlike `zfb build`'s embedded-V8-only SSR path.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -109,6 +125,18 @@ use std::process::Command;
 use std::time::Instant;
 
 use zfb_test_utils::zfb_binary;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
+use std::sync::LazyLock;
+#[cfg(unix)]
+use std::time::Duration;
+
+#[cfg(unix)]
+use zfb_test_utils::{locate_esbuild, CrossBinaryE2eLock};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -508,4 +536,314 @@ fn parse_staging_stats_reads_the_hook_line() {
         parse_staging_stats("[zfb-staging-stats] physical_scans=4"),
         None
     );
+}
+
+// ---------------------------------------------------------------------------
+// Dev confirmation (#3143, Track B3): `zfb dev --port 0` becomes ready
+// within a deadline derived from a measured `control` distribution, and the
+// SAME `[zfb-staging-stats]` line holds for a dev boot, not just `zfb
+// build`. This binary now spawns `zfb dev`, so it lives in nextest's
+// `e2e-heavy-locked` group and adopts issue #1339's cross-binary flock — see
+// this file's header and `crates/CLAUDE.md`'s manifest.
+// ---------------------------------------------------------------------------
+
+/// Cross-binary flock guard's in-binary serial companion — acquired AFTER
+/// the flock, same lock-ordering convention as `dev_out_of_root_collection_e2e.rs`
+/// (see `zfb-test-utils/src/cross_binary_lock.rs`).
+#[cfg(unix)]
+static DEV_SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+#[cfg(unix)]
+const DEV_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+#[cfg(unix)]
+const DEV_BOOT_DEADLINE: Duration = Duration::from_secs(90);
+
+/// `zfb dev --port 0` "dev-ready" deadline (first `GET /` 200) for BOTH
+/// fixture variants.
+///
+/// Derivation (CLAUDE.md rule 8 — from a measured latency distribution, not
+/// a guess): 5 fresh `control`-variant boots were timed on this container
+/// (shared 4 CPUs; other worktrees' `cargo`/`rustc` work contends for the
+/// same cores) by `measure_control_dev_ready_distribution` below
+/// (`#[ignore = "verification: ..."]`, run once by hand with `--ignored
+/// --exact --nocapture`, 2026-09-25):
+///
+/// 2943 / 2982 / 2835 / 2933 / 2831 ms — mean 2904 ms, max 2982 ms.
+///
+/// `with-collection` costs no more than `control` since #3142 (both
+/// variants seed zero packages and flip no staging — see the file header),
+/// so the SAME deadline covers both variants. `DEV_READY_DEADLINE` is the
+/// measured max (2982 ms) rounded up and given roughly 3.4x headroom (10s)
+/// to absorb this container's shared-CPU noise (other worktrees' cargo/
+/// rustc contending for the same 4 cores) rather than pin a tight per-run
+/// bound — the same generous-multiplier convention
+/// `dev_out_of_root_collection_e2e.rs`'s `BOOT_DEADLINE` (90s against
+/// sub-second real boots) and this file's own `zfb build` numbers
+/// (#3138/#3141's 3-run spreads) already use.
+#[cfg(unix)]
+const DEV_READY_DEADLINE: Duration = Duration::from_secs(10);
+
+#[cfg(unix)]
+struct DevGuard {
+    child: std::process::Child,
+    pgid: libc::pid_t,
+}
+
+#[cfg(unix)]
+impl Drop for DevGuard {
+    fn drop(&mut self) {
+        unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
+        let _ = self.child.wait();
+    }
+}
+
+/// Extract the port from the dev ready banner (`→ ready on http://localhost:PORT/`)
+/// — same parsing as `dev_out_of_root_collection_e2e.rs`'s `parse_ready_port`
+/// (a deliberate copy; Rust integration tests are separate binaries and
+/// cannot import another test file's private items).
+#[cfg(unix)]
+fn parse_ready_port(log: &str) -> Option<u16> {
+    let mut rest = log;
+    while let Some(idx) = rest.find("http://") {
+        let candidate = &rest[idx + "http://".len()..];
+        let token: &str = candidate.split_whitespace().next().unwrap_or("");
+        if let Some(colon) = token.find(':') {
+            let digits: String = token[colon + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(port) = digits.parse() {
+                return Some(port);
+            }
+        }
+        rest = &rest[idx + "http://".len()..];
+    }
+    None
+}
+
+#[cfg(unix)]
+fn read_log(p: &Path) -> String {
+    fs::read_to_string(p).unwrap_or_default()
+}
+
+/// One dev-boot outcome: the process guard (kept alive so the caller can
+/// read logs / let it Drop-kill), elapsed ms to the first `GET /` 200, and
+/// the first `[zfb-staging-stats]` line if one was printed.
+#[cfg(unix)]
+struct DevReadyOutcome {
+    _guard: DevGuard,
+    elapsed_ms: u128,
+    staging_stats_line: Option<String>,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+}
+
+/// Boots a real `zfb dev --port 0` over `project_root` and waits for the
+/// FIRST `GET /` 200 — the "dev-ready" instant `DEV_READY_DEADLINE` is
+/// measured against. Returns `None` when the process exits with a known
+/// environmental skip indicator (no V8 / no esbuild / no tailwind),
+/// matching `is_known_skip`'s convention above and
+/// `dev_out_of_root_collection_e2e.rs`'s `boot_and_handshake`.
+#[cfg(unix)]
+async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<DevReadyOutcome> {
+    let stdout_path = project_root.join(".zfb-dev-stdout.log");
+    let stderr_path = project_root.join(".zfb-dev-stderr.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log file");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(project_root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("ZFB_STAGING_STATS", "1")
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.process_group(0);
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut guard = DevGuard { child, pgid };
+
+    let start = Instant::now();
+    let port = loop {
+        if let Some(status) = guard.child.try_wait().expect("try_wait on `zfb dev`") {
+            let combined = format!("{}{}", read_log(&stdout_path), read_log(&stderr_path));
+            if is_known_skip(&combined) {
+                return None;
+            }
+            panic!(
+                "`zfb dev` exited prematurely (status {status:?}) before printing the ready \
+                 banner.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                read_log(&stdout_path),
+                read_log(&stderr_path),
+            );
+        }
+        if let Some(port) = parse_ready_port(&read_log(&stdout_path)) {
+            break port;
+        }
+        assert!(
+            start.elapsed() < DEV_BOOT_DEADLINE,
+            "`zfb dev` did not print a parseable ready banner within {}s.\n--- stdout ---\n{}\n\
+             --- stderr ---\n{}",
+            DEV_BOOT_DEADLINE.as_secs(),
+            read_log(&stdout_path),
+            read_log(&stderr_path),
+        );
+        tokio::time::sleep(DEV_POLL_INTERVAL).await;
+    };
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+    let base = format!("http://localhost:{port}");
+    loop {
+        if let Ok(resp) = client.get(&base).send().await {
+            if resp.status().as_u16() == 200 {
+                break;
+            }
+        }
+        assert!(
+            start.elapsed() < DEV_BOOT_DEADLINE,
+            "GET / never answered 200 within {}s after `zfb dev` started.\n--- stdout ---\n{}\n\
+             --- stderr ---\n{}",
+            DEV_BOOT_DEADLINE.as_secs(),
+            read_log(&stdout_path),
+            read_log(&stderr_path),
+        );
+        tokio::time::sleep(DEV_POLL_INTERVAL).await;
+    }
+    let elapsed_ms = start.elapsed().as_millis();
+
+    let stderr = read_log(&stderr_path);
+    let stdout = read_log(&stdout_path);
+    let staging_stats_line = stderr
+        .lines()
+        .chain(stdout.lines())
+        .find(|line| line.contains("[zfb-staging-stats]"))
+        .map(str::to_string);
+
+    Some(DevReadyOutcome {
+        _guard: guard,
+        elapsed_ms,
+        staging_stats_line,
+        stdout_path,
+        stderr_path,
+    })
+}
+
+/// One-time measurement of the `control`-variant dev-ready distribution used
+/// to derive [`DEV_READY_DEADLINE`]'s doc comment above. NOT a regression
+/// guard (CLAUDE.md rule 6) — run once by hand whenever the deadline needs
+/// re-deriving (e.g. after a change that legitimately shifts dev-boot cost):
+///
+/// ```text
+/// cargo test -p zfb --test collection_seed_3133_baseline \
+///   -- --ignored --exact measure_control_dev_ready_distribution --nocapture
+/// ```
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "verification: one-time measurement of the control dev-ready distribution used to \
+            derive DEV_READY_DEADLINE (#3143)"]
+async fn measure_control_dev_ready_distribution() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[collection_seed_3133_baseline] no esbuild binary available; skipping measurement."
+        );
+        return;
+    };
+    let mut samples = Vec::new();
+    for i in 0..5 {
+        let (_tmp, project_root) = materialise_fixture(&Variant::Control);
+        let Some(outcome) = boot_dev_and_wait_ready(&project_root, &esbuild).await else {
+            eprintln!("[measure] run {i}: known-skip; aborting measurement.");
+            return;
+        };
+        eprintln!(
+            "[measure] control run {i}: dev-ready in {} ms",
+            outcome.elapsed_ms
+        );
+        samples.push(outcome.elapsed_ms);
+    }
+    let max = samples.iter().max().copied().unwrap_or(0);
+    let mean = samples.iter().sum::<u128>() / samples.len() as u128;
+    eprintln!("[measure] control dev-ready samples: {samples:?} mean={mean}ms max={max}ms");
+}
+
+/// Falsifiability: temporarily reverting #3142's `bundler.rs` seed-filter
+/// change (`git show a87b8ea -- crates/zfb-build/src/bundler.rs | git apply
+/// -R`, see this file's header and the fixture README) makes
+/// `with-collection` walk the whole sibling package's closure again — the
+/// staging-stats assertion below fails (`0/0/false` -> `7/9/true`) even
+/// though `zfb dev` still becomes ready within the deadline (the extra work
+/// is invisible to a bare readiness check on this toy-scale fixture, which
+/// is exactly why the stats assertion, not just the deadline, is
+/// load-bearing here — see the #3143 sub-issue and decision-3141.md's
+/// "Target stats" section).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn zfb_dev_becomes_ready_within_deadline_and_matches_staging_stats() {
+    // Cross-binary lock acquired BEFORE the in-binary serial guard — see the
+    // lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = DEV_SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[collection_seed_3133_baseline] no esbuild binary available; skipping dev \
+             confirmation. Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    for variant in [Variant::Control, Variant::WithCollection] {
+        let (_tmp, project_root) = materialise_fixture(&variant);
+        let Some(outcome) = boot_dev_and_wait_ready(&project_root, &esbuild).await else {
+            eprintln!(
+                "[collection_seed_3133_baseline] `zfb dev` exited with a known-skip indicator \
+                 for the {} variant; skipping test.",
+                variant.label(),
+            );
+            return;
+        };
+
+        assert!(
+            outcome.elapsed_ms <= DEV_READY_DEADLINE.as_millis(),
+            "zfb dev for the {} variant took {} ms to become ready, over the {} ms deadline \
+             derived from the measured control distribution (see DEV_READY_DEADLINE's doc \
+             comment).\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            variant.label(),
+            outcome.elapsed_ms,
+            DEV_READY_DEADLINE.as_millis(),
+            read_log(&outcome.stdout_path),
+            read_log(&outcome.stderr_path),
+        );
+
+        let stats_line = outcome.staging_stats_line.clone().unwrap_or_else(|| {
+            panic!(
+                "no [zfb-staging-stats] line for the {} variant's dev boot (ZFB_STAGING_STATS=1 \
+                 was set).\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                variant.label(),
+                read_log(&outcome.stdout_path),
+                read_log(&outcome.stderr_path),
+            )
+        });
+        let stats = parse_staging_stats(&stats_line)
+            .unwrap_or_else(|| panic!("unparseable staging stats line: {stats_line}"));
+        eprintln!(
+            "[collection-seeds-3133 dev confirmation] variant={} elapsed_ms={} {}",
+            variant.label(),
+            outcome.elapsed_ms,
+            stats_line.trim(),
+        );
+        assert_eq!(
+            stats,
+            variant.expected_stats(),
+            "dev-boot staging stats for the {} variant drifted from #3141's measured \
+             expectation (see this file's header and the fixture README)",
+            variant.label(),
+        );
+    }
 }
