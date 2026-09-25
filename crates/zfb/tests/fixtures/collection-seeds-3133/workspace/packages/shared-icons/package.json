@@ -1,0 +1,8 @@
+{
+  "name": "shared-icons",
+  "version": "1.0.0",
+  "main": "./index.js",
+  "dependencies": {
+    "leftpad-priv": "1.0.0"
+  }
+}
