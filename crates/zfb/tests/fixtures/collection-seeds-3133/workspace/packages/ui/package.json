@@ -1,0 +1,8 @@
+{
+  "name": "ui",
+  "version": "1.0.0",
+  "dependencies": {
+    "shared-utils": "workspace:*",
+    "leftpad-priv": "1.0.0"
+  }
+}

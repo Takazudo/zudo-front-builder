@@ -19,9 +19,9 @@
 # at most one flock adopter and one non-adopter concurrently: this preserves
 # serialization within each contention class while allowing genuine two-way
 # progress across the classes.
-# The measured split is 42 = 24 flock-adopting + 18 build-only.
+# The measured split is 43 = 24 flock-adopting + 19 build-only.
 # `scripts/__tests__/nextest-heavy-binary-drift.test.mjs` re-derives the exact
-# 42-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
+# 43-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
 # gate if the two explicit filters collectively drift.
 #
 # The two lanes are:
@@ -85,8 +85,9 @@
 #     byte-identical for supported contract rows, and exactly the
 #     documented D7/D8 divergences (legacy MD5 digest; key-bearing
 #     SubtleCrypto) where they are expected to differ.
-#   • 18 build-command binaries (build_cleans_outdir, build_package_routes,
+#   • 19 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
+#     collection_seed_3133_baseline,
 #     content_snapshot_no_deferred, css_modules_components_build,
 #     end_to_end_basic_blog_build, framework_packages_no_pnpm,
 #     gfm_footnotes_tasklists_confirm_build,
@@ -307,6 +308,12 @@ max-threads = 1
 # is a self-spawned cache protocol/process-race harness with no zfb, V8, or
 # esbuild execution.
 #
+# Issue #3138 (epic #3135, Track B0 — #3133 repro fixture + baseline) added
+# `collection_seed_3133_baseline` to the BUILD-ONLY bucket: a real `zfb
+# build` over a pnpm-workspace fixture (an out-of-root content collection
+# with `allowOutsideRoot`, mirroring #3133), bringing the current total to
+# **43** (24 flock-adopting, 19 build-only).
+#
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
@@ -360,7 +367,7 @@ test-group = 'e2e-heavy-locked'
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 [[profile.default.overrides]]
- filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=end_to_end_basic_blog_build) | binary(=framework_packages_no_pnpm) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+ filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=client_router_autoinclude_build) | binary(=collection_seed_3133_baseline) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=end_to_end_basic_blog_build) | binary(=framework_packages_no_pnpm) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy-unlocked'
 # The three shared-target predicate classes hold no flock, so they belong in
 # this lane deliberately. This lane is their CPU/memory admission control and
