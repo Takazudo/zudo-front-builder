@@ -17,16 +17,16 @@
 //!
 //! - `control`: no package is closure-walked at all and workspace staging
 //!   never activates — the site's own pages import nothing.
-//! - `with-collection`: workspace staging ACTIVATES and the pnpm-private
-//!   `leftpad-priv` is visited along its 3 logical paths while being
-//!   physically scanned once (B1's memoization, #3139). This is #3133's
-//!   mechanism: the ONLY difference between the two variants is the
-//!   out-of-root collection, whose non-included sibling `.tsx` files
-//!   (`button.tsx`, `orphan.tsx`) become module-graph seeds, reach a
-//!   workspace package, flip staging on, and drag every deferred live
-//!   dependency (preact, preact-render-to-string, the zfb runtime, hono)
-//!   plus the workspace packages' pnpm-private closure through the
-//!   import-parsing walk.
+//! - `with-collection`: identical to `control` since #3142. The collection's
+//!   `include: ["**/*.mdx"]` drops both sibling `.tsx` files
+//!   (`button.tsx`, `orphan.tsx`) from the shadow, and the seed walk applies
+//!   the same filter, so they no longer seed the closure. Before #3142 they
+//!   did: they reached a workspace package, flipped staging on, and dragged
+//!   every deferred live dependency (preact, preact-render-to-string, the
+//!   zfb runtime, hono) plus the workspace packages' pnpm-private closure
+//!   through the import-parsing walk (`7/9/true`, measured in #3141 — the
+//!   RED state of this assertion). `button.mdx`'s own `import` is dropped
+//!   by the MDX compiler, so it seeds nothing either.
 //!
 //! ## Why the fixture needs a real `apps/site/node_modules` + `tsconfig.json`
 //!
@@ -57,12 +57,17 @@
 //! record) but would flip the `control` variant too, so the fixture uses
 //! the `tsconfig` gate to keep the control at zero.
 //!
-//! Also learned there: the collection root is joined onto the project root
+//! Also learned there: the collection root was joined onto the project root
 //! UNNORMALISED (`<ws>/apps/site/../../packages/ui/src/components`), so the
-//! out-of-root seeds pass `seed.starts_with(project_root)` lexically and
-//! resolve their bare imports from their own physical location (walking up
-//! through the `..` into `packages/ui/node_modules/`) — that is how an
-//! out-of-root seed reaches a workspace package at all.
+//! out-of-root seeds passed `seed.starts_with(project_root)` lexically and
+//! resolved their bare imports from their own physical location (walking up
+//! through the `..` into `packages/ui/node_modules/`). #3142 normalises the
+//! root and resolves a matched collection file from its shadow location
+//! `<site>/content/<name>/<rel>` instead — where esbuild meets it.
+//!
+//! The tsconfig gate keeps this fixture sensitive: a regression that lets
+//! the non-included `.tsx` files seed again flips `with-collection` back to
+//! a non-zero, staging-activated line.
 //!
 //! ## node_modules layout (built at setup time, never committed)
 //!
@@ -220,36 +225,19 @@ impl Variant {
         }
     }
 
-    /// The staging stats each variant must produce on the merged #3139 +
-    /// #3138 base (measured in #3141; see the file header for the
-    /// mechanism and the fixture README for the per-package derivation).
+    /// The staging stats each variant must produce. Both are `0/0/false`
+    /// since #3142: the collection contributes no seeds under `**/*.mdx`.
     ///
-    /// `with-collection` — 9 logical visits, in closure order:
-    /// `packages/ui/node_modules/shared-utils` (seeded by `button.tsx` /
-    /// `orphan.tsx`), then its pnpm-private `leftpad-priv` and
-    /// `shared-icons` aliases, then `shared-icons`' own `leftpad-priv`
-    /// alias — at which point the workspace aliases flip staging on and
-    /// the deferred live dependencies are drained: `@takazudo/zfb-runtime`,
-    /// its `hono` sibling, `preact`, `preact-render-to-string`, and
-    /// `packages/ui/node_modules/leftpad-priv` (deferred from `button.tsx`
-    /// as an ordinary dependency). That is 3 logical visits of the ONE
-    /// physical `leftpad-priv`. 7 physical scans, one per distinct
-    /// canonical dir: `leftpad-priv` is scanned once across its 3 logical
-    /// paths (#3139's memoization; 9 scans with it reverted — measured in
-    /// #3141). `@takazudo/zfb` is never closure-walked: the vendored
-    /// runtime's `package.json` still declares it `workspace:*`, which
-    /// `workspace_package_source_is_eligible` refuses for a package that is
-    /// not a member of THIS workspace (a fixture artefact — a registry
-    /// install declares a version range); esbuild still resolves it
-    /// through the staged symlink into the store.
+    /// Before #3142 `with-collection` measured `7/9/true` (#3141): the
+    /// non-included `button.tsx` / `orphan.tsx` seeded
+    /// `packages/ui/node_modules/shared-utils`, its pnpm-private
+    /// `leftpad-priv` / `shared-icons` aliases flipped workspace staging on,
+    /// and the deferred live dependencies (`@takazudo/zfb-runtime`, `hono`,
+    /// `preact`, `preact-render-to-string`, `packages/ui`'s `leftpad-priv`)
+    /// were drained. See the fixture README for the full derivation.
     fn expected_stats(&self) -> StagingStats {
         match self {
-            Variant::WithCollection => StagingStats {
-                physical_scans: 7,
-                logical_visits: 9,
-                workspace_staging_activated: true,
-            },
-            Variant::Control => StagingStats {
+            Variant::WithCollection | Variant::Control => StagingStats {
                 physical_scans: 0,
                 logical_visits: 0,
                 workspace_staging_activated: false,
@@ -449,9 +437,8 @@ fn run_zfb_build(project_root: &Path) -> RunOutcome {
 
 /// Runs real `zfb build` over both fixture variants, prints each
 /// wall-clock time, and asserts both builds succeed AND that the staging
-/// stats match each variant's expectation — `with-collection` flips
-/// workspace staging on and visits the 3-logical-path `leftpad-priv` (one
-/// physical scan); `control` walks nothing. See the file header for what
+/// stats match each variant's expectation — since #3142 neither variant
+/// walks any package or flips workspace staging. See the file header for what
 /// is (and is not) proved by this synthetic-scale fixture.
 #[cfg(unix)]
 #[test]

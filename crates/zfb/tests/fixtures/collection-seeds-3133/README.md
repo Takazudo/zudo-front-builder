@@ -152,31 +152,45 @@ this fixture uses because it would flip the `control` variant too; the
 tsconfig gate keeps the control at zero so the delta isolates the
 collection.
 
-Also learned there: `resolver.resolve(&collection.root)` joins the
-collection path onto the project root **unnormalised**
+Also learned there: before #3142, `resolver.resolve(&collection.root)`
+joined the collection path onto the project root **unnormalised**
 (`<ws>/apps/site/../../packages/ui/src/components`), so the out-of-root
-seeds pass `seed.starts_with(project_root)` lexically, become their own
-logical importers, and resolve their bare imports by walking up through
-the `..` into `packages/ui/node_modules/`. That is the only reason an
-out-of-root seed reaches a workspace package at all — with an absolute
-collection path the seeds would fall back to the synthetic
-`<project>/entry` importer and resolve from `apps/site/node_modules`
-instead.
+seeds passed `seed.starts_with(project_root)` lexically, became their own
+logical importers, and resolved their bare imports by walking up through
+the `..` into `packages/ui/node_modules/`. That was the only reason an
+out-of-root seed reached a workspace package at all. #3142 normalises the
+root and gives each matched collection file the logical importer
+`<project>/content/<name>/<rel>` — the location esbuild resolves its
+shadow copy from.
 
-## Measured stats (merged #3138 + #3139 base, #3141, 2026-09-25)
+## Measured stats after #3142 (2026-09-25) — what the harness asserts
+
+#3142 seeds a collection root through the same include/exclude filter
+`materialise_collection` applies, so under `include: ["**/*.mdx"]` the
+collection contributes no seeds at all. Same build setup as below, 3 runs
+each:
+
+| Metric                         | with-collection                                                       | control                                                               |
+| ------------------------------ | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `[zfb-staging-stats]`          | `physical_scans=0 logical_visits=0 workspace_staging_activated=false` | `physical_scans=0 logical_visits=0 workspace_staging_activated=false` |
+| `zfb build` wall time (3 runs) | 3184 / 2902 / 3409 ms                                                 | 2913 / 3006 / 2992 ms                                                 |
+
+The harness asserts `0/0/false` for both variants. The `7/9/true` line
+below is the RED state: reverting #3142 brings it back.
+
+## Measured stats before #3142 (merged #3138 + #3139 base, #3141, 2026-09-25)
 
 Debug `cargo build -p zfb` (embedded V8 + esbuild 0.25.12 + Tailwind v4.2.0
 staged via `ZFB_ESBUILD_BIN`/`ZFB_TAILWIND_BIN`), 3 runs each, real
-`zfb build` against the tempdir tree above — the numbers the harness now
-**asserts**:
+`zfb build` against the tempdir tree above:
 
-| Metric                              | with-collection             | control                     |
-| ----------------------------------- | --------------------------- | --------------------------- |
-| `[zfb-staging-stats]`               | `physical_scans=7 logical_visits=9 workspace_staging_activated=true` | `physical_scans=0 logical_visits=0 workspace_staging_activated=false` |
-| same, with #3139's memo reverted    | `physical_scans=9 logical_visits=9 …=true` | unchanged                   |
-| `zfb build` wall time (3 runs)      | 3582 / 3512 / 3709 ms       | 2822 / 3012 / 2939 ms       |
-| `[zfb-timing] bundle(): materialise=` | ~12 ms                    | ~10 ms                      |
-| Peak RSS                            | not measured — no `/usr/bin/time` in this sandbox | —      |
+| Metric                                | with-collection                                                      | control                                                               |
+| ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `[zfb-staging-stats]`                 | `physical_scans=7 logical_visits=9 workspace_staging_activated=true` | `physical_scans=0 logical_visits=0 workspace_staging_activated=false` |
+| same, with #3139's memo reverted      | `physical_scans=9 logical_visits=9 …=true`                           | unchanged                                                             |
+| `zfb build` wall time (3 runs)        | 3582 / 3512 / 3709 ms                                                | 2822 / 3012 / 2939 ms                                                 |
+| `[zfb-timing] bundle(): materialise=` | ~12 ms                                                               | ~10 ms                                                                |
+| Peak RSS                              | not measured — no `/usr/bin/time` in this sandbox                    | —                                                                     |
 
 `with-collection`'s 9 logical visits, in closure order:
 `packages/ui/node_modules/shared-utils` (seeded by both `button.tsx` and
@@ -220,9 +234,9 @@ throw new Error("MDX requires \`Button\` to be passed via the
 \`components\` prop")`. Components reach MDX through the `components`
   prop / `mdx-components.tsx` (#616), never through MDX-level imports.
 
-So under `include: ["**/*.mdx"]` every seed the whole-root walk adds
-(`button.tsx` **and** `orphan.tsx` alike), every package it stages and
-every post-flip scan is work esbuild can never use. That is the finding
+So under `include: ["**/*.mdx"]` every seed the whole-root walk added
+(`button.tsx` **and** `orphan.tsx` alike), every package it staged and
+every post-flip scan was work esbuild can never use. That is the finding
 #3141 locks into #3142's spec: seed a collection root by the same filter
 the shadow materialisation applies, and do not chase MDX imports — there
 are none to chase.
