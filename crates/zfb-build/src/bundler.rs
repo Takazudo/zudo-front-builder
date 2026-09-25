@@ -878,6 +878,46 @@ pub struct BundlerOutput {
     /// policy decides whether a production build should fail, keeping dev
     /// warning-only by construction.
     pub dropped_plain_css_inputs: Vec<PathBuf>,
+    /// Counters from this call's `node_modules` dependency-staging closure
+    /// (#3133/#3139). Diagnostic only: nothing in the build consults it.
+    pub node_modules_staging_stats: NodeModulesStagingStats,
+}
+
+/// Counters describing one `node_modules` dependency-staging closure walk.
+///
+/// Read by tests through [`BundlerOutput::node_modules_staging_stats`], and by
+/// real-binary fixtures through the `ZFB_STAGING_STATS=1` stderr line
+/// `[zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeModulesStagingStats {
+    /// Physical package directories whose files were walked and import-parsed.
+    /// Each canonical directory is scanned at most once per closure walk.
+    pub physical_scans: usize,
+    /// Logical package roots visited by the closure walk. One physical
+    /// directory can back many logical roots (pnpm-private aliases).
+    pub logical_visits: usize,
+    /// Whether a workspace package entered the staged set, switching the
+    /// build to the isolated staged dependency view.
+    pub workspace_staging_activated: bool,
+}
+
+impl NodeModulesStagingStats {
+    fn stderr_line(&self) -> String {
+        format!(
+            "[zfb-staging-stats] physical_scans={} logical_visits={} workspace_staging_activated={}",
+            self.physical_scans, self.logical_visits, self.workspace_staging_activated,
+        )
+    }
+
+    fn emit_if_enabled(&self) {
+        let enabled = std::env::var("ZFB_STAGING_STATS").is_ok_and(|raw| {
+            let raw = raw.trim();
+            raw == "1" || raw.eq_ignore_ascii_case("true")
+        });
+        if enabled {
+            eprintln!("{}", self.stderr_line());
+        }
+    }
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -3146,7 +3186,7 @@ pub fn bundle_with_session(
         )
         .collect();
 
-    extend_node_modules_dependency_staging(
+    let node_modules_staging_stats = extend_node_modules_dependency_staging(
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
@@ -3160,6 +3200,7 @@ pub fn bundle_with_session(
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
+    node_modules_staging_stats.emit_if_enabled();
 
     // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
     //
@@ -4925,6 +4966,7 @@ pub fn bundle_with_session(
         emitted_wasm_assets,
         content_bridge_fallback_pages,
         dropped_plain_css_inputs,
+        node_modules_staging_stats,
     })
 }
 
@@ -10403,7 +10445,8 @@ fn extend_node_modules_dependency_staging(
     external_specifiers: &[String],
     staging_dirs: &mut BTreeSet<PathBuf>,
     staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
-) {
+) -> NodeModulesStagingStats {
+    let mut stats = NodeModulesStagingStats::default();
     let canonical_project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
@@ -10602,6 +10645,9 @@ fn extend_node_modules_dependency_staging(
     // workspace staging is confirmed, including when it is discovered late
     // in the closure. Explicit preserve-symlinks keeps lexical resolution.
     let mut deferred_physical_dependencies = Vec::new();
+    // A pnpm-private package reachable along N logical paths shares one
+    // canonical directory; scan it once and re-join each visit's logical root.
+    let mut physical_scan_cache: BTreeMap<PathBuf, PhysicalPackageScan> = BTreeMap::new();
     loop {
         while let Some((logical_root, source_root)) = pending.pop_first() {
             if !visited.insert(logical_root.clone()) || !source_root.is_dir() {
@@ -10619,44 +10665,29 @@ fn extend_node_modules_dependency_staging(
                 .unwrap_or_else(|| source_root.clone());
             let package_was_symlinked = logical_root != source_root
                 || normalize_path_lexical(&expected_physical) != physical_root;
-            let mut importers = Vec::new();
-            for entry in WalkDir::new(&physical_root)
-                .follow_links(true)
-                .into_iter()
-                .filter_entry(|entry| {
-                    entry.depth() == 0
-                        || !entry.file_type().is_dir()
-                        || !matches!(
-                            entry.file_name().to_string_lossy().as_ref(),
-                            "node_modules" | ".git"
-                        )
+            stats.logical_visits += 1;
+            let scan = physical_scan_cache
+                .entry(physical_root.clone())
+                .or_insert_with(|| {
+                    stats.physical_scans += 1;
+                    scan_physical_package(&physical_root)
+                });
+            let mut importers = scan
+                .files
+                .iter()
+                .map(|(relative, specifiers)| {
+                    (
+                        logical_root.join(relative),
+                        physical_root.join(relative),
+                        specifiers.clone(),
+                    )
                 })
-                .filter_map(std::result::Result::ok)
-            {
-                let path = entry.path();
-                let dependency_source = raw_source_extension(path)
-                    || path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
-                if !entry.file_type().is_file() || !dependency_source {
-                    continue;
-                }
-                let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
-                    // An unused invalid alternative must remain esbuild-contextual.
-                    continue;
-                };
-                let Ok(relative) = path.strip_prefix(&physical_root) else {
-                    continue;
-                };
-                importers.push((logical_root.join(relative), path.to_path_buf(), specifiers));
-            }
-            let external_imports = package_external_import_names(&physical_root);
-            if !external_imports.is_empty() {
+                .collect::<Vec<_>>();
+            if !scan.external_imports.is_empty() {
                 importers.push((
                     logical_root.join("package.json"),
                     physical_root.join("package.json"),
-                    external_imports,
+                    scan.external_imports.clone(),
                 ));
             }
 
@@ -10778,6 +10809,7 @@ fn extend_node_modules_dependency_staging(
                     canonical_workspace_package_logical_path(&canonical, project_root).is_some()
                 })
             });
+        stats.workspace_staging_activated = workspace_staging_active;
         if !workspace_staging_active {
             break;
         }
@@ -10826,6 +10858,54 @@ fn extend_node_modules_dependency_staging(
         if pending.is_empty() {
             break;
         }
+    }
+    stats
+}
+
+/// The logical-root-independent part of one package's closure scan: each
+/// dependency-source file (relative to the canonical package dir) with its
+/// runtime import specifiers, plus the package's bare `imports` targets.
+struct PhysicalPackageScan {
+    files: Vec<(PathBuf, Vec<String>)>,
+    external_imports: Vec<String>,
+}
+
+fn scan_physical_package(physical_root: &Path) -> PhysicalPackageScan {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(physical_root)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !matches!(
+                    entry.file_name().to_string_lossy().as_ref(),
+                    "node_modules" | ".git"
+                )
+        })
+        .filter_map(std::result::Result::ok)
+    {
+        let path = entry.path();
+        let dependency_source = raw_source_extension(path)
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
+        if !entry.file_type().is_file() || !dependency_source {
+            continue;
+        }
+        let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
+            // An unused invalid alternative must remain esbuild-contextual.
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(physical_root) else {
+            continue;
+        };
+        files.push((relative.to_path_buf(), specifiers));
+    }
+    PhysicalPackageScan {
+        files,
+        external_imports: package_external_import_names(physical_root),
     }
 }
 
@@ -12691,6 +12771,19 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    #[test]
+    fn node_modules_staging_stats_stderr_line_keeps_its_fixture_contract() {
+        let stats = NodeModulesStagingStats {
+            physical_scans: 4,
+            logical_visits: 6,
+            workspace_staging_activated: true,
+        };
+        assert_eq!(
+            stats.stderr_line(),
+            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true"
+        );
+    }
 
     #[cfg(unix)]
     #[test]
