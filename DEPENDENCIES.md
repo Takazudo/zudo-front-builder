@@ -2664,6 +2664,79 @@ and a missing reply without printing module URLs, options, or source. The
 120s deadline and fixture assertions are unchanged. A pass with tracing is
 evidence only for that attempt; the intermittent init risk remains open.
 
+**Plugin init decision (#3121, 2026-09-25): OBSERVE.** Retain #3120's
+diagnostics and investigate the next recurrence through the dedicated open
+tracker [#3127](https://github.com/Takazudo/zudo-front-builder/issues/3127).
+No available evidence demonstrates the cause of the original timeout, so this
+decision delivers observability and makes no claim that the timeout is fixed.
+The manager updated
+[#3122](https://github.com/Takazudo/zudo-front-builder/issues/3122)'s confirmation
+contract and created #3127 before this decision task began.
+
+The first guarded public fixture on diagnostic merge
+`76c84ac6f4a74273201b41f8f4c1d5a62562f653` **failed** after 11.57s
+(`FAIL exit=101`; 154s including build; minimum free memory 10,843 MiB).
+Its captured tool output shows parent write/flush completion at 6ms, all eight
+child imports ending by 2,095ms on the child's clock, and parent `reply_read`
+at 2,494ms on the parent's clock. Initialization succeeded in this attempt;
+the later failure was CSS Modules virtual-module preprocessing rejecting
+`/var/folders/.../stories/hooked.stories.tsx` as outside a
+`/private/var/folders/...` project root. The identical guarded command on
+pre-epic SHA `39d6ba7b9f1bb3886aadc1d66e7829a807f09f1a`, after
+`pnpm install --frozen-lockfile`, failed with the same signature after 13.12s
+(`FAIL exit=101`; 204s including build; minimum free memory 10,642 MiB).
+The initial baseline attempt without installed dependencies failed during
+build setup and supplies no fixture result. Separate issue
+[#3126](https://github.com/Takazudo/zudo-front-builder/issues/3126) owns the
+pre-existing macOS path failure. These local runs are FAIL, not successful
+catalog-rendering checks. The four exact CI passes above establish only
+non-recurrence on their recorded SHAs; they do not verify this decision's
+eventual merged SHA.
+
+The alternatives remain evidence-dependent:
+
+| Option                                                      | Decision and evidence needed                                                                                                                                                                                            |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Retain diagnostics and observe                              | Chosen: there is no failing init trace to attribute. #3127 keeps the unresolved risk actionable.                                                                                                                        |
+| Change import or promise handling                           | A future trace must identify the stalled numbered import, followed by a deterministic failing-before regression of its actual mechanism. Fast direct imports and successful later runs do not establish that mechanism. |
+| Change IPC or child lifecycle                               | Require evidence locating the lost request/reply or unexpected exit and a failing-before regression. A synthetic reply after EOF is not a child wire reply.                                                             |
+| Change scheduling or memory behavior                        | Require evidence beyond the original lower-free-memory correlation. The guarded runs do not isolate scheduling or memory as a cause.                                                                                    |
+| Raise the deadline, weaken the fixture, or rewrite the host | Rejected: none is justified by this evidence, and each would obscure the original contract.                                                                                                                             |
+
+**Assumptions and remaining risks.** Tracing can change timing, and passing
+runs cannot exclude an intermittent fault. Elapsed times are local to each
+process's start; do not subtract child time from parent time to infer IPC
+latency. Stderr delivery order can lag execution, so the terminal last phase
+is the last observed phase, not proof of the precise stall location. The
+existing 120s budget covers waiting for a reply **after** stdin flush; it is
+not an end-to-end boot deadline and does not bound a blocked write/flush.
+Missing phases may therefore require external process/runner evidence.
+Diagnostics omit options, module URLs, and source; ordinary plugin stderr
+and error text still require review before sharing outside the trusted logs.
+
+**Recurrence and PR-time acceptance.** On another plugin `init` timeout or
+unexpected host exit in the public fixture, retain its complete failure log,
+including every `[zfb-plugin-init]` line and terminal error. Record the SHA,
+OS/runner, exact command, duration, CI job URL or local heavy-guard verdict and
+minimum free memory. Correlate host/request IDs, parent write/flush, child
+receipt and numbered imports, reply write/read, timeout/exit and cleanup;
+keep secrets and full module URLs out of the tracker. Follow #3127's capture
+instructions and require a deterministic failing-before regression before
+claiming a bounded causal fix. Keep #3127 open through this sweep.
+
+For #3122, rerun the focused
+`plugin_runner::tests::traced_init_reaps_stalled_child_and_keeps_success_compatible`
+test on the integrated base (delayed success, unresolved import timeout/reap,
+and exited child). Confirm trace opt-in remains subprocess-scoped, phase
+records remain bounded and correlated, terminal timeout/exit errors retain
+the last observed phase, and diagnostic fields contain no request data.
+The public fixture must still assert external-hook catalog output with the
+same 120s default, assertions, and YAML KEEP pins. Classify the known local
+macOS signature as pre-existing FAIL under #3126; any different failure needs
+new attribution. The manager owns resource-serialized heavy checks and the
+required PR gates on the integrated SHA. CI must show no new failures and
+the exact public fixture outcome; a pass there remains non-recurrence.
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports
