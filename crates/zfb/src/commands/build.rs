@@ -8453,6 +8453,7 @@ mod tests {
                 emitted_wasm_assets,
                 content_bridge_fallback_pages: self.content_bridge_fallback_pages.borrow().clone(),
                 dropped_plain_css_inputs: self.dropped_plain_css_inputs.borrow().clone(),
+                node_modules_staging_stats: Default::default(),
             })
         }
         fn eval_deferred_paths(
@@ -9654,6 +9655,7 @@ mod tests {
                     emitted_wasm_assets: Vec::new(),
                     content_bridge_fallback_pages: Vec::new(),
                     dropped_plain_css_inputs: Vec::new(),
+                    node_modules_staging_stats: Default::default(),
                 })
             }
             fn eval_deferred_paths(

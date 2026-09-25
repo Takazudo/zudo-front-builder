@@ -17569,6 +17569,7 @@ mod tests {
             emitted_wasm_assets: Vec::new(),
             content_bridge_fallback_pages: Vec::new(),
             dropped_plain_css_inputs: Vec::new(),
+            node_modules_staging_stats: Default::default(),
         }
     }
 

@@ -1,7 +1,7 @@
 ---
 description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, let release.yml build the macOS x86_64 binary with provenance by default (or use --fast-mac for the explicit local escape hatch), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, and because `2.13.0` established its attestation the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, which is consumer-breaking for `trust-policy=no-downgrade` whenever an earlier version is attested (true since 2.13.0) — a `check-provenance-preflight.mjs --mode mac-local` run aborts the release on such a downgrade unless `--accept-provenance-downgrade` is also passed. --accept-provenance-downgrade — acknowledge a fast-Mac (or recovery) provenance downgrade the preflight detected; writes the `<!-- zfb-release: allow-provenance-downgrade -->` marker into the draft Release body. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
@@ -20,7 +20,7 @@ This skill is **model-invocable**: a rough natural-language request like "bump v
 
 **`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
 
-**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and because `2.13.0` established its attestation the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug).
+**Argument parsing.** Parse `--confirm`, `--fast-mac`, and `--accept-provenance-downgrade` independently alongside the optional version argument; any flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation, then runs the provenance preflight (`node scripts/check-provenance-preflight.mjs --version <version> --mode mac-local`) once the target version is known. `--accept-provenance-downgrade` is meaningful only alongside `--fast-mac`: it acknowledges a downgrade the preflight detects and is required to proceed past one — otherwise the release aborts. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, which is **consumer-breaking** for `trust-policy=no-downgrade` whenever an earlier version is attested (true since 2.13.0).
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -68,7 +68,26 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
    Run without --fast-mac for the provenance-first CI path. For a separate-Mac flow,
    run /l-make-release --confirm, then /l-make-mac-release-binary on the Mac.
    ```
-6. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
+6. **`--fast-mac` provenance preflight.** As soon as Step 2 has computed the target version — still before Step 4's first mutation — run the preflight for the mac-local lane:
+
+   ```bash
+   node scripts/check-provenance-preflight.mjs --version <version> --mode mac-local
+   ```
+
+   - **Exit 0** — no downgrade; continue.
+   - **Exit 1** — the release would downgrade `zfb-darwin-x64`'s trust (the script prints `DOWNGRADE zfb-darwin-x64@<version> (earlier attested: <ver>)`). This is **consumer-breaking** for `trust-policy=no-downgrade` installs. Abort unless `--accept-provenance-downgrade` was also passed:
+
+     ```text
+     ERROR: --fast-mac would publish zfb-darwin-x64@<version> without provenance, downgrading
+     trust for consumers on trust-policy=no-downgrade (earlier attested: <ver>).
+     Re-run with --accept-provenance-downgrade to proceed anyway, or drop --fast-mac for the
+     provenance-first CI path.
+     ```
+
+     With `--accept-provenance-downgrade`, continue — Step 9 writes the acknowledgement line
+     `<!-- zfb-release: allow-provenance-downgrade -->` into the draft Release body.
+   - **Exit 2** — registry error (fail closed). Abort; do not treat this as ok and do not retry with `--accept-provenance-downgrade` (that flag acknowledges a confirmed downgrade, not a lookup failure).
+7. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
 
    ```bash
    gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
@@ -505,6 +524,23 @@ If it exists:
     ```
 
     Then skip the `gh release create` step and proceed to the notify message. If `--fast-mac` was passed, retain the existing assets for the explicit fast path.
+
+    Either way, reconcile the acknowledgement marker with this run's flags before proceeding —
+    the reused draft's body may carry a stale marker from a prior run's decision, or lack one this
+    run now needs:
+
+    ```bash
+    gh release view v<version> --json body --jq .body > /tmp/release-notes.txt
+    ```
+
+    - `--fast-mac` **and** `--accept-provenance-downgrade` were both passed this run → ensure the
+      body contains `<!-- zfb-release: allow-provenance-downgrade -->` exactly once; append it if
+      missing.
+    - Otherwise → strip the marker line if present (a prior run may have added it for a decision
+      that no longer applies to this run's flags).
+
+    Write back with `gh release edit v<version> --notes-file /tmp/release-notes.txt` only if the
+    body actually changed.
   - **Delete and recreate**: `gh release delete v<version> --yes` then re-create (only for drafts — never delete a published Release).
   - **Abort**: stop.
 
@@ -529,6 +565,9 @@ RELEASE_NOTES=$(printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s
   '## create-zfb' "$CREATE_ZFB_NOTES" \
   '## @takazudo/zfb-md-wasm' "$ZFB_MD_WASM_NOTES")
 PRERELEASE_FLAG=$([[ "<version>" =~ -next\.|-beta\.|-rc\. ]] && echo "--prerelease" || echo "")
+if [[ -n "$ACCEPT_PROVENANCE_DOWNGRADE" ]]; then
+  RELEASE_NOTES=$(printf '%s\n\n<!-- zfb-release: allow-provenance-downgrade -->' "$RELEASE_NOTES")
+fi
 gh release create v<version> --target <bump-sha> --title "v<version>" --notes "$RELEASE_NOTES" --draft $PRERELEASE_FLAG
 ```
 
@@ -536,13 +575,19 @@ Keep these five extractions independent: never reuse one lane's variable as anot
 This remains one GitHub Release with the existing tag, binary assets, npm publication order, and
 Homebrew flow; only its notes are assembled from the five package sources.
 
+Append the acknowledgement line `<!-- zfb-release: allow-provenance-downgrade -->` on its own line
+only when `--fast-mac` and `--accept-provenance-downgrade` were both passed this run (Step 1's
+preflight required the flag to reach this step at all when it detected a downgrade). Otherwise leave
+the body exactly as assembled above — the marker must never appear when it was not explicitly
+acknowledged.
+
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
 
 ## Step 10: Build the macOS x86_64 Binary (CI default; `--fast-mac` escape hatch)
 
 The default path deliberately does **not** build or pre-upload the Mac binary, even on a Mac. Leave both Mac assets absent so publishing the draft runs `release.yml`'s `macos-15-intel` leg; that CI-built binary lets all ten packages publish with `--provenance`.
 
-`--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. Because `2.13.0` established its attestation, the weekly drift guard will correctly fail on any later fast-Mac release; that is intended supervision, not a bug.
+`--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. This is **consumer-breaking for `trust-policy=no-downgrade`** whenever an earlier version of `zfb-darwin-x64` is attested (true since 2.13.0) — Step 1's preflight aborts the release on such a downgrade unless `--accept-provenance-downgrade` was passed.
 
 ### If `--fast-mac` was passed
 
@@ -655,9 +700,9 @@ Release bump committed and pushed.
 CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
 macOS x86_64 binary: built locally and uploaded to the draft Release because --fast-mac was passed.
-Provenance consequence: zfb-darwin-x64 publishes unattested; because `2.13.0` established its
-attestation, the weekly drift guard will correctly fail on any later fast-Mac release. That is
-intended supervision, not a bug.
+Provenance consequence: zfb-darwin-x64 publishes unattested. This is consumer-breaking for
+trust-policy=no-downgrade installs, because `2.13.0` established its attestation (Step 1's
+preflight required --accept-provenance-downgrade to reach this point).
 
 NEXT STEP — publish the draft to trigger release.yml (from any host):
 
@@ -790,11 +835,17 @@ Fix the issue, commit the fix, push, then re-invoke `/watch-ci`. Do not proceed 
 
 Never unpublish/delete the published Release, move its tag, or publish npm packages directly. If the cause is in `release.yml`, fix it on `main`, commit + push the fix, and wait for main CI to pass. Then run the fixed workflow definition from `main` against the existing published tag:
 
+Recovery is now **always** consumer-breaking for `trust-policy=no-downgrade`, for all 10 packages
+(GitHub OIDC cannot identify the older tag commit, so every package publishes without provenance —
+see below). Pass `allow_provenance_downgrade=true` to acknowledge it; `release.yml`'s recovery
+publish requires this input (default `false`) and refuses to run without it:
+
 ```bash
 gh workflow run release.yml --ref main \
   -f dry_run=false \
   -f skip_macos_x64=false \
-  -f release_tag=v<version>
+  -f release_tag=v<version> \
+  -f allow_provenance_downgrade=true
 ```
 
 Keep `skip_macos_x64=false` so the recovery uses the `macos-15-intel` CI build rather than a

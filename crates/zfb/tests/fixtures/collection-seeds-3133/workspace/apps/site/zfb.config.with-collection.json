@@ -1,0 +1,11 @@
+{
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "componentDocs",
+      "path": "../../packages/ui/src/components",
+      "include": ["**/*.mdx"],
+      "allowOutsideRoot": true
+    }
+  ]
+}

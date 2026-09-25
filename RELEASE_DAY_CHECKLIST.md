@@ -118,9 +118,25 @@ so no manual re-dispatch is needed.
 
 ### Fast-Mac path (`--fast-mac` opt-in; mixed provenance)
 
-For an autonomous release on a Mac, run `/l-make-release --fast-mac`. It creates
-the draft, builds + uploads the macOS-x64 assets, publishes, and watches the
-workflow end to end. Do not repeat the upload or publish steps afterward.
+**Consumer-breaking whenever an earlier version is attested (true since 2.13.0).**
+`zfb-darwin-x64` publishes without `--provenance` on this path, which is a
+permanent trust downgrade for that package — a consumer on pnpm's
+`trust-policy=no-downgrade` cannot install it at all
+(`ERR_PNPM_TRUST_DOWNGRADE`). Before any mutation, `/l-make-release --fast-mac`
+runs `node scripts/check-provenance-preflight.mjs --version <v> --mode
+mac-local`; on a detected downgrade (exit 1) it aborts unless
+`--accept-provenance-downgrade` was also passed, and on a registry error
+(exit 2) it always aborts. With the flag, the skill writes the acknowledgement
+line `<!-- zfb-release: allow-provenance-downgrade -->` into the draft Release
+body — `release.yml`'s `mac-local` publish step requires that exact line to be
+present and refuses to publish without it.
+
+For an autonomous release on a Mac, run `/l-make-release --fast-mac
+--accept-provenance-downgrade` (the flag is required only when the preflight
+detects a downgrade; omit it and the skill will tell you if it was needed). It
+creates the draft, builds + uploads the macOS-x64 assets, publishes, and
+watches the workflow end to end. Do not repeat the upload or publish steps
+afterward.
 
 For a manual/confirmed flow where the upload happens separately:
 
@@ -140,8 +156,19 @@ For a manual/confirmed flow where the upload happens separately:
    Release for `vX.Y.Z` (`gh release upload --clobber`, so re-runs are safe).
    The archive + checksum are byte-format-identical to what the runner produces
    (same name, same one-file-at-root layout, same GNU two-space sha256 line).
+
+   Before publishing, check whether this upload would downgrade trust:
+   `node scripts/check-provenance-preflight.mjs --version X.Y.Z --mode
+   mac-local`. On a detected downgrade (exit 1), get an explicit decision, then
+   add the acknowledgement line to the draft body before publishing — `gh
+   release view vX.Y.Z --json body --jq .body`, append `<!-- zfb-release:
+   allow-provenance-downgrade -->` on its own line, and write it back with `gh
+   release edit vX.Y.Z --notes-file -`. `/l-make-mac-release-binary` does this
+   check for you; a manual upload must do it by hand.
 3. **Publish the draft Release** (`gh release edit vX.Y.Z --draft=false` or web UI)
-   to trigger `release.yml`. The workflow's `detect-mac-local` job will see both
+   to trigger `release.yml`. Without the acknowledgement line present when a
+   downgrade applies, the publish job refuses to run the `mac-local` lane. The
+   workflow's `detect-mac-local` job will see both
    files on the Release and output `mac_local_present=true`, causing it to:
 
    - drop the `darwin-x64` build leg from the matrix (no `macos-15-intel` wait),
@@ -162,11 +189,22 @@ after the GitHub Release is already public, do **not** move the tag, delete the
 Release, or publish npm packages by hand. Commit the workflow fix to `main`, then
 dispatch the reviewed workflow from `main` while pointing it at the existing tag:
 
+**Recovery is now always consumer-breaking for `trust-policy=no-downgrade`, for
+all 10 packages** — see below for why GitHub OIDC cannot attest the older tag
+commit. Unlike fast-Mac (which acknowledges only an actual detected
+downgrade), recovery unconditionally omits provenance for every package, so
+the `publish` job always requires the acknowledgement in this mode regardless
+of what `check-provenance-preflight.mjs --mode recovery-no-provenance` reports.
+The `allow_provenance_downgrade` `workflow_dispatch` boolean input (default
+`false`) must be set to `true` to acknowledge this; the publish step refuses to
+run without it:
+
 ```sh
 gh workflow run release.yml --ref main \
   -f dry_run=false \
   -f skip_macos_x64=false \
-  -f release_tag=vX.Y.Z
+  -f release_tag=vX.Y.Z \
+  -f allow_provenance_downgrade=true
 ```
 
 The `release-context` job fails closed unless `release_tag` is a valid existing
@@ -262,8 +300,11 @@ why only 5 of the 6 `2.12.0` entries were flagged. It was the weaker problem of
 macOS-x64 users getting no supply-chain evidence at all. The default `2.13.0`
 release restored provenance for this package and expired the temporary legacy
 exception; from `2.13.0` onward, any later `--fast-mac` release is correctly a
-`regression` and the weekly provenance guard fails. That is intended supervision
-of a deliberate opt-in, not a hazard. The publish job warns on this path too.
+`regression`, the weekly provenance guard fails, and the pre-publish preflight
+(`check-provenance-preflight.mjs --mode mac-local`) refuses to run that release
+without an explicit `--accept-provenance-downgrade` — it is **consumer-breaking
+for `trust-policy=no-downgrade`**, not a supervised no-op. The publish job warns
+on this path too.
 
 ## Homebrew tap update (added by issue #383)
 

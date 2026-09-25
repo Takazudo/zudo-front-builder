@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Two-lane admission control for heavy V8/esbuild e2e tests ────────────
-# These 42 integration-test binaries (all in package `zfb`) each spawn a real
+# These 43 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Unbounded concurrent boots starve CPU/memory and turn
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -19,20 +19,20 @@
 # at most one flock adopter and one non-adopter concurrently: this preserves
 # serialization within each contention class while allowing genuine two-way
 # progress across the classes.
-# The measured split is 42 = 24 flock-adopting + 18 build-only.
+# The measured split is 43 = 25 flock-adopting + 18 build-only.
 # `scripts/__tests__/nextest-heavy-binary-drift.test.mjs` re-derives the exact
-# 42-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
+# 43-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
 # gate if the two explicit filters collectively drift.
 #
 # The two lanes are:
-#   • 24 flock-adopting binaries (client_bundling_cross_pipeline,
+#   • 25 flock-adopting binaries (client_bundling_cross_pipeline,
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
 #     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e,
 #     mirror_css_scan_mdx_e2e, cold_rewrite_prewarm_e2e,
 #     ssr_reload_self_heal_e2e, embedded_host_request_time_e2e,
 #     workerd_parity_e2e, dev_content_reload_2063_e2e,
-#     dev_supervision_e2e, plugin_watch_hook_confirm_2170_e2e, and
-#     ssr_contract_dev_warning_e2e) — spawn
+#     dev_supervision_e2e, plugin_watch_hook_confirm_2170_e2e,
+#     ssr_contract_dev_warning_e2e, and collection_seed_3133_baseline) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
 #     so the OS flock is their process-level mutual-exclusion guarantee. The
@@ -85,6 +85,11 @@
 #     byte-identical for supported contract rows, and exactly the
 #     documented D7/D8 divergences (legacy MD5 digest; key-bearing
 #     SubtleCrypto) where they are expected to differ.
+#     `collection_seed_3133_baseline` (issue #3143, Provenance Guard and
+#     Collection Seeds epic #3135, Track B3 — the confirm pass over
+#     #3138/#3141/#3142) is the newest flock-adopting member: it gained a
+#     real `zfb dev --port 0` test alongside its existing `zfb build` test,
+#     so the whole binary moved here from the build-only lane below.
 #   • 18 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
@@ -307,6 +312,20 @@ max-threads = 1
 # is a self-spawned cache protocol/process-race harness with no zfb, V8, or
 # esbuild execution.
 #
+# Issue #3138 (epic #3135, Track B0 — #3133 repro fixture + baseline) added
+# `collection_seed_3133_baseline` to the BUILD-ONLY bucket: a real `zfb
+# build` over a pnpm-workspace fixture (an out-of-root content collection
+# with `allowOutsideRoot`, mirroring #3133), bringing the current total to
+# **43** (24 flock-adopting, 19 build-only).
+#
+# Issue #3143 (epic #3135, Track B3 — the confirm pass over #3138/#3141/#3142)
+# added a real `zfb dev --port 0` test to `collection_seed_3133_baseline`,
+# so the whole binary moved from the BUILD-ONLY bucket into the
+# FLOCK-ADOPTING bucket (it now spawns `zfb dev` and must adopt #1339's OS
+# advisory flock, like every other locked-lane binary). Total unchanged at
+# **43** (25 flock-adopting, 18 build-only) — this is a reclassification,
+# not a new binary.
+#
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
@@ -349,7 +368,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
- filter = 'package(zfb) & (binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=cold_rewrite_prewarm_e2e) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e))'
+ filter = 'package(zfb) & (binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=cold_rewrite_prewarm_e2e) | binary(=collection_seed_3133_baseline) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e))'
 test-group = 'e2e-heavy-locked'
 # The true longest in-test watchdog is 300s
 # (dev_content_aggregate_cold_boot_e2e and dev_dep_invalidation_1284_e2e;
