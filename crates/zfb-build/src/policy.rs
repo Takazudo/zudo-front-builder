@@ -103,6 +103,18 @@ pub struct RawImportInvalidation {
     /// `is_plugin_watch_target`, folded into `dynamic_dependency_paths()`),
     /// not directory-shaped like `css_mirror_roots`.
     plugin_watch_files: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// Real source files the dev SSR bundle transitively imports (issue
+    /// #3162), published from the dev refresh's esbuild metafile after every
+    /// successful bundle. File-shaped like the browser-closure sets, and
+    /// folded into [`GranularityPolicy::dynamic_dependency_paths`] so a
+    /// dependency outside every recursive watch root (an in-root
+    /// `packages/data/` that is not a default root, a nested host's sibling
+    /// workspace package, its `dist/`) still reaches the orchestrator.
+    /// Third-party `node_modules` files and staged shadow copies are never
+    /// stored — see [`Self::replace_ssr_module_deps`]. Dev-only: `zfb build`
+    /// never publishes or reads it.
+    ssr_module_deps: Arc<RwLock<BTreeSet<PathBuf>>>,
 }
 
 impl RawImportInvalidation {
@@ -343,6 +355,64 @@ impl RawImportInvalidation {
     /// Whether `path` is a registered plugin virtual-module watch file.
     pub fn is_plugin_watch_target(&self, path: &Path) -> bool {
         Self::contains(&self.plugin_watch_files, path)
+    }
+
+    /// Atomically replace the dev SSR module-dependency set after a
+    /// successful bundle (issue #3162). Replace, not union: an import the
+    /// latest bundle dropped stops being watched. An empty input is a valid
+    /// publication (a bundle with zero module deps), so it clears the set.
+    ///
+    /// A path whose canonical form has a `node_modules` segment is dropped
+    /// (a third-party pnpm-store file is never edited in place), as is any
+    /// path inside a `zfb-shadow-session-*` directory (a staged copy the
+    /// bundler rewrites every tick, so a watch on it could never observe the
+    /// source edit). Of the surviving entry's lexical/canonical aliases, only
+    /// the ones outside `node_modules` are kept, so a symlinked workspace
+    /// package registers its real `packages/...` spelling, not the link.
+    pub fn replace_ssr_module_deps(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        let mut deps = BTreeSet::new();
+        for path in paths {
+            let lexical = zfb_types::normalize_path_lexical(&path);
+            let canonical = Self::resolved_alias(&path);
+            if Self::is_ssr_excluded(canonical.as_ref().unwrap_or(&lexical)) {
+                continue;
+            }
+            deps.extend(
+                std::iter::once(lexical)
+                    .chain(canonical)
+                    .filter(|alias| !Self::is_ssr_excluded(alias)),
+            );
+        }
+        if let Ok(mut set) = self.ssr_module_deps.write() {
+            *set = deps;
+        }
+    }
+
+    fn is_ssr_excluded(path: &Path) -> bool {
+        zfb_types::has_node_modules_segment(path) || path.components().any(|component| {
+            matches!(
+                component,
+                Component::Normal(name)
+                    if name
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(crate::bundler::SHADOW_SESSION_PREFIX))
+            )
+        })
+    }
+
+    /// Snapshot the current dev SSR module-dependency aliases for dynamic
+    /// watcher registration (folded into
+    /// [`GranularityPolicy::dynamic_dependency_paths`]).
+    pub fn ssr_module_dep_paths(&self) -> BTreeSet<PathBuf> {
+        self.ssr_module_deps
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether `path` is a file the current dev SSR bundle imports.
+    pub fn is_ssr_module_dependency(&self, path: &Path) -> bool {
+        Self::contains(&self.ssr_module_deps, path)
     }
 }
 
@@ -754,14 +824,23 @@ impl GranularityPolicy {
     /// — those paths are file-shaped exactly like the three browser-closure
     /// sets above, so `register_dynamic_dependency_watches`
     /// (`crate::orchestrator`) offers them to `watch_additional_files` with
-    /// no watcher-crate changes needed.
+    /// no watcher-crate changes needed. The dev SSR module-dependency set
+    /// (issue #3162) is folded in on the same terms.
     pub fn dynamic_dependency_paths(&self) -> BTreeSet<PathBuf> {
         let mut paths = self.raw_import_invalidation.islands_paths();
         paths.extend(self.raw_import_invalidation.client_script_paths());
         paths.extend(self.raw_import_invalidation.client_script_worker_paths());
         paths.extend(self.raw_import_invalidation.client_script_sibling_paths());
         paths.extend(self.raw_import_invalidation.plugin_watch_file_paths());
+        paths.extend(self.raw_import_invalidation.ssr_module_dep_paths());
         paths
+    }
+
+    /// Whether this exact changed path is a file the current dev SSR bundle
+    /// imports (issue #3162) — its edit must reload the SSR host whatever
+    /// the path classifies as.
+    pub fn is_ssr_module_dependency(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_ssr_module_dependency(path)
     }
 
     /// Whether this exact changed path is a client-script terminal raw target.
@@ -1037,6 +1116,84 @@ mod tests {
         // through the symlink.
         invalidation.replace_css_mirror_roots([physical.clone()]);
         assert!(policy.is_under_css_mirror_root(&alias.join("nested/notes.mdx")));
+    }
+
+    /// Issue #3162 — the SSR module-dependency registry keeps first-party
+    /// in-root and out-of-root files, drops third-party `node_modules` and
+    /// staged `zfb-shadow-session-*` copies, is actually POPULATED after a
+    /// publish, and a later (even empty) publish replaces it.
+    #[test]
+    fn ssr_module_deps_publish_filters_third_party_and_shadow_copies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project = root.join("site");
+        let in_root = project.join("packages/data/value.json");
+        let out_of_root = root.join("sibling/dist/index.js");
+        let pnpm_store = project.join("node_modules/.pnpm/preact@10/node_modules/preact/index.js");
+        let shadow_copy = root.join("zfb-shadow-session-abc123/site/node_modules/data/value.json");
+        for file in [&in_root, &out_of_root, &pnpm_store, &shadow_copy] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        // A project-local workspace link: its lexical spelling carries a
+        // `node_modules` segment, its canonical target does not.
+        std::fs::create_dir_all(project.join("node_modules")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            project.join("packages/data"),
+            project.join("node_modules/data"),
+        )
+        .unwrap();
+
+        let invalidation = RawImportInvalidation::default();
+        let mut published = vec![
+            in_root.clone(),
+            out_of_root.clone(),
+            pnpm_store.clone(),
+            shadow_copy.clone(),
+        ];
+        #[cfg(unix)]
+        published.push(project.join("node_modules/data/value.json"));
+        invalidation.replace_ssr_module_deps(published);
+
+        let paths = invalidation.ssr_module_dep_paths();
+        assert!(
+            !paths.is_empty(),
+            "a successful publish must populate the registry"
+        );
+        assert!(paths.contains(&in_root), "{paths:?}");
+        assert!(paths.contains(&out_of_root), "{paths:?}");
+        assert!(
+            paths
+                .iter()
+                .all(|path| !zfb_types::has_node_modules_segment(path)),
+            "no node_modules spelling may be registered: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.to_string_lossy().contains("zfb-shadow-session-")),
+            "no staged shadow copy may be registered: {paths:?}"
+        );
+        assert!(invalidation.is_ssr_module_dependency(&in_root));
+        assert!(invalidation.is_ssr_module_dependency(&out_of_root));
+        assert!(!invalidation.is_ssr_module_dependency(&pnpm_store));
+        assert!(!invalidation.is_ssr_module_dependency(&shadow_copy));
+
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        let dynamic = policy.dynamic_dependency_paths();
+        assert!(dynamic.contains(&in_root));
+        assert!(dynamic.contains(&out_of_root));
+        assert!(policy.is_ssr_module_dependency(&in_root));
+        assert!(!policy.is_islands_dependency(&in_root));
+        assert!(!policy.is_client_script_worker_target(&in_root));
+
+        invalidation.replace_ssr_module_deps([out_of_root.clone()]);
+        assert!(!invalidation.is_ssr_module_dependency(&in_root));
+        assert!(invalidation.is_ssr_module_dependency(&out_of_root));
+        invalidation.replace_ssr_module_deps(Vec::new());
+        assert!(invalidation.ssr_module_dep_paths().is_empty());
     }
 
     #[test]

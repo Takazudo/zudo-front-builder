@@ -92,6 +92,23 @@ pub fn route_module_deps(
     shadow_root: &Path,
     project_root: &Path,
 ) -> Vec<RouteModuleDeps> {
+    route_module_deps_with_staged_copies(metafile_bytes, routes, shadow_root, project_root, &[])
+}
+
+/// [`route_module_deps`], additionally mapping an input that only exists as a
+/// staged real copy in the shadow back to the source it was copied from
+/// (issue #3162). `staged_copy_sources` holds `(shadow destination, source)`
+/// pairs, recorded by the bundler as it stages; a destination may be a
+/// directory root or a single file. Without it such an input resolves to the
+/// copy inside `zfb-shadow-session-*`, which no edit of the real workspace
+/// file ever touches.
+pub(crate) fn route_module_deps_with_staged_copies(
+    metafile_bytes: &[u8],
+    routes: &[RouteEntryRef],
+    shadow_root: &Path,
+    project_root: &Path,
+    staged_copy_sources: &[(PathBuf, PathBuf)],
+) -> Vec<RouteModuleDeps> {
     let meta: Metafile = match serde_json::from_slice(metafile_bytes) {
         Ok(m) => m,
         // A malformed / empty metafile must never break the bundle — the dev
@@ -112,7 +129,9 @@ pub fn route_module_deps(
                 if is_synthetic_input(&key) {
                     continue;
                 }
-                if let Some(real) = map_to_real(&key, shadow_root, project_root) {
+                if let Some(real) =
+                    map_to_real(&key, shadow_root, project_root, staged_copy_sources)
+                {
                     module_deps.insert(real);
                 }
             }
@@ -159,7 +178,12 @@ fn is_synthetic_input(key: &str) -> bool {
 }
 
 /// Map a metafile input key to a real on-disk path (see [`route_module_deps`]).
-fn map_to_real(key: &str, shadow_root: &Path, project_root: &Path) -> Option<PathBuf> {
+fn map_to_real(
+    key: &str,
+    shadow_root: &Path,
+    project_root: &Path,
+    staged_copy_sources: &[(PathBuf, PathBuf)],
+) -> Option<PathBuf> {
     let key_path = Path::new(key);
 
     // Absolute keys (node_modules canonicalised by esbuild) are already real.
@@ -174,15 +198,48 @@ fn map_to_real(key: &str, shadow_root: &Path, project_root: &Path) -> Option<Pat
         return canonical_or_self(&in_project);
     }
 
+    // A staged real copy with no project-tree twin (issue #3162): name the
+    // source it was copied from, not the copy.
+    let in_shadow = shadow_root.join(key_path);
+    if let Some(source) = staged_copy_source(&in_shadow, staged_copy_sources) {
+        return canonical_or_self(&source);
+    }
+
     // Fall back to the shadow location itself (e.g. a materialised copy that
     // has no project-tree twin). Canonicalising follows any symlink to the
     // real workspace file — exactly the watch target a symlinked dep needs.
-    let in_shadow = shadow_root.join(key_path);
     if in_shadow.exists() {
         return canonical_or_self(&in_shadow);
     }
 
     None
+}
+
+/// The existing source file behind `shadow_path` when it lies inside a
+/// recorded staged copy. The deepest destination wins, so a dependency staged
+/// under another staged package (`node_modules/a/node_modules/b`) maps to its
+/// own source rather than into `a`'s.
+fn staged_copy_source(
+    shadow_path: &Path,
+    staged_copy_sources: &[(PathBuf, PathBuf)],
+) -> Option<PathBuf> {
+    let shadow_path = normalize_path_lexical(shadow_path);
+    staged_copy_sources
+        .iter()
+        .filter_map(|(dest, source)| {
+            let relative = shadow_path
+                .strip_prefix(normalize_path_lexical(dest))
+                .ok()?;
+            let source = if relative.as_os_str().is_empty() {
+                source.clone()
+            } else {
+                source.join(relative)
+            };
+            Some((dest.components().count(), source))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, source)| source)
+        .filter(|source| source.exists())
 }
 
 /// Canonicalise, falling back to the path as-given when canonicalisation fails
@@ -2269,6 +2326,76 @@ mod tests {
                 deps[0].module_deps
             );
         }
+    }
+
+    /// Issue #3162 — a staged REAL copy with no project-tree twin maps back to
+    /// the source it was copied from, and a package staged beneath another
+    /// staged package (and a single staged file) maps to its own source.
+    #[test]
+    fn staged_real_copy_maps_to_its_source_not_the_shadow_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let project = root.join("project");
+        let shadow = root.join("shadow");
+        write(&project, "pages/index.tsx", "x");
+        for (dir, file) in [
+            ("packages/data", "value.json"),
+            ("packages/toolkit/dist", "feature.js"),
+            ("packages/single", "one.js"),
+        ] {
+            write(&root, &format!("{dir}/{file}"), "real");
+        }
+        write(&shadow, "node_modules/data/value.json", "copy");
+        write(
+            &shadow,
+            "node_modules/data/node_modules/toolkit/dist/feature.js",
+            "copy",
+        );
+        write(&shadow, "node_modules/single/one.js", "copy");
+        let staged = vec![
+            (shadow.join("node_modules/data"), root.join("packages/data")),
+            (
+                shadow.join("node_modules/data/node_modules/toolkit"),
+                root.join("packages/toolkit"),
+            ),
+            (
+                shadow.join("node_modules/single/one.js"),
+                root.join("packages/single/one.js"),
+            ),
+        ];
+
+        let metafile = br#"{
+            "inputs": {
+                "pages/index.tsx": { "imports": [
+                    { "path": "node_modules/data/value.json" },
+                    { "path": "node_modules/data/node_modules/toolkit/dist/feature.js" },
+                    { "path": "node_modules/single/one.js" }
+                ] }
+            }
+        }"#;
+        let routes = vec![RouteEntryRef {
+            source_path: PathBuf::from("pages/index.tsx"),
+            metafile_key: "pages/index.tsx".to_string(),
+        }];
+
+        let deps =
+            route_module_deps_with_staged_copies(metafile, &routes, &shadow, &project, &staged);
+        assert_eq!(
+            deps[0].module_deps,
+            BTreeSet::from([
+                root.join("packages/data/value.json"),
+                root.join("packages/toolkit/dist/feature.js"),
+                root.join("packages/single/one.js"),
+            ])
+        );
+        let without_record = route_module_deps(metafile, &routes, &shadow, &project);
+        assert!(
+            without_record[0]
+                .module_deps
+                .iter()
+                .all(|dep| dep.starts_with(&shadow)),
+            "control: unrecorded staged copies resolve to the shadow copy"
+        );
     }
 
     // --- audit_metafile_exclusions ------------------------------------
