@@ -948,6 +948,124 @@ fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
 }
 
 // ---------------------------------------------------------------------------
+// (o) compiled-JS-only workspace package whose `exports` point into `dist/`
+// (#3161). `dist` is a `MIRROR_SKIP_DIRS` infra name, but a directory the
+// package's own manifest declares must survive the workspace-infra prune —
+// otherwise esbuild cannot resolve the subpath inside the shadow.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn o_workspace_package_exports_into_dist_are_staged() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+    fs::write(
+        project.join("package.json"),
+        r#"{"name":"host","dependencies":{"lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { marker } from "lib/islands";
+            export default function Home() { return marker; }
+        "#,
+    )
+    .unwrap();
+
+    let lib = ws_root.join("packages/lib");
+    fs::create_dir_all(lib.join("dist")).unwrap();
+    fs::create_dir_all(lib.join(".turbo")).unwrap();
+    fs::write(
+        lib.join("package.json"),
+        r#"{
+          "name":"lib",
+          "dependencies":{"toolkit":"workspace:*"},
+          "exports":{"./islands":{"types":"./dist/islands.d.ts","default":"./dist/islands.js"}}
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        lib.join("dist/islands.js"),
+        "import { suffix } from 'toolkit/feature';\n\
+         export const marker = 'COMPILED_DIST_MARKER' + suffix;\n",
+    )
+    .unwrap();
+    fs::write(
+        lib.join("dist/islands.d.ts"),
+        "export declare const marker: string;\n",
+    )
+    .unwrap();
+    fs::write(lib.join(".turbo/turbo-build.log"), "undeclared infra\n").unwrap();
+
+    let toolkit = ws_root.join("packages/toolkit");
+    fs::create_dir_all(toolkit.join("dist")).unwrap();
+    fs::write(
+        toolkit.join("package.json"),
+        r#"{"name":"toolkit","exports":{"./feature":"./dist/feature.js"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        toolkit.join("dist/feature.js"),
+        "export const suffix = '_TRANSITIVE_WORKSPACE_DEP';\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(ws_root.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(&lib, ws_root.join("node_modules/lib")).unwrap();
+    std::os::unix::fs::symlink(&toolkit, ws_root.join("node_modules/toolkit")).unwrap();
+
+    for (case, exclude, project_local_link) in [
+        ("empty exclude with hoisted install", Vec::new(), false),
+        (
+            "active unrelated exclude with hoisted install",
+            unrelated_exclude(),
+            false,
+        ),
+        ("empty exclude with project-local link", Vec::new(), true),
+    ] {
+        if project_local_link {
+            fs::create_dir_all(project.join("node_modules")).unwrap();
+            std::os::unix::fs::symlink(&lib, project.join("node_modules/lib")).unwrap();
+        }
+        let input = base_input(&project, esbuild.clone(), exclude);
+        let mut session = ShadowSession::new(&project).unwrap();
+        // A green build is also the stage-escape audit's verdict: it hard-fails
+        // the build when esbuild consumed a workspace file with no staged spelling.
+        let out = bundle_with_session(input, Some(&mut session)).unwrap_or_else(|error| {
+            panic!("{case}: declared dist/ export of a workspace package must stage: {error:#}")
+        });
+        let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+        assert!(body.contains("COMPILED_DIST_MARKER"), "{case}: {body}");
+        assert!(body.contains("TRANSITIVE_WORKSPACE_DEP"), "{case}: {body}");
+
+        let work = fs::canonicalize(session.shadow_root()).unwrap();
+        let staged = work.join("sub-packages/host/node_modules/lib");
+        let staged_entry = staged.join("dist/islands.js");
+        assert!(
+            fs::symlink_metadata(&staged_entry)
+                .map(|metadata| metadata.file_type().is_file())
+                .unwrap_or(false),
+            "{case}: the declared dist/ entry must be staged as a real file"
+        );
+        assert!(
+            !staged.join(".turbo").exists(),
+            "{case}: undeclared workspace package infra is still pruned"
+        );
+        assert!(
+            staged
+                .join("node_modules/toolkit/dist/feature.js")
+                .is_file(),
+            "{case}: the transitive workspace dependency's declared dist/ is staged too"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // (l) #1985's blast-radius guard: a mirror root is claimed WHOLESALE, so the
 // preprocessing enrolment that fixed cases (b)/(g)/(j)/(k) also reaches files
 // no import edge ever touches. Those must not become build failures they were
