@@ -3344,6 +3344,43 @@ fi
         assert_eq!(oxide_warmup_key(&actual_path, Some(&known)), Some(expected));
     }
 
+    /// An existing `.done` marker keyed on a known digest makes
+    /// [`warm_oxide_cross_process`] return on its fast path without hashing
+    /// or spawning `binary_path`. The binary is a script that records any
+    /// spawn, and its bytes hash to a different key than the known digest —
+    /// so hashing (marker miss) or spawning would both leave the sentinel.
+    #[cfg(unix)]
+    #[test]
+    fn warm_oxide_cross_process_skips_on_an_existing_marker_for_a_known_digest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sentinel = dir.path().join("spawned");
+        let bin = dir.path().join("fake-tailwind");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", sentinel.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Unique per run: the marker lives in the shared `$TMPDIR`.
+        let digest_hex = hex::encode(Sha256::digest(dir.path().as_os_str().as_encoded_bytes()));
+        assert_ne!(
+            tailwind_content_key(&bin).as_deref(),
+            Some(&digest_hex[..16])
+        );
+        let done_path = std::env::temp_dir().join(format!(
+            "zfb-tailwind-oxide-warmup-{}.done",
+            &digest_hex[..16]
+        ));
+        std::fs::File::create(&done_path).expect("create marker");
+
+        warm_oxide_cross_process(&bin, Some(&(bin.clone(), digest_hex)));
+        let _ = std::fs::remove_file(&done_path);
+
+        assert!(
+            !sentinel.exists(),
+            "an existing marker for the known digest must skip the warm-up spawn"
+        );
+    }
+
     /// A short, non-hex, wrong-length, or non-ASCII digest is rejected —
     /// and rejecting it can never itself panic, since it is plain byte
     /// comparisons over whatever bytes `&str` (always valid UTF-8) hands
