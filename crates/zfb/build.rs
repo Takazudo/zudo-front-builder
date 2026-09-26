@@ -764,6 +764,20 @@ fn stage_binaries_into_vendor(
     let tailwind_dst = bin_dir.join(format!("tailwindcss-v4{exe_suffix}"));
     copy_executable(tailwind_src, &tailwind_dst)?;
 
+    // #3159 — stamp the embedded Tailwind binary's SHA-256 at build time so
+    // `zfb-css` can skip re-hashing the ~76 MB binary on every process start
+    // (see `TailwindSubprocessConfig::with_embedded_binary_and_digest`).
+    // Hashing the STAGED copy (not `tailwind_src`) covers slot, download,
+    // and `ZFB_TAILWIND_BIN` override (#1772) builds uniformly — whatever
+    // bytes end up embedded via `include_dir!` are exactly what gets hashed.
+    let tailwind_digest = sha256_hex_file(&tailwind_dst).map_err(|e| {
+        format!(
+            "failed to hash staged tailwind binary {}: {e}",
+            tailwind_dst.display()
+        )
+    })?;
+    println!("cargo:rustc-env=ZFB_EMBEDDED_TAILWIND_SHA256={tailwind_digest}");
+
     Ok(())
 }
 
