@@ -4300,6 +4300,62 @@ mod tests {
         );
     }
 
+    /// Issue #3176 item 8 — the CSS sibling-mirror recursive channel is
+    /// reconciled with `dist` in its skip names, so a declared sibling
+    /// `dist/` is NOT watched through it. A `dist/` file the SSR bundle
+    /// actually imports still reaches the non-recursive dependency-parent
+    /// channel, and `zfb_watcher`'s delivery filter exempts a dependency
+    /// parent and its direct children from skip-dir suppression
+    /// (`filter_exempts_boot_roots_and_dependency_dirs`).
+    #[test]
+    fn declared_sibling_dist_dependency_uses_the_parent_watch_channel() {
+        #[derive(Default)]
+        struct Recorder {
+            files: BTreeSet<PathBuf>,
+            dirs: BTreeSet<PathBuf>,
+            skips: Vec<String>,
+        }
+        impl DynamicWatchRegistrar for Recorder {
+            fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                self.files.extend(paths);
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                desired_roots: BTreeSet<PathBuf>,
+                skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                self.dirs.extend(desired_roots);
+                self.skips = skip_dir_names.to_vec();
+                Vec::new()
+            }
+        }
+
+        let sibling = PathBuf::from("/ws/packages/lib");
+        let dist_dep = sibling.join("dist/index.js");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_css_mirror_roots([sibling.clone()]);
+        invalidation.replace_ssr_module_deps([dist_dep.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let skips = vec!["node_modules".to_string(), "dist".to_string()];
+
+        let mut recorder = Recorder::default();
+        register_dynamic_dependency_watches(&mut recorder, &policy, &skips);
+
+        assert!(recorder.dirs.contains(&sibling));
+        assert!(
+            recorder.skips.iter().any(|name| name == "dist"),
+            "the recursive CSS channel still skips dist: {:?}",
+            recorder.skips
+        );
+        assert!(
+            recorder.files.contains(&dist_dep),
+            "the imported dist file must be offered to the parent-watch channel: {:?}",
+            recorder.files
+        );
+    }
+
     /// Issue #3162 — an SSR module dependency under an in-root directory that
     /// is NOT a recursive watch root (`packages/data/`, the root-site repro)
     /// must get a dynamic parent watch from the SSR registry alone, and an
