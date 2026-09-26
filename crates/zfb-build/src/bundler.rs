@@ -4566,6 +4566,20 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
+        // #3189: a package directory linked to its canonical install (the
+        // directory loops above) or a nested host's hoisted `work/node_modules`
+        // link may already make this destination the source file itself.
+        // Nothing to write, and deliberately NOT marked visited: the path is
+        // not shadow output, so the session prune (which refuses to delete
+        // through such a link) is left to drop its stale bookkeeping. Not
+        // recorded in `staged_copy_sources` either: no copy exists, and the
+        // metafile dep mapping already canonicalises the shadow spelling to
+        // this same source.
+        if exact_target_destination(physical, &to, target_writer)?
+            == ExactTargetDestination::AlreadyReachable
+        {
+            continue;
+        }
         let shadow_relative = to.strip_prefix(target_root).map_err(|_| {
             anyhow!(
                 "bundler: exact-target staging destination {} for {} is outside the shadow root {}",
@@ -7684,6 +7698,63 @@ fn link_ordinary_dependency_to_canonical_source(
             })?;
         Ok(true)
     }
+}
+
+/// What the exact-target file loop does with one destination (#3189).
+#[derive(Debug, PartialEq, Eq)]
+enum ExactTargetDestination {
+    /// No link out of the shadow on the way: stage a copy as usual.
+    Stage,
+    /// The destination already resolves, through a link out of the shadow,
+    /// to the very file being staged — e.g. its package directory was linked
+    /// to the canonical install ([`link_ordinary_dependency_to_canonical_source`])
+    /// or it sits under a nested host's hoisted `work/node_modules` link.
+    /// esbuild reaches it through that link; writing would target the real
+    /// install.
+    AlreadyReachable,
+}
+
+/// Classify an exact-target destination before anything is written (#3189).
+/// Only the filesystem is read — the destination's resolved parent plus its
+/// file name is compared against the source's canonical path — so no
+/// resolver behaviour is predicted. A destination
+/// that leaves the shadow through a link to any OTHER file is an error:
+/// writing would clobber the real install, and skipping would serve the
+/// wrong file.
+fn exact_target_destination(
+    physical: &Path,
+    to: &Path,
+    writer: &ShadowWriter<'_>,
+) -> Result<ExactTargetDestination> {
+    let (Some(parent), Some(file_name)) = (to.parent(), to.file_name()) else {
+        return Ok(ExactTargetDestination::Stage);
+    };
+    let Some((ancestor, ancestor_target)) = writer
+        .escaping_ancestor(parent)
+        .with_context(|| format!("bundler: resolve exact-target destination {}", to.display()))?
+    else {
+        return Ok(ExactTargetDestination::Stage);
+    };
+    let source = fs::canonicalize(physical)
+        .with_context(|| format!("bundler: canonicalize exact-target {}", physical.display()))?;
+    let resolved = fs::canonicalize(parent)
+        .ok()
+        .map(|parent| parent.join(file_name));
+    if let Some(resolved) = &resolved {
+        if *resolved == source || fs::canonicalize(resolved).is_ok_and(|leaf| leaf == source) {
+            return Ok(ExactTargetDestination::AlreadyReachable);
+        }
+    }
+    Err(anyhow!(
+        "bundler: exact-target staging destination {} for {} leaves the shadow through the link {} -> {} and resolves to {}, not the file being staged; refusing to write into the linked install (#3185)",
+        to.display(),
+        physical.display(),
+        ancestor.display(),
+        ancestor_target.display(),
+        resolved
+            .as_deref()
+            .map_or_else(|| "a missing path".to_string(), |p| p.display().to_string())
+    ))
 }
 
 /// How [`materialise_isolated_exact_dir`] treats [`MIRROR_SKIP_DIRS`] infra
@@ -25395,5 +25466,151 @@ mod tests {
             writer.mark_clean();
         }
         assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+    }
+
+    // ── Exact-target same-file rule (#3189) ─────────────────────────────
+
+    /// A nested host's hoisted route: `<work>/node_modules` links to the real
+    /// workspace `node_modules`, and `shadow_path_for_project_path` maps a
+    /// first-party-root file under it. The same file is skipped; a different
+    /// one (or a missing path) behind that link is an error; nothing is
+    /// written either way.
+    #[cfg(unix)]
+    fn classifies_hoisted_work_node_modules_destinations(
+        writer: &ShadowWriter<'_>,
+        work: &Path,
+        workspace: &Path,
+    ) {
+        let installed = workspace.join("node_modules/pkg/dist/file.mjs");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, "INSTALLED").unwrap();
+        std::os::unix::fs::symlink(workspace.join("node_modules"), work.join("node_modules"))
+            .unwrap();
+        let site = workspace.join("apps/site");
+        fs::create_dir_all(&site).unwrap();
+
+        let to = shadow_path_for_project_path(
+            &installed,
+            &site,
+            workspace,
+            &work.join("apps/site"),
+            work,
+            None,
+        );
+        assert_eq!(to, work.join("node_modules/pkg/dist/file.mjs"));
+        assert_eq!(
+            exact_target_destination(&installed, &to, writer).unwrap(),
+            ExactTargetDestination::AlreadyReachable
+        );
+
+        let other = workspace.join("vendor/file.mjs");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "OTHER").unwrap();
+        let err = exact_target_destination(&other, &to, writer)
+            .expect_err("a different file behind the link must be refused");
+        let message = format!("{err:#}");
+        assert!(message.contains("(#3185)"), "{message}");
+        assert!(
+            message.contains(&work.join("node_modules").display().to_string()),
+            "the error must name the link: {message}"
+        );
+        let missing = work.join("node_modules/pkg/absent/file.mjs");
+        exact_target_destination(&other, &missing, writer)
+            .expect_err("a missing path behind the link must be refused");
+
+        // No link involved: stage as before.
+        assert_eq!(
+            exact_target_destination(&other, &work.join("apps/site/vendor/file.mjs"), writer)
+                .unwrap(),
+            ExactTargetDestination::Stage
+        );
+
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "INSTALLED");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "OTHER");
+        assert!(!workspace.join("node_modules/pkg/absent").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_destination_through_hoisted_work_node_modules_link_passthrough() {
+        with_containment_writer(false, classifies_hoisted_work_node_modules_destinations);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_destination_through_hoisted_work_node_modules_link_session() {
+        with_containment_writer(true, classifies_hoisted_work_node_modules_destinations);
+    }
+
+    /// Dev session: tick N stages the alias target as a real copy (its
+    /// package is not linked yet); tick N+1 links the package directory to its
+    /// canonical install and must skip the same file instead of writing
+    /// through the link. The installed file survives both ticks and the
+    /// prune of tick N's copy.
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_session_copy_then_link_keeps_the_installed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let store = base.join("store/node_modules/.pnpm/preact@10.29.8/node_modules/preact");
+        let installed = store.join("hooks/dist/hooks.mjs");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(store.join("package.json"), r#"{"name":"preact"}"#).unwrap();
+        fs::write(&installed, "INSTALLED_HOOKS").unwrap();
+        let project = base.join("site");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&store, project.join("node_modules/preact")).unwrap();
+        let physical = project.join("node_modules/preact/hooks/dist/hooks.mjs");
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        let root = session.shadow_root().to_path_buf();
+        // Nested below the root, like a workspace project mirror, so the
+        // prune's top-level `node_modules` shortcut does not apply.
+        let shadow_pkg = root.join("site/node_modules/preact");
+        let to = shadow_pkg.join("hooks/dist/hooks.mjs");
+        let rel = PathBuf::from("site/node_modules/preact/hooks/dist/hooks.mjs");
+
+        // Tick N: staged as a copy.
+        {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            assert_eq!(
+                exact_target_destination(&physical, &to, &writer).unwrap(),
+                ExactTargetDestination::Stage
+            );
+            writer.ensure_dir(to.parent().unwrap()).unwrap();
+            writer.copy_if_changed(&physical, &to).unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(fs::symlink_metadata(&shadow_pkg).unwrap().is_dir());
+        assert!(session.prev_visited.contains(&rel));
+
+        // Tick N+1 (and a steady N+2): the package directory is linked.
+        for _ in 0..2 {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            assert!(link_ordinary_dependency_to_canonical_source(
+                &project.join("node_modules/preact"),
+                &project.join("node_modules/preact"),
+                &shadow_pkg,
+                &project,
+                &writer,
+            )
+            .unwrap());
+            assert_eq!(
+                exact_target_destination(&physical, &to, &writer).unwrap(),
+                ExactTargetDestination::AlreadyReachable
+            );
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+            assert!(fs::symlink_metadata(&shadow_pkg)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_to_string(&installed).unwrap(), "INSTALLED_HOOKS");
+        }
+        // Skipped, not marked visited: nothing of ours is left to track.
+        assert!(!session.prev_visited.contains(&rel));
+        assert!(!session.written.contains_key(&rel));
+        assert_eq!(fs::read_to_string(&to).unwrap(), "INSTALLED_HOOKS");
     }
 }
