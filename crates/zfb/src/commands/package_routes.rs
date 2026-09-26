@@ -439,18 +439,12 @@ fn resolve_pages_root(
                 pages_rel.display()
             ));
         }
-        // A pattern with a `_`-prefixed segment (e.g. `/_engine/tokens`)
-        // derives an overlay path the router scan and `derive_route` both
-        // treat as private (`zfb_types::path_has_private_prefix_component`)
-        // and therefore skip — the route is silently materialised into the
-        // overlay but never scanned into a page or a `routes.json` entry.
-        // Unlike the `.client` case above this is not rejected: honouring
-        // `_`-prefixed package routes was considered and rejected as it
-        // would contradict the privacy convention, so we warn instead and
-        // keep behaviour unchanged.
-        if let Some(warning) = private_segment_warning(route, &pages_rel) {
-            crate::output::warn(warning);
-        }
+        // `route_shape_key_for_pages_rel` is computed BEFORE the private-
+        // segment check below so a route under the reserved `__paths__/`
+        // prefix (which is ALSO `_`-prefixed, but carries its own harder
+        // `ReservedRoutePrefix` router error — see `zfb-router`) still hard-
+        // errors with plugin + pattern attribution, exactly as it did before
+        // this function started dropping ordinary private routes.
         let shape_key = zfb_router::route_shape_key_for_pages_rel(&pages_rel).map_err(|e| {
             anyhow!(
                 "package route `{}` (from plugin `{}`) could not be parsed: {e}",
@@ -458,6 +452,22 @@ fn resolve_pages_root(
                 route.plugin
             )
         })?;
+        // A pattern with a `_`-prefixed segment (e.g. `/_engine/tokens`)
+        // derives an overlay path the router scan and `derive_route` both
+        // treat as private (`zfb_types::path_has_private_prefix_component`)
+        // — so it is dropped here, before materialisation, instead of ever
+        // reaching the overlay: dev and build must agree on what a `_`
+        // route means, and letting it survive into `materialized` (even
+        // though the scan would later ignore it) is what let dev serve the
+        // pattern while build silently produced nothing for it. Unlike the
+        // `.client` case above this is not a hard error: honouring
+        // `_`-prefixed package routes was considered and rejected as it
+        // would contradict the privacy convention, so we warn and skip the
+        // route instead.
+        if let Some(warning) = private_segment_warning(route, &pages_rel) {
+            crate::output::warn(warning);
+            continue;
+        }
         if user_shape_keys.contains(&shape_key) {
             crate::output::info(format!(
                 "package route `{}` (from plugin `{}`) is shadowed by a user pages/ route (user wins); skipping",
@@ -899,11 +909,12 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
 /// scan (`zfb-router`'s `scan_pages`) and the bundler (`derive_route`)
 /// enforce via [`zfb_types::path_has_private_prefix_component`]: such a
 /// path never produces a page or a `routes.json` entry. A package route
-/// that derives one is therefore silently dropped rather than rejected —
-/// unlike the `.client` case in [`resolve_pages_root`], honouring `_`
-/// routes was considered and rejected as it would contradict the privacy
-/// convention, so this only warns. Pure and side-effect free: the caller
-/// decides how (and whether) to emit the message.
+/// that derives one is therefore skipped rather than rejected — unlike the
+/// `.client` case in [`resolve_pages_root`], honouring `_` routes was
+/// considered and rejected as it would contradict the privacy convention,
+/// so this only warns (the caller drops the route right after). Pure and
+/// side-effect free: the caller decides how (and whether) to emit the
+/// message.
 pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -> Option<String> {
     if !zfb_types::path_has_private_prefix_component(pages_rel) {
         return None;
@@ -911,9 +922,10 @@ pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -
     Some(format!(
         "package route `{}` (from plugin `{}`) derives the pages/ path `{}`, which has a \
          `_`-prefixed segment — segments starting with `_` are private by convention, so \
-         `zfb build` produces no page or `routes.json` entry for it (the route scanner and \
-         bundler both skip them), even though `zfb dev` still serves the pattern. Rename the segment so it does not start with `_` (e.g. rename \
-         `/_engine/*` to `/sg-engine/*`) if this route is meant to be served.",
+         both `zfb dev` and `zfb build` skip it (no page, no `routes.json` entry, and it is \
+         never materialised into either overlay). Rename the segment so it does not start \
+         with `_` (e.g. rename `/_engine/*` to `/sg-engine/*`) if this route is meant to be \
+         served.",
         route.pattern,
         route.plugin,
         pages_rel.display()
@@ -2408,6 +2420,113 @@ export default function Page() { return null; }
 
         let survivors = surviving_injected_routes(&routes, &res.materialized);
         assert!(survivors.is_empty());
+    }
+
+    // ── #3211: dev matches build on `_`-prefixed injected routes ──
+
+    #[test]
+    fn private_prefixed_route_is_dropped_from_materialized_seeds_and_survivors_on_build() {
+        // `/_engine/tokens` must never reach `materialized` — for build,
+        // `static_injected_seeds`, or `surviving_injected_routes` — even
+        // though a sibling non-private route in the same call DOES survive
+        // (so this isn't just the trivially-empty all-shadowed path).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let private = route("/_engine/tokens", "/pkg/tokens.tsx");
+        let public = route("/preset-about", "/pkg/about.tsx");
+        let routes = vec![private.clone(), public];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+
+        assert_eq!(
+            res.materialized.len(),
+            1,
+            "only the non-private route survives into materialized"
+        );
+        assert_eq!(res.materialized[0].pattern, "/preset-about");
+        assert!(
+            !res.build_pages_root
+                .join("_engine")
+                .join("tokens.tsx")
+                .exists(),
+            "the private route must never be written into the overlay"
+        );
+
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert!(
+            seeds.iter().all(|s| s.pattern != "/_engine/tokens"),
+            "the private route must not be seeded for dev SSG either"
+        );
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert!(
+            survivors.iter().all(|r| r.pattern != "/_engine/tokens"),
+            "the private route must not appear in the survivor set the dev fallback matches against"
+        );
+
+        // The warning itself must still fire — `resolve_pages_root` calls
+        // this same pure function right before dropping the route.
+        let pages_rel = pattern_to_pages_rel(&private.pattern).unwrap();
+        let warning = private_segment_warning(&private, &pages_rel)
+            .expect("a `_`-prefixed segment must still warn");
+        assert!(
+            warning.contains("zfb dev") && warning.contains("zfb build"),
+            "the warning must state both dev and build skip the route: {warning}"
+        );
+        assert!(
+            !warning.contains("still serves"),
+            "the warning must no longer claim dev serves the route: {warning}"
+        );
+    }
+
+    #[test]
+    fn private_prefixed_route_is_dropped_from_materialized_on_dev_too() {
+        // Same drop, through the dev-facing entry point (`resolve_dev_pages_root`).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![
+            route("/_engine/tokens", "/pkg/tokens.tsx"),
+            route("/preset-about", "/pkg/about.tsx"),
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        assert_eq!(res.materialized.len(), 1);
+        assert_eq!(res.materialized[0].pattern, "/preset-about");
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].pattern, "/preset-about");
+    }
+
+    #[test]
+    fn zero_pages_only_private_route_has_no_surviving_injected_route() {
+        // The zero-pages dev-boot decision (`resolve_dev_user_pages_root` in
+        // `commands/dev.rs`) gates the internal-empty-pages fallback on
+        // `resolution.guard.is_some()`. When the ONLY injected route is
+        // `_`-prefixed, no route survives precedence at all, so `survivors`
+        // is empty and `resolve_pages_root` takes its all-shadowed fast
+        // path: `guard: None`, `build_pages_root == real_pages_dir`. A
+        // project with no real `pages/` directory and only this route is
+        // therefore indistinguishable, at that gate, from a project with no
+        // injected routes at all — it hits the historical "no pages/
+        // directory" dev-boot error (pinned separately for the bool-driven
+        // gate itself in `commands::dev::tests::zero_pages_without_injected_routes_keeps_missing_pages_error`).
+        let tmp = tempfile::tempdir().unwrap();
+        // Deliberately no real pages/ dir under `tmp`.
+        let pages = tmp.path().join("pages");
+
+        let routes = vec![route("/_engine/tokens", "/pkg/tokens.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        assert!(
+            res.guard.is_none(),
+            "an only-private-route project must not get a staging dir"
+        );
+        assert_eq!(res.build_pages_root, pages);
+        assert!(res.materialized.is_empty());
     }
 
     #[test]

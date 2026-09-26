@@ -6099,6 +6099,12 @@ struct DevRenderInner {
     #[cfg(feature = "embed_v8")]
     boot_bundle_read_since: Option<std::time::SystemTime>,
 
+    /// The eager boot's page sources outside the metafile walk (issue
+    /// #3210): see [`reconcile_only_page_sources`]. Published with
+    /// [`Self::boot_route_module_deps`]; empty on the deferred-boot path.
+    #[cfg(feature = "embed_v8")]
+    boot_reconcile_page_sources: Vec<PathBuf>,
+
     /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
     /// passed into every route-table build, so a `paths()` JSON output
     /// identical to a previous tick's skips the Rust-side
@@ -6614,7 +6620,16 @@ impl DevRenderSession {
     #[cfg(feature = "embed_v8")]
     pub(crate) fn seed_boot_module_edges(&self) {
         let deps = self.inner.boot_route_module_deps.clone();
-        self.populate_module_edges(&deps, self.inner.boot_bundle_read_since);
+        // The deferred path has neither, and publishes from its own refresh;
+        // an empty page-entry publication here must not be able to race it.
+        if deps.is_empty() && self.inner.boot_reconcile_page_sources.is_empty() {
+            return;
+        }
+        self.populate_module_edges(
+            &deps,
+            &self.inner.boot_reconcile_page_sources,
+            self.inner.boot_bundle_read_since,
+        );
     }
 
     /// Install the dev SSR module-dependency registry (issue #3162) and
@@ -6635,7 +6650,7 @@ impl DevRenderSession {
             publish_ssr_module_deps_into(&registry, deps, publication.read_since);
         }
         if let Some(entries) = publication.page_entries.as_ref() {
-            registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+            publish_page_entries_into(&registry, &entries.paths, entries.read_since);
         }
         if let Some(files) = publication.content_files.as_ref() {
             registry.replace_content_files_read_since(files.paths.clone(), files.read_since);
@@ -6647,22 +6662,27 @@ impl DevRenderSession {
     /// (issue #3162). A route whose dependency set is empty is a real
     /// publication and replaces the previous one; a failed bundle never
     /// reaches here, which keeps the last good set watched. An empty route
-    /// list is NOT a publication: it is also what a missing or malformed
-    /// metafile degrades to (`route_module_deps_with_staged_copies`), and
-    /// clearing on it would silently unwatch every dependency.
+    /// list is NOT a publication of the SSR set: it is also what a missing or
+    /// malformed metafile degrades to (`route_module_deps_with_staged_copies`),
+    /// and clearing on it would silently unwatch every dependency.
+    ///
+    /// The page-entry set is published regardless (issue #3210): a project
+    /// whose only pages are static `.html` files has no metafile routes at
+    /// all, yet its `extra_page_sources` were still read by this pass. On a
+    /// degraded metafile that publication names only `extra_page_sources`;
+    /// the route entries return with the next good bundle.
     #[cfg(feature = "embed_v8")]
     fn publish_ssr_module_deps(
         &self,
         deps: &[zfb_build::RouteModuleDeps],
+        extra_page_sources: &[PathBuf],
         read_since: Option<std::time::SystemTime>,
     ) {
-        if deps.is_empty() {
-            return;
-        }
-        let set: std::collections::BTreeSet<PathBuf> = deps
-            .iter()
-            .flat_map(|route| route.module_deps.iter().cloned())
-            .collect();
+        let set: Option<std::collections::BTreeSet<PathBuf>> = (!deps.is_empty()).then(|| {
+            deps.iter()
+                .flat_map(|route| route.module_deps.iter().cloned())
+                .collect()
+        });
         let mut publication = self
             .inner
             .ssr_module_deps
@@ -6672,23 +6692,34 @@ impl DevRenderSession {
         // its dependency set (the graph adds a page self-edge), so publish
         // the entries separately, keyed by their logical project path (the
         // bundler records `source_path` from the logical, not the shadow,
-        // spelling).
-        let page_entries = read_since.map(|read_since| ReconcileOnlyReads {
+        // spelling). Issue #3209 — published on BOTH paths, stamped or not,
+        // same as the SSR module-dependency set itself: the unstamped route
+        // entries stay the current entries, only their stamp is cleared, so
+        // the two sets never disagree about whether a reconcile stamp is
+        // live. Issue #3210 — an absolute `source_path` lies outside the
+        // project: an injected route's synthesized stub in its
+        // `zfb-pkg-routes-*` staging dir, which no user edit touches. Its
+        // real entrypoint arrives in `extra_page_sources` instead.
+        let page_entries = PageEntriesPublication {
             paths: deps
                 .iter()
+                .filter(|route| route.source_path.is_relative())
                 .map(|route| self.inner.project_root.join(&route.source_path))
+                .chain(extra_page_sources.iter().cloned())
                 .collect(),
             read_since,
-        });
+        };
         if let Some(registry) = publication.registry.as_ref() {
-            publish_ssr_module_deps_into(registry, &set, read_since);
-            if let Some(entries) = page_entries.as_ref() {
-                registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+            if let Some(set) = set.as_ref() {
+                publish_ssr_module_deps_into(registry, set, read_since);
             }
+            publish_page_entries_into(registry, &page_entries.paths, page_entries.read_since);
         }
-        publication.last_successful = Some(set);
-        publication.read_since = read_since;
-        publication.page_entries = page_entries;
+        if let Some(set) = set {
+            publication.last_successful = Some(set);
+            publication.read_since = read_since;
+        }
+        publication.page_entries = Some(page_entries);
     }
 
     /// Record and publish the content-collection files a content snapshot
@@ -6927,9 +6958,10 @@ impl DevRenderSession {
     fn populate_module_edges(
         &self,
         deps: &[zfb_build::RouteModuleDeps],
+        extra_page_sources: &[PathBuf],
         read_since: Option<std::time::SystemTime>,
     ) {
-        self.publish_ssr_module_deps(deps, read_since);
+        self.publish_ssr_module_deps(deps, extra_page_sources, read_since);
         if deps.is_empty() {
             return;
         }
@@ -7570,7 +7602,11 @@ impl DevRenderSession {
         // return below is irrelevant — the edges only change when the bundle
         // changes, and a byte-identical bundle re-asserts identical edges, a
         // cheap idempotent upsert). No-op until the graph handle is installed.
-        self.populate_module_edges(&bundler_out.route_module_deps, Some(read_since));
+        self.populate_module_edges(
+            &bundler_out.route_module_deps,
+            &reconcile_only_page_sources(router.routes(), inputs.injected_route_entrypoints()),
+            Some(read_since),
+        );
 
         // P1b — skip-key compute (SHA-256 over bundle + router + static HTML).
         // Phase B (issue #940) — skip key check.
@@ -8075,8 +8111,10 @@ struct SsrModuleDepPublication {
     /// When the bundle behind `last_successful` started reading (#3190).
     read_since: Option<std::time::SystemTime>,
     /// The same bundle's route entry files, as logical project paths, with
-    /// its read start (#3202). Only a read-stamped bundle records them.
-    page_entries: Option<ReconcileOnlyReads>,
+    /// the bundle's read start when it has one (#3202; unstamped publishes
+    /// added by #3209). `None` until the first publication; `Some` with
+    /// `read_since: None` is a real unstamped publication.
+    page_entries: Option<PageEntriesPublication>,
     /// The content-collection files the latest content snapshot read, with
     /// its read start (#3202).
     content_files: Option<ReconcileOnlyReads>,
@@ -8090,6 +8128,19 @@ struct SsrModuleDepPublication {
 struct ReconcileOnlyReads {
     paths: std::collections::BTreeSet<PathBuf>,
     read_since: std::time::SystemTime,
+}
+
+/// The route entry files an SSR bundle publish read, as logical project
+/// paths, with the bundle's read start when it has one (issue #3209). Unlike
+/// [`ReconcileOnlyReads`] (always stamped), a page-entry publish can be
+/// unstamped — mirroring the SSR module-dependency set's own
+/// `replace_ssr_module_deps` / `replace_ssr_module_deps_read_since` split —
+/// so `read_since` is optional here too.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+struct PageEntriesPublication {
+    paths: std::collections::BTreeSet<PathBuf>,
+    read_since: Option<std::time::SystemTime>,
 }
 
 /// The files `snapshot` was built from: each collection entry's
@@ -8112,6 +8163,26 @@ fn content_snapshot_files(
         .collect()
 }
 
+/// The page sources a dev bundle pass read that the metafile walk never
+/// names (issue #3210), for the reconcile-only page-entry set: every
+/// `static_html` route's source (the renderer copies it verbatim, so it never
+/// enters the JS bundle) and every materialized injected route's real
+/// entrypoint (the route itself is keyed on its synthesized staging stub,
+/// whose metafile key the walk does not match, so the entrypoint reaches no
+/// route's dependency set).
+#[cfg(feature = "embed_v8")]
+fn reconcile_only_page_sources(
+    routes: &[zfb_router::Route],
+    injected_route_entrypoints: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    routes
+        .iter()
+        .filter(|route| route.static_html)
+        .map(|route| route.source_path.clone())
+        .chain(injected_route_entrypoints)
+        .collect()
+}
+
 /// Publish `deps` into the registry, with the bundle's read start when known
 /// (issue #3190).
 #[cfg(feature = "embed_v8")]
@@ -8125,6 +8196,23 @@ fn publish_ssr_module_deps_into(
             registry.replace_ssr_module_deps_read_since(deps.iter().cloned(), read_since)
         }
         None => registry.replace_ssr_module_deps(deps.iter().cloned()),
+    }
+}
+
+/// [`publish_ssr_module_deps_into`]'s counterpart for the page-entries set
+/// (issue #3209): publishes the same route entries either way, so the two
+/// sets stay in step on whether a reconcile stamp is live.
+#[cfg(feature = "embed_v8")]
+fn publish_page_entries_into(
+    registry: &zfb_build::RawImportInvalidation,
+    paths: &std::collections::BTreeSet<PathBuf>,
+    read_since: Option<std::time::SystemTime>,
+) {
+    match read_since {
+        Some(read_since) => {
+            registry.replace_page_entries_read_since(paths.iter().cloned(), read_since)
+        }
+        None => registry.replace_page_entries(paths.iter().cloned()),
     }
 }
 
@@ -9525,6 +9613,7 @@ fn boot_dev_renderer(
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
     let mut boot_bundle_read_since: Option<std::time::SystemTime> = None;
+    let mut boot_reconcile_page_sources: Vec<PathBuf> = Vec::new();
     let mut boot_content_reads: Option<ReconcileOnlyReads> = None;
     let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
@@ -9591,6 +9680,10 @@ fn boot_dev_renderer(
         // post-graph seeding (the graph does not exist yet at this point).
         boot_route_module_deps = bundler_out.route_module_deps.clone();
         boot_bundle_read_since = Some(read_since);
+        boot_reconcile_page_sources = reconcile_only_page_sources(
+            router.routes(),
+            rebuild_inputs.injected_route_entrypoints(),
+        );
 
         let state = start(RendererStartInput {
             bundle_path: bundler_out.bundle_path.clone(),
@@ -9699,6 +9792,7 @@ fn boot_dev_renderer(
             }),
             boot_route_module_deps,
             boot_bundle_read_since,
+            boot_reconcile_page_sources,
             paths_cache: Mutex::new(paths_cache),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: lazy_dev_render_enabled(),
@@ -11184,6 +11278,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
             boot_bundle_read_since: None,
+            boot_reconcile_page_sources: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render,
@@ -12532,6 +12627,7 @@ mod tests {
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
             boot_bundle_read_since: None,
+            boot_reconcile_page_sources: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: false,
@@ -12613,6 +12709,7 @@ mod tests {
 
         session.populate_module_edges(
             &route_deps(&[in_root.clone(), out_of_root.clone(), store.clone()]),
+            &[],
             None,
         );
         assert!(
@@ -12627,13 +12724,13 @@ mod tests {
         assert!(policy.dynamic_dependency_paths().contains(&in_root));
         assert!(policy.dynamic_dependency_paths().contains(&out_of_root));
 
-        session.populate_module_edges(&[], None);
+        session.populate_module_edges(&[], &[], None);
         assert!(
             registry.is_ssr_module_dependency(&in_root),
             "an empty route list (the degraded missing/malformed-metafile result) \
              must not clear the last good set"
         );
-        session.populate_module_edges(&route_deps(&[]), None);
+        session.populate_module_edges(&route_deps(&[]), &[], None);
         assert!(
             registry.ssr_module_dep_paths().is_empty(),
             "a successful bundle with no module deps replaces the old set"
@@ -12656,7 +12753,7 @@ mod tests {
         let session = ssr_dep_session(&project, Vec::new());
         let registry = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(registry.clone());
-        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), None);
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), &[], None);
         assert!(registry.is_ssr_module_dependency(&in_root));
 
         // The stub project fails inside esbuild (the syntax error, or the
@@ -12715,6 +12812,7 @@ mod tests {
 
         session.populate_module_edges(
             &route_deps(std::slice::from_ref(&in_root)),
+            &[],
             Some(std::time::SystemTime::now() + std::time::Duration::from_secs(60)),
         );
         assert!(
@@ -12759,7 +12857,7 @@ mod tests {
             .collect::<Vec<_>>();
         let session = ssr_dep_session(&project, Vec::new());
 
-        session.populate_module_edges(&routes, None);
+        session.populate_module_edges(&routes, &[], None);
         let registry = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(registry.clone());
         assert!(
@@ -12767,7 +12865,7 @@ mod tests {
             "a publication without a read start records no page entries"
         );
 
-        session.populate_module_edges(&routes, Some(read_since));
+        session.populate_module_edges(&routes, &[], Some(read_since));
         assert_eq!(
             registry.modified_since_read(|_| true),
             vec![index.clone()],
@@ -12776,6 +12874,155 @@ mod tests {
         let replayed = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(replayed.clone());
         assert_eq!(replayed.modified_since_read(|_| true), vec![index]);
+    }
+
+    /// Issue #3209 — an unstamped SSR module-dependency publish
+    /// (`read_since = None`) must clear the page-entries stamp too, and a
+    /// registry installed after that unstamped publish must never replay a
+    /// stale one. Stamped publish -> unstamped publish -> registry replay.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn unstamped_publish_clears_page_entry_stamp_and_replay_stays_clear_3209() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let index = project.join("pages/index.tsx");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::write(&index, "export default () => null;").unwrap();
+        let routes = route_deps(&[]);
+        let session = ssr_dep_session(&project, Vec::new());
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+
+        // Stamped publish: an edit made after this read start is reported.
+        let read_since = std::time::SystemTime::now();
+        session.populate_module_edges(&routes, &[], Some(read_since));
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(read_since + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![index.clone()],
+            "the edit is reported while the page-entry stamp is live"
+        );
+
+        // Unstamped publish (the `read_since = None` path): the live
+        // registry's page-entries stamp must clear along with the SSR
+        // module-dependency set's. A second, later edit keeps the reconcile
+        // memo from masking a stale stamp: only a cleared stamp hides it.
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(read_since + std::time::Duration::from_secs(2))
+            .unwrap();
+        session.populate_module_edges(&routes, &[], None);
+        assert!(
+            registry.modified_since_read(|_| true).is_empty(),
+            "an unstamped publish must clear the page-entries stamp on the \
+             live registry"
+        );
+
+        // Replay: a registry installed AFTER the unstamped publish must not
+        // carry a stale stamp forward either.
+        let replayed = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(replayed.clone());
+        assert!(
+            replayed.modified_since_read(|_| true).is_empty(),
+            "a registry replayed after an unstamped publish must end with no \
+             live page-entry stamp"
+        );
+    }
+
+    /// Write `path` and set its mtime.
+    #[cfg(feature = "embed_v8")]
+    fn write_with_mtime(path: &Path, mtime: std::time::SystemTime) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// Issue #3210 — a project whose only pages are static `.html` files has
+    /// no metafile routes, so the SSR set is not republished (an empty route
+    /// list is not a publication) while the static page sources still reach
+    /// the stamped page-entry set, live and on replay.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn static_only_project_publishes_its_html_pages_for_the_reconcile_3210() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (project, [in_root, _, _]) = ssr_dep_fixture(&root);
+        let html = project.join("pages/about.html");
+        let read_since = std::time::SystemTime::now();
+        write_with_mtime(&html, read_since + std::time::Duration::from_secs(1));
+        let session = ssr_dep_session(&project, Vec::new());
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), &[], None);
+
+        let routes = [zfb_router::Route {
+            source_path: html.clone(),
+            segments: vec![zfb_router::Segment::Static("about".into())],
+            kind: zfb_router::RouteKind::Static,
+            specificity: 100,
+            output_extension: None,
+            static_html: true,
+        }];
+        let sources = reconcile_only_page_sources(&routes, Vec::new());
+        assert_eq!(sources, vec![html.clone()]);
+        session.populate_module_edges(&[], &sources, Some(read_since));
+        assert!(
+            registry.is_ssr_module_dependency(&in_root),
+            "an empty route list must still not clear the last good SSR set"
+        );
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![html.clone()],
+            "the static page edited after the read is reported"
+        );
+        let replayed = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(replayed.clone());
+        assert_eq!(replayed.modified_since_read(|_| true), vec![html]);
+    }
+
+    /// Issue #3210 — an injected route's metafile route is keyed on its
+    /// synthesized stub in a `zfb-pkg-routes-*` staging dir (an absolute,
+    /// out-of-project `source_path`), whose metafile key the walk never
+    /// matches, so its real entrypoint is in no route's dependency set. The
+    /// stub is not published; the materialized entrypoint is.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn injected_route_publishes_its_entrypoint_not_its_staging_stub_3210() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project = root.join("site");
+        let entrypoint = project.join("plugin-routes/pkg.tsx");
+        let stub = root.join("zfb-pkg-routes-abc/pages/pkg.tsx");
+        let read_since = std::time::SystemTime::now();
+        for file in [&entrypoint, &stub] {
+            write_with_mtime(file, read_since + std::time::Duration::from_secs(1));
+        }
+        let session = ssr_dep_session(&project, Vec::new());
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        let deps = vec![zfb_build::RouteModuleDeps {
+            source_path: stub.clone(),
+            module_deps: std::collections::BTreeSet::new(),
+        }];
+        let sources = reconcile_only_page_sources(&[], vec![entrypoint.clone()]);
+        session.populate_module_edges(&deps, &sources, Some(read_since));
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![entrypoint],
+            "the entrypoint is reported and the staging stub is never published"
+        );
     }
 
     /// Issue #3202 — the content snapshot's files map back onto each
@@ -12997,6 +13244,7 @@ mod tests {
                 linked_lexical.clone(),
                 shadow.clone(),
             ]),
+            &[],
             None,
         );
         let (graph_deps, registered) = assert_subset("full publish");
@@ -13009,7 +13257,7 @@ mod tests {
         assert!(!registered.contains(&linked_lexical));
         assert!(!registered.contains(&store) && !registered.contains(&shadow));
 
-        session.populate_module_edges(&[], None);
+        session.populate_module_edges(&[], &[], None);
         let (degraded_graph, degraded_registry) = assert_subset("degraded empty metafile");
         assert_eq!(
             degraded_graph, graph_deps,
@@ -13020,7 +13268,7 @@ mod tests {
             "the registry keeps the last good set"
         );
 
-        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), None);
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), &[], None);
         let (narrowed_graph, narrowed_registry) = assert_subset("narrowing refresh");
         assert!(!narrowed_graph.contains(&out_of_root));
         assert!(
