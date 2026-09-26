@@ -12910,7 +12910,14 @@ mod tests {
 
         // Unstamped publish (the `read_since = None` path): the live
         // registry's page-entries stamp must clear along with the SSR
-        // module-dependency set's, so the same edit stops being reported.
+        // module-dependency set's. A second, later edit keeps the reconcile
+        // memo from masking a stale stamp: only a cleared stamp hides it.
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(read_since + std::time::Duration::from_secs(2))
+            .unwrap();
         session.populate_module_edges(&routes, &[], None);
         assert!(
             registry.modified_since_read(|_| true).is_empty(),
