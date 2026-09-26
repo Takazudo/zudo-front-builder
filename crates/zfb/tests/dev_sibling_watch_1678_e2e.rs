@@ -64,6 +64,11 @@
 //! reached by no client import and no tsconfig alias, so only the SSR
 //! module-dependency registry (plus the boot-only #1284 D4 watch for an eager
 //! nested host) can observe them.
+//!
+//! **Issue #3190** (epic #3187, #3181) adds two `e2e_3190_*` functions after
+//! those: over the same root site, a SINGLE edit written the instant `ready`
+//! is printed must be served, including when it lands before the watcher is
+//! armed at all (the orchestrator's watch-arm reconcile recovers it).
 
 #![cfg(unix)]
 
@@ -1253,4 +1258,163 @@ async fn e2e_3163_deferred_cold_boot_ssr_workspace_json_edit_is_served() {
     )
     .await;
     wait_for_watch_extra(&session, "packages/data").await;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #3190 (epic #3187, source #3181) — the first edit right after `ready`
+// ---------------------------------------------------------------------------
+
+/// Issue #3190 — poll budget after the single edit. The reporter's later
+/// edits landed in 8–12 s; 30 s is well clear of that while still failing
+/// fast when the edit is lost for good (#3181 waited 120 s).
+const FIRST_EDIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Write `path` EXACTLY ONCE, then only poll `url` until it serves `marker`.
+/// Returns the write-to-served latency. Unlike [`edit_until_served`] it never
+/// re-issues the write: a re-write is a second FS event that can arrive after
+/// the watch arms, which is exactly what hid #3181 from the #3163 tests.
+async fn write_once_until_served(
+    client: &reqwest::Client,
+    path: &Path,
+    contents: &str,
+    url: &str,
+    marker: &str,
+    label: &str,
+    session: &DevSession,
+) -> Duration {
+    fs::write(path, contents).unwrap_or_else(|e| panic!("edit {}: {e}", path.display()));
+    let written = Instant::now();
+    let mut last = String::from("no response");
+    while written.elapsed() < FIRST_EDIT_DEADLINE {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                if status.as_u16() == 200 && body.contains(marker) {
+                    return written.elapsed();
+                }
+                last = format!("status={status}");
+            }
+            Err(error) => last = format!("request failed: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "{label}: {url} never served {marker:?} within {}s of a SINGLE write to {}; \
+         last={last}\n{}",
+        FIRST_EDIT_DEADLINE.as_secs(),
+        path.display(),
+        session.logs(),
+    );
+}
+
+/// Issue #3190 — boot the scenario-(a) root site with `extra_env`, write
+/// `packages/data/value.json` ONCE the instant `ready` is printed (no boot
+/// page poll first), and require that single edit to be served. Returns the
+/// session and page URL for follow-up edits, or `None` on an environmental
+/// skip.
+async fn first_edit_right_after_ready_3190(
+    workspace: &Path,
+    extra_env: &[(&str, &str)],
+    label: &str,
+) -> Option<(DevSession, String, Duration)> {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3190] no esbuild binary available; skipping.");
+        return None;
+    };
+    let (session, page_url) = boot_3163(workspace, &esbuild, extra_env, "").await?;
+    let latency = write_once_until_served(
+        &loopback_client(),
+        &workspace.join("packages/data/value.json"),
+        &json_value(ROOT_DATA_V2),
+        &page_url,
+        ROOT_DATA_V2,
+        label,
+        &session,
+    )
+    .await;
+    Some((session, page_url, latency))
+}
+
+/// Issue #3190 (#3181's repro) — root site, eager boot (no `dist/`): a single
+/// edit of `packages/data/value.json` written the instant `ready` is printed
+/// must be served. Later single edits in the same session are timed and
+/// printed as `[#3190 timing]` lines (the #3181 latency note).
+///
+/// On an unthrottled small fixture the watcher is usually armed before the
+/// edit lands, so this passes even without the fix; the slow-window test
+/// below is the falsifiable one.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let workspace = tempfile::tempdir().expect("#3190 fixture tempdir");
+    let _runtime = write_root_site_3163(workspace.path());
+    let Some((session, page_url, first)) = first_edit_right_after_ready_3190(
+        workspace.path(),
+        &[],
+        "#3190: the first edit right after `ready` is served",
+    )
+    .await
+    else {
+        return;
+    };
+    eprintln!("[#3190 timing] first edit (0 s after ready) served after {first:?}");
+
+    let client = loopback_client();
+    for (round, marker) in [ROOT_DATA_V1, ROOT_DATA_V2].into_iter().enumerate() {
+        let latency = write_once_until_served(
+            &client,
+            &workspace.path().join("packages/data/value.json"),
+            &json_value(marker),
+            &page_url,
+            marker,
+            "#3190: a later single edit is served",
+            &session,
+        )
+        .await;
+        eprintln!(
+            "[#3190 timing] later edit #{} served after {latency:?}",
+            round + 1
+        );
+    }
+}
+
+/// Issue #3190 — the same single edit, with both boot windows of a large site
+/// widened by the existing test seams: the orchestrator (and so the watcher)
+/// starts 2 s after `ready` (`ZFB_DEV_TEST_SLOW_DIGEST_MS`), and the eager
+/// boot render takes 2 s (`ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS`). The edit lands
+/// after the eager bundle read `value.json` and before any watch covers it,
+/// so it produces no filesystem event at all.
+///
+/// Falsifiability (revert-proven, #3190): with the orchestrator's pre-boot
+/// `unobserved_ssr_dependency_edits` call removed the edit is never served;
+/// it fails on the pre-fix base and on v2.21.1 (`066e058`) too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let workspace = tempfile::tempdir().expect("#3190 fixture tempdir");
+    let _runtime = write_root_site_3163(workspace.path());
+    let Some((session, _, _)) = first_edit_right_after_ready_3190(
+        workspace.path(),
+        &[
+            ("ZFB_DEV_TEST_SLOW_DIGEST_MS", "2000"),
+            ("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS", "2000"),
+        ],
+        "#3190: an edit made before the watcher is armed is served",
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        session
+            .stderr()
+            .contains("watch-arm reconcile: edited before its watch:"),
+        "the edit must be recovered by the watch-arm reconcile, not a late event\n{}",
+        session.logs(),
+    );
 }
