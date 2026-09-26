@@ -910,9 +910,9 @@ pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -
     }
     Some(format!(
         "package route `{}` (from plugin `{}`) derives the pages/ path `{}`, which has a \
-         `_`-prefixed segment — segments starting with `_` are private by convention and \
-         never produce a page or a `routes.json` entry (the route scanner and bundler both \
-         skip them). Rename the segment so it does not start with `_` (e.g. rename \
+         `_`-prefixed segment — segments starting with `_` are private by convention, so \
+         `zfb build` produces no page or `routes.json` entry for it (the route scanner and \
+         bundler both skip them), even though `zfb dev` still serves the pattern. Rename the segment so it does not start with `_` (e.g. rename \
          `/_engine/*` to `/sg-engine/*`) if this route is meant to be served.",
         route.pattern,
         route.plugin,
