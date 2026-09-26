@@ -74,6 +74,12 @@
 //! same single pre-arm write, to a route's own entry (`pages/index.tsx`), a
 //! content-collection entry, and a client-script `?raw` target, each of which
 //! the watch-arm reconcile must recover.
+//!
+//! **Issue #3210** (epic #3208, #3205) adds two `e2e_3210_*` functions: the
+//! same single pre-arm write, to a `static_html` page (`pages/plain.html`,
+//! read by the renderer, never by the SSR bundle) and to an injected route's
+//! real entrypoint (`pkg/about.tsx`, which the bundle reads through a
+//! synthesized staging stub whose dependency set never names it).
 
 #![cfg(unix)]
 
@@ -1440,6 +1446,9 @@ const SLOW_WATCH_ARM_ENV: [(&str, &str); 2] = [
 const PAGE_ENTRY_V2: &str = "ZFB3202_PAGE_ENTRY_V2_EDITED";
 const CONTENT_ENTRY_V2: &str = "ZFB3202_CONTENT_ENTRY_V2_EDITED";
 const CLIENT_RAW_V2: &str = "ZFB3202_CLIENT_RAW_V2_EDITED";
+const STATIC_HTML_V1: &str = "ZFB3210_STATIC_HTML_V1_BOOT";
+const STATIC_HTML_V2: &str = "ZFB3210_STATIC_HTML_V2_EDITED";
+const INJECTED_ENTRY_V2: &str = "ZFB3210_INJECTED_ENTRY_V2_EDITED";
 
 fn dev_loop_basic_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-loop-basic")
@@ -1569,6 +1578,88 @@ async fn e2e_3202_client_raw_target_edit_before_the_watcher_is_armed_is_served()
         "/assets/client/entry.js",
         CLIENT_RAW_V2,
         "#3202: a client ?raw target edit made before the watcher is armed is served",
+    )
+    .await;
+}
+
+/// Issue #3210 (#3205) — a `static_html` page (`pages/plain.html`), edited
+/// once after the eager boot read it and before any watch covers it, is
+/// served. The renderer copies the file verbatim, so it never enters the JS
+/// bundle or its metafile and needs its own page-entry publication.
+///
+/// Falsifiability (revert-proven, #3210): with `reconcile_only_page_sources`
+/// returning no `static_html` sources the reconcile line never names
+/// `plain.html` and the test fails. The served-bytes half still passes under
+/// that revert: on the eager boot the renderer first reads the file in the
+/// orchestrator's boot hook, which runs after the watcher is armed, so the
+/// served page is never stale today. The publication is what keeps it that
+/// way if a render ever reads the file before the watch.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3210_static_html_page_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let project = tempfile::tempdir().expect("#3210 fixture tempdir");
+    copy_fixture(&dev_loop_basic_fixture(), project.path()).expect("copy dev-loop-basic");
+    let page = project.path().join("pages/plain.html");
+    fs::write(
+        &page,
+        format!("<!doctype html><html><body><p>{STATIC_HTML_V1}</p></body></html>\n"),
+    )
+    .expect("write the static .html page");
+    single_edit_before_watch_arm_is_served(
+        project.path(),
+        &page,
+        |html| html.replace(STATIC_HTML_V1, STATIC_HTML_V2),
+        "/plain",
+        STATIC_HTML_V2,
+        "#3210: a static .html page edit made before the watcher is armed is served",
+    )
+    .await;
+}
+
+/// Issue #3210 (#3205) — an injected route's real entrypoint
+/// (`pkg/about.tsx`, injected as `/preset-about` by the
+/// `package-routes-consumer` fixture's `preset.mjs`), edited once after the
+/// eager bundle read it and before any watch covers it, is served. The
+/// bundle's route for it is keyed on a synthesized stub in a
+/// `zfb-pkg-routes-*` staging dir, so the entrypoint reaches neither the
+/// page-entry set nor any route's SSR dependency set on its own.
+///
+/// Falsifiability (revert-proven, #3210): with `reconcile_only_page_sources`
+/// dropping the injected entrypoints the edit is never served.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!(
+            "[dev_sibling_watch_1678 #3210] no `node` on PATH for the preset plugin; skipping."
+        );
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("#3210 fixture tempdir");
+    let project = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture tempdir");
+    copy_fixture(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/package-routes-consumer"),
+        &project,
+    )
+    .expect("copy package-routes-consumer");
+    let (_runtime, embedded) =
+        zfb::render_pipeline::embedded_node_modules().expect("extract embedded node_modules");
+    std::os::unix::fs::symlink(&embedded, project.join("node_modules"))
+        .expect("link the embedded runtime as node_modules");
+    single_edit_before_watch_arm_is_served(
+        &project,
+        &project.join("pkg/about.tsx"),
+        |page| page.replace("CONSUMER_PRESET_ABOUT_MARKER", INJECTED_ENTRY_V2),
+        "/preset-about",
+        INJECTED_ENTRY_V2,
+        "#3210: an injected route entrypoint edit made before the watcher is armed is served",
     )
     .await;
 }

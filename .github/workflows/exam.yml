@@ -289,6 +289,8 @@ jobs:
               | test(=e2e_3202_page_entry_edit_before_the_watcher_is_armed_is_served)
               | test(=e2e_3202_content_entry_edit_before_the_watcher_is_armed_is_served)
               | test(=e2e_3202_client_raw_target_edit_before_the_watcher_is_armed_is_served)
+              | test(=e2e_3210_static_html_page_edit_before_the_watcher_is_armed_is_served)
+              | test(=e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_served)
               | test(=sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted)
               | test(=sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan)
               | test(=islands_shadow_alias_raw_import_bundles_text)
