@@ -24802,13 +24802,8 @@ mod tests {
     /// by the dedicated `shadow_writer_containment_*` tests instead.
     fn leaked_passthrough_writer() -> &'static ShadowWriter<'static> {
         Box::leak(Box::new(
-            ShadowWriter::new(
-                PathBuf::from("/"),
-                None,
-                false,
-                None,
-            )
-            .expect("passthrough writer construction is infallible"),
+            ShadowWriter::new(PathBuf::from("/"), None, false, None)
+                .expect("passthrough writer construction is infallible"),
         ))
     }
 
@@ -25198,21 +25193,22 @@ mod tests {
 
     // ── ShadowWriter containment guard (#3185) ───────────────────────────
 
-    /// Run `check` against a passthrough writer and a session writer, each
-    /// with a fresh shadow root and a separate "real install" directory.
+    /// Run `check` against a passthrough or a session writer with a fresh
+    /// shadow root and a separate "real install" directory.
     #[cfg(unix)]
-    fn with_containment_writers(check: impl Fn(&ShadowWriter<'_>, &Path, &Path)) {
-        let shadow = tempfile::tempdir().unwrap();
+    fn with_containment_writer(session_mode: bool, check: fn(&ShadowWriter<'_>, &Path, &Path)) {
         let outside = tempfile::tempdir().unwrap();
-        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
-        check(&writer, shadow.path(), outside.path());
-
-        let project = tempfile::tempdir().unwrap();
-        let mut session = ShadowSession::new(project.path()).unwrap();
-        let root = session.shadow_root().to_path_buf();
-        let outside = tempfile::tempdir().unwrap();
-        let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
-        check(&writer, &root, outside.path());
+        if session_mode {
+            let project = tempfile::tempdir().unwrap();
+            let mut session = ShadowSession::new(project.path()).unwrap();
+            let root = session.shadow_root().to_path_buf();
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            check(&writer, &root, outside.path());
+        } else {
+            let shadow = tempfile::tempdir().unwrap();
+            let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+            check(&writer, shadow.path(), outside.path());
+        }
     }
 
     /// `<outside>/pkg/b/file` holding `REAL`, linked into the shadow as `a`.
@@ -25238,70 +25234,102 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor() {
-        with_containment_writers(|writer, shadow, outside| {
-            let real = link_real_install_into_shadow(shadow, outside);
-            let source = outside.join("source.txt");
-            fs::write(&source, "NEW").unwrap();
-            let through = shadow.join("a/b/file");
-
-            assert_refused_through_link(writer.copy_if_changed(&source, &through), shadow);
-            assert_refused_through_link(writer.write_if_changed(&through, b"NEW"), shadow);
-            assert_refused_through_link(writer.symlink_if_absent(&source, &through), shadow);
-            assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
-            assert!(!fs::symlink_metadata(&real).unwrap().file_type().is_symlink());
-
-            // A real directory reached through the link is never replaced.
-            assert_refused_through_link(
-                writer.symlink_if_absent(&source, &shadow.join("a/b")),
-                shadow,
-            );
-            assert_refused_through_link(
-                writer.write_if_changed(&shadow.join("a/b"), b"NEW"),
-                shadow,
-            );
-            assert!(outside.join("pkg/b").is_dir());
-            assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
-
-            assert_refused_through_link(writer.ensure_dir(&shadow.join("a/b/new")), shadow);
-            assert_refused_through_link(writer.ensure_dir(&shadow.join("a/c/deeper")), shadow);
-            assert!(!outside.join("pkg/b/new").exists());
-            assert!(!outside.join("pkg/c").exists());
-            assert!(fs::symlink_metadata(shadow.join("a"))
-                .unwrap()
-                .file_type()
-                .is_symlink());
-        });
+    fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_passthrough() {
+        with_containment_writer(false, refuses_writes_through_a_linked_ancestor);
     }
 
     #[cfg(unix)]
     #[test]
-    fn shadow_writer_containment_still_replaces_a_link_at_the_destination() {
-        with_containment_writers(|writer, shadow, outside| {
-            let real = outside.join("real.txt");
-            fs::write(&real, "REAL").unwrap();
-            let source = outside.join("source.txt");
-            fs::write(&source, "NEW").unwrap();
+    fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_session() {
+        with_containment_writer(true, refuses_writes_through_a_linked_ancestor);
+    }
 
-            let written = shadow.join("written");
-            std::os::unix::fs::symlink(&real, &written).unwrap();
-            writer.write_if_changed(&written, b"NEW").unwrap();
-            assert!(!fs::symlink_metadata(&written).unwrap().file_type().is_symlink());
+    #[cfg(unix)]
+    fn refuses_writes_through_a_linked_ancestor(
+        writer: &ShadowWriter<'_>,
+        shadow: &Path,
+        outside: &Path,
+    ) {
+        let real = link_real_install_into_shadow(shadow, outside);
+        let source = outside.join("source.txt");
+        fs::write(&source, "NEW").unwrap();
+        let through = shadow.join("a/b/file");
 
-            let copied = shadow.join("copied");
-            std::os::unix::fs::symlink(&real, &copied).unwrap();
-            writer.copy_if_changed(&source, &copied).unwrap();
-            assert!(!fs::symlink_metadata(&copied).unwrap().file_type().is_symlink());
+        assert_refused_through_link(writer.copy_if_changed(&source, &through), shadow);
+        assert_refused_through_link(writer.write_if_changed(&through, b"NEW"), shadow);
+        assert_refused_through_link(writer.symlink_if_absent(&source, &through), shadow);
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+        assert!(!fs::symlink_metadata(&real)
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
-            let linked = shadow.join("linked");
-            std::os::unix::fs::symlink(&real, &linked).unwrap();
-            writer.symlink_if_absent(&source, &linked).unwrap();
-            assert_eq!(fs::read_link(&linked).unwrap(), source);
+        // A real directory reached through the link is never replaced.
+        assert_refused_through_link(
+            writer.symlink_if_absent(&source, &shadow.join("a/b")),
+            shadow,
+        );
+        assert_refused_through_link(writer.write_if_changed(&shadow.join("a/b"), b"NEW"), shadow);
+        assert!(outside.join("pkg/b").is_dir());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
 
-            assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
-            assert_eq!(fs::read_to_string(&written).unwrap(), "NEW");
-            assert_eq!(fs::read_to_string(&copied).unwrap(), "NEW");
-        });
+        assert_refused_through_link(writer.ensure_dir(&shadow.join("a/b/new")), shadow);
+        assert_refused_through_link(writer.ensure_dir(&shadow.join("a/c/deeper")), shadow);
+        assert!(!outside.join("pkg/b/new").exists());
+        assert!(!outside.join("pkg/c").exists());
+        assert!(fs::symlink_metadata(shadow.join("a"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_still_replaces_a_link_at_the_destination_passthrough() {
+        with_containment_writer(false, replaces_a_link_at_the_destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_still_replaces_a_link_at_the_destination_session() {
+        with_containment_writer(true, replaces_a_link_at_the_destination);
+    }
+
+    #[cfg(unix)]
+    fn replaces_a_link_at_the_destination(
+        writer: &ShadowWriter<'_>,
+        shadow: &Path,
+        outside: &Path,
+    ) {
+        let real = outside.join("real.txt");
+        fs::write(&real, "REAL").unwrap();
+        let source = outside.join("source.txt");
+        fs::write(&source, "NEW").unwrap();
+
+        let written = shadow.join("written");
+        std::os::unix::fs::symlink(&real, &written).unwrap();
+        writer.write_if_changed(&written, b"NEW").unwrap();
+        assert!(!fs::symlink_metadata(&written)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let copied = shadow.join("copied");
+        std::os::unix::fs::symlink(&real, &copied).unwrap();
+        writer.copy_if_changed(&source, &copied).unwrap();
+        assert!(!fs::symlink_metadata(&copied)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let linked = shadow.join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        writer.symlink_if_absent(&source, &linked).unwrap();
+        assert_eq!(fs::read_link(&linked).unwrap(), source);
+
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+        assert_eq!(fs::read_to_string(&written).unwrap(), "NEW");
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "NEW");
     }
 
     #[cfg(unix)]
@@ -25328,7 +25356,9 @@ mod tests {
         writer
             .symlink_if_absent(&outside.path().join("pkg"), &dep)
             .unwrap();
-        let err = writer.ensure_dir(&dep).expect_err("same-call link must be kept");
+        let err = writer
+            .ensure_dir(&dep)
+            .expect_err("same-call link must be kept");
         assert!(err.to_string().contains("(#3185)"), "{err}");
         assert!(fs::symlink_metadata(&dep).unwrap().file_type().is_symlink());
     }
