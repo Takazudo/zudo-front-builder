@@ -1097,6 +1097,26 @@ fn declared_entries(manifest: &serde_json::Value) -> Vec<DeclaredEntry> {
     entries
 }
 
+/// The package-relative directories a `package.json` declares through
+/// `exports`/`main`/`module` (`"dist/"`, `"build/dist/"`), from the same
+/// [`declared_entries`] walk the stage-escape audit accepts against — so a
+/// directory staged because of this list is one the audit also authorises.
+///
+/// The empty prefix (a root-level `./*`) is dropped: it names no particular
+/// directory, so it must not exempt any infra directory from pruning.
+pub(crate) fn declared_entry_dir_prefixes(manifest: &serde_json::Value) -> Vec<String> {
+    let mut prefixes: Vec<String> = declared_entries(manifest)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            DeclaredEntry::Prefix(prefix) if !prefix.is_empty() => Some(prefix),
+            _ => None,
+        })
+        .collect();
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes
+}
+
 /// Stringify a package's declared entries for
 /// [`AcceptedPackage::declared_entry_roots`] (epic #2078 Sub 10a): a
 /// [`DeclaredEntry::Prefix`] becomes its package-relative directory string
@@ -2846,6 +2866,28 @@ mod tests {
         let absolute: serde_json::Value =
             serde_json::from_str(r#"{ "main": "/etc/passwd" }"#).unwrap();
         assert!(declared_entries(&absolute).is_empty());
+    }
+
+    #[test]
+    fn declared_entry_dir_prefixes_lists_only_named_directories() {
+        let manifest: serde_json::Value = serde_json::from_str(
+            r#"{
+                "main": "./index.js",
+                "module": "dist/index.mjs",
+                "exports": {
+                    "./*": "./*",
+                    "./islands": { "types": "./dist/islands.d.ts", "default": "./dist/islands.js" },
+                    "./x": "./build/dist/x.js",
+                    "./escape": "../outside/dist/x.js"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            declared_entry_dir_prefixes(&manifest),
+            vec!["build/dist/".to_string(), "dist/".to_string()]
+        );
     }
 
     #[test]
