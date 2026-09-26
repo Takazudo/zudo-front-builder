@@ -5854,6 +5854,9 @@ fn runtime_alias_claim_is_allowed(
                     .is_some_and(|(package_root, declared)| {
                         (is_carvable_skip_dir(&name) || name.starts_with('.'))
                             && name != ".git"
+                            && path.strip_prefix(package_root).is_ok_and(|rel| {
+                                declared.iter().any(|prefix| rel.starts_with(prefix))
+                            })
                             && workspace_root
                                 .join(&walked)
                                 .strip_prefix(package_root)
@@ -24388,6 +24391,20 @@ mod tests {
             assert!(!allowed(&site.join("dist/index.js"), &ws, &site));
             assert!(!allowed(&ws.join("dist/root.js"), &ws, &site));
         }
+
+        // A declared `dist/esm/` must not carve out its non-gitignored sibling
+        // `dist/cjs/`: being on the path to a declared dir is not being in it.
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./dist/esm/a.js"}}"#);
+        fs::remove_file(lib.join(".gitignore")).unwrap();
+        fs::create_dir_all(lib.join("dist/cjs")).unwrap();
+        fs::write(lib.join("dist/cjs/b.js"), "x").unwrap();
+        assert!(allowed(&lib.join("dist/esm/a.js"), &ws, &site));
+        assert!(
+            !allowed(&lib.join("dist/cjs/b.js"), &ws, &site),
+            "an undeclared sibling of a declared dist/esm/ must stay unclaimable"
+        );
 
         let tmp = tempfile::tempdir().unwrap();
         let (ws, site, lib) =
