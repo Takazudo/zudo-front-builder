@@ -138,8 +138,8 @@ pub use plugin_runner::{
     PluginSpec, PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
 };
 pub use policy::{
-    classify_change, classify_change_with_content_roots, GranularityPolicy, KnownContentEntries,
-    PathClass, RawImportInvalidation,
+    classify_change, classify_change_with_content_roots, ssr_read_start, GranularityPolicy,
+    KnownContentEntries, PathClass, RawImportInvalidation,
 };
 pub use renderer::{
     reload, render_all, render_one, shutdown, start, Backend, EmbeddedV8Host,

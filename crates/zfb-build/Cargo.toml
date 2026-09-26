@@ -127,6 +127,11 @@ url = "2"
 # (`zfb-server`, `zfb-islands`).
 lol_html = "2.8.1"
 
+# Issue #3190 — `policy::ssr_read_start` reads `CLOCK_REALTIME_COARSE`, the
+# clock Linux stamps file times from. Already in the tree via wait-timeout.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # `test-util` enables `start_paused` on `#[tokio::test]` for virtual-time

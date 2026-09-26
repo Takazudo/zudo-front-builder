@@ -123,12 +123,65 @@ pub struct RawImportInvalidation {
     ssr_module_deps_read_since: Arc<RwLock<Option<SystemTime>>>,
 }
 
-/// How far before a bundle's read start an SSR dependency's mtime may fall
-/// and still count as a possibly-unseen edit (issue #3190). Linux stamps
-/// file times from the coarse clock, which can lag `SystemTime::now()` by up
-/// to one scheduler tick (10 ms at `HZ=100`), so an edit made just after the
-/// read started can carry an mtime just before it.
+/// Fallback slack for [`ssr_read_start`] off Linux, where it does not know
+/// which clock file times are stamped from: an edit made just after the read
+/// started can carry an mtime up to one timer tick before it (issue #3190).
 const SSR_READ_SINCE_MTIME_SLACK: Duration = Duration::from_millis(20);
+
+/// Upper bound on [`ssr_read_start`]'s wait for the Linux coarse clock
+/// (measured: ~3 ms on average, 6 ms worst case, at a 4 ms tick).
+#[cfg(target_os = "linux")]
+const COARSE_CLOCK_WAIT_LIMIT: Duration = Duration::from_millis(50);
+
+/// The read start a bundle records with
+/// [`RawImportInvalidation::replace_ssr_module_deps_read_since`] (issue
+/// #3190): a time that every file write made after this call is stamped at or
+/// after, and every write made before it is stamped before.
+///
+/// Linux stamps a file time from the coarse realtime clock (or, on
+/// multigrain kernels, from the fine clock when a stamp was just queried),
+/// and the coarse clock can trail `SystemTime::now()` by a tick or more. So
+/// `now()` would miss an edit made right after it (stamped earlier), while
+/// `now()` minus slack flags every file written just before the read although
+/// the bundle read it — on a freshly copied tree, all of them, which queued a
+/// rebuild right after boot and flipped `/__zfb/ready` back to false. This
+/// waits until the coarse clock reaches `now()` and returns that coarse time:
+/// an earlier write was stamped at most at its own, earlier, wall time, and a
+/// later one at least at the coarse clock, which never goes back. Elsewhere,
+/// or if the wait gives up, the slack keeps edits from being lost at the cost
+/// of reporting files written just before the read.
+pub fn ssr_read_start() -> SystemTime {
+    let now = SystemTime::now();
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + COARSE_CLOCK_WAIT_LIMIT;
+        while let Some(coarse) = coarse_realtime_now() {
+            if coarse >= now {
+                return coarse;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+    }
+    now.checked_sub(SSR_READ_SINCE_MTIME_SLACK).unwrap_or(now)
+}
+
+#[cfg(target_os = "linux")]
+fn coarse_realtime_now() -> Option<SystemTime> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable `timespec` for the duration of the call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME_COARSE, &mut ts) } != 0 {
+        return None;
+    }
+    let secs = u64::try_from(ts.tv_sec).ok()?;
+    let nanos = u32::try_from(ts.tv_nsec).ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
+}
 
 impl RawImportInvalidation {
     fn resolved_alias(path: &Path) -> Option<PathBuf> {
@@ -387,7 +440,8 @@ impl RawImportInvalidation {
     }
 
     /// [`Self::replace_ssr_module_deps`], also recording when the publishing
-    /// bundle started reading its sources (issue #3190), so
+    /// bundle started reading its sources — taken with [`ssr_read_start`]
+    /// before the read (issue #3190), so
     /// [`Self::ssr_module_deps_modified_since_read`] can find edits made
     /// before the watcher covered a dependency.
     pub fn replace_ssr_module_deps_read_since(
@@ -443,9 +497,6 @@ impl RawImportInvalidation {
         else {
             return Vec::new();
         };
-        let threshold = read_since
-            .checked_sub(SSR_READ_SINCE_MTIME_SLACK)
-            .unwrap_or(read_since);
         let mut seen_files = BTreeSet::new();
         let mut modified = Vec::new();
         for path in self.ssr_module_dep_paths() {
@@ -456,7 +507,7 @@ impl RawImportInvalidation {
                 continue;
             };
             let file = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if mtime >= threshold && seen_files.insert(file) {
+            if mtime >= read_since && seen_files.insert(file) {
                 modified.push(path);
             }
         }
@@ -1279,6 +1330,38 @@ mod tests {
         assert!(invalidation.is_ssr_module_dependency(&out_of_root));
         invalidation.replace_ssr_module_deps(Vec::new());
         assert!(invalidation.ssr_module_dep_paths().is_empty());
+    }
+
+    /// Issue #3190 follow-up — a dependency written moments before the
+    /// bundle starts reading (a freshly copied or checked-out tree, as the
+    /// `dev_bind_before_walk_e2e` fixtures are) was read by that bundle and
+    /// must not be reported: a report queues a rebuild right after boot that
+    /// nothing asked for. A write made after the read start still is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ssr_dependency_written_just_before_the_read_is_not_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let dep = root.join("components/island.tsx");
+        std::fs::create_dir_all(dep.parent().unwrap()).unwrap();
+        std::fs::write(&dep, "export const v = 1;").unwrap();
+
+        let read_since = ssr_read_start();
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps_read_since([dep.clone()], read_since);
+        assert!(
+            invalidation
+                .ssr_module_deps_modified_since_read(|_| true)
+                .is_empty(),
+            "a write that precedes the read start was seen by the bundle"
+        );
+
+        std::fs::write(&dep, "export const v = 2;").unwrap();
+        assert_eq!(
+            invalidation.ssr_module_deps_modified_since_read(|_| true),
+            vec![dep],
+            "a write after the read start may have been missed by the bundle"
+        );
     }
 
     /// Issue #3190 — an SSR dependency edited after its bundle started
