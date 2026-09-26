@@ -6058,6 +6058,12 @@ struct DevRenderInner {
     #[cfg(feature = "embed_v8")]
     boot_route_module_deps: Vec<zfb_build::RouteModuleDeps>,
 
+    /// When the eager boot bundle started reading its sources (issue #3190),
+    /// published with [`Self::boot_route_module_deps`]. `None` on the
+    /// deferred-boot path, which publishes from its own refresh.
+    #[cfg(feature = "embed_v8")]
+    boot_bundle_read_since: Option<std::time::SystemTime>,
+
     /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
     /// passed into every route-table build, so a `paths()` JSON output
     /// identical to a previous tick's skips the Rust-side
@@ -6573,7 +6579,7 @@ impl DevRenderSession {
     #[cfg(feature = "embed_v8")]
     pub(crate) fn seed_boot_module_edges(&self) {
         let deps = self.inner.boot_route_module_deps.clone();
-        self.populate_module_edges(&deps);
+        self.populate_module_edges(&deps, self.inner.boot_bundle_read_since);
     }
 
     /// Install the dev SSR module-dependency registry (issue #3162) and
@@ -6591,7 +6597,7 @@ impl DevRenderSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if let Some(deps) = publication.last_successful.as_ref() {
-            registry.replace_ssr_module_deps(deps.iter().cloned());
+            publish_ssr_module_deps_into(&registry, deps, publication.read_since);
         }
         publication.registry = Some(registry);
     }
@@ -6604,7 +6610,11 @@ impl DevRenderSession {
     /// metafile degrades to (`route_module_deps_with_staged_copies`), and
     /// clearing on it would silently unwatch every dependency.
     #[cfg(feature = "embed_v8")]
-    fn publish_ssr_module_deps(&self, deps: &[zfb_build::RouteModuleDeps]) {
+    fn publish_ssr_module_deps(
+        &self,
+        deps: &[zfb_build::RouteModuleDeps],
+        read_since: Option<std::time::SystemTime>,
+    ) {
         if deps.is_empty() {
             return;
         }
@@ -6618,9 +6628,10 @@ impl DevRenderSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if let Some(registry) = publication.registry.as_ref() {
-            registry.replace_ssr_module_deps(set.iter().cloned());
+            publish_ssr_module_deps_into(registry, &set, read_since);
         }
         publication.last_successful = Some(set);
+        publication.read_since = read_since;
     }
 
     /// The persisted graph is only a cache. Once the boot graph has been
@@ -6834,8 +6845,12 @@ impl DevRenderSession {
     /// edges lack the registry's `node_modules`/shadow filtering and alias
     /// expansion.
     #[cfg(feature = "embed_v8")]
-    fn populate_module_edges(&self, deps: &[zfb_build::RouteModuleDeps]) {
-        self.publish_ssr_module_deps(deps);
+    fn populate_module_edges(
+        &self,
+        deps: &[zfb_build::RouteModuleDeps],
+        read_since: Option<std::time::SystemTime>,
+    ) {
+        self.publish_ssr_module_deps(deps, read_since);
         if deps.is_empty() {
             return;
         }
@@ -7420,6 +7435,9 @@ impl DevRenderSession {
         //    construction incl. embedded esbuild extraction), bundle/esbuild
         //    (subprocess or embedded runner).
         let p1_snapshot_start = tick_start.map(|_| std::time::Instant::now());
+        // Issue #3190 — taken before the bundle reads any source, so an edit
+        // this bundle may have missed is never older than it.
+        let read_since = zfb_build::ssr_read_start();
         let bundle_result = {
             // #993 — the persistent shadow session lock is scoped to the
             // P1 bundle step only: it is released before the P2 renderer-
@@ -7470,7 +7488,7 @@ impl DevRenderSession {
         // return below is irrelevant — the edges only change when the bundle
         // changes, and a byte-identical bundle re-asserts identical edges, a
         // cheap idempotent upsert). No-op until the graph handle is installed.
-        self.populate_module_edges(&bundler_out.route_module_deps);
+        self.populate_module_edges(&bundler_out.route_module_deps, Some(read_since));
 
         // P1b — skip-key compute (SHA-256 over bundle + router + static HTML).
         // Phase B (issue #940) — skip key check.
@@ -7972,6 +7990,24 @@ struct SsrModuleDepPublication {
     registry: Option<zfb_build::RawImportInvalidation>,
     /// `None` until the first publication; `Some(empty)` is a real one.
     last_successful: Option<std::collections::BTreeSet<PathBuf>>,
+    /// When the bundle behind `last_successful` started reading (#3190).
+    read_since: Option<std::time::SystemTime>,
+}
+
+/// Publish `deps` into the registry, with the bundle's read start when known
+/// (issue #3190).
+#[cfg(feature = "embed_v8")]
+fn publish_ssr_module_deps_into(
+    registry: &zfb_build::RawImportInvalidation,
+    deps: &std::collections::BTreeSet<PathBuf>,
+    read_since: Option<std::time::SystemTime>,
+) {
+    match read_since {
+        Some(read_since) => {
+            registry.replace_ssr_module_deps_read_since(deps.iter().cloned(), read_since)
+        }
+        None => registry.replace_ssr_module_deps(deps.iter().cloned()),
+    }
 }
 
 /// Generate a fresh opaque nonce for the worker trace-drain endpoint.
@@ -9359,6 +9395,7 @@ fn boot_dev_renderer(
     // path this stays empty; the deferred `refresh_bundle_and_routes` seeds the
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
+    let mut boot_bundle_read_since: Option<std::time::SystemTime> = None;
     let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
@@ -9395,6 +9432,7 @@ fn boot_dev_renderer(
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
+        let read_since = zfb_build::ssr_read_start();
         let bundler_out: BundlerOutput = assemble_and_bundle_dev(
             project_root,
             cfg,
@@ -9417,6 +9455,7 @@ fn boot_dev_renderer(
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
         // post-graph seeding (the graph does not exist yet at this point).
         boot_route_module_deps = bundler_out.route_module_deps.clone();
+        boot_bundle_read_since = Some(read_since);
 
         let state = start(RendererStartInput {
             bundle_path: bundler_out.bundle_path.clone(),
@@ -9521,6 +9560,7 @@ fn boot_dev_renderer(
             }),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps,
+            boot_bundle_read_since,
             paths_cache: Mutex::new(paths_cache),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: lazy_dev_render_enabled(),
@@ -11005,6 +11045,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             content_trace: Mutex::new(DevContentTraceState::default()),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
+            boot_bundle_read_since: None,
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render,
@@ -12352,6 +12393,7 @@ mod tests {
             content_trace: Mutex::new(DevContentTraceState::default()),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
+            boot_bundle_read_since: None,
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: false,
@@ -12431,11 +12473,10 @@ mod tests {
         session.set_ssr_module_dep_registry(registry.clone());
         assert!(registry.ssr_module_dep_paths().is_empty());
 
-        session.populate_module_edges(&route_deps(&[
-            in_root.clone(),
-            out_of_root.clone(),
-            store.clone(),
-        ]));
+        session.populate_module_edges(
+            &route_deps(&[in_root.clone(), out_of_root.clone(), store.clone()]),
+            None,
+        );
         assert!(
             !registry.ssr_module_dep_paths().is_empty(),
             "a successful publish must populate the registry"
@@ -12448,13 +12489,13 @@ mod tests {
         assert!(policy.dynamic_dependency_paths().contains(&in_root));
         assert!(policy.dynamic_dependency_paths().contains(&out_of_root));
 
-        session.populate_module_edges(&[]);
+        session.populate_module_edges(&[], None);
         assert!(
             registry.is_ssr_module_dependency(&in_root),
             "an empty route list (the degraded missing/malformed-metafile result) \
              must not clear the last good set"
         );
-        session.populate_module_edges(&route_deps(&[]));
+        session.populate_module_edges(&route_deps(&[]), None);
         assert!(
             registry.ssr_module_dep_paths().is_empty(),
             "a successful bundle with no module deps replaces the old set"
@@ -12477,7 +12518,7 @@ mod tests {
         let session = ssr_dep_session(&project, Vec::new());
         let registry = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(registry.clone());
-        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)));
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), None);
         assert!(registry.is_ssr_module_dependency(&in_root));
 
         // The stub project fails inside esbuild (the syntax error, or the
@@ -12494,6 +12535,55 @@ mod tests {
         assert!(
             registry.is_ssr_module_dependency(&in_root),
             "a failed refresh keeps the last good set"
+        );
+    }
+
+    /// Issue #3190 — the eager boot bundle's read start travels with its
+    /// replayed dependency set, so the orchestrator can find an edit made
+    /// after that read but before the watcher was armed; a refresh publishes
+    /// its own read start the same way.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn eager_boot_replay_carries_the_bundle_read_start_3190() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (project, [in_root, out_of_root, _]) = ssr_dep_fixture(&root);
+        let read_since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let mut inner = stub_dev_inner_at(
+            project.clone(),
+            config::Config::default(),
+            HashMap::new(),
+            Vec::new(),
+        );
+        inner.boot_route_module_deps = route_deps(&[in_root.clone(), out_of_root.clone()]);
+        inner.boot_bundle_read_since = Some(read_since);
+        let session = DevRenderSession {
+            inner: Arc::new(inner),
+        };
+        std::fs::File::options()
+            .write(true)
+            .open(&out_of_root)
+            .unwrap()
+            .set_modified(read_since - std::time::Duration::from_secs(60))
+            .unwrap();
+        session.seed_boot_module_edges();
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        assert_eq!(
+            registry.ssr_module_deps_modified_since_read(|_| true),
+            vec![in_root.clone()],
+            "only the dependency written after the boot read is reported"
+        );
+
+        session.populate_module_edges(
+            &route_deps(std::slice::from_ref(&in_root)),
+            Some(std::time::SystemTime::now() + std::time::Duration::from_secs(60)),
+        );
+        assert!(
+            registry
+                .ssr_module_deps_modified_since_read(|_| true)
+                .is_empty(),
+            "a later publication replaces the read start"
         );
     }
 
@@ -12650,13 +12740,16 @@ mod tests {
             (graph_deps, registered)
         };
 
-        session.populate_module_edges(&route_deps(&[
-            in_root.clone(),
-            out_of_root.clone(),
-            store.clone(),
-            linked_lexical.clone(),
-            shadow.clone(),
-        ]));
+        session.populate_module_edges(
+            &route_deps(&[
+                in_root.clone(),
+                out_of_root.clone(),
+                store.clone(),
+                linked_lexical.clone(),
+                shadow.clone(),
+            ]),
+            None,
+        );
         let (graph_deps, registered) = assert_subset("full publish");
         assert!(graph_deps.contains(&store) && graph_deps.contains(&shadow));
         assert!(registered.contains(&in_root) && registered.contains(&out_of_root));
@@ -12667,7 +12760,7 @@ mod tests {
         assert!(!registered.contains(&linked_lexical));
         assert!(!registered.contains(&store) && !registered.contains(&shadow));
 
-        session.populate_module_edges(&[]);
+        session.populate_module_edges(&[], None);
         let (degraded_graph, degraded_registry) = assert_subset("degraded empty metafile");
         assert_eq!(
             degraded_graph, graph_deps,
@@ -12678,7 +12771,7 @@ mod tests {
             "the registry keeps the last good set"
         );
 
-        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)));
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), None);
         let (narrowed_graph, narrowed_registry) = assert_subset("narrowing refresh");
         assert!(!narrowed_graph.contains(&out_of_root));
         assert!(

@@ -189,3 +189,42 @@ persisted graph carries stale previous-session Module edges, and edges lack the 
 - **Two overlapping channels make a revert proof lie.** If a confirm-e2e keeps passing with the
   channel under test reverted, look for another channel covering the same path (same lesson as the
   `css_mirror_roots` entry above) — here it was D4.
+
+## 2026-09 — `ready` precedes the watch: an edit in between is lost for good (issue #3190 / #3181)
+
+The eager dev boot bundles the SSR entry BEFORE bind, prints `ready`, and only then does the spawned
+orchestrator task start the watcher and register the dynamic-dependency watches. A dependency edited
+between the bundle's read and the watch produces no event, and nothing ever re-reads it: the page
+keeps the boot value until the file changes AGAIN. #3186's pre-boot registration closed the longer
+window (the whole eager boot render, v2.21.1) but not this one. `ZFB_DEV_TEST_SLOW_DIGEST_MS` (sleeps
+before `run_with_boot`) widens it deterministically; on a small fixture it is a few ms and the e2e
+passes by luck.
+
+**Fix: reconcile, don't reorder.** Moving `ready` after the watcher start would put size-bound work
+(recursive watch registration) back in front of reachability (#1166) and still leave the pre-bind
+read uncovered. Instead every SSR dependency publication records when its bundle STARTED reading
+(`replace_ssr_module_deps_read_since`), and every watch-arming point in `run_drain_loop` synthesizes a
+`Modified` change for any dependency whose mtime is at or after that start (pre-boot: all of them;
+post-boot and per tick: those under newly watched directories).
+
+### Watch for next time
+
+- **Any "watch arms after the read" gap loses edits for good, not just late.** When a watch is added
+  for something already read, ask what re-reads it if it changed in between. A watch only reports
+  edits made after it is armed.
+- **An e2e that re-writes until served cannot see a lost-edit bug.** `edit_until_served` re-issues
+  the write every 700 ms, so a write after the watch arms always rescues the first. Write ONCE.
+- **Compare mtimes against the READ START, taken on the clock file times are stamped from — not
+  with slack.** Linux stamps mtimes from the coarse clock, which can trail `SystemTime::now()` by a
+  tick or more (NOHZ), and multigrain kernels hand out fine stamps ahead of it; a stat taken after
+  the bundle leaves its own read-to-stat window open. The first cut compared against `now()` minus
+  20 ms of slack, which flagged every file written in the 20 ms before the read — a freshly copied
+  fixture, all of them — as "edited before its watch", queued a rebuild right after boot, and
+  flipped `/__zfb/ready` back to false (`dev_200_document_declares_and_serves_islands_module`,
+  red twice in CI, green locally where the copy-to-read gap happened to exceed 20 ms).
+  `zfb_build::ssr_read_start` waits (~3 ms) until the coarse clock reaches `now()` and returns
+  that: earlier writes are stamped before it, later ones at or after it, with no slack either way
+  (Linux only — other platforms keep the 20 ms slack until their stamping clock is verified).
+- **Two overlapping recoveries mask each other's revert proof.** With the reconcile in place,
+  reverting #3186's pre-boot registration no longer fails `e2e_3190_edit_before_the_watcher_is_armed_is_served`
+  (measured): the reconcile recovers the edit instead. Revert the reconcile to prove the reconcile.

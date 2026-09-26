@@ -2229,8 +2229,21 @@ fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
 /// operation. In session mode it skips byte-identical rewrites, records
 /// each visited shadow-relative path for the prune pass, and maintains
 /// the session's `written` hash map.
+///
+/// Containment invariant: every destructive or link-following operation
+/// (writes, copies, links, `ensure_dir`, the session prune) first checks
+/// that the destination's ANCESTORS resolve inside this writer's own
+/// canonical shadow root, and fails instead of touching the path when one
+/// escapes through a link. The destination itself is never checked:
+/// replacing a link AT `to` is intended (#553). See #3185.
 struct ShadowWriter<'s> {
     shadow_root: PathBuf,
+    /// `shadow_root` canonicalised on first use by the containment check.
+    canonical_root: std::cell::OnceCell<PathBuf>,
+    /// Directories (lexical paths) this call already verified to resolve
+    /// inside `canonical_root`. Entries at or below a path are dropped
+    /// whenever that path is removed or re-linked.
+    verified_dirs: RefCell<BTreeSet<PathBuf>>,
     /// `None` → passthrough. `Some` wraps the borrowed session in a
     /// `RefCell` so the `&MaterialiseCtx` plumbing (shared refs) can
     /// still mutate the bookkeeping — all single-threaded within one
@@ -2312,9 +2325,103 @@ impl<'s> ShadowWriter<'s> {
         };
         Ok(Self {
             shadow_root,
+            canonical_root: std::cell::OnceCell::new(),
+            verified_dirs: RefCell::new(BTreeSet::new()),
             session,
             visited: RefCell::new(HashSet::new()),
         })
+    }
+
+    fn canonical_root(&self) -> std::io::Result<&Path> {
+        if let Some(root) = self.canonical_root.get() {
+            return Ok(root);
+        }
+        let root = fs::canonicalize(&self.shadow_root).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "shadow writer: failed to canonicalize shadow root {}: {e}",
+                    self.shadow_root.display()
+                ),
+            )
+        })?;
+        Ok(self.canonical_root.get_or_init(|| root))
+    }
+
+    /// Resolve the nearest existing path at or above `start` and report
+    /// the outermost ancestor that resolves outside the canonical shadow
+    /// root, as `(ancestor, resolved)`. `None` when contained.
+    fn escaping_ancestor(&self, start: &Path) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
+        let root = self.canonical_root()?;
+        let mut dir = start;
+        loop {
+            match fs::symlink_metadata(dir) {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    dir = dir.parent().ok_or_else(|| {
+                        std::io::Error::other(format!(
+                            "shadow writer: no existing ancestor of {}",
+                            start.display()
+                        ))
+                    })?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if self.verified_dirs.borrow().contains(dir) {
+            return Ok(None);
+        }
+        if fs::canonicalize(dir)?.starts_with(root) {
+            self.verified_dirs.borrow_mut().insert(dir.to_path_buf());
+            return Ok(None);
+        }
+        // Failure path only: name the outermost ancestor that escapes.
+        let mut ancestors: Vec<&Path> = dir.ancestors().collect();
+        ancestors.reverse();
+        for ancestor in ancestors {
+            if let Ok(resolved) = fs::canonicalize(ancestor) {
+                if !resolved.starts_with(root) && !root.starts_with(&resolved) {
+                    return Ok(Some((ancestor.to_path_buf(), resolved)));
+                }
+            }
+        }
+        Ok(Some((dir.to_path_buf(), fs::canonicalize(dir)?)))
+    }
+
+    /// Fail unless every existing ancestor from `start` up stays inside
+    /// the shadow (the containment invariant on [`ShadowWriter`]).
+    fn ensure_contained(&self, op: &str, to: &Path, start: &Path) -> std::io::Result<()> {
+        match self.escaping_ancestor(start)? {
+            None => Ok(()),
+            Some((ancestor, resolved)) => Err(std::io::Error::other(format!(
+                "shadow writer: refusing to {op} {}: ancestor {} resolves to {}, outside the shadow root {} (#3185)",
+                to.display(),
+                ancestor.display(),
+                resolved.display(),
+                self.shadow_root.display()
+            ))),
+        }
+    }
+
+    fn ensure_parent_contained(&self, op: &str, to: &Path) -> std::io::Result<()> {
+        match to.parent() {
+            Some(parent) => self.ensure_contained(op, to, parent),
+            None => Ok(()),
+        }
+    }
+
+    /// Drop cached verifications at or below `path` — call whenever the
+    /// entry at `path` is removed or (re-)linked.
+    fn forget_verified_under(&self, path: &Path) {
+        let mut verified = self.verified_dirs.borrow_mut();
+        let stale: Vec<PathBuf> = verified
+            .range(path.to_path_buf()..)
+            .take_while(|dir| dir.starts_with(path))
+            .cloned()
+            .collect();
+        for dir in stale {
+            verified.remove(&dir);
+        }
     }
 
     fn rel_of(&self, to: &Path) -> std::io::Result<PathBuf> {
@@ -2345,6 +2452,7 @@ impl<'s> ShadowWriter<'s> {
     }
 
     fn write_inner(&self, to: &Path, bytes: &[u8], mark_visited: bool) -> std::io::Result<()> {
+        self.ensure_parent_contained("write", to)?;
         let Some(cell) = &self.session else {
             // Passthrough — pre-#993 semantics. The remove-first protects
             // against writing THROUGH a pre-existing symlink into the
@@ -2383,6 +2491,7 @@ impl<'s> ShadowWriter<'s> {
                 // descendant path could be wrongly skipped.
                 if fs::symlink_metadata(to).is_ok_and(|m| m.is_dir()) {
                     fs::remove_dir_all(to)?;
+                    self.forget_verified_under(to);
                     session.written.retain(|p, _| !p.starts_with(&rel));
                 }
                 let _ = fs::remove_file(to);
@@ -2398,6 +2507,7 @@ impl<'s> ShadowWriter<'s> {
     /// every content file each tick).
     fn copy_if_changed(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.session.is_none() {
+            self.ensure_parent_contained("copy to", to)?;
             let _ = fs::remove_file(to);
             return fs::copy(from, to).map(|_| ());
         }
@@ -2409,6 +2519,8 @@ impl<'s> ShadowWriter<'s> {
     /// missing or points elsewhere. Records the path as visited.
     fn symlink_if_absent(&self, target: &Path, to: &Path) -> std::io::Result<()> {
         let Some(cell) = &self.session else {
+            self.ensure_parent_contained("link", to)?;
+            self.forget_verified_under(to);
             return symlink_or_copy(target, to);
         };
         let rel = self.rel_of(to)?;
@@ -2418,6 +2530,8 @@ impl<'s> ShadowWriter<'s> {
                 return Ok(());
             }
         }
+        self.ensure_parent_contained("link", to)?;
+        self.forget_verified_under(to);
         // A stale DIRECTORY at this path (directory→file source mutation
         // during the dev session) would make the symlink creation fail
         // until the next dirty wipe. Remove it recursively and drop every
@@ -2451,13 +2565,31 @@ impl<'s> ShadowWriter<'s> {
     /// path. Passthrough mode is the plain pre-#993 `create_dir_all`
     /// (the prod shadow tempdir is fresh, so no conflict can exist).
     fn ensure_dir(&self, to: &Path) -> std::io::Result<()> {
+        let existing = fs::symlink_metadata(to).ok();
+        // A real directory at `to` is itself an ancestor of what will be
+        // created below it; anything else at `to` may be replaced.
+        let start = match &existing {
+            Some(m) if m.is_dir() => to,
+            _ => to.parent().unwrap_or(to),
+        };
+        self.ensure_contained("create directory", to, start)?;
         if let Some(cell) = &self.session {
-            if fs::symlink_metadata(to).is_ok_and(|m| !m.is_dir()) {
+            if let Some(m) = existing.filter(|m| !m.is_dir()) {
                 // Validate the path is shadow-relative BEFORE the
                 // destructive removal (rel_of rejects out-of-shadow
                 // paths — none exist today, but never delete first).
                 let rel = self.rel_of(to)?;
+                // A link this same call created is live output (e.g. a
+                // dependency linked to its canonical install); replacing
+                // it with a partial real directory broke resolution (#3185).
+                if m.file_type().is_symlink() && self.visited.borrow().contains(&rel) {
+                    return Err(std::io::Error::other(format!(
+                        "shadow writer: refusing to replace {} with a directory: it is a link created earlier in this call (#3185)",
+                        to.display()
+                    )));
+                }
                 fs::remove_file(to)?;
+                self.forget_verified_under(to);
                 cell.borrow_mut().written.remove(&rel);
             }
         }
@@ -2610,7 +2742,29 @@ impl<'s> ShadowWriter<'s> {
                     session.written.remove(&rel);
                     continue;
                 }
-                Ok(_) => {}
+                // A link on the path now leads out of the shadow: the file
+                // we wrote is gone with the replaced directory, and what is
+                // reachable there is not ours to delete (#3185).
+                Ok(_) => {
+                    let parent = abs.parent().unwrap_or(&abs);
+                    if let Some((ancestor, resolved)) =
+                        self.escaping_ancestor(parent).with_context(|| {
+                            format!(
+                                "shadow session: failed to verify stale shadow path {}",
+                                abs.display()
+                            )
+                        })?
+                    {
+                        tracing::debug!(
+                            path = %abs.display(),
+                            ancestor = %ancestor.display(),
+                            resolved = %resolved.display(),
+                            "shadow session prune: stale path leaves the shadow through a link; not deleting"
+                        );
+                        session.written.remove(&rel);
+                        continue;
+                    }
+                }
                 // Already gone: deleted with an ancestor directory
                 // (dir→file flip removes whole subtrees — NotFound), or
                 // an ancestor is now a regular file so the path can no
@@ -3873,6 +4027,7 @@ pub fn bundle_with_session(
                 if !already_correct {
                     let _ = fs::remove_file(&work_nm);
                     let _ = fs::remove_dir_all(&work_nm);
+                    writer.forget_verified_under(&work_nm);
                     std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
                         || {
                             format!(
@@ -3945,6 +4100,7 @@ pub fn bundle_with_session(
                     // other no-ops.
                     let _ = fs::remove_file(&shadow_nm);
                     let _ = fs::remove_dir_all(&shadow_nm);
+                    writer.forget_verified_under(&shadow_nm);
                     std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
                         format!(
                             "bundler: failed to symlink node_modules {} → {}",
@@ -3975,6 +4131,7 @@ pub fn bundle_with_session(
                     .unwrap_or(false)
                 {
                     let _ = fs::remove_file(&shadow_nm);
+                    writer.forget_verified_under(&shadow_nm);
                 }
             }
             #[cfg(not(unix))]
@@ -4409,9 +4566,28 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
-        let shadow_relative = to
-            .strip_prefix(target_root)
-            .expect("exact-target staging destination remains inside shadow");
+        // #3189: a package directory linked to its canonical install (the
+        // directory loops above) or a nested host's hoisted `work/node_modules`
+        // link may already make this destination the source file itself.
+        // Nothing to write, and deliberately NOT marked visited: the path is
+        // not shadow output, so the session prune (which refuses to delete
+        // through such a link) is left to drop its stale bookkeeping. Not
+        // recorded in `staged_copy_sources` either: no copy exists, and the
+        // metafile dep mapping already canonicalises the shadow spelling to
+        // this same source.
+        if exact_target_destination(physical, &to, target_writer)?
+            == ExactTargetDestination::AlreadyReachable
+        {
+            continue;
+        }
+        let shadow_relative = to.strip_prefix(target_root).map_err(|_| {
+            anyhow!(
+                "bundler: exact-target staging destination {} for {} is outside the shadow root {}",
+                to.display(),
+                physical.display(),
+                target_root.display()
+            )
+        })?;
         let mut shadow_parent = target_root.to_path_buf();
         for component in shadow_relative
             .parent()
@@ -7503,6 +7679,12 @@ fn link_ordinary_dependency_to_canonical_source(
             return Ok(false);
         }
         if let Some(parent) = dest.parent() {
+            // Nested under a package already linked to its install: esbuild
+            // reaches this dependency through that link, and staging it here
+            // would write into the real install (#3185).
+            if writer.escaping_ancestor(parent)?.is_some() {
+                return Ok(true);
+            }
             writer.ensure_dir(parent)?;
         }
         writer
@@ -7516,6 +7698,63 @@ fn link_ordinary_dependency_to_canonical_source(
             })?;
         Ok(true)
     }
+}
+
+/// What the exact-target file loop does with one destination (#3189).
+#[derive(Debug, PartialEq, Eq)]
+enum ExactTargetDestination {
+    /// No link out of the shadow on the way: stage a copy as usual.
+    Stage,
+    /// The destination already resolves, through a link out of the shadow,
+    /// to the very file being staged — e.g. its package directory was linked
+    /// to the canonical install ([`link_ordinary_dependency_to_canonical_source`])
+    /// or it sits under a nested host's hoisted `work/node_modules` link.
+    /// esbuild reaches it through that link; writing would target the real
+    /// install.
+    AlreadyReachable,
+}
+
+/// Classify an exact-target destination before anything is written (#3189).
+/// Only the filesystem is read — the destination's resolved parent plus its
+/// file name is compared against the source's canonical path — so no
+/// resolver behaviour is predicted. A destination
+/// that leaves the shadow through a link to any OTHER file is an error:
+/// writing would clobber the real install, and skipping would serve the
+/// wrong file.
+fn exact_target_destination(
+    physical: &Path,
+    to: &Path,
+    writer: &ShadowWriter<'_>,
+) -> Result<ExactTargetDestination> {
+    let (Some(parent), Some(file_name)) = (to.parent(), to.file_name()) else {
+        return Ok(ExactTargetDestination::Stage);
+    };
+    let Some((ancestor, ancestor_target)) = writer
+        .escaping_ancestor(parent)
+        .with_context(|| format!("bundler: resolve exact-target destination {}", to.display()))?
+    else {
+        return Ok(ExactTargetDestination::Stage);
+    };
+    let source = fs::canonicalize(physical)
+        .with_context(|| format!("bundler: canonicalize exact-target {}", physical.display()))?;
+    let resolved = fs::canonicalize(parent)
+        .ok()
+        .map(|parent| parent.join(file_name));
+    if let Some(resolved) = &resolved {
+        if *resolved == source || fs::canonicalize(resolved).is_ok_and(|leaf| leaf == source) {
+            return Ok(ExactTargetDestination::AlreadyReachable);
+        }
+    }
+    Err(anyhow!(
+        "bundler: exact-target staging destination {} for {} leaves the shadow through the link {} -> {} and resolves to {}, not the file being staged; refusing to write into the linked install (#3185)",
+        to.display(),
+        physical.display(),
+        ancestor.display(),
+        ancestor_target.display(),
+        resolved
+            .as_deref()
+            .map_or_else(|| "a missing path".to_string(), |p| p.display().to_string())
+    ))
 }
 
 /// How [`materialise_isolated_exact_dir`] treats [`MIRROR_SKIP_DIRS`] infra
@@ -13452,7 +13691,7 @@ mod tests {
     #[test]
     fn session_scan_cache_reuses_node_modules_scans_with_an_identical_staging_set() {
         let tmp = tempfile::tempdir().unwrap();
-        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let (dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
         let mut session = ShadowSession::new(&site).unwrap();
 
         assert_eq!(
@@ -13460,11 +13699,18 @@ mod tests {
             SCAN_CACHE_COLD
         );
         let first = staged_listing(&session);
+        // dep-a is linked to its install, so dep-b (reached through it, see
+        // the stats) is resolved from the store — never staged INTO the store
+        // through that link (#3185).
         assert!(
             first
                 .iter()
-                .any(|path| path.ends_with("dep-a/node_modules/dep-b/index.js")),
-            "the fixture must actually stage dep-b: {first:?}"
+                .any(|path| path.ends_with("data/node_modules/dep-a/index.js")),
+            "the fixture must actually stage dep-a: {first:?}"
+        );
+        assert!(
+            !dep_a.join("node_modules").exists(),
+            "staging must not write through the dep-a link into the real install"
         );
         assert!(
             !first
@@ -24622,16 +24868,13 @@ mod tests {
     /// performs exactly the pre-#993 fs operations. Leaked (`Box::leak`)
     /// so `default_mat_ctx` can hand out a `'static` borrow without
     /// changing its many call sites; the struct is a few words, leaked
-    /// once per test call.
+    /// once per test call. Rooted at `/` because these call sites stage
+    /// into arbitrary tempdirs: the containment guard (#3185) is exercised
+    /// by the dedicated `shadow_writer_containment_*` tests instead.
     fn leaked_passthrough_writer() -> &'static ShadowWriter<'static> {
         Box::leak(Box::new(
-            ShadowWriter::new(
-                PathBuf::from("/nonexistent-passthrough-shadow"),
-                None,
-                false,
-                None,
-            )
-            .expect("passthrough writer construction is infallible"),
+            ShadowWriter::new(PathBuf::from("/"), None, false, None)
+                .expect("passthrough writer construction is infallible"),
         ))
     }
 
@@ -25017,5 +25260,357 @@ mod tests {
              #2216). Reported fallback(s): {:?}",
             output.content_bridge_fallback_pages
         );
+    }
+
+    // ── ShadowWriter containment guard (#3185) ───────────────────────────
+
+    /// Run `check` against a passthrough or a session writer with a fresh
+    /// shadow root and a separate "real install" directory.
+    #[cfg(unix)]
+    fn with_containment_writer(session_mode: bool, check: fn(&ShadowWriter<'_>, &Path, &Path)) {
+        let outside = tempfile::tempdir().unwrap();
+        if session_mode {
+            let project = tempfile::tempdir().unwrap();
+            let mut session = ShadowSession::new(project.path()).unwrap();
+            let root = session.shadow_root().to_path_buf();
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            check(&writer, &root, outside.path());
+        } else {
+            let shadow = tempfile::tempdir().unwrap();
+            let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+            check(&writer, shadow.path(), outside.path());
+        }
+    }
+
+    /// `<outside>/pkg/b/file` holding `REAL`, linked into the shadow as `a`.
+    #[cfg(unix)]
+    fn link_real_install_into_shadow(shadow: &Path, outside: &Path) -> PathBuf {
+        let real = outside.join("pkg/b/file");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "REAL").unwrap();
+        std::os::unix::fs::symlink(outside.join("pkg"), shadow.join("a")).unwrap();
+        real
+    }
+
+    #[cfg(unix)]
+    fn assert_refused_through_link(result: std::io::Result<()>, shadow: &Path) {
+        let err = result.expect_err("a write through a link out of the shadow must be refused");
+        let message = err.to_string();
+        assert!(message.contains("(#3185)"), "{message}");
+        assert!(
+            message.contains(&shadow.join("a").display().to_string()),
+            "the error must name the escaping ancestor: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_passthrough() {
+        with_containment_writer(false, refuses_writes_through_a_linked_ancestor);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_session() {
+        with_containment_writer(true, refuses_writes_through_a_linked_ancestor);
+    }
+
+    #[cfg(unix)]
+    fn refuses_writes_through_a_linked_ancestor(
+        writer: &ShadowWriter<'_>,
+        shadow: &Path,
+        outside: &Path,
+    ) {
+        let real = link_real_install_into_shadow(shadow, outside);
+        let source = outside.join("source.txt");
+        fs::write(&source, "NEW").unwrap();
+        let through = shadow.join("a/b/file");
+
+        assert_refused_through_link(writer.copy_if_changed(&source, &through), shadow);
+        assert_refused_through_link(writer.write_if_changed(&through, b"NEW"), shadow);
+        assert_refused_through_link(writer.symlink_if_absent(&source, &through), shadow);
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+        assert!(!fs::symlink_metadata(&real)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        // A real directory reached through the link is never replaced.
+        assert_refused_through_link(
+            writer.symlink_if_absent(&source, &shadow.join("a/b")),
+            shadow,
+        );
+        assert_refused_through_link(writer.write_if_changed(&shadow.join("a/b"), b"NEW"), shadow);
+        assert!(outside.join("pkg/b").is_dir());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+
+        assert_refused_through_link(writer.ensure_dir(&shadow.join("a/b/new")), shadow);
+        assert_refused_through_link(writer.ensure_dir(&shadow.join("a/c/deeper")), shadow);
+        assert!(!outside.join("pkg/b/new").exists());
+        assert!(!outside.join("pkg/c").exists());
+        assert!(fs::symlink_metadata(shadow.join("a"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_still_replaces_a_link_at_the_destination_passthrough() {
+        with_containment_writer(false, replaces_a_link_at_the_destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_containment_still_replaces_a_link_at_the_destination_session() {
+        with_containment_writer(true, replaces_a_link_at_the_destination);
+    }
+
+    #[cfg(unix)]
+    fn replaces_a_link_at_the_destination(
+        writer: &ShadowWriter<'_>,
+        shadow: &Path,
+        outside: &Path,
+    ) {
+        let real = outside.join("real.txt");
+        fs::write(&real, "REAL").unwrap();
+        let source = outside.join("source.txt");
+        fs::write(&source, "NEW").unwrap();
+
+        let written = shadow.join("written");
+        std::os::unix::fs::symlink(&real, &written).unwrap();
+        writer.write_if_changed(&written, b"NEW").unwrap();
+        assert!(!fs::symlink_metadata(&written)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let copied = shadow.join("copied");
+        std::os::unix::fs::symlink(&real, &copied).unwrap();
+        writer.copy_if_changed(&source, &copied).unwrap();
+        assert!(!fs::symlink_metadata(&copied)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let linked = shadow.join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        writer.symlink_if_absent(&source, &linked).unwrap();
+        assert_eq!(fs::read_link(&linked).unwrap(), source);
+
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+        assert_eq!(fs::read_to_string(&written).unwrap(), "NEW");
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "NEW");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_writer_ensure_dir_keeps_a_link_created_this_call() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(outside.path().join("pkg")).unwrap();
+        let mut session = ShadowSession::new(project.path()).unwrap();
+        let root = session.shadow_root().to_path_buf();
+        let dep = root.join("dep");
+
+        // A previous call's link is stale and may become a real directory.
+        std::os::unix::fs::symlink(outside.path().join("pkg"), &dep).unwrap();
+        {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            writer.ensure_dir(&dep).unwrap();
+            assert!(fs::symlink_metadata(&dep).unwrap().is_dir());
+        }
+
+        // A link made earlier in the SAME call is live output: refuse.
+        fs::remove_dir(&dep).unwrap();
+        let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+        writer
+            .symlink_if_absent(&outside.path().join("pkg"), &dep)
+            .unwrap();
+        let err = writer
+            .ensure_dir(&dep)
+            .expect_err("same-call link must be kept");
+        assert!(err.to_string().contains("(#3185)"), "{err}");
+        assert!(fs::symlink_metadata(&dep).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_session_prune_never_deletes_through_a_linked_ancestor() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut session = ShadowSession::new(project.path()).unwrap();
+        let root = session.shadow_root().to_path_buf();
+
+        // Tick N writes `a/b/file`.
+        {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            writer.ensure_dir(&root.join("a/b")).unwrap();
+            writer
+                .write_if_changed(&root.join("a/b/file"), b"OURS")
+                .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+
+        // Tick N+1 turns `a` into a link to an outside dir holding `b/file`.
+        let real = outside.path().join("pkg/b/file");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "REAL").unwrap();
+        {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            writer
+                .symlink_if_absent(&outside.path().join("pkg"), &root.join("a"))
+                .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert_eq!(fs::read_to_string(&real).unwrap(), "REAL");
+    }
+
+    // ── Exact-target same-file rule (#3189) ─────────────────────────────
+
+    /// A nested host's hoisted route: `<work>/node_modules` links to the real
+    /// workspace `node_modules`, and `shadow_path_for_project_path` maps a
+    /// first-party-root file under it. The same file is skipped; a different
+    /// one (or a missing path) behind that link is an error; nothing is
+    /// written either way.
+    #[cfg(unix)]
+    fn classifies_hoisted_work_node_modules_destinations(
+        writer: &ShadowWriter<'_>,
+        work: &Path,
+        workspace: &Path,
+    ) {
+        let installed = workspace.join("node_modules/pkg/dist/file.mjs");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, "INSTALLED").unwrap();
+        std::os::unix::fs::symlink(workspace.join("node_modules"), work.join("node_modules"))
+            .unwrap();
+        let site = workspace.join("apps/site");
+        fs::create_dir_all(&site).unwrap();
+
+        let to = shadow_path_for_project_path(
+            &installed,
+            &site,
+            workspace,
+            &work.join("apps/site"),
+            work,
+            None,
+        );
+        assert_eq!(to, work.join("node_modules/pkg/dist/file.mjs"));
+        assert_eq!(
+            exact_target_destination(&installed, &to, writer).unwrap(),
+            ExactTargetDestination::AlreadyReachable
+        );
+
+        let other = workspace.join("vendor/file.mjs");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "OTHER").unwrap();
+        let err = exact_target_destination(&other, &to, writer)
+            .expect_err("a different file behind the link must be refused");
+        let message = format!("{err:#}");
+        assert!(message.contains("(#3185)"), "{message}");
+        assert!(
+            message.contains(&work.join("node_modules").display().to_string()),
+            "the error must name the link: {message}"
+        );
+        let missing = work.join("node_modules/pkg/absent/file.mjs");
+        exact_target_destination(&other, &missing, writer)
+            .expect_err("a missing path behind the link must be refused");
+
+        // No link involved: stage as before.
+        assert_eq!(
+            exact_target_destination(&other, &work.join("apps/site/vendor/file.mjs"), writer)
+                .unwrap(),
+            ExactTargetDestination::Stage
+        );
+
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "INSTALLED");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "OTHER");
+        assert!(!workspace.join("node_modules/pkg/absent").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_destination_through_hoisted_work_node_modules_link_passthrough() {
+        with_containment_writer(false, classifies_hoisted_work_node_modules_destinations);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_destination_through_hoisted_work_node_modules_link_session() {
+        with_containment_writer(true, classifies_hoisted_work_node_modules_destinations);
+    }
+
+    /// Dev session: tick N stages the alias target as a real copy (its
+    /// package is not linked yet); tick N+1 links the package directory to its
+    /// canonical install and must skip the same file instead of writing
+    /// through the link. The installed file survives both ticks and the
+    /// prune of tick N's copy.
+    #[cfg(unix)]
+    #[test]
+    fn exact_target_session_copy_then_link_keeps_the_installed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let store = base.join("store/node_modules/.pnpm/preact@10.29.8/node_modules/preact");
+        let installed = store.join("hooks/dist/hooks.mjs");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(store.join("package.json"), r#"{"name":"preact"}"#).unwrap();
+        fs::write(&installed, "INSTALLED_HOOKS").unwrap();
+        let project = base.join("site");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&store, project.join("node_modules/preact")).unwrap();
+        let physical = project.join("node_modules/preact/hooks/dist/hooks.mjs");
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        let root = session.shadow_root().to_path_buf();
+        // Nested below the root, like a workspace project mirror, so the
+        // prune's top-level `node_modules` shortcut does not apply.
+        let shadow_pkg = root.join("site/node_modules/preact");
+        let to = shadow_pkg.join("hooks/dist/hooks.mjs");
+        let rel = PathBuf::from("site/node_modules/preact/hooks/dist/hooks.mjs");
+
+        // Tick N: staged as a copy.
+        {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            assert_eq!(
+                exact_target_destination(&physical, &to, &writer).unwrap(),
+                ExactTargetDestination::Stage
+            );
+            writer.ensure_dir(to.parent().unwrap()).unwrap();
+            writer.copy_if_changed(&physical, &to).unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(fs::symlink_metadata(&shadow_pkg).unwrap().is_dir());
+        assert!(session.prev_visited.contains(&rel));
+
+        // Tick N+1 (and a steady N+2): the package directory is linked.
+        for _ in 0..2 {
+            let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
+            assert!(link_ordinary_dependency_to_canonical_source(
+                &project.join("node_modules/preact"),
+                &project.join("node_modules/preact"),
+                &shadow_pkg,
+                &project,
+                &writer,
+            )
+            .unwrap());
+            assert_eq!(
+                exact_target_destination(&physical, &to, &writer).unwrap(),
+                ExactTargetDestination::AlreadyReachable
+            );
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+            assert!(fs::symlink_metadata(&shadow_pkg)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_to_string(&installed).unwrap(), "INSTALLED_HOOKS");
+        }
+        // Skipped, not marked visited: nothing of ours is left to track.
+        assert!(!session.prev_visited.contains(&rel));
+        assert!(!session.written.contains_key(&rel));
+        assert_eq!(fs::read_to_string(&to).unwrap(), "INSTALLED_HOOKS");
     }
 }
