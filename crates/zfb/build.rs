@@ -646,13 +646,21 @@ fn download_binaries() -> Result<(), String> {
     let esbuild_slot = with_exe_suffix(binaries_dir.join("esbuild").join("esbuild"), exe_suffix);
     let tailwind_slot = with_exe_suffix(binaries_dir.join("tailwindcss-v4"), exe_suffix);
 
-    // Emit rerun triggers so Cargo re-invokes the build script when the
-    // binary slots or override env vars change (e.g. after a manual `rm`,
-    // after a fetch, or after pointing ZFB_*_BIN at a different file).
-    println!("cargo:rerun-if-changed=crates/zfb-islands/src/esbuild.rs");
-    println!("cargo:rerun-if-changed=scripts/fetch-tailwind.mjs");
-    println!("cargo:rerun-if-changed={}", esbuild_slot.display());
-    println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    // Emit rerun triggers so Cargo re-invokes the build script when an
+    // override env var changes (e.g. after pointing ZFB_*_BIN at a different
+    // file). The two relative triggers that used to sit here —
+    // `crates/zfb-islands/src/esbuild.rs` and `scripts/fetch-tailwind.mjs` —
+    // were vestigial and have been removed: cargo resolves a relative
+    // `rerun-if-changed` path against the package root (`crates/zfb/`),
+    // where neither file exists, so both counted as permanently stale and
+    // forced a rerun + relink on every build. Neither file is read by this
+    // script anyway. The esbuild version pin moved into the
+    // `zfb-toolchain-pins` build-dependency in commit 774e9cd3, so cargo
+    // already reruns this script when that dependency's content changes; the
+    // Tailwind version and SHA-256 pins live in the constants above, not in
+    // `fetch-tailwind.mjs`, which calls itself superseded and whose drift is
+    // guarded by the `tailwind_version_pins_are_in_sync` test in
+    // `crates/zfb/src/lib.rs`.
     println!("cargo:rerun-if-env-changed=ZFB_ESBUILD_BIN");
     println!("cargo:rerun-if-env-changed=ZFB_TAILWIND_BIN");
 
@@ -664,6 +672,18 @@ fn download_binaries() -> Result<(), String> {
         resolve_vendor_source("ZFB_TAILWIND_BIN", vendor_platform, &tailwind_slot, |p| {
             tailwindcss_asset_name(p).1
         });
+
+    // Watch each binary slot only when its resolved source is NOT an
+    // override — an override path already emits its own absolute
+    // rerun-if-changed trigger in `validate_override_path`, and the slot
+    // need not exist at all in that case, so watching it here would make
+    // the build permanently stale for override-only builds.
+    if !matches!(esbuild_source, BinarySource::Override(_)) {
+        println!("cargo:rerun-if-changed={}", esbuild_slot.display());
+    }
+    if !matches!(tailwind_source, BinarySource::Override(_)) {
+        println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    }
 
     if matches!(esbuild_source, BinarySource::Unsupported)
         || matches!(tailwind_source, BinarySource::Unsupported)
