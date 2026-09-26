@@ -102,12 +102,22 @@ pub(crate) fn role_classes_inline_sources(config: &Config) -> Vec<String> {
 /// is retained by [`TailwindSubprocessConfig`] for the engine's lifetime.  If
 /// extraction is unavailable, the original config (and its workspace-relative
 /// fallback) is preserved exactly as before.
+///
+/// Also installs #3159's build-time-stamped SHA-256 digest
+/// (`env!("ZFB_EMBEDDED_TAILWIND_SHA256")`, stamped by
+/// `crates/zfb/build.rs::stage_binaries_into_vendor`) so the oxide warm-up
+/// protocol can skip re-hashing the ~76 MB binary on every process start —
+/// see `zfb_css::engine::oxide_warmup_key`.
 pub(crate) fn with_embedded_tailwind_binary(
     config: TailwindSubprocessConfig,
 ) -> TailwindSubprocessConfig {
-    if std::env::var_os("ZFB_TAILWIND_BIN").is_none() {
+    if zfb_css::engine::tailwind_bin_env_override().is_none() {
         if let Ok((handle, path)) = embedded_binary("tailwindcss-v4") {
-            return config.with_embedded_binary(handle, path);
+            return config.with_embedded_binary_and_digest(
+                handle,
+                path,
+                env!("ZFB_EMBEDDED_TAILWIND_SHA256"),
+            );
         }
     }
     config
@@ -189,4 +199,58 @@ fn run_css_emitter_with_module_policy<E: CssEngine>(
     };
 
     CssPipeline::new(engine, pipe_cfg).build_emitter()
+}
+
+/// Serialises every test in this crate that mutates the process-wide
+/// `ZFB_TAILWIND_BIN` variable: `cargo test` runs tests as threads of one
+/// process, so an env guard bounds a mutation in time but not across threads.
+#[cfg(test)]
+pub(crate) static TAILWIND_BIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A set-but-EMPTY `ZFB_TAILWIND_BIN` must be treated the same as unset
+    /// — the embedded extraction (and its digest) must still be installed,
+    /// not skipped. Regression test for the `var_os(..).is_none()` vs.
+    /// `filter(|v| !v.is_empty()).is_none()` mismatch (#3159).
+    ///
+    /// Discriminator: under the old (buggy) check, an empty override reads
+    /// as "set" and this function becomes a no-op, leaving `config`'s
+    /// `binary_path` at whatever `TailwindSubprocessConfig::default()`
+    /// resolved — the workspace-RELATIVE fallback
+    /// `crates/zfb/binaries/tailwindcss-v4` (default() itself already
+    /// treats "" as unset, so it never observed the override either). That
+    /// relative path essentially never resolves from a `cargo test`
+    /// process's cwd. The fixed embedded-extraction path always writes a
+    /// real, absolute file to a tempdir, so `binary_path.exists()` is the
+    /// discriminator.
+    #[test]
+    fn with_embedded_tailwind_binary_treats_empty_env_override_as_unset() {
+        let _env_lock = TAILWIND_BIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct EnvGuard {
+            prev: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.prev {
+                    Some(v) => std::env::set_var("ZFB_TAILWIND_BIN", v),
+                    None => std::env::remove_var("ZFB_TAILWIND_BIN"),
+                }
+            }
+        }
+        let prev = std::env::var_os("ZFB_TAILWIND_BIN");
+        std::env::set_var("ZFB_TAILWIND_BIN", "");
+        let _guard = EnvGuard { prev };
+
+        let cfg = with_embedded_tailwind_binary(TailwindSubprocessConfig::default());
+        assert!(
+            cfg.binary_path.exists(),
+            "an empty ZFB_TAILWIND_BIN must not skip the embedded extraction: {}",
+            cfg.binary_path.display()
+        );
+    }
 }

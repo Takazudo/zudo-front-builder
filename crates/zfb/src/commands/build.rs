@@ -8102,14 +8102,11 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    /// Serialises the two tests that touch the process-wide
-    /// `ZFB_TAILWIND_BIN` variable: one `set_var`s a deliberately bogus path
-    /// to force a hermetic Tailwind failure, the other is env-gated ON that
-    /// variable pointing at a real binary. `cargo test` runs tests on
-    /// parallel threads in ONE process, so a scope guard bounds the
-    /// mutation in time but not across threads — without this lock the
-    /// first can flake the second (issue #1799 review finding).
-    static TAILWIND_BIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Shared with `css_support`'s tests, which also mutate
+    /// `ZFB_TAILWIND_BIN`: one test here `set_var`s a deliberately bogus path
+    /// to force a hermetic Tailwind failure, another is env-gated ON that
+    /// variable pointing at a real binary (issue #1799 review finding).
+    use crate::commands::css_support::TAILWIND_BIN_ENV_LOCK;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};

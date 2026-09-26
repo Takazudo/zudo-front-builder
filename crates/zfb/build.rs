@@ -646,13 +646,9 @@ fn download_binaries() -> Result<(), String> {
     let esbuild_slot = with_exe_suffix(binaries_dir.join("esbuild").join("esbuild"), exe_suffix);
     let tailwind_slot = with_exe_suffix(binaries_dir.join("tailwindcss-v4"), exe_suffix);
 
-    // Emit rerun triggers so Cargo re-invokes the build script when the
-    // binary slots or override env vars change (e.g. after a manual `rm`,
-    // after a fetch, or after pointing ZFB_*_BIN at a different file).
-    println!("cargo:rerun-if-changed=crates/zfb-islands/src/esbuild.rs");
-    println!("cargo:rerun-if-changed=scripts/fetch-tailwind.mjs");
-    println!("cargo:rerun-if-changed={}", esbuild_slot.display());
-    println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    // Cargo resolves a relative `rerun-if-changed` path against the package
+    // root (`crates/zfb/`) and treats a missing file as permanently stale, so
+    // every trigger here must be an absolute path to a file that exists.
     println!("cargo:rerun-if-env-changed=ZFB_ESBUILD_BIN");
     println!("cargo:rerun-if-env-changed=ZFB_TAILWIND_BIN");
 
@@ -664,6 +660,18 @@ fn download_binaries() -> Result<(), String> {
         resolve_vendor_source("ZFB_TAILWIND_BIN", vendor_platform, &tailwind_slot, |p| {
             tailwindcss_asset_name(p).1
         });
+
+    // Watch each binary slot only when its resolved source is NOT an
+    // override — an override path already emits its own absolute
+    // rerun-if-changed trigger in `validate_override_path`, and the slot
+    // need not exist at all in that case, so watching it here would make
+    // the build permanently stale for override-only builds.
+    if !matches!(esbuild_source, BinarySource::Override(_)) {
+        println!("cargo:rerun-if-changed={}", esbuild_slot.display());
+    }
+    if !matches!(tailwind_source, BinarySource::Override(_)) {
+        println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    }
 
     if matches!(esbuild_source, BinarySource::Unsupported)
         || matches!(tailwind_source, BinarySource::Unsupported)
@@ -743,6 +751,20 @@ fn stage_binaries_into_vendor(
 
     let tailwind_dst = bin_dir.join(format!("tailwindcss-v4{exe_suffix}"));
     copy_executable(tailwind_src, &tailwind_dst)?;
+
+    // #3159 — stamp the embedded Tailwind binary's SHA-256 at build time so
+    // `zfb-css` can skip re-hashing the ~76 MB binary on every process start
+    // (see `TailwindSubprocessConfig::with_embedded_binary_and_digest`).
+    // Hashing the STAGED copy (not `tailwind_src`) covers slot, download,
+    // and `ZFB_TAILWIND_BIN` override (#1772) builds uniformly — whatever
+    // bytes end up embedded via `include_dir!` are exactly what gets hashed.
+    let tailwind_digest = sha256_hex_file(&tailwind_dst).map_err(|e| {
+        format!(
+            "failed to hash staged tailwind binary {}: {e}",
+            tailwind_dst.display()
+        )
+    })?;
+    println!("cargo:rustc-env=ZFB_EMBEDDED_TAILWIND_SHA256={tailwind_digest}");
 
     Ok(())
 }

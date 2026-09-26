@@ -239,6 +239,21 @@ pub struct TailwindSubprocessConfig {
     /// field is non-public; callers don't see it, they just receive a
     /// `binary_path` that points inside the live tempdir.
     _embedded_handle: Option<Arc<tempfile::TempDir>>,
+
+    /// #3159 — a build-time-stamped SHA-256 digest of the embedded Tailwind
+    /// binary, paired with the exact [`Self::binary_path`] it was computed
+    /// for.
+    ///
+    /// Populated only by [`Self::with_embedded_binary_and_digest`], and only
+    /// on the branch where the embedded path actually wins (never under a
+    /// `ZFB_TAILWIND_BIN` override). [`Self::binary_path`] is a public field
+    /// and can be reassigned directly by a caller, so the stored path is
+    /// re-checked for equality at USE time (see `oxide_warmup_key`) rather
+    /// than trusted from construction — a direct reassignment silently
+    /// falls back to hashing the file, never a stale/mismatched digest.
+    /// [`Self::with_binary_path`] and [`Self::with_embedded_binary`] (no
+    /// digest) both clear this field.
+    _embedded_digest: Option<(PathBuf, String)>,
 }
 
 impl Default for TailwindSubprocessConfig {
@@ -257,7 +272,7 @@ impl Default for TailwindSubprocessConfig {
         // An empty value (set but blank) is treated the same as unset,
         // mirroring the build-time override contract in
         // `crates/zfb/build.rs` / `BUILDING.md`.
-        let env_override = std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty());
+        let env_override = tailwind_bin_env_override();
         let oxide_warmup =
             parse_oxide_warmup_policy(std::env::var_os("ZFB_TAILWIND_OXIDE_WARMUP").as_deref());
         let binary_path = match env_override {
@@ -280,14 +295,21 @@ impl Default for TailwindSubprocessConfig {
             mock_subprocess: false,
             mock_output: String::new(),
             _embedded_handle: None,
+            _embedded_digest: None,
         }
     }
 }
 
 impl TailwindSubprocessConfig {
     /// Override the binary path (chainable).
+    ///
+    /// Clears any build-time-stamped digest installed by
+    /// [`Self::with_embedded_binary_and_digest`] — it was computed for a
+    /// different path, so keeping it would let a stale digest be mistaken
+    /// for this one via the tuple's path (see the field's doc comment).
     pub fn with_binary_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.binary_path = path.into();
+        self._embedded_digest = None;
         self
     }
 
@@ -393,8 +415,7 @@ impl TailwindSubprocessConfig {
     /// `#[derive(Clone)]` keeps working — `tempfile::TempDir` is not
     /// itself `Clone`.
     pub fn with_embedded_binary(mut self, handle: tempfile::TempDir, path: PathBuf) -> Self {
-        // Empty value = unset, matching `Self::default`'s check above.
-        if std::env::var_os("ZFB_TAILWIND_BIN").is_some_and(|v| !v.is_empty()) {
+        if tailwind_bin_env_override().is_some() {
             // Env tier already won — drop the handle on the floor and
             // leave `binary_path` pointing at the env value.
             drop(handle);
@@ -402,8 +423,80 @@ impl TailwindSubprocessConfig {
         }
         self.binary_path = path;
         self._embedded_handle = Some(Arc::new(handle));
+        // No digest known for this call — clear any stale one a prior
+        // `with_embedded_binary_and_digest` call may have installed.
+        self._embedded_digest = None;
         self
     }
+
+    /// #3159 — like [`Self::with_embedded_binary`], but also installs a
+    /// build-time-stamped SHA-256 digest of the embedded binary so the
+    /// oxide warm-up protocol (`oxide_warmup_key`) can skip re-hashing the
+    /// ~76 MB file on every process start.
+    ///
+    /// `digest_hex` must be exactly 64 ASCII hex characters (a full SHA-256
+    /// in hex, as `env!("ZFB_EMBEDDED_TAILWIND_SHA256")` provides — see
+    /// `crates/zfb/build.rs::stage_binaries_into_vendor`). Anything else is
+    /// ignored (`debug_assert`s in debug builds) and this call degrades to
+    /// exactly [`Self::with_embedded_binary`]'s behavior: the path still
+    /// installs, but with no stored digest, so callers fall back to
+    /// hashing the file at use time — the `[..16]` slice taken from a
+    /// validated digest can therefore never panic.
+    ///
+    /// Same `ZFB_TAILWIND_BIN` precedence as [`Self::with_embedded_binary`]:
+    /// under an env override this call is a no-op and the digest is never
+    /// installed.
+    pub fn with_embedded_binary_and_digest(
+        self,
+        handle: tempfile::TempDir,
+        path: PathBuf,
+        digest_hex: &str,
+    ) -> Self {
+        let digest = validated_embedded_digest(&path, digest_hex);
+        let mut installed = self.with_embedded_binary(handle, path);
+        if digest
+            .as_ref()
+            .is_some_and(|(p, _)| *p == installed.binary_path)
+        {
+            installed._embedded_digest = digest;
+        }
+        installed
+    }
+}
+
+/// The `ZFB_TAILWIND_BIN` runtime override, with a set-but-empty value
+/// treated as unset (the same contract `crates/zfb/build.rs` applies at
+/// build time). The single source of truth for every "is the override set?"
+/// decision, so the config builders and the `zfb` crate cannot disagree.
+pub fn tailwind_bin_env_override() -> Option<std::ffi::OsString> {
+    std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty())
+}
+
+/// Pure shape check: exactly 64 ASCII hex characters (a full SHA-256 in
+/// hex). Never panics for any input — short, non-hex, or non-ASCII all fall
+/// through to `false` via plain byte comparisons.
+fn is_valid_sha256_hex_digest(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Validate `digest_hex` as exactly 64 ASCII hex characters and pair it with
+/// `path`, or return `None` when it is not — see
+/// [`TailwindSubprocessConfig::with_embedded_binary_and_digest`].
+///
+/// Carries a `debug_assert` on the valid case so a malformed build-time
+/// stamp (the only realistic way this is ever reached with bad input — the
+/// sole production caller passes `env!("ZFB_EMBEDDED_TAILWIND_SHA256")`,
+/// which `build.rs` always stamps as valid) is loud in debug builds; in a
+/// release build the assert compiles away and this function's `None`
+/// fallback is silent, matching [`is_valid_sha256_hex_digest`]'s
+/// panic-free contract.
+fn validated_embedded_digest(path: &Path, digest_hex: &str) -> Option<(PathBuf, String)> {
+    let is_valid = is_valid_sha256_hex_digest(digest_hex);
+    debug_assert!(
+        is_valid,
+        "embedded tailwind digest must be exactly 64 ASCII hex characters, got {digest_hex:?}"
+    );
+    is_valid.then(|| (path.to_path_buf(), digest_hex.to_ascii_lowercase()))
 }
 
 /// Append a single `@source "<escaped_value>";\n` directive to `out`.
@@ -1362,7 +1455,11 @@ impl CssEngine for TailwindSubprocessEngine {
         // load a half-written addon and die with
         // `undefined is not a constructor (new import_oxide.Scanner(...))`.
         // See `ensure_oxide_extracted` and zfb#1237 for the full rationale.
-        ensure_oxide_extracted_with_policy(&self.config.binary_path, self.config.oxide_warmup);
+        ensure_oxide_extracted_with_policy(
+            &self.config.binary_path,
+            self.config.oxide_warmup,
+            self.config._embedded_digest.as_ref(),
+        );
 
         // Both the sweep and the temp-file create below must agree on the
         // entry's directory — compute it once via the shared helper.
@@ -1478,7 +1575,7 @@ impl CssEngine for TailwindSubprocessEngine {
 // regression continues to exercise an unconditional warm-up unchanged.
 #[cfg(test)]
 fn ensure_oxide_extracted(binary_path: &Path) -> bool {
-    ensure_oxide_extracted_with_policy(binary_path, OxideWarmupPolicy::Always)
+    ensure_oxide_extracted_with_policy(binary_path, OxideWarmupPolicy::Always, None)
 }
 
 /// Force the Tailwind v4 standalone binary to extract its embedded oxide
@@ -1534,7 +1631,17 @@ fn ensure_oxide_extracted(binary_path: &Path) -> bool {
 /// or this process had already warmed the binary. The production call site
 /// ignores the return; tests use it to assert the decision precedence and the
 /// once-per-process / serialized contract.
-fn ensure_oxide_extracted_with_policy(binary_path: &Path, policy: OxideWarmupPolicy) -> bool {
+///
+/// `known_digest` is #3159's build-time-stamped SHA-256 for `binary_path`
+/// (`(path, hex)`, only used when `path` still equals `binary_path` at this
+/// call — see `TailwindSubprocessConfig`'s `_embedded_digest` field doc comment).
+/// Passed through to [`warm_oxide_cross_process`] / [`oxide_warmup_key`] so
+/// the cross-process `.done` marker key can skip hashing the binary.
+fn ensure_oxide_extracted_with_policy(
+    binary_path: &Path,
+    policy: OxideWarmupPolicy,
+    known_digest: Option<&(PathBuf, String)>,
+) -> bool {
     static WARMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     let warmed = WARMED.get_or_init(|| Mutex::new(HashSet::new()));
 
@@ -1551,7 +1658,7 @@ fn ensure_oxide_extracted_with_policy(binary_path: &Path, policy: OxideWarmupPol
     if !should_warm_oxide(binary_path, policy) {
         return false;
     }
-    warm_oxide_cross_process(binary_path);
+    warm_oxide_cross_process(binary_path, known_digest);
     guard.insert(binary_path.to_path_buf());
     true
 }
@@ -1683,8 +1790,12 @@ fn contains_node_word(bytes: &[u8]) -> bool {
 /// `$TMPDIR` — distinct versions merely serialize their (separate) warm-ups,
 /// which is harmless. Marker lives next to Bun's addon under `$TMPDIR`, sharing
 /// its lifetime (clear `$TMPDIR` → both vanish → the next cold process re-warms).
-fn warm_oxide_cross_process(binary_path: &Path) {
-    let Some(key) = tailwind_content_key(binary_path) else {
+///
+/// `known_digest` is #3159's build-time-stamped digest, forwarded from
+/// [`ensure_oxide_extracted_with_policy`] — see [`oxide_warmup_key`] for how
+/// it is used (or not) to derive `key` below.
+fn warm_oxide_cross_process(binary_path: &Path, known_digest: Option<&(PathBuf, String)>) {
+    let Some(key) = oxide_warmup_key(binary_path, known_digest) else {
         return;
     };
     let base = std::env::temp_dir();
@@ -1714,11 +1825,46 @@ fn warm_oxide_cross_process(binary_path: &Path) {
     let _ = lock_file.unlock();
 }
 
+/// #3159 — the key [`warm_oxide_cross_process`] uses to name the `.done`
+/// marker: a build-time-stamped digest when one is known AND still matches
+/// `binary_path` (checked here, at use time — see
+/// `TailwindSubprocessConfig`'s `_embedded_digest` field doc comment for why a
+/// stored digest cannot be trusted from construction), else
+/// [`tailwind_content_key`]'s runtime hash of `binary_path`'s bytes.
+///
+/// The known-digest branch never touches the filesystem, so a real
+/// `zfb build`/`zfb dev` process backed by the embedded binary (the common
+/// case since #3159) no longer pays for hashing the ~76 MB Tailwind binary
+/// at all — [`tailwind_content_key`] is now purely the fallback for a
+/// caller-overridden `binary_path` (`ZFB_TAILWIND_BIN`, `with_binary_path`,
+/// or a direct `binary_path` reassignment) with no matching known digest.
+///
+/// The returned key is byte-identical to [`tailwind_content_key`]'s output
+/// whenever the known digest is accurate: both are the first 16 lowercase
+/// hex characters of the file's full SHA-256 — existing `.done` markers and
+/// cross-process agreement between identical-content children are
+/// unaffected by which branch computed the key.
+fn oxide_warmup_key(
+    binary_path: &Path,
+    known_digest: Option<&(PathBuf, String)>,
+) -> Option<String> {
+    if let Some((known_path, digest_hex)) = known_digest {
+        if known_path == binary_path {
+            return Some(digest_hex[..16].to_string());
+        }
+    }
+    tailwind_content_key(binary_path)
+}
+
 /// A stable key for the tailwind binary's *content* — `sha256` of the file
 /// bytes, truncated to 16 hex chars. Read in chunks to avoid buffering the
 /// whole ~80 MiB binary; the just-extracted file is usually still warm in the
 /// page cache, so this is cheap in practice. Returns `None` if the file cannot
 /// be read (the real invocation will report that failure).
+///
+/// This is the FALLBACK half of [`oxide_warmup_key`] (#3159) — reached only
+/// when no build-time-stamped digest is known for `binary_path`, or a known
+/// one no longer matches it.
 fn tailwind_content_key(binary_path: &Path) -> Option<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(binary_path).ok()?;
@@ -1813,11 +1959,27 @@ mod tests {
     /// keeps the [`tempfile::TempDir`] alive on the config so the path
     /// stays valid for every subprocess invocation.
     ///
-    /// Bundles BOTH behavioural assertions — the embedded-tier install AND
-    /// the env-override no-op — into a single test so that `cargo test`'s
-    /// parallel runner can never race the two cases on the shared
-    /// `ZFB_TAILWIND_BIN` env var. Splitting them caused the env-set test
-    /// to leak the var into the embedded-tier test on parallel scheduling.
+    /// #3159 extends this SAME test with `with_embedded_binary_and_digest`'s
+    /// behavior (installs a paired digest; `with_binary_path` and
+    /// `with_embedded_binary` clear it; the env override never receives it
+    /// either) rather than adding a competing test function — see the next
+    /// paragraph for why that matters. Invalid-digest coverage stays OUT of
+    /// this test (it carries a `debug_assert` that would trip here) — see
+    /// `is_valid_sha256_hex_digest_rejects_malformed_input_without_panicking`
+    /// and `validated_embedded_digest_debug_asserts_loudly_on_malformed_input`.
+    ///
+    /// Bundles ALL of these behavioural assertions — the embedded-tier
+    /// install, the env-override no-op, and every digest-builder case —
+    /// into a single test so that `cargo test`'s parallel runner can never
+    /// race them on the shared `ZFB_TAILWIND_BIN` env var. Splitting them
+    /// across separate test functions caused exactly this kind of leak
+    /// before (hence the original, still-true comment below), and re-adding
+    /// a second env-var-touching test for #3159 reproduced it immediately
+    /// (observed: a `with_embedded_binary` call in one test silently took
+    /// the "env override is set" branch because a *different*, concurrently
+    /// running test had `std::env::set_var("ZFB_TAILWIND_BIN", ...)`'d in
+    /// between — `cargo test`'s default parallel scheduling gives no
+    /// isolation between OS threads sharing this process-global var).
     ///
     /// We don't shell out to the real binary here — that's gated by the
     /// `#[ignore]` integration tests in zfb-build. This unit test just
@@ -1878,6 +2040,53 @@ mod tests {
         );
         drop(cloned);
 
+        // ----- Phase 1b: with_embedded_binary_and_digest installs the ---
+        // ----- digest paired with the path; with_binary_path and --------
+        // ----- with_embedded_binary (no digest) both clear it. ----------
+        let digest_hex = "c".repeat(64);
+        let dir_d = tempfile::tempdir().expect("tempdir");
+        let bin_path_d = dir_d.path().join("tailwindcss-v4");
+        std::fs::write(&bin_path_d, b"binary bytes").unwrap();
+
+        let cfg_d = TailwindSubprocessConfig::default().with_embedded_binary_and_digest(
+            dir_d,
+            bin_path_d.clone(),
+            &digest_hex,
+        );
+        assert_eq!(cfg_d.binary_path, bin_path_d);
+        assert_eq!(
+            cfg_d._embedded_digest,
+            Some((bin_path_d.clone(), digest_hex.clone())),
+            "with_embedded_binary_and_digest should pair the digest with its path"
+        );
+
+        let rebased = cfg_d.clone().with_binary_path(bin_path_d.clone());
+        assert!(
+            rebased._embedded_digest.is_none(),
+            "with_binary_path must clear any stored digest"
+        );
+
+        let dir_nd = tempfile::tempdir().expect("tempdir");
+        let bin_path_nd = dir_nd.path().join("tailwindcss-v4");
+        std::fs::write(&bin_path_nd, b"other bytes").unwrap();
+        let no_digest = cfg_d
+            .clone()
+            .with_embedded_binary(dir_nd, bin_path_nd.clone());
+        assert_eq!(no_digest.binary_path, bin_path_nd);
+        assert!(
+            no_digest._embedded_digest.is_none(),
+            "with_embedded_binary (no digest) must clear a previously stored digest"
+        );
+
+        // Invalid-digest coverage (short / non-hex / wrong-length /
+        // non-ASCII, "ignored, never panics, falls back") lives in
+        // `is_valid_sha256_hex_digest_rejects_malformed_input_without_panicking`
+        // and `validated_embedded_digest_debug_asserts_loudly_on_malformed_input`
+        // below, NOT here: `with_embedded_binary_and_digest` carries a
+        // `debug_assert` on that path (by design — see
+        // `validated_embedded_digest`'s doc comment), which would trip in
+        // this debug test binary if exercised through the public builder.
+
         // ----- Phase 2: env set -> env value wins, embedded is no-op --
         std::env::set_var("ZFB_TAILWIND_BIN", "/tmp/zfb-test-tailwind-env-override");
 
@@ -1899,6 +2108,25 @@ mod tests {
             cfg.binary_path,
             PathBuf::from("/tmp/zfb-test-tailwind-env-override"),
             "env-override path must win over with_embedded_binary"
+        );
+
+        // ----- Phase 2b: env override must never receive the digest ----
+        let dir3 = tempfile::tempdir().expect("tempdir");
+        let bin_path3 = dir3.path().join("tailwindcss-v4");
+        std::fs::write(&bin_path3, b"z").unwrap();
+        let env_cfg = TailwindSubprocessConfig::default().with_embedded_binary_and_digest(
+            dir3,
+            bin_path3,
+            &digest_hex,
+        );
+        assert_eq!(
+            env_cfg.binary_path,
+            PathBuf::from("/tmp/zfb-test-tailwind-env-override"),
+            "env override must win over with_embedded_binary_and_digest"
+        );
+        assert!(
+            env_cfg._embedded_digest.is_none(),
+            "a ZFB_TAILWIND_BIN override must never receive the embedded digest"
         );
 
         // _guard drops here, restoring the previous ZFB_TAILWIND_BIN value.
@@ -3001,10 +3229,11 @@ fi
         assert!(should_warm_oxide(&node, OxideWarmupPolicy::Always));
         assert!(!ensure_oxide_extracted_with_policy(
             &node,
-            OxideWarmupPolicy::Auto
+            OxideWarmupPolicy::Auto,
+            None
         ));
         assert!(
-            ensure_oxide_extracted_with_policy(&node, OxideWarmupPolicy::Always),
+            ensure_oxide_extracted_with_policy(&node, OxideWarmupPolicy::Always, None),
             "Auto skip must not be cached into WARMED"
         );
     }
@@ -3048,5 +3277,148 @@ fi
             !ensure_oxide_extracted(&fake_bin),
             "already-warmed path must not warm again"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #3159 — build-time-stamped Tailwind digest
+    // -----------------------------------------------------------------------
+
+    /// A known digest that still matches `binary_path` short-circuits
+    /// straight to a 16-character lowercase key WITHOUT ever opening the
+    /// file — proven by pointing at a path that does not exist on disk:
+    /// [`tailwind_content_key`] (the only thing that would touch the
+    /// filesystem) always returns `None` for a nonexistent path, so a `Some`
+    /// result here is only possible if the digest branch was taken.
+    #[test]
+    fn oxide_warmup_key_prefers_a_matching_known_digest_and_never_opens_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nonexistent-tailwind-binary");
+        assert!(!path.exists());
+
+        let digest_hex = "a".repeat(64);
+        let known = (path.clone(), digest_hex.clone());
+
+        let key = oxide_warmup_key(&path, Some(&known))
+            .expect("a matching known digest must short-circuit even for a missing file");
+        assert_eq!(key.len(), 16);
+        assert_eq!(key, digest_hex[..16]);
+        assert!(
+            key.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "key must be lowercase hex: {key}"
+        );
+
+        // Sanity check the premise: with no known digest, the same
+        // nonexistent path falls back to hashing and yields `None`.
+        assert!(oxide_warmup_key(&path, None).is_none());
+    }
+
+    /// With no known digest, [`oxide_warmup_key`] falls back to
+    /// [`tailwind_content_key`]'s runtime hash — pinned against a real file
+    /// so the fallback path is exercised end to end, not just "returns
+    /// `None` for a missing file" (already covered above).
+    #[test]
+    fn oxide_warmup_key_falls_back_to_the_runtime_hash_with_no_known_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tailwind-like-binary");
+        std::fs::write(&path, b"pretend tailwind bytes for keying").unwrap();
+
+        let expected = tailwind_content_key(&path).expect("hashing an existing file must succeed");
+        assert_eq!(oxide_warmup_key(&path, None), Some(expected));
+    }
+
+    /// [`TailwindSubprocessConfig::binary_path`] is public and can be
+    /// reassigned directly (bypassing every builder), so a known digest
+    /// paired with a DIFFERENT path than the one actually in use must be
+    /// ignored — [`oxide_warmup_key`] falls back to hashing the real
+    /// `binary_path` rather than trusting a stale digest.
+    #[test]
+    fn oxide_warmup_key_ignores_a_known_digest_for_a_different_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let known_path = dir.path().join("known-tailwind-path");
+        let actual_path = dir.path().join("actual-tailwind-path");
+        std::fs::write(&actual_path, b"actual bytes").unwrap();
+
+        let known = (known_path, "b".repeat(64));
+        let expected = tailwind_content_key(&actual_path).expect("hashing must succeed");
+        assert_eq!(oxide_warmup_key(&actual_path, Some(&known)), Some(expected));
+    }
+
+    /// An existing `.done` marker keyed on a known digest makes
+    /// [`warm_oxide_cross_process`] return on its fast path without hashing
+    /// or spawning `binary_path`. The binary is a script that records any
+    /// spawn, and its bytes hash to a different key than the known digest —
+    /// so hashing (marker miss) or spawning would both leave the sentinel.
+    #[cfg(unix)]
+    #[test]
+    fn warm_oxide_cross_process_skips_on_an_existing_marker_for_a_known_digest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sentinel = dir.path().join("spawned");
+        let bin = dir.path().join("fake-tailwind");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", sentinel.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Unique per run: the marker lives in the shared `$TMPDIR`.
+        let digest_hex = hex::encode(Sha256::digest(dir.path().as_os_str().as_encoded_bytes()));
+        assert_ne!(
+            tailwind_content_key(&bin).as_deref(),
+            Some(&digest_hex[..16])
+        );
+        let done_path = std::env::temp_dir().join(format!(
+            "zfb-tailwind-oxide-warmup-{}.done",
+            &digest_hex[..16]
+        ));
+        std::fs::File::create(&done_path).expect("create marker");
+
+        warm_oxide_cross_process(&bin, Some(&(bin.clone(), digest_hex)));
+        let _ = std::fs::remove_file(&done_path);
+
+        assert!(
+            !sentinel.exists(),
+            "an existing marker for the known digest must skip the warm-up spawn"
+        );
+    }
+
+    /// A short, non-hex, wrong-length, or non-ASCII digest is rejected —
+    /// and rejecting it can never itself panic, since it is plain byte
+    /// comparisons over whatever bytes `&str` (always valid UTF-8) hands
+    /// back. This is the pure half of #3159's validation contract; the
+    /// paired `debug_assert` lives one layer up, in
+    /// `validated_embedded_digest` (pinned separately below), so that a
+    /// unit test can exercise every malformed shape here without tripping
+    /// it.
+    #[test]
+    fn is_valid_sha256_hex_digest_rejects_malformed_input_without_panicking() {
+        for bad in [
+            "too-short",
+            "not-hex-------------------------------------------------------", // 64 bytes, non-hex
+            &"a".repeat(63),                                                  // wrong length
+            "café-is-not-ascii-so-this-can-never-be-a-valid-64-hex-digest!!",
+            "",
+        ] {
+            assert!(!is_valid_sha256_hex_digest(bad), "should reject: {bad:?}");
+        }
+        assert!(is_valid_sha256_hex_digest(&"a".repeat(64)));
+        assert!(
+            is_valid_sha256_hex_digest(&"F".repeat(64)),
+            "uppercase hex is still a valid 64-hex-character SHAPE (case is normalized on store)"
+        );
+    }
+
+    /// Pins the OTHER half of #3159's validation contract: `debug_assert`
+    /// makes a malformed digest reaching `validated_embedded_digest` loud in
+    /// a debug build. The sole production caller
+    /// (`env!("ZFB_EMBEDDED_TAILWIND_SHA256")`, stamped by
+    /// `crates/zfb/build.rs`) can never actually supply bad input, so this
+    /// assert exists purely as a dev-time bug detector — a release build
+    /// compiles it away and the function falls back to `None` silently
+    /// instead, exactly as the pure predicate above already proves for
+    /// every one of these shapes.
+    #[test]
+    #[should_panic(expected = "embedded tailwind digest must be exactly 64 ASCII hex characters")]
+    fn validated_embedded_digest_debug_asserts_loudly_on_malformed_input() {
+        let _ = validated_embedded_digest(Path::new("/tmp/whatever-3159-test"), "too-short");
     }
 }
