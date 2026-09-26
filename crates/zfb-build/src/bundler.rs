@@ -1025,6 +1025,8 @@ const KNOWN_SOURCE_DIRS: &[&str] = &[
 /// pruned when mirroring a sibling region — only genuine build/VCS/vendor
 /// output is. `node_modules` is pruned here AND enforced again by the
 /// per-file `path_is_inside_node_modules` guard (defense in depth).
+/// Workspace-package staging applies the same list but keeps any directory
+/// the package's manifest declares (issue #3161, see [`WorkspaceInfraPrune`]).
 const MIRROR_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "dist",
@@ -4245,9 +4247,7 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
-        let prune_workspace_infra = logical_root.canonicalize().is_ok_and(|canonical| {
-            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
-        });
+        let workspace_infra = WorkspaceInfraPrune::for_source(logical_root, &project_root);
         if bundle_exclude.is_empty()
             && workspace_package_staging_active
             && !esbuild_will_preserve_symlinks(&input)
@@ -4267,7 +4267,7 @@ pub fn bundle_with_session(
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
-            prune_workspace_infra,
+            &workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -4290,9 +4290,7 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
-        let prune_workspace_infra = source_root.canonicalize().is_ok_and(|canonical| {
-            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
-        });
+        let workspace_infra = WorkspaceInfraPrune::for_source(source_root, &project_root);
         if bundle_exclude.is_empty()
             && workspace_package_staging_active
             && !esbuild_will_preserve_symlinks(&input)
@@ -4312,7 +4310,7 @@ pub fn bundle_with_session(
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
-            prune_workspace_infra,
+            &workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -7252,18 +7250,77 @@ fn link_ordinary_dependency_to_canonical_source(
     }
 }
 
+/// How [`materialise_isolated_exact_dir`] treats [`MIRROR_SKIP_DIRS`] infra
+/// directories (`node_modules` and `.git` are pruned regardless).
+#[derive(Debug, PartialEq, Eq)]
+enum WorkspaceInfraPrune {
+    /// An ordinary dependency: infra directory names are copied like any other.
+    Off,
+    /// A claimed workspace package (issue #1901): infra directories are pruned
+    /// at any depth, except those on the path to or inside one of `keep` — the
+    /// package-relative directories its own `exports`/`main`/`module` declare
+    /// (issue #3161), e.g. a compiled-JS-only package shipping `dist/`.
+    Workspace { keep: Vec<PathBuf> },
+}
+
+impl WorkspaceInfraPrune {
+    fn for_source(source_root: &Path, project_root: &Path) -> Self {
+        let Ok(canonical) = source_root.canonicalize() else {
+            return Self::Off;
+        };
+        if canonical_workspace_package_logical_path(&canonical, project_root).is_none() {
+            return Self::Off;
+        }
+        // The host project (or an ancestor holding it) is never granted a
+        // `keep`: its own manifest may point into `dist`, which is also the
+        // default build `out_dir`.
+        let holds_host = project_root
+            .canonicalize()
+            .is_ok_and(|host| host.starts_with(&canonical));
+        let keep = if holds_host {
+            Vec::new()
+        } else {
+            fs::read(canonical.join("package.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .map(|manifest| {
+                    crate::metafile_deps::declared_entry_dir_prefixes(&manifest)
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Self::Workspace { keep }
+    }
+
+    fn prunes(&self, relative_dir: &Path, name: &str) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Workspace { keep } => {
+                MIRROR_SKIP_DIRS.contains(&name)
+                    && !keep.iter().any(|declared| {
+                        declared.starts_with(relative_dir) || relative_dir.starts_with(declared)
+                    })
+            }
+        }
+    }
+}
+
 /// Copy an exact alias/package directory into its isolated shadow spelling.
 /// Unlike ordinary source walks, package-owned dot-directories are preserved
 /// because `package.json#imports` may point at them. Nested dependency and VCS
-/// trees remain pruned to keep this explicit staging bounded. Reachable source
-/// files are preprocessed separately and overwrite these raw copies.
+/// trees remain pruned to keep this explicit staging bounded, and so are a
+/// workspace package's infra directories unless its manifest declares them
+/// (see [`WorkspaceInfraPrune`]). Reachable source files are preprocessed
+/// separately and overwrite these raw copies.
 fn materialise_isolated_exact_dir(
     source_root: &Path,
     logical_root: &Path,
     dest: &Path,
     writer: &ShadowWriter<'_>,
     is_excluded: &dyn Fn(&Path) -> bool,
-    prune_workspace_infra: bool,
+    workspace_infra: &WorkspaceInfraPrune,
 ) -> Result<()> {
     let physical_root = source_root.canonicalize().with_context(|| {
         format!(
@@ -7280,8 +7337,14 @@ fn materialise_isolated_exact_dir(
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
-            !matches!(name.as_ref(), "node_modules" | ".git")
-                && (!prune_workspace_infra || !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip))
+            if matches!(name.as_ref(), "node_modules" | ".git") {
+                return false;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&physical_root)
+                .unwrap_or(entry.path());
+            !workspace_infra.prunes(relative, &name)
         })
     {
         let entry = match entry {
@@ -18129,7 +18192,7 @@ mod tests {
             &dest,
             &writer,
             &is_excluded,
-            false,
+            &WorkspaceInfraPrune::Off,
         )
         .expect(
             "a dangling symlink inside an isolated exact-target dir must be \
@@ -18172,7 +18235,7 @@ mod tests {
             &dest,
             &writer,
             &|_| false,
-            true,
+            &WorkspaceInfraPrune::Workspace { keep: Vec::new() },
         )
         .unwrap();
 
@@ -18188,6 +18251,160 @@ mod tests {
                 .file_type()
                 .is_symlink(),
             "copy-mode package staging must not require symlink privileges"
+        );
+    }
+
+    /// A nested host `apps/site` in a workspace claiming `packages/*` and
+    /// `apps/*` (plus `extra_globs`). Returns the workspace tempdir and the
+    /// host's project root.
+    fn nested_host_workspace(extra_globs: &str) -> (tempfile::TempDir, PathBuf) {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(
+            workspace.path().join("pnpm-workspace.yaml"),
+            format!("packages:\n  - 'packages/*'\n  - 'apps/*'\n{extra_globs}"),
+        )
+        .unwrap();
+        let project = workspace.path().join("apps/site");
+        fs::create_dir_all(&project).unwrap();
+        (workspace, project)
+    }
+
+    /// Write `files` (relative path, contents) under `root`.
+    fn write_tree(root: &Path, files: &[(&str, &str)]) {
+        for (relative, contents) in files {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+    }
+
+    /// Stage workspace package `packages/<name>` for the nested host exactly
+    /// as the exact-target call sites do. Returns the workspace and shadow
+    /// tempdirs (to keep them alive) and the staged directory.
+    fn stage_workspace_package(
+        name: &str,
+        files: &[(&str, &str)],
+    ) -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+        let (workspace, project) = nested_host_workspace("");
+        let source_root = workspace.path().join("packages").join(name);
+        write_tree(&source_root, files);
+        let workspace_infra = WorkspaceInfraPrune::for_source(&source_root, &project);
+        assert!(
+            matches!(workspace_infra, WorkspaceInfraPrune::Workspace { .. }),
+            "the fixture package must be claimed: {workspace_infra:?}"
+        );
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("node_modules").join(name);
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        materialise_isolated_exact_dir(
+            &source_root,
+            &Path::new("node_modules").join(name),
+            &dest,
+            &writer,
+            &|_| false,
+            &workspace_infra,
+        )
+        .unwrap();
+        (workspace, shadow, dest)
+    }
+
+    #[test]
+    fn materialise_workspace_package_keeps_manifest_declared_dist() {
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                (
+                    "package.json",
+                    r#"{"name":"lib","exports":{"./islands":{"types":"./dist/islands.d.ts","default":"./dist/islands.js"}}}"#,
+                ),
+                ("dist/islands.js", "export const marker = 1;\n"),
+                (
+                    "dist/islands.d.ts",
+                    "export declare const marker: number;\n",
+                ),
+                ("dist/node_modules/vendor/index.js", "vendored\n"),
+                ("node_modules/vendor/index.js", "vendored\n"),
+                ("target/debug/leak.txt", "infra\n"),
+                (".turbo/turbo-build.log", "infra\n"),
+            ],
+        );
+
+        assert!(dest.join("dist/islands.js").is_file());
+        assert!(dest.join("dist/islands.d.ts").is_file());
+        assert!(
+            !dest.join("dist/node_modules").exists(),
+            "node_modules stays pruned even inside a declared directory"
+        );
+        assert!(!dest.join("node_modules").exists());
+        assert!(!dest.join("target").exists());
+        assert!(!dest.join(".turbo").exists());
+    }
+
+    #[test]
+    fn materialise_workspace_package_keeps_nested_declared_dist_only() {
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                (
+                    "package.json",
+                    r#"{"name":"lib","exports":{"./x":"./build/dist/x.js"}}"#,
+                ),
+                ("build/dist/x.js", "export const x = 1;\n"),
+                ("build/other/dist/y.js", "undeclared\n"),
+                ("dist/leak.js", "undeclared\n"),
+            ],
+        );
+
+        assert!(dest.join("build/dist/x.js").is_file());
+        assert!(!dest.join("build/other/dist").exists());
+        assert!(!dest.join("dist").exists());
+    }
+
+    #[test]
+    fn materialise_workspace_package_with_source_exports_still_prunes_dist() {
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "ui",
+            &[
+                (
+                    "package.json",
+                    r#"{"name":"ui","main":"./index.js","exports":{"./*":"./src/*"}}"#,
+                ),
+                ("index.js", "export {};\n"),
+                ("src/button.ts", "export const b = 1;\n"),
+                ("dist/leak.js", "generated\n"),
+            ],
+        );
+
+        assert!(dest.join("src/button.ts").is_file());
+        assert!(!dest.join("dist").exists());
+    }
+
+    #[test]
+    fn workspace_infra_prune_grants_no_keep_to_the_host_or_its_ancestors() {
+        let dist_manifest = r#"{"name":"pkg","exports":{"./x":"./dist/x.js"}}"#;
+        let (workspace, project) = nested_host_workspace("  - '.'\n");
+        write_tree(&project, &[("package.json", dist_manifest)]);
+        write_tree(workspace.path(), &[("package.json", dist_manifest)]);
+        let sibling = workspace.path().join("packages/lib");
+        write_tree(&sibling, &[("package.json", dist_manifest)]);
+
+        let no_keep = WorkspaceInfraPrune::Workspace { keep: Vec::new() };
+        assert_eq!(
+            WorkspaceInfraPrune::for_source(&project, &project),
+            no_keep,
+            "the host's own out_dir must never be staged"
+        );
+        assert_eq!(
+            WorkspaceInfraPrune::for_source(workspace.path(), &project),
+            no_keep,
+            "an ancestor holding the host must not be granted its dist either"
+        );
+        assert_eq!(
+            WorkspaceInfraPrune::for_source(&sibling, &project),
+            WorkspaceInfraPrune::Workspace {
+                keep: vec![PathBuf::from("dist/")]
+            },
         );
     }
 
