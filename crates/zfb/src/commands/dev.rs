@@ -7437,7 +7437,7 @@ impl DevRenderSession {
         let p1_snapshot_start = tick_start.map(|_| std::time::Instant::now());
         // Issue #3190 — taken before the bundle reads any source, so an edit
         // this bundle may have missed is never older than it.
-        let read_since = std::time::SystemTime::now();
+        let read_since = zfb_build::ssr_read_start();
         let bundle_result = {
             // #993 — the persistent shadow session lock is scoped to the
             // P1 bundle step only: it is released before the P2 renderer-
@@ -9432,7 +9432,7 @@ fn boot_dev_renderer(
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-        let read_since = std::time::SystemTime::now();
+        let read_since = zfb_build::ssr_read_start();
         let bundler_out: BundlerOutput = assemble_and_bundle_dev(
             project_root,
             cfg,
