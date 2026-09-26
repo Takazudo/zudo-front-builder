@@ -1393,6 +1393,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // kills the subprocess.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
 
+    // Issue #3201 — plugin loaders read their `watchFiles` during setup and
+    // the virtual-module prefetch, so the plugin watch-file set is stamped
+    // with a read start taken just before setup.
+    let plugin_watch_files_read_since = zfb_build::ssr_read_start();
+
     // #255 / #260 / #261 / #268 — shared plugin setup phase:
     // setup → virtual-module prefetch → alias/virtual-module derivation.
     //
@@ -2226,12 +2231,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+    // Issue #3201 — directories zfb writes into itself this session: the
+    // watch-arm reconcile must never report their files as user edits.
+    // `outDir` is left out when it would swallow the project (`outDir: "."`).
+    raw_import_invalidation.set_zfb_written_roots(
+        [
+            project_root.join(".zfb"),
+            project_root.join(".zfb-build"),
+            dev_html_root.clone(),
+            dev_assets_root.clone(),
+        ]
+        .into_iter()
+        .chain((!project_root.starts_with(&dist_root)).then(|| dist_root.clone())),
+    );
     // Issue #2168 — populate the plugin watch-file registry ONCE, here at
     // boot. Unlike the client-script / islands sets this same
     // `RawImportInvalidation` also carries, plugin registrations are frozen
     // after `setup` runs, so there is no later successful-bundle tick that
     // would call `replace_plugin_watch_files` again.
-    raw_import_invalidation.replace_plugin_watch_files(plugin_watch_files);
+    raw_import_invalidation
+        .replace_plugin_watch_files_read_since(plugin_watch_files, plugin_watch_files_read_since);
     // Issue #3162 — the dev SSR module-dependency set rides the same
     // registry. Installing it replays the eager boot bundle's set (recorded
     // by `seed_boot_module_edges` above, before this registry existed), so
@@ -2588,9 +2607,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             ledger.track_candidate(&outcome.output_filenames);
             ledger.stage(outcome.output_filenames.clone(), outcome.changed);
             drop(ledger);
-            raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
-            raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
-            raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            // Issue #3201 — one publisher, one read start for all three sets.
+            raw_import_invalidation
+                .replace_client_scripts_read_since(outcome.raw_targets, outcome.read_since);
+            raw_import_invalidation.replace_client_script_workers_read_since(
+                outcome.worker_targets,
+                outcome.read_since,
+            );
+            raw_import_invalidation.replace_client_script_siblings_read_since(
+                outcome.client_script_siblings,
+                outcome.read_since,
+            );
             islands_bundle_url_handle
                 .write()
                 .unwrap_or_else(|p| {
@@ -2713,9 +2740,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             ledger.track_candidate(&outcome.output_filenames);
             ledger.stage(outcome.output_filenames.clone(), outcome.changed);
             drop(ledger);
-            raw_invalidation.replace_client_scripts(outcome.raw_targets);
-            raw_invalidation.replace_client_script_workers(outcome.worker_targets);
-            raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            // Issue #3201 — one publisher, one read start for all three sets.
+            raw_invalidation
+                .replace_client_scripts_read_since(outcome.raw_targets, outcome.read_since);
+            raw_invalidation.replace_client_script_workers_read_since(
+                outcome.worker_targets,
+                outcome.read_since,
+            );
+            raw_invalidation.replace_client_script_siblings_read_since(
+                outcome.client_script_siblings,
+                outcome.read_since,
+            );
             publication_state
                 .write()
                 .unwrap_or_else(|p| {
@@ -12570,7 +12605,7 @@ mod tests {
         let registry = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(registry.clone());
         assert_eq!(
-            registry.ssr_module_deps_modified_since_read(|_| true),
+            registry.modified_since_read(|_| true),
             vec![in_root.clone()],
             "only the dependency written after the boot read is reported"
         );
@@ -12580,9 +12615,7 @@ mod tests {
             Some(std::time::SystemTime::now() + std::time::Duration::from_secs(60)),
         );
         assert!(
-            registry
-                .ssr_module_deps_modified_since_read(|_| true)
-                .is_empty(),
+            registry.modified_since_read(|_| true).is_empty(),
             "a later publication replaces the read start"
         );
     }
