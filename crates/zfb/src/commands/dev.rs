@@ -12523,9 +12523,16 @@ mod tests {
         session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)));
         assert!(registry.is_ssr_module_dependency(&in_root));
 
+        // The stub project fails inside esbuild (the syntax error, or the
+        // unresolved runtime import this stub has no node_modules for) —
+        // either way at the bundle step, which is the path under test.
+        let Err(err) = session.refresh_bundle_and_routes() else {
+            panic!("the broken page must fail the refresh");
+        };
+        let err = format!("{err:#}");
         assert!(
-            session.refresh_bundle_and_routes().is_err(),
-            "a page with a syntax error must fail the refresh"
+            err.contains("re-bundle failed") && err.contains("esbuild exited"),
+            "the refresh must fail at the bundle step, got: {err}"
         );
         assert!(
             registry.is_ssr_module_dependency(&in_root),

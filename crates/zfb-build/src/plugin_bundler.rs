@@ -725,8 +725,11 @@ mod tests {
         };
 
         let getter = make_stub_embedded_getter(real);
-        let (handle, resolved_path) = resolve_esbuild_for_plugins(Some(getter))
-            .expect("embedded getter should resolve a usable esbuild path");
+        // Injected empty env: the real process env may carry ZFB_ESBUILD_BIN,
+        // whose tier would win and return no TempDir handle (#3167).
+        let (handle, resolved_path) =
+            resolve_esbuild_binary_with_env(None, |_: &str| None, Some(getter), None)
+                .expect("embedded getter should resolve a usable esbuild path");
         let handle = handle.expect("embedded tier must return the TempDir handle");
 
         let project = tempfile::tempdir().unwrap();
