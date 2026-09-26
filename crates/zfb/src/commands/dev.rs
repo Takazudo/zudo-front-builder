@@ -1393,6 +1393,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // kills the subprocess.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
 
+    // Issue #3201 — plugin loaders read their `watchFiles` during setup and
+    // the virtual-module prefetch, so the plugin watch-file set is stamped
+    // with a read start taken just before setup.
+    let plugin_watch_files_read_since = zfb_build::ssr_read_start();
+
     // #255 / #260 / #261 / #268 — shared plugin setup phase:
     // setup → virtual-module prefetch → alias/virtual-module derivation.
     //
@@ -2226,12 +2231,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+    // Issue #3201 — directories zfb writes into itself this session: the
+    // watch-arm reconcile must never report their files as user edits.
+    // `outDir` is left out when it would swallow the project (`outDir: "."`).
+    raw_import_invalidation.set_zfb_written_roots(
+        [
+            project_root.join(".zfb"),
+            project_root.join(".zfb-build"),
+            dev_html_root.clone(),
+            dev_assets_root.clone(),
+        ]
+        .into_iter()
+        .chain((!project_root.starts_with(&dist_root)).then(|| dist_root.clone())),
+    );
     // Issue #2168 — populate the plugin watch-file registry ONCE, here at
     // boot. Unlike the client-script / islands sets this same
     // `RawImportInvalidation` also carries, plugin registrations are frozen
     // after `setup` runs, so there is no later successful-bundle tick that
     // would call `replace_plugin_watch_files` again.
-    raw_import_invalidation.replace_plugin_watch_files(plugin_watch_files);
+    raw_import_invalidation
+        .replace_plugin_watch_files_read_since(plugin_watch_files, plugin_watch_files_read_since);
     // Issue #3162 — the dev SSR module-dependency set rides the same
     // registry. Installing it replays the eager boot bundle's set (recorded
     // by `seed_boot_module_edges` above, before this registry existed), so
@@ -2588,9 +2607,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             ledger.track_candidate(&outcome.output_filenames);
             ledger.stage(outcome.output_filenames.clone(), outcome.changed);
             drop(ledger);
-            raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
-            raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
-            raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            // Issue #3201 — one publisher, one read start for all three sets.
+            raw_import_invalidation
+                .replace_client_scripts_read_since(outcome.raw_targets, outcome.read_since);
+            raw_import_invalidation.replace_client_script_workers_read_since(
+                outcome.worker_targets,
+                outcome.read_since,
+            );
+            raw_import_invalidation.replace_client_script_siblings_read_since(
+                outcome.client_script_siblings,
+                outcome.read_since,
+            );
             islands_bundle_url_handle
                 .write()
                 .unwrap_or_else(|p| {
@@ -2713,9 +2740,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             ledger.track_candidate(&outcome.output_filenames);
             ledger.stage(outcome.output_filenames.clone(), outcome.changed);
             drop(ledger);
-            raw_invalidation.replace_client_scripts(outcome.raw_targets);
-            raw_invalidation.replace_client_script_workers(outcome.worker_targets);
-            raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            // Issue #3201 — one publisher, one read start for all three sets.
+            raw_invalidation
+                .replace_client_scripts_read_since(outcome.raw_targets, outcome.read_since);
+            raw_invalidation.replace_client_script_workers_read_since(
+                outcome.worker_targets,
+                outcome.read_since,
+            );
+            raw_invalidation.replace_client_script_siblings_read_since(
+                outcome.client_script_siblings,
+                outcome.read_since,
+            );
             publication_state
                 .write()
                 .unwrap_or_else(|p| {
@@ -6599,6 +6634,12 @@ impl DevRenderSession {
         if let Some(deps) = publication.last_successful.as_ref() {
             publish_ssr_module_deps_into(&registry, deps, publication.read_since);
         }
+        if let Some(entries) = publication.page_entries.as_ref() {
+            registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+        }
+        if let Some(files) = publication.content_files.as_ref() {
+            registry.replace_content_files_read_since(files.paths.clone(), files.read_since);
+        }
         publication.registry = Some(registry);
     }
 
@@ -6627,11 +6668,49 @@ impl DevRenderSession {
             .ssr_module_deps
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        // Issue #3202 — the metafile walk drops each route's own entry from
+        // its dependency set (the graph adds a page self-edge), so publish
+        // the entries separately, keyed by their logical project path (the
+        // bundler records `source_path` from the logical, not the shadow,
+        // spelling).
+        let page_entries = read_since.map(|read_since| ReconcileOnlyReads {
+            paths: deps
+                .iter()
+                .map(|route| self.inner.project_root.join(&route.source_path))
+                .collect(),
+            read_since,
+        });
         if let Some(registry) = publication.registry.as_ref() {
             publish_ssr_module_deps_into(registry, &set, read_since);
+            if let Some(entries) = page_entries.as_ref() {
+                registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+            }
         }
         publication.last_successful = Some(set);
         publication.read_since = read_since;
+        publication.page_entries = page_entries;
+    }
+
+    /// Record and publish the content-collection files a content snapshot
+    /// read, with the read start taken before it walked them (issue #3202),
+    /// so the watch-arm reconcile can find an entry edited after the read
+    /// but before the watcher covered it. Every snapshot is a publication,
+    /// an empty one included.
+    #[cfg(feature = "embed_v8")]
+    fn publish_content_reads(
+        &self,
+        paths: std::collections::BTreeSet<PathBuf>,
+        read_since: std::time::SystemTime,
+    ) {
+        let mut publication = self
+            .inner
+            .ssr_module_deps
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(registry) = publication.registry.as_ref() {
+            registry.replace_content_files_read_since(paths.clone(), read_since);
+        }
+        publication.content_files = Some(ReconcileOnlyReads { paths, read_since });
     }
 
     /// The persisted graph is only a cache. Once the boot graph has been
@@ -7480,6 +7559,9 @@ impl DevRenderSession {
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
         let bundler_out = bundle_result.output;
+        // Issue #3202 — the snapshot is the bundle's first read, so the
+        // bundle's read start covers it.
+        self.publish_content_reads(bundle_result.content_files, read_since);
 
         // #1284/#1287 — populate per-route `DepKind::Module` edges from the
         // bundle's metafile so a component edit (direct or transitive, incl. a
@@ -7992,6 +8074,42 @@ struct SsrModuleDepPublication {
     last_successful: Option<std::collections::BTreeSet<PathBuf>>,
     /// When the bundle behind `last_successful` started reading (#3190).
     read_since: Option<std::time::SystemTime>,
+    /// The same bundle's route entry files, as logical project paths, with
+    /// its read start (#3202). Only a read-stamped bundle records them.
+    page_entries: Option<ReconcileOnlyReads>,
+    /// The content-collection files the latest content snapshot read, with
+    /// its read start (#3202).
+    content_files: Option<ReconcileOnlyReads>,
+}
+
+/// Files a dev pass read outside esbuild's dependency walk, and when it
+/// started reading them (issue #3202). Published only for the watch-arm
+/// reconcile: see `RawImportInvalidation::replace_page_entries_read_since`.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+struct ReconcileOnlyReads {
+    paths: std::collections::BTreeSet<PathBuf>,
+    read_since: std::time::SystemTime,
+}
+
+/// The files `snapshot` was built from: each collection entry's
+/// collection-root-relative path joined onto that collection's root, the
+/// same root `build_content_snapshot` handed the snapshot walk (#3202).
+#[cfg(feature = "embed_v8")]
+fn content_snapshot_files(
+    project_root: &Path,
+    cfg: &config::Config,
+    snapshot: &zfb_content::ContentSnapshot,
+) -> std::collections::BTreeSet<PathBuf> {
+    cfg.collections
+        .iter()
+        .filter_map(|collection| {
+            let entries = snapshot.collections.get(&collection.name)?;
+            let root = project_root.join(&collection.path);
+            Some(entries.iter().map(move |entry| root.join(&entry.rel_path)))
+        })
+        .flatten()
+        .collect()
 }
 
 /// Publish `deps` into the registry, with the bundle's read start when known
@@ -8326,6 +8444,10 @@ struct BundleSubTiming {
 struct AssembledBundleResult {
     output: BundlerOutput,
     sub_timing: Option<BundleSubTiming>,
+    /// The files the content snapshot was built from (issue #3202). The
+    /// snapshot is this function's first read, so a read start the caller
+    /// took just before calling covers it.
+    content_files: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Assemble the dev-mode bundler input and run the bundler, returning the
@@ -8406,8 +8528,14 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
-    let content_snapshot_json =
-        crate::commands::build::build_content_snapshot_json(project_root, cfg);
+    let (content_snapshot_json, content_files) =
+        match crate::commands::build::build_content_snapshot_json(project_root, cfg) {
+            Some((json, snapshot)) => (
+                Some(json),
+                content_snapshot_files(project_root, cfg, &snapshot),
+            ),
+            None => (None, std::collections::BTreeSet::new()),
+        };
     let snapshot_ms = snap_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
     // The full ~25-field BundlerInput assembly is shared with `zfb build`
@@ -8476,6 +8604,7 @@ fn assemble_and_bundle_dev(
     Ok(AssembledBundleResult {
         output: bundler_out,
         sub_timing,
+        content_files,
     })
 }
 
@@ -9396,6 +9525,7 @@ fn boot_dev_renderer(
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
     let mut boot_bundle_read_since: Option<std::time::SystemTime> = None;
+    let mut boot_content_reads: Option<ReconcileOnlyReads> = None;
     let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
@@ -9433,7 +9563,7 @@ fn boot_dev_renderer(
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
         let read_since = zfb_build::ssr_read_start();
-        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+        let assembled = assemble_and_bundle_dev(
             project_root,
             cfg,
             plugin_alias_entries,
@@ -9448,8 +9578,13 @@ fn boot_dev_renderer(
             // #3004/#3021 — stage the same frozen entrypoint list the BOOT
             // bundle and every subsequent refresh tick share.
             rebuild_inputs.injected_route_entrypoints(),
-        )?
-        .output;
+        )?;
+        // #3202 — replayed into the registry with the SSR set once it exists.
+        boot_content_reads = Some(ReconcileOnlyReads {
+            paths: assembled.content_files,
+            read_since,
+        });
+        let bundler_out: BundlerOutput = assembled.output;
         let (trace_token, trace_wrapper_source) =
             wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
@@ -9558,7 +9693,10 @@ fn boot_dev_renderer(
                 reads_by_observation: BTreeMap::new(),
                 boot_complete: false,
             }),
-            ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
+            ssr_module_deps: Mutex::new(SsrModuleDepPublication {
+                content_files: boot_content_reads,
+                ..SsrModuleDepPublication::default()
+            }),
             boot_route_module_deps,
             boot_bundle_read_since,
             paths_cache: Mutex::new(paths_cache),
@@ -12570,7 +12708,7 @@ mod tests {
         let registry = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(registry.clone());
         assert_eq!(
-            registry.ssr_module_deps_modified_since_read(|_| true),
+            registry.modified_since_read(|_| true),
             vec![in_root.clone()],
             "only the dependency written after the boot read is reported"
         );
@@ -12580,10 +12718,121 @@ mod tests {
             Some(std::time::SystemTime::now() + std::time::Duration::from_secs(60)),
         );
         assert!(
-            registry
-                .ssr_module_deps_modified_since_read(|_| true)
-                .is_empty(),
+            registry.modified_since_read(|_| true).is_empty(),
             "a later publication replaces the read start"
+        );
+    }
+
+    /// Issue #3202 — the SSR bundle's route entries are published as their
+    /// logical project paths (the bundler's project-relative `source_path`
+    /// joined onto the project root, never a shadow copy) with the bundle's
+    /// read start, replayed into a registry installed later; an unedited
+    /// entry is not reported, and a publication without a read start records
+    /// no entries.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn page_entries_publish_logical_paths_with_the_bundle_read_start_3202() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let index = project.join("pages/index.tsx");
+        let about = project.join("pages/about.tsx");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        let read_since = std::time::SystemTime::now();
+        for (page, mtime) in [
+            (&index, read_since + std::time::Duration::from_secs(1)),
+            (&about, read_since - std::time::Duration::from_secs(5)),
+        ] {
+            std::fs::write(page, "export default () => null;").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(page)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        }
+        let routes = ["pages/index.tsx", "pages/about.tsx"]
+            .into_iter()
+            .map(|source| zfb_build::RouteModuleDeps {
+                source_path: PathBuf::from(source),
+                module_deps: std::collections::BTreeSet::new(),
+            })
+            .collect::<Vec<_>>();
+        let session = ssr_dep_session(&project, Vec::new());
+
+        session.populate_module_edges(&routes, None);
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        assert!(
+            registry.modified_since_read(|_| true).is_empty(),
+            "a publication without a read start records no page entries"
+        );
+
+        session.populate_module_edges(&routes, Some(read_since));
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![index.clone()],
+            "only the entry edited after the bundle read is reported"
+        );
+        let replayed = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(replayed.clone());
+        assert_eq!(replayed.modified_since_read(|_| true), vec![index]);
+    }
+
+    /// Issue #3202 — the content snapshot's files map back onto each
+    /// collection's root, and a content publication recorded before the
+    /// registry exists (the eager boot's) is replayed into it.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn content_snapshot_files_are_published_for_the_reconcile_3202() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let posts = project.join("content/posts");
+        std::fs::create_dir_all(posts.join("nested")).unwrap();
+        std::fs::write(posts.join("a.md"), "---\ntitle: A\n---\nA\n").unwrap();
+        std::fs::write(posts.join("nested/b.md"), "---\ntitle: B\n---\nB\n").unwrap();
+        let cfg = config::Config {
+            collections: vec![config::CollectionDef {
+                name: "posts".into(),
+                path: PathBuf::from("content/posts"),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+                allow_outside_root: false,
+            }],
+            ..Default::default()
+        };
+        let (_, snapshot) = crate::commands::build::build_content_snapshot_json(&project, &cfg)
+            .expect("snapshot of one collection");
+        let files = content_snapshot_files(&project, &cfg, &snapshot);
+        assert_eq!(
+            files,
+            [posts.join("a.md"), posts.join("nested/b.md")]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+
+        let read_since = std::time::SystemTime::now();
+        std::fs::File::options()
+            .write(true)
+            .open(posts.join("a.md"))
+            .unwrap()
+            .set_modified(read_since + std::time::Duration::from_secs(1))
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(posts.join("nested/b.md"))
+            .unwrap()
+            .set_modified(read_since - std::time::Duration::from_secs(5))
+            .unwrap();
+        let session = ssr_dep_session(&project, Vec::new());
+        session.publish_content_reads(files, read_since);
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![posts.join("a.md")],
+            "only the entry edited after the snapshot read is reported"
         );
     }
 

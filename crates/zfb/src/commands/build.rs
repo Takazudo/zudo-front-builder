@@ -3489,7 +3489,7 @@ fn materialise_islands_shadow_with_worker_context(
 
     // --- Materialise. ----------------------------------------------------
     let tempdir = tempfile::Builder::new()
-        .prefix("zfb-islands-shadow-")
+        .prefix(zfb_build::ISLANDS_SHADOW_DIR_PREFIX)
         .tempdir()
         .context("failed to allocate islands shadow tempdir")?;
     let shadow_root = tempdir.path();
@@ -4274,6 +4274,10 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // legitimate external dependency, not a workspace sibling (issue #1731),
     // and must never be recorded as a `WorkspacePackageImportEdge`.
     let first_party_root = zfb_types::first_party_root_for(project_root);
+    // Issue #3201 — the dev registry's islands set records when this scan
+    // started reading, so the watch-arm reconcile can find an edit made
+    // before the watcher covered a dependency. Production never publishes.
+    let islands_read_since = raw_invalidation.is_some().then(zfb_build::ssr_read_start);
     let (islands_set, scan_meta) = match scan_islands_with_meta_and_first_party_root(
         &entries,
         &resolver,
@@ -4428,7 +4432,10 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             dependencies.extend(shadow.raw_targets.iter().cloned());
             dependencies.extend(shadow.module_worker_dependencies.iter().cloned());
         }
-        invalidation.replace_islands(dependencies);
+        match islands_read_since {
+            Some(read_since) => invalidation.replace_islands_read_since(dependencies, read_since),
+            None => invalidation.replace_islands(dependencies),
+        }
     }
 
     // Issue #289: a project may use `<ClientRouter />` without any
@@ -5293,7 +5300,7 @@ fn stage_client_script_preprocessing_with_worker_context(
     let sibling_present = !sibling_closure.is_empty();
 
     let tempdir = tempfile::Builder::new()
-        .prefix("zfb-client-preprocess-")
+        .prefix(zfb_build::CLIENT_PREPROCESS_DIR_PREFIX)
         .tempdir()
         .context("allocate client-script preprocessing directory")?;
     let root = tempdir.path().to_path_buf();
@@ -6335,6 +6342,11 @@ pub(crate) struct DevClientScriptsOutcome {
     /// dependency) materialised into the preprocess stage (issue #1710) — an
     /// edit to any member must also rerun the client-script pipeline.
     pub(crate) client_script_siblings: std::collections::BTreeSet<PathBuf>,
+    /// When this pass started reading its sources (issue #3201), taken with
+    /// [`zfb_build::ssr_read_start`] before discovery. Published with the
+    /// three sets above so the watch-arm reconcile can find an edit made
+    /// before the watcher covered one of them.
+    pub(crate) read_since: std::time::SystemTime,
 }
 
 #[cfg(test)]
@@ -6368,6 +6380,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     registered: &zfb_build::ClientEntryList,
     plugin_config: &IslandsPluginConfig,
 ) -> Result<DevClientScriptsOutcome> {
+    let read_since = zfb_build::ssr_read_start();
     let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
 
@@ -6449,6 +6462,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
             raw_targets: std::collections::BTreeSet::new(),
             worker_targets: std::collections::BTreeSet::new(),
             client_script_siblings: std::collections::BTreeSet::new(),
+            read_since,
         });
     }
 
@@ -6605,6 +6619,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         raw_targets,
         worker_targets,
         client_script_siblings,
+        read_since,
     })
 }
 
@@ -7691,13 +7706,20 @@ pub(crate) fn read_tsconfig_paths(
 /// sees the same collection data the build does — without this, dev
 /// `getCollection(...)` resolves against the placeholder empty snapshot
 /// and every collection query returns `[]`).
-pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) -> Option<String> {
+///
+/// The snapshot comes back beside its JSON so `zfb dev` can publish the
+/// files it was built from for the watch-arm reconcile (issue #3202).
+pub(crate) fn build_content_snapshot_json(
+    project_root: &Path,
+    config: &Config,
+) -> Option<(String, zfb_content::ContentSnapshot)> {
     let snapshot = build_content_snapshot(
         project_root,
         config,
         zfb_content::SnapshotOptions::default(),
     )?;
-    serialize_content_snapshot(&snapshot)
+    let json = serialize_content_snapshot(&snapshot)?;
+    Some((json, snapshot))
 }
 
 /// Serialize a built snapshot for embedding in the worker bundle.
@@ -18453,7 +18475,7 @@ mod tests {
             "Config::default() must produce no collections for this test to be meaningful"
         );
         let tmp = tempdir().unwrap();
-        let result = build_content_snapshot_json(tmp.path(), &cfg);
+        let result = build_content_snapshot_json(tmp.path(), &cfg).map(|(json, _)| json);
         assert!(
             result.is_none(),
             "build_content_snapshot_json must return None when collections is empty \

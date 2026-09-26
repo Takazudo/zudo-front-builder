@@ -69,6 +69,11 @@
 //! those: over the same root site, a SINGLE edit written the instant `ready`
 //! is printed must be served, including when it lands before the watcher is
 //! armed at all (the orchestrator's watch-arm reconcile recovers it).
+//!
+//! **Issue #3202** (epic #3197, #3191) adds three `e2e_3202_*` functions: the
+//! same single pre-arm write, to a route's own entry (`pages/index.tsx`), a
+//! content-collection entry, and a client-script `?raw` target, each of which
+//! the watch-arm reconcile must recover.
 
 #![cfg(unix)]
 
@@ -1389,8 +1394,9 @@ async fn e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served(
 /// so it produces no filesystem event at all.
 ///
 /// Falsifiability (revert-proven, #3190): with the orchestrator's pre-boot
-/// `unobserved_ssr_dependency_edits` call removed the edit is never served;
-/// it fails on the pre-fix base and on v2.21.1 (`066e058`) too.
+/// `unobserved_dependency_edits` call (`unobserved_ssr_dependency_edits`
+/// before #3201) removed the edit is never served; it fails on the pre-fix
+/// base and on v2.21.1 (`066e058`) too.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
 async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
@@ -1417,4 +1423,152 @@ async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
         "the edit must be recovered by the watch-arm reconcile, not a late event\n{}",
         session.logs(),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #3202 (#3191) — files the eager boot read outside the SSR dependency
+// set, edited ONCE before the watcher is armed.
+// ---------------------------------------------------------------------------
+
+/// The #3190 seams that widen both boot windows: the orchestrator (and so the
+/// watcher) starts 2 s after `ready`, and the eager boot render takes 2 s.
+const SLOW_WATCH_ARM_ENV: [(&str, &str); 2] = [
+    ("ZFB_DEV_TEST_SLOW_DIGEST_MS", "2000"),
+    ("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS", "2000"),
+];
+
+const PAGE_ENTRY_V2: &str = "ZFB3202_PAGE_ENTRY_V2_EDITED";
+const CONTENT_ENTRY_V2: &str = "ZFB3202_CONTENT_ENTRY_V2_EDITED";
+const CLIENT_RAW_V2: &str = "ZFB3202_CLIENT_RAW_V2_EDITED";
+
+fn dev_loop_basic_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-loop-basic")
+}
+
+/// Boot `root` with [`SLOW_WATCH_ARM_ENV`], rewrite `edited` ONCE (through
+/// `edit`) the instant `ready` is printed, and require `url_path` to serve
+/// `marker` and the watch-arm reconcile to name the edited file. Returns
+/// `false` on an environmental skip.
+async fn single_edit_before_watch_arm_is_served(
+    root: &Path,
+    edited: &Path,
+    edit: impl FnOnce(String) -> String,
+    url_path: &str,
+    marker: &str,
+    label: &str,
+) -> bool {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3202] no esbuild binary available; skipping.");
+        return false;
+    };
+    let before = fs::read_to_string(edited).expect("read the file to edit");
+    let after = edit(before.clone());
+    assert_ne!(before, after, "{label}: the edit must change the file");
+    let mut session = spawn_dev_with_env(root, &esbuild, None, &SLOW_WATCH_ARM_ENV, "");
+    let Some(port) = wait_for_ready(&mut session).await else {
+        return false;
+    };
+    write_once_until_served(
+        &loopback_client(),
+        edited,
+        &after,
+        &format!("http://localhost:{port}{url_path}"),
+        marker,
+        label,
+        &session,
+    )
+    .await;
+    let edited_name = edited.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    assert!(
+        session.stderr().lines().any(|line| {
+            line.contains("watch-arm reconcile: edited before its watch:")
+                && line.trim_end().ends_with(edited_name)
+        }),
+        "{label}: the edit must be recovered by the watch-arm reconcile, not a late event\n{}",
+        session.logs(),
+    );
+    true
+}
+
+/// Issue #3202 — a route's OWN entry file (`pages/index.tsx`), edited once
+/// after the eager bundle read it and before any watch covers it, is served.
+/// The entry is not in the SSR module-dependency set (the metafile walk drops
+/// the route's self-edge), so it needs its own read-stamped publication.
+///
+/// Falsifiability (revert-proven, #3202): with
+/// `RawImportInvalidation::replace_page_entries_read_since` publishing an
+/// empty set the edit is never served.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3202_page_entry_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let project = tempfile::tempdir().expect("#3202 fixture tempdir");
+    copy_fixture(&dev_loop_basic_fixture(), project.path()).expect("copy dev-loop-basic");
+    single_edit_before_watch_arm_is_served(
+        project.path(),
+        &project.path().join("pages/index.tsx"),
+        |page| {
+            page.replace(
+                "<h1>dev-loop-basic</h1>",
+                &format!("<h1>{PAGE_ENTRY_V2}</h1>"),
+            )
+        },
+        "/",
+        PAGE_ENTRY_V2,
+        "#3202: a page-entry edit made before the watcher is armed is served",
+    )
+    .await;
+}
+
+/// Issue #3202 — a content-collection entry, edited once after the eager
+/// boot's content snapshot read it and before any watch covers it, is
+/// served. Content files are read by the snapshot, not by esbuild, so they
+/// are in no bundler dependency set.
+///
+/// Falsifiability (revert-proven, #3202): with
+/// `RawImportInvalidation::replace_content_files_read_since` publishing an
+/// empty set the edit is never served.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3202_content_entry_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let project = tempfile::tempdir().expect("#3202 fixture tempdir");
+    copy_fixture(&dev_loop_basic_fixture(), project.path()).expect("copy dev-loop-basic");
+    single_edit_before_watch_arm_is_served(
+        project.path(),
+        &project.path().join("content/posts/a.md"),
+        |post| post.replace("title: Alpha", &format!("title: {CONTENT_ENTRY_V2}")),
+        "/",
+        CONTENT_ENTRY_V2,
+        "#3202: a content-entry edit made before the watcher is armed is served",
+    )
+    .await;
+}
+
+/// Issue #3202 (the #3201 follow-up) — a client-script `?raw` target in a
+/// workspace sibling (`sub/shared/panel.frag`), edited once after the eager
+/// client-script pass read it and before the watcher is armed, reaches the
+/// served client bundle through the watch-arm reconcile.
+///
+/// Falsifiability (revert-proven, #3202): with
+/// `RawImportInvalidation::modified_since_read` scoped to the SSR
+/// module-dependency set only, the edit is never served.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3202_client_raw_target_edit_before_the_watcher_is_armed_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let workspace = tempfile::tempdir().expect("#3202 fixture tempdir");
+    copy_fixture(&fixture_dir(), workspace.path()).expect("copy dev-sibling-watch fixture");
+    single_edit_before_watch_arm_is_served(
+        &workspace.path().join("sub/host"),
+        &workspace.path().join("sub/shared/panel.frag"),
+        |_| format!("{CLIENT_RAW_V2}\nedited before the watcher armed\n"),
+        "/assets/client/entry.js",
+        CLIENT_RAW_V2,
+        "#3202: a client ?raw target edit made before the watcher is armed is served",
+    )
+    .await;
 }

@@ -50,7 +50,7 @@
 //! - We do **not** decide here whether a `.tsx` is a page; we let the
 //!   graph answer that via `dirty_pages`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
@@ -117,11 +117,86 @@ pub struct RawImportInvalidation {
     /// never publishes or reads it.
     ssr_module_deps: Arc<RwLock<BTreeSet<PathBuf>>>,
 
-    /// When the bundle that published [`Self::ssr_module_deps`] started
-    /// reading its sources (issue #3190). `None` when the publisher did not
-    /// say, which disables [`Self::ssr_module_deps_modified_since_read`].
-    ssr_module_deps_read_since: Arc<RwLock<Option<SystemTime>>>,
+    /// Logical project paths of the route entry files the dev SSR bundle read
+    /// (issue #3202). The metafile walk drops each route's own entry from
+    /// [`Self::ssr_module_deps`] (the graph adds a page self-edge instead), so
+    /// without this set an entry edited before the watcher armed was never
+    /// reconciled. Consulted ONLY by [`Self::modified_since_read`]: entries
+    /// live under the recursive `pages/` watch root, so they never join a
+    /// dynamic watch or a reload predicate.
+    page_entries: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// Content-collection files the dev content snapshot read (issue #3202).
+    /// The snapshot, not esbuild, reads them, so no bundler set holds them.
+    /// Reconcile-only, like [`Self::page_entries`].
+    content_files: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// When the pass that published each file-shaped set started reading
+    /// its sources (issues #3190 / #3201). A set without an entry — its last
+    /// publisher did not say — is skipped by [`Self::modified_since_read`].
+    /// Each publisher stamps its own sets; a stamp is never shared across
+    /// publishers, because each read starts at a different time.
+    read_since: Arc<RwLock<BTreeMap<FileSet, SystemTime>>>,
+
+    /// Directories zfb itself writes into for this session (`<project>/.zfb/`,
+    /// the dev asset and output roots), stored with their lexical and
+    /// canonical aliases. See [`Self::is_zfb_written`].
+    zfb_written_roots: Arc<RwLock<Vec<PathBuf>>>,
+
+    /// Per reconciled file (keyed by its canonical path), the mtime a tick
+    /// has already accounted for — written when [`Self::modified_since_read`]
+    /// reports the file and when a real watcher event for it enters a tick
+    /// ([`Self::note_observed_edits`]). The reconcile skips a file whose
+    /// current mtime equals its entry, so one edit is reported at most once:
+    /// without it, a file edited after a stamp that is never renewed (plugin
+    /// watch files are stamped once, at boot) was re-reported every time one
+    /// of its ancestor directories became newly watched, although the
+    /// watcher had already delivered and handled that edit.
+    accounted_mtimes: Arc<RwLock<BTreeMap<PathBuf, SystemTime>>>,
 }
+
+/// The file-shaped sets of [`RawImportInvalidation`] (`css_mirror_roots`
+/// holds directories and is deliberately not one of them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FileSet {
+    Islands,
+    ClientScripts,
+    ClientScriptWorkers,
+    ClientScriptSiblings,
+    PluginWatchFiles,
+    SsrModuleDeps,
+    PageEntries,
+    ContentFiles,
+}
+
+impl FileSet {
+    const ALL: [FileSet; 8] = [
+        FileSet::Islands,
+        FileSet::ClientScripts,
+        FileSet::ClientScriptWorkers,
+        FileSet::ClientScriptSiblings,
+        FileSet::PluginWatchFiles,
+        FileSet::SsrModuleDeps,
+        FileSet::PageEntries,
+        FileSet::ContentFiles,
+    ];
+}
+
+/// Directory-name prefix of the islands shadow `zfb dev`/`zfb build`
+/// materialises for a preprocessed islands graph (`zfb` crate,
+/// `commands::build`).
+pub const ISLANDS_SHADOW_DIR_PREFIX: &str = "zfb-islands-shadow-";
+
+/// Directory-name prefix of the client-script preprocessing stage (`zfb`
+/// crate, `commands::build`).
+pub const CLIENT_PREPROCESS_DIR_PREFIX: &str = "zfb-client-preprocess-";
+
+/// Every staging-directory prefix zfb writes copies of source files under.
+const STAGING_DIR_PREFIXES: [&str; 3] = [
+    crate::bundler::SHADOW_SESSION_PREFIX,
+    ISLANDS_SHADOW_DIR_PREFIX,
+    CLIENT_PREPROCESS_DIR_PREFIX,
+];
 
 /// Fallback slack for [`ssr_read_start`] off Linux, where it does not know
 /// which clock file times are stamped from: an edit made just after the read
@@ -133,10 +208,11 @@ const SSR_READ_SINCE_MTIME_SLACK: Duration = Duration::from_millis(20);
 #[cfg(target_os = "linux")]
 const COARSE_CLOCK_WAIT_LIMIT: Duration = Duration::from_millis(50);
 
-/// The read start a bundle records with
-/// [`RawImportInvalidation::replace_ssr_module_deps_read_since`] (issue
-/// #3190): a time that every file write made after this call is stamped at or
-/// after, and every write made before it is stamped before.
+/// The read start a publisher records with
+/// [`RawImportInvalidation::replace_ssr_module_deps_read_since`] and its
+/// per-set siblings (issues #3190 / #3201): a time that every file write made
+/// after this call is stamped at or after, and every write made before it is
+/// stamped before.
 ///
 /// Linux stamps a file time from the coarse realtime clock (or, on
 /// multigrain kernels, from the fine clock when a stamp was just queried),
@@ -150,6 +226,10 @@ const COARSE_CLOCK_WAIT_LIMIT: Duration = Duration::from_millis(50);
 /// later one at least at the coarse clock, which never goes back. Elsewhere,
 /// or if the wait gives up, the slack keeps edits from being lost at the cost
 /// of reporting files written just before the read.
+///
+/// On macOS, Windows, and when the Linux wait times out, this falls back to `now − 20 ms`.
+/// On filesystems with 1–2 s mtime resolution (HFS+, FAT/exFAT, some NFS/SMB mounts), an edit
+/// landing just after `ready` can receive a timestamp before the read start and be missed; saving again picks it up (see #3195).
 pub fn ssr_read_start() -> SystemTime {
     let now = SystemTime::now();
     #[cfg(target_os = "linux")]
@@ -211,9 +291,56 @@ impl RawImportInvalidation {
         }
     }
 
+    fn file_set(&self, set: FileSet) -> &RwLock<BTreeSet<PathBuf>> {
+        match set {
+            FileSet::Islands => &self.islands,
+            FileSet::ClientScripts => &self.client_scripts,
+            FileSet::ClientScriptWorkers => &self.client_script_workers,
+            FileSet::ClientScriptSiblings => &self.client_script_siblings,
+            FileSet::PluginWatchFiles => &self.plugin_watch_files,
+            FileSet::SsrModuleDeps => &self.ssr_module_deps,
+            FileSet::PageEntries => &self.page_entries,
+            FileSet::ContentFiles => &self.content_files,
+        }
+    }
+
+    /// Record (or, with `None`, forget) when the publisher of `set` started
+    /// reading. A publication without a read time must forget the previous
+    /// one: that stamp belonged to a different read.
+    fn stamp(&self, set: FileSet, read_since: Option<SystemTime>) {
+        if let Ok(mut stamps) = self.read_since.write() {
+            match read_since {
+                Some(read_since) => stamps.insert(set, read_since),
+                None => stamps.remove(&set),
+            };
+        }
+    }
+
+    fn publish(
+        &self,
+        set: FileSet,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: Option<SystemTime>,
+    ) {
+        self.stamp(set, read_since);
+        Self::replace(self.file_set(set), paths);
+    }
+
     /// Atomically replace the islands dependency set after a successful scan.
     pub fn replace_islands(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        Self::replace(&self.islands, paths);
+        self.publish(FileSet::Islands, paths, None);
+    }
+
+    /// [`Self::replace_islands`], also recording when the islands scan
+    /// started reading — taken with [`ssr_read_start`] immediately before
+    /// the scan (issue #3201), so [`Self::modified_since_read`] can find
+    /// edits made before the watcher covered a dependency.
+    pub fn replace_islands_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::Islands, paths, Some(read_since));
     }
 
     /// Snapshot the current islands dependency aliases for dynamic watcher
@@ -228,7 +355,17 @@ impl RawImportInvalidation {
     /// Atomically replace the client-script raw-target set after a successful
     /// staging/bundle pass.
     pub fn replace_client_scripts(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        Self::replace(&self.client_scripts, paths);
+        self.publish(FileSet::ClientScripts, paths, None);
+    }
+
+    /// [`Self::replace_client_scripts`] with the client-script pass's read
+    /// start (issue #3201; see [`Self::replace_islands_read_since`]).
+    pub fn replace_client_scripts_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::ClientScripts, paths, Some(read_since));
     }
 
     /// Snapshot the current client-script raw-target aliases for dynamic
@@ -244,7 +381,17 @@ impl RawImportInvalidation {
     /// Atomically replace the complete first-party invalidation closure for
     /// client-script-owned module workers, including constructor importers.
     pub fn replace_client_script_workers(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        Self::replace(&self.client_script_workers, paths);
+        self.publish(FileSet::ClientScriptWorkers, paths, None);
+    }
+
+    /// [`Self::replace_client_script_workers`] with the client-script pass's
+    /// read start (issue #3201).
+    pub fn replace_client_script_workers_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::ClientScriptWorkers, paths, Some(read_since));
     }
 
     /// Snapshot the current client-script worker dependency aliases for
@@ -260,7 +407,17 @@ impl RawImportInvalidation {
     /// Atomically replace the client-script workspace-sibling plain-module
     /// set after a successful staging/bundle pass (issue #1710).
     pub fn replace_client_script_siblings(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        Self::replace(&self.client_script_siblings, paths);
+        self.publish(FileSet::ClientScriptSiblings, paths, None);
+    }
+
+    /// [`Self::replace_client_script_siblings`] with the client-script
+    /// pass's read start (issue #3201).
+    pub fn replace_client_script_siblings_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::ClientScriptSiblings, paths, Some(read_since));
     }
 
     /// Snapshot the current client-script sibling-module aliases for dynamic
@@ -406,7 +563,18 @@ impl RawImportInvalidation {
     /// `setup` runs, so unlike `replace_islands` / `replace_client_scripts`
     /// there is no later tick that would call this again.
     pub fn replace_plugin_watch_files(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        Self::replace(&self.plugin_watch_files, paths);
+        self.publish(FileSet::PluginWatchFiles, paths, None);
+    }
+
+    /// [`Self::replace_plugin_watch_files`] with the read start taken just
+    /// before plugin `setup` — the loaders read their watch files during
+    /// setup and the virtual-module prefetch (issue #3201).
+    pub fn replace_plugin_watch_files_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::PluginWatchFiles, paths, Some(read_since));
     }
 
     /// Snapshot the current plugin watch-file aliases for dynamic watcher
@@ -430,11 +598,12 @@ impl RawImportInvalidation {
     ///
     /// A path whose canonical form has a `node_modules` segment is dropped
     /// (a third-party pnpm-store file is never edited in place), as is any
-    /// path inside a `zfb-shadow-session-*` directory (a staged copy the
-    /// bundler rewrites every tick, so a watch on it could never observe the
-    /// source edit). Of the surviving entry's lexical/canonical aliases, only
-    /// the ones outside `node_modules` are kept, so a symlinked workspace
-    /// package registers its real `packages/...` spelling, not the link.
+    /// path inside a `zfb-shadow-session-*` (or other zfb staging) directory
+    /// (a staged copy the bundler rewrites every tick, so a watch on it could
+    /// never observe the source edit). Of the surviving entry's
+    /// lexical/canonical aliases, only the ones outside `node_modules` are
+    /// kept, so a symlinked workspace package registers its real
+    /// `packages/...` spelling, not the link.
     pub fn replace_ssr_module_deps(&self, paths: impl IntoIterator<Item = PathBuf>) {
         self.publish_ssr_module_deps(paths, None);
     }
@@ -442,8 +611,8 @@ impl RawImportInvalidation {
     /// [`Self::replace_ssr_module_deps`], also recording when the publishing
     /// bundle started reading its sources — taken with [`ssr_read_start`]
     /// before the read (issue #3190), so
-    /// [`Self::ssr_module_deps_modified_since_read`] can find edits made
-    /// before the watcher covered a dependency.
+    /// [`Self::modified_since_read`] can find edits made before the watcher
+    /// covered a dependency.
     pub fn replace_ssr_module_deps_read_since(
         &self,
         paths: impl IntoIterator<Item = PathBuf>,
@@ -461,69 +630,200 @@ impl RawImportInvalidation {
         for path in paths {
             let lexical = zfb_types::normalize_path_lexical(&path);
             let canonical = Self::resolved_alias(&path);
-            if Self::is_ssr_excluded(canonical.as_ref().unwrap_or(&lexical)) {
+            if Self::is_third_party_or_staged(canonical.as_ref().unwrap_or(&lexical)) {
                 continue;
             }
             deps.extend(
                 std::iter::once(lexical)
                     .chain(canonical)
-                    .filter(|alias| !Self::is_ssr_excluded(alias)),
+                    .filter(|alias| !Self::is_third_party_or_staged(alias)),
             );
         }
-        if let Ok(mut since) = self.ssr_module_deps_read_since.write() {
-            *since = read_since;
-        }
+        self.stamp(FileSet::SsrModuleDeps, read_since);
         if let Ok(mut set) = self.ssr_module_deps.write() {
             *set = deps;
         }
     }
 
-    /// SSR module dependencies accepted by `in_scope` whose file was modified
-    /// at or after the publishing bundle started reading its sources (issue
-    /// #3190), one path per file. An edit made after that read but before
-    /// the watcher covered the file produces no event and would otherwise
-    /// stay unserved until the file changes again. A missing file is skipped
-    /// (the bundle that follows a real delete event reports it). Empty when
-    /// the publication carried no read time.
-    pub fn ssr_module_deps_modified_since_read(
+    /// Replace the route entry files the dev SSR bundle read, as logical
+    /// project paths, with the bundle's read start (issue #3202; see
+    /// [`Self::page_entries`]). Reconcile-only: nothing else reads the set.
+    pub fn replace_page_entries_read_since(
         &self,
-        in_scope: impl Fn(&Path) -> bool,
-    ) -> Vec<PathBuf> {
-        let Some(read_since) = self
-            .ssr_module_deps_read_since
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::PageEntries, paths, Some(read_since));
+    }
+
+    /// Replace the content-collection files the dev content snapshot read,
+    /// with a read start taken just before the snapshot walked them (issue
+    /// #3202; see [`Self::content_files`]). Reconcile-only.
+    pub fn replace_content_files_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::ContentFiles, paths, Some(read_since));
+    }
+
+    /// Register the directories zfb itself writes into for this session
+    /// (issue #3201): `<project>/.zfb/` (`graph.bin`, staged JSON), the dev
+    /// asset root, and the output roots. Replaces any earlier registration.
+    /// Only [`Self::modified_since_read`] consults them — the sets and their
+    /// watches are unchanged.
+    pub fn set_zfb_written_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut stored) = self.zfb_written_roots.write() {
+            *stored = roots
+                .into_iter()
+                .flat_map(Self::aliases)
+                .filter(|root| !root.as_os_str().is_empty())
+                .collect();
+        }
+    }
+
+    /// The one exclusion predicate for the watch-arm reconcile (issue
+    /// #3201): whether `path` is a file zfb writes itself rather than a
+    /// source a user edits — a `node_modules` file, a staged copy under a
+    /// `zfb-shadow-session-*`, islands-shadow or client-preprocess directory
+    /// (the islands and client-script sibling sets can fall back to
+    /// unmapped physical paths), or anything under a root registered with
+    /// [`Self::set_zfb_written_roots`]. zfb rewrites these during its own
+    /// passes, so their mtimes routinely postdate a read start without any
+    /// user edit, and reporting them would queue a rebuild nobody asked for.
+    pub fn is_zfb_written(&self, path: &Path) -> bool {
+        let roots = self
+            .zfb_written_roots
             .read()
-            .ok()
-            .and_then(|since| *since)
-        else {
+            .map(|roots| roots.clone())
+            .unwrap_or_default();
+        Self::aliases(path.to_path_buf()).any(|alias| {
+            Self::is_third_party_or_staged(&alias)
+                || roots.iter().any(|root| alias.starts_with(root))
+        })
+    }
+
+    /// Members of every read-stamped file-shaped set (islands, client-script
+    /// raw/worker/sibling, plugin watch files, SSR module dependencies, page
+    /// entries, content-collection files)
+    /// accepted by `in_scope` whose file was modified at or after the read
+    /// start its own publisher recorded (issues #3190 / #3201), one path per
+    /// file. An edit made after that read but before the watcher covered the
+    /// file produces no event and would otherwise stay unserved until the
+    /// file changes again. A missing file is skipped (the pass that follows
+    /// a real delete event reports it), as is a set published without a read
+    /// time and any file [`Self::is_zfb_written`] claims.
+    ///
+    /// Each (file, mtime) is reported at most once: a reported file's mtime
+    /// is recorded as accounted for, and a file whose current mtime was
+    /// already accounted for — reported earlier, or delivered by a real
+    /// watcher event ([`Self::note_observed_edits`]) — is skipped. A later
+    /// edit moves the mtime and is reported again.
+    pub fn modified_since_read(&self, in_scope: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let stamps = self
+            .read_since
+            .read()
+            .map(|stamps| stamps.clone())
+            .unwrap_or_default();
+        let Ok(mut accounted) = self.accounted_mtimes.write() else {
             return Vec::new();
         };
         let mut seen_files = BTreeSet::new();
         let mut modified = Vec::new();
-        for path in self.ssr_module_dep_paths() {
-            if !in_scope(&path) {
-                continue;
-            }
-            let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
-                continue;
-            };
-            let file = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if mtime >= read_since && seen_files.insert(file) {
-                modified.push(path);
+        for (set, read_since) in stamps {
+            let paths = self
+                .file_set(set)
+                .read()
+                .map(|paths| paths.clone())
+                .unwrap_or_default();
+            for path in paths {
+                if !in_scope(&path) {
+                    continue;
+                }
+                let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+                    continue;
+                };
+                if mtime < read_since || self.is_zfb_written(&path) {
+                    continue;
+                }
+                let file = Self::reconcile_key(&path);
+                if accounted.get(&file) == Some(&mtime) {
+                    continue;
+                }
+                if seen_files.insert(file.clone()) {
+                    accounted.insert(file, mtime);
+                    modified.push(path);
+                }
             }
         }
         modified
     }
 
-    fn is_ssr_excluded(path: &Path) -> bool {
-        zfb_types::has_node_modules_segment(path) || path.components().any(|component| {
-            matches!(
-                component,
-                Component::Normal(name)
-                    if name
-                        .to_str()
-                        .is_some_and(|name| name.starts_with(crate::bundler::SHADOW_SESSION_PREFIX))
-            )
+    /// Record, for each of `paths` that belongs to a reconciled file-shaped
+    /// set, its current mtime as accounted for: a real watcher event for it
+    /// is entering a tick, so [`Self::modified_since_read`] must not report
+    /// that same edit again when an ancestor directory is watched later. A
+    /// path that no longer exists forgets its entry. Recording the CURRENT
+    /// mtime is safe even if the file changed again after its event: the
+    /// watcher that delivered the event is still armed and reports that edit
+    /// too.
+    pub fn note_observed_edits<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        let observed: Vec<(PathBuf, Option<SystemTime>)> = paths
+            .into_iter()
+            .filter(|path| self.is_reconciled_member(path))
+            .map(|path| {
+                let mtime = std::fs::metadata(path)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                (Self::reconcile_key(path), mtime)
+            })
+            .collect();
+        if observed.is_empty() {
+            return;
+        }
+        if let Ok(mut accounted) = self.accounted_mtimes.write() {
+            for (file, mtime) in observed {
+                match mtime {
+                    Some(mtime) => accounted.insert(file, mtime),
+                    None => accounted.remove(&file),
+                };
+            }
+        }
+    }
+
+    /// Whether `path` (as either alias the sets store) is a member of any
+    /// file-shaped set [`Self::modified_since_read`] reconciles.
+    fn is_reconciled_member(&self, path: &Path) -> bool {
+        FileSet::ALL.into_iter().any(|set| {
+            self.file_set(set)
+                .read()
+                .is_ok_and(|paths| paths.contains(path))
         })
+    }
+
+    /// One key per physical file, so a lexical and a canonical alias share
+    /// their accounted mtime.
+    fn reconcile_key(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// A third-party `node_modules` file, or a copy inside one of the
+    /// staging directories zfb creates and rewrites itself on every pass
+    /// (see [`STAGING_DIR_PREFIXES`]). Filters the SSR publication, and is
+    /// the path-shape half of [`Self::is_zfb_written`].
+    fn is_third_party_or_staged(path: &Path) -> bool {
+        zfb_types::has_node_modules_segment(path)
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::Normal(name)
+                        if name.to_str().is_some_and(|name| {
+                            STAGING_DIR_PREFIXES
+                                .iter()
+                                .any(|prefix| name.starts_with(prefix))
+                        })
+                )
+            })
     }
 
     /// Snapshot the current dev SSR module-dependency aliases for dynamic
@@ -969,14 +1269,15 @@ impl GranularityPolicy {
         self.raw_import_invalidation.is_ssr_module_dependency(path)
     }
 
-    /// See [`RawImportInvalidation::ssr_module_deps_modified_since_read`]
-    /// (issue #3190).
-    pub fn ssr_module_deps_modified_since_read(
-        &self,
-        in_scope: impl Fn(&Path) -> bool,
-    ) -> Vec<PathBuf> {
-        self.raw_import_invalidation
-            .ssr_module_deps_modified_since_read(in_scope)
+    /// See [`RawImportInvalidation::modified_since_read`] (issues #3190 /
+    /// #3201).
+    pub fn modified_since_read(&self, in_scope: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        self.raw_import_invalidation.modified_since_read(in_scope)
+    }
+
+    /// See [`RawImportInvalidation::note_observed_edits`].
+    pub fn note_observed_edits<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        self.raw_import_invalidation.note_observed_edits(paths);
     }
 
     /// Whether this exact changed path is a client-script terminal raw target.
@@ -1350,15 +1651,13 @@ mod tests {
         let invalidation = RawImportInvalidation::default();
         invalidation.replace_ssr_module_deps_read_since([dep.clone()], read_since);
         assert!(
-            invalidation
-                .ssr_module_deps_modified_since_read(|_| true)
-                .is_empty(),
+            invalidation.modified_since_read(|_| true).is_empty(),
             "a write that precedes the read start was seen by the bundle"
         );
 
         std::fs::write(&dep, "export const v = 2;").unwrap();
         assert_eq!(
-            invalidation.ssr_module_deps_modified_since_read(|_| true),
+            invalidation.modified_since_read(|_| true),
             vec![dep],
             "a write after the read start may have been missed by the bundle"
         );
@@ -1404,9 +1703,7 @@ mod tests {
         let invalidation = RawImportInvalidation::default();
         invalidation.replace_ssr_module_deps(deps.clone());
         assert!(
-            invalidation
-                .ssr_module_deps_modified_since_read(|_| true)
-                .is_empty(),
+            invalidation.modified_since_read(|_| true).is_empty(),
             "a publication without a read time reports nothing"
         );
 
@@ -1414,35 +1711,244 @@ mod tests {
         let policy =
             GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
         assert_eq!(
-            policy.ssr_module_deps_modified_since_read(in_packages),
+            policy.modified_since_read(in_packages),
             vec![edited.clone()]
         );
-        let all = policy.ssr_module_deps_modified_since_read(|_| true);
-        assert_eq!(all.len(), 2, "{all:?}");
-        assert!(all.contains(&edited) && all.contains(&out_of_scope));
+        // `edited` was already reported at this mtime; only the file the
+        // narrower scope excluded is new.
+        assert_eq!(
+            policy.modified_since_read(|_| true),
+            vec![out_of_scope.clone()]
+        );
+        assert!(policy.modified_since_read(|_| true).is_empty());
 
         // A symlinked spelling of the same file is reported once, not twice.
         #[cfg(unix)]
         {
+            set_mtime(&edited, after + Duration::from_millis(500));
             std::fs::create_dir_all(root.join("site/node_modules")).unwrap();
             std::os::unix::fs::symlink(root.join("packages"), root.join("site/pkgs")).unwrap();
             invalidation.replace_ssr_module_deps_read_since(
                 [edited.clone(), root.join("site/pkgs/data/value.json")],
                 read_since,
             );
-            assert_eq!(
-                invalidation
-                    .ssr_module_deps_modified_since_read(|_| true)
-                    .len(),
-                1
-            );
+            assert_eq!(invalidation.modified_since_read(|_| true).len(), 1);
         }
 
-        // A later publication whose read started after the edit clears it.
+        // A later publication's read start is the boundary: a fresh mtime
+        // before it is not reported, one after it is.
+        set_mtime(&edited, read_since + Duration::from_millis(1700));
+        set_mtime(&out_of_scope, read_since + Duration::from_millis(2500));
         invalidation.replace_ssr_module_deps_read_since(deps, after + Duration::from_secs(1));
-        assert!(invalidation
-            .ssr_module_deps_modified_since_read(|_| true)
-            .is_empty());
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![out_of_scope]
+        );
+    }
+
+    /// Issue #3202 — page entries and content-collection files are reconciled
+    /// against their own publisher's read start: an edited page or entry is
+    /// reported, an unedited page never is, and neither set joins the dynamic
+    /// watch set or the SSR-reload predicate (both live under recursive watch
+    /// roots already).
+    #[test]
+    fn page_entries_and_content_files_reconcile_only_3202() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let edited_page = root.join("pages/index.tsx");
+        let unedited_page = root.join("pages/about.tsx");
+        let edited_post = root.join("content/posts/a.md");
+        let unedited_post = root.join("content/posts/b.md");
+        for file in [&edited_page, &unedited_page, &edited_post, &unedited_post] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+        }
+        let read_since = SystemTime::now();
+        let set_mtime = |path: &Path, mtime: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        for untouched in [&unedited_page, &unedited_post] {
+            set_mtime(untouched, read_since - Duration::from_secs(5));
+        }
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_page_entries_read_since(
+            [edited_page.clone(), unedited_page.clone()],
+            read_since,
+        );
+        invalidation.replace_content_files_read_since(
+            [edited_post.clone(), unedited_post.clone()],
+            read_since,
+        );
+        set_mtime(&edited_page, read_since - Duration::from_secs(5));
+        set_mtime(&edited_post, read_since - Duration::from_secs(5));
+        assert!(
+            invalidation.modified_since_read(|_| true).is_empty(),
+            "an unedited page or entry never ticks"
+        );
+
+        set_mtime(&edited_page, read_since + Duration::from_secs(1));
+        set_mtime(&edited_post, read_since + Duration::from_secs(1));
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        let mut reported = policy.modified_since_read(|_| true);
+        reported.sort();
+        assert_eq!(reported, vec![edited_post.clone(), edited_page.clone()]);
+
+        let dynamic = policy.dynamic_dependency_paths();
+        for path in [&edited_page, &unedited_page, &edited_post, &unedited_post] {
+            assert!(
+                !dynamic.contains(path),
+                "{} must not be watched",
+                path.display()
+            );
+            assert!(!policy.is_ssr_module_dependency(path));
+        }
+
+        // Each publisher's stamp is its own: a later page publication whose
+        // read started after the edit clears the page, not the content file.
+        // Both files are edited again, since the first edit was reported.
+        set_mtime(&edited_page, read_since + Duration::from_millis(1500));
+        set_mtime(&edited_post, read_since + Duration::from_millis(1500));
+        invalidation.replace_page_entries_read_since(
+            [edited_page.clone(), unedited_page],
+            read_since + Duration::from_secs(2),
+        );
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![edited_post]
+        );
+    }
+
+    /// Epic #3197 review — plugin watch files are stamped once, at boot, so
+    /// without a memo an edit made after boot stayed "after the read" for the
+    /// whole session and was re-reported by every later reconcile. An edit a
+    /// real watcher event delivered is never reported; a later genuine edit
+    /// is reported exactly once; a path outside every set is not memoised.
+    #[test]
+    fn modified_since_read_reports_each_edit_at_most_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let menu = root.join("data/nav/menu.json");
+        let stranger = root.join("data/other.json");
+        for file in [&menu, &stranger] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        let read_since = SystemTime::now();
+        let set_mtime = |path: &Path, mtime: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        set_mtime(&menu, read_since - Duration::from_secs(5));
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_plugin_watch_files_read_since([menu.clone()], read_since);
+        let under_data = |path: &Path| path.starts_with(root.join("data"));
+
+        set_mtime(&menu, read_since + Duration::from_secs(1));
+        invalidation.note_observed_edits([menu.as_path(), stranger.as_path()]);
+        assert!(
+            invalidation.modified_since_read(under_data).is_empty(),
+            "an edit the watcher already delivered must not be reported again"
+        );
+        assert!(
+            invalidation
+                .accounted_mtimes
+                .read()
+                .unwrap()
+                .keys()
+                .all(|file| file == &menu),
+            "only reconciled files are memoised"
+        );
+
+        set_mtime(&menu, read_since + Duration::from_secs(2));
+        assert_eq!(
+            invalidation.modified_since_read(under_data),
+            vec![menu.clone()]
+        );
+        assert!(
+            invalidation.modified_since_read(|_| true).is_empty(),
+            "a reported edit is reported once"
+        );
+    }
+
+    /// Issue #3201 — each publisher's read start belongs to its own set: an
+    /// edit made after one pass read is reported for that pass's set only,
+    /// a set published without a read time reports nothing, and a later
+    /// plain publication forgets the earlier stamp.
+    #[test]
+    fn modified_since_read_uses_each_sets_own_read_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let island = root.join("lib/island-helper.ts");
+        let sibling = root.join("shared/plain.ts");
+        let plugin = root.join("data/plugin-source.json");
+        let islands_read = SystemTime::now();
+        let client_read = islands_read + Duration::from_secs(10);
+        for file in [&island, &sibling, &plugin] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(islands_read + Duration::from_secs(5))
+                .unwrap();
+        }
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_islands_read_since([island.clone()], islands_read);
+        invalidation.replace_client_script_siblings_read_since([sibling.clone()], client_read);
+        invalidation.replace_plugin_watch_files([plugin.clone()]);
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![island.clone()],
+            "only the set whose read started before the edit reports it"
+        );
+
+        invalidation.replace_islands([island]);
+        assert!(invalidation.modified_since_read(|_| true).is_empty());
+    }
+
+    /// Issue #3201 — the one shared exclusion predicate: `node_modules`, any
+    /// zfb staging directory, and registered zfb-written roots are excluded;
+    /// user files (and a directory merely named like a root elsewhere) are not.
+    #[test]
+    fn is_zfb_written_covers_node_modules_staging_and_registered_roots() {
+        let invalidation = RawImportInvalidation::default();
+        let project = PathBuf::from("/proj/site");
+        assert!(!invalidation.is_zfb_written(&project.join(".zfb/graph.bin")));
+        invalidation.set_zfb_written_roots([
+            project.join(".zfb"),
+            project.join(".zfb-build/dev-assets"),
+            project.join("dist"),
+        ]);
+        for written in [
+            project.join(".zfb/graph.bin"),
+            project.join(".zfb-build/dev-assets/assets/islands.js"),
+            project.join("dist/index.html"),
+            project.join("node_modules/preact/index.js"),
+            PathBuf::from("/tmp/zfb-shadow-session-1/site/lib/a.ts"),
+            PathBuf::from("/tmp/zfb-islands-shadow-1/site/lib/a.ts"),
+            PathBuf::from("/tmp/zfb-client-preprocess-1/site/lib/a.ts"),
+        ] {
+            assert!(invalidation.is_zfb_written(&written), "{written:?}");
+        }
+        for source in [
+            project.join("src/lib/a.ts"),
+            project.join("distribution/a.ts"),
+            PathBuf::from("/proj/other/.zfb-notes/a.md"),
+        ] {
+            assert!(!invalidation.is_zfb_written(&source), "{source:?}");
+        }
     }
 
     #[test]
