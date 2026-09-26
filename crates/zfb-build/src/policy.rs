@@ -117,6 +117,20 @@ pub struct RawImportInvalidation {
     /// never publishes or reads it.
     ssr_module_deps: Arc<RwLock<BTreeSet<PathBuf>>>,
 
+    /// Logical project paths of the route entry files the dev SSR bundle read
+    /// (issue #3202). The metafile walk drops each route's own entry from
+    /// [`Self::ssr_module_deps`] (the graph adds a page self-edge instead), so
+    /// without this set an entry edited before the watcher armed was never
+    /// reconciled. Consulted ONLY by [`Self::modified_since_read`]: entries
+    /// live under the recursive `pages/` watch root, so they never join a
+    /// dynamic watch or a reload predicate.
+    page_entries: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// Content-collection files the dev content snapshot read (issue #3202).
+    /// The snapshot, not esbuild, reads them, so no bundler set holds them.
+    /// Reconcile-only, like [`Self::page_entries`].
+    content_files: Arc<RwLock<BTreeSet<PathBuf>>>,
+
     /// When the pass that published each file-shaped set started reading
     /// its sources (issues #3190 / #3201). A set without an entry — its last
     /// publisher did not say — is skipped by [`Self::modified_since_read`].
@@ -140,6 +154,8 @@ enum FileSet {
     ClientScriptSiblings,
     PluginWatchFiles,
     SsrModuleDeps,
+    PageEntries,
+    ContentFiles,
 }
 
 /// Directory-name prefix of the islands shadow `zfb dev`/`zfb build`
@@ -259,6 +275,8 @@ impl RawImportInvalidation {
             FileSet::ClientScriptSiblings => &self.client_script_siblings,
             FileSet::PluginWatchFiles => &self.plugin_watch_files,
             FileSet::SsrModuleDeps => &self.ssr_module_deps,
+            FileSet::PageEntries => &self.page_entries,
+            FileSet::ContentFiles => &self.content_files,
         }
     }
 
@@ -603,6 +621,28 @@ impl RawImportInvalidation {
         }
     }
 
+    /// Replace the route entry files the dev SSR bundle read, as logical
+    /// project paths, with the bundle's read start (issue #3202; see
+    /// [`Self::page_entries`]). Reconcile-only: nothing else reads the set.
+    pub fn replace_page_entries_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::PageEntries, paths, Some(read_since));
+    }
+
+    /// Replace the content-collection files the dev content snapshot read,
+    /// with a read start taken just before the snapshot walked them (issue
+    /// #3202; see [`Self::content_files`]). Reconcile-only.
+    pub fn replace_content_files_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::ContentFiles, paths, Some(read_since));
+    }
+
     /// Register the directories zfb itself writes into for this session
     /// (issue #3201): `<project>/.zfb/` (`graph.bin`, staged JSON), the dev
     /// asset root, and the output roots. Replaces any earlier registration.
@@ -640,7 +680,8 @@ impl RawImportInvalidation {
     }
 
     /// Members of every read-stamped file-shaped set (islands, client-script
-    /// raw/worker/sibling, plugin watch files, SSR module dependencies)
+    /// raw/worker/sibling, plugin watch files, SSR module dependencies, page
+    /// entries, content-collection files)
     /// accepted by `in_scope` whose file was modified at or after the read
     /// start its own publisher recorded (issues #3190 / #3201), one path per
     /// file. An edit made after that read but before the watcher covered the
@@ -1602,6 +1643,82 @@ mod tests {
         // A later publication whose read started after the edit clears it.
         invalidation.replace_ssr_module_deps_read_since(deps, after + Duration::from_secs(1));
         assert!(invalidation.modified_since_read(|_| true).is_empty());
+    }
+
+    /// Issue #3202 — page entries and content-collection files are reconciled
+    /// against their own publisher's read start: an edited page or entry is
+    /// reported, an unedited page never is, and neither set joins the dynamic
+    /// watch set or the SSR-reload predicate (both live under recursive watch
+    /// roots already).
+    #[test]
+    fn page_entries_and_content_files_reconcile_only_3202() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let edited_page = root.join("pages/index.tsx");
+        let unedited_page = root.join("pages/about.tsx");
+        let edited_post = root.join("content/posts/a.md");
+        let unedited_post = root.join("content/posts/b.md");
+        for file in [&edited_page, &unedited_page, &edited_post, &unedited_post] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+        }
+        let read_since = SystemTime::now();
+        let set_mtime = |path: &Path, mtime: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        for untouched in [&unedited_page, &unedited_post] {
+            set_mtime(untouched, read_since - Duration::from_secs(5));
+        }
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_page_entries_read_since(
+            [edited_page.clone(), unedited_page.clone()],
+            read_since,
+        );
+        invalidation.replace_content_files_read_since(
+            [edited_post.clone(), unedited_post.clone()],
+            read_since,
+        );
+        set_mtime(&edited_page, read_since - Duration::from_secs(5));
+        set_mtime(&edited_post, read_since - Duration::from_secs(5));
+        assert!(
+            invalidation.modified_since_read(|_| true).is_empty(),
+            "an unedited page or entry never ticks"
+        );
+
+        set_mtime(&edited_page, read_since + Duration::from_secs(1));
+        set_mtime(&edited_post, read_since + Duration::from_secs(1));
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        let mut reported = policy.modified_since_read(|_| true);
+        reported.sort();
+        assert_eq!(reported, vec![edited_post.clone(), edited_page.clone()]);
+
+        let dynamic = policy.dynamic_dependency_paths();
+        for path in [&edited_page, &unedited_page, &edited_post, &unedited_post] {
+            assert!(
+                !dynamic.contains(path),
+                "{} must not be watched",
+                path.display()
+            );
+            assert!(!policy.is_ssr_module_dependency(path));
+        }
+
+        // Each publisher's stamp is its own: a later page publication whose
+        // read started after the edit clears the page, not the content file.
+        invalidation.replace_page_entries_read_since(
+            [edited_page.clone(), unedited_page],
+            read_since + Duration::from_secs(2),
+        );
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![edited_post]
+        );
     }
 
     /// Issue #3201 — each publisher's read start belongs to its own set: an

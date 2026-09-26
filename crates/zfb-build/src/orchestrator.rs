@@ -152,7 +152,8 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
 
 /// Synthesize a `Modified` change for every file-shaped dynamic dependency
 /// (islands, client-script raw/worker/sibling, plugin watch files, SSR module
-/// dependencies) that was edited after its own publisher started reading and
+/// dependencies, and the SSR bundle's page entries and content-collection
+/// files — issue #3202) that was edited after its own publisher started reading and
 /// that `in_scope` says the watcher may not have been covering at the time
 /// (issues #3190 / #3201). Files zfb writes itself never count
 /// ([`crate::policy::RawImportInvalidation::is_zfb_written`]).
