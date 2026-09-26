@@ -1863,6 +1863,18 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         P: 'static,
         R: DynamicWatchRegistrar,
     {
+        // Issue #3179 — register whatever the registry already holds BEFORE
+        // the boot hook. On the eager path the dev command replays the boot
+        // bundle's SSR module dependencies into the registry before this
+        // orchestrator exists, and the boot hook then runs the whole eager
+        // render; without this call a boot-imported dependency outside the
+        // recursive roots would go unwatched for that entire window (the
+        // retired #1284 D4 extras used to cover it).
+        register_dynamic_dependency_watches(
+            &mut watcher,
+            &self.config.policy,
+            &self.config.css_mirror_skip_dir_names,
+        );
         // Boot hook — runs with the watch already registered (so any edit
         // saved during it is buffered by notify and drained by the loop
         // below) but before the loop consumes events. Its outcome, if any,
@@ -4300,6 +4312,62 @@ mod tests {
         );
     }
 
+    /// Issue #3176 item 8 — the CSS sibling-mirror recursive channel is
+    /// reconciled with `dist` in its skip names, so a declared sibling
+    /// `dist/` is NOT watched through it. A `dist/` file the SSR bundle
+    /// actually imports still reaches the non-recursive dependency-parent
+    /// channel, and `zfb_watcher`'s delivery filter exempts a dependency
+    /// parent and its direct children from skip-dir suppression
+    /// (`filter_exempts_boot_roots_and_dependency_dirs`).
+    #[test]
+    fn declared_sibling_dist_dependency_uses_the_parent_watch_channel() {
+        #[derive(Default)]
+        struct Recorder {
+            files: BTreeSet<PathBuf>,
+            dirs: BTreeSet<PathBuf>,
+            skips: Vec<String>,
+        }
+        impl DynamicWatchRegistrar for Recorder {
+            fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                self.files.extend(paths);
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                desired_roots: BTreeSet<PathBuf>,
+                skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                self.dirs.extend(desired_roots);
+                self.skips = skip_dir_names.to_vec();
+                Vec::new()
+            }
+        }
+
+        let sibling = PathBuf::from("/ws/packages/lib");
+        let dist_dep = sibling.join("dist/index.js");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_css_mirror_roots([sibling.clone()]);
+        invalidation.replace_ssr_module_deps([dist_dep.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let skips = vec!["node_modules".to_string(), "dist".to_string()];
+
+        let mut recorder = Recorder::default();
+        register_dynamic_dependency_watches(&mut recorder, &policy, &skips);
+
+        assert!(recorder.dirs.contains(&sibling));
+        assert!(
+            recorder.skips.iter().any(|name| name == "dist"),
+            "the recursive CSS channel still skips dist: {:?}",
+            recorder.skips
+        );
+        assert!(
+            recorder.files.contains(&dist_dep),
+            "the imported dist file must be offered to the parent-watch channel: {:?}",
+            recorder.files
+        );
+    }
+
     /// Issue #3162 — an SSR module dependency under an in-root directory that
     /// is NOT a recursive watch root (`packages/data/`, the root-site repro)
     /// must get a dynamic parent watch from the SSR registry alone, and an
@@ -4420,30 +4488,101 @@ mod tests {
         assert!(plans[0].ssr_reload_needed, "removed SSR dep");
     }
 
+    /// Records every file set offered to the parent-watch channel, in call
+    /// order, for the boot-ordering tests below.
+    #[derive(Clone, Default)]
+    struct RecordingRegistrar {
+        offered: Arc<Mutex<Vec<BTreeSet<PathBuf>>>>,
+    }
+    impl DynamicWatchRegistrar for RecordingRegistrar {
+        fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+            self.offered.lock().unwrap().push(paths);
+            Vec::new()
+        }
+        fn sync_recursive_dir_watches(
+            &mut self,
+            _desired_roots: BTreeSet<PathBuf>,
+            _skip_dir_names: &[String],
+        ) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
+    /// Issue #3179 — on the eager path the dev command replays the boot
+    /// bundle's SSR dependencies into the registry BEFORE the orchestrator
+    /// exists, and the boot hook then runs the whole eager render. Those
+    /// dependencies must be offered to the watcher before the boot hook
+    /// starts (the window the retired #1284 D4 extras used to cover), not
+    /// only after it returns.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssr_dependencies_in_the_registry_before_boot_are_registered_before_the_boot_hook() {
+        let dep = PathBuf::from("/workspace/packages/data/value.json");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps([dep.clone()]);
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/workspace/apps/site", vec![PathBuf::from("pages")])
+                .with_policy(
+                    crate::policy::GranularityPolicy::default()
+                        .with_raw_import_invalidation(invalidation),
+                ),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let registrar = RecordingRegistrar::default();
+        let offered = Arc::clone(&registrar.offered);
+        let seen_by_boot_hook = Arc::clone(&registrar.offered);
+        let offered_before_boot: Arc<Mutex<Option<Vec<BTreeSet<PathBuf>>>>> =
+            Arc::new(Mutex::new(None));
+        let boot_snapshot = Arc::clone(&offered_before_boot);
+        let dist = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Change>(1);
+        drop(tx);
+        orch.run_drain_loop(
+            noop_ctx(dist.path()),
+            None,
+            |_: &BuildOutcome| {},
+            Some(
+                move |_: &BuildOrchestrator<CountingPipeline>, _: &BuildContext| {
+                    *boot_snapshot.lock().unwrap() =
+                        Some(seen_by_boot_hook.lock().unwrap().clone());
+                    None
+                },
+            ),
+            registrar,
+            rx,
+        )
+        .await
+        .unwrap();
+
+        let before_boot = offered_before_boot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the boot hook must run");
+        assert_eq!(
+            before_boot.len(),
+            1,
+            "exactly the pre-boot registration ran before the boot hook"
+        );
+        assert!(
+            before_boot[0].contains(&dep),
+            "a registry dependency published before the orchestrator must be offered \
+             before the boot hook: {:?}",
+            before_boot[0]
+        );
+        assert_eq!(
+            offered.lock().unwrap().len(),
+            2,
+            "the post-boot registration still runs"
+        );
+    }
+
     /// Issue #3162 item 4 — the deferred/cold boot publishes its SSR
     /// dependencies from INSIDE the boot hook (the deferred
     /// `refresh_bundle_and_routes`). The post-boot registration must see that
     /// publication, so those dependencies are watched before the first tick.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ssr_dependencies_published_by_the_boot_hook_are_registered_after_boot() {
-        #[derive(Clone, Default)]
-        struct RecordingRegistrar {
-            offered: Arc<Mutex<Vec<BTreeSet<PathBuf>>>>,
-        }
-        impl DynamicWatchRegistrar for RecordingRegistrar {
-            fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
-                self.offered.lock().unwrap().push(paths);
-                Vec::new()
-            }
-            fn sync_recursive_dir_watches(
-                &mut self,
-                _desired_roots: BTreeSet<PathBuf>,
-                _skip_dir_names: &[String],
-            ) -> Vec<PathBuf> {
-                Vec::new()
-            }
-        }
-
         let dep = PathBuf::from("/proj/packages/data/value.json");
         let invalidation = crate::policy::RawImportInvalidation::default();
         let orch = BuildOrchestrator::new(
@@ -4477,11 +4616,20 @@ mod tests {
         .unwrap();
 
         let offered = offered.lock().unwrap();
-        assert_eq!(offered.len(), 1, "exactly the post-boot registration ran");
+        assert_eq!(
+            offered.len(),
+            2,
+            "the pre-boot (#3179) and post-boot registrations both ran"
+        );
         assert!(
-            offered[0].contains(&dep),
-            "the boot hook's SSR publication must be offered to the watcher: {:?}",
+            offered[0].is_empty(),
+            "nothing was published before the boot hook: {:?}",
             offered[0]
+        );
+        assert!(
+            offered[1].contains(&dep),
+            "the boot hook's SSR publication must be offered to the watcher: {:?}",
+            offered[1]
         );
     }
 

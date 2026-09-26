@@ -887,11 +887,14 @@ pub struct BundlerOutput {
 ///
 /// Read by tests through [`BundlerOutput::node_modules_staging_stats`], and by
 /// real-binary fixtures through the `ZFB_STAGING_STATS=1` stderr line
-/// `[zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool`.
+/// `[zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool
+/// cache_hits=H parsed_files=F`. New tokens are only ever appended, so a
+/// parser keyed on token names (the #3133 fixture's) keeps working.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeModulesStagingStats {
     /// Physical package directories whose files were walked and import-parsed.
-    /// Each canonical directory is scanned at most once per closure walk.
+    /// Each canonical directory is scanned at most once per closure walk; a
+    /// session-cache reuse counts under `cache_hits`, not here.
     pub physical_scans: usize,
     /// Logical package roots visited by the closure walk. One physical
     /// directory can back many logical roots (pnpm-private aliases).
@@ -899,13 +902,24 @@ pub struct NodeModulesStagingStats {
     /// Whether a workspace package entered the staged set, switching the
     /// build to the isolated staged dependency view.
     pub workspace_staging_activated: bool,
+    /// Physical `node_modules` package scans reused from the dev session's
+    /// cache (#3178) instead of rescanned. Always 0 for a sessionless build.
+    pub cache_hits: usize,
+    /// Files handed to the import parser across this call's physical scans
+    /// (`.d.ts` / `.d.mts` / `.d.cts` excluded; cache hits parse nothing).
+    pub parsed_files: usize,
 }
 
 impl NodeModulesStagingStats {
     fn stderr_line(&self) -> String {
         format!(
-            "[zfb-staging-stats] physical_scans={} logical_visits={} workspace_staging_activated={}",
-            self.physical_scans, self.logical_visits, self.workspace_staging_activated,
+            "[zfb-staging-stats] physical_scans={} logical_visits={} workspace_staging_activated={} \
+             cache_hits={} parsed_files={}",
+            self.physical_scans,
+            self.logical_visits,
+            self.workspace_staging_activated,
+            self.cache_hits,
+            self.parsed_files,
         )
     }
 
@@ -1766,6 +1780,37 @@ pub struct ShadowSession {
     ///
     /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
     mirror_skip: HashMap<PathBuf, MirrorSkipEntry>,
+    /// Cross-call cache of the `node_modules` dependency-staging closure's
+    /// per-package import scans (#3178), keyed by the CANONICAL package dir —
+    /// the same key the closure walk's per-call dedup map uses. Without it
+    /// every tick re-parses every file of every staged package (hono, preact,
+    /// the embedded runtime) although the result is a pure function of the
+    /// package's bytes.
+    ///
+    /// Scope: only canonical dirs with a `node_modules` path component
+    /// (plain and pnpm installs, and both embedded-runtime extraction
+    /// layouts). First-party / `workspace:*` package dirs never enter it and
+    /// are rescanned on every call. An entry is reused only while its
+    /// package's `package.json` `(mtime, size)` stamp is unchanged; unreadable
+    /// metadata is never cached. A sessionless build never consults it.
+    ///
+    /// Cleared on the same dirty/copy_mode wipe as `content_skip` and on the
+    /// `config_fingerprint` wipe — hence after any failed call.
+    ///
+    /// Known limitation (accepted, #3177's verdict — do NOT widen the stamp):
+    /// an in-place edit inside a cached package that leaves its `package.json`
+    /// untouched (a hand edit, a patch applied mid-session) is invisible for
+    /// the session's lifetime. Acceptable because patch-package runs at
+    /// install time before `zfb dev` starts; `pnpm install` / re-linking
+    /// rewrites `package.json` or changes the canonical dir; `workspace:*`
+    /// deps canonicalise outside `node_modules` and are never cached; the scan
+    /// only feeds closure DISCOVERY (the staged tree still mirrors the live
+    /// package bytes, so an edit adding no new bare import is served
+    /// correctly); and an edit adding a bare import whose package is then
+    /// missing makes esbuild fail, the call goes dirty, and the next call
+    /// wipes this cache and rescans. A stamp covering the whole directory
+    /// would reintroduce the very I/O this cache removes.
+    physical_scan_cache: HashMap<PathBuf, PhysicalScanCacheEntry>,
     /// The pipeline `config_fingerprint` of the LAST successful call —
     /// the wipe trigger for a config/route-map change (zfb#1148, Defect
     /// A). Both skip caches reuse a file's previous compiled output, but
@@ -1836,6 +1881,7 @@ impl ShadowSession {
             content_skip: HashMap::new(),
             source_skip: HashMap::new(),
             mirror_skip: HashMap::new(),
+            physical_scan_cache: HashMap::new(),
             config_fingerprint: None,
         })
     }
@@ -2227,6 +2273,7 @@ impl<'s> ShadowWriter<'s> {
                     s.content_skip.clear();
                     s.source_skip.clear();
                     s.mirror_skip.clear();
+                    s.physical_scan_cache.clear();
                 }
                 // Config/route-map change wipe (zfb#1148, Defect A): a
                 // change to any compile-affecting knob — in particular the
@@ -2250,6 +2297,7 @@ impl<'s> ShadowWriter<'s> {
                     s.content_skip.clear();
                     s.source_skip.clear();
                     s.mirror_skip.clear();
+                    s.physical_scan_cache.clear();
                     s.config_fingerprint = config_fingerprint;
                 }
                 s.copy_mode = Some(copy_mode);
@@ -3203,7 +3251,13 @@ pub fn bundle_with_session(
         )
         .collect();
 
+    // The dev session's cross-call scan cache (#3178); `None` for a
+    // sessionless build, which therefore always rescans.
+    let mut session_guard = writer.session.as_ref().map(RefCell::borrow_mut);
     let node_modules_staging_stats = extend_node_modules_dependency_staging(
+        session_guard
+            .as_mut()
+            .map(|session| &mut session.physical_scan_cache),
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
@@ -3217,6 +3271,7 @@ pub fn bundle_with_session(
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
+    drop(session_guard);
     node_modules_staging_stats.emit_if_enabled();
 
     // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
@@ -5380,6 +5435,81 @@ fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf
     out
 }
 
+/// Whether a directory `name` is one [`MIRROR_SKIP_DIRS`] prunes but a
+/// sibling's own manifest may carve back in (issue #3176): `node_modules` and
+/// `.git` are never carved out, whatever a manifest declares.
+fn is_carvable_skip_dir(name: &str) -> bool {
+    name != "node_modules" && name != ".git" && MIRROR_SKIP_DIRS.contains(&name)
+}
+
+/// The package-relative directories `package_root`'s own `package.json`
+/// declares (through `exports`/`main`/`module`/`imports`, via
+/// [`crate::metafile_deps::declared_entry_dir_prefixes`]) that pass through a
+/// carvable [`MIRROR_SKIP_DIRS`] directory — e.g. `dist/`, `build/dist/` — for
+/// the tsconfig-alias sibling mirror and the runtime alias claim (issue
+/// #3176). A declared prefix outside every skip dir needs no carve-out, and
+/// one naming `node_modules`, `.git`, or a non-plain component never gets one.
+///
+/// Host guard (copied from [`WorkspaceInfraPrune::for_source`]): no carve-out
+/// when `package_root` is the workspace root, the host project, an ancestor
+/// of it, or inside it — the host's manifest may point into `dist`, which is
+/// also the default build `out_dir`, and that must never become claimable.
+/// Compared both lexically and canonically; either match refuses (fail
+/// closed).
+fn declared_skip_dir_carve_outs(
+    package_root: &Path,
+    project_root: &Path,
+    workspace_root: &Path,
+) -> Vec<PathBuf> {
+    let spell = |path: &Path| normalize_macos_var_alias(&normalize_path_lexical(path));
+    let related = |package: &Path, host: &Path, workspace: &Path| {
+        package == workspace || host.starts_with(package) || package.starts_with(host)
+    };
+    if related(
+        &spell(package_root),
+        &spell(project_root),
+        &spell(workspace_root),
+    ) {
+        return Vec::new();
+    }
+    if let (Ok(package), Ok(host)) = (package_root.canonicalize(), project_root.canonicalize()) {
+        let workspace = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        if related(&package, &host, &workspace) {
+            return Vec::new();
+        }
+    }
+    let Some(manifest) = fs::read(package_root.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return Vec::new();
+    };
+    crate::metafile_deps::declared_entry_dir_prefixes(&manifest)
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|prefix| {
+            let names = || {
+                prefix.components().map(|component| match component {
+                    Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+            };
+            names().all(|name| name.is_some_and(|name| name != "node_modules" && name != ".git"))
+                && names().flatten().any(|name| is_carvable_skip_dir(&name))
+        })
+        .collect()
+}
+
+/// Whether the skip-dir (or hidden) directory at package-relative `relative`
+/// is on the path to, or is, one of `declared` — the package-relative prefix
+/// match of issue #3176: `dist/` is kept for a declared `dist/` (or
+/// `dist/esm/`), while a nested `src/dist/` or `dist/dist/` is not.
+fn skip_dir_is_declared(relative: &Path, declared: &[PathBuf]) -> bool {
+    declared.iter().any(|prefix| prefix.starts_with(relative))
+}
+
 /// Walk `root` with the same `ignore::WalkBuilder` machinery
 /// [`enumerate_extra_top_level_dirs`] uses (`.gitignore` / `.git/info/exclude`
 /// / global-git honored via `standard_filters`, `require_git(false)` so the
@@ -5391,7 +5521,19 @@ fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf
 /// end-to-end. The `MIRROR_SKIP_DIRS` infra dirs are pruned at any depth, and
 /// a `node_modules` component is never descended into (also re-checked
 /// per-file by the caller).
-fn enumerate_mirror_root_files(root: &Path) -> Vec<PathBuf> {
+///
+/// Manifest carve-out (issue #3176): a package inside `root` (the root itself
+/// or a nested `package.json` the filtered walk reached) whose manifest
+/// declares an entry under a skip dir — `"exports": "./dist/index.js"`, a
+/// directory-valued `"main": "./dist"`, an `imports` target — gets that
+/// declared subtree back through a second walk that ignores `.gitignore`
+/// (`dist/` is conventionally gitignored, so dropping it from the skip list
+/// alone would stage nothing). That walk still prunes hidden entries,
+/// `node_modules`, `.git`, and any skip dir nested inside the subtree that is
+/// not itself on a declared path. The host guard of
+/// [`declared_skip_dir_carve_outs`] keeps the host project's (and the
+/// workspace root's) own build output out.
+fn enumerate_mirror_root_files(root: &Path, project_root: &Path) -> Vec<PathBuf> {
     use ignore::WalkBuilder;
     let walker = WalkBuilder::new(root)
         .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
@@ -5413,6 +5555,60 @@ fn enumerate_mirror_root_files(root: &Path) -> Vec<PathBuf> {
     for entry in walker.flatten() {
         if entry.file_type().is_some_and(|ft| ft.is_file()) {
             out.push(entry.path().to_path_buf());
+        }
+    }
+
+    let workspace_root = zfb_types::first_party_root_for(project_root);
+    let mut package_roots: BTreeSet<PathBuf> = out
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "package.json"))
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect();
+    package_roots.insert(root.to_path_buf());
+    let mut seen: HashSet<PathBuf> = out.iter().cloned().collect();
+    for package_root in package_roots {
+        let declared = declared_skip_dir_carve_outs(&package_root, project_root, &workspace_root);
+        for prefix in &declared {
+            // The declared subtree must physically stay inside its package:
+            // a `dist` symlink out of the first-party region is not staged.
+            let subtree = package_root.join(prefix);
+            let contained = match (subtree.canonicalize(), package_root.canonicalize()) {
+                (Ok(physical), Ok(package)) => physical.is_dir() && physical.starts_with(package),
+                _ => false,
+            };
+            if !contained {
+                continue;
+            }
+            let walker = WalkBuilder::new(&subtree)
+                .standard_filters(false)
+                .hidden(true)
+                .filter_entry({
+                    let package_root = package_root.clone();
+                    let declared = declared.clone();
+                    move |entry| {
+                        if entry.depth() == 0 || !entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                            return true;
+                        }
+                        let name = entry.file_name().to_string_lossy();
+                        if !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip) {
+                            return true;
+                        }
+                        is_carvable_skip_dir(&name)
+                            && entry
+                                .path()
+                                .strip_prefix(&package_root)
+                                .is_ok_and(|relative| skip_dir_is_declared(relative, &declared))
+                    }
+                })
+                .build();
+            for entry in walker.flatten() {
+                if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    let path = entry.path().to_path_buf();
+                    if seen.insert(path.clone()) {
+                        out.push(path);
+                    }
+                }
+            }
         }
     }
     out
@@ -5596,6 +5792,36 @@ fn runtime_alias_path_is_claimable(
     ))
 }
 
+/// The owning sibling package of a runtime alias claim `path` and its
+/// declared skip-dir carve-outs (issue #3176, see
+/// [`declared_skip_dir_carve_outs`]). The owner is the nearest `package.json`
+/// directory above `path`, below `workspace_root`, whose own workspace-relative
+/// path crosses no hidden or skip-list directory — a `dist/esm/package.json`
+/// type marker is not a package root. `None` when there is no such package or
+/// it declares nothing carvable (including every host-guarded package).
+fn runtime_alias_declared_carve_out(
+    path: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let package_root = path
+        .parent()?
+        .ancestors()
+        .take_while(|dir| *dir != workspace_root && dir.starts_with(workspace_root))
+        .filter(|dir| {
+            dir.strip_prefix(workspace_root).is_ok_and(|rel| {
+                rel.components().all(|component| {
+                    let name = component.as_os_str().to_string_lossy();
+                    !name.starts_with('.') && !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+                })
+            })
+        })
+        .find(|dir| dir.join("package.json").is_file())?
+        .to_path_buf();
+    let declared = declared_skip_dir_carve_outs(&package_root, project_root, workspace_root);
+    (!declared.is_empty()).then_some((package_root, declared))
+}
+
 fn runtime_alias_claim_is_allowed(
     path: &Path,
     workspace_root: &Path,
@@ -5606,13 +5832,36 @@ fn runtime_alias_claim_is_allowed(
     let Ok(relative) = path.strip_prefix(workspace_root) else {
         return Ok(false);
     };
+    // Issue #3176: a hidden/skip-list component, or a gitignored path, is
+    // claimable only inside a subtree the owning sibling's manifest declares
+    // (package-relative prefix match, after the host guard).
+    let carve_out = std::cell::OnceCell::new();
+    let carve_out = || {
+        carve_out
+            .get_or_init(|| runtime_alias_declared_carve_out(path, workspace_root, project_root))
+    };
+    let mut walked = PathBuf::new();
     if bundle_exclude.is_excluded(path, project_root)
         || relative.components().any(|component| {
+            walked.push(component);
             let Component::Normal(name) = component else {
                 return false;
             };
             let name = name.to_string_lossy();
-            name.starts_with('.') || MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+            (name.starts_with('.') || MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip))
+                && !carve_out()
+                    .as_ref()
+                    .is_some_and(|(package_root, declared)| {
+                        (is_carvable_skip_dir(&name) || name.starts_with('.'))
+                            && name != ".git"
+                            && path.strip_prefix(package_root).is_ok_and(|rel| {
+                                declared.iter().any(|prefix| rel.starts_with(prefix))
+                            })
+                            && workspace_root
+                                .join(&walked)
+                                .strip_prefix(package_root)
+                                .is_ok_and(|rel| skip_dir_is_declared(rel, declared))
+                    })
         })
         || (relative
             .parent()
@@ -5654,7 +5903,15 @@ fn runtime_alias_claim_is_allowed(
     // to the wholesale mirror's gitignore posture, while the hidden/infra,
     // reserved-name, bundle.exclude, containment, canonical-path, and
     // workspace-membership checks above/below remain fail-closed.
+    let declared_leaf = gitignored
+        && carve_out()
+            .as_ref()
+            .is_some_and(|(package_root, declared)| {
+                path.strip_prefix(package_root)
+                    .is_ok_and(|rel| declared.iter().any(|prefix| rel.starts_with(prefix)))
+            });
     Ok(!gitignored
+        || declared_leaf
         || (claim_mode == RuntimeAliasClaimMode::ExactNonSourceLeaf
             && path.is_file()
             && !raw_source_extension(path)))
@@ -6009,6 +6266,8 @@ fn resolve_mirror_root(
     mirror_root_is_stageable(&claim_dir).then(|| respell(claim_dir))
 }
 
+// Deliberately no manifest carve-out (issue #3176): this rejects only a root
+// that no `package.json` was found for, so nothing can be declared there.
 fn mirror_root_is_stageable(root: &Path) -> bool {
     root.file_name().is_some_and(|name| {
         let name = name.to_string_lossy();
@@ -6347,7 +6606,7 @@ fn mirror_sibling_root(
     bundle_exclude: &BundleExcludeMatcher,
 ) -> Result<Vec<PathBuf>> {
     let mut mirrored = Vec::new();
-    for src in enumerate_mirror_root_files(mirror_root) {
+    for src in enumerate_mirror_root_files(mirror_root, project_root) {
         // Defense in depth vs. the walk's own pruning: never mirror through a
         // node_modules component, out of the first-party region, or over the
         // project mirror.
@@ -7267,8 +7526,9 @@ enum WorkspaceInfraPrune {
     Off,
     /// A claimed workspace package (issue #1901): infra directories are pruned
     /// at any depth, except those on the path to or inside one of `keep` — the
-    /// package-relative directories its own `exports`/`main`/`module` declare
-    /// (issue #3161), e.g. a compiled-JS-only package shipping `dist/`.
+    /// package-relative directories its own `exports`/`main`/`module`/`imports`
+    /// declare (issues #3161/#3169), e.g. a compiled-JS-only package shipping
+    /// `dist/`, including a directory-valued `"main": "./dist"`.
     Workspace { keep: Vec<PathBuf> },
 }
 
@@ -10584,6 +10844,7 @@ impl CollectionSeedRoot {
 
 #[allow(clippy::too_many_arguments)]
 fn extend_node_modules_dependency_staging(
+    mut session_scan_cache: Option<&mut HashMap<PathBuf, PhysicalScanCacheEntry>>,
     project_root: &Path,
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
@@ -10798,6 +11059,8 @@ fn extend_node_modules_dependency_staging(
     let mut deferred_physical_dependencies = Vec::new();
     // A pnpm-private package reachable along N logical paths shares one
     // canonical directory; scan it once and re-join each visit's logical root.
+    // This per-call map stays even with a session cache: it is what keeps
+    // every canonical dir to one scan-or-reuse per closure walk.
     let mut physical_scan_cache: BTreeMap<PathBuf, PhysicalPackageScan> = BTreeMap::new();
     loop {
         while let Some((logical_root, source_root)) = pending.pop_first() {
@@ -10817,12 +11080,16 @@ fn extend_node_modules_dependency_staging(
             let package_was_symlinked = logical_root != source_root
                 || normalize_path_lexical(&expected_physical) != physical_root;
             stats.logical_visits += 1;
-            let scan = physical_scan_cache
-                .entry(physical_root.clone())
-                .or_insert_with(|| {
-                    stats.physical_scans += 1;
-                    scan_physical_package(&physical_root)
-                });
+            let scan = match physical_scan_cache.entry(physical_root.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(scan_physical_package_via_session_cache(
+                        &physical_root,
+                        session_scan_cache.as_deref_mut(),
+                        &mut stats,
+                    ))
+                }
+            };
             let mut importers = scan
                 .files
                 .iter()
@@ -11016,12 +11283,82 @@ fn extend_node_modules_dependency_staging(
 /// The logical-root-independent part of one package's closure scan: each
 /// dependency-source file (relative to the canonical package dir) with its
 /// runtime import specifiers, plus the package's bare `imports` targets.
+#[derive(Clone)]
 struct PhysicalPackageScan {
     files: Vec<(PathBuf, Vec<String>)>,
     external_imports: Vec<String>,
 }
 
-fn scan_physical_package(physical_root: &Path) -> PhysicalPackageScan {
+/// One [`ShadowSession::physical_scan_cache`] entry: a package scan plus the
+/// `package.json` `(mtime, size)` stamp it was taken under.
+struct PhysicalScanCacheEntry {
+    stamp: (std::time::SystemTime, u64),
+    scan: PhysicalPackageScan,
+}
+
+fn path_has_node_modules_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| component == Component::Normal("node_modules".as_ref()))
+}
+
+fn package_json_stamp(physical_root: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = fs::metadata(physical_root.join("package.json")).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// Scan `physical_root`, reusing the dev session's cached scan when the dir is
+/// `node_modules`-scoped and its `package.json` stamp is unchanged (#3178).
+fn scan_physical_package_via_session_cache(
+    physical_root: &Path,
+    session_scan_cache: Option<&mut HashMap<PathBuf, PhysicalScanCacheEntry>>,
+    stats: &mut NodeModulesStagingStats,
+) -> PhysicalPackageScan {
+    let Some(cache) = session_scan_cache.filter(|_| path_has_node_modules_component(physical_root))
+    else {
+        stats.physical_scans += 1;
+        return scan_physical_package(physical_root, &mut stats.parsed_files);
+    };
+    // Stamped BEFORE the scan, so an edit racing the scan reads as a mismatch
+    // on the next call rather than being cached under the newer stamp.
+    let stamp = package_json_stamp(physical_root);
+    if let Some(entry) = cache
+        .get(physical_root)
+        .filter(|entry| Some(entry.stamp) == stamp)
+    {
+        stats.cache_hits += 1;
+        return entry.scan.clone();
+    }
+    stats.physical_scans += 1;
+    let scan = scan_physical_package(physical_root, &mut stats.parsed_files);
+    match stamp {
+        Some(stamp) => {
+            cache.insert(
+                physical_root.to_path_buf(),
+                PhysicalScanCacheEntry {
+                    stamp,
+                    scan: scan.clone(),
+                },
+            );
+        }
+        None => {
+            cache.remove(physical_root);
+        }
+    }
+    scan
+}
+
+/// Type declarations: never a runtime module, so never an import source.
+fn is_type_declaration_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|name| {
+            name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+        })
+}
+
+/// `parsed_files` is incremented once per file handed to the import parser.
+fn scan_physical_package(physical_root: &Path, parsed_files: &mut usize) -> PhysicalPackageScan {
     let mut files = Vec::new();
     for entry in WalkDir::new(physical_root)
         .follow_links(true)
@@ -11045,6 +11382,11 @@ fn scan_physical_package(physical_root: &Path) -> PhysicalPackageScan {
         if !entry.file_type().is_file() || !dependency_source {
             continue;
         }
+        // Discovery only (staged wholesale, esbuild resolves): a `.d.ts` is never a runtime module.
+        if is_type_declaration_file(path) {
+            continue;
+        }
+        *parsed_files += 1;
         let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
             // An unused invalid alternative must remain esbuild-contextual.
             continue;
@@ -12929,11 +13271,381 @@ mod tests {
             physical_scans: 4,
             logical_visits: 6,
             workspace_staging_activated: true,
+            cache_hits: 2,
+            parsed_files: 510,
         };
         assert_eq!(
             stats.stderr_line(),
-            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true"
+            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true \
+             cache_hits=2 parsed_files=510"
         );
+        assert_eq!(
+            NodeModulesStagingStats::default().stderr_line(),
+            "[zfb-staging-stats] physical_scans=0 logical_visits=0 workspace_staging_activated=false \
+             cache_hits=0 parsed_files=0"
+        );
+    }
+
+    // --- #3178: session scan cache + `.d.ts` skip ------------------------
+
+    fn scan_cache_write(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn scan_cache_write_package(dir: &Path, name: &str, index_body: &str) {
+        scan_cache_write(
+            &dir.join("package.json"),
+            &format!(
+                r#"{{"name":"{name}","version":"1.0.0","type":"module","main":"./index.js"}}"#
+            ),
+        );
+        scan_cache_write(&dir.join("index.js"), index_body);
+    }
+
+    /// A nested pnpm-workspace host (`<ws>/apps/site`) whose page imports the
+    /// first-party workspace package `data` (`<ws>/packages/data`, no
+    /// `node_modules` in its canonical dir), which imports the store package
+    /// `dep-a`, which imports its pnpm-private `dep-b`. `dep-b` also ships an
+    /// `index.d.ts` importing `types-only` — installed beside it, so a scan
+    /// that parsed declarations would walk it too. Returns `(dep_a, site)`.
+    #[cfg(unix)]
+    fn write_scan_cache_fixture(ws: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::symlink;
+        scan_cache_write(
+            &ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - \"apps/*\"\n  - \"packages/*\"\n",
+        );
+        let store = ws.join("node_modules/.pnpm");
+        let types_only = store.join("types-only@1.0.0/node_modules/types-only");
+        scan_cache_write_package(&types_only, "types-only", "export default 'T';\n");
+        let dep_b = store.join("dep-b@1.0.0/node_modules/dep-b");
+        scan_cache_write_package(&dep_b, "dep-b", "export default 'B';\n");
+        scan_cache_write(
+            &dep_b.join("index.d.ts"),
+            "import 'types-only';\nexport declare const b: string;\n",
+        );
+        symlink(
+            &types_only,
+            store.join("dep-b@1.0.0/node_modules/types-only"),
+        )
+        .unwrap();
+        let dep_a = store.join("dep-a@1.0.0/node_modules/dep-a");
+        scan_cache_write_package(
+            &dep_a,
+            "dep-a",
+            "import b from 'dep-b';\nexport default b;\n",
+        );
+        symlink(&dep_b, store.join("dep-a@1.0.0/node_modules/dep-b")).unwrap();
+
+        let data = ws.join("packages/data");
+        scan_cache_write(
+            &data.join("package.json"),
+            r#"{"name":"data","version":"1.0.0","type":"module","main":"./index.js","dependencies":{"dep-a":"1.0.0"}}"#,
+        );
+        scan_cache_write(
+            &data.join("index.js"),
+            "import a from 'dep-a';\nexport default a;\n",
+        );
+        fs::create_dir_all(data.join("node_modules")).unwrap();
+        symlink(&dep_a, data.join("node_modules/dep-a")).unwrap();
+
+        let site = ws.join("apps/site");
+        scan_cache_write(
+            &site.join("package.json"),
+            r#"{"name":"site","private":true,"dependencies":{"data":"workspace:*"}}"#,
+        );
+        fs::create_dir_all(site.join("node_modules")).unwrap();
+        symlink(&data, site.join("node_modules/data")).unwrap();
+        scan_cache_write(
+            &site.join("pages/index.tsx"),
+            "import data from 'data';\nexport default function Index() { return <div>{data}</div>; }\n",
+        );
+        scan_cache_write(
+            &site.join("layouts/default.tsx"),
+            "export default function L({ children }) { return children; }\n",
+        );
+        scan_cache_write(
+            &site.join("components/unused.tsx"),
+            "export default function Unused() { return null; }\n",
+        );
+        fs::create_dir_all(site.join("content")).unwrap();
+        (dep_a, site)
+    }
+
+    #[cfg(unix)]
+    fn scan_cache_input(site: &Path) -> BundlerInput {
+        BundlerInput {
+            external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+            mock_subprocess_output: Some("export default {};\n".to_string()),
+            node_modules_dir: Some(site.join("node_modules")),
+            tsconfig_paths: BTreeMap::from([(
+                "@/unused".to_string(),
+                vec![site
+                    .join("components/unused.tsx")
+                    .to_string_lossy()
+                    .into_owned()],
+            )]),
+            ..BundlerInput::for_project(
+                site.to_path_buf(),
+                Framework::Preact,
+                BundleMode::Production,
+                site.join("dist"),
+                None,
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    fn session_stats(session: &mut ShadowSession, input: BundlerInput) -> NodeModulesStagingStats {
+        bundle_with_session(input, Some(session))
+            .expect("mock bundle must succeed")
+            .node_modules_staging_stats
+    }
+
+    #[cfg(unix)]
+    /// Every entry under the site mirror's `node_modules` in the persistent
+    /// shadow, links followed — the staged dependency set the call left
+    /// behind. (The WORK root's own `node_modules` is the live workspace
+    /// link, not staging, so it is deliberately not listed.)
+    fn staged_listing(session: &ShadowSession) -> BTreeSet<PathBuf> {
+        let staged = session.shadow_root().join("apps/site/node_modules");
+        WalkDir::new(&staged)
+            .follow_links(true)
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .strip_prefix(&staged)
+                    .unwrap()
+                    .to_path_buf()
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    /// First-call closure over the fixture: `data`, `dep-a`, `dep-b` — one
+    /// parsed `index.js` each (`dep-b/index.d.ts` skipped, so `types-only` is
+    /// never reached).
+    const SCAN_CACHE_COLD: NodeModulesStagingStats = NodeModulesStagingStats {
+        physical_scans: 3,
+        logical_visits: 3,
+        workspace_staging_activated: true,
+        cache_hits: 0,
+        parsed_files: 3,
+    };
+
+    #[cfg(unix)]
+    /// A warm call: only the first-party `data` is rescanned; `dep-a` and
+    /// `dep-b` are reused from the session cache.
+    const SCAN_CACHE_WARM: NodeModulesStagingStats = NodeModulesStagingStats {
+        physical_scans: 1,
+        logical_visits: 3,
+        workspace_staging_activated: true,
+        cache_hits: 2,
+        parsed_files: 1,
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_reuses_node_modules_scans_with_an_identical_staging_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+        let first = staged_listing(&session);
+        assert!(
+            first
+                .iter()
+                .any(|path| path.ends_with("dep-a/node_modules/dep-b/index.js")),
+            "the fixture must actually stage dep-b: {first:?}"
+        );
+        assert!(
+            !first
+                .iter()
+                .any(|path| path.to_string_lossy().contains("types-only")),
+            "a bare import that appears only in a `.d.ts` must not enter the closure: {first:?}"
+        );
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+        assert_eq!(
+            staged_listing(&session),
+            first,
+            "a cached scan must stage exactly the set a fresh scan staged"
+        );
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_rescans_a_package_whose_package_json_stamp_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+
+        // A size change is a stamp change regardless of mtime granularity.
+        let manifest = dep_a.join("package.json");
+        let body = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, format!("{body}\n")).unwrap();
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            NodeModulesStagingStats {
+                physical_scans: SCAN_CACHE_WARM.physical_scans + 1,
+                cache_hits: SCAN_CACHE_WARM.cache_hits - 1,
+                parsed_files: SCAN_CACHE_WARM.parsed_files + 1,
+                ..SCAN_CACHE_WARM
+            },
+            "dep-a's package.json changed, so dep-a alone must be rescanned"
+        );
+        // The rescan re-stamped the entry: the next call reuses it again.
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_never_holds_a_first_party_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        for _ in 0..3 {
+            session_stats(&mut session, scan_cache_input(&site));
+            let mut cached = session
+                .physical_scan_cache
+                .keys()
+                .map(|dir| dir.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            cached.sort();
+            assert_eq!(
+                cached,
+                ["dep-a", "dep-b"],
+                "only node_modules-scoped dirs may be cached; packages/data is rescanned"
+            );
+            assert!(session
+                .physical_scan_cache
+                .keys()
+                .all(|dir| path_has_node_modules_component(dir)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_is_wiped_after_a_failed_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+
+        // A failed call is exactly a writer armed and never `mark_clean`ed
+        // (every early `?` in `bundle_with_session`). Same copy mode and
+        // fingerprint, so the constructor itself wipes nothing.
+        let copy_mode = session.copy_mode.unwrap();
+        let fingerprint = session.config_fingerprint.clone();
+        let shadow_root = session.shadow_root().to_path_buf();
+        drop(ShadowWriter::new(shadow_root, Some(&mut session), copy_mode, fingerprint).unwrap());
+        assert!(session.dirty);
+        assert_eq!(session.physical_scan_cache.len(), 2);
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD,
+            "the call after a failed one must rescan everything"
+        );
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_is_wiped_on_a_config_fingerprint_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+        let before = session.config_fingerprint.clone();
+
+        let changed = || {
+            let mut input = scan_cache_input(&site);
+            input.pipeline_spec.cjk_friendly = !input.pipeline_spec.cjk_friendly;
+            input
+        };
+        assert_eq!(
+            session_stats(&mut session, changed()),
+            SCAN_CACHE_COLD,
+            "a config fingerprint change must wipe the scan cache"
+        );
+        assert_ne!(
+            session.config_fingerprint, before,
+            "the fixture's spec edit must actually move the fingerprint"
+        );
+        assert_eq!(session_stats(&mut session, changed()), SCAN_CACHE_WARM);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessionless_bundle_never_uses_a_scan_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        for _ in 0..2 {
+            let stats = bundle(scan_cache_input(&site))
+                .expect("mock bundle must succeed")
+                .node_modules_staging_stats;
+            assert_eq!(stats, SCAN_CACHE_COLD);
+        }
+    }
+
+    #[test]
+    fn scan_physical_package_skips_type_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        scan_cache_write(&root.join("index.js"), "import 'runtime-dep';\n");
+        scan_cache_write(&root.join("index.d.ts"), "import 'types-a';\n");
+        scan_cache_write(&root.join("esm/index.d.mts"), "import 'types-b';\n");
+        scan_cache_write(&root.join("cjs/index.d.cts"), "import 'types-c';\n");
+        scan_cache_write(&root.join("src/real.ts"), "import 'ts-dep';\n");
+
+        let mut parsed_files = 0;
+        let scan = scan_physical_package(root, &mut parsed_files);
+        let specifiers = scan
+            .files
+            .iter()
+            .flat_map(|(_, specifiers)| specifiers.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            specifiers,
+            BTreeSet::from(["runtime-dep".to_string(), "ts-dep".to_string()]),
+            "declaration files must never feed closure discovery; a plain `.ts` still does"
+        );
+        assert_eq!(parsed_files, 2, "`parsed_files` must exclude declarations");
+        assert!(is_type_declaration_file(Path::new("x/INDEX.D.TS")));
+        assert!(!is_type_declaration_file(Path::new("x/d.ts.js")));
     }
 
     #[cfg(unix)]
@@ -18351,6 +19063,48 @@ mod tests {
     }
 
     #[test]
+    fn materialise_workspace_package_keeps_directory_valued_main_dist() {
+        // Issue #3169: `"main": "./dist"` names a directory (Node resolves it
+        // to `dist/index.js`); pruning it left esbuild nothing to resolve.
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                ("package.json", r#"{"name":"lib","main":"./dist"}"#),
+                ("dist/index.js", "export const marker = 1;\n"),
+                ("dist/node_modules/vendor/index.js", "vendored\n"),
+                ("target/debug/leak.txt", "infra\n"),
+            ],
+        );
+
+        assert!(dest.join("dist/index.js").is_file());
+        assert!(!dest.join("dist/node_modules").exists());
+        assert!(!dest.join("target").exists());
+    }
+
+    #[test]
+    fn materialise_workspace_package_keeps_imports_target_dist() {
+        // Issue #3169: a `package.json#imports` target into `dist/` declares
+        // that directory just as an `exports` target would.
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                (
+                    "package.json",
+                    r##"{"name":"lib","exports":"./index.js","imports":{"#impl":{"node":"./dist/impl.js","default":"lib-other"}}}"##,
+                ),
+                ("index.js", "import '#impl';\n"),
+                ("dist/impl.js", "export const marker = 1;\n"),
+                ("dist/chunk-a.js", "export const chunk = 1;\n"),
+                ("target/leak.txt", "infra\n"),
+            ],
+        );
+
+        assert!(dest.join("dist/impl.js").is_file());
+        assert!(dest.join("dist/chunk-a.js").is_file());
+        assert!(!dest.join("target").exists());
+    }
+
+    #[test]
     fn materialise_workspace_package_keeps_nested_declared_dist_only() {
         let (_workspace, _shadow, dest) = stage_workspace_package(
             "lib",
@@ -23437,7 +24191,7 @@ mod tests {
         fs::write(root.join(".gitignore"), "ignored.ts\n").unwrap();
         fs::write(root.join("ignored.ts"), "x").unwrap();
 
-        let rels: Vec<PathBuf> = enumerate_mirror_root_files(root)
+        let rels: Vec<PathBuf> = enumerate_mirror_root_files(root, root)
             .into_iter()
             .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
             .collect();
@@ -23461,6 +24215,206 @@ mod tests {
             !rels.contains(&PathBuf::from("ignored.ts")),
             "gitignored file pruned; got {rels:?}"
         );
+    }
+
+    /// Issue #3176 fixture: a pnpm workspace with a host `apps/site` and a
+    /// tsconfig-alias sibling `packages/lib` whose `package.json` is
+    /// `manifest` and whose `.gitignore` lists `dist/`. Returns
+    /// `(workspace_root, project_root, sibling_root)`.
+    fn alias_dist_carve_out_workspace(
+        tmp: &tempfile::TempDir,
+        manifest: &str,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let ws = tmp.path().to_path_buf();
+        fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        fs::write(ws.join("package.json"), r#"{"main": "./dist/root.js"}"#).unwrap();
+        fs::create_dir_all(ws.join("dist")).unwrap();
+        fs::write(ws.join("dist/root.js"), "x").unwrap();
+        let site = ws.join("apps/site");
+        fs::create_dir_all(site.join("dist")).unwrap();
+        fs::write(site.join("package.json"), r#"{"main": "./dist/index.js"}"#).unwrap();
+        fs::write(site.join("dist/index.js"), "x").unwrap();
+        let lib = ws.join("packages/lib");
+        for dir in [
+            "src/dist",
+            "dist/esm",
+            "dist/node_modules/p",
+            "dist/dist",
+            "target",
+            ".turbo",
+        ] {
+            fs::create_dir_all(lib.join(dir)).unwrap();
+        }
+        fs::write(lib.join("package.json"), manifest).unwrap();
+        fs::write(lib.join(".gitignore"), "dist/\n").unwrap();
+        for file in [
+            "src/ok.ts",
+            "src/dist/nested.js",
+            "dist/index.js",
+            "dist/esm/a.js",
+            "dist/node_modules/p/i.js",
+            "dist/dist/z.js",
+            "target/t.js",
+            ".turbo/c.json",
+        ] {
+            fs::write(lib.join(file), "x").unwrap();
+        }
+        (ws, site, lib)
+    }
+
+    const ALIAS_DIST_MANIFESTS: &[(&str, &str)] = &[
+        ("exports", r#"{"exports": {".": "./dist/index.js"}}"#),
+        ("directory-valued main", r#"{"main": "./dist"}"#),
+        ("imports", r##"{"imports": {"#x": "./dist/index.js"}}"##),
+    ];
+
+    #[test]
+    fn enumerate_mirror_root_files_carves_out_a_manifest_declared_gitignored_dist() {
+        for (shape, manifest) in ALIAS_DIST_MANIFESTS {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_ws, site, lib) = alias_dist_carve_out_workspace(&tmp, manifest);
+            let rels: BTreeSet<PathBuf> = enumerate_mirror_root_files(&lib, &site)
+                .into_iter()
+                .map(|p| p.strip_prefix(&lib).unwrap().to_path_buf())
+                .collect();
+            for kept in [
+                "src/ok.ts",
+                "package.json",
+                "dist/index.js",
+                "dist/esm/a.js",
+            ] {
+                assert!(
+                    rels.contains(Path::new(kept)),
+                    "{shape}: declared {kept} must be mirrored; got {rels:?}"
+                );
+            }
+            for pruned in [
+                "src/dist/nested.js",
+                "dist/node_modules/p/i.js",
+                "dist/dist/z.js",
+                "target/t.js",
+                ".turbo/c.json",
+            ] {
+                assert!(
+                    !rels.contains(Path::new(pruned)),
+                    "{shape}: {pruned} must stay pruned; got {rels:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enumerate_mirror_root_files_prunes_undeclared_and_host_dist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./src/ok.ts"}}"#);
+        let rels: Vec<PathBuf> = enumerate_mirror_root_files(&lib, &site)
+            .into_iter()
+            .map(|p| p.strip_prefix(&lib).unwrap().to_path_buf())
+            .collect();
+        assert!(rels.contains(&PathBuf::from("src/ok.ts")), "got {rels:?}");
+        for skip in ["dist", "target", ".turbo", "src/dist"] {
+            assert!(
+                !rels.iter().any(|p| p.starts_with(skip)),
+                "undeclared {skip} must stay pruned; got {rels:?}"
+            );
+        }
+
+        // Host guard: the host's and the workspace root's own declared
+        // `dist/` never come back, even though both manifests declare it.
+        for (root, dist) in [(&site, site.join("dist")), (&ws, ws.join("dist"))] {
+            let files = enumerate_mirror_root_files(root, &site);
+            assert!(
+                !files.iter().any(|p| p.starts_with(&dist)),
+                "host-guarded {} must stay pruned; got {files:?}",
+                dist.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_mirror_root_files_skips_a_declared_dist_symlinked_out_of_the_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./dist/index.js"}}"#);
+        fs::remove_dir_all(lib.join("dist")).unwrap();
+        fs::create_dir_all(ws.join("outside")).unwrap();
+        fs::write(ws.join("outside/leak.js"), "x").unwrap();
+        std::os::unix::fs::symlink(ws.join("outside"), lib.join("dist")).unwrap();
+        let files = enumerate_mirror_root_files(&lib, &site);
+        assert!(
+            !files.iter().any(|p| p.starts_with(lib.join("dist"))),
+            "a symlinked-out declared dist must not be staged; got {files:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_alias_claim_carves_out_only_a_declared_sibling_dist() {
+        let matcher = BundleExcludeMatcher::new(&[]).unwrap();
+        let allowed = |path: &Path, ws: &Path, site: &Path| {
+            runtime_alias_claim_is_allowed(
+                path,
+                ws,
+                site,
+                &matcher,
+                RuntimeAliasClaimMode::for_runtime_target(path),
+            )
+            .unwrap()
+        };
+        for (shape, manifest) in ALIAS_DIST_MANIFESTS {
+            let tmp = tempfile::tempdir().unwrap();
+            let (ws, site, lib) = alias_dist_carve_out_workspace(&tmp, manifest);
+            for claim in ["dist/index.js", "dist/esm/a.js", "src/ok.ts"] {
+                assert!(
+                    allowed(&lib.join(claim), &ws, &site),
+                    "{shape}: {claim} must be claimable"
+                );
+            }
+            for claim in [
+                "src/dist/nested.js",
+                "dist/node_modules/p/i.js",
+                "dist/dist/z.js",
+                "target/t.js",
+                ".turbo/c.json",
+            ] {
+                assert!(
+                    !allowed(&lib.join(claim), &ws, &site),
+                    "{shape}: {claim} must stay unclaimable"
+                );
+            }
+            // Host guard: the host's and the workspace root's declared dist.
+            assert!(!allowed(&site.join("dist/index.js"), &ws, &site));
+            assert!(!allowed(&ws.join("dist/root.js"), &ws, &site));
+        }
+
+        // A declared `dist/esm/` must not carve out its non-gitignored sibling
+        // `dist/cjs/`: being on the path to a declared dir is not being in it.
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./dist/esm/a.js"}}"#);
+        fs::remove_file(lib.join(".gitignore")).unwrap();
+        fs::create_dir_all(lib.join("dist/cjs")).unwrap();
+        fs::write(lib.join("dist/cjs/b.js"), "x").unwrap();
+        assert!(allowed(&lib.join("dist/esm/a.js"), &ws, &site));
+        assert!(
+            !allowed(&lib.join("dist/cjs/b.js"), &ws, &site),
+            "an undeclared sibling of a declared dist/esm/ must stay unclaimable"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./src/ok.ts"}}"#);
+        for claim in ["dist/index.js", "target/t.js", ".turbo/c.json"] {
+            assert!(
+                !allowed(&lib.join(claim), &ws, &site),
+                "undeclared {claim} must stay unclaimable"
+            );
+        }
     }
 
     // ── symlink_or_copy tests ────────────────────────────────────────────

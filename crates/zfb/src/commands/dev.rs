@@ -556,8 +556,8 @@ fn missing_watch_targets(
         }
     }
     // `extra_watch_paths` are already absolute by this point (resolved via
-    // `resolve_extra_watch_paths`, `session.out_of_root_watch_targets()`, or
-    // `resolve_css_import_watch_targets` — all canonicalise before adding).
+    // `resolve_extra_watch_paths`, `resolve_css_import_watch_targets`, or the
+    // out-of-root collection inventory — all canonicalise before adding).
     for extra in extra_watch_paths {
         if !extra.exists() && seen.insert(extra.clone()) {
             missing.push(extra.clone());
@@ -2122,30 +2122,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // discipline and its tick-vs-request exclusion (#1024).
     let request_writer = pipeline.request_writer();
     let mut extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
-    // #1284/#1287 (D4) — register the eager boot bundle's out-of-root real
-    // Module deps (canonicalised symlink targets of workspace `.tsx` deps
-    // esbuild resolved through `node_modules`) as extra watch targets, so an
-    // edit of the real workspace file fires a tick. `notify` does not follow
-    // symlinks and `node_modules` is excluded from the recursive watch, so
-    // without this a symlinked workspace component edit produces no event. The
-    // in-repo `src/**` case needs none of this — it is covered by
-    // `DEFAULT_WATCH_ROOTS`. Empty on the deferred-boot path (the boot bundle
-    // has not run yet there; that case relies on the in-repo `src` root).
-    #[cfg(feature = "embed_v8")]
-    if let Some(session) = dev_session.as_ref() {
-        // Boot-time-only backup (#1293): these targets are resolved once
-        // from the eager boot bundle's metafile and registered before the
-        // `BuildOrchestrator` is constructed. Dependencies discovered by
-        // later refreshes, and every deferred-boot dependency, are watched
-        // through the SSR module-dependency registry instead (#3162,
-        // `RawImportInvalidation::replace_ssr_module_deps`), which the
-        // orchestrator re-registers after boot and after every tick.
-        for target in session.out_of_root_watch_targets() {
-            if !extra_watch_paths.contains(&target) {
-                extra_watch_paths.push(target);
-            }
-        }
-    }
+    // #3179 (#3171) — the eager boot bundle's out-of-root SSR module deps are
+    // no longer copied into this boot-time extras list (the retired #1284 D4
+    // channel). The SSR module-dependency registry (#3162,
+    // `RawImportInvalidation::replace_ssr_module_deps`) is their single live
+    // watch source: `run` replays the boot set into it below, and the
+    // orchestrator registers it BEFORE the boot hook, so a boot-imported
+    // dependency is watched from the start and — unlike D4 — without
+    // `node_modules` leaking in or stale entries surviving a dropped import.
     // #1288 (D4) — auto-watch the CSS `@import` graph. `notify` does not
     // follow symlinks, and `node_modules` is excluded, so a transitively
     // imported / symlinked-workspace-dep CSS file (`@import './tokens.css'`,
@@ -2172,7 +2156,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // absolute extras channel: their canonical root matches notify's
     // canonical event paths, which a literal `project_root.join("../x")`
     // relative watch root never would. Dedupe against anything an explicit
-    // `extraWatchPaths` entry (or the #1284 / #1288 auto-watch resolvers
+    // `extraWatchPaths` entry (or the #1288 CSS `@import` auto-watch resolver
     // above) already registered, so an out-of-root collection that also
     // appears under `extraWatchPaths` is not double-watched.
     for root in root_inventory.out_of_root_watch_roots() {
@@ -2251,9 +2235,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Issue #3162 — the dev SSR module-dependency set rides the same
     // registry. Installing it replays the eager boot bundle's set (recorded
     // by `seed_boot_module_edges` above, before this registry existed), so
-    // the orchestrator's post-boot `register_dynamic_dependency_watches`
-    // already watches those dependencies. The deferred/cold boot publishes
-    // from inside the boot hook, which runs before that same registration.
+    // the orchestrator's PRE-boot-hook `register_dynamic_dependency_watches`
+    // (#3179) already watches those dependencies while the eager boot render
+    // runs — the window the retired #1284 D4 extras used to cover. The
+    // deferred/cold boot publishes from inside the boot hook, which runs
+    // before the post-boot registration.
     #[cfg(feature = "embed_v8")]
     if let Some(session) = dev_session.as_ref() {
         session.set_ssr_module_dep_registry(raw_import_invalidation.clone());
@@ -6054,17 +6040,6 @@ struct DevRenderInner {
     #[cfg(feature = "embed_v8")]
     content_trace: Mutex<DevContentTraceState>,
 
-    /// Real on-disk module-dep paths that live OUTSIDE `project_root` —
-    /// canonicalised symlink targets of workspace `.tsx` deps esbuild resolved
-    /// through `node_modules` (#1284/#1287, D4). `notify` does not follow
-    /// symlinks and `node_modules` is excluded from the recursive watch, so
-    /// these must be registered as `extraWatchPaths`-style targets for an edit
-    /// of the real workspace file to fire a tick. Accumulated by
-    /// [`Self::populate_module_edges`] every refresh; read by `run` to extend
-    /// the watcher's extra targets. A `BTreeSet`-backed dedup keeps it stable.
-    #[cfg(feature = "embed_v8")]
-    out_of_root_watch_targets: Mutex<std::collections::BTreeSet<PathBuf>>,
-
     /// The dev SSR module-dependency publication (issue #3162): the last
     /// successful bundle's dependency set, and the `RawImportInvalidation`
     /// registry it is published into once `run` installs it via
@@ -6850,6 +6825,14 @@ impl DevRenderSession {
     /// refresh, so a removed import drops its edge next tick), and re-upserts
     /// the preserved Content/Style/Data edges alongside the new Module set. The
     /// page self-edge is re-added by `upsert` regardless.
+    ///
+    /// The same set is published into the SSR module-dependency registry
+    /// first (#3162). That registry is the single live source for the watch
+    /// set and the SSR-reload predicate (#3171/#3179); the Module edges written
+    /// here serve page selection only. Watching from the graph was rejected: a
+    /// warm persisted graph carries stale previous-session edges, and the
+    /// edges lack the registry's `node_modules`/shadow filtering and alias
+    /// expansion.
     #[cfg(feature = "embed_v8")]
     fn populate_module_edges(&self, deps: &[zfb_build::RouteModuleDeps]) {
         self.publish_ssr_module_deps(deps);
@@ -6867,7 +6850,6 @@ impl DevRenderSession {
             }
         };
         let project_root = &self.inner.project_root;
-        let mut new_out_of_root: Vec<PathBuf> = Vec::new();
         if let Ok(mut g) = graph.lock() {
             for route in deps {
                 // The page key must match how the rest of the dev graph keys
@@ -6887,38 +6869,16 @@ impl DevRenderSession {
                     })
                     .collect();
 
-                for real in &route.module_deps {
-                    edges.push((real.clone(), zfb_graph::DepKind::Module));
-                    // A real dep path outside `project_root` is a symlinked
-                    // workspace dep (esbuild canonicalised it). Collect it so
-                    // the watcher can register it as an extra target (#1284 D4).
-                    if !real.starts_with(project_root) {
-                        new_out_of_root.push(real.clone());
-                    }
-                }
+                edges.extend(
+                    route
+                        .module_deps
+                        .iter()
+                        .map(|real| (real.clone(), zfb_graph::DepKind::Module)),
+                );
 
                 g.upsert(PageDeps::new(page_id, edges));
             }
-        }
-        if !new_out_of_root.is_empty() {
-            if let Ok(mut set) = self.inner.out_of_root_watch_targets.lock() {
-                set.extend(new_out_of_root);
-            }
-        }
-    }
-
-    /// Snapshot of the out-of-root real Module-dep paths discovered so far
-    /// (#1284/#1287, D4) — canonicalised symlink targets of workspace `.tsx`
-    /// deps that must be registered as extra watch targets. Read by `run`
-    /// after the boot bundle so a symlinked workspace component edit fires a
-    /// tick (the in-repo `src/**` case is covered by `DEFAULT_WATCH_ROOTS`).
-    #[cfg(feature = "embed_v8")]
-    pub(crate) fn out_of_root_watch_targets(&self) -> Vec<PathBuf> {
-        self.inner
-            .out_of_root_watch_targets
-            .lock()
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default()
+        };
     }
 
     /// The boot-resolved lazy dev-render switch (issue #1025/#1026).
@@ -9559,7 +9519,6 @@ fn boot_dev_renderer(
                 reads_by_observation: BTreeMap::new(),
                 boot_complete: false,
             }),
-            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps,
             paths_cache: Mutex::new(paths_cache),
@@ -11044,7 +11003,6 @@ pub(crate) fn stub_session_for_adapter_tests(
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),
             content_trace: Mutex::new(DevContentTraceState::default()),
-            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
@@ -12392,7 +12350,6 @@ mod tests {
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),
             content_trace: Mutex::new(DevContentTraceState::default()),
-            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication::default()),
             boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
@@ -12572,6 +12529,210 @@ mod tests {
         let deferred_registry = zfb_build::RawImportInvalidation::default();
         deferred.set_ssr_module_dep_registry(deferred_registry.clone());
         assert!(deferred_registry.ssr_module_dep_paths().is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // One live SSR-dependency source, D4 retired (issue #3179 / #3171)
+    // -----------------------------------------------------------------
+
+    /// Every `DepKind::Module` dependency path the graph holds for `page`.
+    #[cfg(feature = "embed_v8")]
+    fn graph_module_deps(
+        graph: &Arc<Mutex<DependencyGraph>>,
+        page: &Path,
+    ) -> std::collections::BTreeSet<PathBuf> {
+        graph
+            .lock()
+            .unwrap()
+            .deps_of(&PageId::new(page.to_path_buf()))
+            .into_iter()
+            .filter(|(_, kind)| *kind == zfb_graph::DepKind::Module)
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// Unit analogue of `e2e_3163` scenario (b)'s boot half, with no #1284 D4
+    /// extras: a nested site's boot-imported out-of-root SSR dependency is in
+    /// the registry — and therefore in the dynamic dependency set the
+    /// orchestrator registers BEFORE its boot hook — as soon as `run` has
+    /// installed the graph, seeded the boot edges, and installed the registry,
+    /// i.e. before the orchestrator and its first post-boot tick exist.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn boot_imported_out_of_root_ssr_deps_are_registered_before_first_tick_3179() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project = root.join("apps/site");
+        let sibling = root.join("packages/data/value.json");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+        std::fs::write(&sibling, "{}").unwrap();
+        let session = ssr_dep_session(&project, route_deps(std::slice::from_ref(&sibling)));
+
+        // The pre-orchestrator sequence `run` performs, in its order.
+        let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+        session.set_dep_graph(Arc::clone(&graph));
+        session.seed_boot_module_edges();
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+
+        assert!(
+            !registry.ssr_module_dep_paths().is_empty(),
+            "the eager boot bundle must populate the registry before the orchestrator runs"
+        );
+        assert!(registry.is_ssr_module_dependency(&sibling));
+        let policy = zfb_build::GranularityPolicy::default().with_raw_import_invalidation(registry);
+        assert!(
+            policy.dynamic_dependency_paths().contains(&sibling),
+            "the boot-imported out-of-root dependency must be in the set the \
+             orchestrator's pre-boot registration offers: {:?}",
+            policy.dynamic_dependency_paths()
+        );
+        assert!(
+            graph_module_deps(&graph, &project.join("pages/index.tsx")).contains(&sibling),
+            "the graph keeps the Module edge for page selection"
+        );
+    }
+
+    /// After `populate_module_edges`, the registry's paths are a subset of the
+    /// graph's Module dependency paths once those are alias-expanded and
+    /// stripped of `node_modules` and shadow-session paths. Holds after a
+    /// narrowing refresh (a dropped import leaves both — the retired D4 set
+    /// only ever grew) and in the degraded empty-metafile case, where both
+    /// keep the last good set.
+    #[cfg(all(feature = "embed_v8", unix))]
+    #[test]
+    fn ssr_module_dep_registry_is_a_filtered_subset_of_graph_module_deps_3179() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (project, [in_root, out_of_root, store]) = ssr_dep_fixture(&root);
+        let linked_real = root.join("packages/linked/value.json");
+        std::fs::create_dir_all(linked_real.parent().unwrap()).unwrap();
+        std::fs::write(&linked_real, "{}").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("packages/linked"),
+            project.join("node_modules/linked"),
+        )
+        .unwrap();
+        // The link's lexical spelling; only its canonical alias is watchable.
+        let linked_lexical = project.join("node_modules/linked/value.json");
+        let shadow = root.join("zfb-shadow-session-3179/pages/index.tsx");
+        std::fs::create_dir_all(shadow.parent().unwrap()).unwrap();
+        std::fs::write(&shadow, "").unwrap();
+
+        let session = ssr_dep_session(&project, Vec::new());
+        let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+        session.set_dep_graph(Arc::clone(&graph));
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+        let page = project.join("pages/index.tsx");
+
+        let assert_subset = |label: &str| {
+            let graph_deps = graph_module_deps(&graph, &page);
+            let expanded: std::collections::BTreeSet<PathBuf> = graph_deps
+                .iter()
+                .flat_map(|dep| zfb_build::RawImportInvalidation::path_aliases(dep))
+                .filter(|alias| {
+                    !zfb_types::has_node_modules_segment(alias)
+                        && !alias.components().any(|c| {
+                            c.as_os_str()
+                                .to_str()
+                                .is_some_and(|name| name.starts_with("zfb-shadow-session-"))
+                        })
+                })
+                .collect();
+            let registered = registry.ssr_module_dep_paths();
+            assert!(
+                registered.is_subset(&expanded),
+                "{label}: registry {registered:?} must be a subset of the filtered, \
+                 alias-expanded graph Module deps {expanded:?}"
+            );
+            (graph_deps, registered)
+        };
+
+        session.populate_module_edges(&route_deps(&[
+            in_root.clone(),
+            out_of_root.clone(),
+            store.clone(),
+            linked_lexical.clone(),
+            shadow.clone(),
+        ]));
+        let (graph_deps, registered) = assert_subset("full publish");
+        assert!(graph_deps.contains(&store) && graph_deps.contains(&shadow));
+        assert!(registered.contains(&in_root) && registered.contains(&out_of_root));
+        assert!(
+            registered.contains(&linked_real),
+            "the symlinked package must register its real spelling: {registered:?}"
+        );
+        assert!(!registered.contains(&linked_lexical));
+        assert!(!registered.contains(&store) && !registered.contains(&shadow));
+
+        session.populate_module_edges(&[]);
+        let (degraded_graph, degraded_registry) = assert_subset("degraded empty metafile");
+        assert_eq!(
+            degraded_graph, graph_deps,
+            "the graph keeps the last good set"
+        );
+        assert_eq!(
+            degraded_registry, registered,
+            "the registry keeps the last good set"
+        );
+
+        session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)));
+        let (narrowed_graph, narrowed_registry) = assert_subset("narrowing refresh");
+        assert!(!narrowed_graph.contains(&out_of_root));
+        assert!(
+            !narrowed_registry.contains(&out_of_root),
+            "a dropped out-of-root import must stop being registered"
+        );
+    }
+
+    /// A nested site's `node_modules` dependency hoisted to the workspace
+    /// root lives outside `project_root`, which is exactly what the retired
+    /// #1284 D4 channel keyed on — it would have watched it. The registry
+    /// drops every `node_modules` path, so it is never watched, while the
+    /// graph keeps its Module edge for page selection.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn hoisted_node_modules_dep_of_nested_site_is_not_watched_3179() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project = root.join("apps/site");
+        let hoisted = root.join("node_modules/dep/index.js");
+        let hoisted_store = root.join("node_modules/.pnpm/dep@1.0.0/node_modules/dep/index.js");
+        let sibling = root.join("packages/data/value.json");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        for file in [&hoisted, &hoisted_store, &sibling] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        let session = ssr_dep_session(
+            &project,
+            route_deps(&[hoisted.clone(), hoisted_store.clone(), sibling.clone()]),
+        );
+        let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+        session.set_dep_graph(Arc::clone(&graph));
+        session.seed_boot_module_edges();
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+
+        let graph_deps = graph_module_deps(&graph, &project.join("pages/index.tsx"));
+        assert!(graph_deps.contains(&hoisted) && graph_deps.contains(&hoisted_store));
+        let policy =
+            zfb_build::GranularityPolicy::default().with_raw_import_invalidation(registry.clone());
+        let watched = policy.dynamic_dependency_paths();
+        assert!(
+            watched.contains(&sibling),
+            "control: the first-party sibling is watched: {watched:?}"
+        );
+        assert!(
+            !watched
+                .iter()
+                .any(|path| zfb_types::has_node_modules_segment(path)),
+            "no hoisted node_modules dependency may be watched: {watched:?}"
+        );
+        assert!(!registry.is_ssr_module_dependency(&hoisted));
+        assert!(!registry.is_ssr_module_dependency(&hoisted_store));
     }
 
     // -----------------------------------------------------------------

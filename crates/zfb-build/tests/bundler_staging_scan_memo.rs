@@ -129,6 +129,8 @@ fn pnpm_private_dependency_reached_along_three_logical_paths_is_scanned_once() {
             physical_scans: IMPORTERS.len() + 1,
             logical_visits: IMPORTERS.len() * 2,
             workspace_staging_activated: false,
+            cache_hits: 0,
+            parsed_files: IMPORTERS.len() + 2,
         },
         "the shared pnpm store dir must be scanned exactly once across its three logical aliases",
     );
