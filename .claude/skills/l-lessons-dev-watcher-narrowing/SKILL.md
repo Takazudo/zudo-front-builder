@@ -162,3 +162,30 @@ the tsconfig alias — no import touches it — verified by actually reverting
 `wait_for_watch_extra` before restoring it. When adding a new dynamic-watch confirm-test,
 check whether your chosen sibling path is already claimed by a channel you are not
 trying to test.
+
+## 2026-09 — one live SSR-dependency source; D4 retired (issue #3179 / #3171)
+
+After #3162 the metafile-derived SSR dependency set lived in three places, all written by
+`populate_module_edges` (`crates/zfb/src/commands/dev.rs`): the graph's `DepKind::Module` edges,
+`RawImportInvalidation::ssr_module_deps`, and the #1284 D4 `out_of_root_watch_targets` extras.
+D4 only grew, never filtered `node_modules` (a nested site's hoisted deps are "out of root"), and
+registered its watches once at watcher construction — and in #3163's revert proof it MASKED the
+registry for boot-imported nested-site deps, so the e2e could not tell whether the registry worked.
+
+**Decision:** the registry is the single live source for the watch set and the SSR-reload
+predicate; graph Module edges stay for page selection only; D4 is gone (`with_extra_watch_paths`
+stays — config `extraWatchPaths`, CSS `@import` targets and out-of-root collections still feed it).
+Deriving the watch set from graph edges was rejected: the reverse index has no edge kinds, a warm
+persisted graph carries stale previous-session Module edges, and edges lack the registry's
+`node_modules`/shadow filtering and alias expansion.
+
+### Watch for next time
+
+- **Retiring a backup channel re-opens the window it covered.** D4 was registered at watcher
+  construction; the registry was registered only AFTER the boot hook, which runs the whole eager
+  render. The fix calls `register_dynamic_dependency_watches` BEFORE the boot hook too (the eager
+  bundle has already published into the registry by then). When you delete a redundant channel,
+  list the time windows it was the only cover for.
+- **Two overlapping channels make a revert proof lie.** If a confirm-e2e keeps passing with the
+  channel under test reverted, look for another channel covering the same path (same lesson as the
+  `css_mirror_roots` entry above) — here it was D4.
