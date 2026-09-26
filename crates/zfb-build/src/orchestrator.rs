@@ -165,7 +165,9 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
 /// `ready` fell between the read and the watch: no event, and the page kept
 /// its boot value until the file changed again (#3181, #3192). An edit made
 /// just after a watch arms can arrive both as a real event and as a
-/// synthesized change; the second tick is a harmless rebuild.
+/// synthesized change; the second tick is a harmless rebuild. Each
+/// (file, mtime) is reported at most once — see
+/// [`crate::policy::RawImportInvalidation::note_observed_edits`].
 fn unobserved_dependency_edits(
     policy: &GranularityPolicy,
     in_scope: impl Fn(&Path) -> bool,
@@ -2049,6 +2051,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if changes.is_empty() {
                 continue;
             }
+            // These edits are handled by this tick, so the watch-arm
+            // reconcile must not report them again later.
+            this.config
+                .policy
+                .note_observed_edits(changes.iter().map(|(path, _)| path.as_path()));
 
             // Pre-tick plugin refresh (issue #2169) — awaited HERE, before
             // the tick is dispatched to the blocking pool, so the shared
@@ -4937,6 +4944,195 @@ mod tests {
         let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
         assert_eq!(plans.len(), 1, "{plans:?}");
         assert_eq!(plans[0].triggers, vec![user_file], "{plans:?}");
+    }
+
+    /// Epic #3197 review — a registrar whose Nth `watch_additional_files`
+    /// call runs the Nth scripted step and returns what it names as newly
+    /// watched (nothing once the script runs out). Calls: pre-boot (#3179),
+    /// post-boot, then one after every tick.
+    struct ScriptedRegistrar {
+        steps: std::collections::VecDeque<Box<dyn FnOnce() -> Vec<PathBuf> + Send>>,
+    }
+    impl ScriptedRegistrar {
+        fn new(steps: Vec<Box<dyn FnOnce() -> Vec<PathBuf> + Send>>) -> Self {
+            Self {
+                steps: steps.into(),
+            }
+        }
+    }
+    impl DynamicWatchRegistrar for ScriptedRegistrar {
+        fn watch_additional_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+            self.steps
+                .pop_front()
+                .map(|step| step())
+                .unwrap_or_default()
+        }
+        fn sync_recursive_dir_watches(
+            &mut self,
+            _desired_roots: BTreeSet<PathBuf>,
+            _skip_dir_names: &[String],
+        ) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
+    /// Run the drain loop with `events` already queued (then the channel
+    /// closes) and return the plans the pipeline was asked to apply.
+    async fn drain_scripted_3197(
+        root: &Path,
+        invalidation: crate::policy::RawImportInvalidation,
+        boot: impl FnOnce(&BuildOrchestrator<CountingPipeline>, &BuildContext) -> Option<BuildOutcome>,
+        registrar: ScriptedRegistrar,
+        events: Vec<Change>,
+    ) -> Vec<RebuildPlan> {
+        let pipeline = CountingPipeline::default();
+        let applies = Arc::clone(&pipeline.applies);
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(root, vec![PathBuf::from("pages")]).with_policy(
+                crate::policy::GranularityPolicy::default()
+                    .with_raw_import_invalidation(invalidation),
+            ),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Change>(events.len().max(1));
+        for event in events {
+            tx.send(event).await.unwrap();
+        }
+        drop(tx);
+        orch.run_drain_loop(
+            noop_ctx(dist.path()),
+            None,
+            |_: &BuildOutcome| {},
+            Some(boot),
+            registrar,
+            rx,
+        )
+        .await
+        .unwrap();
+        let plans = applies.lock().unwrap().clone();
+        plans
+    }
+
+    /// A plugin watch file published (stamped once, at boot) under
+    /// `data/nav/`, unedited since the boot read.
+    fn plugin_watch_file_fixture_3197() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        std::time::SystemTime,
+        crate::policy::RawImportInvalidation,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let menu = root.join("data/nav/menu.json");
+        std::fs::create_dir_all(menu.parent().unwrap()).unwrap();
+        std::fs::write(&menu, "{}").unwrap();
+        let read_since = std::time::SystemTime::now();
+        set_mtime_3190(&menu, read_since - Duration::from_secs(5));
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_plugin_watch_files_read_since([menu.clone()], read_since);
+        (tmp, root, menu, read_since, invalidation)
+    }
+
+    /// Epic #3197 review — the plugin watch file is edited after boot and the
+    /// watcher delivers that edit (tick 1). When `data/` later becomes newly
+    /// watched, the reconcile must not synthesize the same edit again: that
+    /// would be a second islands + client-scripts rebuild and a transient
+    /// `/__zfb/ready` not-ready for an edit already served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_watch_file_edit_delivered_by_an_event_is_not_reconciled_again() {
+        let (_tmp, root, menu, read_since, invalidation) = plugin_watch_file_fixture_3197();
+        let edited = menu.clone();
+        let data_dir = root.join("data");
+        let plans = drain_scripted_3197(
+            &root,
+            invalidation,
+            move |_, _| {
+                set_mtime_3190(&edited, read_since + Duration::from_secs(1));
+                None
+            },
+            ScriptedRegistrar::new(vec![
+                Box::new(Vec::new),
+                Box::new(Vec::new),
+                Box::new(move || vec![data_dir]),
+            ]),
+            vec![Change::new(menu.clone(), ChangeKind::Modified)],
+        )
+        .await;
+        assert_eq!(plans.len(), 1, "only the real event may rebuild: {plans:?}");
+        assert_eq!(plans[0].triggers, vec![menu], "{plans:?}");
+    }
+
+    /// Epic #3197 review — after the delivered edit, a genuine second edit
+    /// that no event reported (its directory was not yet watched) is
+    /// reconciled once, and a further newly watched ancestor does not report
+    /// it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_later_genuine_edit_is_reconciled_exactly_once() {
+        let (_tmp, root, menu, read_since, invalidation) = plugin_watch_file_fixture_3197();
+        let edited = menu.clone();
+        let second_edit = menu.clone();
+        let data_dir = root.join("data");
+        let root_dir = root.clone();
+        let plans = drain_scripted_3197(
+            &root,
+            invalidation,
+            move |_, _| {
+                set_mtime_3190(&edited, read_since + Duration::from_secs(1));
+                None
+            },
+            ScriptedRegistrar::new(vec![
+                Box::new(Vec::new),
+                Box::new(Vec::new),
+                Box::new(move || {
+                    set_mtime_3190(&second_edit, read_since + Duration::from_secs(2));
+                    vec![data_dir]
+                }),
+                Box::new(move || vec![root_dir]),
+            ]),
+            vec![Change::new(menu.clone(), ChangeKind::Modified)],
+        )
+        .await;
+        assert_eq!(
+            plans.len(),
+            2,
+            "the real event, then the second edit once: {plans:?}"
+        );
+        for plan in &plans {
+            assert_eq!(plan.triggers, vec![menu.clone()], "{plans:?}");
+        }
+    }
+
+    /// Issues #3190 / #3201 / #3202 with the memo — an edit made before the
+    /// watcher armed is still reconciled, and exactly once: neither the
+    /// post-boot registration's newly watched parent nor a later newly
+    /// watched ancestor reports it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_before_the_watch_armed_is_reconciled_exactly_once() {
+        let (_tmp, root, menu, read_since, invalidation) = plugin_watch_file_fixture_3197();
+        set_mtime_3190(&menu, read_since + Duration::from_secs(1));
+        let nav_dir = menu.parent().unwrap().to_path_buf();
+        let data_dir = root.join("data");
+        let plans = drain_scripted_3197(
+            &root,
+            invalidation,
+            |_, _| None,
+            ScriptedRegistrar::new(vec![
+                Box::new(Vec::new),
+                Box::new(move || vec![nav_dir]),
+                Box::new(move || vec![data_dir]),
+            ]),
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(plans[0].triggers, vec![menu], "{plans:?}");
+        assert!(
+            plans[0].rerun_islands && plans[0].rerun_client_scripts,
+            "{plans:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -142,6 +142,17 @@ pub struct RawImportInvalidation {
     /// the dev asset and output roots), stored with their lexical and
     /// canonical aliases. See [`Self::is_zfb_written`].
     zfb_written_roots: Arc<RwLock<Vec<PathBuf>>>,
+
+    /// Per reconciled file (keyed by its canonical path), the mtime a tick
+    /// has already accounted for — written when [`Self::modified_since_read`]
+    /// reports the file and when a real watcher event for it enters a tick
+    /// ([`Self::note_observed_edits`]). The reconcile skips a file whose
+    /// current mtime equals its entry, so one edit is reported at most once:
+    /// without it, a file edited after a stamp that is never renewed (plugin
+    /// watch files are stamped once, at boot) was re-reported every time one
+    /// of its ancestor directories became newly watched, although the
+    /// watcher had already delivered and handled that edit.
+    accounted_mtimes: Arc<RwLock<BTreeMap<PathBuf, SystemTime>>>,
 }
 
 /// The file-shaped sets of [`RawImportInvalidation`] (`css_mirror_roots`
@@ -156,6 +167,19 @@ enum FileSet {
     SsrModuleDeps,
     PageEntries,
     ContentFiles,
+}
+
+impl FileSet {
+    const ALL: [FileSet; 8] = [
+        FileSet::Islands,
+        FileSet::ClientScripts,
+        FileSet::ClientScriptWorkers,
+        FileSet::ClientScriptSiblings,
+        FileSet::PluginWatchFiles,
+        FileSet::SsrModuleDeps,
+        FileSet::PageEntries,
+        FileSet::ContentFiles,
+    ];
 }
 
 /// Directory-name prefix of the islands shadow `zfb dev`/`zfb build`
@@ -689,12 +713,21 @@ impl RawImportInvalidation {
     /// file changes again. A missing file is skipped (the pass that follows
     /// a real delete event reports it), as is a set published without a read
     /// time and any file [`Self::is_zfb_written`] claims.
+    ///
+    /// Each (file, mtime) is reported at most once: a reported file's mtime
+    /// is recorded as accounted for, and a file whose current mtime was
+    /// already accounted for — reported earlier, or delivered by a real
+    /// watcher event ([`Self::note_observed_edits`]) — is skipped. A later
+    /// edit moves the mtime and is reported again.
     pub fn modified_since_read(&self, in_scope: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
         let stamps = self
             .read_since
             .read()
             .map(|stamps| stamps.clone())
             .unwrap_or_default();
+        let Ok(mut accounted) = self.accounted_mtimes.write() else {
+            return Vec::new();
+        };
         let mut seen_files = BTreeSet::new();
         let mut modified = Vec::new();
         for (set, read_since) in stamps {
@@ -713,13 +746,65 @@ impl RawImportInvalidation {
                 if mtime < read_since || self.is_zfb_written(&path) {
                     continue;
                 }
-                let file = path.canonicalize().unwrap_or_else(|_| path.clone());
-                if seen_files.insert(file) {
+                let file = Self::reconcile_key(&path);
+                if accounted.get(&file) == Some(&mtime) {
+                    continue;
+                }
+                if seen_files.insert(file.clone()) {
+                    accounted.insert(file, mtime);
                     modified.push(path);
                 }
             }
         }
         modified
+    }
+
+    /// Record, for each of `paths` that belongs to a reconciled file-shaped
+    /// set, its current mtime as accounted for: a real watcher event for it
+    /// is entering a tick, so [`Self::modified_since_read`] must not report
+    /// that same edit again when an ancestor directory is watched later. A
+    /// path that no longer exists forgets its entry. Recording the CURRENT
+    /// mtime is safe even if the file changed again after its event: the
+    /// watcher that delivered the event is still armed and reports that edit
+    /// too.
+    pub fn note_observed_edits<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        let observed: Vec<(PathBuf, Option<SystemTime>)> = paths
+            .into_iter()
+            .filter(|path| self.is_reconciled_member(path))
+            .map(|path| {
+                let mtime = std::fs::metadata(path)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                (Self::reconcile_key(path), mtime)
+            })
+            .collect();
+        if observed.is_empty() {
+            return;
+        }
+        if let Ok(mut accounted) = self.accounted_mtimes.write() {
+            for (file, mtime) in observed {
+                match mtime {
+                    Some(mtime) => accounted.insert(file, mtime),
+                    None => accounted.remove(&file),
+                };
+            }
+        }
+    }
+
+    /// Whether `path` (as either alias the sets store) is a member of any
+    /// file-shaped set [`Self::modified_since_read`] reconciles.
+    fn is_reconciled_member(&self, path: &Path) -> bool {
+        FileSet::ALL.into_iter().any(|set| {
+            self.file_set(set)
+                .read()
+                .is_ok_and(|paths| paths.contains(path))
+        })
+    }
+
+    /// One key per physical file, so a lexical and a canonical alias share
+    /// their accounted mtime.
+    fn reconcile_key(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
 
     /// A third-party `node_modules` file, or a copy inside one of the
@@ -1190,6 +1275,11 @@ impl GranularityPolicy {
         self.raw_import_invalidation.modified_since_read(in_scope)
     }
 
+    /// See [`RawImportInvalidation::note_observed_edits`].
+    pub fn note_observed_edits<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        self.raw_import_invalidation.note_observed_edits(paths);
+    }
+
     /// Whether this exact changed path is a client-script terminal raw target.
     pub fn is_client_script_raw_target(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_client_script_target(path)
@@ -1624,13 +1714,18 @@ mod tests {
             policy.modified_since_read(in_packages),
             vec![edited.clone()]
         );
-        let all = policy.modified_since_read(|_| true);
-        assert_eq!(all.len(), 2, "{all:?}");
-        assert!(all.contains(&edited) && all.contains(&out_of_scope));
+        // `edited` was already reported at this mtime; only the file the
+        // narrower scope excluded is new.
+        assert_eq!(
+            policy.modified_since_read(|_| true),
+            vec![out_of_scope.clone()]
+        );
+        assert!(policy.modified_since_read(|_| true).is_empty());
 
         // A symlinked spelling of the same file is reported once, not twice.
         #[cfg(unix)]
         {
+            set_mtime(&edited, after + Duration::from_millis(500));
             std::fs::create_dir_all(root.join("site/node_modules")).unwrap();
             std::os::unix::fs::symlink(root.join("packages"), root.join("site/pkgs")).unwrap();
             invalidation.replace_ssr_module_deps_read_since(
@@ -1711,6 +1806,9 @@ mod tests {
 
         // Each publisher's stamp is its own: a later page publication whose
         // read started after the edit clears the page, not the content file.
+        // Both files are edited again, since the first edit was reported.
+        set_mtime(&edited_page, read_since + Duration::from_millis(1500));
+        set_mtime(&edited_post, read_since + Duration::from_millis(1500));
         invalidation.replace_page_entries_read_since(
             [edited_page.clone(), unedited_page],
             read_since + Duration::from_secs(2),
@@ -1718,6 +1816,62 @@ mod tests {
         assert_eq!(
             invalidation.modified_since_read(|_| true),
             vec![edited_post]
+        );
+    }
+
+    /// Epic #3197 review — plugin watch files are stamped once, at boot, so
+    /// without a memo an edit made after boot stayed "after the read" for the
+    /// whole session and was re-reported by every later reconcile. An edit a
+    /// real watcher event delivered is never reported; a later genuine edit
+    /// is reported exactly once; a path outside every set is not memoised.
+    #[test]
+    fn modified_since_read_reports_each_edit_at_most_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let menu = root.join("data/nav/menu.json");
+        let stranger = root.join("data/other.json");
+        for file in [&menu, &stranger] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        let read_since = SystemTime::now();
+        let set_mtime = |path: &Path, mtime: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        set_mtime(&menu, read_since - Duration::from_secs(5));
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_plugin_watch_files_read_since([menu.clone()], read_since);
+        let under_data = |path: &Path| path.starts_with(root.join("data"));
+
+        set_mtime(&menu, read_since + Duration::from_secs(1));
+        invalidation.note_observed_edits([menu.as_path(), stranger.as_path()]);
+        assert!(
+            invalidation.modified_since_read(under_data).is_empty(),
+            "an edit the watcher already delivered must not be reported again"
+        );
+        assert!(
+            invalidation
+                .accounted_mtimes
+                .read()
+                .unwrap()
+                .keys()
+                .all(|file| file == &menu),
+            "only reconciled files are memoised"
+        );
+
+        set_mtime(&menu, read_since + Duration::from_secs(2));
+        assert_eq!(
+            invalidation.modified_since_read(under_data),
+            vec![menu.clone()]
+        );
+        assert!(
+            invalidation.modified_since_read(|_| true).is_empty(),
+            "a reported edit is reported once"
         );
     }
 
