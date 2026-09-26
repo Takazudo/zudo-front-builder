@@ -1496,7 +1496,7 @@ fn bundler_timing_enabled() -> bool {
 
 /// Prefix every [`ShadowSession`] tempdir carries — also the name filter
 /// [`reap_stale_shadow_sessions`] uses to recognize a sibling session dir.
-const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
+pub(crate) const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
 
 /// Reserved lock-file name at a shadow session dir's root (issue #2257) —
 /// zfb-namespaced (mirrors the watcher-liveness probe's per-session
@@ -4227,6 +4227,11 @@ pub fn bundle_with_session(
             .bundle_exclude
             .is_excluded(path, mat_ctx.project_root)
     };
+    // Issue #3162 — every real copy staged below, as `(shadow destination,
+    // source it was copied from)`. The dev metafile mapping uses it to name
+    // the ORIGINAL file behind a staged copy that has no project-tree twin
+    // (a nested host's hoisted workspace package), never the copy itself.
+    let mut staged_copy_sources: Vec<(PathBuf, PathBuf)> = Vec::new();
     for logical_root in &exact_target_staging_dirs {
         let isolated_node_modules =
             project_path_is_inside_node_modules(logical_root, &project_root);
@@ -4275,6 +4280,7 @@ pub fn bundle_with_session(
                 logical_root.display()
             )
         })?;
+        staged_copy_sources.push((dest, logical_root.clone()));
     }
     for (logical_root, source_root) in &exact_target_staging_alias_dirs {
         // Alias dirs are always node_modules-shaped; under exclusions they fall
@@ -4319,6 +4325,7 @@ pub fn bundle_with_session(
                 logical_root.display()
             )
         })?;
+        staged_copy_sources.push((dest, source_root.clone()));
     }
     for physical in &exact_target_staging_files {
         if is_plugin_preprocessing_excluded(physical) {
@@ -4367,6 +4374,7 @@ pub fn bundle_with_session(
                     physical.display()
                 )
             })?;
+        staged_copy_sources.push((to, physical.clone()));
     }
     let excluded_plugin_preprocessing_files = plugin_preprocessing_files
         .iter()
@@ -4897,11 +4905,12 @@ pub fn bundle_with_session(
                         metafile_key: rel_to_forward_slash(&r.source_path),
                     })
                     .collect();
-                crate::metafile_deps::route_module_deps(
+                crate::metafile_deps::route_module_deps_with_staged_copies(
                     bytes,
                     &route_refs,
                     shadow,
                     &input.project_root,
+                    &staged_copy_sources,
                 )
             }
             None => Vec::new(),

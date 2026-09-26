@@ -129,7 +129,16 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
     policy: &GranularityPolicy,
     css_mirror_skip_dir_names: &[String],
 ) -> Vec<PathBuf> {
-    let mut newly_watched = watcher.watch_additional_files(policy.dynamic_dependency_paths());
+    // Only a file's PARENT is ever watched, and the SSR module-dependency set
+    // (issue #3162) can hold thousands of files in a few directories, so
+    // offer one file per parent rather than paying the watcher's per-path
+    // `exists` + `canonicalize` for every sibling on every tick.
+    let mut one_per_parent: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    for path in policy.dynamic_dependency_paths() {
+        let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        one_per_parent.entry(parent).or_insert(path);
+    }
+    let mut newly_watched = watcher.watch_additional_files(one_per_parent.into_values().collect());
     let newly_watched_dirs = watcher
         .sync_recursive_dir_watches(policy.css_mirror_root_paths(), css_mirror_skip_dir_names);
     if dev_timing_enabled() {
@@ -1194,6 +1203,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // of how the path itself classifies. See
             // [`Self::apply_plugin_watch_invalidation`].
             self.apply_plugin_watch_invalidation(&mut plan, &path);
+            // Issue #3162 — a file the live SSR bundle imports must re-bundle
+            // the SSR host whatever it classifies as: an in-root
+            // `packages/...` dependency can land in `Unclassified` or
+            // `Asset`, whose arms never reload. The graph's `Module` edges
+            // for it are merged in additively; every other arm already
+            // selected at least these pages.
+            if self.config.policy.is_ssr_module_dependency(&path) {
+                plan.mark_ssr_reload_needed();
+                plan.mark_pages(graph.dirty_pages(&path).into());
+            }
         }
 
         plan
@@ -1540,6 +1559,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // edge-less watch file has none). See
             // [`Self::apply_plugin_watch_invalidation`].
             self.apply_plugin_watch_invalidation(&mut plan, path);
+            // Issue #3162 — a deleted SSR module dependency changes what the
+            // SSR bundle resolves, whatever the path classifies as; its
+            // former consumers are already in `removed_consumers`. The
+            // registry keeps the path until the next successful bundle
+            // republishes, so its parent stays watched for a recreate.
+            if self.config.policy.is_ssr_module_dependency(path) {
+                plan.mark_ssr_reload_needed();
+            }
         }
 
         // Keep this precise discovery result separate from the plan's
@@ -4270,6 +4297,191 @@ mod tests {
         assert!(
             matches!(observed, Some(ChangeKind::Created | ChangeKind::Modified)),
             "outside-root client worker edit must produce a write event, got {observed:?}"
+        );
+    }
+
+    /// Issue #3162 — an SSR module dependency under an in-root directory that
+    /// is NOT a recursive watch root (`packages/data/`, the root-site repro)
+    /// must get a dynamic parent watch from the SSR registry alone, and an
+    /// edit of it must reach the watcher. No other channel claims
+    /// `packages/data/` here, so this proves the SSR set specifically.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssr_module_dependency_outside_boot_roots_is_watched() {
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("packages/data")).unwrap();
+        let dep = root.join("packages/data/value.json");
+        std::fs::write(&dep, r#"{"label":"one"}"#).unwrap();
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps([dep.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy.dynamic_dependency_paths().contains(&dep));
+        assert!(policy.is_ssr_module_dependency(&dep));
+        assert!(!policy.is_islands_dependency(&dep));
+        assert!(!policy.is_client_script_worker_target(&dep));
+
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let newly_watched = register_dynamic_dependency_watches(&mut watcher, &policy, &[]);
+        assert!(
+            newly_watched.contains(&root.join("packages/data")),
+            "the SSR dependency's parent must be newly watched, got {newly_watched:?}"
+        );
+
+        settle_watch_with_sentinels(&mut rx, dep.parent().unwrap(), "ssr-module-dep").await;
+        std::fs::write(&dep, r#"{"label":"two"}"#).unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(change) = rx.recv().await {
+                if change.path == dep {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .expect("SSR module dependency edit must reach the watcher");
+        watcher.shutdown().await;
+        assert!(
+            matches!(observed, Some(ChangeKind::Created | ChangeKind::Modified)),
+            "SSR module dependency edit must produce a write event, got {observed:?}"
+        );
+    }
+
+    /// Issue #3162 — a registered SSR dependency that classifies
+    /// `Unclassified` (or `Asset`) must still reload the SSR host, on edit
+    /// and on removal; the unregistered control stays a no-op.
+    #[test]
+    fn ssr_module_dependency_marks_ssr_reload_whatever_its_class() {
+        use zfb_watcher::ChangeKind;
+        let unclassified = PathBuf::from("/proj/packages/shared/notes.txt");
+        let asset = PathBuf::from("/proj/packages/ui/public/strings.json");
+        let unregistered = PathBuf::from("/proj/packages/shared/other.txt");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps([unclassified.clone(), asset.clone()]);
+        let mut graph = DependencyGraph::new();
+        graph.upsert(PageDeps::new(
+            pid("/proj/pages/a.tsx"),
+            vec![(asset.clone(), DepKind::Module)],
+        ));
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]).with_policy(
+                crate::policy::GranularityPolicy::default()
+                    .with_raw_import_invalidation(invalidation),
+            ),
+            Arc::new(Mutex::new(graph)),
+            pipeline,
+        );
+
+        let project = Path::new("/proj");
+        assert_eq!(
+            classify_change_with_content_roots(&unclassified, project, &[], |_| false),
+            PathClass::Unclassified
+        );
+        assert_eq!(
+            classify_change_with_content_roots(&asset, project, &[], |_| false),
+            PathClass::Asset
+        );
+
+        let plan = orch.plan_for_changes(vec![unclassified.clone()]);
+        assert!(plan.ssr_reload_needed, "Unclassified SSR dep edit");
+        let plan = orch.plan_for_changes(vec![asset.clone()]);
+        assert!(plan.ssr_reload_needed, "Asset SSR dep edit");
+        assert_eq!(
+            plan.pages,
+            PageSelection::Specific(BTreeSet::from([pid("/proj/pages/a.tsx")])),
+            "the Asset arm selects no pages itself; the dep's Module consumers are merged in"
+        );
+        let plan = orch.plan_for_changes(vec![unregistered.clone()]);
+        assert!(
+            plan.is_noop(),
+            "control: an unregistered Unclassified path stays a no-op"
+        );
+
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(unclassified.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1, "a removed SSR dep must not be a no-op tick");
+        assert!(plans[0].ssr_reload_needed, "removed SSR dep");
+    }
+
+    /// Issue #3162 item 4 — the deferred/cold boot publishes its SSR
+    /// dependencies from INSIDE the boot hook (the deferred
+    /// `refresh_bundle_and_routes`). The post-boot registration must see that
+    /// publication, so those dependencies are watched before the first tick.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssr_dependencies_published_by_the_boot_hook_are_registered_after_boot() {
+        #[derive(Clone, Default)]
+        struct RecordingRegistrar {
+            offered: Arc<Mutex<Vec<BTreeSet<PathBuf>>>>,
+        }
+        impl DynamicWatchRegistrar for RecordingRegistrar {
+            fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                self.offered.lock().unwrap().push(paths);
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                _desired_roots: BTreeSet<PathBuf>,
+                _skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                Vec::new()
+            }
+        }
+
+        let dep = PathBuf::from("/proj/packages/data/value.json");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]).with_policy(
+                crate::policy::GranularityPolicy::default()
+                    .with_raw_import_invalidation(invalidation.clone()),
+            ),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let registrar = RecordingRegistrar::default();
+        let offered = Arc::clone(&registrar.offered);
+        let dist = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Change>(1);
+        drop(tx);
+        let boot_dep = dep.clone();
+        orch.run_drain_loop(
+            noop_ctx(dist.path()),
+            None,
+            |_: &BuildOutcome| {},
+            Some(
+                move |_: &BuildOrchestrator<CountingPipeline>, _: &BuildContext| {
+                    invalidation.replace_ssr_module_deps([boot_dep]);
+                    None
+                },
+            ),
+            registrar,
+            rx,
+        )
+        .await
+        .unwrap();
+
+        let offered = offered.lock().unwrap();
+        assert_eq!(offered.len(), 1, "exactly the post-boot registration ran");
+        assert!(
+            offered[0].contains(&dep),
+            "the boot hook's SSR publication must be offered to the watcher: {:?}",
+            offered[0]
         );
     }
 
