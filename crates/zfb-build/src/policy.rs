@@ -150,6 +150,10 @@ const COARSE_CLOCK_WAIT_LIMIT: Duration = Duration::from_millis(50);
 /// later one at least at the coarse clock, which never goes back. Elsewhere,
 /// or if the wait gives up, the slack keeps edits from being lost at the cost
 /// of reporting files written just before the read.
+///
+/// On macOS, Windows, and when the Linux wait times out, this falls back to `now − 20 ms`.
+/// On filesystems with 1–2 s mtime resolution (HFS+, FAT/exFAT, some NFS/SMB mounts), an edit
+/// landing just after `ready` can receive a timestamp before the read start and be missed; saving again picks it up (see #3195).
 pub fn ssr_read_start() -> SystemTime {
     let now = SystemTime::now();
     #[cfg(target_os = "linux")]
