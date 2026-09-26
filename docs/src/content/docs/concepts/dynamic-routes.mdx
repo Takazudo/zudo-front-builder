@@ -80,18 +80,16 @@ or the file's own stem, e.g. `_engine/tokens.tsx`) is private by convention —
 the router scan and the bundler's route derivation both skip it, so it never
 produces a page or a `routes.json` entry. `injectRoute` patterns that derive
 such a path — `injectRoute("/_engine/tokens", "./engine/tokens.tsx")` — hit
-the same rule: `zfb build` prints a warning naming the pattern and the
-plugin and materialises no page for it. Rename the segment so it does not
-start with `_` (for example `/sg-engine/tokens` instead of `/_engine/tokens`)
-if the route is meant to be served.
+the same rule: both `zfb dev` and `zfb build` print a warning naming the
+pattern and the plugin and materialise no page for it. Rename the segment
+so it does not start with `_` (for example `/sg-engine/tokens` instead of
+`/_engine/tokens`) if the route is meant to be served.
 
-<Warning title="Dev serves it, build does not">
+<Warning title="Dev and build both skip it">
 
-`zfb dev` matches injected routes directly against their registered
-pattern and does not apply the `_`-prefix privacy rule, so a `_`-prefixed
-injected route **is** reachable under `zfb dev` even though `zfb build`
-silently drops it. Do not rely on that dev-only behaviour — treat the
-build behaviour (no page, warning printed) as the contract.
+`zfb dev` and `zfb build` apply the same `_`-prefix privacy rule to injected
+routes: neither ever serves or builds a `_`-prefixed pattern. Treat the
+warning (no page, printed at both dev boot and build time) as the contract.
 
 </Warning>
 
