@@ -439,6 +439,18 @@ fn resolve_pages_root(
                 pages_rel.display()
             ));
         }
+        // A pattern with a `_`-prefixed segment (e.g. `/_engine/tokens`)
+        // derives an overlay path the router scan and `derive_route` both
+        // treat as private (`zfb_types::path_has_private_prefix_component`)
+        // and therefore skip — the route is silently materialised into the
+        // overlay but never scanned into a page or a `routes.json` entry.
+        // Unlike the `.client` case above this is not rejected: honouring
+        // `_`-prefixed package routes was considered and rejected as it
+        // would contradict the privacy convention, so we warn instead and
+        // keep behaviour unchanged.
+        if let Some(warning) = private_segment_warning(route, &pages_rel) {
+            crate::output::warn(warning);
+        }
         let shape_key = zfb_router::route_shape_key_for_pages_rel(&pages_rel).map_err(|e| {
             anyhow!(
                 "package route `{}` (from plugin `{}`) could not be parsed: {e}",
@@ -876,6 +888,36 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
         }
     }
     Ok(rel)
+}
+
+/// Returns a warning message when `pages_rel` — the overlay path derived
+/// from `route.pattern` — has a `_`-prefixed path segment, or `None`
+/// otherwise.
+///
+/// A `_`-prefixed segment (ancestor directory or file stem) marks a
+/// `pages/`-relative path "private" under the convention both the router
+/// scan (`zfb-router`'s `scan_pages`) and the bundler (`derive_route`)
+/// enforce via [`zfb_types::path_has_private_prefix_component`]: such a
+/// path never produces a page or a `routes.json` entry. A package route
+/// that derives one is therefore silently dropped rather than rejected —
+/// unlike the `.client` case in [`resolve_pages_root`], honouring `_`
+/// routes was considered and rejected as it would contradict the privacy
+/// convention, so this only warns. Pure and side-effect free: the caller
+/// decides how (and whether) to emit the message.
+pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -> Option<String> {
+    if !zfb_types::path_has_private_prefix_component(pages_rel) {
+        return None;
+    }
+    Some(format!(
+        "package route `{}` (from plugin `{}`) derives the pages/ path `{}`, which has a \
+         `_`-prefixed segment — segments starting with `_` are private by convention and \
+         never produce a page or a `routes.json` entry (the route scanner and bundler both \
+         skip them). Rename the segment so it does not start with `_` (e.g. rename \
+         `/_engine/*` to `/sg-engine/*`) if this route is meant to be served.",
+        route.pattern,
+        route.plugin,
+        pages_rel.display()
+    ))
 }
 
 /// Synthesize the overlay module source for a **static** package route.
@@ -1325,6 +1367,46 @@ mod tests {
             pattern_to_pages_rel("/index/x").unwrap(),
             PathBuf::from("index/x.tsx")
         );
+    }
+
+    fn private_test_route(pattern: &str, plugin: &str) -> InjectedRoute {
+        InjectedRoute {
+            pattern: pattern.into(),
+            entrypoint: PathBuf::from("/pkg/entry.tsx"),
+            plugin: plugin.into(),
+            prerender: None,
+        }
+    }
+
+    #[test]
+    fn private_segment_warning_names_pattern_and_plugin() {
+        let route = private_test_route("/_engine/tokens", "sg-engine-preset");
+        let pages_rel = pattern_to_pages_rel(&route.pattern).unwrap();
+        let warning =
+            private_segment_warning(&route, &pages_rel).expect("`_engine` segment is private");
+        assert!(
+            warning.contains("/_engine/tokens"),
+            "warning must name the route pattern: {warning}"
+        );
+        assert!(
+            warning.contains("sg-engine-preset"),
+            "warning must name the plugin: {warning}"
+        );
+    }
+
+    #[test]
+    fn private_segment_warning_is_none_for_non_private_patterns() {
+        // A `sg-`-prefixed segment (the pgen pilot's rename target) is not
+        // private — no leading `_`.
+        let route = private_test_route("/sg-engine/tokens", "sg-engine-preset");
+        let pages_rel = pattern_to_pages_rel(&route.pattern).unwrap();
+        assert!(private_segment_warning(&route, &pages_rel).is_none());
+
+        // A non-leading `_` inside a segment is not the private-prefix
+        // convention either.
+        let route = private_test_route("/a_b", "some-plugin");
+        let pages_rel = pattern_to_pages_rel(&route.pattern).unwrap();
+        assert!(private_segment_warning(&route, &pages_rel).is_none());
     }
 
     #[cfg(unix)]
