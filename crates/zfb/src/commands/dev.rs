@@ -6635,7 +6635,7 @@ impl DevRenderSession {
             publish_ssr_module_deps_into(&registry, deps, publication.read_since);
         }
         if let Some(entries) = publication.page_entries.as_ref() {
-            registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+            publish_page_entries_into(&registry, &entries.paths, entries.read_since);
         }
         if let Some(files) = publication.content_files.as_ref() {
             registry.replace_content_files_read_since(files.paths.clone(), files.read_since);
@@ -6672,8 +6672,12 @@ impl DevRenderSession {
         // its dependency set (the graph adds a page self-edge), so publish
         // the entries separately, keyed by their logical project path (the
         // bundler records `source_path` from the logical, not the shadow,
-        // spelling).
-        let page_entries = read_since.map(|read_since| ReconcileOnlyReads {
+        // spelling). Issue #3209 — published on BOTH paths, stamped or not,
+        // same as the SSR module-dependency set itself: the unstamped route
+        // entries stay the current entries, only their stamp is cleared, so
+        // the two sets never disagree about whether a reconcile stamp is
+        // live.
+        let page_entries = Some(PageEntriesPublication {
             paths: deps
                 .iter()
                 .map(|route| self.inner.project_root.join(&route.source_path))
@@ -6683,7 +6687,7 @@ impl DevRenderSession {
         if let Some(registry) = publication.registry.as_ref() {
             publish_ssr_module_deps_into(registry, &set, read_since);
             if let Some(entries) = page_entries.as_ref() {
-                registry.replace_page_entries_read_since(entries.paths.clone(), entries.read_since);
+                publish_page_entries_into(registry, &entries.paths, entries.read_since);
             }
         }
         publication.last_successful = Some(set);
@@ -8075,8 +8079,10 @@ struct SsrModuleDepPublication {
     /// When the bundle behind `last_successful` started reading (#3190).
     read_since: Option<std::time::SystemTime>,
     /// The same bundle's route entry files, as logical project paths, with
-    /// its read start (#3202). Only a read-stamped bundle records them.
-    page_entries: Option<ReconcileOnlyReads>,
+    /// the bundle's read start when it has one (#3202; unstamped publishes
+    /// added by #3209). `None` until the first publication; `Some` with
+    /// `read_since: None` is a real unstamped publication.
+    page_entries: Option<PageEntriesPublication>,
     /// The content-collection files the latest content snapshot read, with
     /// its read start (#3202).
     content_files: Option<ReconcileOnlyReads>,
@@ -8090,6 +8096,19 @@ struct SsrModuleDepPublication {
 struct ReconcileOnlyReads {
     paths: std::collections::BTreeSet<PathBuf>,
     read_since: std::time::SystemTime,
+}
+
+/// The route entry files an SSR bundle publish read, as logical project
+/// paths, with the bundle's read start when it has one (issue #3209). Unlike
+/// [`ReconcileOnlyReads`] (always stamped), a page-entry publish can be
+/// unstamped — mirroring the SSR module-dependency set's own
+/// `replace_ssr_module_deps` / `replace_ssr_module_deps_read_since` split —
+/// so `read_since` is optional here too.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+struct PageEntriesPublication {
+    paths: std::collections::BTreeSet<PathBuf>,
+    read_since: Option<std::time::SystemTime>,
 }
 
 /// The files `snapshot` was built from: each collection entry's
@@ -8125,6 +8144,23 @@ fn publish_ssr_module_deps_into(
             registry.replace_ssr_module_deps_read_since(deps.iter().cloned(), read_since)
         }
         None => registry.replace_ssr_module_deps(deps.iter().cloned()),
+    }
+}
+
+/// [`publish_ssr_module_deps_into`]'s counterpart for the page-entries set
+/// (issue #3209): publishes the same route entries either way, so the two
+/// sets stay in step on whether a reconcile stamp is live.
+#[cfg(feature = "embed_v8")]
+fn publish_page_entries_into(
+    registry: &zfb_build::RawImportInvalidation,
+    paths: &std::collections::BTreeSet<PathBuf>,
+    read_since: Option<std::time::SystemTime>,
+) {
+    match read_since {
+        Some(read_since) => {
+            registry.replace_page_entries_read_since(paths.iter().cloned(), read_since)
+        }
+        None => registry.replace_page_entries(paths.iter().cloned()),
     }
 }
 
@@ -12776,6 +12812,59 @@ mod tests {
         let replayed = zfb_build::RawImportInvalidation::default();
         session.set_ssr_module_dep_registry(replayed.clone());
         assert_eq!(replayed.modified_since_read(|_| true), vec![index]);
+    }
+
+    /// Issue #3209 — an unstamped SSR module-dependency publish
+    /// (`read_since = None`) must clear the page-entries stamp too, and a
+    /// registry installed after that unstamped publish must never replay a
+    /// stale one. Stamped publish -> unstamped publish -> registry replay.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn unstamped_publish_clears_page_entry_stamp_and_replay_stays_clear_3209() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let index = project.join("pages/index.tsx");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::write(&index, "export default () => null;").unwrap();
+        let routes = route_deps(&[]);
+        let session = ssr_dep_session(&project, Vec::new());
+        let registry = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(registry.clone());
+
+        // Stamped publish: an edit made after this read start is reported.
+        let read_since = std::time::SystemTime::now();
+        session.populate_module_edges(&routes, Some(read_since));
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(read_since + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            registry.modified_since_read(|_| true),
+            vec![index.clone()],
+            "the edit is reported while the page-entry stamp is live"
+        );
+
+        // Unstamped publish (the `read_since = None` path): the live
+        // registry's page-entries stamp must clear along with the SSR
+        // module-dependency set's, so the same edit stops being reported.
+        session.populate_module_edges(&routes, None);
+        assert!(
+            registry.modified_since_read(|_| true).is_empty(),
+            "an unstamped publish must clear the page-entries stamp on the \
+             live registry"
+        );
+
+        // Replay: a registry installed AFTER the unstamped publish must not
+        // carry a stale stamp forward either.
+        let replayed = zfb_build::RawImportInvalidation::default();
+        session.set_ssr_module_dep_registry(replayed.clone());
+        assert!(
+            replayed.modified_since_read(|_| true).is_empty(),
+            "a registry replayed after an unstamped publish must end with no \
+             live page-entry stamp"
+        );
     }
 
     /// Issue #3202 — the content snapshot's files map back onto each
