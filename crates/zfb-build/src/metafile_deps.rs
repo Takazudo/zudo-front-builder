@@ -1042,7 +1042,7 @@ fn staged_copy_is_a_copy_of_claimed_member(
         == declared_entry_roots_from(&declared_entries(&member_manifest))
 }
 
-/// One entry a `package.json` declares, in the two shapes a target can take.
+/// One entry a `package.json` declares, in the shapes a target can take.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum DeclaredEntry {
     /// A package-relative directory prefix authorising every subpath under it
@@ -1055,6 +1055,16 @@ enum DeclaredEntry {
     /// ordinary dist-shipping package commonly carries a root `main`, and
     /// reading it as the empty prefix would grant its whole source tree.
     ExactFile(String),
+    /// A package-relative directory (always non-empty, with a trailing `/`)
+    /// declared by a directory-valued `main`/`module` (`"main": "./dist"`,
+    /// which Node resolves to `dist/index.js`) or containing a
+    /// `package.json#imports` target (`"#x": "./src/x.ts"` -> `src/`). It
+    /// authorises its subtree like a [`Self::Prefix`], but is deliberately a
+    /// separate variant: it never counts as "declares a directory" in
+    /// [`declared_entries_cover`]'s aggregate rule, so adding one can only
+    /// widen what a package's declarations cover, never narrow it (issue
+    /// #3169).
+    Directory(String),
 }
 
 impl DeclaredEntry {
@@ -1062,6 +1072,7 @@ impl DeclaredEntry {
         match self {
             Self::Prefix(prefix) => prefix.is_empty() || subpath.starts_with(prefix),
             Self::ExactFile(file) => subpath == file,
+            Self::Directory(dir) => subpath.starts_with(dir),
         }
     }
 }
@@ -1087,6 +1098,12 @@ impl DeclaredEntry {
 ///   grant would authorise every `src/` file behind the built entry — the
 ///   blanket exemption condition 5 exists to prevent.
 ///
+/// Only a non-empty [`DeclaredEntry::Prefix`] counts as "declares a
+/// directory" here. A [`DeclaredEntry::Directory`] (a directory-valued
+/// `main`/`module`, or an `imports` target's containing directory) covers its
+/// own subtree but never flips a package out of the root-files-only shape, so
+/// the entries it joins can only be covered more, never less (issue #3169).
+///
 /// This is decided by plain arithmetic over the DECLARED set. It deliberately
 /// does not walk the entry's imports: which files the entry actually reaches
 /// is esbuild's answer to give, and predicting it in Rust is the failure mode
@@ -1103,7 +1120,7 @@ fn declared_entries_cover(entries: &[DeclaredEntry], subpath: &str) -> bool {
 
 /// The entries a `package.json` declares, from `exports` (walked recursively
 /// — conditions, subpath maps and arrays are all just nesting around the
-/// target strings), `main` and `module`.
+/// target strings), `main`, `module` and `imports`.
 ///
 /// A target carrying a directory component contributes the directory portion
 /// of its path up to the first `*`: `./dist/index.js` -> `dist/`, `./src/*`
@@ -1116,55 +1133,98 @@ fn declared_entries_cover(entries: &[DeclaredEntry], subpath: &str) -> bool {
 /// it, and a bare string there is a package name, not a location inside this
 /// package — but **optional** for `main` and `module`, where the bare form
 /// (`"main": "dist/index.js"`) is both valid and common.
+///
+/// Two further shapes (issue #3169), both pure manifest reading — nothing is
+/// probed on disk and esbuild's resolution is never predicted:
+///
+/// - A root-level `main`/`module` whose name has no `.` (`"main": "./dist"`)
+///   may name a directory (Node resolves it to `dist/index.js`), so it
+///   contributes BOTH its existing [`DeclaredEntry::ExactFile`] and a
+///   [`DeclaredEntry::Directory`]. The degenerate targets `""`, `"."` and
+///   `"./"` name no directory and keep only their old entry.
+/// - `imports` values are walked exactly like `exports` values (`./`
+///   required, so bare-package targets are skipped). A target inside a
+///   directory contributes that whole containing directory as a
+///   [`DeclaredEntry::Directory`] — deliberately covering its sibling chunks,
+///   not just the named file — and a root-level file contributes an
+///   [`DeclaredEntry::ExactFile`].
 fn declared_entries(manifest: &serde_json::Value) -> Vec<DeclaredEntry> {
-    fn entry(target: &str, require_dot_slash: bool) -> Option<DeclaredEntry> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Field {
+        Exports,
+        MainOrModule,
+        Imports,
+    }
+
+    fn entry(target: &str, field: Field, out: &mut Vec<DeclaredEntry>) {
         let target = match target.strip_prefix("./") {
             Some(rest) => rest,
-            None if require_dot_slash => return None,
+            None if field != Field::MainOrModule => return,
             None => target,
         };
         if target.starts_with('/') || target.split('/').any(|segment| segment == "..") {
-            return None;
+            return;
         }
         let (up_to_wildcard, has_wildcard) = match target.find('*') {
             Some(at) => (&target[..at], true),
             None => (target, false),
         };
-        Some(match up_to_wildcard.rfind('/') {
-            Some(at) => DeclaredEntry::Prefix(up_to_wildcard[..=at].to_string()),
+        let directory = up_to_wildcard.rfind('/').map(|at| &up_to_wildcard[..=at]);
+        if field == Field::Imports {
+            match directory {
+                Some(dir) => out.push(DeclaredEntry::Directory(dir.to_string())),
+                None if !has_wildcard && !matches!(up_to_wildcard, "" | ".") => {
+                    out.push(DeclaredEntry::ExactFile(up_to_wildcard.to_string()));
+                }
+                None => {}
+            }
+            return;
+        }
+        out.push(match directory {
+            Some(dir) => DeclaredEntry::Prefix(dir.to_string()),
             None if has_wildcard => DeclaredEntry::Prefix(String::new()),
             None => DeclaredEntry::ExactFile(up_to_wildcard.to_string()),
-        })
+        });
+        if field == Field::MainOrModule
+            && directory.is_none()
+            && !has_wildcard
+            && !up_to_wildcard.is_empty()
+            && !up_to_wildcard.contains('.')
+        {
+            out.push(DeclaredEntry::Directory(format!("{up_to_wildcard}/")));
+        }
     }
 
-    fn collect(value: &serde_json::Value, require_dot_slash: bool, out: &mut Vec<DeclaredEntry>) {
+    fn collect(value: &serde_json::Value, field: Field, out: &mut Vec<DeclaredEntry>) {
         match value {
-            serde_json::Value::String(target) => {
-                out.extend(entry(target, require_dot_slash));
-            }
-            serde_json::Value::Array(items) => items
-                .iter()
-                .for_each(|v| collect(v, require_dot_slash, out)),
-            serde_json::Value::Object(map) => map
-                .values()
-                .for_each(|v| collect(v, require_dot_slash, out)),
+            serde_json::Value::String(target) => entry(target, field, out),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| collect(v, field, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| collect(v, field, out)),
             _ => {}
         }
     }
 
     let mut entries = Vec::new();
-    for (field, require_dot_slash) in [("exports", true), ("main", false), ("module", false)] {
-        if let Some(value) = manifest.get(field) {
-            collect(value, require_dot_slash, &mut entries);
+    for (name, field) in [
+        ("exports", Field::Exports),
+        ("main", Field::MainOrModule),
+        ("module", Field::MainOrModule),
+        ("imports", Field::Imports),
+    ] {
+        if let Some(value) = manifest.get(name) {
+            collect(value, field, &mut entries);
         }
     }
     entries
 }
 
 /// The package-relative directories a `package.json` declares through
-/// `exports`/`main`/`module` (`"dist/"`, `"build/dist/"`), from the same
-/// [`declared_entries`] walk the stage-escape audit accepts against — so a
-/// directory staged because of this list is one the audit also authorises.
+/// `exports`/`main`/`module`/`imports` (`"dist/"`, `"build/dist/"`), from the
+/// same [`declared_entries`] walk the stage-escape audit accepts against — so
+/// a directory staged because of this list is one the audit also authorises.
+/// That includes [`DeclaredEntry::Directory`] entries: a directory-valued
+/// `"main": "./dist"` and an `imports` target's containing directory
+/// (issue #3169).
 ///
 /// The empty prefix (a root-level `./*`) is dropped: it names no particular
 /// directory, so it must not exempt any infra directory from pruning.
@@ -1172,7 +1232,11 @@ pub(crate) fn declared_entry_dir_prefixes(manifest: &serde_json::Value) -> Vec<S
     let mut prefixes: Vec<String> = declared_entries(manifest)
         .into_iter()
         .filter_map(|entry| match entry {
-            DeclaredEntry::Prefix(prefix) if !prefix.is_empty() => Some(prefix),
+            DeclaredEntry::Prefix(prefix) | DeclaredEntry::Directory(prefix)
+                if !prefix.is_empty() =>
+            {
+                Some(prefix)
+            }
             _ => None,
         })
         .collect();
@@ -1184,14 +1248,16 @@ pub(crate) fn declared_entry_dir_prefixes(manifest: &serde_json::Value) -> Vec<S
 /// Stringify a package's declared entries for
 /// [`AcceptedPackage::declared_entry_roots`] (epic #2078 Sub 10a): a
 /// [`DeclaredEntry::Prefix`] becomes its package-relative directory string
-/// (`""` for the whole-package wildcard shape), a [`DeclaredEntry::ExactFile`]
-/// becomes its package-relative file string. Sorted and deduplicated so the
-/// result does not depend on `exports`/`main`/`module` declaration order.
+/// (`""` for the whole-package wildcard shape), a [`DeclaredEntry::Directory`]
+/// becomes its package-relative directory string too, and a
+/// [`DeclaredEntry::ExactFile`] becomes its package-relative file string.
+/// Sorted and deduplicated so the result does not depend on
+/// `exports`/`main`/`module`/`imports` declaration order.
 fn declared_entry_roots_from(entries: &[DeclaredEntry]) -> Vec<String> {
     let mut roots: Vec<String> = entries
         .iter()
         .map(|entry| match entry {
-            DeclaredEntry::Prefix(prefix) => prefix.clone(),
+            DeclaredEntry::Prefix(prefix) | DeclaredEntry::Directory(prefix) => prefix.clone(),
             DeclaredEntry::ExactFile(file) => file.clone(),
         })
         .collect();
@@ -1879,9 +1945,10 @@ pub struct AcceptedPackage {
     /// whichever of the two manifests it is read from.
     pub package_root: PathBuf,
     /// The package-relative entry locations its OWN `package.json` declares
-    /// via `exports`/`main`/`module` — a directory prefix (e.g. `"src/"`, or
-    /// `""` for the whole package, the `./*` wildcard shape) or a single file
-    /// (e.g. `"index.ts"`). Sorted and deduplicated. This is what bounds
+    /// via `exports`/`main`/`module`/`imports` — a directory (e.g. `"src/"`,
+    /// `"dist/"` for a directory-valued `"main": "./dist"`, or `""` for the
+    /// whole package, the `./*` wildcard shape) or a single file (e.g.
+    /// `"index.ts"`). Sorted and deduplicated. This is what bounds
     /// enrolment to what the package itself declares reachable, not its
     /// entire directory tree (build output, tests, tooling config, etc.
     /// included) — see [`declared_entries_cover`]'s own docs for why a
@@ -3091,6 +3158,138 @@ mod tests {
         assert!(declared_entries_cover(&with_dist, "index.ts"));
         assert!(declared_entries_cover(&with_dist, "dist/x.js"));
         assert!(!declared_entries_cover(&with_dist, "helper.ts"));
+    }
+
+    fn manifest(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn declared_entries_directory_valued_main_adds_a_directory_entry() {
+        // Issue #3169: an extensionless root-level `main`/`module` keeps its
+        // old `ExactFile` AND gains a `Directory`, so the old set is a subset.
+        for json in [
+            r#"{ "main": "./dist" }"#,
+            r#"{ "main": "dist" }"#,
+            r#"{ "module": "./dist" }"#,
+        ] {
+            let mut entries = declared_entries(&manifest(json));
+            entries.sort();
+            assert_eq!(
+                entries,
+                vec![
+                    DeclaredEntry::ExactFile("dist".into()),
+                    DeclaredEntry::Directory("dist/".into()),
+                ],
+                "{json}"
+            );
+            assert_eq!(
+                declared_entry_dir_prefixes(&manifest(json)),
+                vec!["dist/".to_string()]
+            );
+        }
+        // A `main` with an extension is a file and gains nothing.
+        assert_eq!(
+            declared_entries(&manifest(r#"{ "main": "./index.js" }"#)),
+            vec![DeclaredEntry::ExactFile("index.js".into())]
+        );
+    }
+
+    #[test]
+    fn declared_entries_directory_valued_main_covers_dist_and_does_not_tighten() {
+        let entries = declared_entries(&manifest(r#"{ "main": "./dist" }"#));
+        assert!(declared_entries_cover(&entries, "dist/index.js"));
+        assert!(
+            declared_entries_cover(&entries, "src/foo.ts"),
+            "a package declaring only `main: ./dist` kept \"ExactFile covers every \
+             subpath\" before #3169 and must keep it: {entries:?}"
+        );
+        assert_eq!(
+            declared_entry_roots_from(&entries),
+            vec!["dist".to_string(), "dist/".to_string()]
+        );
+    }
+
+    #[test]
+    fn declared_entries_degenerate_main_targets_keep_todays_entries() {
+        for (json, expected) in [
+            (r#"{ "main": "." }"#, "."),
+            (r#"{ "main": "./" }"#, ""),
+            (r#"{ "main": "" }"#, ""),
+            (r#"{ "module": "." }"#, "."),
+        ] {
+            assert_eq!(
+                declared_entries(&manifest(json)),
+                vec![DeclaredEntry::ExactFile(expected.into())],
+                "{json} must not produce a Directory entry"
+            );
+            assert!(declared_entry_dir_prefixes(&manifest(json)).is_empty());
+        }
+        for target in [".", "./", ""] {
+            let json = format!(r##"{{ "imports": {{ "#x": "{target}" }} }}"##);
+            assert!(
+                declared_entries(&manifest(&json)).is_empty(),
+                "imports target {target:?} names nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_entries_reads_imports_like_exports() {
+        let mut entries = declared_entries(&manifest(
+            r##"{
+                "imports": {
+                    "#impl": { "node": ["./dist/node/impl.js", "fallback-pkg"], "default": "./dist/impl.js" },
+                    "#src/*": "./src/*.ts",
+                    "#root": "./root.js",
+                    "#dep": "some-package",
+                    "#abs": "/etc/passwd",
+                    "#up": "./lib/../../escape.js",
+                    "#rootwild/*": "./*"
+                }
+            }"##,
+        ));
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                DeclaredEntry::ExactFile("root.js".into()),
+                DeclaredEntry::Directory("dist/".into()),
+                DeclaredEntry::Directory("dist/node/".into()),
+                DeclaredEntry::Directory("src/".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn declared_entries_imports_target_into_dist_is_kept_and_covered() {
+        let json = r##"{ "exports": "./index.js", "imports": { "#impl": "./dist/impl.js" } }"##;
+        assert_eq!(
+            declared_entry_dir_prefixes(&manifest(json)),
+            vec!["dist/".to_string()]
+        );
+        let entries = declared_entries(&manifest(json));
+        assert!(declared_entries_cover(&entries, "dist/index.js"));
+        assert!(declared_entries_cover(&entries, "dist/impl.js"));
+    }
+
+    #[test]
+    fn declared_entries_imports_covers_the_whole_containing_directory() {
+        // Deliberate loosening (#3169): an `imports` target's sibling chunks
+        // must be covered, so the whole containing directory is declared.
+        let json = r##"{ "exports": "./dist/*", "imports": { "#x": "./src/x.ts" } }"##;
+        let entries = declared_entries(&manifest(json));
+        assert!(declared_entries_cover(&entries, "src/x.ts"));
+        assert!(declared_entries_cover(&entries, "src/y.ts"));
+        assert!(declared_entries_cover(&entries, "src/nested/chunk.ts"));
+        assert!(declared_entries_cover(&entries, "dist/a.js"));
+        assert!(
+            !declared_entries_cover(&entries, "lib/other.ts"),
+            "only the imports target's own directory is loosened: {entries:?}"
+        );
+        // Without `imports` the same package does not cover `src/`.
+        let without = declared_entries(&manifest(r#"{ "exports": "./dist/*" }"#));
+        assert!(!declared_entries_cover(&without, "src/x.ts"));
     }
 
     #[test]
