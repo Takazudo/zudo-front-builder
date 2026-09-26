@@ -2318,7 +2318,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // CSS-agnostic); the filename shape lives with its create site in
         // zfb-css. Suppression is kind-agnostic by contract — see
         // `IntakeSuppressionPredicate`.
-        .with_intake_suppression(Arc::new(zfb_css::is_tailwind_entry_tmp))
+        //
+        // Issue #3215 — composed with zfb-islands' own in-project temp-file
+        // classes (the synthesized esbuild entry, the tsconfig temps, and the
+        // virtual-module materialization). Those are written into
+        // `working_dir` too (see `allocate_locked_entry_tmp`'s doc comment),
+        // so without this half a component edit that rebuilds islands
+        // triggers a second full tick right after the real one.
+        .with_intake_suppression(Arc::new(|path: &Path| {
+            zfb_css::is_tailwind_entry_tmp(path) || zfb_islands::is_zfb_islands_temp_file(path)
+        }))
         // Issue #2169 (epic #2166 Sub 3) — the live-watcher wiring #2168
         // deliberately left out: when a tick's batch touches the plugin
         // watch-file set registered above, the orchestrator awaits this

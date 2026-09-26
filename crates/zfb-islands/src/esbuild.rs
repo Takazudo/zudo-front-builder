@@ -1846,6 +1846,38 @@ fn allocate_locked_entry_tmp(
     Ok(entry_tmp)
 }
 
+/// Does `name` (a bare filename, no directory components) match one of the
+/// recognized in-project `.zfb-*` temp-file classes ([`IN_PROJECT_TEMP_CLASSES`])?
+/// Shared by the orphan sweep above and [`is_zfb_islands_temp_file`] below so
+/// the two can never drift apart.
+fn matches_in_project_temp_class(name: &str) -> bool {
+    IN_PROJECT_TEMP_CLASSES
+        .iter()
+        .any(|(prefix, suffix)| name.starts_with(prefix) && name.ends_with(suffix))
+}
+
+/// Does `path` name one of zfb-islands' own in-project temp files
+/// ([`IN_PROJECT_TEMP_CLASSES`]) — the synthesized esbuild entry, either
+/// synthetic tsconfig class, or the virtual-module materialization?
+///
+/// The dev watcher's intake suppression consumes this (issue #3215), mirroring
+/// [`zfb_css::is_tailwind_entry_tmp`]'s role for Tailwind's own entry temp
+/// file (zfb#2345): every one of these classes is allocated inside
+/// `working_dir`, which is the watched project root (see
+/// [`allocate_locked_entry_tmp`]'s doc comment for why), so without
+/// suppression the `Created`/`Removed` events they generate re-trigger a
+/// second full watcher tick after every islands rebuild. Basename-only,
+/// matching the sweep's own prefix+suffix check exactly (`matches_in_project_temp_class`)
+/// rather than the tighter exact-random-length match `is_tailwind_entry_tmp`
+/// uses — these classes are already dot-prefixed and zfb-namespaced, so a
+/// user file colliding with one is not a realistic concern.
+pub fn is_zfb_islands_temp_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    matches_in_project_temp_class(name)
+}
+
 fn sweep_orphaned_in_project_temp_files(working_dir: &Path) {
     let Ok(dir) = std::fs::read_dir(working_dir) else {
         return;
@@ -1856,10 +1888,7 @@ fn sweep_orphaned_in_project_temp_files(working_dir: &Path) {
         let Some(name) = name.to_str() else {
             continue;
         };
-        let matches_a_recognized_class = IN_PROJECT_TEMP_CLASSES
-            .iter()
-            .any(|(prefix, suffix)| name.starts_with(prefix) && name.ends_with(suffix));
-        if !matches_a_recognized_class {
+        if !matches_in_project_temp_class(name) {
             continue;
         }
         let Ok(metadata) = dirent.metadata() else {
@@ -3323,6 +3352,42 @@ mod tests {
         file.set_modified(std::time::SystemTime::now() - age)
             .unwrap();
         path
+    }
+
+    #[test]
+    fn is_zfb_islands_temp_file_drops_every_in_project_temp_class_but_keeps_real_sources() {
+        // Issue #3215: the dev watcher's intake filter dropped only
+        // Tailwind's own temp files, so the islands entry's `Created`/
+        // `Removed` events got through and re-triggered a second full tick
+        // after every island rebuild. This pins the predicate the fix wires
+        // into that filter — one representative filename per recognized
+        // class, plus a normal source file that must NOT match.
+        for name in [
+            ".zfb-esbuild-entry-APmUkl.tsx",
+            ".zfb-islands-tsconfig-abc123.json",
+            ".zfb-worker-tsconfig-abc123.json",
+        ] {
+            assert!(
+                is_zfb_islands_temp_file(Path::new(name)),
+                "{name} should be recognized as an in-project islands temp file"
+            );
+        }
+        assert!(
+            is_zfb_islands_temp_file(Path::new(&format!(
+                "{}xyz{}",
+                zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX,
+                zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_SUFFIX
+            ))),
+            "the virtual-module temp class should be recognized too"
+        );
+        assert!(
+            !is_zfb_islands_temp_file(Path::new("Header.tsx")),
+            "an ordinary component source file must never be dropped"
+        );
+        assert!(
+            !is_zfb_islands_temp_file(Path::new("islands-chunk-abc123.js")),
+            "an unrelated zfb-generated filename must not accidentally match"
+        );
     }
 
     #[test]

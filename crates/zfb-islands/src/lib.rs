@@ -50,7 +50,7 @@ pub use client_scripts::{
     CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use esbuild::{
-    hash_8, render_island_entry_source, render_runtime_entry_source,
+    hash_8, is_zfb_islands_temp_file, render_island_entry_source, render_runtime_entry_source,
     render_shared_bundle_entry_source, ClientScriptBundleOutput, EsbuildSubprocessBundler,
     EsbuildSubprocessConfig, StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
