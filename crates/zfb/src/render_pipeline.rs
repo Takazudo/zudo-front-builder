@@ -2282,6 +2282,54 @@ mod tests {
         drop(handle);
     }
 
+    /// #3159 — `build.rs::stage_binaries_into_vendor` stamps
+    /// `ZFB_EMBEDDED_TAILWIND_SHA256` as the SHA-256 (hex) of the STAGED
+    /// tailwind binary, the same bytes `include_dir!` later embeds and
+    /// [`embedded_binary`] extracts. Pinning that the env constant matches
+    /// the extracted binary's own hash is what lets
+    /// `TailwindSubprocessConfig::with_embedded_binary_and_digest` skip
+    /// re-hashing the ~76 MB file at runtime (`zfb_css::engine`'s
+    /// `oxide_warmup_key`) without ever trusting a stale or mismatched
+    /// value.
+    #[test]
+    fn embedded_tailwind_digest_env_matches_extracted_binary_sha256() {
+        use sha2::{Digest, Sha256};
+
+        let digest_env = env!("ZFB_EMBEDDED_TAILWIND_SHA256");
+        assert_eq!(
+            digest_env.len(),
+            64,
+            "digest must be 64 hex characters: {digest_env:?}"
+        );
+        assert!(
+            digest_env
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "digest must be lowercase hex: {digest_env:?}"
+        );
+
+        let (handle, path) =
+            embedded_binary("tailwindcss-v4").expect("embedded tailwindcss-v4 binary");
+        let mut hasher = Sha256::new();
+        std::io::copy(
+            &mut std::fs::File::open(&path).expect("open extracted tailwind binary"),
+            &mut hasher,
+        )
+        .expect("hash extracted tailwind binary");
+        let digest_hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        assert_eq!(
+            digest_env, digest_hex,
+            "env!(\"ZFB_EMBEDDED_TAILWIND_SHA256\") must equal the SHA-256 of the bytes \
+             embedded_binary(\"tailwindcss-v4\") extracts"
+        );
+        drop(handle);
+    }
+
     /// `embedded_binary` returns a clear error when the requested name is
     /// not present in `EMBEDDED_VENDOR/bin/`. The error message must point
     /// the operator at the build-script staging step.
