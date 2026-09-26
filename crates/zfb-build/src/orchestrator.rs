@@ -150,22 +150,27 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
     newly_watched
 }
 
-/// Synthesize a `Modified` change for every SSR module dependency that was
-/// edited after its bundle started reading and that `in_scope` says the
-/// watcher may not have been covering at the time (issue #3190).
+/// Synthesize a `Modified` change for every file-shaped dynamic dependency
+/// (islands, client-script raw/worker/sibling, plugin watch files, SSR module
+/// dependencies) that was edited after its own publisher started reading and
+/// that `in_scope` says the watcher may not have been covering at the time
+/// (issues #3190 / #3201). Files zfb writes itself never count
+/// ([`crate::policy::RawImportInvalidation::is_zfb_written`]).
 ///
-/// A watch only reports edits made after it is armed, and the dependency set
-/// is only known once a bundle has read the files. On the eager dev boot that
-/// bundle runs before the listener binds, `ready` is printed next, and the
-/// watcher is armed afterwards on the orchestrator task, so an edit saved
-/// right after `ready` fell between the read and the watch: no event, and the
-/// page kept its boot value until the file changed again (#3181).
-fn unobserved_ssr_dependency_edits(
+/// A watch only reports edits made after it is armed, and each set is only
+/// known once its pass has read the files. On the eager dev boot those passes
+/// run before the listener binds, `ready` is printed next, and the watcher is
+/// armed afterwards on the orchestrator task, so an edit saved right after
+/// `ready` fell between the read and the watch: no event, and the page kept
+/// its boot value until the file changed again (#3181, #3192). An edit made
+/// just after a watch arms can arrive both as a real event and as a
+/// synthesized change; the second tick is a harmless rebuild.
+fn unobserved_dependency_edits(
     policy: &GranularityPolicy,
     in_scope: impl Fn(&Path) -> bool,
 ) -> Vec<Change> {
     policy
-        .ssr_module_deps_modified_since_read(in_scope)
+        .modified_since_read(in_scope)
         .into_iter()
         .map(|path| {
             if dev_timing_enabled() {
@@ -179,14 +184,14 @@ fn unobserved_ssr_dependency_edits(
         .collect()
 }
 
-/// [`unobserved_ssr_dependency_edits`] limited to the directories a
-/// registration call just started watching: every other dependency was
-/// already covered, so its edits arrived as ordinary events.
+/// [`unobserved_dependency_edits`] limited to the directories a registration
+/// call just started watching: every other dependency was already covered,
+/// so its edits arrived as ordinary events.
 fn unobserved_edits_under(policy: &GranularityPolicy, newly_watched: &[PathBuf]) -> Vec<Change> {
     if newly_watched.is_empty() {
         return Vec::new();
     }
-    unobserved_ssr_dependency_edits(policy, |path| {
+    unobserved_dependency_edits(policy, |path| {
         newly_watched.iter().any(|dir| path.starts_with(dir))
     })
 }
@@ -1916,9 +1921,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             &self.config.policy,
             &self.config.css_mirror_skip_dir_names,
         );
-        // Issue #3190 — the watcher itself was only just started, so an edit
-        // to ANY dependency the eager boot bundle read may predate it.
-        let mut pending = unobserved_ssr_dependency_edits(&self.config.policy, |_| true);
+        // Issues #3190 / #3201 — the watcher itself was only just started, so
+        // an edit to ANY dependency an eager boot pass read may predate it.
+        let mut pending = unobserved_dependency_edits(&self.config.policy, |_| true);
         // Boot hook — runs with the watch already registered (so any edit
         // saved during it is buffered by notify and drained by the loop
         // below) but before the loop consumes events. Its outcome, if any,
@@ -4809,6 +4814,128 @@ mod tests {
         .await;
         assert_eq!(plans.len(), 1, "{plans:?}");
         assert!(plans[0].ssr_reload_needed, "{plans:?}");
+    }
+
+    /// Issue #3201 — publish `dep` into one file-shaped set with a read start.
+    type Publish3201 = fn(&crate::policy::RawImportInvalidation, PathBuf, std::time::SystemTime);
+
+    /// Issue #3201 — the #3190 reconcile generalised to one set: an edit made
+    /// after the set's publisher started reading, with no watcher event, is
+    /// rebuilt (by the pipeline `rerun` names), and an unedited file is not.
+    async fn assert_set_edited_before_the_watch_armed_3201(
+        publish: Publish3201,
+        rerun: fn(&RebuildPlan) -> bool,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let dep = root.join("packages/shared/dep.ts");
+        std::fs::create_dir_all(dep.parent().unwrap()).unwrap();
+        std::fs::write(&dep, "export const v = 1;").unwrap();
+        let read_since = std::time::SystemTime::now();
+
+        set_mtime_3190(&dep, read_since - Duration::from_secs(5));
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        publish(&invalidation, dep.clone(), read_since);
+        let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
+        assert!(
+            plans.is_empty(),
+            "a file the pass already read must not rebuild: {plans:?}"
+        );
+
+        set_mtime_3190(&dep, read_since + Duration::from_secs(1));
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        publish(&invalidation, dep.clone(), read_since);
+        let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert!(plans[0].triggers.contains(&dep), "{plans:?}");
+        assert!(
+            rerun(&plans[0]),
+            "the unobserved edit must rerun its owning pipeline: {plans:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn islands_dependency_edited_before_the_watch_armed_is_rebuilt_3201() {
+        assert_set_edited_before_the_watch_armed_3201(
+            |inv, dep, since| inv.replace_islands_read_since([dep], since),
+            |plan| plan.rerun_islands,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_script_raw_target_edited_before_the_watch_armed_is_rebuilt_3201() {
+        assert_set_edited_before_the_watch_armed_3201(
+            |inv, dep, since| inv.replace_client_scripts_read_since([dep], since),
+            |plan| plan.rerun_client_scripts,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_script_worker_edited_before_the_watch_armed_is_rebuilt_3201() {
+        assert_set_edited_before_the_watch_armed_3201(
+            |inv, dep, since| inv.replace_client_script_workers_read_since([dep], since),
+            |plan| plan.rerun_client_scripts,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_script_sibling_edited_before_the_watch_armed_is_rebuilt_3201() {
+        assert_set_edited_before_the_watch_armed_3201(
+            |inv, dep, since| inv.replace_client_script_siblings_read_since([dep], since),
+            |plan| plan.rerun_client_scripts,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_watch_file_edited_before_the_watch_armed_is_rebuilt_3201() {
+        assert_set_edited_before_the_watch_armed_3201(
+            |inv, dep, since| inv.replace_plugin_watch_files_read_since([dep], since),
+            |plan| plan.rerun_islands && plan.rerun_client_scripts,
+        )
+        .await;
+    }
+
+    /// Issue #3201 — files zfb writes itself (`<project>/.zfb/`, a staged
+    /// shadow copy the islands / client-script sibling sets can fall back to,
+    /// `node_modules`) never produce a synthesized change, however recent
+    /// their mtime; a user file published beside them still does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn zfb_written_files_never_synthesize_a_change_3201() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let zfb_written = [
+            root.join(".zfb/staged.json"),
+            root.join("tmp/zfb-shadow-session-abc/lib/dep.ts"),
+            root.join("tmp/zfb-islands-shadow-abc/lib/dep.ts"),
+            root.join("tmp/zfb-client-preprocess-abc/lib/dep.ts"),
+            root.join("node_modules/pkg/index.js"),
+        ];
+        let user_file = root.join("packages/shared/dep.ts");
+        let read_since = std::time::SystemTime::now();
+        for file in zfb_written.iter().chain([&user_file]) {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+            set_mtime_3190(file, read_since + Duration::from_secs(1));
+        }
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.set_zfb_written_roots([root.join(".zfb")]);
+        invalidation.replace_islands_read_since(zfb_written.clone(), read_since);
+        invalidation.replace_client_script_siblings_read_since(zfb_written.clone(), read_since);
+        let plans = drain_without_events_3190(&root, invalidation.clone(), |_, _| None).await;
+        assert!(plans.is_empty(), "{plans:?}");
+
+        invalidation.replace_client_script_siblings_read_since(
+            zfb_written.iter().cloned().chain([user_file.clone()]),
+            read_since,
+        );
+        let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(plans[0].triggers, vec![user_file], "{plans:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1389,8 +1389,9 @@ async fn e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served(
 /// so it produces no filesystem event at all.
 ///
 /// Falsifiability (revert-proven, #3190): with the orchestrator's pre-boot
-/// `unobserved_ssr_dependency_edits` call removed the edit is never served;
-/// it fails on the pre-fix base and on v2.21.1 (`066e058`) too.
+/// `unobserved_dependency_edits` call (`unobserved_ssr_dependency_edits`
+/// before #3201) removed the edit is never served; it fails on the pre-fix
+/// base and on v2.21.1 (`066e058`) too.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
 async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
