@@ -11379,8 +11379,7 @@ fn scan_physical_package(physical_root: &Path, parsed_files: &mut usize) -> Phys
         if !entry.file_type().is_file() || !dependency_source {
             continue;
         }
-        // The scan only discovers WHICH packages to walk; the package dir is
-        // staged wholesale, so skipping declarations never changes the shadow.
+        // Discovery only (staged wholesale, esbuild resolves): a `.d.ts` is never a runtime module.
         if is_type_declaration_file(path) {
             continue;
         }
@@ -13291,6 +13290,7 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
+    #[cfg(unix)]
     fn scan_cache_write_package(dir: &Path, name: &str, index_body: &str) {
         scan_cache_write(
             &dir.join("package.json"),
@@ -13306,7 +13306,7 @@ mod tests {
     /// `node_modules` in its canonical dir), which imports the store package
     /// `dep-a`, which imports its pnpm-private `dep-b`. `dep-b` also ships an
     /// `index.d.ts` importing `types-only` — installed beside it, so a scan
-    /// that parsed declarations would walk it too. Returns `(ws, site)`.
+    /// that parsed declarations would walk it too. Returns `(dep_a, site)`.
     #[cfg(unix)]
     fn write_scan_cache_fixture(ws: &Path) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::symlink;
@@ -13371,6 +13371,7 @@ mod tests {
         (dep_a, site)
     }
 
+    #[cfg(unix)]
     fn scan_cache_input(site: &Path) -> BundlerInput {
         BundlerInput {
             external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
@@ -13393,12 +13394,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn session_stats(session: &mut ShadowSession, input: BundlerInput) -> NodeModulesStagingStats {
         bundle_with_session(input, Some(session))
             .expect("mock bundle must succeed")
             .node_modules_staging_stats
     }
 
+    #[cfg(unix)]
     /// Every entry under the site mirror's `node_modules` in the persistent
     /// shadow, links followed — the staged dependency set the call left
     /// behind. (The WORK root's own `node_modules` is the live workspace
@@ -13419,6 +13422,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     /// First-call closure over the fixture: `data`, `dep-a`, `dep-b` — one
     /// parsed `index.js` each (`dep-b/index.d.ts` skipped, so `types-only` is
     /// never reached).
@@ -13430,6 +13434,7 @@ mod tests {
         parsed_files: 3,
     };
 
+    #[cfg(unix)]
     /// A warm call: only the first-party `data` is rescanned; `dep-a` and
     /// `dep-b` are reused from the session cache.
     const SCAN_CACHE_WARM: NodeModulesStagingStats = NodeModulesStagingStats {
