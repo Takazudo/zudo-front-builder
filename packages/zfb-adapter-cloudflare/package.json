@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-adapter-cloudflare",
-  "version": "2.21.0",
+  "version": "2.21.1",
   "private": false,
   "type": "module",
   "description": "Content-site engine on the web's Request/Response model — prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. Cloudflare adapter: Workers Static Assets (Pages-compatible).",

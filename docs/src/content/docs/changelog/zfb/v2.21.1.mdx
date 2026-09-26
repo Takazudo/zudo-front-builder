@@ -1,0 +1,20 @@
+---
+title: v2.21.1
+sidebar_position: 136
+---
+
+# v2.21.1
+
+Released: 2026-09-26
+
+## Bug Fixes
+
+- fix(zfb): drop vestigial relative rerun-if-changed triggers; gate slot triggers on non-override — no more build-script rerun and relink of `zfb` on every cargo invocation (f7a94911)
+- fix(zfb-css): stamp embedded Tailwind SHA-256 at build time, skip per-start hash — `zfb dev` / `zfb build` no longer hash the 76 MB embedded Tailwind binary on every start (1a88c9e0)
+- fix(zfb-build): keep manifest-declared dirs when staging workspace packages — a compiled-JS-only workspace sibling whose `exports` point into `dist/` now resolves from a nested host (99816b8f)
+- fix(dev): watch SSR module deps outside the watch roots and reload SSR on their change — `zfb dev` picks up edits to workspace-package files SSR imports without a restart (5e085540)
+- fix(dev,zfb-build): review fixes for the workspace-package staging epic — a degraded empty metafile no longer clears the SSR dependency watch set (b2858cd4)
+
+## Other Changes
+
+- refactor(zfb,zfb-css): review fixes for the boot-cost epic — one shared `ZFB_TAILWIND_BIN` override check (empty value = unset) (f37b62ce)
