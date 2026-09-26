@@ -1735,9 +1735,15 @@ mod tests {
             assert_eq!(invalidation.modified_since_read(|_| true).len(), 1);
         }
 
-        // A later publication whose read started after the edit clears it.
+        // A later publication's read start is the boundary: a fresh mtime
+        // before it is not reported, one after it is.
+        set_mtime(&edited, read_since + Duration::from_millis(1700));
+        set_mtime(&out_of_scope, read_since + Duration::from_millis(2500));
         invalidation.replace_ssr_module_deps_read_since(deps, after + Duration::from_secs(1));
-        assert!(invalidation.modified_since_read(|_| true).is_empty());
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![out_of_scope]
+        );
     }
 
     /// Issue #3202 — page entries and content-collection files are reconciled
