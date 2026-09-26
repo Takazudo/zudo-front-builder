@@ -6622,11 +6622,17 @@ impl DevRenderSession {
     }
 
     /// Record and publish a successful bundle's SSR module-dependency set
-    /// (issue #3162). Every caller has a bundle that succeeded, so an empty
-    /// set is a real publication and replaces the previous one; a failed
-    /// bundle never reaches here, which keeps the last good set watched.
+    /// (issue #3162). A route whose dependency set is empty is a real
+    /// publication and replaces the previous one; a failed bundle never
+    /// reaches here, which keeps the last good set watched. An empty route
+    /// list is NOT a publication: it is also what a missing or malformed
+    /// metafile degrades to (`route_module_deps_with_staged_copies`), and
+    /// clearing on it would silently unwatch every dependency.
     #[cfg(feature = "embed_v8")]
     fn publish_ssr_module_deps(&self, deps: &[zfb_build::RouteModuleDeps]) {
+        if deps.is_empty() {
+            return;
+        }
         let set: std::collections::BTreeSet<PathBuf> = deps
             .iter()
             .flat_map(|route| route.module_deps.iter().cloned())
@@ -12485,13 +12491,17 @@ mod tests {
         assert!(policy.dynamic_dependency_paths().contains(&in_root));
         assert!(policy.dynamic_dependency_paths().contains(&out_of_root));
 
+        session.populate_module_edges(&[]);
+        assert!(
+            registry.is_ssr_module_dependency(&in_root),
+            "an empty route list (the degraded missing/malformed-metafile result) \
+             must not clear the last good set"
+        );
         session.populate_module_edges(&route_deps(&[]));
         assert!(
             registry.ssr_module_dep_paths().is_empty(),
             "a successful bundle with no module deps replaces the old set"
         );
-        session.populate_module_edges(&[]);
-        assert!(registry.ssr_module_dep_paths().is_empty());
     }
 
     /// A refresh that fails before its bundle succeeds never reaches the

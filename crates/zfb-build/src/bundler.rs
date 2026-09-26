@@ -4252,7 +4252,6 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
-        let workspace_infra = WorkspaceInfraPrune::for_source(logical_root, &project_root);
         if bundle_exclude.is_empty()
             && workspace_package_staging_active
             && !esbuild_will_preserve_symlinks(&input)
@@ -4266,6 +4265,7 @@ pub fn bundle_with_session(
         {
             continue;
         }
+        let workspace_infra = WorkspaceInfraPrune::for_source(logical_root, &project_root);
         materialise_isolated_exact_dir(
             logical_root,
             logical_root,
@@ -4296,7 +4296,6 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
-        let workspace_infra = WorkspaceInfraPrune::for_source(source_root, &project_root);
         if bundle_exclude.is_empty()
             && workspace_package_staging_active
             && !esbuild_will_preserve_symlinks(&input)
@@ -4310,6 +4309,7 @@ pub fn bundle_with_session(
         {
             continue;
         }
+        let workspace_infra = WorkspaceInfraPrune::for_source(source_root, &project_root);
         materialise_isolated_exact_dir(
             source_root,
             logical_root,

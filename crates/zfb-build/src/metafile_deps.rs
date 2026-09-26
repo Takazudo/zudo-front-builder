@@ -115,6 +115,13 @@ pub(crate) fn route_module_deps_with_staged_copies(
         // path falls back to the prior (imprecise) selection on empty deps.
         Err(_) => return Vec::new(),
     };
+    let staged_copy_sources: Vec<(PathBuf, &PathBuf)> = staged_copy_sources
+        .iter()
+        .map(|(dest, source)| (normalize_path_lexical(dest), source))
+        .collect();
+    // Routes share most of their inputs; map each key (filesystem probes
+    // included) once per bundle rather than once per route.
+    let mut mapped: HashMap<String, Option<PathBuf>> = HashMap::new();
 
     routes
         .iter()
@@ -129,10 +136,11 @@ pub(crate) fn route_module_deps_with_staged_copies(
                 if is_synthetic_input(&key) {
                     continue;
                 }
-                if let Some(real) =
-                    map_to_real(&key, shadow_root, project_root, staged_copy_sources)
-                {
-                    module_deps.insert(real);
+                let real = mapped.entry(key).or_insert_with_key(|key| {
+                    map_to_real(key, shadow_root, project_root, &staged_copy_sources)
+                });
+                if let Some(real) = real {
+                    module_deps.insert(real.clone());
                 }
             }
             RouteModuleDeps {
@@ -182,7 +190,7 @@ fn map_to_real(
     key: &str,
     shadow_root: &Path,
     project_root: &Path,
-    staged_copy_sources: &[(PathBuf, PathBuf)],
+    staged_copy_sources: &[(PathBuf, &PathBuf)],
 ) -> Option<PathBuf> {
     let key_path = Path::new(key);
 
@@ -218,20 +226,19 @@ fn map_to_real(
 /// The existing source file behind `shadow_path` when it lies inside a
 /// recorded staged copy. The deepest destination wins, so a dependency staged
 /// under another staged package (`node_modules/a/node_modules/b`) maps to its
-/// own source rather than into `a`'s.
+/// own source rather than into `a`'s. Destinations are already lexically
+/// normalized by the caller.
 fn staged_copy_source(
     shadow_path: &Path,
-    staged_copy_sources: &[(PathBuf, PathBuf)],
+    staged_copy_sources: &[(PathBuf, &PathBuf)],
 ) -> Option<PathBuf> {
     let shadow_path = normalize_path_lexical(shadow_path);
     staged_copy_sources
         .iter()
         .filter_map(|(dest, source)| {
-            let relative = shadow_path
-                .strip_prefix(normalize_path_lexical(dest))
-                .ok()?;
+            let relative = shadow_path.strip_prefix(dest).ok()?;
             let source = if relative.as_os_str().is_empty() {
-                source.clone()
+                (*source).clone()
             } else {
                 source.join(relative)
             };
