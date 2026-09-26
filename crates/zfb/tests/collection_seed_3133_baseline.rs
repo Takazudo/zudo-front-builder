@@ -401,7 +401,8 @@ fn materialise_fixture(variant: &Variant) -> (tempfile::TempDir, PathBuf) {
 
 /// The parsed `[zfb-staging-stats] physical_scans=N logical_visits=M
 /// workspace_staging_activated=bool` line (`NodeModulesStagingStats` in
-/// `crates/zfb-build/src/bundler.rs`, #3139).
+/// `crates/zfb-build/src/bundler.rs`, #3139). Later-appended tokens
+/// (`cache_hits`, `parsed_files` — #3178) are ignored.
 #[derive(Debug, PartialEq, Eq)]
 struct StagingStats {
     physical_scans: usize,
@@ -532,6 +533,18 @@ fn parse_staging_stats_reads_the_hook_line() {
             logical_visits: 6,
             workspace_staging_activated: true,
         })
+    );
+    assert_eq!(
+        parse_staging_stats(
+            "[zfb-staging-stats] physical_scans=1 logical_visits=6 workspace_staging_activated=true \
+             cache_hits=5 parsed_files=0"
+        ),
+        Some(StagingStats {
+            physical_scans: 1,
+            logical_visits: 6,
+            workspace_staging_activated: true,
+        }),
+        "the #3178 tokens are appended after the original three and must not disturb them"
     );
     assert_eq!(
         parse_staging_stats("[zfb-staging-stats] physical_scans=4"),
