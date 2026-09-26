@@ -75,6 +75,24 @@ Two synthetic files anchor the shadow root:
 
 A fail-closed **stage-escape audit** runs against esbuild's own metafile after every bundle: it hard-fails the build if any input resolved to live first-party source outside the shadow tree with no staged spelling, or to a `node_modules` symlink escaping to a live workspace sibling. Workspace packages a nested host imports by name are staged as real copies, with infra directories (`dist`, `target`, `.turbo`, `.next`, `.vercel`) pruned except where the package's own `exports`/`main`/`module` point into them — the same declared entries this audit accepts. The shadow tree itself is a build-time-only artifact — it is discarded once the bundle is written, and nothing in `dist/` ever depends on it existing.
 
+### Troubleshooting: a workspace package nested under an already-linked package fails to stage
+
+An ordinary installed dependency is staged as a symlink straight to its canonical install (`link_ordinary_dependency_to_canonical_source`), not copied — cheaper, and it keeps a single physical identity per install. If a workspace package or `link:` dependency then sits **nested inside** that already-linked package's own `node_modules` — the shape pnpm produces under `link-workspace-packages: deep` — zfb refuses to stage it and fails the build with an error naming both packages, e.g.:
+
+```
+bundler: cannot stage nested dependency "nested-pkg" (…/node_modules/parent-pkg/node_modules/nested-pkg):
+it sits under "parent-pkg" (…/node_modules/parent-pkg), which zfb already linked straight to its real
+install at …/.pnpm/parent-pkg@1.0.0/node_modules/parent-pkg — zfb never writes into an installed
+package, so a workspace/`link:` dependency nested this deep under an already-linked package cannot be
+staged. Fix: make "nested-pkg" a direct dependency of this site so pnpm hoists it to the top level, or
+turn off `link-workspace-packages: deep` for it (#3194)
+```
+
+zfb never writes into an installed package's own directory tree, so staging the nested package here — which would mean writing into (or symlinking under) the parent package's real, live install — is out of bounds by the same containment rule the shadow writer enforces everywhere else. Two fixes:
+
+- Make the nested package a **direct dependency** of the site so pnpm hoists it to the top level instead of nesting it under `parent-pkg`.
+- Turn off `link-workspace-packages: deep` (globally, or scoped to that dependency) so pnpm stops symlinking workspace packages this deep into an installed package's own `node_modules`.
+
 ## V8-mode gate: `output` and auto-detection
 
 `zfb-render` exposes the embedded V8 host behind a default-on `embed_v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.

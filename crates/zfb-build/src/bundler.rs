@@ -7673,9 +7673,28 @@ fn link_ordinary_dependency_to_canonical_source(
         let canonical = source_root
             .canonicalize()
             .with_context(|| format!("canonicalize dependency {}", source_root.display()))?;
-        if !path_is_inside_node_modules(&canonical)
-            || canonical_workspace_package_logical_path(&canonical, project_root).is_some()
-        {
+        let is_ordinary_store_dependency = path_is_inside_node_modules(&canonical)
+            && canonical_workspace_package_logical_path(&canonical, project_root).is_none();
+        if !is_ordinary_store_dependency {
+            // Not a plain installed store package: `canonical` resolves to a
+            // workspace/`link:` source tree instead. If it is also nested
+            // under a package this call already linked straight to its real
+            // install, esbuild can only reach it by resolving through that
+            // ancestor link into the real install — and zfb never writes
+            // into an installed package (#3185/#3188's containment guard).
+            // Falling through to `materialise_isolated_exact_dir` would hit
+            // that guard's generic error, so name the problem here instead
+            // (#3194).
+            if let Some(parent) = dest.parent() {
+                if let Some((ancestor, ancestor_target)) = writer.escaping_ancestor(parent)? {
+                    return Err(nested_dependency_under_linked_ancestor_error(
+                        logical_root,
+                        &canonical,
+                        &ancestor,
+                        &ancestor_target,
+                    ));
+                }
+            }
             return Ok(false);
         }
         if let Some(parent) = dest.parent() {
@@ -7698,6 +7717,51 @@ fn link_ordinary_dependency_to_canonical_source(
             })?;
         Ok(true)
     }
+}
+
+/// Best-effort `name` field from a package directory's `package.json`,
+/// falling back to the directory name (and then the full path) when it is
+/// missing, unreadable, or unparsable — this is error-message decoration
+/// only, never a resolution decision.
+fn package_display_name(package_root: &Path) -> String {
+    fs::read(package_root.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| {
+            value
+                .get("name")
+                .and_then(|name| name.as_str())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            package_root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| package_root.display().to_string())
+}
+
+/// The actionable error for a workspace/`link:` dependency (`canonical`,
+/// staged as `logical_root`) found nested under a package this call already
+/// linked straight to its real install (`ancestor` in the shadow, resolving
+/// to `ancestor_target`) — issue #3194, the fall-through gap left by the
+/// #3188 containment guard. Names both packages and their paths, explains
+/// why zfb refuses (it never writes into an installed package), and
+/// suggests the two known fixes.
+fn nested_dependency_under_linked_ancestor_error(
+    logical_root: &Path,
+    canonical: &Path,
+    ancestor: &Path,
+    ancestor_target: &Path,
+) -> anyhow::Error {
+    let nested_name = package_display_name(canonical);
+    let ancestor_name = package_display_name(ancestor_target);
+    anyhow!(
+        "bundler: cannot stage nested dependency \"{nested_name}\" ({logical_path}): it sits under \"{ancestor_name}\" ({ancestor_path}), which zfb already linked straight to its real install at {ancestor_target_path} — zfb never writes into an installed package, so a workspace/`link:` dependency nested this deep under an already-linked package cannot be staged. Fix: make \"{nested_name}\" a direct dependency of this site so pnpm hoists it to the top level, or turn off `link-workspace-packages: deep` for it (#3194)",
+        logical_path = logical_root.display(),
+        ancestor_path = ancestor.display(),
+        ancestor_target_path = ancestor_target.display(),
+    )
 }
 
 /// What the exact-target file loop does with one destination (#3189).
@@ -13926,6 +13990,179 @@ mod tests {
         assert_ne!(
             staged[0], staged[1],
             "distinct installs must retain distinct identities"
+        );
+    }
+
+    /// Fixture for issue #3194: a workspace package nested under a store
+    /// package this call already linked straight to its real install (the
+    /// `link-workspace-packages: deep` shape). Returns
+    /// `(store package.json dir, ancestor dest, nested logical, nested dest,
+    /// writer)` with the ancestor link already established.
+    #[cfg(unix)]
+    fn write_nested_workspace_under_linked_ancestor_fixture(
+        base: &Path,
+        stage: &Path,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf, ShadowWriter<'static>) {
+        // Workspace: `packages/*` claims the nested package; `apps/*`
+        // claims the project consuming the already-linked store package.
+        let workspace_root = base.join("workspace");
+        fs::create_dir_all(&workspace_root).unwrap();
+        fs::write(
+            workspace_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        let project = workspace_root.join("apps/site");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+
+        // The nested workspace package: a real workspace member, not under
+        // node_modules.
+        let nested = workspace_root.join("packages/nested-pkg");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("package.json"), r#"{"name":"nested-pkg"}"#).unwrap();
+
+        // The already-installed store package, with the SAME nested package
+        // symlinked into its own `node_modules` — the real shape a pnpm
+        // install produces (`link-workspace-packages: deep`).
+        let store = base.join("store/node_modules/.pnpm/parent-pkg@1.0.0/node_modules/parent-pkg");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("package.json"), r#"{"name":"parent-pkg"}"#).unwrap();
+        fs::create_dir_all(store.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&nested, store.join("node_modules/nested-pkg")).unwrap();
+
+        // The project's own `node_modules` mirrors that same nested shape.
+        std::os::unix::fs::symlink(&store, project.join("node_modules/parent-pkg")).unwrap();
+
+        let writer = ShadowWriter::new(stage.to_path_buf(), None, true, None).unwrap();
+
+        // First call: link the ancestor package straight to its real
+        // install, as an ordinary dependency (canonical is a plain
+        // node_modules-shaped install, not a workspace package).
+        let ancestor_logical = project.join("node_modules/parent-pkg");
+        let ancestor_dest = stage.join("node_modules/parent-pkg");
+        assert!(link_ordinary_dependency_to_canonical_source(
+            &ancestor_logical,
+            &ancestor_logical,
+            &ancestor_dest,
+            &project,
+            &writer,
+        )
+        .unwrap());
+
+        let nested_logical = project.join("node_modules/parent-pkg/node_modules/nested-pkg");
+        let nested_dest = ancestor_dest.join("node_modules/nested-pkg");
+        (store, ancestor_dest, nested_logical, nested_dest, writer)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_workspace_dependency_under_linked_ancestor_names_both_packages_and_suggests_a_fix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let stage_tmp = tempfile::tempdir().unwrap();
+        let (store, _ancestor_dest, nested_logical, nested_dest, writer) =
+            write_nested_workspace_under_linked_ancestor_fixture(&base, stage_tmp.path());
+        let project = nested_logical
+            .ancestors()
+            .nth(3) // node_modules/parent-pkg/node_modules/nested-pkg -> project
+            .unwrap()
+            .to_path_buf();
+
+        let err = link_ordinary_dependency_to_canonical_source(
+            &nested_logical,
+            &nested_logical,
+            &nested_dest,
+            &project,
+            &writer,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+
+        assert!(
+            message.contains("nested-pkg"),
+            "names the nested package: {message}"
+        );
+        assert!(
+            message.contains(&nested_logical.display().to_string()),
+            "names the nested package's path: {message}"
+        );
+        assert!(
+            message.contains("parent-pkg"),
+            "names the linked ancestor package: {message}"
+        );
+        assert!(
+            message.contains(&store.display().to_string()),
+            "names where the linked ancestor resolves to: {message}"
+        );
+        assert!(
+            message.contains("never writes into an installed package"),
+            "explains why this fails: {message}"
+        );
+        assert!(
+            message.contains("direct dependency"),
+            "suggests hoisting as a fix: {message}"
+        );
+        assert!(
+            message.contains("link-workspace-packages: deep"),
+            "suggests turning off deep linking as a fix: {message}"
+        );
+        assert!(message.contains("#3194"), "tagged #3194: {message}");
+    }
+
+    /// Second half of the acceptance criteria: the error above must be
+    /// surfaced without ever touching the linked install — no file written
+    /// or deleted under it.
+    #[cfg(unix)]
+    #[test]
+    fn nested_workspace_dependency_under_linked_ancestor_writes_nothing_to_the_linked_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let stage_tmp = tempfile::tempdir().unwrap();
+        let (store, _ancestor_dest, nested_logical, nested_dest, writer) =
+            write_nested_workspace_under_linked_ancestor_fixture(&base, stage_tmp.path());
+        let project = nested_logical.ancestors().nth(3).unwrap().to_path_buf();
+
+        let before: BTreeSet<PathBuf> = WalkDir::new(&store)
+            .into_iter()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path().to_path_buf()))
+            .collect();
+        let package_json_before = fs::read(store.join("package.json")).unwrap();
+
+        let result = link_ordinary_dependency_to_canonical_source(
+            &nested_logical,
+            &nested_logical,
+            &nested_dest,
+            &project,
+            &writer,
+        );
+        assert!(result.is_err());
+
+        let after: BTreeSet<PathBuf> = WalkDir::new(&store)
+            .into_iter()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path().to_path_buf()))
+            .collect();
+        assert_eq!(
+            before, after,
+            "no file may be written or deleted under the linked install"
+        );
+        assert_eq!(
+            fs::read(store.join("package.json")).unwrap(),
+            package_json_before,
+            "the linked install's own package.json must be untouched"
+        );
+        // `nested_dest` already resolves through the ancestor's own linked
+        // install (mirroring a real pnpm install's own nested
+        // `node_modules`) before this call ever runs — that pre-existing
+        // reachability is the fixture, not something the rejected call may
+        // add to. The `WalkDir` comparison over `store` above is what pins
+        // "nothing written or deleted under the linked install"; this only
+        // confirms the rejected call left that pre-existing symlink alone.
+        assert!(
+            fs::symlink_metadata(&nested_dest)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the ancestor's own pre-existing nested symlink must be untouched"
         );
     }
 
