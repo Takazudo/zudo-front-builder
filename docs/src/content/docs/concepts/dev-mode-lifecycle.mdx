@@ -267,6 +267,15 @@ right away doesn't seem to trigger a rebuild, the recovery is simply to save the
 by the time you notice nothing happened and re-save, the watcher has settled, and the second
 write is reliably observed.
 
+<Note title="Coarse-resolution filesystems">
+
+On filesystems with 1–2 second mtime granularity (HFS+, FAT/exFAT, some NFS/SMB mounts), an
+edit made in the first moment after `ready` can receive a modification time that falls before
+the read start, causing the change to be missed. Saving the file again fixes it. APFS, ext4,
+and NTFS are not affected (see [#3195](https://github.com/Takazudo/zudo-front-builder/issues/3195)).
+
+</Note>
+
 ## Related
 
 - [Build pipeline](./build-pipeline.mdx) — the full pipeline from CLI to
