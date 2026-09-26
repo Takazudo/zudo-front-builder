@@ -7706,13 +7706,20 @@ pub(crate) fn read_tsconfig_paths(
 /// sees the same collection data the build does — without this, dev
 /// `getCollection(...)` resolves against the placeholder empty snapshot
 /// and every collection query returns `[]`).
-pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) -> Option<String> {
+///
+/// The snapshot comes back beside its JSON so `zfb dev` can publish the
+/// files it was built from for the watch-arm reconcile (issue #3202).
+pub(crate) fn build_content_snapshot_json(
+    project_root: &Path,
+    config: &Config,
+) -> Option<(String, zfb_content::ContentSnapshot)> {
     let snapshot = build_content_snapshot(
         project_root,
         config,
         zfb_content::SnapshotOptions::default(),
     )?;
-    serialize_content_snapshot(&snapshot)
+    let json = serialize_content_snapshot(&snapshot)?;
+    Some((json, snapshot))
 }
 
 /// Serialize a built snapshot for embedding in the worker bundle.
@@ -18468,7 +18475,7 @@ mod tests {
             "Config::default() must produce no collections for this test to be meaningful"
         );
         let tmp = tempdir().unwrap();
-        let result = build_content_snapshot_json(tmp.path(), &cfg);
+        let result = build_content_snapshot_json(tmp.path(), &cfg).map(|(json, _)| json);
         assert!(
             result.is_none(),
             "build_content_snapshot_json must return None when collections is empty \
