@@ -7267,8 +7267,9 @@ enum WorkspaceInfraPrune {
     Off,
     /// A claimed workspace package (issue #1901): infra directories are pruned
     /// at any depth, except those on the path to or inside one of `keep` — the
-    /// package-relative directories its own `exports`/`main`/`module` declare
-    /// (issue #3161), e.g. a compiled-JS-only package shipping `dist/`.
+    /// package-relative directories its own `exports`/`main`/`module`/`imports`
+    /// declare (issues #3161/#3169), e.g. a compiled-JS-only package shipping
+    /// `dist/`, including a directory-valued `"main": "./dist"`.
     Workspace { keep: Vec<PathBuf> },
 }
 
@@ -18348,6 +18349,48 @@ mod tests {
         assert!(!dest.join("node_modules").exists());
         assert!(!dest.join("target").exists());
         assert!(!dest.join(".turbo").exists());
+    }
+
+    #[test]
+    fn materialise_workspace_package_keeps_directory_valued_main_dist() {
+        // Issue #3169: `"main": "./dist"` names a directory (Node resolves it
+        // to `dist/index.js`); pruning it left esbuild nothing to resolve.
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                ("package.json", r#"{"name":"lib","main":"./dist"}"#),
+                ("dist/index.js", "export const marker = 1;\n"),
+                ("dist/node_modules/vendor/index.js", "vendored\n"),
+                ("target/debug/leak.txt", "infra\n"),
+            ],
+        );
+
+        assert!(dest.join("dist/index.js").is_file());
+        assert!(!dest.join("dist/node_modules").exists());
+        assert!(!dest.join("target").exists());
+    }
+
+    #[test]
+    fn materialise_workspace_package_keeps_imports_target_dist() {
+        // Issue #3169: a `package.json#imports` target into `dist/` declares
+        // that directory just as an `exports` target would.
+        let (_workspace, _shadow, dest) = stage_workspace_package(
+            "lib",
+            &[
+                (
+                    "package.json",
+                    r##"{"name":"lib","exports":"./index.js","imports":{"#impl":{"node":"./dist/impl.js","default":"lib-other"}}}"##,
+                ),
+                ("index.js", "import '#impl';\n"),
+                ("dist/impl.js", "export const marker = 1;\n"),
+                ("dist/chunk-a.js", "export const chunk = 1;\n"),
+                ("target/leak.txt", "infra\n"),
+            ],
+        );
+
+        assert!(dest.join("dist/impl.js").is_file());
+        assert!(dest.join("dist/chunk-a.js").is_file());
+        assert!(!dest.join("target").exists());
     }
 
     #[test]
