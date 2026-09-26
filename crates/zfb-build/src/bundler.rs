@@ -5143,10 +5143,7 @@ pub fn bundle_with_session(
                     .filter(|r| !r.static_html)
                     .map(|r| crate::metafile_deps::RouteEntryRef {
                         source_path: r.source_path.clone(),
-                        // The shadow mirrors the project tree by relative path,
-                        // so a route's metafile-input key equals its
-                        // project-relative source path in forward-slash form.
-                        metafile_key: rel_to_forward_slash(&r.source_path),
+                        metafile_key: route_metafile_key(r),
                     })
                     .collect();
                 crate::metafile_deps::route_module_deps_with_staged_copies(
@@ -12564,6 +12561,21 @@ fn rel_to_forward_slash(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
+/// The key esbuild records for `route`'s page module in the metafile's
+/// `inputs`, which is relative to the shadow root (esbuild's cwd). The shadow
+/// mirrors the project tree by relative path, so an in-project page's key is
+/// its project-relative `source_path`. An injected route's `source_path` is
+/// instead the absolute stub in its `zfb-pkg-routes-*` staging dir, while the
+/// stub itself is materialised at `<shadow>/pages/<rel_under_pages>` and
+/// recorded under that spelling (issue #3213).
+fn route_metafile_key(route: &RouteEntry) -> String {
+    if route.source_path.is_absolute() && !route.rel_under_pages.as_os_str().is_empty() {
+        format!("pages/{}", rel_to_forward_slash(&route.rel_under_pages))
+    } else {
+        rel_to_forward_slash(&route.source_path)
+    }
+}
+
 /// Heuristic to recover "path under pages/" from a project-relative
 /// page path. We assume `source_path` starts with `pages/` (since the
 /// pages-dir walk pushed RouteEntries with project-relative source
@@ -13604,6 +13616,93 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    /// Issue #3213 — an injected route's stub lives at an absolute
+    /// `zfb-pkg-routes-*` path, but esbuild records it shadow-relative as
+    /// `pages/<rel>`. Keyed that way, the walk reaches the stub's entrypoint
+    /// and the entrypoint's own imports, mapped back to real sources.
+    #[test]
+    fn injected_route_metafile_key_reaches_entrypoint_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let project = root.join("project");
+        let shadow = root.join("shadow");
+        let stub = root.join("zfb-pkg-routes-abc/pages/pkg/index.tsx");
+        for file in [
+            project.join("pages/index.tsx"),
+            project.join("node_modules/pkg/entry.tsx"),
+            project.join("node_modules/pkg/Widget.tsx"),
+            root.join("packages/shared/util.js"),
+            shadow.join("node_modules/shared/util.js"),
+            stub.clone(),
+        ] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, "x").unwrap();
+        }
+        let staged = vec![(
+            shadow.join("node_modules/shared"),
+            root.join("packages/shared"),
+        )];
+        let injected = RouteEntry {
+            route: "/pkg".to_string(),
+            source_path: stub.clone(),
+            entry_key: "/pkg".to_string(),
+            static_html: false,
+            rel_under_pages: PathBuf::from("pkg/index.tsx"),
+        };
+        let user = RouteEntry {
+            route: "/".to_string(),
+            source_path: PathBuf::from("pages/index.tsx"),
+            entry_key: "/".to_string(),
+            static_html: false,
+            rel_under_pages: PathBuf::from("index.tsx"),
+        };
+        assert_eq!(route_metafile_key(&injected), "pages/pkg/index.tsx");
+        assert_eq!(route_metafile_key(&user), "pages/index.tsx");
+
+        let metafile = br#"{
+            "inputs": {
+                "pages/index.tsx": { "imports": [] },
+                "pages/pkg/index.tsx": { "imports": [ { "path": "node_modules/pkg/entry.tsx" } ] },
+                "node_modules/pkg/entry.tsx": { "imports": [
+                    { "path": "node_modules/pkg/Widget.tsx" },
+                    { "path": "node_modules/shared/util.js" }
+                ] },
+                "node_modules/pkg/Widget.tsx": { "imports": [] },
+                "node_modules/shared/util.js": { "imports": [] }
+            }
+        }"#;
+        let refs: Vec<crate::metafile_deps::RouteEntryRef> = [&injected, &user]
+            .iter()
+            .map(|r| crate::metafile_deps::RouteEntryRef {
+                source_path: r.source_path.clone(),
+                metafile_key: route_metafile_key(r),
+            })
+            .collect();
+        let deps = crate::metafile_deps::route_module_deps_with_staged_copies(
+            metafile, &refs, &shadow, &project, &staged,
+        );
+        assert_eq!(deps[0].source_path, stub);
+        assert_eq!(
+            deps[0].module_deps,
+            BTreeSet::from([
+                project.join("node_modules/pkg/entry.tsx"),
+                project.join("node_modules/pkg/Widget.tsx"),
+                root.join("packages/shared/util.js"),
+            ])
+        );
+        assert!(deps[1].module_deps.is_empty());
+
+        // Control: the pre-#3213 key (the absolute staging path) walks nothing.
+        let stale = vec![crate::metafile_deps::RouteEntryRef {
+            source_path: stub.clone(),
+            metafile_key: rel_to_forward_slash(&stub),
+        }];
+        let stale_deps = crate::metafile_deps::route_module_deps_with_staged_copies(
+            metafile, &stale, &shadow, &project, &staged,
+        );
+        assert!(stale_deps[0].module_deps.is_empty());
+    }
 
     #[test]
     fn node_modules_staging_stats_stderr_line_keeps_its_fixture_contract() {
