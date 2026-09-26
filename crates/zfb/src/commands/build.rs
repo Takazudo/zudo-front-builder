@@ -1551,6 +1551,13 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
 /// `zfb_build::bundler`'s own `MIRROR_SKIP_DIRS` used to wholesale-mirror
 /// the same root into the SSR shadow, so the CSS-side walk and the
 /// bundler's real mirror agree on what counts as infra vs. source.
+///
+/// Deliberately has NO manifest-declared carve-out, unlike the bundler's
+/// sibling mirror and runtime alias claim (issue #3176): this list is the
+/// Tailwind `@source not` / CSS-Modules scan exclusion, not an esbuild
+/// resolution surface, so a sibling's declared `dist/` still stays out of the
+/// class scan — pinned by the `sibling_css_module_command_layer_build` test
+/// `sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan`.
 const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "dist",

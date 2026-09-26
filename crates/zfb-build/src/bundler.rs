@@ -5380,6 +5380,81 @@ fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf
     out
 }
 
+/// Whether a directory `name` is one [`MIRROR_SKIP_DIRS`] prunes but a
+/// sibling's own manifest may carve back in (issue #3176): `node_modules` and
+/// `.git` are never carved out, whatever a manifest declares.
+fn is_carvable_skip_dir(name: &str) -> bool {
+    name != "node_modules" && name != ".git" && MIRROR_SKIP_DIRS.contains(&name)
+}
+
+/// The package-relative directories `package_root`'s own `package.json`
+/// declares (through `exports`/`main`/`module`/`imports`, via
+/// [`crate::metafile_deps::declared_entry_dir_prefixes`]) that pass through a
+/// carvable [`MIRROR_SKIP_DIRS`] directory — e.g. `dist/`, `build/dist/` — for
+/// the tsconfig-alias sibling mirror and the runtime alias claim (issue
+/// #3176). A declared prefix outside every skip dir needs no carve-out, and
+/// one naming `node_modules`, `.git`, or a non-plain component never gets one.
+///
+/// Host guard (copied from [`WorkspaceInfraPrune::for_source`]): no carve-out
+/// when `package_root` is the workspace root, the host project, an ancestor
+/// of it, or inside it — the host's manifest may point into `dist`, which is
+/// also the default build `out_dir`, and that must never become claimable.
+/// Compared both lexically and canonically; either match refuses (fail
+/// closed).
+fn declared_skip_dir_carve_outs(
+    package_root: &Path,
+    project_root: &Path,
+    workspace_root: &Path,
+) -> Vec<PathBuf> {
+    let spell = |path: &Path| normalize_macos_var_alias(&normalize_path_lexical(path));
+    let related = |package: &Path, host: &Path, workspace: &Path| {
+        package == workspace || host.starts_with(package) || package.starts_with(host)
+    };
+    if related(
+        &spell(package_root),
+        &spell(project_root),
+        &spell(workspace_root),
+    ) {
+        return Vec::new();
+    }
+    if let (Ok(package), Ok(host)) = (package_root.canonicalize(), project_root.canonicalize()) {
+        let workspace = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        if related(&package, &host, &workspace) {
+            return Vec::new();
+        }
+    }
+    let Some(manifest) = fs::read(package_root.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return Vec::new();
+    };
+    crate::metafile_deps::declared_entry_dir_prefixes(&manifest)
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|prefix| {
+            let names = || {
+                prefix.components().map(|component| match component {
+                    Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+            };
+            names().all(|name| name.is_some_and(|name| name != "node_modules" && name != ".git"))
+                && names().flatten().any(|name| is_carvable_skip_dir(&name))
+        })
+        .collect()
+}
+
+/// Whether the skip-dir (or hidden) directory at package-relative `relative`
+/// is on the path to, or is, one of `declared` — the package-relative prefix
+/// match of issue #3176: `dist/` is kept for a declared `dist/` (or
+/// `dist/esm/`), while a nested `src/dist/` or `dist/dist/` is not.
+fn skip_dir_is_declared(relative: &Path, declared: &[PathBuf]) -> bool {
+    declared.iter().any(|prefix| prefix.starts_with(relative))
+}
+
 /// Walk `root` with the same `ignore::WalkBuilder` machinery
 /// [`enumerate_extra_top_level_dirs`] uses (`.gitignore` / `.git/info/exclude`
 /// / global-git honored via `standard_filters`, `require_git(false)` so the
@@ -5391,7 +5466,19 @@ fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf
 /// end-to-end. The `MIRROR_SKIP_DIRS` infra dirs are pruned at any depth, and
 /// a `node_modules` component is never descended into (also re-checked
 /// per-file by the caller).
-fn enumerate_mirror_root_files(root: &Path) -> Vec<PathBuf> {
+///
+/// Manifest carve-out (issue #3176): a package inside `root` (the root itself
+/// or a nested `package.json` the filtered walk reached) whose manifest
+/// declares an entry under a skip dir — `"exports": "./dist/index.js"`, a
+/// directory-valued `"main": "./dist"`, an `imports` target — gets that
+/// declared subtree back through a second walk that ignores `.gitignore`
+/// (`dist/` is conventionally gitignored, so dropping it from the skip list
+/// alone would stage nothing). That walk still prunes hidden entries,
+/// `node_modules`, `.git`, and any skip dir nested inside the subtree that is
+/// not itself on a declared path. The host guard of
+/// [`declared_skip_dir_carve_outs`] keeps the host project's (and the
+/// workspace root's) own build output out.
+fn enumerate_mirror_root_files(root: &Path, project_root: &Path) -> Vec<PathBuf> {
     use ignore::WalkBuilder;
     let walker = WalkBuilder::new(root)
         .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
@@ -5413,6 +5500,60 @@ fn enumerate_mirror_root_files(root: &Path) -> Vec<PathBuf> {
     for entry in walker.flatten() {
         if entry.file_type().is_some_and(|ft| ft.is_file()) {
             out.push(entry.path().to_path_buf());
+        }
+    }
+
+    let workspace_root = zfb_types::first_party_root_for(project_root);
+    let mut package_roots: BTreeSet<PathBuf> = out
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "package.json"))
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect();
+    package_roots.insert(root.to_path_buf());
+    let mut seen: HashSet<PathBuf> = out.iter().cloned().collect();
+    for package_root in package_roots {
+        let declared = declared_skip_dir_carve_outs(&package_root, project_root, &workspace_root);
+        for prefix in &declared {
+            // The declared subtree must physically stay inside its package:
+            // a `dist` symlink out of the first-party region is not staged.
+            let subtree = package_root.join(prefix);
+            let contained = match (subtree.canonicalize(), package_root.canonicalize()) {
+                (Ok(physical), Ok(package)) => physical.is_dir() && physical.starts_with(package),
+                _ => false,
+            };
+            if !contained {
+                continue;
+            }
+            let walker = WalkBuilder::new(&subtree)
+                .standard_filters(false)
+                .hidden(true)
+                .filter_entry({
+                    let package_root = package_root.clone();
+                    let declared = declared.clone();
+                    move |entry| {
+                        if entry.depth() == 0 || !entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                            return true;
+                        }
+                        let name = entry.file_name().to_string_lossy();
+                        if !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip) {
+                            return true;
+                        }
+                        is_carvable_skip_dir(&name)
+                            && entry
+                                .path()
+                                .strip_prefix(&package_root)
+                                .is_ok_and(|relative| skip_dir_is_declared(relative, &declared))
+                    }
+                })
+                .build();
+            for entry in walker.flatten() {
+                if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    let path = entry.path().to_path_buf();
+                    if seen.insert(path.clone()) {
+                        out.push(path);
+                    }
+                }
+            }
         }
     }
     out
@@ -5596,6 +5737,36 @@ fn runtime_alias_path_is_claimable(
     ))
 }
 
+/// The owning sibling package of a runtime alias claim `path` and its
+/// declared skip-dir carve-outs (issue #3176, see
+/// [`declared_skip_dir_carve_outs`]). The owner is the nearest `package.json`
+/// directory above `path`, below `workspace_root`, whose own workspace-relative
+/// path crosses no hidden or skip-list directory — a `dist/esm/package.json`
+/// type marker is not a package root. `None` when there is no such package or
+/// it declares nothing carvable (including every host-guarded package).
+fn runtime_alias_declared_carve_out(
+    path: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let package_root = path
+        .parent()?
+        .ancestors()
+        .take_while(|dir| *dir != workspace_root && dir.starts_with(workspace_root))
+        .filter(|dir| {
+            dir.strip_prefix(workspace_root).is_ok_and(|rel| {
+                rel.components().all(|component| {
+                    let name = component.as_os_str().to_string_lossy();
+                    !name.starts_with('.') && !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+                })
+            })
+        })
+        .find(|dir| dir.join("package.json").is_file())?
+        .to_path_buf();
+    let declared = declared_skip_dir_carve_outs(&package_root, project_root, workspace_root);
+    (!declared.is_empty()).then_some((package_root, declared))
+}
+
 fn runtime_alias_claim_is_allowed(
     path: &Path,
     workspace_root: &Path,
@@ -5606,13 +5777,33 @@ fn runtime_alias_claim_is_allowed(
     let Ok(relative) = path.strip_prefix(workspace_root) else {
         return Ok(false);
     };
+    // Issue #3176: a hidden/skip-list component, or a gitignored path, is
+    // claimable only inside a subtree the owning sibling's manifest declares
+    // (package-relative prefix match, after the host guard).
+    let carve_out = std::cell::OnceCell::new();
+    let carve_out = || {
+        carve_out
+            .get_or_init(|| runtime_alias_declared_carve_out(path, workspace_root, project_root))
+    };
+    let mut walked = PathBuf::new();
     if bundle_exclude.is_excluded(path, project_root)
         || relative.components().any(|component| {
+            walked.push(component);
             let Component::Normal(name) = component else {
                 return false;
             };
             let name = name.to_string_lossy();
-            name.starts_with('.') || MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+            (name.starts_with('.') || MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip))
+                && !carve_out()
+                    .as_ref()
+                    .is_some_and(|(package_root, declared)| {
+                        (is_carvable_skip_dir(&name) || name.starts_with('.'))
+                            && name != ".git"
+                            && workspace_root
+                                .join(&walked)
+                                .strip_prefix(package_root)
+                                .is_ok_and(|rel| skip_dir_is_declared(rel, declared))
+                    })
         })
         || (relative
             .parent()
@@ -5654,7 +5845,15 @@ fn runtime_alias_claim_is_allowed(
     // to the wholesale mirror's gitignore posture, while the hidden/infra,
     // reserved-name, bundle.exclude, containment, canonical-path, and
     // workspace-membership checks above/below remain fail-closed.
+    let declared_leaf = gitignored
+        && carve_out()
+            .as_ref()
+            .is_some_and(|(package_root, declared)| {
+                path.strip_prefix(package_root)
+                    .is_ok_and(|rel| declared.iter().any(|prefix| rel.starts_with(prefix)))
+            });
     Ok(!gitignored
+        || declared_leaf
         || (claim_mode == RuntimeAliasClaimMode::ExactNonSourceLeaf
             && path.is_file()
             && !raw_source_extension(path)))
@@ -6009,6 +6208,8 @@ fn resolve_mirror_root(
     mirror_root_is_stageable(&claim_dir).then(|| respell(claim_dir))
 }
 
+// Deliberately no manifest carve-out (issue #3176): this rejects only a root
+// that no `package.json` was found for, so nothing can be declared there.
 fn mirror_root_is_stageable(root: &Path) -> bool {
     root.file_name().is_some_and(|name| {
         let name = name.to_string_lossy();
@@ -6347,7 +6548,7 @@ fn mirror_sibling_root(
     bundle_exclude: &BundleExcludeMatcher,
 ) -> Result<Vec<PathBuf>> {
     let mut mirrored = Vec::new();
-    for src in enumerate_mirror_root_files(mirror_root) {
+    for src in enumerate_mirror_root_files(mirror_root, project_root) {
         // Defense in depth vs. the walk's own pruning: never mirror through a
         // node_modules component, out of the first-party region, or over the
         // project mirror.
@@ -23480,7 +23681,7 @@ mod tests {
         fs::write(root.join(".gitignore"), "ignored.ts\n").unwrap();
         fs::write(root.join("ignored.ts"), "x").unwrap();
 
-        let rels: Vec<PathBuf> = enumerate_mirror_root_files(root)
+        let rels: Vec<PathBuf> = enumerate_mirror_root_files(root, root)
             .into_iter()
             .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
             .collect();
@@ -23504,6 +23705,192 @@ mod tests {
             !rels.contains(&PathBuf::from("ignored.ts")),
             "gitignored file pruned; got {rels:?}"
         );
+    }
+
+    /// Issue #3176 fixture: a pnpm workspace with a host `apps/site` and a
+    /// tsconfig-alias sibling `packages/lib` whose `package.json` is
+    /// `manifest` and whose `.gitignore` lists `dist/`. Returns
+    /// `(workspace_root, project_root, sibling_root)`.
+    fn alias_dist_carve_out_workspace(
+        tmp: &tempfile::TempDir,
+        manifest: &str,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let ws = tmp.path().to_path_buf();
+        fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        fs::write(ws.join("package.json"), r#"{"main": "./dist/root.js"}"#).unwrap();
+        fs::create_dir_all(ws.join("dist")).unwrap();
+        fs::write(ws.join("dist/root.js"), "x").unwrap();
+        let site = ws.join("apps/site");
+        fs::create_dir_all(site.join("dist")).unwrap();
+        fs::write(site.join("package.json"), r#"{"main": "./dist/index.js"}"#).unwrap();
+        fs::write(site.join("dist/index.js"), "x").unwrap();
+        let lib = ws.join("packages/lib");
+        for dir in [
+            "src/dist",
+            "dist/esm",
+            "dist/node_modules/p",
+            "dist/dist",
+            "target",
+            ".turbo",
+        ] {
+            fs::create_dir_all(lib.join(dir)).unwrap();
+        }
+        fs::write(lib.join("package.json"), manifest).unwrap();
+        fs::write(lib.join(".gitignore"), "dist/\n").unwrap();
+        for file in [
+            "src/ok.ts",
+            "src/dist/nested.js",
+            "dist/index.js",
+            "dist/esm/a.js",
+            "dist/node_modules/p/i.js",
+            "dist/dist/z.js",
+            "target/t.js",
+            ".turbo/c.json",
+        ] {
+            fs::write(lib.join(file), "x").unwrap();
+        }
+        (ws, site, lib)
+    }
+
+    const ALIAS_DIST_MANIFESTS: &[(&str, &str)] = &[
+        ("exports", r#"{"exports": {".": "./dist/index.js"}}"#),
+        ("directory-valued main", r#"{"main": "./dist"}"#),
+        ("imports", r##"{"imports": {"#x": "./dist/index.js"}}"##),
+    ];
+
+    #[test]
+    fn enumerate_mirror_root_files_carves_out_a_manifest_declared_gitignored_dist() {
+        for (shape, manifest) in ALIAS_DIST_MANIFESTS {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_ws, site, lib) = alias_dist_carve_out_workspace(&tmp, manifest);
+            let rels: BTreeSet<PathBuf> = enumerate_mirror_root_files(&lib, &site)
+                .into_iter()
+                .map(|p| p.strip_prefix(&lib).unwrap().to_path_buf())
+                .collect();
+            for kept in [
+                "src/ok.ts",
+                "package.json",
+                "dist/index.js",
+                "dist/esm/a.js",
+            ] {
+                assert!(
+                    rels.contains(Path::new(kept)),
+                    "{shape}: declared {kept} must be mirrored; got {rels:?}"
+                );
+            }
+            for pruned in [
+                "src/dist/nested.js",
+                "dist/node_modules/p/i.js",
+                "dist/dist/z.js",
+                "target/t.js",
+                ".turbo/c.json",
+            ] {
+                assert!(
+                    !rels.contains(Path::new(pruned)),
+                    "{shape}: {pruned} must stay pruned; got {rels:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enumerate_mirror_root_files_prunes_undeclared_and_host_dist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./src/ok.ts"}}"#);
+        let rels: Vec<PathBuf> = enumerate_mirror_root_files(&lib, &site)
+            .into_iter()
+            .map(|p| p.strip_prefix(&lib).unwrap().to_path_buf())
+            .collect();
+        assert!(rels.contains(&PathBuf::from("src/ok.ts")), "got {rels:?}");
+        for skip in ["dist", "target", ".turbo", "src/dist"] {
+            assert!(
+                !rels.iter().any(|p| p.starts_with(skip)),
+                "undeclared {skip} must stay pruned; got {rels:?}"
+            );
+        }
+
+        // Host guard: the host's and the workspace root's own declared
+        // `dist/` never come back, even though both manifests declare it.
+        for (root, dist) in [(&site, site.join("dist")), (&ws, ws.join("dist"))] {
+            let files = enumerate_mirror_root_files(root, &site);
+            assert!(
+                !files.iter().any(|p| p.starts_with(&dist)),
+                "host-guarded {} must stay pruned; got {files:?}",
+                dist.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_mirror_root_files_skips_a_declared_dist_symlinked_out_of_the_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./dist/index.js"}}"#);
+        fs::remove_dir_all(lib.join("dist")).unwrap();
+        fs::create_dir_all(ws.join("outside")).unwrap();
+        fs::write(ws.join("outside/leak.js"), "x").unwrap();
+        std::os::unix::fs::symlink(ws.join("outside"), lib.join("dist")).unwrap();
+        let files = enumerate_mirror_root_files(&lib, &site);
+        assert!(
+            !files.iter().any(|p| p.starts_with(lib.join("dist"))),
+            "a symlinked-out declared dist must not be staged; got {files:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_alias_claim_carves_out_only_a_declared_sibling_dist() {
+        let matcher = BundleExcludeMatcher::new(&[]).unwrap();
+        let allowed = |path: &Path, ws: &Path, site: &Path| {
+            runtime_alias_claim_is_allowed(
+                path,
+                ws,
+                site,
+                &matcher,
+                RuntimeAliasClaimMode::for_runtime_target(path),
+            )
+            .unwrap()
+        };
+        for (shape, manifest) in ALIAS_DIST_MANIFESTS {
+            let tmp = tempfile::tempdir().unwrap();
+            let (ws, site, lib) = alias_dist_carve_out_workspace(&tmp, manifest);
+            for claim in ["dist/index.js", "dist/esm/a.js", "src/ok.ts"] {
+                assert!(
+                    allowed(&lib.join(claim), &ws, &site),
+                    "{shape}: {claim} must be claimable"
+                );
+            }
+            for claim in [
+                "src/dist/nested.js",
+                "dist/node_modules/p/i.js",
+                "dist/dist/z.js",
+                "target/t.js",
+                ".turbo/c.json",
+            ] {
+                assert!(
+                    !allowed(&lib.join(claim), &ws, &site),
+                    "{shape}: {claim} must stay unclaimable"
+                );
+            }
+            // Host guard: the host's and the workspace root's declared dist.
+            assert!(!allowed(&site.join("dist/index.js"), &ws, &site));
+            assert!(!allowed(&ws.join("dist/root.js"), &ws, &site));
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (ws, site, lib) =
+            alias_dist_carve_out_workspace(&tmp, r#"{"exports": {".": "./src/ok.ts"}}"#);
+        for claim in ["dist/index.js", "target/t.js", ".turbo/c.json"] {
+            assert!(
+                !allowed(&lib.join(claim), &ws, &site),
+                "undeclared {claim} must stay unclaimable"
+            );
+        }
     }
 
     // ── symlink_or_copy tests ────────────────────────────────────────────
