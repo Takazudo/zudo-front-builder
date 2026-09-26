@@ -646,21 +646,9 @@ fn download_binaries() -> Result<(), String> {
     let esbuild_slot = with_exe_suffix(binaries_dir.join("esbuild").join("esbuild"), exe_suffix);
     let tailwind_slot = with_exe_suffix(binaries_dir.join("tailwindcss-v4"), exe_suffix);
 
-    // Emit rerun triggers so Cargo re-invokes the build script when an
-    // override env var changes (e.g. after pointing ZFB_*_BIN at a different
-    // file). The two relative triggers that used to sit here —
-    // `crates/zfb-islands/src/esbuild.rs` and `scripts/fetch-tailwind.mjs` —
-    // were vestigial and have been removed: cargo resolves a relative
-    // `rerun-if-changed` path against the package root (`crates/zfb/`),
-    // where neither file exists, so both counted as permanently stale and
-    // forced a rerun + relink on every build. Neither file is read by this
-    // script anyway. The esbuild version pin moved into the
-    // `zfb-toolchain-pins` build-dependency in commit 774e9cd3, so cargo
-    // already reruns this script when that dependency's content changes; the
-    // Tailwind version and SHA-256 pins live in the constants above, not in
-    // `fetch-tailwind.mjs`, which calls itself superseded and whose drift is
-    // guarded by the `tailwind_version_pins_are_in_sync` test in
-    // `crates/zfb/src/lib.rs`.
+    // Cargo resolves a relative `rerun-if-changed` path against the package
+    // root (`crates/zfb/`) and treats a missing file as permanently stale, so
+    // every trigger here must be an absolute path to a file that exists.
     println!("cargo:rerun-if-env-changed=ZFB_ESBUILD_BIN");
     println!("cargo:rerun-if-env-changed=ZFB_TAILWIND_BIN");
 

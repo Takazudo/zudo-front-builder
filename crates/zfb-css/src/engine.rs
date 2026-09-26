@@ -272,7 +272,7 @@ impl Default for TailwindSubprocessConfig {
         // An empty value (set but blank) is treated the same as unset,
         // mirroring the build-time override contract in
         // `crates/zfb/build.rs` / `BUILDING.md`.
-        let env_override = std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty());
+        let env_override = tailwind_bin_env_override();
         let oxide_warmup =
             parse_oxide_warmup_policy(std::env::var_os("ZFB_TAILWIND_OXIDE_WARMUP").as_deref());
         let binary_path = match env_override {
@@ -415,8 +415,7 @@ impl TailwindSubprocessConfig {
     /// `#[derive(Clone)]` keeps working — `tempfile::TempDir` is not
     /// itself `Clone`.
     pub fn with_embedded_binary(mut self, handle: tempfile::TempDir, path: PathBuf) -> Self {
-        // Empty value = unset, matching `Self::default`'s check above.
-        if std::env::var_os("ZFB_TAILWIND_BIN").is_some_and(|v| !v.is_empty()) {
+        if tailwind_bin_env_override().is_some() {
             // Env tier already won — drop the handle on the floor and
             // leave `binary_path` pointing at the env value.
             drop(handle);
@@ -448,20 +447,29 @@ impl TailwindSubprocessConfig {
     /// under an env override this call is a no-op and the digest is never
     /// installed.
     pub fn with_embedded_binary_and_digest(
-        mut self,
+        self,
         handle: tempfile::TempDir,
         path: PathBuf,
         digest_hex: &str,
     ) -> Self {
-        if std::env::var_os("ZFB_TAILWIND_BIN").is_some_and(|v| !v.is_empty()) {
-            drop(handle);
-            return self;
+        let digest = validated_embedded_digest(&path, digest_hex);
+        let mut installed = self.with_embedded_binary(handle, path);
+        if digest
+            .as_ref()
+            .is_some_and(|(p, _)| *p == installed.binary_path)
+        {
+            installed._embedded_digest = digest;
         }
-        self._embedded_digest = validated_embedded_digest(&path, digest_hex);
-        self.binary_path = path;
-        self._embedded_handle = Some(Arc::new(handle));
-        self
+        installed
     }
+}
+
+/// The `ZFB_TAILWIND_BIN` runtime override, with a set-but-empty value
+/// treated as unset (the same contract `crates/zfb/build.rs` applies at
+/// build time). The single source of truth for every "is the override set?"
+/// decision, so the config builders and the `zfb` crate cannot disagree.
+pub fn tailwind_bin_env_override() -> Option<std::ffi::OsString> {
+    std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty())
 }
 
 /// Pure shape check: exactly 64 ASCII hex characters (a full SHA-256 in
@@ -2034,8 +2042,7 @@ mod tests {
 
         // ----- Phase 1b: with_embedded_binary_and_digest installs the ---
         // ----- digest paired with the path; with_binary_path and --------
-        // ----- with_embedded_binary (no digest) both clear it; an -------
-        // ----- invalid digest is ignored rather than stored or panicking.
+        // ----- with_embedded_binary (no digest) both clear it. ----------
         let digest_hex = "c".repeat(64);
         let dir_d = tempfile::tempdir().expect("tempdir");
         let bin_path_d = dir_d.path().join("tailwindcss-v4");

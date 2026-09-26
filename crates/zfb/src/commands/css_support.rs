@@ -108,20 +108,10 @@ pub(crate) fn role_classes_inline_sources(config: &Config) -> Vec<String> {
 /// `crates/zfb/build.rs::stage_binaries_into_vendor`) so the oxide warm-up
 /// protocol can skip re-hashing the ~76 MB binary on every process start —
 /// see `zfb_css::engine::oxide_warmup_key`.
-///
-/// The override check treats a set-but-EMPTY `ZFB_TAILWIND_BIN` the same as
-/// unset, matching `zfb_css::engine::TailwindSubprocessConfig::default`'s own
-/// "empty value = unset" contract (commit 1823c85c) — this used to check
-/// only `var_os(..).is_none()`, which disagreed with that contract and could
-/// silently skip the embedded extraction (and its digest) for an
-/// empty-but-set override.
 pub(crate) fn with_embedded_tailwind_binary(
     config: TailwindSubprocessConfig,
 ) -> TailwindSubprocessConfig {
-    if std::env::var_os("ZFB_TAILWIND_BIN")
-        .filter(|v| !v.is_empty())
-        .is_none()
-    {
+    if zfb_css::engine::tailwind_bin_env_override().is_none() {
         if let Ok((handle, path)) = embedded_binary("tailwindcss-v4") {
             return config.with_embedded_binary_and_digest(
                 handle,
@@ -211,6 +201,12 @@ fn run_css_emitter_with_module_policy<E: CssEngine>(
     CssPipeline::new(engine, pipe_cfg).build_emitter()
 }
 
+/// Serialises every test in this crate that mutates the process-wide
+/// `ZFB_TAILWIND_BIN` variable: `cargo test` runs tests as threads of one
+/// process, so an env guard bounds a mutation in time but not across threads.
+#[cfg(test)]
+pub(crate) static TAILWIND_BIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +228,9 @@ mod tests {
     /// discriminator.
     #[test]
     fn with_embedded_tailwind_binary_treats_empty_env_override_as_unset() {
+        let _env_lock = TAILWIND_BIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         struct EnvGuard {
             prev: Option<std::ffi::OsString>,
         }

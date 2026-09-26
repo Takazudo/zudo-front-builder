@@ -2310,10 +2310,12 @@ mod tests {
 
         let (handle, path) =
             embedded_binary("tailwindcss-v4").expect("embedded tailwindcss-v4 binary");
-        let bytes = std::fs::read(&path).expect("read extracted tailwind binary");
-
         let mut hasher = Sha256::new();
-        hasher.update(&bytes);
+        std::io::copy(
+            &mut std::fs::File::open(&path).expect("open extracted tailwind binary"),
+            &mut hasher,
+        )
+        .expect("hash extracted tailwind binary");
         let digest_hex: String = hasher
             .finalize()
             .iter()
