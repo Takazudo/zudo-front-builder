@@ -4980,6 +4980,19 @@ pub fn bundle_with_session(
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
 
+    // `ZFB_DEV_TIMING=1` — post-esbuild phase (issue #3216): the stage-escape
+    // audits, the wasm-reference guard, and the metafile-derived dependency
+    // work below all run between esbuild returning and `post_start` (which
+    // only covers manifest assembly). Without this timer that work is
+    // invisible in `bundle(): materialise=… esbuild=… post=… teardown=…` even
+    // though it used to cost ~1.2-1.4s per tick on a large SSR bundle before
+    // the wasm-guard prefilter above.
+    let post_esbuild_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+
     // Fail-closed `bundle.exclude` audit (#1558): whenever exclusions are
     // active, verify esbuild's metafile — the only resolver, per this
     // project's lessons-learned — recorded no input resolving to an excluded
@@ -5160,6 +5173,8 @@ pub fn bundle_with_session(
         &input.project_root,
     );
 
+    let post_esbuild_ms = post_esbuild_start.map(|t| t.elapsed().as_millis());
+
     let post_start = if timing_enabled {
         Some(std::time::Instant::now())
     } else {
@@ -5197,9 +5212,10 @@ pub fn bundle_with_session(
 
     if timing_enabled {
         eprintln!(
-            "[zfb-timing] bundle(): materialise={}ms esbuild={}ms post={}ms teardown={}ms",
+            "[zfb-timing] bundle(): materialise={}ms esbuild={}ms post-esbuild={}ms post={}ms teardown={}ms",
             materialise_ms.unwrap_or(0),
             esbuild_ms.unwrap_or(0),
+            post_esbuild_ms.unwrap_or(0),
             post_ms.unwrap_or(0),
             teardown_ms.unwrap_or(0),
         );
@@ -5342,6 +5358,27 @@ fn emitted_wasm_assets_from_metafile(
 }
 
 fn bundle_references_wasm(bundle_path: &Path) -> Result<bool> {
+    // Cheap byte-level prefilter (#3216): every ESM import specifier this
+    // function is looking for ends in the literal `.wasm` extension, so that
+    // substring is a necessary (not sufficient) condition for a real Wasm
+    // import. When the emitted bytes don't contain it at all, the SWC parse
+    // below can only find zero matching specifiers, so skip straight to
+    // `false` — on a 45 MB SSR bundle (zzmod, issue #3216) this turns a
+    // ~1.2-1.4s parse into a sub-millisecond scan for the common no-Wasm tick.
+    const WASM_NEEDLE: &[u8] = b".wasm";
+    let bundle_bytes = fs::read(bundle_path).with_context(|| {
+        format!(
+            "bundler: failed to read emitted bundle {} for the wasm prefilter",
+            bundle_path.display()
+        )
+    })?;
+    if !bundle_bytes
+        .windows(WASM_NEEDLE.len())
+        .any(|window| window == WASM_NEEDLE)
+    {
+        return Ok(false);
+    }
+
     // A bare `.wasm` substring is not sufficient: user-facing messages,
     // comments, and template literals can all contain one without requiring a
     // deployable module. Reuse the existing static-ESM parser so this guard
@@ -22281,6 +22318,47 @@ mod tests {
         )
         .expect("non-import Wasm text must not require a metafile");
         assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn bundle_references_wasm_fast_path_rejects_bundle_with_no_wasm_substring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("bundle.mjs");
+        fs::write(&bundle, "export default function App() { return null; }\n").unwrap();
+
+        assert!(!bundle_references_wasm(&bundle).unwrap());
+    }
+
+    #[test]
+    fn bundle_references_wasm_detects_a_real_wasm_esm_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("bundle.mjs");
+        fs::write(
+            &bundle,
+            "import wasm from \"./x-123.wasm\";\nexport default wasm;\n",
+        )
+        .unwrap();
+
+        assert!(bundle_references_wasm(&bundle).unwrap());
+    }
+
+    #[test]
+    fn bundle_references_wasm_falls_back_to_full_parse_for_non_import_substring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("bundle.mjs");
+        // Contains the `.wasm` substring (comment + string), so the prefilter
+        // must not short-circuit — but neither reference is a static ESM
+        // import, so the full SWC-parsed verdict must still be `false`.
+        fs::write(
+            &bundle,
+            r#"
+                // import wasm from "./comment-only.wasm";
+                const message = "./string-only.wasm";
+            "#,
+        )
+        .unwrap();
+
+        assert!(!bundle_references_wasm(&bundle).unwrap());
     }
 
     #[test]
