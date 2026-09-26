@@ -53,6 +53,17 @@
 //! dedicated function also keeps its own independent nextest `e2e-heavy`
 //! per-test 600s `slow-timeout` budget instead of sharing this function's
 //! already-tight cumulative deadline total.
+//!
+//! **Issue #3163** (epic #3160, the confirm pass over #3161/#3162) adds five
+//! `e2e_3163_*` functions at the end of this file, each over its own fixture:
+//! an edit of a first-party workspace package that the SSR page imports by
+//! name is served restart-free — for a root site, a nested site (including a
+//! package first imported mid-session), a nested site whose compiled-JS-only
+//! sibling exports into `dist/`, and a deferred Cold boot — and a restart
+//! serves an edit made before the stop (#3155's report). Those packages are
+//! reached by no client import and no tsconfig alias, so only the SSR
+//! module-dependency registry (plus the boot-only #1284 D4 watch for an eager
+//! nested host) can observe them.
 
 #![cfg(unix)]
 
@@ -97,7 +108,7 @@ const SIGNAL_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 // Serialize with sibling heavy e2e binaries at the process level, and with
-// this binary's own tests (both `#[tokio::test]` fns below) at the
+// this binary's own tests (every `#[tokio::test]` fn below) at the
 // in-binary level.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -173,8 +184,21 @@ impl DevSession {
 /// scenarios A-D pass `None`, leaving the child's env byte-identical to
 /// before issue #1805.
 fn spawn_dev(root: &Path, esbuild: &Path, tailwind: Option<&Path>) -> DevSession {
-    let stdout_path = root.join(".zfb-dev-stdout.log");
-    let stderr_path = root.join(".zfb-dev-stderr.log");
+    spawn_dev_with_env(root, esbuild, tailwind, &[], "")
+}
+
+/// [`spawn_dev`] plus extra child env vars (issue #3163's deferred-boot
+/// scenario sets `ZFB_DEV_BOOT_LAZY=cold`) and a log-file tag, so a restarted
+/// session over the same root keeps the first session's logs readable.
+fn spawn_dev_with_env(
+    root: &Path,
+    esbuild: &Path,
+    tailwind: Option<&Path>,
+    extra_env: &[(&str, &str)],
+    log_tag: &str,
+) -> DevSession {
+    let stdout_path = root.join(format!(".zfb-dev{log_tag}-stdout.log"));
+    let stderr_path = root.join(format!(".zfb-dev{log_tag}-stderr.log"));
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
     let stderr = fs::File::create(&stderr_path).expect("create dev stderr log");
     let mut command = Command::new(zfb_binary!());
@@ -188,11 +212,13 @@ fn spawn_dev(root: &Path, esbuild: &Path, tailwind: Option<&Path>) -> DevSession
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_BOOT_LAZY")
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     if let Some(tailwind) = tailwind {
         command.env("ZFB_TAILWIND_BIN", tailwind);
     }
+    command.envs(extra_env.iter().copied());
     command.process_group(0);
     let child = command.spawn().expect("spawn `zfb dev --port 0`");
     let pgid = child.id() as libc::pid_t;
@@ -709,4 +735,522 @@ async fn e2e_dev_sibling_tailwind_utility_class_refreshes_served_css() {
     .await;
 
     session.guard.child.try_wait().ok();
+}
+
+// ---------------------------------------------------------------------------
+// Issue #3163 (epic #3160) — SSR workspace-package dependency edits
+// ---------------------------------------------------------------------------
+//
+// Confirm pass for #3161 (manifest-declared `dist/` kept when staging a
+// claimed workspace package) and #3162 (the dev SSR module-dependency
+// registry, `RawImportInvalidation::replace_ssr_module_deps`, folded into
+// `GranularityPolicy::dynamic_dependency_paths`). Every fixture below is its
+// own pnpm workspace whose SSR page imports a first-party package by NAME
+// (`node_modules/<pkg>` -> `packages/<pkg>`, the link `pnpm install` makes).
+// None of those packages is reached through a `?raw`/worker/plain client
+// import or a tsconfig alias, so the #1678 file-parent channels and the
+// `css_mirror_roots` channel never claim them: the SSR registry, plus the
+// boot-only #1284 D4 out-of-root watch for an eager nested host, are the only
+// ways their edits can reach the orchestrator. Readiness is always keyed on
+// the initially served value, never on `watch-extra registered:` — that line
+// is emitted by the very registration under test.
+
+/// Issue #3163 — graceful-shutdown deadline for the restart scenario (same
+/// value `dev_supervision_e2e.rs` uses for the identical SIGINT shape).
+const GRACEFUL_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(20);
+
+const ROOT_DATA_V1: &str = "ZFB3163_ROOT_DATA_V1";
+const ROOT_DATA_V2: &str = "ZFB3163_ROOT_DATA_V2_EDITED";
+const NESTED_DATA_V1: &str = "ZFB3163_NESTED_DATA_V1";
+const NESTED_DATA_V2: &str = "ZFB3163_NESTED_DATA_V2_EDITED";
+const LATE_V1: &str = "ZFB3163_LATE_V1";
+const LATE_V2: &str = "ZFB3163_LATE_V2_EDITED";
+const DIST_V1: &str = "ZFB3163_DIST_V1";
+const DIST_V2: &str = "ZFB3163_DIST_V2_EDITED";
+
+fn loopback_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build loopback HTTP client")
+}
+
+fn json_value(marker: &str) -> String {
+    format!("{{ \"v\": \"{marker}\" }}\n")
+}
+
+/// A first-party JSON package exposing every file through `"./*": "./*"`.
+fn write_json_workspace_package(dir: &Path, name: &str, marker: &str) {
+    fs::create_dir_all(dir).expect("create JSON workspace package dir");
+    fs::write(
+        dir.join("package.json"),
+        format!(
+            "{{ \"name\": \"{name}\", \"private\": true, \"type\": \"module\", \
+             \"exports\": {{ \"./*\": \"./*\" }} }}\n"
+        ),
+    )
+    .expect("write JSON workspace package.json");
+    fs::write(dir.join("value.json"), json_value(marker)).expect("write value.json");
+}
+
+/// The project's own `node_modules` (holding the workspace links) disarms
+/// the embedded-vendor SSR runtime fallback, so link each extracted embedded
+/// package in beside them. The handle must outlive the dev session.
+fn link_embedded_ssr_runtime(project: &Path) -> tempfile::TempDir {
+    let (handle, embedded) =
+        zfb::render_pipeline::embedded_node_modules().expect("extract embedded node_modules");
+    let node_modules = project.join("node_modules");
+    fs::create_dir_all(&node_modules).expect("create project node_modules");
+    for entry in fs::read_dir(&embedded).expect("read embedded node_modules") {
+        let entry = entry.expect("embedded node_modules entry");
+        std::os::unix::fs::symlink(entry.path(), node_modules.join(entry.file_name()))
+            .expect("link embedded runtime package into project node_modules");
+    }
+    handle
+}
+
+/// The relative `node_modules/<name>` link `pnpm install` creates for a
+/// `workspace:*` dependency.
+fn link_workspace_package(project: &Path, name: &str, relative_target: &str) {
+    std::os::unix::fs::symlink(relative_target, project.join("node_modules").join(name))
+        .expect("link workspace package into project node_modules");
+}
+
+fn write_zfb_project_shell(project: &Path, name: &str, deps: &[&str]) {
+    fs::create_dir_all(project.join("pages")).expect("create pages/");
+    let deps = deps
+        .iter()
+        .map(|dep| format!("\"{dep}\": \"workspace:*\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        project.join("package.json"),
+        format!(
+            "{{ \"name\": \"{name}\", \"private\": true, \"type\": \"module\", \
+             \"dependencies\": {{ {deps} }} }}\n"
+        ),
+    )
+    .expect("write project package.json");
+    fs::write(
+        project.join("zfb.config.json"),
+        "{\n  \"framework\": \"preact\",\n  \"tailwind\": { \"enabled\": false }\n}\n",
+    )
+    .expect("write zfb.config.json");
+}
+
+/// An SSR page rendering each of `values` (JS expressions) in its own `<p>`.
+fn ssr_page(imports: &str, values: &[&str]) -> String {
+    let paragraphs: String = values
+        .iter()
+        .map(|value| format!("          <p>{{{value}}}</p>\n"))
+        .collect();
+    format!(
+        "{imports}\nexport default function WorkspaceDepPage() {{\n  return (\n    \
+         <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        \
+         <title>ZFB3163_PAGE</title>\n      </head>\n      <body>\n        <main>\n\
+         {paragraphs}        </main>\n      </body>\n    </html>\n  );\n}}\n"
+    )
+}
+
+/// Scenario (a)/(d)/(e) fixture: the site IS the workspace root
+/// (`packages: ['packages/*']`), so `packages/data` sits inside the project
+/// root but outside every default watch root. Returns the embedded-runtime
+/// handle.
+fn write_root_site_3163(ws: &Path) -> tempfile::TempDir {
+    fs::write(
+        ws.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n",
+    )
+    .expect("write pnpm-workspace.yaml");
+    write_zfb_project_shell(ws, "zfb3163-root-site", &["data"]);
+    write_json_workspace_package(&ws.join("packages/data"), "data", ROOT_DATA_V1);
+    let handle = link_embedded_ssr_runtime(ws);
+    link_workspace_package(ws, "data", "../packages/data");
+    fs::write(
+        ws.join("pages/index.tsx"),
+        ssr_page("import data from \"data/value.json\";\n", &["data.v"]),
+    )
+    .expect("write pages/index.tsx");
+    handle
+}
+
+/// Scenario (b)/(c) fixture shell: a pnpm workspace with the site nested at
+/// `apps/site`, so every `packages/*` sibling is OUTSIDE the project root and
+/// staged as a claimed workspace package. Returns `(site, runtime handle)`.
+fn write_nested_workspace_3163(ws: &Path, deps: &[&str]) -> (PathBuf, tempfile::TempDir) {
+    fs::write(
+        ws.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    .expect("write pnpm-workspace.yaml");
+    fs::write(
+        ws.join("package.json"),
+        "{ \"name\": \"zfb3163-workspace\", \"private\": true }\n",
+    )
+    .expect("write workspace package.json");
+    let site = ws.join("apps/site");
+    write_zfb_project_shell(&site, "zfb3163-nested-site", deps);
+    let handle = link_embedded_ssr_runtime(&site);
+    (site, handle)
+}
+
+async fn boot_3163(
+    project: &Path,
+    esbuild: &Path,
+    extra_env: &[(&str, &str)],
+    log_tag: &str,
+) -> Option<(DevSession, String)> {
+    let mut session = spawn_dev_with_env(project, esbuild, None, extra_env, log_tag);
+    let port = wait_for_ready(&mut session).await?;
+    Some((session, format!("http://localhost:{port}/")))
+}
+
+/// Send a real SIGINT (Ctrl+C) to the dev server's process group and wait
+/// for a clean exit, as a user stopping `zfb dev` would.
+async fn stop_gracefully(session: &mut DevSession) {
+    unsafe {
+        libc::kill(-session.guard.pgid, libc::SIGINT);
+    }
+    let started = Instant::now();
+    loop {
+        if let Some(status) = session.guard.try_status() {
+            assert!(
+                status.success(),
+                "`zfb dev` must exit 0 after SIGINT, got {status:?}\n{}",
+                session.logs(),
+            );
+            return;
+        }
+        assert!(
+            started.elapsed() < GRACEFUL_SHUTDOWN_DEADLINE,
+            "`zfb dev` did not exit within {}s of SIGINT\n{}",
+            GRACEFUL_SHUTDOWN_DEADLINE.as_secs(),
+            session.logs(),
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Scenario (a) — root site: an edit of `packages/data/value.json`, which the
+/// SSR page imports as `data/value.json`, is served without a restart.
+///
+/// Falsifiability (revert-proven, #3163): with the SSR set's fold removed from
+/// `GranularityPolicy::dynamic_dependency_paths`, `packages/data` is watched by
+/// nothing (it is in-root, so #1284 D4 skips it, and no default watch root
+/// covers it) and the edit below times out.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3163_root_site_ssr_workspace_json_edit_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3163 (a)] no esbuild binary available; skipping.");
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("#3163 (a) fixture tempdir");
+    let _runtime = write_root_site_3163(workspace.path());
+    let Some((session, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "").await else {
+        return;
+    };
+    let client = loopback_client();
+
+    poll_body(
+        &client,
+        &page_url,
+        ROOT_DATA_V1,
+        "#3163 (a): boot page renders the workspace JSON",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    edit_until_served(
+        &client,
+        &workspace.path().join("packages/data/value.json"),
+        &json_value(ROOT_DATA_V2),
+        &page_url,
+        ROOT_DATA_V2,
+        "#3163 (a): root-site workspace JSON edit is served",
+        &session,
+    )
+    .await;
+    // The registry was populated by the SSR bundle: its parent dir is watched.
+    wait_for_watch_extra(&session, "packages/data").await;
+}
+
+/// Scenario (b) — nested site (`apps/site`): an edit of the boot-imported
+/// `packages/data/value.json` is served, and so is an edit of a package the
+/// page only starts importing mid-session.
+///
+/// Falsifiability (revert-proven, #3163): the boot-imported `packages/data` is
+/// also covered by the boot-only #1284 D4 watch, but `packages/late` is
+/// imported after boot, so with the SSR set's fold reverted nothing watches
+/// it and the last edit times out.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3163_nested_site_ssr_workspace_deps_including_post_boot_import_are_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3163 (b)] no esbuild binary available; skipping.");
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("#3163 (b) fixture tempdir");
+    let ws = workspace.path();
+    let (site, _runtime) = write_nested_workspace_3163(ws, &["data", "late"]);
+    write_json_workspace_package(&ws.join("packages/data"), "data", NESTED_DATA_V1);
+    write_json_workspace_package(&ws.join("packages/late"), "late", LATE_V1);
+    link_workspace_package(&site, "data", "../../../packages/data");
+    // Installed from the start, but not imported until mid-session.
+    link_workspace_package(&site, "late", "../../../packages/late");
+    let page = site.join("pages/index.tsx");
+    fs::write(
+        &page,
+        ssr_page("import data from \"data/value.json\";\n", &["data.v"]),
+    )
+    .expect("write pages/index.tsx");
+
+    let Some((session, page_url)) = boot_3163(&site, &esbuild, &[], "").await else {
+        return;
+    };
+    let client = loopback_client();
+
+    poll_body(
+        &client,
+        &page_url,
+        NESTED_DATA_V1,
+        "#3163 (b): boot page renders the sibling workspace JSON",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    edit_until_served(
+        &client,
+        &ws.join("packages/data/value.json"),
+        &json_value(NESTED_DATA_V2),
+        &page_url,
+        NESTED_DATA_V2,
+        "#3163 (b): boot-imported sibling workspace JSON edit is served",
+        &session,
+    )
+    .await;
+
+    // Introduce the new dependency through an in-project edit (`pages/` is a
+    // watched root, so this alone fires a tick).
+    fs::write(
+        &page,
+        ssr_page(
+            "import data from \"data/value.json\";\nimport late from \"late/value.json\";\n",
+            &["data.v", "late.v"],
+        ),
+    )
+    .expect("add the late import to pages/index.tsx");
+    poll_body(
+        &client,
+        &page_url,
+        LATE_V1,
+        "#3163 (b): the post-boot import is rendered",
+        SCENARIO_DEADLINE,
+        &session,
+    )
+    .await;
+    edit_until_served(
+        &client,
+        &ws.join("packages/late/value.json"),
+        &json_value(LATE_V2),
+        &page_url,
+        LATE_V2,
+        "#3163 (b): post-boot sibling workspace JSON edit is served",
+        &session,
+    )
+    .await;
+    wait_for_watch_extra(&session, "packages/late").await;
+}
+
+/// Scenario (c) — nested site consuming a compiled-JS-only sibling whose
+/// `exports` point into `dist/` (#3161 keeps that `dist/` when staging): an
+/// edit of `packages/lib/dist/value.js` is served.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3163_nested_site_compiled_dist_sibling_edit_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3163 (c)] no esbuild binary available; skipping.");
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("#3163 (c) fixture tempdir");
+    let ws = workspace.path();
+    let (site, _runtime) = write_nested_workspace_3163(ws, &["lib"]);
+    let lib = ws.join("packages/lib");
+    fs::create_dir_all(lib.join("dist")).expect("create packages/lib/dist");
+    fs::write(
+        lib.join("package.json"),
+        "{ \"name\": \"lib\", \"private\": true, \"type\": \"module\", \"exports\": \
+         { \"./value\": { \"types\": \"./dist/value.d.ts\", \"default\": \"./dist/value.js\" } } }\n",
+    )
+    .expect("write packages/lib/package.json");
+    // The build output a compiled-JS-only package ships but does not commit.
+    fs::write(lib.join(".gitignore"), "dist/\n").expect("write packages/lib/.gitignore");
+    fs::write(
+        lib.join("dist/value.d.ts"),
+        "export declare const libValue: string;\n",
+    )
+    .expect("write dist/value.d.ts");
+    let dist_value = lib.join("dist/value.js");
+    fs::write(
+        &dist_value,
+        format!("export const libValue = \"{DIST_V1}\";\n"),
+    )
+    .expect("write dist/value.js");
+    link_workspace_package(&site, "lib", "../../../packages/lib");
+    fs::write(
+        site.join("pages/index.tsx"),
+        ssr_page("import { libValue } from \"lib/value\";\n", &["libValue"]),
+    )
+    .expect("write pages/index.tsx");
+
+    let Some((session, page_url)) = boot_3163(&site, &esbuild, &[], "").await else {
+        return;
+    };
+    let client = loopback_client();
+
+    poll_body(
+        &client,
+        &page_url,
+        DIST_V1,
+        "#3163 (c): boot page renders the compiled dist/ export",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    edit_until_served(
+        &client,
+        &dist_value,
+        &format!("export const libValue = \"{DIST_V2}\";\n"),
+        &page_url,
+        DIST_V2,
+        "#3163 (c): compiled dist/ sibling edit is served",
+        &session,
+    )
+    .await;
+}
+
+/// Scenario (d) — #3155 reported that restarting `zfb dev` did not pick up
+/// an edit. Edit the dependency while the first session runs, stop it with a
+/// real SIGINT straight away (not waiting for that session to serve the
+/// edit), restart over the same tree — its persisted `.zfb/` graph and
+/// `.zfb-build/dev-pages` included — and require the new value. This does not
+/// depend on the watcher at all, so it holds with #3162 reverted too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3163_restart_serves_ssr_workspace_edit_made_before_the_stop() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3163 (d)] no esbuild binary available; skipping.");
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("#3163 (d) fixture tempdir");
+    let _runtime = write_root_site_3163(workspace.path());
+    let client = loopback_client();
+
+    let Some((mut first, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "-first").await
+    else {
+        return;
+    };
+    poll_body(
+        &client,
+        &page_url,
+        ROOT_DATA_V1,
+        "#3163 (d): first session renders the workspace JSON",
+        BOOT_CONTENT_DEADLINE,
+        &first,
+    )
+    .await;
+    fs::write(
+        workspace.path().join("packages/data/value.json"),
+        json_value(ROOT_DATA_V2),
+    )
+    .expect("edit packages/data/value.json");
+    stop_gracefully(&mut first).await;
+    assert!(
+        workspace.path().join(".zfb/graph.bin").is_file(),
+        "the first session must persist its graph, so the restart is a warm one\n{}",
+        first.logs(),
+    );
+
+    let Some((second, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "-second").await
+    else {
+        return;
+    };
+    let body = poll_body(
+        &client,
+        &page_url,
+        ROOT_DATA_V2,
+        "#3163 (d): the restarted session serves the edit",
+        BOOT_CONTENT_DEADLINE,
+        &second,
+    )
+    .await;
+    assert!(
+        !body.contains(ROOT_DATA_V1),
+        "the restarted session must not serve the pre-edit value\n{body}\n{}",
+        second.logs(),
+    );
+}
+
+/// Scenario (e) — deferred Cold boot (`ZFB_DEV_BOOT_LAZY=cold`: the SSR
+/// bundle is built after bind, inside the orchestrator's boot hook). Once the
+/// deferred publish has served the initial value, an edit of the dependency —
+/// with no source edit or tick in between — is served.
+///
+/// Falsifiability (revert-proven, #3163): the deferred path never populates
+/// the #1284 D4 targets, and `packages/data` is in-root anyway, so with the
+/// SSR set's fold reverted the edit times out.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a real `zfb dev --port 0` with embedded V8 + esbuild and polls over HTTP; too slow / port-bound for the T1 gate"]
+async fn e2e_3163_deferred_cold_boot_ssr_workspace_json_edit_is_served() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_sibling_watch_1678 #3163 (e)] no esbuild binary available; skipping.");
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("#3163 (e) fixture tempdir");
+    let _runtime = write_root_site_3163(workspace.path());
+    let Some((session, page_url)) = boot_3163(
+        workspace.path(),
+        &esbuild,
+        &[("ZFB_DEV_BOOT_LAZY", "cold")],
+        "",
+    )
+    .await
+    else {
+        return;
+    };
+    let client = loopback_client();
+
+    // Cold has no `dist/` seed: the page only answers 200 once the deferred
+    // publish has landed, so this is also the "publish completed" signal.
+    poll_body(
+        &client,
+        &page_url,
+        ROOT_DATA_V1,
+        "#3163 (e): the deferred publish renders the workspace JSON",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    edit_until_served(
+        &client,
+        &workspace.path().join("packages/data/value.json"),
+        &json_value(ROOT_DATA_V2),
+        &page_url,
+        ROOT_DATA_V2,
+        "#3163 (e): workspace JSON edit after the deferred publish is served",
+        &session,
+    )
+    .await;
+    wait_for_watch_extra(&session, "packages/data").await;
 }
