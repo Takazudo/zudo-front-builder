@@ -887,11 +887,14 @@ pub struct BundlerOutput {
 ///
 /// Read by tests through [`BundlerOutput::node_modules_staging_stats`], and by
 /// real-binary fixtures through the `ZFB_STAGING_STATS=1` stderr line
-/// `[zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool`.
+/// `[zfb-staging-stats] physical_scans=N logical_visits=M workspace_staging_activated=bool
+/// cache_hits=H parsed_files=F`. New tokens are only ever appended, so a
+/// parser keyed on token names (the #3133 fixture's) keeps working.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeModulesStagingStats {
     /// Physical package directories whose files were walked and import-parsed.
-    /// Each canonical directory is scanned at most once per closure walk.
+    /// Each canonical directory is scanned at most once per closure walk; a
+    /// session-cache reuse counts under `cache_hits`, not here.
     pub physical_scans: usize,
     /// Logical package roots visited by the closure walk. One physical
     /// directory can back many logical roots (pnpm-private aliases).
@@ -899,13 +902,24 @@ pub struct NodeModulesStagingStats {
     /// Whether a workspace package entered the staged set, switching the
     /// build to the isolated staged dependency view.
     pub workspace_staging_activated: bool,
+    /// Physical `node_modules` package scans reused from the dev session's
+    /// cache (#3178) instead of rescanned. Always 0 for a sessionless build.
+    pub cache_hits: usize,
+    /// Files handed to the import parser across this call's physical scans
+    /// (`.d.ts` / `.d.mts` / `.d.cts` excluded; cache hits parse nothing).
+    pub parsed_files: usize,
 }
 
 impl NodeModulesStagingStats {
     fn stderr_line(&self) -> String {
         format!(
-            "[zfb-staging-stats] physical_scans={} logical_visits={} workspace_staging_activated={}",
-            self.physical_scans, self.logical_visits, self.workspace_staging_activated,
+            "[zfb-staging-stats] physical_scans={} logical_visits={} workspace_staging_activated={} \
+             cache_hits={} parsed_files={}",
+            self.physical_scans,
+            self.logical_visits,
+            self.workspace_staging_activated,
+            self.cache_hits,
+            self.parsed_files,
         )
     }
 
@@ -1766,6 +1780,37 @@ pub struct ShadowSession {
     ///
     /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
     mirror_skip: HashMap<PathBuf, MirrorSkipEntry>,
+    /// Cross-call cache of the `node_modules` dependency-staging closure's
+    /// per-package import scans (#3178), keyed by the CANONICAL package dir —
+    /// the same key the closure walk's per-call dedup map uses. Without it
+    /// every tick re-parses every file of every staged package (hono, preact,
+    /// the embedded runtime) although the result is a pure function of the
+    /// package's bytes.
+    ///
+    /// Scope: only canonical dirs with a `node_modules` path component
+    /// (plain and pnpm installs, and both embedded-runtime extraction
+    /// layouts). First-party / `workspace:*` package dirs never enter it and
+    /// are rescanned on every call. An entry is reused only while its
+    /// package's `package.json` `(mtime, size)` stamp is unchanged; unreadable
+    /// metadata is never cached. A sessionless build never consults it.
+    ///
+    /// Cleared on the same dirty/copy_mode wipe as `content_skip` and on the
+    /// `config_fingerprint` wipe — hence after any failed call.
+    ///
+    /// Known limitation (accepted, #3177's verdict — do NOT widen the stamp):
+    /// an in-place edit inside a cached package that leaves its `package.json`
+    /// untouched (a hand edit, a patch applied mid-session) is invisible for
+    /// the session's lifetime. Acceptable because patch-package runs at
+    /// install time before `zfb dev` starts; `pnpm install` / re-linking
+    /// rewrites `package.json` or changes the canonical dir; `workspace:*`
+    /// deps canonicalise outside `node_modules` and are never cached; the scan
+    /// only feeds closure DISCOVERY (the staged tree still mirrors the live
+    /// package bytes, so an edit adding no new bare import is served
+    /// correctly); and an edit adding a bare import whose package is then
+    /// missing makes esbuild fail, the call goes dirty, and the next call
+    /// wipes this cache and rescans. A stamp covering the whole directory
+    /// would reintroduce the very I/O this cache removes.
+    physical_scan_cache: HashMap<PathBuf, PhysicalScanCacheEntry>,
     /// The pipeline `config_fingerprint` of the LAST successful call —
     /// the wipe trigger for a config/route-map change (zfb#1148, Defect
     /// A). Both skip caches reuse a file's previous compiled output, but
@@ -1836,6 +1881,7 @@ impl ShadowSession {
             content_skip: HashMap::new(),
             source_skip: HashMap::new(),
             mirror_skip: HashMap::new(),
+            physical_scan_cache: HashMap::new(),
             config_fingerprint: None,
         })
     }
@@ -2227,6 +2273,7 @@ impl<'s> ShadowWriter<'s> {
                     s.content_skip.clear();
                     s.source_skip.clear();
                     s.mirror_skip.clear();
+                    s.physical_scan_cache.clear();
                 }
                 // Config/route-map change wipe (zfb#1148, Defect A): a
                 // change to any compile-affecting knob — in particular the
@@ -2250,6 +2297,7 @@ impl<'s> ShadowWriter<'s> {
                     s.content_skip.clear();
                     s.source_skip.clear();
                     s.mirror_skip.clear();
+                    s.physical_scan_cache.clear();
                     s.config_fingerprint = config_fingerprint;
                 }
                 s.copy_mode = Some(copy_mode);
@@ -3203,7 +3251,13 @@ pub fn bundle_with_session(
         )
         .collect();
 
+    // The dev session's cross-call scan cache (#3178); `None` for a
+    // sessionless build, which therefore always rescans.
+    let mut session_guard = writer.session.as_ref().map(RefCell::borrow_mut);
     let node_modules_staging_stats = extend_node_modules_dependency_staging(
+        session_guard
+            .as_mut()
+            .map(|session| &mut session.physical_scan_cache),
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
@@ -3217,6 +3271,7 @@ pub fn bundle_with_session(
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
+    drop(session_guard);
     node_modules_staging_stats.emit_if_enabled();
 
     // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
@@ -10786,6 +10841,7 @@ impl CollectionSeedRoot {
 
 #[allow(clippy::too_many_arguments)]
 fn extend_node_modules_dependency_staging(
+    mut session_scan_cache: Option<&mut HashMap<PathBuf, PhysicalScanCacheEntry>>,
     project_root: &Path,
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
@@ -11000,6 +11056,8 @@ fn extend_node_modules_dependency_staging(
     let mut deferred_physical_dependencies = Vec::new();
     // A pnpm-private package reachable along N logical paths shares one
     // canonical directory; scan it once and re-join each visit's logical root.
+    // This per-call map stays even with a session cache: it is what keeps
+    // every canonical dir to one scan-or-reuse per closure walk.
     let mut physical_scan_cache: BTreeMap<PathBuf, PhysicalPackageScan> = BTreeMap::new();
     loop {
         while let Some((logical_root, source_root)) = pending.pop_first() {
@@ -11019,12 +11077,16 @@ fn extend_node_modules_dependency_staging(
             let package_was_symlinked = logical_root != source_root
                 || normalize_path_lexical(&expected_physical) != physical_root;
             stats.logical_visits += 1;
-            let scan = physical_scan_cache
-                .entry(physical_root.clone())
-                .or_insert_with(|| {
-                    stats.physical_scans += 1;
-                    scan_physical_package(&physical_root)
-                });
+            let scan = match physical_scan_cache.entry(physical_root.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(scan_physical_package_via_session_cache(
+                        &physical_root,
+                        session_scan_cache.as_deref_mut(),
+                        &mut stats,
+                    ))
+                }
+            };
             let mut importers = scan
                 .files
                 .iter()
@@ -11218,12 +11280,82 @@ fn extend_node_modules_dependency_staging(
 /// The logical-root-independent part of one package's closure scan: each
 /// dependency-source file (relative to the canonical package dir) with its
 /// runtime import specifiers, plus the package's bare `imports` targets.
+#[derive(Clone)]
 struct PhysicalPackageScan {
     files: Vec<(PathBuf, Vec<String>)>,
     external_imports: Vec<String>,
 }
 
-fn scan_physical_package(physical_root: &Path) -> PhysicalPackageScan {
+/// One [`ShadowSession::physical_scan_cache`] entry: a package scan plus the
+/// `package.json` `(mtime, size)` stamp it was taken under.
+struct PhysicalScanCacheEntry {
+    stamp: (std::time::SystemTime, u64),
+    scan: PhysicalPackageScan,
+}
+
+fn path_has_node_modules_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| component == Component::Normal("node_modules".as_ref()))
+}
+
+fn package_json_stamp(physical_root: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = fs::metadata(physical_root.join("package.json")).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// Scan `physical_root`, reusing the dev session's cached scan when the dir is
+/// `node_modules`-scoped and its `package.json` stamp is unchanged (#3178).
+fn scan_physical_package_via_session_cache(
+    physical_root: &Path,
+    session_scan_cache: Option<&mut HashMap<PathBuf, PhysicalScanCacheEntry>>,
+    stats: &mut NodeModulesStagingStats,
+) -> PhysicalPackageScan {
+    let Some(cache) = session_scan_cache.filter(|_| path_has_node_modules_component(physical_root))
+    else {
+        stats.physical_scans += 1;
+        return scan_physical_package(physical_root, &mut stats.parsed_files);
+    };
+    // Stamped BEFORE the scan, so an edit racing the scan reads as a mismatch
+    // on the next call rather than being cached under the newer stamp.
+    let stamp = package_json_stamp(physical_root);
+    if let Some(entry) = cache
+        .get(physical_root)
+        .filter(|entry| Some(entry.stamp) == stamp)
+    {
+        stats.cache_hits += 1;
+        return entry.scan.clone();
+    }
+    stats.physical_scans += 1;
+    let scan = scan_physical_package(physical_root, &mut stats.parsed_files);
+    match stamp {
+        Some(stamp) => {
+            cache.insert(
+                physical_root.to_path_buf(),
+                PhysicalScanCacheEntry {
+                    stamp,
+                    scan: scan.clone(),
+                },
+            );
+        }
+        None => {
+            cache.remove(physical_root);
+        }
+    }
+    scan
+}
+
+/// Type declarations: never a runtime module, so never an import source.
+fn is_type_declaration_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|name| {
+            name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+        })
+}
+
+/// `parsed_files` is incremented once per file handed to the import parser.
+fn scan_physical_package(physical_root: &Path, parsed_files: &mut usize) -> PhysicalPackageScan {
     let mut files = Vec::new();
     for entry in WalkDir::new(physical_root)
         .follow_links(true)
@@ -11247,6 +11379,12 @@ fn scan_physical_package(physical_root: &Path) -> PhysicalPackageScan {
         if !entry.file_type().is_file() || !dependency_source {
             continue;
         }
+        // The scan only discovers WHICH packages to walk; the package dir is
+        // staged wholesale, so skipping declarations never changes the shadow.
+        if is_type_declaration_file(path) {
+            continue;
+        }
+        *parsed_files += 1;
         let Ok(specifiers) = collect_runtime_import_specifiers_from_file(path) else {
             // An unused invalid alternative must remain esbuild-contextual.
             continue;
@@ -13131,11 +13269,375 @@ mod tests {
             physical_scans: 4,
             logical_visits: 6,
             workspace_staging_activated: true,
+            cache_hits: 2,
+            parsed_files: 510,
         };
         assert_eq!(
             stats.stderr_line(),
-            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true"
+            "[zfb-staging-stats] physical_scans=4 logical_visits=6 workspace_staging_activated=true \
+             cache_hits=2 parsed_files=510"
         );
+        assert_eq!(
+            NodeModulesStagingStats::default().stderr_line(),
+            "[zfb-staging-stats] physical_scans=0 logical_visits=0 workspace_staging_activated=false \
+             cache_hits=0 parsed_files=0"
+        );
+    }
+
+    // --- #3178: session scan cache + `.d.ts` skip ------------------------
+
+    fn scan_cache_write(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    fn scan_cache_write_package(dir: &Path, name: &str, index_body: &str) {
+        scan_cache_write(
+            &dir.join("package.json"),
+            &format!(
+                r#"{{"name":"{name}","version":"1.0.0","type":"module","main":"./index.js"}}"#
+            ),
+        );
+        scan_cache_write(&dir.join("index.js"), index_body);
+    }
+
+    /// A nested pnpm-workspace host (`<ws>/apps/site`) whose page imports the
+    /// first-party workspace package `data` (`<ws>/packages/data`, no
+    /// `node_modules` in its canonical dir), which imports the store package
+    /// `dep-a`, which imports its pnpm-private `dep-b`. `dep-b` also ships an
+    /// `index.d.ts` importing `types-only` — installed beside it, so a scan
+    /// that parsed declarations would walk it too. Returns `(ws, site)`.
+    #[cfg(unix)]
+    fn write_scan_cache_fixture(ws: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::symlink;
+        scan_cache_write(
+            &ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - \"apps/*\"\n  - \"packages/*\"\n",
+        );
+        let store = ws.join("node_modules/.pnpm");
+        let types_only = store.join("types-only@1.0.0/node_modules/types-only");
+        scan_cache_write_package(&types_only, "types-only", "export default 'T';\n");
+        let dep_b = store.join("dep-b@1.0.0/node_modules/dep-b");
+        scan_cache_write_package(&dep_b, "dep-b", "export default 'B';\n");
+        scan_cache_write(
+            &dep_b.join("index.d.ts"),
+            "import 'types-only';\nexport declare const b: string;\n",
+        );
+        symlink(
+            &types_only,
+            store.join("dep-b@1.0.0/node_modules/types-only"),
+        )
+        .unwrap();
+        let dep_a = store.join("dep-a@1.0.0/node_modules/dep-a");
+        scan_cache_write_package(
+            &dep_a,
+            "dep-a",
+            "import b from 'dep-b';\nexport default b;\n",
+        );
+        symlink(&dep_b, store.join("dep-a@1.0.0/node_modules/dep-b")).unwrap();
+
+        let data = ws.join("packages/data");
+        scan_cache_write(
+            &data.join("package.json"),
+            r#"{"name":"data","version":"1.0.0","type":"module","main":"./index.js","dependencies":{"dep-a":"1.0.0"}}"#,
+        );
+        scan_cache_write(
+            &data.join("index.js"),
+            "import a from 'dep-a';\nexport default a;\n",
+        );
+        fs::create_dir_all(data.join("node_modules")).unwrap();
+        symlink(&dep_a, data.join("node_modules/dep-a")).unwrap();
+
+        let site = ws.join("apps/site");
+        scan_cache_write(
+            &site.join("package.json"),
+            r#"{"name":"site","private":true,"dependencies":{"data":"workspace:*"}}"#,
+        );
+        fs::create_dir_all(site.join("node_modules")).unwrap();
+        symlink(&data, site.join("node_modules/data")).unwrap();
+        scan_cache_write(
+            &site.join("pages/index.tsx"),
+            "import data from 'data';\nexport default function Index() { return <div>{data}</div>; }\n",
+        );
+        scan_cache_write(
+            &site.join("layouts/default.tsx"),
+            "export default function L({ children }) { return children; }\n",
+        );
+        scan_cache_write(
+            &site.join("components/unused.tsx"),
+            "export default function Unused() { return null; }\n",
+        );
+        fs::create_dir_all(site.join("content")).unwrap();
+        (dep_a, site)
+    }
+
+    fn scan_cache_input(site: &Path) -> BundlerInput {
+        BundlerInput {
+            external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+            mock_subprocess_output: Some("export default {};\n".to_string()),
+            node_modules_dir: Some(site.join("node_modules")),
+            tsconfig_paths: BTreeMap::from([(
+                "@/unused".to_string(),
+                vec![site
+                    .join("components/unused.tsx")
+                    .to_string_lossy()
+                    .into_owned()],
+            )]),
+            ..BundlerInput::for_project(
+                site.to_path_buf(),
+                Framework::Preact,
+                BundleMode::Production,
+                site.join("dist"),
+                None,
+            )
+        }
+    }
+
+    fn session_stats(session: &mut ShadowSession, input: BundlerInput) -> NodeModulesStagingStats {
+        bundle_with_session(input, Some(session))
+            .expect("mock bundle must succeed")
+            .node_modules_staging_stats
+    }
+
+    /// Every entry under the site mirror's `node_modules` in the persistent
+    /// shadow, links followed — the staged dependency set the call left
+    /// behind. (The WORK root's own `node_modules` is the live workspace
+    /// link, not staging, so it is deliberately not listed.)
+    fn staged_listing(session: &ShadowSession) -> BTreeSet<PathBuf> {
+        let staged = session.shadow_root().join("apps/site/node_modules");
+        WalkDir::new(&staged)
+            .follow_links(true)
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .strip_prefix(&staged)
+                    .unwrap()
+                    .to_path_buf()
+            })
+            .collect()
+    }
+
+    /// First-call closure over the fixture: `data`, `dep-a`, `dep-b` — one
+    /// parsed `index.js` each (`dep-b/index.d.ts` skipped, so `types-only` is
+    /// never reached).
+    const SCAN_CACHE_COLD: NodeModulesStagingStats = NodeModulesStagingStats {
+        physical_scans: 3,
+        logical_visits: 3,
+        workspace_staging_activated: true,
+        cache_hits: 0,
+        parsed_files: 3,
+    };
+
+    /// A warm call: only the first-party `data` is rescanned; `dep-a` and
+    /// `dep-b` are reused from the session cache.
+    const SCAN_CACHE_WARM: NodeModulesStagingStats = NodeModulesStagingStats {
+        physical_scans: 1,
+        logical_visits: 3,
+        workspace_staging_activated: true,
+        cache_hits: 2,
+        parsed_files: 1,
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_reuses_node_modules_scans_with_an_identical_staging_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+        let first = staged_listing(&session);
+        assert!(
+            first
+                .iter()
+                .any(|path| path.ends_with("dep-a/node_modules/dep-b/index.js")),
+            "the fixture must actually stage dep-b: {first:?}"
+        );
+        assert!(
+            !first
+                .iter()
+                .any(|path| path.to_string_lossy().contains("types-only")),
+            "a bare import that appears only in a `.d.ts` must not enter the closure: {first:?}"
+        );
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+        assert_eq!(
+            staged_listing(&session),
+            first,
+            "a cached scan must stage exactly the set a fresh scan staged"
+        );
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_rescans_a_package_whose_package_json_stamp_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+
+        // A size change is a stamp change regardless of mtime granularity.
+        let manifest = dep_a.join("package.json");
+        let body = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, format!("{body}\n")).unwrap();
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            NodeModulesStagingStats {
+                physical_scans: SCAN_CACHE_WARM.physical_scans + 1,
+                cache_hits: SCAN_CACHE_WARM.cache_hits - 1,
+                parsed_files: SCAN_CACHE_WARM.parsed_files + 1,
+                ..SCAN_CACHE_WARM
+            },
+            "dep-a's package.json changed, so dep-a alone must be rescanned"
+        );
+        // The rescan re-stamped the entry: the next call reuses it again.
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_never_holds_a_first_party_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        for _ in 0..3 {
+            session_stats(&mut session, scan_cache_input(&site));
+            let mut cached = session
+                .physical_scan_cache
+                .keys()
+                .map(|dir| dir.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            cached.sort();
+            assert_eq!(
+                cached,
+                ["dep-a", "dep-b"],
+                "only node_modules-scoped dirs may be cached; packages/data is rescanned"
+            );
+            assert!(session
+                .physical_scan_cache
+                .keys()
+                .all(|dir| path_has_node_modules_component(dir)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_is_wiped_after_a_failed_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+
+        // A failed call is exactly a writer armed and never `mark_clean`ed
+        // (every early `?` in `bundle_with_session`). Same copy mode and
+        // fingerprint, so the constructor itself wipes nothing.
+        let copy_mode = session.copy_mode.unwrap();
+        let fingerprint = session.config_fingerprint.clone();
+        let shadow_root = session.shadow_root().to_path_buf();
+        drop(ShadowWriter::new(shadow_root, Some(&mut session), copy_mode, fingerprint).unwrap());
+        assert!(session.dirty);
+        assert_eq!(session.physical_scan_cache.len(), 2);
+
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD,
+            "the call after a failed one must rescan everything"
+        );
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_WARM
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_scan_cache_is_wiped_on_a_config_fingerprint_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        let mut session = ShadowSession::new(&site).unwrap();
+        assert_eq!(
+            session_stats(&mut session, scan_cache_input(&site)),
+            SCAN_CACHE_COLD
+        );
+        let before = session.config_fingerprint.clone();
+
+        let changed = || {
+            let mut input = scan_cache_input(&site);
+            input.pipeline_spec.cjk_friendly = !input.pipeline_spec.cjk_friendly;
+            input
+        };
+        assert_eq!(
+            session_stats(&mut session, changed()),
+            SCAN_CACHE_COLD,
+            "a config fingerprint change must wipe the scan cache"
+        );
+        assert_ne!(
+            session.config_fingerprint, before,
+            "the fixture's spec edit must actually move the fingerprint"
+        );
+        assert_eq!(session_stats(&mut session, changed()), SCAN_CACHE_WARM);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessionless_bundle_never_uses_a_scan_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dep_a, site) = write_scan_cache_fixture(&tmp.path().canonicalize().unwrap());
+        for _ in 0..2 {
+            let stats = bundle(scan_cache_input(&site))
+                .expect("mock bundle must succeed")
+                .node_modules_staging_stats;
+            assert_eq!(stats, SCAN_CACHE_COLD);
+        }
+    }
+
+    #[test]
+    fn scan_physical_package_skips_type_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        scan_cache_write(&root.join("index.js"), "import 'runtime-dep';\n");
+        scan_cache_write(&root.join("index.d.ts"), "import 'types-a';\n");
+        scan_cache_write(&root.join("esm/index.d.mts"), "import 'types-b';\n");
+        scan_cache_write(&root.join("cjs/index.d.cts"), "import 'types-c';\n");
+        scan_cache_write(&root.join("src/real.ts"), "import 'ts-dep';\n");
+
+        let mut parsed_files = 0;
+        let scan = scan_physical_package(root, &mut parsed_files);
+        let specifiers = scan
+            .files
+            .iter()
+            .flat_map(|(_, specifiers)| specifiers.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            specifiers,
+            BTreeSet::from(["runtime-dep".to_string(), "ts-dep".to_string()]),
+            "declaration files must never feed closure discovery; a plain `.ts` still does"
+        );
+        assert_eq!(parsed_files, 2, "`parsed_files` must exclude declarations");
+        assert!(is_type_declaration_file(Path::new("x/INDEX.D.TS")));
+        assert!(!is_type_declaration_file(Path::new("x/d.ts.js")));
     }
 
     #[cfg(unix)]

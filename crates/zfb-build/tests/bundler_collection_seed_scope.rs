@@ -202,6 +202,8 @@ const NOTHING_STAGED: NodeModulesStagingStats = NodeModulesStagingStats {
     physical_scans: 0,
     logical_visits: 0,
     workspace_staging_activated: false,
+    cache_hits: 0,
+    parsed_files: 0,
 };
 
 /// (a) The #3133 shape: `include: ["**/*.mdx"]` drops both `.tsx` files from
@@ -247,6 +249,8 @@ fn included_tsx_seeds_from_its_logical_site_location() {
             physical_scans: 4,
             logical_visits: 4,
             workspace_staging_activated: true,
+            cache_hits: 0,
+            parsed_files: 4,
         },
         "an included `.tsx` must seed from `<site>/content/componentDocs/…`, staging the site's \
          `site-dep` / `shared-utils` and nothing from `packages/ui/node_modules`",
@@ -286,6 +290,8 @@ fn included_tsx_relative_node_modules_import_resolves_from_the_logical_collectio
             physical_scans: 1,
             logical_visits: 1,
             workspace_staging_activated: false,
+            cache_hits: 0,
+            parsed_files: 1,
         },
         "`deep.tsx`'s relative node_modules import must resolve from \
          `<site>/content/componentDocs/button/`, staging `<site>/node_modules/site-dep`",
@@ -313,6 +319,8 @@ fn materialised_non_content_sibling_still_seeds() {
             physical_scans: 1,
             logical_visits: 1,
             workspace_staging_activated: false,
+            cache_hits: 0,
+            parsed_files: 1,
         },
         "`helper.ts` beside an included `.mdx` is copied into the shadow, so its bare `site-dep` \
          import must be staged",
