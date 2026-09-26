@@ -645,6 +645,19 @@ impl RawImportInvalidation {
         }
     }
 
+    /// [`Self::replace_page_entries_read_since`], without a read start
+    /// (issue #3209): publishes the same `FileSet::PageEntries` set but
+    /// clears its stamp, mirroring [`Self::replace_ssr_module_deps`]'s
+    /// relationship to [`Self::replace_ssr_module_deps_read_since`]. Used on
+    /// the `read_since = None` path of an SSR module-dependency publish, so
+    /// the two sets never disagree about whether a reconcile stamp is live.
+    /// [`Self::modified_since_read`] never reports a set whose stamp is
+    /// `None` ([`Self::stamp`] forgets the previous one), so this set's
+    /// entries go quiet until the next stamped publish.
+    pub fn replace_page_entries(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.publish(FileSet::PageEntries, paths, None);
+    }
+
     /// Replace the route entry files the dev SSR bundle read, as logical
     /// project paths, with the bundle's read start (issue #3202; see
     /// [`Self::page_entries`]). Reconcile-only: nothing else reads the set.
@@ -1822,6 +1835,51 @@ mod tests {
         assert_eq!(
             invalidation.modified_since_read(|_| true),
             vec![edited_post]
+        );
+    }
+
+    /// Issue #3209 — an unstamped `replace_page_entries` publishes the same
+    /// `FileSet::PageEntries` set but clears its stamp, so a page edited
+    /// after the OLD stamp is no longer reported once the unstamped publish
+    /// lands (mirroring `replace_ssr_module_deps` clearing the SSR set's
+    /// stamp on its own unstamped path). Confirms acceptance criterion 5 of
+    /// #3209: `modified_since_read` ignores a set whose stamp is `None`.
+    #[test]
+    fn unstamped_replace_page_entries_clears_the_page_entries_stamp_3209() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let page = root.join("pages/index.tsx");
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(&page, "x").unwrap();
+
+        let read_since = SystemTime::now();
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_page_entries_read_since([page.clone()], read_since);
+
+        // Edited after the old stamp: reported while the stamp is live.
+        std::fs::File::options()
+            .write(true)
+            .open(&page)
+            .unwrap()
+            .set_modified(read_since + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            invalidation.modified_since_read(|_| true),
+            vec![page.clone()],
+            "the edit is reported while the page-entry stamp is live"
+        );
+
+        // A fresh set, same edited path, but the stamp is cleared via the
+        // memoisation this same reconcile just recorded: re-stamp with a
+        // read start after the recorded edit, so only the stamp-clearing
+        // itself is under test, not memoisation of the same mtime.
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_page_entries_read_since([page.clone()], read_since);
+        invalidation.replace_page_entries([page.clone()]);
+        assert!(
+            invalidation.modified_since_read(|_| true).is_empty(),
+            "an unstamped replace_page_entries must clear the stamp, so the \
+             edit made after the OLD stamp is no longer reported"
         );
     }
 
