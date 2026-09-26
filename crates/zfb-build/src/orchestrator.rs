@@ -150,6 +150,47 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
     newly_watched
 }
 
+/// Synthesize a `Modified` change for every SSR module dependency that was
+/// edited after its bundle started reading and that `in_scope` says the
+/// watcher may not have been covering at the time (issue #3190).
+///
+/// A watch only reports edits made after it is armed, and the dependency set
+/// is only known once a bundle has read the files. On the eager dev boot that
+/// bundle runs before the listener binds, `ready` is printed next, and the
+/// watcher is armed afterwards on the orchestrator task, so an edit saved
+/// right after `ready` fell between the read and the watch: no event, and the
+/// page kept its boot value until the file changed again (#3181).
+fn unobserved_ssr_dependency_edits(
+    policy: &GranularityPolicy,
+    in_scope: impl Fn(&Path) -> bool,
+) -> Vec<Change> {
+    policy
+        .ssr_module_deps_modified_since_read(in_scope)
+        .into_iter()
+        .map(|path| {
+            if dev_timing_enabled() {
+                eprintln!(
+                    "[zfb-timing] watch-arm reconcile: edited before its watch: {}",
+                    path.display()
+                );
+            }
+            Change::new(path, ChangeKind::Modified)
+        })
+        .collect()
+}
+
+/// [`unobserved_ssr_dependency_edits`] limited to the directories a
+/// registration call just started watching: every other dependency was
+/// already covered, so its edits arrived as ordinary events.
+fn unobserved_edits_under(policy: &GranularityPolicy, newly_watched: &[PathBuf]) -> Vec<Change> {
+    if newly_watched.is_empty() {
+        return Vec::new();
+    }
+    unobserved_ssr_dependency_edits(policy, |path| {
+        newly_watched.iter().any(|dir| path.starts_with(dir))
+    })
+}
+
 /// `ZFB_DEV_TIMING` gate for the per-tick kind/narrowing trace (issue #1058).
 /// Same env var and truthy parser as `bundler_timing_enabled` and
 /// `crates/zfb/src/commands/dev.rs::dev_timing_enabled`, so one flag turns on
@@ -1875,6 +1916,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             &self.config.policy,
             &self.config.css_mirror_skip_dir_names,
         );
+        // Issue #3190 — the watcher itself was only just started, so an edit
+        // to ANY dependency the eager boot bundle read may predate it.
+        let mut pending = unobserved_ssr_dependency_edits(&self.config.policy, |_| true);
         // Boot hook — runs with the watch already registered (so any edit
         // saved during it is buffered by notify and drained by the loop
         // below) but before the loop consumes events. Its outcome, if any,
@@ -1891,11 +1935,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // deletes, and recreations enter the same watcher channel. The
         // registry exposes the last successful closures, so a transient failed
         // rebuild never drops recovery watches.
-        register_dynamic_dependency_watches(
+        let newly_watched = register_dynamic_dependency_watches(
             &mut watcher,
             &self.config.policy,
             &self.config.css_mirror_skip_dir_names,
         );
+        pending.extend(unobserved_edits_under(&self.config.policy, &newly_watched));
 
         // Deterministic fault-injection knobs (issue #2100, Dev Supervision
         // epic #2099 Sub #2100). Both are read here — AFTER the boot hook
@@ -1944,8 +1989,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         let mut ctx = ctx;
         let mut discover = discover;
         let mut handoff_intake_id = 0u64;
-        while let Some(first) = recv_with_stop_deadline(&mut rx, stop_deadline).await {
-            let mut batch: Vec<Change> = vec![first];
+        loop {
+            // Synthesized edits (issue #3190) go first, without waiting for
+            // an event that will never come.
+            let mut batch: Vec<Change> = std::mem::take(&mut pending);
+            if batch.is_empty() {
+                match recv_with_stop_deadline(&mut rx, stop_deadline).await {
+                    Some(first) => batch.push(first),
+                    None => break,
+                }
+            }
             while let Ok(c) = rx.try_recv() {
                 batch.push(c);
             }
@@ -2043,11 +2096,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // dependency closures. Add newly-discovered parents before
             // waiting for the next event; the watcher deduplicates
             // existing/covered paths.
-            register_dynamic_dependency_watches(
+            let newly_watched = register_dynamic_dependency_watches(
                 &mut watcher,
                 &this.config.policy,
                 &this.config.css_mirror_skip_dir_names,
             );
+            pending = unobserved_edits_under(&this.config.policy, &newly_watched);
             match result {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
@@ -4631,6 +4685,130 @@ mod tests {
             "the boot hook's SSR publication must be offered to the watcher: {:?}",
             offered[1]
         );
+    }
+
+    /// Issue #3190 — a registrar that reports every offered file's parent as
+    /// newly watched, the way the real watcher does for a directory it did
+    /// not cover before.
+    #[derive(Default)]
+    struct ParentWatchingRegistrar {
+        watched: BTreeSet<PathBuf>,
+    }
+    impl DynamicWatchRegistrar for ParentWatchingRegistrar {
+        fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+            paths
+                .iter()
+                .filter_map(|path| path.parent().map(Path::to_path_buf))
+                .filter(|parent| self.watched.insert(parent.clone()))
+                .collect()
+        }
+        fn sync_recursive_dir_watches(
+            &mut self,
+            _desired_roots: BTreeSet<PathBuf>,
+            _skip_dir_names: &[String],
+        ) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
+    fn set_mtime_3190(path: &Path, mtime: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// Run the drain loop over a closed event channel — no filesystem event
+    /// ever arrives — and return the plans the pipeline was asked to apply.
+    async fn drain_without_events_3190(
+        root: &Path,
+        invalidation: crate::policy::RawImportInvalidation,
+        boot: impl FnOnce(&BuildOrchestrator<CountingPipeline>, &BuildContext) -> Option<BuildOutcome>,
+    ) -> Vec<RebuildPlan> {
+        let pipeline = CountingPipeline::default();
+        let applies = Arc::clone(&pipeline.applies);
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(root, vec![PathBuf::from("pages")]).with_policy(
+                crate::policy::GranularityPolicy::default()
+                    .with_raw_import_invalidation(invalidation),
+            ),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Change>(1);
+        drop(tx);
+        orch.run_drain_loop(
+            noop_ctx(dist.path()),
+            None,
+            |_: &BuildOutcome| {},
+            Some(boot),
+            ParentWatchingRegistrar::default(),
+            rx,
+        )
+        .await
+        .unwrap();
+        let plans = applies.lock().unwrap().clone();
+        plans
+    }
+
+    /// Issue #3190 (#3181) — on the eager boot the SSR bundle reads its
+    /// dependencies before `ready` and the watcher is armed after it, so an
+    /// edit in between produces no event. The drain loop must still rebuild
+    /// for it; an edit that predates the read must not trigger a rebuild.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssr_dependency_edited_before_the_watch_armed_is_rebuilt_without_an_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let dep = root.join("packages/data/value.json");
+        std::fs::create_dir_all(dep.parent().unwrap()).unwrap();
+        std::fs::write(&dep, "{}").unwrap();
+        let read_since = std::time::SystemTime::now();
+
+        set_mtime_3190(&dep, read_since - Duration::from_secs(5));
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps_read_since([dep.clone()], read_since);
+        let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
+        assert!(
+            plans.is_empty(),
+            "an edit the bundle already read must not rebuild: {plans:?}"
+        );
+
+        set_mtime_3190(&dep, read_since + Duration::from_secs(1));
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps_read_since([dep.clone()], read_since);
+        let plans = drain_without_events_3190(&root, invalidation, |_, _| None).await;
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert!(
+            plans[0].ssr_reload_needed,
+            "the unobserved edit must reload the SSR host: {plans:?}"
+        );
+    }
+
+    /// Issue #3190 — the deferred/cold boot publishes its SSR dependencies
+    /// from inside the boot hook, and the post-boot registration arms their
+    /// parent watches afterwards. An edit made in between must be rebuilt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssr_dependency_edited_before_its_post_boot_watch_is_rebuilt_without_an_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let dep = root.join("packages/data/value.json");
+        std::fs::create_dir_all(dep.parent().unwrap()).unwrap();
+        std::fs::write(&dep, "{}").unwrap();
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let publisher = invalidation.clone();
+        let boot_dep = dep.clone();
+        let plans = drain_without_events_3190(&root, invalidation, move |_, _| {
+            let read_since = std::time::SystemTime::now();
+            publisher.replace_ssr_module_deps_read_since([boot_dep.clone()], read_since);
+            set_mtime_3190(&boot_dep, read_since + Duration::from_secs(1));
+            None
+        })
+        .await;
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert!(plans[0].ssr_reload_needed, "{plans:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

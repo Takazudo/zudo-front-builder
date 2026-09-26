@@ -284,6 +284,8 @@ jobs:
               | test(=e2e_3163_nested_site_compiled_dist_sibling_edit_is_served)
               | test(=e2e_3163_restart_serves_ssr_workspace_edit_made_before_the_stop)
               | test(=e2e_3163_deferred_cold_boot_ssr_workspace_json_edit_is_served)
+              | test(=e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served)
+              | test(=e2e_3190_edit_before_the_watcher_is_armed_is_served)
               | test(=sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted)
               | test(=sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan)
               | test(=islands_shadow_alias_raw_import_bundles_text)

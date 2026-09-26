@@ -53,6 +53,7 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime};
 
 /// Live dependency sets consumed by the islands and client-script dev
 /// sub-pipelines.
@@ -115,7 +116,19 @@ pub struct RawImportInvalidation {
     /// stored — see [`Self::replace_ssr_module_deps`]. Dev-only: `zfb build`
     /// never publishes or reads it.
     ssr_module_deps: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// When the bundle that published [`Self::ssr_module_deps`] started
+    /// reading its sources (issue #3190). `None` when the publisher did not
+    /// say, which disables [`Self::ssr_module_deps_modified_since_read`].
+    ssr_module_deps_read_since: Arc<RwLock<Option<SystemTime>>>,
 }
+
+/// How far before a bundle's read start an SSR dependency's mtime may fall
+/// and still count as a possibly-unseen edit (issue #3190). Linux stamps
+/// file times from the coarse clock, which can lag `SystemTime::now()` by up
+/// to one scheduler tick (10 ms at `HZ=100`), so an edit made just after the
+/// read started can carry an mtime just before it.
+const SSR_READ_SINCE_MTIME_SLACK: Duration = Duration::from_millis(20);
 
 impl RawImportInvalidation {
     fn resolved_alias(path: &Path) -> Option<PathBuf> {
@@ -370,6 +383,26 @@ impl RawImportInvalidation {
     /// the ones outside `node_modules` are kept, so a symlinked workspace
     /// package registers its real `packages/...` spelling, not the link.
     pub fn replace_ssr_module_deps(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.publish_ssr_module_deps(paths, None);
+    }
+
+    /// [`Self::replace_ssr_module_deps`], also recording when the publishing
+    /// bundle started reading its sources (issue #3190), so
+    /// [`Self::ssr_module_deps_modified_since_read`] can find edits made
+    /// before the watcher covered a dependency.
+    pub fn replace_ssr_module_deps_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish_ssr_module_deps(paths, Some(read_since));
+    }
+
+    fn publish_ssr_module_deps(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: Option<SystemTime>,
+    ) {
         let mut deps = BTreeSet::new();
         for path in paths {
             let lexical = zfb_types::normalize_path_lexical(&path);
@@ -383,9 +416,51 @@ impl RawImportInvalidation {
                     .filter(|alias| !Self::is_ssr_excluded(alias)),
             );
         }
+        if let Ok(mut since) = self.ssr_module_deps_read_since.write() {
+            *since = read_since;
+        }
         if let Ok(mut set) = self.ssr_module_deps.write() {
             *set = deps;
         }
+    }
+
+    /// SSR module dependencies accepted by `in_scope` whose file was modified
+    /// at or after the publishing bundle started reading its sources (issue
+    /// #3190), one path per file. An edit made after that read but before
+    /// the watcher covered the file produces no event and would otherwise
+    /// stay unserved until the file changes again. A missing file is skipped
+    /// (the bundle that follows a real delete event reports it). Empty when
+    /// the publication carried no read time.
+    pub fn ssr_module_deps_modified_since_read(
+        &self,
+        in_scope: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        let Some(read_since) = self
+            .ssr_module_deps_read_since
+            .read()
+            .ok()
+            .and_then(|since| *since)
+        else {
+            return Vec::new();
+        };
+        let threshold = read_since
+            .checked_sub(SSR_READ_SINCE_MTIME_SLACK)
+            .unwrap_or(read_since);
+        let mut seen_files = BTreeSet::new();
+        let mut modified = Vec::new();
+        for path in self.ssr_module_dep_paths() {
+            if !in_scope(&path) {
+                continue;
+            }
+            let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            let file = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if mtime >= threshold && seen_files.insert(file) {
+                modified.push(path);
+            }
+        }
+        modified
     }
 
     fn is_ssr_excluded(path: &Path) -> bool {
@@ -843,6 +918,16 @@ impl GranularityPolicy {
         self.raw_import_invalidation.is_ssr_module_dependency(path)
     }
 
+    /// See [`RawImportInvalidation::ssr_module_deps_modified_since_read`]
+    /// (issue #3190).
+    pub fn ssr_module_deps_modified_since_read(
+        &self,
+        in_scope: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        self.raw_import_invalidation
+            .ssr_module_deps_modified_since_read(in_scope)
+    }
+
     /// Whether this exact changed path is a client-script terminal raw target.
     pub fn is_client_script_raw_target(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_client_script_target(path)
@@ -1194,6 +1279,87 @@ mod tests {
         assert!(invalidation.is_ssr_module_dependency(&out_of_root));
         invalidation.replace_ssr_module_deps(Vec::new());
         assert!(invalidation.ssr_module_dep_paths().is_empty());
+    }
+
+    /// Issue #3190 — an SSR dependency edited after its bundle started
+    /// reading (but possibly before the watcher covered it) is reported once
+    /// per file; an older file, an out-of-scope file, a missing file, and a
+    /// publication without a read time are not.
+    #[test]
+    fn ssr_module_deps_modified_since_read_reports_only_edits_after_the_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let edited = root.join("packages/data/value.json");
+        let untouched = root.join("packages/data/other.json");
+        let out_of_scope = root.join("elsewhere/value.json");
+        let missing = root.join("packages/data/deleted.json");
+        for file in [&edited, &untouched, &out_of_scope] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        let read_since = SystemTime::now();
+        let set_mtime = |path: &Path, mtime: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        let after = read_since + Duration::from_secs(1);
+        set_mtime(&edited, after);
+        set_mtime(&out_of_scope, after);
+        set_mtime(&untouched, read_since - Duration::from_secs(5));
+        let deps = [
+            edited.clone(),
+            untouched.clone(),
+            out_of_scope.clone(),
+            missing.clone(),
+        ];
+        let in_packages = |path: &Path| path.starts_with(root.join("packages"));
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_ssr_module_deps(deps.clone());
+        assert!(
+            invalidation
+                .ssr_module_deps_modified_since_read(|_| true)
+                .is_empty(),
+            "a publication without a read time reports nothing"
+        );
+
+        invalidation.replace_ssr_module_deps_read_since(deps.clone(), read_since);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        assert_eq!(
+            policy.ssr_module_deps_modified_since_read(in_packages),
+            vec![edited.clone()]
+        );
+        let all = policy.ssr_module_deps_modified_since_read(|_| true);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert!(all.contains(&edited) && all.contains(&out_of_scope));
+
+        // A symlinked spelling of the same file is reported once, not twice.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(root.join("site/node_modules")).unwrap();
+            std::os::unix::fs::symlink(root.join("packages"), root.join("site/pkgs")).unwrap();
+            invalidation.replace_ssr_module_deps_read_since(
+                [edited.clone(), root.join("site/pkgs/data/value.json")],
+                read_since,
+            );
+            assert_eq!(
+                invalidation
+                    .ssr_module_deps_modified_since_read(|_| true)
+                    .len(),
+                1
+            );
+        }
+
+        // A later publication whose read started after the edit clears it.
+        invalidation.replace_ssr_module_deps_read_since(deps, after + Duration::from_secs(1));
+        assert!(invalidation
+            .ssr_module_deps_modified_since_read(|_| true)
+            .is_empty());
     }
 
     #[test]
