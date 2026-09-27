@@ -3,7 +3,7 @@ name = "zfb-server"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
+description = "zfb dev server: axum + WebSocket live-reload + CSS hot-swap"
 
 [lib]
 
@@ -35,7 +35,7 @@ zfb-islands = { path = "../zfb-islands" }
 # (#228) and the dev server agree on the canonical form.
 zfb-types = { path = "../zfb-types" }
 
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 # Sub 3 / #108: dyn-compat async trait for the dev-middleware
 # dispatcher seam between zfb-server and the plugin host owner. Used
 # only inside `plugin_middleware.rs`.
@@ -66,6 +66,7 @@ tracing = "0.1"
 lol_html = "2.8.1"
 
 [dev-dependencies]
+tokio-tungstenite = "0.29"
 zfb-graph = { path = "../zfb-graph" }
 # Combined Gap 1+2 integration test (sub-task 2.3 / #369): the server
 # test boots both the SSR router and the watcher side-by-side to prove

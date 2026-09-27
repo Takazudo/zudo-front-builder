@@ -7,10 +7,11 @@
 //!   when `dev_assets_root` is set (`zfb dev`, issue #1189) — from
 //!   `<dev_assets_root>/assets/` first with `<dist_root>/assets/` as a
 //!   fallback. See [`crate::assets_containment`].
-//! - `GET /__zfb/livereload.js` — bundled JS that opens an SSE
+//! - `GET /__zfb/livereload.js` — bundled JS that opens a WebSocket
 //!   connection back to this server. Always served with
 //!   `Cache-Control: no-store`.
-//! - `GET /__zfb/reload` — SSE event stream. See
+//! - `GET /__zfb/reload/ws` — browser live-reload WebSocket.
+//! - `GET /__zfb/reload` — SSE event stream for tooling. See
 //!   [`crate::livereload::sse_response`].
 //! - `GET /__zfb/ready` — Dev-only JSON snapshot of framework-owned asset
 //!   publication readiness.
@@ -106,7 +107,7 @@ use zfb_types::escape_html;
 use crate::assets_containment::ContainedAssetsService;
 use crate::embed_handlers::EmbedHandlerSet;
 use crate::inject::inject_livereload_with_prefix;
-use crate::livereload::{sse_response, ReloadTx};
+use crate::livereload::{sse_response, websocket_session, ReloadTx};
 use crate::plugin_middleware::{
     dispatch_plugin, origin_gate, DevMiddlewareSet, PluginDispatchAttempt,
 };
@@ -383,7 +384,7 @@ pub struct AppState {
     pub mode: crate::ServerMode,
     /// Page cache that renderers populate.
     pub pages: PageCache,
-    /// Live-reload broadcast sender — cloned per SSE subscription.
+    /// Live-reload broadcast sender — cloned per subscription.
     pub broadcast: ReloadTx,
     /// Optional plugin dev-middleware set. `None` when no user plugins
     /// declared a `devMiddleware` hook.
@@ -699,13 +700,13 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
+    let ws_path = format!("{prefix}/__zfb/reload/ws");
     let ready_path = format!("{prefix}/__zfb/ready");
     let assets_mount = format!("{prefix}/assets");
     let root_path = format!("{prefix}/");
     let wild_path = format!("{prefix}/{{*path}}");
 
-    // Live-reload surface (`/__zfb/livereload.js` SSE script,
-    // `/__zfb/reload` SSE stream) is Dev-only. In Preview/Embed modes
+    // Live-reload script, WebSocket, and SSE tooling stream are Dev-only. In Preview/Embed modes
     // these endpoints stay unmounted so an embedder doesn't accidentally
     // expose dev-server infrastructure on a production-shaped server.
     // The HTML body never injects the script in those modes either —
@@ -718,6 +719,7 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
         router = router
             .route(&livereload_path, get(livereload_js))
             .route(&sse_path, get(sse_handler))
+            .route(&ws_path, any(websocket_handler))
             .route(&ready_path, get(dev_ready));
     }
     router
@@ -1002,6 +1004,18 @@ pub async fn livereload_js() -> impl IntoResponse {
 /// connection.
 pub async fn sse_handler(State(state): State<AppState>) -> impl IntoResponse {
     sse_response(&state.broadcast)
+}
+
+/// Browser live reload uses a WebSocket so tabs do not exhaust the HTTP/1.1
+/// connection pool. Subscribe before upgrading so no event is lost in between.
+pub async fn websocket_handler(
+    State(state): State<AppState>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> impl IntoResponse {
+    let rx = state.broadcast.subscribe();
+    ws.max_message_size(4096)
+        .max_frame_size(4096)
+        .on_upgrade(move |socket| websocket_session(socket, rx))
 }
 
 /// Handler for `/` — serve the root page or dispatch to a plugin
@@ -3217,6 +3231,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn livereload_websocket_broadcasts_with_base_and_releases_subscribers() {
+        use futures_util::StreamExt;
+        use std::time::Duration;
+        use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+        for prefix in ["", "/foo"] {
+            let state = test_state_with_base(prefix);
+            let tx = state.broadcast.clone();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let router = test_router(state);
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let mut clients = Vec::new();
+            for _ in 0..10 {
+                let (client, _) = connect_async(format!("ws://{addr}{prefix}/__zfb/reload/ws"))
+                    .await
+                    .unwrap();
+                clients.push(client);
+            }
+            assert_eq!(tx.receiver_count(), 10);
+            for event in [
+                ReloadEvent::Page,
+                ReloadEvent::Css,
+                ReloadEvent::Islands {
+                    component: String::new(),
+                    bundle_url: "/assets/islands.js".into(),
+                },
+            ] {
+                tx.send(event.clone()).unwrap();
+                for client in &mut clients {
+                    let text = tokio::time::timeout(Duration::from_secs(3), async {
+                        loop {
+                            if let Message::Text(text) = client.next().await.unwrap().unwrap() {
+                                break text;
+                            }
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(payload["event"], event.name());
+                    assert_eq!(payload["data"], event.data());
+                }
+            }
+            // Drop TCP connections without a close handshake, as a closed tab can do.
+            drop(clients);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while tx.receiver_count() != 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn livereload_websocket_is_dev_only() {
+        for mode in [crate::ServerMode::Preview, crate::ServerMode::Embed] {
+            let mut state = test_state();
+            state.mode = mode;
+            let response = test_router(state)
+                .oneshot(
+                    Request::builder()
+                        .uri("/__zfb/reload/ws")
+                        .header("connection", "upgrade")
+                        .header("upgrade", "websocket")
+                        .header("sec-websocket-version", "13")
+                        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
     async fn livereload_js_endpoint_serves_script() {
         let state = test_state();
         let router = test_router(state);
@@ -3252,7 +3349,7 @@ mod tests {
         assert_eq!(cc, "no-store");
 
         let body = body_string(resp).await;
-        assert!(body.contains("EventSource"));
+        assert!(body.contains("WebSocket"));
         // The unprefixed literal survives only as the no-currentScript
         // fallback (issue #1027): the stream URL is derived from the
         // script tag's own src so a `base`-prefixed dev server connects
@@ -3260,7 +3357,7 @@ mod tests {
         assert!(body.contains("/__zfb/reload"));
         assert!(
             body.contains("document.currentScript"),
-            "served livereload.js must derive the SSE stream URL from its \
+            "served livereload.js must derive the reload URL from its \
              own script src (base-prefix awareness)"
         );
     }
@@ -4281,7 +4378,7 @@ mod tests {
             "unexpected content-type: {ct}"
         );
         let body = body_string(resp).await;
-        assert!(body.contains("EventSource"), "body missing EventSource");
+        assert!(body.contains("WebSocket"), "body missing WebSocket");
     }
 
     #[tokio::test]

@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 import { expect, test } from "@playwright/test";
+import { WebSocketServer } from "ws";
 
 const LIVERELOAD_JS = readFileSync(
   new URL("../../crates/zfb-server/src/livereload.js", import.meta.url),
 );
-const DETAIL_COUNT = 7;
+const DETAIL_COUNT = 10;
 const NAVIGATION_TIMEOUT_MS = 5000;
 const CONNECTION_SETTLE_TIMEOUT_MS = 5000;
 const MAX_LIVE_CONNECTIONS = 2;
@@ -32,9 +33,7 @@ test.afterAll(async () => {
   await harness?.stop();
 });
 
-test("rapid Back walk keeps livereload SSE connections bounded through bfcache", async ({
-  page,
-}) => {
+test("rapid Back walk keeps livereload connections bounded through bfcache", async ({ page }) => {
   test.setTimeout(60_000);
 
   const historyPaths = ["/index.html"];
@@ -49,7 +48,7 @@ test("rapid Back walk keeps livereload SSE connections bounded through bfcache",
 
   for (let index = historyPaths.length - 2; index >= 0; index -= 1) {
     const path = historyPaths[index];
-    const opensBeforeBack = harness.openCountFor(path);
+    const opensBeforeBack = harness.openCount;
 
     const startedAt = performance.now();
     await page.goBack({ waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
@@ -59,7 +58,7 @@ test("rapid Back walk keeps livereload SSE connections bounded through bfcache",
       timeout: NAVIGATION_TIMEOUT_MS,
     });
     await expect
-      .poll(() => harness.openCountFor(path), {
+      .poll(() => harness.openCount, {
         message: `${path} should open its own livereload stream after Back`,
         timeout: NAVIGATION_TIMEOUT_MS,
       })
@@ -83,8 +82,44 @@ test("rapid Back walk keeps livereload SSE connections bounded through bfcache",
     .toBeGreaterThan(0);
 });
 
+test("ten linked tabs finish loading while every tab keeps live reload", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(30_000);
+  await navigateToReadyPage(page, "/index.html");
+  const tabs = [];
+  for (let index = 1; index <= DETAIL_COUNT; index += 1) {
+    const opensBefore = harness.openCount;
+    const opened = context.waitForEvent("page", { timeout: NAVIGATION_TIMEOUT_MS });
+    await page.locator(`a[href="/detail-${index}.html"]`).click({
+      modifiers: ["ControlOrMeta"],
+      noWaitAfter: true,
+    });
+    const tab = await opened;
+    tabs.push(tab);
+    await tab.waitForLoadState("load", { timeout: NAVIGATION_TIMEOUT_MS });
+    await expect.poll(() => harness.openCount).toBeGreaterThan(opensBefore);
+  }
+  await expect.poll(() => harness.liveConnectionCount).toBe(DETAIL_COUNT + 1);
+  harness.broadcast("css");
+  for (const tab of [page, ...tabs]) {
+    await expect(tab.locator('link[rel="stylesheet"]')).toHaveAttribute("href", /\?v=\d+$/);
+  }
+  const beforeReconnect = harness.openCount;
+  harness.disconnect();
+  await expect.poll(() => harness.openCount).toBe(beforeReconnect + DETAIL_COUNT + 1);
+  await expect.poll(() => harness.liveConnectionCount).toBe(DETAIL_COUNT + 1);
+  const beforeReload = harness.openCount;
+  harness.broadcast("page");
+  await expect.poll(() => harness.openCount).toBe(beforeReload + DETAIL_COUNT + 1);
+  // A fresh ordinary HTTP request must still have a connection available.
+  expect(await page.evaluate(() => fetch("/index.html").then((r) => r.status))).toBe(200);
+  for (const tab of tabs) await tab.close();
+});
+
 async function navigateToReadyPage(page, path) {
-  const opensBeforeNavigation = harness.openCountFor(path);
+  const opensBeforeNavigation = harness.openCount;
   const startedAt = performance.now();
 
   await page.goto(new URL(path, harness.origin).href, {
@@ -94,7 +129,7 @@ async function navigateToReadyPage(page, path) {
   expect(performance.now() - startedAt).toBeLessThan(NAVIGATION_TIMEOUT_MS);
 
   await expect
-    .poll(() => harness.openCountFor(path), {
+    .poll(() => harness.openCount, {
       message: `${path} should open its own livereload stream before navigation continues`,
       timeout: NAVIGATION_TIMEOUT_MS,
     })
@@ -104,7 +139,7 @@ async function navigateToReadyPage(page, path) {
 function createHarness() {
   const openSseResponses = new Set();
   const sockets = new Set();
-  const openCountsByPath = new Map();
+  let openCount = 0;
   let liveConnectionCount = 0;
   let peakLiveConnectionCount = 0;
   let persistedPageShowCount = 0;
@@ -120,8 +155,7 @@ function createHarness() {
     }
 
     if (requestUrl.pathname === "/__zfb/reload") {
-      const pagePath = pagePathFromReferer(request.headers.referer);
-      openCountsByPath.set(pagePath, (openCountsByPath.get(pagePath) ?? 0) + 1);
+      openCount += 1;
       liveConnectionCount += 1;
       peakLiveConnectionCount = Math.max(peakLiveConnectionCount, liveConnectionCount);
       openSseResponses.add(response);
@@ -139,6 +173,12 @@ function createHarness() {
         "content-type": "text/event-stream",
       });
       response.write(": connected\n\n");
+      return;
+    }
+
+    if (requestUrl.pathname === "/style.css") {
+      response.writeHead(200, { "content-type": "text/css" });
+      response.end("body { color: black; }");
       return;
     }
 
@@ -167,6 +207,16 @@ function createHarness() {
     response.end("Not found");
   });
 
+  const websocketServer = new WebSocketServer({ server, path: "/__zfb/reload/ws" });
+  websocketServer.on("connection", (socket) => {
+    openCount += 1;
+    liveConnectionCount += 1;
+    peakLiveConnectionCount = Math.max(peakLiveConnectionCount, liveConnectionCount);
+    socket.on("close", () => {
+      liveConnectionCount -= 1;
+    });
+  });
+
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -185,8 +235,16 @@ function createHarness() {
     get persistedPageShowCount() {
       return persistedPageShowCount;
     },
-    openCountFor(path) {
-      return openCountsByPath.get(path) ?? 0;
+    get openCount() {
+      return openCount;
+    },
+    broadcast(event, data = "{}") {
+      for (const socket of websocketServer.clients) {
+        socket.send(JSON.stringify({ event, data }));
+      }
+    },
+    disconnect() {
+      for (const socket of websocketServer.clients) socket.terminate();
     },
     async start() {
       await new Promise((resolve, reject) => {
@@ -200,6 +258,8 @@ function createHarness() {
       origin = `http://127.0.0.1:${address.port}`;
     },
     async stop() {
+      for (const socket of websocketServer.clients) socket.terminate();
+      websocketServer.close();
       for (const response of openSseResponses) response.destroy();
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => {
@@ -207,15 +267,6 @@ function createHarness() {
       });
     },
   };
-}
-
-function pagePathFromReferer(referer) {
-  if (!referer) return "<missing-referer>";
-  try {
-    return new URL(referer).pathname;
-  } catch {
-    return "<invalid-referer>";
-  }
 }
 
 function serveHtml(response, html) {
@@ -234,6 +285,7 @@ function fixtureHtml(path) {
   <head>
     <meta charset="utf-8">
     <title>${path}</title>
+    <link rel="stylesheet" href="/style.css">
     <script>
       addEventListener("pageshow", (event) => {
         fetch("/__harness/pageshow?persisted=" + event.persisted, {

@@ -1,12 +1,12 @@
-//! SSE live-reload bridge between [`zfb_build::BuildOutcome`] and the
+//! WebSocket and SSE live-reload bridge between [`zfb_build::BuildOutcome`] and the
 //! browser.
 //!
 //! The dev server holds a [`tokio::sync::broadcast`] channel of
 //! [`ReloadEvent`]s. The bin crate (the one that owns
 //! [`zfb_build::BuildOrchestrator`]) wires its `on_outcome` callback
 //! through [`outcome_to_events`] and forwards the resulting events into
-//! the channel. Each browser tab subscribes to the channel via the SSE
-//! endpoint mounted at `/__zfb/reload` (see [`crate::routes`]).
+//! the channel. Browser tabs subscribe via `/__zfb/reload/ws`; tooling can
+//! use the SSE endpoint at `/__zfb/reload` (see [`crate::routes`]).
 //!
 //! ## Wiring contract (cheat sheet for the bin crate)
 //!
@@ -290,6 +290,46 @@ pub fn sse_response(
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+/// Forward the same named events as SSE over a dedicated browser socket.
+/// Reading concurrently detects closed tabs even while the watcher is idle.
+pub async fn websocket_session(
+    mut socket: axum::extract::ws::WebSocket,
+    mut rx: broadcast::Receiver<ReloadEvent>,
+) {
+    use axum::extract::ws::Message;
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    loop {
+        let message = tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    _ => continue,
+                }
+            }
+            event = rx.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    // A slow tab must converge even if there is no later edit.
+                    Err(broadcast::error::RecvError::Lagged(_)) => ReloadEvent::Page,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                Message::Text(serde_json::json!({
+                    "event": event.name(),
+                    "data": event.data(),
+                }).to_string().into())
+            }
+            _ = heartbeat.tick() => Message::Ping(Vec::new().into()),
+        };
+        // A stopped reader must not retain a broadcast receiver indefinitely.
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), socket.send(message)).await,
+            Ok(Ok(()))
+        ) {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -807,7 +847,7 @@ mod tests {
 
     #[test]
     fn event_names_match_browser_protocol() {
-        // The strings here MUST match the addEventListener calls in
+        // The strings here MUST match the named handlers in
         // src/livereload.js.
         let script = include_str!("livereload.js");
         assert_eq!(ReloadEvent::Page.name(), "page");
@@ -822,8 +862,8 @@ mod tests {
         );
         for name in ["page", "css", "islands"] {
             assert!(
-                script.contains(&format!("addEventListener(\"{name}\"")),
-                "livereload.js must subscribe to the `{name}` event"
+                script.contains(&format!("{name}: function (")),
+                "livereload.js must handle the `{name}` event"
             );
         }
     }
@@ -847,8 +887,8 @@ mod tests {
             "livereload.js must keep the unprefixed fallback stream URL"
         );
         assert!(
-            !script.contains("new EventSource(\"/__zfb/reload\")"),
-            "the EventSource constructor must not hardcode the unprefixed \
+            !script.contains("new WebSocket(\"/__zfb/reload"),
+            "the WebSocket constructor must not hardcode the unprefixed \
              stream URL — base-prefixed dev servers would never connect"
         );
     }
