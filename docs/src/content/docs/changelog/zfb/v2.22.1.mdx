@@ -1,0 +1,14 @@
+---
+title: v2.22.1
+sidebar_position: 138
+---
+
+# v2.22.1
+
+Released: 2026-09-28
+
+## Bug Fixes
+
+- Fix dev page loading stalls with many open tabs (789ad2a5). Browser live reload now uses WebSockets to avoid exhausting the browser’s HTTP connection pool. Development reverse proxies must forward WebSocket upgrades.
+- Fix early dev edits blocked by eager startup rendering (15404fa5). Pages now render on demand by default, and each dev process uses its own temporary page directory. Set `ZFB_DEV_BOOT_LAZY=0` to retain eager startup rendering.
+- Enable content dependency tracking at lazy boot publication (f35b2220), so content edits invalidate affected pages from the start of the dev session.
