@@ -238,7 +238,14 @@ impl DevSession {
     /// fan-out, the request-time lazy renderer, and `serve_page`'s disk
     /// leg all agree on (`dev_html_root_for` in commands/dev.rs).
     fn html_root(&self) -> PathBuf {
-        self.root.join(".zfb-build").join("dev-pages")
+        let parent = self.root.join(".zfb-build").join("dev-pages");
+        let prefix = format!("session-{}-", self.guard.pgid);
+        std::fs::read_dir(&parent)
+            .expect("dev HTML sessions")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .expect("this dev process's HTML session")
+            .path()
     }
 }
 
