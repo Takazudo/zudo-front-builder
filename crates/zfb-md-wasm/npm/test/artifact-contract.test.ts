@@ -26,13 +26,14 @@ afterEach(() => {
 });
 
 describe("slim artifact descriptors", () => {
-  it("locks the sequential Cargo matrix, including the explicit highlight feature", () => {
+  it("locks the Cargo feature matrix and Workerd factory artifacts", () => {
     expect(
-      ARTIFACTS.map(({ entry, cargoFeatureArgs, dirName, outName, gzipCeiling }) => ({
+      ARTIFACTS.map(({ entry, cargoFeatureArgs, dirName, outName, workerd, gzipCeiling }) => ({
         entry,
         cargoFeatureArgs,
         dirName,
         outName,
+        workerd: workerd === true,
         gzipCeiling,
       })),
     ).toEqual([
@@ -41,6 +42,7 @@ describe("slim artifact descriptors", () => {
         cargoFeatureArgs: [],
         dirName: "wasm",
         outName: "zfb_md_wasm",
+        workerd: false,
         gzipCeiling: 1_600_000,
       },
       {
@@ -48,6 +50,7 @@ describe("slim artifact descriptors", () => {
         cargoFeatureArgs: ["--no-default-features", "--features", "highlight"],
         dirName: "wasm-highlight",
         outName: "zfb_md_wasm_highlight",
+        workerd: true,
         gzipCeiling: 880_000,
       },
       {
@@ -55,6 +58,7 @@ describe("slim artifact descriptors", () => {
         cargoFeatureArgs: ["--no-default-features", "--features", "render"],
         dirName: "wasm-render",
         outName: "zfb_md_wasm_render",
+        workerd: false,
         gzipCeiling: 1_100_000,
       },
       {
@@ -62,12 +66,33 @@ describe("slim artifact descriptors", () => {
         cargoFeatureArgs: ["--no-default-features", "--features", "parse"],
         dirName: "wasm-parse",
         outName: "zfb_md_wasm_parse",
+        workerd: true,
         gzipCeiling: 325_000,
       },
     ]);
   });
 
   it("publishes matching source and dist conditional exports", () => {
+    for (const entry of ["./parse", "./highlight"] as const) {
+      expect(Object.keys(packageJson.exports[entry])).toEqual([
+        "types",
+        "workerd",
+        "browser",
+        "default",
+      ]);
+      expect(Object.keys(packageJson.publishConfig.exports[entry])).toEqual([
+        "types",
+        "workerd",
+        "browser",
+        "default",
+      ]);
+    }
+    expect(packageJson.exports["./highlight"]).toEqual({
+      types: "./src/highlight.ts",
+      workerd: "./src/highlight-workerd.ts",
+      browser: "./src/highlight-browser.ts",
+      default: "./src/highlight.ts",
+    });
     expect(packageJson.exports["./render"]).toEqual({
       types: "./src/render.ts",
       browser: "./src/render-browser.ts",
@@ -75,8 +100,15 @@ describe("slim artifact descriptors", () => {
     });
     expect(packageJson.exports["./parse"]).toEqual({
       types: "./src/parse.ts",
+      workerd: "./src/parse-workerd.ts",
       browser: "./src/parse-browser.ts",
       default: "./src/parse.ts",
+    });
+    expect(packageJson.publishConfig.exports["./highlight"]).toEqual({
+      types: "./dist/highlight.d.ts",
+      workerd: "./dist/highlight-workerd.js",
+      browser: "./dist/highlight-browser.js",
+      default: "./dist/highlight.js",
     });
     expect(packageJson.publishConfig.exports["./render"]).toEqual({
       types: "./dist/render.d.ts",
@@ -85,6 +117,7 @@ describe("slim artifact descriptors", () => {
     });
     expect(packageJson.publishConfig.exports["./parse"]).toEqual({
       types: "./dist/parse.d.ts",
+      workerd: "./dist/parse-workerd.js",
       browser: "./dist/parse-browser.js",
       default: "./dist/parse.js",
     });
@@ -115,15 +148,18 @@ describe("slim artifact descriptors", () => {
 });
 
 describe("closed packed layout", () => {
-  it("describes exactly four files for each of four resource directories", () => {
+  it("describes the closed four-file and six-file resource sets", () => {
     expect(WASM_RESOURCE_SETS).toHaveLength(4);
-    for (const set of WASM_RESOURCE_SETS) {
-      expect([...set.requiredFiles]).toHaveLength(4);
-    }
+    expect(WASM_RESOURCE_SETS.map((set) => [set.dirName, set.requiredFiles.size])).toEqual([
+      ["wasm", 4],
+      ["wasm-highlight", 6],
+      ["wasm-render", 4],
+      ["wasm-parse", 6],
+    ]);
     expect(() => assertPackedContents(REQUIRED_PACKED_FILES)).not.toThrow();
   });
 
-  it("fails closed for a missing file, a fifth sidecar, and a stray resource", () => {
+  it("fails closed for a missing file, an extra sidecar, and stray resources", () => {
     expect(() => assertPackedContents(REQUIRED_PACKED_FILES.slice(1))).toThrow(/missing/);
     expect(() =>
       assertPackedContents([
@@ -134,6 +170,14 @@ describe("closed packed layout", () => {
     expect(() =>
       assertPackedContents([...REQUIRED_PACKED_FILES, "package/dist/copied_bg.wasm"]),
     ).toThrow(/unapproved runtime resources/);
+    expect(() =>
+      assertPackedContents([...REQUIRED_PACKED_FILES, "package/dist/copied_glue.zfb-factory.mjs"]),
+    ).toThrow(/unapproved runtime resources/);
+    expect(() =>
+      assertPackedContents(
+        REQUIRED_PACKED_FILES.filter((path) => !path.endsWith("_glue.zfb-factory.mjs")),
+      ),
+    ).toThrow(/missing/);
   });
 
   it("rejects an oversized archive before attempting to inspect it", () => {

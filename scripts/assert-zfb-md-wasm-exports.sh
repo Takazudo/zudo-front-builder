@@ -13,21 +13,29 @@ if [[ -z "$dist" || "$#" -ne 1 ]]; then
 fi
 
 expected_files() {
-  local stem="$1"
-  printf '%s\n' \
-    "${stem}_bg.wasm" \
-    "${stem}_bg.wasm.d.ts" \
-    "${stem}_glue.zfb-resource.d.mts" \
-    "${stem}_glue.zfb-resource.mjs" | sort
+  local stem="$1" workerd="$2"
+  local files=(
+    "${stem}_bg.wasm"
+    "${stem}_bg.wasm.d.ts"
+    "${stem}_glue.zfb-resource.d.mts"
+    "${stem}_glue.zfb-resource.mjs"
+  )
+  if [[ "$workerd" == "1" ]]; then
+    files+=(
+      "${stem}_glue.zfb-factory.d.mts"
+      "${stem}_glue.zfb-factory.mjs"
+    )
+  fi
+  printf '%s\n' "${files[@]}" | sort
 }
 
 assert_artifact() {
-  local label="$1" dir="$2" stem="$3"
-  shift 3
+  local label="$1" dir="$2" stem="$3" workerd="$4"
+  shift 4
   local path="$dist/$dir" declaration actual expected
   [[ -d "$path" ]] || { echo "ERROR: missing ${label} resource directory: $path" >&2; exit 1; }
   actual="$(find "$path" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
-  expected="$(expected_files "$stem")"
+  expected="$(expected_files "$stem" "$workerd")"
   if [[ "$actual" != "$expected" ]]; then
     echo "ERROR: ${label} resource set is not closed" >&2
     echo "expected:" >&2; echo "$expected" >&2
@@ -55,10 +63,28 @@ assert_artifact() {
       exit 1
     fi
   done
+  if [[ "$workerd" == "1" ]]; then
+    local factory="$path/${stem}_glue.zfb-factory.mjs" factory_declaration="$path/${stem}_glue.zfb-factory.d.mts" export_count
+    [[ -s "$factory" ]] || { echo "ERROR: missing generated factory: $factory" >&2; exit 1; }
+    [[ -s "$factory_declaration" ]] || { echo "ERROR: missing generated factory declaration: $factory_declaration" >&2; exit 1; }
+    if ! grep -Eq '^export function createGlue[[:space:]]*\(' "$factory"; then
+      echo "ERROR: ${label} factory does not export createGlue" >&2
+      exit 1
+    fi
+    export_count="$(grep -Eo '(^|[;[:space:]])export([[:space:]]|\{|\*)' "$factory" | wc -l | tr -d '[:space:]' || true)"
+    if [[ "$export_count" -ne 1 ]]; then
+      echo "ERROR: ${label} factory must export only createGlue" >&2
+      exit 1
+    fi
+    if ! grep -Eq '^export function createGlue[[:space:]]*\(' "$factory_declaration"; then
+      echo "ERROR: ${label} factory declaration is missing createGlue" >&2
+      exit 1
+    fi
+  fi
   echo "OK: ${label} generated exports and closed resource set"
 }
 
-assert_artifact "default (.)" wasm zfb_md_wasm compile renderHtml parseToAst highlightCode
-assert_artifact "highlight (./highlight)" wasm-highlight zfb_md_wasm_highlight highlightCode
-assert_artifact "render (./render)" wasm-render zfb_md_wasm_render renderHtml
-assert_artifact "parse (./parse)" wasm-parse zfb_md_wasm_parse parseToAst
+assert_artifact "default (.)" wasm zfb_md_wasm 0 compile renderHtml parseToAst highlightCode
+assert_artifact "highlight (./highlight)" wasm-highlight zfb_md_wasm_highlight 1 highlightCode
+assert_artifact "render (./render)" wasm-render zfb_md_wasm_render 0 renderHtml
+assert_artifact "parse (./parse)" wasm-parse zfb_md_wasm_parse 1 parseToAst

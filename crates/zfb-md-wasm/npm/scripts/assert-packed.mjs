@@ -16,6 +16,8 @@ const ENTRY_FILES = [
   "highlight.d.ts",
   "highlight-browser.js",
   "highlight-browser.d.ts",
+  "highlight-workerd.js",
+  "highlight-workerd.d.ts",
   "render.js",
   "render.d.ts",
   "render-browser.js",
@@ -24,25 +26,31 @@ const ENTRY_FILES = [
   "parse.d.ts",
   "parse-browser.js",
   "parse-browser.d.ts",
+  "parse-workerd.js",
+  "parse-workerd.d.ts",
 ].map((name) => `package/dist/${name}`);
 
 export const WASM_RESOURCE_SETS = [
-  { dirName: "wasm", stem: "zfb_md_wasm" },
-  { dirName: "wasm-highlight", stem: "zfb_md_wasm_highlight" },
-  { dirName: "wasm-render", stem: "zfb_md_wasm_render" },
-  { dirName: "wasm-parse", stem: "zfb_md_wasm_parse" },
-].map(({ dirName, stem }) => {
+  { dirName: "wasm", stem: "zfb_md_wasm", factory: false },
+  { dirName: "wasm-highlight", stem: "zfb_md_wasm_highlight", factory: true },
+  { dirName: "wasm-render", stem: "zfb_md_wasm_render", factory: false },
+  { dirName: "wasm-parse", stem: "zfb_md_wasm_parse", factory: true },
+].map(({ dirName, stem, factory }) => {
   const prefix = `package/dist/${dirName}/`;
+  const requiredFiles = [
+    `${prefix}${stem}_glue.zfb-resource.mjs`,
+    `${prefix}${stem}_glue.zfb-resource.d.mts`,
+    `${prefix}${stem}_bg.wasm`,
+    `${prefix}${stem}_bg.wasm.d.ts`,
+    ...(factory
+      ? [`${prefix}${stem}_glue.zfb-factory.mjs`, `${prefix}${stem}_glue.zfb-factory.d.mts`]
+      : []),
+  ];
   return {
     dirName,
     stem,
     prefix,
-    requiredFiles: new Set([
-      `${prefix}${stem}_glue.zfb-resource.mjs`,
-      `${prefix}${stem}_glue.zfb-resource.d.mts`,
-      `${prefix}${stem}_bg.wasm`,
-      `${prefix}${stem}_bg.wasm.d.ts`,
-    ]),
+    requiredFiles: new Set(requiredFiles),
   };
 });
 
@@ -84,7 +92,9 @@ export function assertPackedContents(paths) {
   const strayResources = paths.filter(
     (path) =>
       path.startsWith("package/dist/") &&
-      (path.endsWith(".zfb-resource.mjs") || path.endsWith(".wasm")) &&
+      (path.endsWith(".zfb-resource.mjs") ||
+        path.endsWith(".zfb-factory.mjs") ||
+        path.endsWith(".wasm")) &&
       !approvedResources.has(path),
   );
   if (strayResources.length > 0) {

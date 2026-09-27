@@ -92,7 +92,7 @@ Validates a raw `parseToAst().ast` tree and returns a detached, `@types/mdast`-c
 ## Error classes
 
 - **`ZfbMdWasmTrapError extends Error`** — thrown by the async call that observed a wasm trap. Constructed with `(cause: unknown)`, exposed via `.cause`. The trapped instance is dropped and a fresh one started from the cached compiled `WebAssembly.Module` **before** this error is thrown, so the very next call already uses the replacement — no caches or globals survive between calls, so re-instantiation loses nothing but time.
-- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — thrown instead of `ZfbMdWasmTrapError` once 16 automatic trap recoveries have been exhausted for the process. Constructed with `(maxRecoveries: number, cause: unknown)`, `cause` exposed via `.cause`. Further recovery stays disabled (to avoid unbounded ES module record growth) until the JS realm is reloaded.
+- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — thrown instead of `ZfbMdWasmTrapError` once 16 automatic trap recoveries have been exhausted for the process. Constructed with `(maxRecoveries: number, cause: unknown)`, `cause` exposed via `.cause`. Further recovery stays disabled (to avoid unbounded resource growth) until the JS realm is reloaded.
 - **`MdastAdapterError extends TypeError`** — thrown by `toMdastRoot`. Carries `path: string` (a JSON-path-like pointer into the offending node, e.g. `"$.children[2].value"`) and `nodeType: string | null` (the node's observed `type`, or `null` when the value wasn't even a typed record).
 
 ## Type reference
@@ -302,6 +302,52 @@ the JSX runtime, and components. `toMdastRoot` is a controlled consumer-side
 adapter; an AST-to-React renderer may interpret the resulting data. No slim entry evaluates author
 JavaScript. `renderHtml` is not a sanitizer and raw HTML remains untrusted;
 MDX JSX/expression/ESM-shaped AST nodes remain inert data.
+
+## Cloudflare Workers (workerd)
+
+`@takazudo/zfb-md-wasm/parse` and `@takazudo/zfb-md-wasm/highlight` have a
+`workerd` export condition. Their Worker entries import compiled `.wasm` modules
+statically and create a fresh wasm-bindgen glue closure for each instance.
+The package root and `/render` do not have a `workerd` entry.
+
+For example, a Worker can parse Markdown inside `fetch`:
+
+```ts
+import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const source = new URL(request.url).searchParams.get("source") ?? "# Hello";
+    const result = await parseToAst(source, { filename: "post.md" });
+    return Response.json(result);
+  },
+};
+```
+
+Wrangler handles the `.wasm` imports with its default module rules; no extra
+configuration is needed. When running a bundled Worker with Miniflare, register
+the copied wasm files as compiled modules:
+
+```ts
+import { Miniflare } from "miniflare";
+
+const miniflare = new Miniflare({
+  modules: true,
+  scriptPath: "dist/worker.js",
+  modulesRoot: "dist",
+  modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+});
+```
+
+The `@cloudflare/vite-plugin` path has not been tested.
+
+If a wasm trap occurs, the failing call throws `ZfbMdWasmTrapError` after
+the replacement is ready. Each recovery uses a fresh glue closure around the
+**same compiled module**, so the next call uses a replacement instance. If
+another trap occurs after 16 successful recoveries, that entry becomes terminal
+and throws `ZfbMdWasmTrapRecoveryLimitError` on that and subsequent calls.
+Recycle the Worker isolate before using that entry again. The parse and
+highlight entries have independent recovery state.
 
 ### Shipped artifact sizes and locked ceilings
 

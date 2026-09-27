@@ -92,7 +92,7 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 ## エラークラス
 
 - **`ZfbMdWasmTrapError extends Error`** — wasm トラップを観測した async 呼び出しがスローします。`(cause: unknown)` で構築され、`.cause` で公開されます。このエラーがスローされる **前** に、トラップしたインスタンスは破棄され、キャッシュ済みのコンパイル済み `WebAssembly.Module` から新しいインスタンスが起動されます。そのため、直後の呼び出しはすでに置き換え後のインスタンスを使います — 呼び出し間で存続するキャッシュやグローバルはないため、再インスタンス化で失われるのは時間だけです。
-- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — プロセスで自動トラップ回復を 16 回使い切ると、`ZfbMdWasmTrapError` の代わりにスローされます。`(maxRecoveries: number, cause: unknown)` で構築され、`cause` は `.cause` で公開されます。それ以降の回復は（ES モジュールレコードの無制限な増加を避けるため）、JS レルムがリロードされるまで無効のままになります。
+- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — プロセスで自動トラップ回復を 16 回使い切ると、`ZfbMdWasmTrapError` の代わりにスローされます。`(maxRecoveries: number, cause: unknown)` で構築され、`cause` は `.cause` で公開されます。それ以降の回復は（回復に使うリソースの無制限な増加を避けるため）、JS レルムがリロードされるまで無効のままになります。
 - **`MdastAdapterError extends TypeError`** — `toMdastRoot` がスローします。`path: string`（問題のノードを指す JSON パス風のポインタ、例: `"$.children[2].value"`）と `nodeType: string | null`（観測されたノードの `type`、または値が型付きレコードですらなかった場合は `null`）を持ちます。
 
 ## 型リファレンス
@@ -301,6 +301,52 @@ parseButton.addEventListener("click", async () => {
 AST-to-React レンダラーで解釈するためのアダプタです。slim エントリは author JavaScript を評価しません。
 `renderHtml` はサニタイザーではなく、生 HTML は信頼できないままです。MDX の JSX / 式 /
 ESM 形状の AST ノードは不活性なデータとして扱われます。
+
+## Cloudflare Workers（workerd）
+
+`@takazudo/zfb-md-wasm/parse` と `@takazudo/zfb-md-wasm/highlight` には
+`workerd` エクスポート条件があります。Worker 向けのエントリは、コンパイル済みの `.wasm`
+モジュールを静的にインポートし、インスタンスごとに新しい wasm-bindgen グルーのクロージャを
+作ります。パッケージのルートと `/render` には `workerd` エントリはありません。
+
+たとえば、Worker の `fetch` 内で Markdown をパースできます:
+
+```ts
+import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const source = new URL(request.url).searchParams.get("source") ?? "# Hello";
+    const result = await parseToAst(source, { filename: "post.md" });
+    return Response.json(result);
+  },
+};
+```
+
+Wrangler はデフォルトのモジュールルールで `.wasm` のインポートを処理するため、追加設定は
+不要です。バンドル済みの Worker を Miniflare で実行する場合は、コピーされた wasm ファイルを
+コンパイル済みモジュールとして登録します:
+
+```ts
+import { Miniflare } from "miniflare";
+
+const miniflare = new Miniflare({
+  modules: true,
+  scriptPath: "dist/worker.js",
+  modulesRoot: "dist",
+  modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+});
+```
+
+`@cloudflare/vite-plugin` を使う経路は未検証です。
+
+wasm トラップが発生すると、代替インスタンスの準備ができたあと、失敗した呼び出しが
+`ZfbMdWasmTrapError` を投げます。復旧のたびに**同じコンパイル済みモジュール**を使い、
+新しいグルーのクロージャから代替インスタンスを作るため、次の呼び出しはその代替インスタンスを
+使います。16 回の復旧に成功したあとでさらにトラップが発生すると、そのエントリは終端状態になり、
+その呼び出しと以後の呼び出しは `ZfbMdWasmTrapRecoveryLimitError` を投げます。
+そのエントリを再び使うには Worker の isolate を作り直してください。parse と highlight の
+復旧状態は互いに独立しています。
 
 ### 出荷アーティファクトのサイズと上限
 

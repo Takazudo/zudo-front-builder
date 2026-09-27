@@ -35,6 +35,7 @@
     },
     "./highlight": {
       "types": "./src/highlight.ts",
+      "workerd": "./src/highlight-workerd.ts",
       "browser": "./src/highlight-browser.ts",
       "default": "./src/highlight.ts"
     },
@@ -45,6 +46,7 @@
     },
     "./parse": {
       "types": "./src/parse.ts",
+      "workerd": "./src/parse-workerd.ts",
       "browser": "./src/parse-browser.ts",
       "default": "./src/parse.ts"
     }
@@ -66,6 +68,7 @@
       },
       "./highlight": {
         "types": "./dist/highlight.d.ts",
+        "workerd": "./dist/highlight-workerd.js",
         "browser": "./dist/highlight-browser.js",
         "default": "./dist/highlight.js"
       },
@@ -76,6 +79,7 @@
       },
       "./parse": {
         "types": "./dist/parse.d.ts",
+        "workerd": "./dist/parse-workerd.js",
         "browser": "./dist/parse-browser.js",
         "default": "./dist/parse.js"
       }
@@ -104,10 +108,11 @@
     "binaryen": "130.0.0",
     "esbuild": "0.27.7",
     "mdast-util-to-hast": "^13.2.1",
+    "miniflare": "4.20260424.0",
+    "remark-directive": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "remark-mdx": "^3.1.1",
     "remark-parse": "^11.0.0",
-    "remark-directive": "^4.0.0",
     "typescript": "^5.9.0",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",

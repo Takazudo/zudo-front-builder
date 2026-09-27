@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createStaticWasmApi } from "../src/runtime-static.js";
 
 import {
   createWasmApi,
@@ -587,5 +588,154 @@ describe("transient initialization retry", () => {
       glueImportAttempts: 2,
     });
     expectTrapStateUntouched(api);
+  });
+});
+
+describe("static factory runtime", () => {
+  it("reuses one module and makes fresh glue for each recovery", async () => {
+    let creations = 0;
+    const modules: WebAssembly.Module[] = [];
+    const api = createStaticWasmApi({
+      module: () => FAKE_MODULE,
+      createGlue: () => {
+        const current = ++creations;
+        return fakeGlue(
+          (input?: { module: WebAssembly.Module }) => {
+            modules.push(input!.module);
+          },
+          () => {
+            if (current <= 2) throw new WebAssembly.RuntimeError("trap");
+          },
+        );
+      },
+    });
+    await api.init();
+    await expect(api.__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
+    await expect(api.__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
+    await expect(api.version()).resolves.toBe("1.2.3-test");
+    expect(creations).toBe(3);
+    expect(modules).toEqual([FAKE_MODULE, FAKE_MODULE, FAKE_MODULE]);
+    expect(api.__getTrapRecoveryStateForTests()).toMatchObject({
+      compiledModuleLoads: 1,
+      freshInstanceStarts: 3,
+      glueImportAttempts: 3,
+      currentGeneration: 2,
+      trapRecoveriesStarted: 2,
+    });
+  });
+
+  it("single-flights reporters and stops after sixteen recoveries", async () => {
+    let creations = 0;
+    const api = createStaticWasmApi({
+      module: FAKE_MODULE,
+      createGlue: () => {
+        creations++;
+        return fakeGlue(undefined, () => {
+          throw new WebAssembly.RuntimeError("trap");
+        });
+      },
+    });
+    await api.init();
+    const results = await Promise.allSettled([
+      api.__forceTrapForTests(),
+      api.__forceTrapForTests(),
+      api.__forceTrapForTests(),
+    ]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason).toBeInstanceOf(ZfbMdWasmTrapError);
+    }
+    expect(creations).toBe(2);
+    for (let i = 1; i < 16; i++) {
+      await expect(api.__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
+    }
+    expect(creations).toBe(17);
+    await expect(api.__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapRecoveryLimitError);
+    expect(api.__getTrapRecoveryStateForTests()).toMatchObject({
+      currentGeneration: 16,
+      trapRecoveriesStarted: 16,
+      terminal: true,
+    });
+  });
+
+  it.each(["createGlue", "initSync"])(
+    "retries throwing %s without spending trap budget",
+    async (failure) => {
+      let creations = 0;
+      const transient = new Error("transient");
+      const api = createStaticWasmApi({
+        module: FAKE_MODULE,
+        createGlue: () => {
+          creations++;
+          if (failure === "createGlue" && creations === 1) throw transient;
+          return fakeGlue(() => {
+            if (failure === "initSync" && creations === 1) throw transient;
+          });
+        },
+      });
+      await expect(api.init()).rejects.toBe(transient);
+      await expect(api.version()).resolves.toBe("1.2.3-test");
+      expect(creations).toBe(2);
+      expect(api.__getTrapRecoveryStateForTests()).toMatchObject({
+        compiledModuleLoads: 1,
+        freshInstanceStarts: 2,
+        glueImportAttempts: 2,
+        currentGeneration: 0,
+        trapRecoveriesStarted: 0,
+        terminal: false,
+      });
+    },
+  );
+
+  it("keeps the newer instance when stale rejection cleanup runs", async () => {
+    const firstModule = deferred<WebAssembly.Module>();
+    const secondModule = deferred<WebAssembly.Module>();
+    let loads = 0;
+    let creations = 0;
+    const api = createStaticWasmApi({
+      module: () => (++loads === 1 ? firstModule.promise : secondModule.promise),
+      createGlue: () => {
+        creations++;
+        return fakeGlue();
+      },
+    });
+    type RejectionHandler = (reason: unknown) => unknown;
+    const promisePrototype = Promise.prototype as unknown as {
+      catch(onRejected?: RejectionHandler | null): Promise<unknown>;
+    };
+    const originalCatch = promisePrototype.catch;
+    const staleCleanups: Array<() => void> = [];
+    promisePrototype.catch = function (this: Promise<unknown>, onRejected) {
+      return originalCatch.call(this, (reason: unknown) => {
+        if (!onRejected) throw reason;
+        const result = onRejected(reason);
+        staleCleanups.push(() => {
+          void onRejected(reason);
+        });
+        return result;
+      });
+    };
+    try {
+      const first = api.init();
+      await Promise.resolve();
+      firstModule.reject(new Error("failed"));
+      await expect(first).rejects.toThrow("failed");
+      expect(staleCleanups).toHaveLength(2);
+      const retry = api.init();
+      await Promise.resolve();
+      expect(loads).toBe(2);
+      expect(creations).toBe(2);
+      for (const cleanup of staleCleanups) cleanup();
+      const secondCaller = api.version();
+      expect(loads).toBe(2);
+      expect(creations).toBe(2);
+      secondModule.resolve(FAKE_MODULE);
+      await expect(retry).resolves.toBeUndefined();
+      await expect(secondCaller).resolves.toBe("1.2.3-test");
+    } finally {
+      promisePrototype.catch = originalCatch;
+    }
+    expect(loads).toBe(2);
+    expect(creations).toBe(2);
   });
 });

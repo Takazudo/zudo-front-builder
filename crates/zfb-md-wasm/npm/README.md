@@ -665,6 +665,33 @@ The root import remains the compatibility choice for code that also calls
 `compile`, and the existing highlight import remains compatible. This is also
 how the package's vitest suite and parse benchmark exercise the built wasm.
 
+## Cloudflare Workers (workerd)
+
+Only `./parse` and `./highlight` select `workerd` entries; the root and
+`./render` do not. In a Worker, use the same public subpath as in Node:
+
+```ts
+import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const source = new URL(request.url).searchParams.get("source") ?? "# Hello";
+    return Response.json(await parseToAst(source, { filename: "post.md" }));
+  },
+};
+```
+
+Wrangler's default module rules handle the static `.wasm` imports without
+extra configuration. For a bundled Worker in Miniflare, use
+`modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }]`.
+`@cloudflare/vite-plugin` has not been tested.
+
+After a trap, each recovery creates a fresh glue closure against the same
+compiled module. The next call uses the replacement instance. A further trap
+after 16 successful recoveries makes that entry terminal and throws
+`ZfbMdWasmTrapRecoveryLimitError` on that and later calls; recycle the Worker
+isolate. Parse and highlight keep independent recovery state.
+
 ## Parity guarantee & limitations
 
 Output matches zfb's native pipeline on a fixed fixture corpus (the parity
