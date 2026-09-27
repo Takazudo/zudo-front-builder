@@ -19,6 +19,9 @@
  *      cdylib` because the manifest is rlib-only — see Cargo.toml)
  *   2. wasm-bindgen --target web                (ESM glue, browser + Node)
  *   3. wasm-opt -O1 (binaryen, pinned via the `binaryen` devDependency)
+ *      For the parse-only and highlight-only artifacts, also derives a
+ *      synchronous createGlue() factory from wasm-bindgen's canonical web
+ *      glue so each Workerd instance owns its mutable JS glue state.
  *
  * Sequencing between the four artifacts is load-bearing: every cargo rustc
  * invocation writes the SAME cdylib path
@@ -43,7 +46,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  cpSync,
+  renameSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -88,6 +99,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "highlight"],
     outName: "zfb_md_wasm_highlight",
     dirName: "wasm-highlight",
+    workerd: true,
     gzipCeiling: SHIPPED_SIZES.ceilings.highlight,
   },
   {
@@ -104,9 +116,241 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "parse"],
     outName: "zfb_md_wasm_parse",
     dirName: "wasm-parse",
+    workerd: true,
     gzipCeiling: SHIPPED_SIZES.ceilings.parse,
   },
 ];
+
+const FACTORY_CAPABILITIES = new Set(["parseToAst", "highlightCode"]);
+
+function matchingBrace(source, openIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === "/" && next === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+
+  throw new Error("wasm-bindgen factory transform found an unterminated function body");
+}
+
+function countCodeIdentifier(source, identifier) {
+  let count = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === "/" && next === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      continue;
+    }
+
+    if (!source.startsWith(identifier, index)) continue;
+    const previous = source[index - 1];
+    const following = source[index + identifier.length];
+    const isIdentifierCharacter = (value) => value !== undefined && /[A-Za-z0-9_$]/.test(value);
+    if (!isIdentifierCharacter(previous) && !isIdentifierCharacter(following)) {
+      count += 1;
+      index += identifier.length - 1;
+    }
+  }
+
+  return count;
+}
+
+function removeFunction(source, name) {
+  const pattern = new RegExp(
+    `(?:^|\\n)[ \\t]*(?:async[ \\t]+)?function[ \\t]+${name}[ \\t]*\\(`,
+    "g",
+  );
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) {
+    throw new Error(
+      `wasm-bindgen factory transform expected one function declaration for ${name}; found ${matches.length}`,
+    );
+  }
+
+  const match = matches[0];
+  const functionIndex = match.index + match[0].lastIndexOf("function");
+  const declarationStart = source.lastIndexOf("\n", match.index) + 1;
+  const parameterEnd = source.indexOf(")", functionIndex);
+  const bodyStart = source.indexOf("{", parameterEnd + 1);
+  if (bodyStart === -1) {
+    throw new Error(`wasm-bindgen factory transform could not find the body for ${name}`);
+  }
+  const bodyEnd = matchingBrace(source, bodyStart);
+  return source.slice(0, declarationStart) + source.slice(bodyEnd + 1);
+}
+
+function parseFactoryExports(source, capability) {
+  const exportPattern = /^[ \t]*export[ \t]*\{([\s\S]*?)\}[ \t]*;?[ \t]*$/gm;
+  const matches = [...source.matchAll(exportPattern)];
+  const expectedBlock = ["initSync", "__wbg_init as default"].sort();
+  const expectedFunctionExports = ["__forceTrapForTests", capability, "version"].sort();
+  if (matches.length !== 1) {
+    throw new Error(
+      `wasm-bindgen factory transform expected one generated export block; found ${matches.length}`,
+    );
+  }
+
+  const actualBlock = matches[0][1]
+    .split(",")
+    .map((name) => name.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+    .sort();
+  const functionExportPattern =
+    /^[ \t]*export[ \t]+(?:async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(/gm;
+  const actualFunctionExports = [...source.matchAll(functionExportPattern)]
+    .map((match) => match[1])
+    .sort();
+  if (
+    JSON.stringify(actualBlock) !== JSON.stringify(expectedBlock) ||
+    JSON.stringify(actualFunctionExports) !== JSON.stringify(expectedFunctionExports)
+  ) {
+    throw new Error(
+      `wasm-bindgen factory transform expected exports [` +
+        `${[...expectedFunctionExports, ...expectedBlock].sort().join(", ")}]; ` +
+        `received [` +
+        `${[...actualFunctionExports, ...actualBlock].sort().join(", ")}]`,
+    );
+  }
+  return { exportBlock: matches[0] };
+}
+
+function factoryDeclaration(capability) {
+  const parameter = capability === "parseToAst" ? "source" : "code";
+  return [
+    "export function createGlue(): {",
+    "  initSync(input: { module: WebAssembly.Module }): unknown;",
+    `  ${capability}(${parameter}: string, optionsJson: string): string;`,
+    "  version(): string;",
+    "  __forceTrapForTests(): void;",
+    "};",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Convert pinned wasm-bindgen web-target glue into a synchronous, per-instance
+ * factory. The generated module body is enclosed by createGlue(), so all
+ * wasm-bindgen state (including cached views, externrefs, and finalizers) is
+ * local to one instance. The strict export/token checks intentionally fail
+ * closed when wasm-bindgen changes its output shape.
+ */
+export function transformWasmBindgenGlueToFactory(source, capability) {
+  if (!FACTORY_CAPABILITIES.has(capability)) {
+    throw new Error(`unsupported wasm-bindgen factory capability: ${capability}`);
+  }
+
+  const { exportBlock } = parseFactoryExports(source, capability);
+  let body =
+    source.slice(0, exportBlock.index) + source.slice(exportBlock.index + exportBlock[0].length);
+  body = body.replace(/^([ \t]*)export([ \t]+(?:async[ \t]+)?function[ \t]+)/gm, "$1$2");
+  for (const name of ["__wbg_load", "__wbg_init"]) {
+    body = removeFunction(body, name);
+  }
+
+  for (const name of ["initSync", capability, "version", "__forceTrapForTests"]) {
+    const declaration = new RegExp(
+      `(?:^|\\n)[ \\t]*(?:async[ \\t]+)?function[ \\t]+${name}[ \\t]*\\(`,
+    );
+    if (!declaration.test(body)) {
+      throw new Error(`wasm-bindgen factory transform expected function declaration ${name}`);
+    }
+  }
+
+  const factorySource =
+    `export function createGlue() {\n${body.trim()}\n` +
+    `  return { initSync, ${capability}, version, __forceTrapForTests };\n}\n`;
+  const forbidden = [
+    ["import.meta", /\bimport\s*\.\s*meta\b/],
+    ["fetch(", /\bfetch\s*\(/],
+    ["import(", /\bimport\s*\(/],
+    ["__wbg_init", /\b__wbg_init\b/],
+    ["__wbg_load", /\b__wbg_load\b/],
+    [".zfb-resource.mjs", /\.zfb-resource\.mjs/],
+  ];
+  for (const [token, pattern] of forbidden) {
+    if (pattern.test(factorySource)) {
+      throw new Error(`wasm-bindgen factory transform left forbidden token ${token}`);
+    }
+  }
+
+  if (countCodeIdentifier(factorySource, "export") !== 1) {
+    throw new Error("wasm-bindgen factory transform left a residual export");
+  }
+  if (!/^export function createGlue\(\)/m.test(factorySource)) {
+    throw new Error("wasm-bindgen factory transform did not emit createGlue as its only export");
+  }
+  if (source.includes("__wbindgen_start") && !factorySource.includes("__wbindgen_start")) {
+    throw new Error("wasm-bindgen factory transform removed synchronous __wbindgen_start");
+  }
+
+  return { javascript: factorySource, declaration: factoryDeclaration(capability) };
+}
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -298,12 +542,13 @@ export function reportCeilings(stats, policy, log) {
 
 /**
  * Builds one wasm artifact end-to-end (cargo rustc -> wasm-bindgen ->
- * wasm-opt) into `srcOutDir`. `cargoFeatureArgs` is `[]` for the default
+ * wasm-opt) into `srcOutDir`. `workerd` selects whether this artifact also
+ * emits the parse/highlight factory pair. `cargoFeatureArgs` is `[]` for the default
  * artifact or the exact singleton feature arguments for a slim artifact;
  * `outName` becomes both the wasm-bindgen `--out-name` and the emitted file
  * stems (`<outName>_bg.wasm`, `<outName>_glue.zfb-resource.mjs`, …).
  */
-function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir }) {
+function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir, workerd }) {
   rmSync(srcOutDir, { recursive: true, force: true });
   mkdirSync(srcOutDir, { recursive: true });
 
@@ -394,11 +639,22 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
   log(`${label} wasm-opt output: ${fmtBytes(finalSize)}`);
   log(`${label} gzip -9: ${fmtBytes(gzipSize)}`);
 
+  if (workerd) {
+    const capability = label === "parse-only" ? "parseToAst" : "highlightCode";
+    const { javascript, declaration } = transformWasmBindgenGlueToFactory(
+      readFileSync(resourceGluePath, "utf8"),
+      capability,
+    );
+    writeFileSync(resolve(srcOutDir, `${outName}_glue.zfb-factory.mjs`), javascript);
+    writeFileSync(resolve(srcOutDir, `${outName}_glue.zfb-factory.d.mts`), declaration);
+  }
+
   const expectedFiles = [
     `${outName}_glue.zfb-resource.mjs`,
     `${outName}_glue.zfb-resource.d.mts`,
     `${outName}_bg.wasm`,
     `${outName}_bg.wasm.d.ts`,
+    ...(workerd ? [`${outName}_glue.zfb-factory.mjs`, `${outName}_glue.zfb-factory.d.mts`] : []),
   ].sort();
   const actualFiles = readdirSync(srcOutDir).sort();
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
@@ -439,6 +695,7 @@ function main(argv) {
       cargoFeatureArgs: artifact.cargoFeatureArgs,
       outName: artifact.outName,
       srcOutDir: resolve(pkgRoot, "src", artifact.dirName),
+      workerd: artifact.workerd === true,
     }),
   }));
 
