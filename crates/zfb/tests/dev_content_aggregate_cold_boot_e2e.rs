@@ -111,7 +111,14 @@ impl DevSession {
     }
 
     fn html_root(&self) -> PathBuf {
-        self.root.join(".zfb-build").join("dev-pages")
+        let parent = self.root.join(".zfb-build").join("dev-pages");
+        let prefix = format!("session-{}-", self.guard.pgid);
+        std::fs::read_dir(&parent)
+            .expect("dev HTML sessions")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .expect("this dev process's HTML session")
+            .path()
     }
 
     fn graph_cache_path(&self) -> PathBuf {

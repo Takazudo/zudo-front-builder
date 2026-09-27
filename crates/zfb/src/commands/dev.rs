@@ -1339,11 +1339,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             dev_html_root.display(),
         );
     }
-    if !dev_html_root.exists() {
-        std::fs::create_dir_all(&dev_html_root).with_context(|| {
-            format!("failed to create dev html dir {}", dev_html_root.display())
-        })?;
-    }
+    // Keep the guard alive until server/tasks have shut down. No startup,
+    // including a failed bind, can delete another session's documents.
+    let dev_html_session = create_dev_html_session(&dev_html_root)?;
+    let dev_html_root = dev_html_session.path().to_path_buf();
 
     // Issue #1189 — dev's STABLE served assets (`styles.css`, `islands.js`,
     // island chunks, `client/*.js`) must NOT land in the project's `outDir`
@@ -5025,9 +5024,7 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
 /// reshaping at the call sites, exactly as Wave 1 set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BootLazyMode {
-    /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
-    /// route exists on disk before the server is ready") are preserved
-    /// exactly.
+    /// Explicit eager boot: render every route before draining edits.
     Off,
     /// `ZFB_DEV_BOOT_LAZY=1|true` (issue #1057): boot-lazy only when a
     /// servable prebuilt `dist/` seed exists (see
@@ -5058,10 +5055,10 @@ impl BootLazyMode {
     }
 }
 
-/// Compile-time default for the opt-in boot-lazy switch (issue #1057). OFF —
-/// the default `zfb dev` boot semantics ("every route exists on disk before
-/// the server is ready") are preserved exactly.
-const BOOT_LAZY_DEFAULT: BootLazyMode = BootLazyMode::Off;
+/// Render documents on demand at boot too. An eager all-page render keeps
+/// the watcher drain blocked after `ready`, delaying early edits (#3239).
+/// `ZFB_DEV_BOOT_LAZY=0` or `ZFB_DEV_EAGER=1` restores eager startup.
+const BOOT_LAZY_DEFAULT: BootLazyMode = BootLazyMode::Cold;
 
 /// Pure boot-lazy decision (issue #1057; mode-aware since #1807, `Cold`
 /// activated by #1808): resolves the [`BootLazyMode`] the env asked for via
@@ -5260,8 +5257,9 @@ fn deferred_bundle_failure_message(mode: BootLazyMode, err_chain: &str) -> Strin
 /// Pure precedence rule for the boot-lazy mode (issue #1057; 3-state since
 /// the #1806/#1807 Cold Lazy Boot epic, `cold` activated by #1808):
 /// `ZFB_DEV_BOOT_LAZY=1|true` → [`BootLazyMode::Auto`]; `=cold` (same
-/// case/whitespace insensitivity) → [`BootLazyMode::Cold`]; everything else
-/// (unset / `0` / unrecognized) falls back to [`BOOT_LAZY_DEFAULT`] (`Off`).
+/// case/whitespace insensitivity) → [`BootLazyMode::Cold`].
+/// Unset uses seedless lazy boot; explicit `0`/`false` and unrecognized
+/// values retain the legacy eager behavior.
 fn resolve_boot_lazy(var: Option<&str>) -> BootLazyMode {
     match var {
         Some(raw) => {
@@ -5271,7 +5269,7 @@ fn resolve_boot_lazy(var: Option<&str>) -> BootLazyMode {
             } else if t.eq_ignore_ascii_case("cold") {
                 BootLazyMode::Cold
             } else {
-                BOOT_LAZY_DEFAULT
+                BootLazyMode::Off
             }
         }
         None => BOOT_LAZY_DEFAULT,
@@ -10311,7 +10309,7 @@ fn seed_frontmatter_hashes(
 /// `<link rel="stylesheet">` / islands `<script type="module">` head
 /// injections and breaking subsequent `pnpm preview`.
 ///
-/// Dev now writes to `<project_root>/.zfb-build/dev-pages/`. This sits
+/// Dev now writes to a session directory under `<project_root>/.zfb-build/dev-pages/`. This sits
 /// under the existing `.zfb-build/` intermediate directory (already
 /// `.gitignore`d by the project templates) and is read back by
 /// `DevRenderSession::render_one_with` to populate the in-memory
@@ -10319,6 +10317,21 @@ fn seed_frontmatter_hashes(
 /// lookups are URL-keyed and never touch this path.
 fn dev_html_root_for(project_root: &Path) -> PathBuf {
     project_root.join(".zfb-build").join("dev-pages")
+}
+
+/// Each dev process gets fresh output, leaving old/active sessions untouched.
+fn create_dev_html_session(parent: &Path) -> Result<tempfile::TempDir> {
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create dev html parent {}", parent.display()))?;
+    tempfile::Builder::new()
+        .prefix(&format!("session-{}-", std::process::id()))
+        .tempdir_in(parent)
+        .with_context(|| {
+            format!(
+                "failed to create dev html session under {}",
+                parent.display()
+            )
+        })
 }
 
 /// The isolated directory `zfb dev` writes its STABLE served assets into
@@ -14146,6 +14159,28 @@ mod tests {
         assert!(messages[1].contains("plugin-b") && messages[1].contains("virtual:b"));
     }
 
+    #[test]
+    fn dev_html_sessions_isolate_old_and_active_output() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = dev_html_root_for(root.path());
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(parent.join("index.html"), "old process").unwrap();
+        let first = create_dev_html_session(&parent).unwrap();
+        std::fs::write(first.path().join("index.html"), "active process").unwrap();
+        let failed_start = create_dev_html_session(&parent).unwrap();
+        assert_ne!(first.path(), failed_start.path());
+        assert!(!failed_start.path().join("index.html").exists());
+        drop(failed_start);
+        assert_eq!(
+            std::fs::read_to_string(first.path().join("index.html")).unwrap(),
+            "active process"
+        );
+        assert_eq!(
+            std::fs::read_to_string(parent.join("index.html")).unwrap(),
+            "old process"
+        );
+    }
+
     /// Issue #534 regression — dev's per-route HTML output dir must live
     /// under `.zfb-build/`, NOT under the project's `outDir` (`dist/`).
     /// If this contract is broken, `pnpm dev` after a clean `pnpm build`
@@ -15043,11 +15078,11 @@ mod tests {
             /// Issue #1057 — boot-lazy MODE resolution (3-state since the
             /// #1806/#1807 Cold Lazy Boot epic): `1`/`true`
             /// (case/whitespace-insensitive) → `Auto`; `cold` (same
-            /// insensitivity) → `Cold`; everything else (unset, `0`,
-            /// unrecognized) → `Off`.
+            /// insensitivity) → `Cold`, also the unset default. Explicit `0`
+            /// and unrecognized values retain eager `Off`.
             #[test]
             fn boot_lazy_switch_resolution() {
-                assert_eq!(resolve_boot_lazy(None), BootLazyMode::Off);
+                assert_eq!(resolve_boot_lazy(None), BootLazyMode::Cold);
                 assert_eq!(resolve_boot_lazy(Some("0")), BootLazyMode::Off);
                 assert_eq!(resolve_boot_lazy(Some("false")), BootLazyMode::Off);
                 assert_eq!(resolve_boot_lazy(Some("banana")), BootLazyMode::Off);
@@ -15081,8 +15116,8 @@ mod tests {
                 assert_eq!(boot_lazy_decision(false, Some("1")), BootLazyMode::Off);
                 assert_eq!(boot_lazy_decision(false, Some("true")), BootLazyMode::Off);
                 assert_eq!(boot_lazy_decision(false, Some("cold")), BootLazyMode::Off);
-                // lazy on but env off/unset => Off.
-                assert_eq!(boot_lazy_decision(true, None), BootLazyMode::Off);
+                // Unset defaults to Cold; explicit off remains Off.
+                assert_eq!(boot_lazy_decision(true, None), BootLazyMode::Cold);
                 assert_eq!(boot_lazy_decision(true, Some("0")), BootLazyMode::Off);
             }
 
@@ -15169,8 +15204,8 @@ mod tests {
                 assert!(defer_dev_bundle_decision(true, Some("1"), true, Some("1")));
                 // boot-lazy on but NO servable dist => eager (no safe seed).
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
-                // servable dist but boot-lazy OFF (env off) => eager.
-                assert!(!defer_dev_bundle_decision(true, None, true, None));
+                // The unset default is seedless lazy; an explicit off remains eager.
+                assert!(defer_dev_bundle_decision(true, None, true, None));
                 assert!(!defer_dev_bundle_decision(true, Some("0"), true, None));
                 // servable dist + env on but lazy rendering OFF => eager
                 // (no render-on-request hook is installed).
@@ -15188,11 +15223,10 @@ mod tests {
                     Some("false")
                 ));
 
-                // The opt-out can only SUPPRESS, never force-enable: with lazy off,
-                // boot-lazy off, or no servable dist, the gate stays false even when
-                // the opt-out is unset/opted-in.
+                // The opt-out suppresses deferral; an unset boot mode now uses Cold.
+                // Explicit Auto still requires a seed.
                 assert!(!defer_dev_bundle_decision(false, Some("1"), true, None));
-                assert!(!defer_dev_bundle_decision(true, None, true, Some("true")));
+                assert!(defer_dev_bundle_decision(true, None, true, Some("true")));
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
 
                 // #1808 — `cold` is now ACTIVE and seedless: it defers with
@@ -15238,8 +15272,8 @@ mod tests {
             fn defer_decision_matrix_off_auto_cold_x_seed_x_defer_optout() {
                 // (boot_lazy_var, dist_servable, expected defer when NOT opted out)
                 let cases: &[(Option<&str>, bool, bool)] = &[
-                    (None, true, false),
-                    (None, false, false),
+                    (None, true, true),
+                    (None, false, true),
                     (Some("0"), true, false),
                     (Some("0"), false, false),
                     (Some("1"), true, true),
