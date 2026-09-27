@@ -73,6 +73,26 @@ describe("slim artifact descriptors", () => {
   });
 
   it("publishes matching source and dist conditional exports", () => {
+    for (const entry of ["./parse", "./highlight"] as const) {
+      expect(Object.keys(packageJson.exports[entry])).toEqual([
+        "types",
+        "workerd",
+        "browser",
+        "default",
+      ]);
+      expect(Object.keys(packageJson.publishConfig.exports[entry])).toEqual([
+        "types",
+        "workerd",
+        "browser",
+        "default",
+      ]);
+    }
+    expect(packageJson.exports["./highlight"]).toEqual({
+      types: "./src/highlight.ts",
+      workerd: "./src/highlight-workerd.ts",
+      browser: "./src/highlight-browser.ts",
+      default: "./src/highlight.ts",
+    });
     expect(packageJson.exports["./render"]).toEqual({
       types: "./src/render.ts",
       browser: "./src/render-browser.ts",
@@ -80,8 +100,15 @@ describe("slim artifact descriptors", () => {
     });
     expect(packageJson.exports["./parse"]).toEqual({
       types: "./src/parse.ts",
+      workerd: "./src/parse-workerd.ts",
       browser: "./src/parse-browser.ts",
       default: "./src/parse.ts",
+    });
+    expect(packageJson.publishConfig.exports["./highlight"]).toEqual({
+      types: "./dist/highlight.d.ts",
+      workerd: "./dist/highlight-workerd.js",
+      browser: "./dist/highlight-browser.js",
+      default: "./dist/highlight.js",
     });
     expect(packageJson.publishConfig.exports["./render"]).toEqual({
       types: "./dist/render.d.ts",
@@ -90,6 +117,7 @@ describe("slim artifact descriptors", () => {
     });
     expect(packageJson.publishConfig.exports["./parse"]).toEqual({
       types: "./dist/parse.d.ts",
+      workerd: "./dist/parse-workerd.js",
       browser: "./dist/parse-browser.js",
       default: "./dist/parse.js",
     });

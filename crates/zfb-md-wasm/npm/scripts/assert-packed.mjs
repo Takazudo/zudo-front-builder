@@ -16,6 +16,8 @@ const ENTRY_FILES = [
   "highlight.d.ts",
   "highlight-browser.js",
   "highlight-browser.d.ts",
+  "highlight-workerd.js",
+  "highlight-workerd.d.ts",
   "render.js",
   "render.d.ts",
   "render-browser.js",
@@ -24,6 +26,8 @@ const ENTRY_FILES = [
   "parse.d.ts",
   "parse-browser.js",
   "parse-browser.d.ts",
+  "parse-workerd.js",
+  "parse-workerd.d.ts",
 ].map((name) => `package/dist/${name}`);
 
 export const WASM_RESOURCE_SETS = [
