@@ -3508,8 +3508,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 *slot = manifest_digest;
             }
 
-            // 5. Boot render — eager by default (zfb#642 / #644), opt-in
-            //    boot-lazy (#1057). Returns the eager outcome (or `None` for
+            // 5. Boot documents — on demand by default; explicit eager mode
+            //    renders all pages. Returns the eager outcome (or `None` for
             //    boot-lazy / no-pages / render error) so `run_with_boot` can
             //    broadcast a reload after the render lands. See
             //    `run_boot_render`.
@@ -10837,10 +10837,9 @@ fn make_render_callback(
         // the #1027 activation flip) routes the tick through the
         // eager-vs-stale split; OFF (the `ZFB_DEV_EAGER=1` hatch) falls
         // through to the fully-eager fan-out below, untouched. The
-        // session's FIRST invocation — the eager initial build at boot —
-        // stays on the eager path even when the switch is ON: the
-        // request-time stale-render adapter doesn't exist yet, so a
-        // lazy boot would 404 every route (review finding on #1025).
+        // explicit eager boot's FIRST invocation stays eager even when
+        // later ticks are lazy. Boot-lazy consumes this flag without an
+        // initial build, so its first watcher tick uses the lazy path.
         #[cfg(feature = "embed_v8")]
         if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
             let result = lazy_render_tick(
