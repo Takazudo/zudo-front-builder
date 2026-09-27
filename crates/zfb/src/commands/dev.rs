@@ -4360,6 +4360,13 @@ fn run_boot_render(
             } else {
                 session.mark_all_routes_stale()
             };
+            // No eager render will open this gate. Track paths() observations
+            // now and add each page's reads as it is rendered on request.
+            if let Err(error) = session.complete_boot_content_provenance() {
+                output::warn(format!(
+                    "content provenance unavailable after lazy boot: {error:#}"
+                ));
+            }
             match mode {
                 BootLazyMode::Cold => output::info(format!(
                     "dev: cold-lazy — no prebuilt dist/ seed required; {n} route(s) render \
@@ -6775,8 +6782,8 @@ impl DevRenderSession {
         }
     }
 
-    /// Enable provenance only after the eager boot render has had a chance to
-    /// execute both `paths()` and ordinary page reads.
+    /// Enable provenance at the boot publication boundary. Eager boot already
+    /// observed every page; lazy boot adds page reads as requests render them.
     #[cfg(feature = "embed_v8")]
     fn complete_boot_content_provenance(&self) -> Result<()> {
         if let Ok(mut state) = self.inner.content_trace.lock() {

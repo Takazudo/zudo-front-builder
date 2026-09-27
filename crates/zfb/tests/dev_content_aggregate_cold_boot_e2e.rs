@@ -1330,6 +1330,16 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         let post_index = html_root.join("posts/index.html");
         let tag_page = html_root.join("tags/guide/index.html");
         let pagination = html_root.join("posts/page/1/index.html");
+        // Default startup now renders on request; prime this unrelated route
+        // before comparing its bytes/mtime across subsequent invalidations.
+        poll_until_response_contains(
+            &second_client,
+            &format!("{second_base}/posts/beta/"),
+            "V1-BODY-BETA",
+            "restart beta entry first request",
+            &second,
+        )
+        .await;
         poll_until_file_contains(&beta, "V1-BODY-BETA", "restart beta entry boot", &second).await;
 
         // This data edit proves the retagged cache actually loaded: its cached
