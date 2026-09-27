@@ -306,7 +306,10 @@ async fn livereload_js_endpoint_returns_script() {
         "unexpected content-type: {ct}"
     );
     let body = resp.text().await.unwrap();
-    assert!(body.contains("new WebSocket("), "body missing WebSocket client");
+    assert!(
+        body.contains("new WebSocket("),
+        "body missing WebSocket client"
+    );
     let reload_path = format!("/{}/{}", "__zfb", "reload");
     assert!(body.contains(&reload_path), "body missing reload path");
 }
