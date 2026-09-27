@@ -1,0 +1,17 @@
+---
+title: v2.22.0
+sidebar_position: 23
+---
+
+# v2.22.0
+
+Released: 2026-09-27
+
+## Features
+
+- Add `workerd` exports for `/parse` and `/highlight`, so Cloudflare Workers can import the published WASM as static `CompiledWasm` modules without URL loading or dynamic imports (382086b1).
+- Add a static factory runtime strategy that shares bounded, single-flight trap recovery with the existing browser and Node loaders (d50eac69).
+
+## Other Changes
+
+- Generate isolated factory glue for parse and highlight from pinned wasm-bindgen output, with closed resource-set guards for the published artifacts (20014937).

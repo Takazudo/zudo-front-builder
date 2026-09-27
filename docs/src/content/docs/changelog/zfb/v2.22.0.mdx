@@ -1,0 +1,37 @@
+---
+title: v2.22.0
+sidebar_position: 137
+---
+
+# v2.22.0
+
+Released: 2026-09-27
+
+## Features
+
+- Warn when an injected package route contains a private `_`-prefixed segment (97677801).
+
+## Bug Fixes
+
+- Resolve injected routes' SSR dependencies using their shadow-relative metafile paths, so dev watches imported files (b30594ae).
+- Suppress generated islands and Worker entry files at dev watcher intake to avoid redundant rebuilds (a6537c06).
+- Exclude private injected routes from dev materialization, matching build behavior (8b119685).
+- Reconcile static HTML pages and injected route entrypoints when the dev watcher starts (b94abd19).
+- Clear stale page-entry stamps when SSR dependencies are published without a read stamp (b12923c0).
+- Reconcile each changed SSR dependency once per dev tick (05ce4168).
+- Clarify the warning for private injected routes in dev and build (e972c0fa).
+- Catch page-entry and content edits made before the dev watcher is armed (a082194f).
+- Reconcile every file-shaped dependency set when the dev watcher is armed (45a6b33f).
+- Give an actionable error when a nested workspace package sits under an already-linked ancestor (c9f4aa1c).
+- Avoid treating SSR dependencies written just before bundle reads as stale (8ac41879).
+- Serve SSR dependency edits made before their watch is armed (833ce9a4).
+- Skip staging an exact-target file that is already reachable through a link (65973b6c).
+- Refuse shadow writes that would escape through a linked ancestor (7a286574).
+- Require an alias-claim carve-out to stay inside its declared prefix (aa99db57).
+- Preserve manifest-declared sibling `dist/` directories outside alias mirroring and runtime claims (a22b9520).
+- Recognize directory-valued `main`, `module`, and package `imports` declarations when staging workspace packages (33b2ef60).
+
+## Other Changes
+
+- Prefilter bundles by `.wasm` bytes before parsing for SSR WASM references, reducing common dev rebuild cost (99538273).
+- Cache workspace `node_modules` closure scans and skip declaration files during staging (b5651ba2).
