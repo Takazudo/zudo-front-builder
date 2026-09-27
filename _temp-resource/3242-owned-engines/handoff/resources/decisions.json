@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "status": "design_specification",
+  "project": "Takazudo/zudo-front-builder",
+  "prepared_at": "2026-09-27T17:43:34Z",
+  "reviewed_commit": "95d06aea3bc5b70b7f7df3253649673fef4da35a",
+  "authority_note": "D01-D08 reflect the owner's conversation decisions. P01-P10 are recommended implementation defaults, revisable by the local agent with recorded reasons. No engine is implemented or verified by this handoff.",
+  "owner_decisions": [
+    {
+      "id": "D01",
+      "decision": "The owner is zfb's only current user; the new engines target the owner's consumers.",
+      "consequence": "Optimize for the owner's selected consumers and development workflow."
+    },
+    {
+      "id": "D02",
+      "decision": "Tailwind compatibility may be dropped.",
+      "consequence": "No universal class, directive, plugin, theme, or future-release parity requirement."
+    },
+    {
+      "id": "D03",
+      "decision": "Build zudo-wind with an independently fixed specification.",
+      "consequence": "Version owned behavior and adopt upstream ideas on the owner's timing."
+    },
+    {
+      "id": "D04",
+      "decision": "React and Preact compatibility may be dropped; hooks are not required.",
+      "consequence": "Migrate consumer semantics directly without mandatory emulation."
+    },
+    {
+      "id": "D05",
+      "decision": "JSX/component authoring and true hydration are essential.",
+      "consequence": "Support server HTML and adoption of existing browser DOM."
+    },
+    {
+      "id": "D06",
+      "decision": "Prefer a small built-in rendering model.",
+      "consequence": "Use a bounded API with explicit behavior and lifetimes."
+    },
+    {
+      "id": "D07",
+      "decision": "Keep esbuild.",
+      "consequence": "No bundler replacement or custom JS/TS compiler in this work."
+    },
+    {
+      "id": "D08",
+      "decision": "Continue implementation with a local AI agent.",
+      "consequence": "This deliverable is an implementation handoff, with no repository mutation or release."
+    }
+  ],
+  "recommended_defaults": [
+    {
+      "id": "P01",
+      "default": "Native Rust zudo-wind library in crates/zudo-wind."
+    },
+    {
+      "id": "P02",
+      "default": "Reuse the existing CSS/assets pipeline and Lightning CSS where suitable."
+    },
+    {
+      "id": "P03",
+      "default": "Tailwind v4.2.0 is an optional pinned reference for selected adopted cases, not the language authority."
+    },
+    {
+      "id": "P04",
+      "default": "Use a normalized source plan, explicit candidates/safelists, and deterministic contribution replacement/removal."
+    },
+    {
+      "id": "P05",
+      "default": "Original JSX runtime in packages/zudo-react with JSX, server, and client entry points."
+    },
+    {
+      "id": "P06",
+      "default": "Setup-once components; signal/computed objects are live JSX bindings; plain values and .value are snapshots."
+    },
+    {
+      "id": "P07",
+      "default": "Explicit scopes own bindings, activation callbacks, child scopes, and idempotent disposal."
+    },
+    {
+      "id": "P08",
+      "default": "Deterministic hydration boundaries and validation; no silent remount fallback."
+    },
+    {
+      "id": "P09",
+      "default": "Start with static composition, scalar bindings, native events, and forms; add structural regions when required by a real consumer."
+    },
+    {
+      "id": "P10",
+      "default": "Develop engines independently, prove a real CSS slice first, and integrate the JSX runtime after browser behavior is established."
+    }
+  ],
+  "non_goals": [
+    "Full Tailwind or React/Preact compatibility",
+    "Mandatory V8-hosted Tailwind migration stage",
+    "Permanent legacy emulation layer",
+    "esbuild replacement or Rolldown migration",
+    "Implicit per-island mixed-framework support",
+    "Unmeasured performance or bundle-size promises",
+    "Publication or deployment from this handoff task"
+  ],
+  "phase_ids": [
+    "P0",
+    "W0",
+    "W1",
+    "W2",
+    "W3",
+    "W4",
+    "R0",
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "X1"
+  ],
+  "evidence_documents": [
+    "../docs/01-decisions.md",
+    "../docs/05-delivery-plan.md",
+    "../docs/07-sources.md"
+  ]
+}
