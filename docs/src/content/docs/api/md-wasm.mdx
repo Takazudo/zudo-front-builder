@@ -303,6 +303,52 @@ adapter; an AST-to-React renderer may interpret the resulting data. No slim entr
 JavaScript. `renderHtml` is not a sanitizer and raw HTML remains untrusted;
 MDX JSX/expression/ESM-shaped AST nodes remain inert data.
 
+## Cloudflare Workers (workerd)
+
+`@takazudo/zfb-md-wasm/parse` and `@takazudo/zfb-md-wasm/highlight` have a
+`workerd` export condition. Their Worker entries import compiled `.wasm` modules
+statically and create a fresh wasm-bindgen glue closure for each instance.
+The package root and `/render` do not have a `workerd` entry.
+
+For example, a Worker can parse Markdown inside `fetch`:
+
+```ts
+import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const source = new URL(request.url).searchParams.get("source") ?? "# Hello";
+    const result = await parseToAst(source, { filename: "post.md" });
+    return Response.json(result);
+  },
+};
+```
+
+Wrangler handles the `.wasm` imports with its default module rules; no extra
+configuration is needed. When running a bundled Worker with Miniflare, register
+the copied wasm files as compiled modules:
+
+```ts
+import { Miniflare } from "miniflare";
+
+const miniflare = new Miniflare({
+  modules: true,
+  scriptPath: "dist/worker.js",
+  modulesRoot: "dist",
+  modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+});
+```
+
+The `@cloudflare/vite-plugin` path has not been tested.
+
+If a wasm trap occurs, the failing call throws `ZfbMdWasmTrapError` after
+the replacement is ready. Each recovery uses a fresh glue closure around the
+**same compiled module**, so the next call uses a replacement instance. If
+another trap occurs after 16 successful recoveries, that entry becomes terminal
+and throws `ZfbMdWasmTrapRecoveryLimitError` on that and subsequent calls.
+Recycle the Worker isolate before using that entry again. The parse and
+highlight entries have independent recovery state.
+
 ### Shipped artifact sizes and locked ceilings
 
 These are the shipped **2.15.0** artifact rows — optimized final wasm after

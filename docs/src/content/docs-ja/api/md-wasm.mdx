@@ -302,6 +302,52 @@ AST-to-React レンダラーで解釈するためのアダプタです。slim �
 `renderHtml` はサニタイザーではなく、生 HTML は信頼できないままです。MDX の JSX / 式 /
 ESM 形状の AST ノードは不活性なデータとして扱われます。
 
+## Cloudflare Workers（workerd）
+
+`@takazudo/zfb-md-wasm/parse` と `@takazudo/zfb-md-wasm/highlight` には
+`workerd` エクスポート条件があります。Worker 向けのエントリは、コンパイル済みの `.wasm`
+モジュールを静的にインポートし、インスタンスごとに新しい wasm-bindgen グルーのクロージャを
+作ります。パッケージのルートと `/render` には `workerd` エントリはありません。
+
+たとえば、Worker の `fetch` 内で Markdown をパースできます:
+
+```ts
+import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const source = new URL(request.url).searchParams.get("source") ?? "# Hello";
+    const result = await parseToAst(source, { filename: "post.md" });
+    return Response.json(result);
+  },
+};
+```
+
+Wrangler はデフォルトのモジュールルールで `.wasm` のインポートを処理するため、追加設定は
+不要です。バンドル済みの Worker を Miniflare で実行する場合は、コピーされた wasm ファイルを
+コンパイル済みモジュールとして登録します:
+
+```ts
+import { Miniflare } from "miniflare";
+
+const miniflare = new Miniflare({
+  modules: true,
+  scriptPath: "dist/worker.js",
+  modulesRoot: "dist",
+  modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+});
+```
+
+`@cloudflare/vite-plugin` を使う経路は未検証です。
+
+wasm トラップが発生すると、代替インスタンスの準備ができたあと、失敗した呼び出しが
+`ZfbMdWasmTrapError` を投げます。復旧のたびに**同じコンパイル済みモジュール**を使い、
+新しいグルーのクロージャから代替インスタンスを作るため、次の呼び出しはその代替インスタンスを
+使います。16 回の復旧に成功したあとでさらにトラップが発生すると、そのエントリは終端状態になり、
+その呼び出しと以後の呼び出しは `ZfbMdWasmTrapRecoveryLimitError` を投げます。
+そのエントリを再び使うには Worker の isolate を作り直してください。parse と highlight の
+復旧状態は互いに独立しています。
+
 ### 出荷アーティファクトのサイズと上限
 
 出荷された **2.15.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
