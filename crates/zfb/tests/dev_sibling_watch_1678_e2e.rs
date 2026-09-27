@@ -1333,7 +1333,10 @@ async fn first_edit_right_after_ready_3190(
         eprintln!("[dev_sibling_watch_1678 #3190] no esbuild binary available; skipping.");
         return None;
     };
-    let (session, page_url) = boot_3163(workspace, &esbuild, extra_env, "").await?;
+    // These regressions specifically exercise the eager read-before-watch window.
+    let mut env = vec![("ZFB_DEV_BOOT_LAZY", "0")];
+    env.extend_from_slice(extra_env);
+    let (session, page_url) = boot_3163(workspace, &esbuild, &env, "").await?;
     let latency = write_once_until_served(
         &loopback_client(),
         &workspace.join("packages/data/value.json"),
@@ -1438,7 +1441,8 @@ async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
 
 /// The #3190 seams that widen both boot windows: the orchestrator (and so the
 /// watcher) starts 2 s after `ready`, and the eager boot render takes 2 s.
-const SLOW_WATCH_ARM_ENV: [(&str, &str); 2] = [
+const SLOW_WATCH_ARM_ENV: [(&str, &str); 3] = [
+    ("ZFB_DEV_BOOT_LAZY", "0"),
     ("ZFB_DEV_TEST_SLOW_DIGEST_MS", "2000"),
     ("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS", "2000"),
 ];
@@ -1660,6 +1664,96 @@ async fn e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_
         "/preset-about",
         INJECTED_ENTRY_V2,
         "#3210: an injected route entrypoint edit made before the watcher is armed is served",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — real dev server and workspace JSON first-edit regression"]
+async fn e2e_3239_root_claimed_workspace_json_first_edit() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        return;
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    write_zfb_project_shell(root, "workspace-json-site", &["@fixture/data"]);
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'packages/*'\n",
+    )
+    .unwrap();
+    let package = root.join("packages/data");
+    fs::create_dir_all(package.join("presets")).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{"name":"@fixture/data","type":"module","exports":{"./presets/*":"./presets/*"}}"#,
+    )
+    .unwrap();
+    let json = package.join("presets/theme.json");
+    fs::write(&json, json_value(ROOT_DATA_V1)).unwrap();
+    let _runtime = link_embedded_ssr_runtime(root);
+    fs::create_dir_all(root.join("node_modules/@fixture")).unwrap();
+    link_workspace_package(root, "@fixture/data", "../../packages/data");
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    fs::write(
+        root.join("src/data/theme.ts"),
+        "export { default } from '@fixture/data/presets/theme.json';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        ssr_page("import data from '../src/data/theme';", &["data.v"]),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/zz-unrequested.tsx"),
+        r#"
+export default function SlowPage() {
+  const until = Date.now() + 35000;
+  while (Date.now() < until) {}
+  return <html><body>unrequested page</body></html>;
+}
+"#,
+    )
+    .unwrap();
+    // A previous process's scratch output is not a valid cold-start seed.
+    let scratch = root.join(".zfb-build/dev-pages");
+    fs::create_dir_all(&scratch).unwrap();
+    fs::write(scratch.join("index.html"), "PRIOR_PROCESS_SENTINEL").unwrap();
+    let (session, url) = boot_3163(root, &esbuild, &[], "-3239").await.unwrap();
+    fs::write(&json, json_value(ROOT_DATA_V2)).unwrap();
+    let client = loopback_client();
+    let start = Instant::now();
+    let mut served = false;
+    while start.elapsed() < FIRST_EDIT_DEADLINE {
+        let response = client.get(&url).send().await.unwrap();
+        let body = response.text().await.unwrap();
+        assert!(
+            !body.contains("PRIOR_PROCESS_SENTINEL"),
+            "prior-process HTML leaked after ready"
+        );
+        if body.contains(ROOT_DATA_V2) {
+            served = true;
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    assert!(
+        served,
+        "first edit was blocked by an unrequested page: {}",
+        session.logs()
+    );
+    // A later single edit must still reach the running server through the watcher.
+    write_once_until_served(
+        &client,
+        &json,
+        &json_value(ROOT_DATA_V1),
+        &url,
+        ROOT_DATA_V1,
+        "later workspace JSON edit",
+        &session,
     )
     .await;
 }

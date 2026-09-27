@@ -7,8 +7,8 @@
 //! `public/` are reachable at the site root (e.g.
 //! `public/logo.svg` → `/logo.svg`). Every served HTML
 //! response has a small `<script src="/__zfb/livereload.js"></script>`
-//! injected before `</body>`. That script opens an SSE connection to
-//! `/__zfb/reload` and listens for two event types:
+//! injected before `</body>`. That script opens a WebSocket connection to
+//! `/__zfb/reload/ws` and listens for reload events:
 //!
 //! - `page` — the browser does a full `location.reload()`.
 //! - `css` — the browser bumps the query-string on every

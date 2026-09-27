@@ -1,12 +1,15 @@
 # zfb-server
 
-The dev-mode HTTP server for `zudo-front-builder`: axum + SSE live-reload + CSS hot-swap.
+The dev-mode HTTP server for `zudo-front-builder`: axum + WebSocket live-reload + CSS hot-swap.
 
 `zfb-server` runs an [`axum`](https://docs.rs/axum) server that serves in-memory rendered HTML from
 [`zfb-build`](../zfb-build)'s rebuild loop, built `dist/assets/` files, and per-request on-disk
 fallbacks for `dist/` and `public/`. Every served HTML response has a small live-reload
-`<script>` injected before `</body>`, which opens an SSE connection to `/__zfb/reload` and
-listens for `page`, `css`, and `islands` events.
+`<script>` injected before `</body>`, which opens a WebSocket connection to `/__zfb/reload/ws` and
+listens for `page`, `css`, and `islands` events. WebSockets avoid exhausting the
+shared HTTP/1.1 connection pool when many dev tabs are open. The SSE endpoint
+at `/__zfb/reload` remains available for tooling. Both endpoints honor `base`.
+If you proxy the dev server, forward WebSocket upgrades too.
 
 ## Modules
 
@@ -18,7 +21,7 @@ listens for `page`, `css`, and `islands` events.
 | `host_validation` | Host / Origin allowlist guard for non-loopback binds |
 | `inject` | Byte-level live-reload `<script>` injector |
 | `injected_routes` | `InjectedRouteSet` — pattern registry + request-time matcher for plugin-owned routes |
-| `livereload` | SSE bridge: `ReloadEvent`, `outcome_to_events`, `sse_response` |
+| `livereload` | Reload bridge: `ReloadEvent`, `outcome_to_events`, `sse_response`, `websocket_session` |
 | `middleware` | Tower middleware for request extensions |
 | `plugin_middleware` | `DevMiddlewareDispatcher` — plugin dev-middleware dispatch |
 | `render_hook` | Render-on-request hook handle used by lazy dev rendering |

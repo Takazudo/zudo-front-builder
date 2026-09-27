@@ -39,15 +39,10 @@
 //! condition-keyed polling with a deadline, never a bare `sleep` (root
 //! `CLAUDE.md`'s first deflaking root cause).
 //!
-//! **Readiness signal**: the dev server's own ready banner
-//! (`parse_ready_port`, scanning captured stdout) — the same
-//! deterministic boot log line every neighbouring dev e2e test in this
-//! crate keys its wait on. The SSR-contract warning is written to stderr
-//! earlier in the same synchronous boot path (`output::warn` inside
-//! `build_dev_route_tables`, which runs before the HTTP listener starts
-//! and the ready banner prints), so by the time the ready banner appears
-//! any boot-time warning has already landed in the captured stderr file —
-//! no separate wait is needed for it.
+//! **Readiness signals**: the banner identifies the listener's port; a
+//! successful fixture response proves the deferred renderer and route-table
+//! diagnostics have completed. Both positive and negative warning assertions
+//! run after that response, so neither races lazy startup.
 //!
 //! ## Self-skip convention (no `#[ignore]`)
 //!
@@ -205,6 +200,7 @@ fn spawn_dev(fixture: &Path, tmp: &tempfile::TempDir, esbuild: &Path) -> DevSess
         .arg("0")
         .current_dir(&root)
         .env("ZFB_ESBUILD_BIN", esbuild)
+        .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
@@ -346,26 +342,6 @@ async fn positive_fixture_warns_on_boot_and_serves_normally() {
         }
     };
 
-    let stderr = read_log(&session.stderr_path);
-    assert!(
-        stderr.contains(STRONG_TIER_SUBSTRING),
-        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not contain the Strong-tier \
-         SSR-contract warning substring {STRONG_TIER_SUBSTRING:?}.\n{}",
-        session.logs(),
-    );
-    assert!(
-        stderr.contains("route /api/broken:"),
-        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not name the offending route \
-         (/api/broken).\n{}",
-        session.logs(),
-    );
-    assert!(
-        stderr.contains("pages/api/broken.tsx"),
-        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not name the offending file \
-         (pages/api/broken.tsx).\n{}",
-        session.logs(),
-    );
-
     let base = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -401,6 +377,26 @@ async fn positive_fixture_warns_on_boot_and_serves_normally() {
         "positive",
     )
     .await;
+    // A served response proves deferred renderer startup (and diagnostics) finished.
+    let stderr = read_log(&session.stderr_path);
+    assert!(
+        stderr.contains(STRONG_TIER_SUBSTRING),
+        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not contain the Strong-tier \
+         SSR-contract warning substring {STRONG_TIER_SUBSTRING:?}.\n{}",
+        session.logs(),
+    );
+    assert!(
+        stderr.contains("route /api/broken:"),
+        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not name the offending route \
+         (/api/broken).\n{}",
+        session.logs(),
+    );
+    assert!(
+        stderr.contains("pages/api/broken.tsx"),
+        "[ssr_contract_dev_warning_e2e:positive] boot stderr did not name the offending file \
+         (pages/api/broken.tsx).\n{}",
+        session.logs(),
+    );
 }
 
 /// **Negative fixture / precision control**: a real `zfb dev --port 0`
@@ -431,14 +427,6 @@ async fn negative_fixture_boots_without_warning() {
         }
     };
 
-    let stderr = read_log(&session.stderr_path);
-    assert!(
-        !stderr.contains(STRONG_TIER_SUBSTRING) && !stderr.contains("likely incorrect"),
-        "[ssr_contract_dev_warning_e2e:negative] boot stderr contains an SSR-contract warning \
-         for a fixture with no violating route (the precision control failed).\n{}",
-        session.logs(),
-    );
-
     let base = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -466,4 +454,12 @@ async fn negative_fixture_boots_without_warning() {
         "negative",
     )
     .await;
+    // A served response proves deferred renderer startup (and diagnostics) finished.
+    let stderr = read_log(&session.stderr_path);
+    assert!(
+        !stderr.contains(STRONG_TIER_SUBSTRING) && !stderr.contains("likely incorrect"),
+        "[ssr_contract_dev_warning_e2e:negative] boot stderr contains an SSR-contract warning \
+         for a fixture with no violating route (the precision control failed).\n{}",
+        session.logs(),
+    );
 }
