@@ -45,7 +45,7 @@ export class ZfbMdWasmTrapRecoveryLimitError extends Error {
     super(
       `zfb-md-wasm: wasm trap recovery limit reached after ${maxRecoveries} ` +
         `successful re-instantiations. Further automatic recovery is disabled to avoid ` +
-        `unbounded ES module record growth. Reload the JS realm before using zfb-md-wasm ` +
+        `unbounded recovery resource growth. Reload the JS realm before using zfb-md-wasm ` +
         `again, and please report the input that triggered the repeated traps.`,
     );
     this.name = "ZfbMdWasmTrapRecoveryLimitError";

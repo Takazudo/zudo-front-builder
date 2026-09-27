@@ -92,7 +92,7 @@ Validates a raw `parseToAst().ast` tree and returns a detached, `@types/mdast`-c
 ## Error classes
 
 - **`ZfbMdWasmTrapError extends Error`** — thrown by the async call that observed a wasm trap. Constructed with `(cause: unknown)`, exposed via `.cause`. The trapped instance is dropped and a fresh one started from the cached compiled `WebAssembly.Module` **before** this error is thrown, so the very next call already uses the replacement — no caches or globals survive between calls, so re-instantiation loses nothing but time.
-- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — thrown instead of `ZfbMdWasmTrapError` once 16 automatic trap recoveries have been exhausted for the process. Constructed with `(maxRecoveries: number, cause: unknown)`, `cause` exposed via `.cause`. Further recovery stays disabled (to avoid unbounded ES module record growth) until the JS realm is reloaded.
+- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — thrown instead of `ZfbMdWasmTrapError` once 16 automatic trap recoveries have been exhausted for the process. Constructed with `(maxRecoveries: number, cause: unknown)`, `cause` exposed via `.cause`. Further recovery stays disabled (to avoid unbounded resource growth) until the JS realm is reloaded.
 - **`MdastAdapterError extends TypeError`** — thrown by `toMdastRoot`. Carries `path: string` (a JSON-path-like pointer into the offending node, e.g. `"$.children[2].value"`) and `nodeType: string | null` (the node's observed `type`, or `null` when the value wasn't even a typed record).
 
 ## Type reference
