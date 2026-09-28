@@ -4926,11 +4926,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     .with_outdir(outdir.to_path_buf())
     .with_jsx_import_source(islands_jsx_import_source)
     .with_zudo_react_build(if framework == crate::config::Framework::ZudoReact {
-        Some(zfb_build::bundler::zudo_react_build_token_with_inputs(
-            project_root,
-            &plugin_config.alias_entries,
-            &plugin_config.virtual_modules,
-        )?)
+        Some(
+            zfb_build::bundler::zudo_react_build_token_with_inputs_and_output(
+                project_root,
+                &plugin_config.alias_entries,
+                &plugin_config.virtual_modules,
+                outdir,
+            )?,
+        )
     } else {
         None
     })
