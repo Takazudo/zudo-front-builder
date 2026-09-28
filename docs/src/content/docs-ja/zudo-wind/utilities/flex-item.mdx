@@ -1,0 +1,216 @@
+---
+title: フレックス項目
+description: 項目の伸長、収縮、簡略指定のサイズ動作を設定します。
+sidebar_position: 25
+generated: true
+---
+
+項目の伸長、収縮、簡略指定のサイズ動作を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## flex-1
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.flex-1` |
+| クラスパターン | `flex-1` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1 1 0%"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-1` | `flex: 1 1 0%` |
+
+## flex-auto
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.flex-auto` |
+| クラスパターン | `flex-auto` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1 1 auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-auto` | `flex: 1 1 auto` |
+
+## flex-initial
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.flex-initial` |
+| クラスパターン | `flex-initial` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"0 1 auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-initial` | `flex: 0 1 auto` |
+
+## flex-none
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.flex-none` |
+| クラスパターン | `flex-none` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-none` | `flex: none` |
+
+## grow
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.grow` |
+| クラスパターン | `grow` or `grow-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"flex-grow","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex-grow` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `null` | `"1"` |
+| `keyword` | `"0"` | `"0"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex-grow` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `grow` | `flex-grow: 1` |
+
+## shrink
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.shrink` |
+| クラスパターン | `shrink` or `shrink-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"flex-shrink","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex-shrink` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `null` | `"1"` |
+| `keyword` | `"0"` | `"0"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex-shrink` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `shrink` | `flex-shrink: 1` |

@@ -1,0 +1,42 @@
+---
+title: 行の高さ
+description: 設定済みトークンまたは任意の CSS 値から行の高さを設定します。
+sidebar_position: 38
+generated: true
+---
+
+設定済みトークンまたは任意の CSS 値から行の高さを設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## leading
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.leading` |
+| クラスパターン | `leading-<suffix>` |
+| 文法 | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"line-height","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | `lineHeights` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `line-height` (`18`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `line-height` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `line-height` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `leading-[1.5]` | `line-height: 1.5` |

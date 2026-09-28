@@ -1,0 +1,332 @@
+---
+title: 角丸
+description: 設定された角丸の値を、全角、辺の角、個別の角に適用します。
+sidebar_position: 47
+generated: true
+---
+
+設定された角丸の値を、全角、辺の角、個別の角に適用します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## rounded
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded` |
+| クラスパターン | `rounded-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-left-radius`, `border-top-right-radius`, `border-bottom-right-radius`, `border-bottom-left-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-top-right-radius` | `resolved` | `null` |
+| `border-bottom-right-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-full` | `border-top-left-radius: 9999px`; `border-top-right-radius: 9999px`; `border-bottom-right-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-b
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-b` |
+| クラスパターン | `rounded-b-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-bottom-right-radius`, `border-bottom-left-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-bottom-right-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-b-full` | `border-bottom-right-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-l
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-l` |
+| クラスパターン | `rounded-l-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-left-radius`, `border-bottom-left-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-l-full` | `border-top-left-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-r
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-r` |
+| クラスパターン | `rounded-r-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-right-radius`, `border-bottom-right-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-right-radius` | `resolved` | `null` |
+| `border-bottom-right-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-r-full` | `border-top-right-radius: 9999px`; `border-bottom-right-radius: 9999px` |
+
+## rounded-t
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-t` |
+| クラスパターン | `rounded-t-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-left-radius`, `border-top-right-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-top-right-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-t-full` | `border-top-left-radius: 9999px`; `border-top-right-radius: 9999px` |
+
+## rounded-bl
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-bl` |
+| クラスパターン | `rounded-bl-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-bottom-left-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-bl-full` | `border-bottom-left-radius: 9999px` |
+
+## rounded-br
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-br` |
+| クラスパターン | `rounded-br-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-bottom-right-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-bottom-right-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-br-full` | `border-bottom-right-radius: 9999px` |
+
+## rounded-tl
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-tl` |
+| クラスパターン | `rounded-tl-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-left-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-tl-full` | `border-top-left-radius: 9999px` |
+
+## rounded-tr
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.rounded-tr` |
+| クラスパターン | `rounded-tr-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `radii` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `radius` (`27`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-right-radius` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-right-radius` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rounded-tr-full` | `border-top-right-radius: 9999px` |

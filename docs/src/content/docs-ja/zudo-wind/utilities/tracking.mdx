@@ -1,0 +1,42 @@
+---
+title: 字間
+description: 設定済みトークンまたは任意の値で字間を設定します。負の値も使えます。
+sidebar_position: 39
+generated: true
+---
+
+設定済みトークンまたは任意の値で字間を設定します。負の値も使えます。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## tracking
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.tracking` |
+| クラスパターン | `tracking-<suffix>` |
+| 文法 | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"letter-spacing","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | `letterSpacings` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `tracking` (`19`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `letter-spacing` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `letter-spacing` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `tracking-[0.08em]` | `letter-spacing: 0.08em` |

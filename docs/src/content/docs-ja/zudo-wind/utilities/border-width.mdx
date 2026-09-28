@@ -1,0 +1,265 @@
+---
+title: ボーダー幅
+description: 物理的なボーダー幅をピクセルで設定し、実線のボーダースタイルにします。
+sidebar_position: 44
+generated: true
+---
+
+物理的なボーダー幅をピクセルで設定し、実線のボーダースタイルにします。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## border
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width` |
+| クラスパターン | `border` or `border-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-width`, `border-top-style`, `border-right-width`, `border-right-style`, `border-bottom-width`, `border-bottom-style`, `border-left-width`, `border-left-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border` | `border-top-width: 1px`; `border-top-style: solid`; `border-right-width: 1px`; `border-right-style: solid`; `border-bottom-width: 1px`; `border-bottom-style: solid`; `border-left-width: 1px`; `border-left-style: solid` |
+
+## border-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.x` |
+| クラスパターン | `border-x` or `border-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-left-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-left-width`, `border-left-style`, `border-right-width`, `border-right-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-x` | `border-left-width: 1px`; `border-left-style: solid`; `border-right-width: 1px`; `border-right-style: solid` |
+
+## border-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.y` |
+| クラスパターン | `border-y` or `border-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-width`, `border-top-style`, `border-bottom-width`, `border-bottom-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-y` | `border-top-width: 1px`; `border-top-style: solid`; `border-bottom-width: 1px`; `border-bottom-style: solid` |
+
+## border-b
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.b` |
+| クラスパターン | `border-b` or `border-b-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-bottom-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-bottom-width`, `border-bottom-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-b` | `border-bottom-width: 1px`; `border-bottom-style: solid` |
+
+## border-l
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.l` |
+| クラスパターン | `border-l` or `border-l-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-left-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-left-width`, `border-left-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-l` | `border-left-width: 1px`; `border-left-style: solid` |
+
+## border-r
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.r` |
+| クラスパターン | `border-r` or `border-r-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-right-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-right-width`, `border-right-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-r` | `border-right-width: 1px`; `border-right-style: solid` |
+
+## border-t
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.border.width.t` |
+| クラスパターン | `border-t` or `border-t-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `border-width` (`24`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-width`, `border-top-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-t` | `border-top-width: 1px`; `border-top-style: solid` |

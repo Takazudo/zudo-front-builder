@@ -1,0 +1,45 @@
+---
+title: 背景色
+description: 設定された値または検証済みの任意の色から背景色を設定します。
+sidebar_position: 43
+generated: true
+---
+
+設定された値または検証済みの任意の色から背景色を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## bg
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.background` |
+| クラスパターン | `bg-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"background-color","allowsFractionSlash":false,"allowsColorOpacity":true}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `colors` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `background` (`23`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `background-color` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"transparent"` | `"transparent"` |
+| `keyword` | `"current"` | `"currentColor"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `background-color` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `bg-[red]/40` | `background-color: color-mix(in oklab, red 40%, transparent)` |

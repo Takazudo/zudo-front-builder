@@ -1,0 +1,260 @@
+---
+title: スクロール余白
+description: 負の値も含む余白値で、物理的なスクロール余白を設定します。
+sidebar_position: 63
+generated: true
+---
+
+負の値も含む余白値で、物理的なスクロール余白を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## scroll-m
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-m` |
+| クラスパターン | `scroll-m-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+| `scroll-margin-right` | `resolved` | `null` |
+| `scroll-margin-bottom` | `resolved` | `null` |
+| `scroll-margin-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-m-0` | `scroll-margin-top: 0`; `scroll-margin-right: 0`; `scroll-margin-bottom: 0`; `scroll-margin-left: 0` |
+
+## scroll-mx
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-mx` |
+| クラスパターン | `scroll-mx-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-left`, `scroll-margin-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-left` | `resolved` | `null` |
+| `scroll-margin-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-mx-0` | `scroll-margin-left: 0`; `scroll-margin-right: 0` |
+
+## scroll-my
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-my` |
+| クラスパターン | `scroll-my-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-top`, `scroll-margin-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+| `scroll-margin-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-my-0` | `scroll-margin-top: 0`; `scroll-margin-bottom: 0` |
+
+## scroll-mb
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-mb` |
+| クラスパターン | `scroll-mb-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-mb-0` | `scroll-margin-bottom: 0` |
+
+## scroll-ml
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-ml` |
+| クラスパターン | `scroll-ml-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-ml-0` | `scroll-margin-left: 0` |
+
+## scroll-mr
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-mr` |
+| クラスパターン | `scroll-mr-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-mr-0` | `scroll-margin-right: 0` |
+
+## scroll-mt
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.scroll-mt` |
+| クラスパターン | `scroll-mt-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `scroll-margin` (`43`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `scroll-margin-top` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `scroll-mt-0` | `scroll-margin-top: 0` |

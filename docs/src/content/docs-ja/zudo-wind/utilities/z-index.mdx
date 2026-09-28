@@ -1,0 +1,44 @@
+---
+title: 重なり順
+description: 範囲付き整数、auto、設定済みトークンで重なり順を設定します。
+sidebar_position: 34
+generated: true
+---
+
+範囲付き整数、auto、設定済みトークンで重なり順を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## z
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.z` |
+| クラスパターン | `z-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","integer","arbitrary"],"arbitraryProperty":"z-index","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | `zIndices` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `z-index` (`14`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `z-index` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `z-index` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `z-0` | `z-index: 0` |

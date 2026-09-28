@@ -1,0 +1,227 @@
+---
+title: テキスト配置
+description: 文字の整列、空白、折り返し、省略表示を設定します。
+sidebar_position: 40
+generated: true
+---
+
+文字の整列、空白、折り返し、省略表示を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## text
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.text.align` |
+| クラスパターン | `text-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `6` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-align` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"left"` | `"left"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"right"` | `"right"` |
+| `keyword` | `"justify"` | `"justify"` |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-align` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `text-left` | `text-align: left` |
+
+## whitespace
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.whitespace` |
+| クラスパターン | `whitespace-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `6` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `white-space` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"normal"` | `"normal"` |
+| `keyword` | `"nowrap"` | `"nowrap"` |
+| `keyword` | `"pre"` | `"pre"` |
+| `keyword` | `"pre-line"` | `"pre-line"` |
+| `keyword` | `"pre-wrap"` | `"pre-wrap"` |
+| `keyword` | `"break-spaces"` | `"break-spaces"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `white-space` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `whitespace-normal` | `white-space: normal` |
+
+## break-all
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.break-all` |
+| クラスパターン | `break-all` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `word-break` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"break-all"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `word-break` | `fixed` | `"break-all"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `break-all` | `word-break: break-all` |
+
+## break-normal
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.break-normal` |
+| クラスパターン | `break-normal` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow-wrap`, `word-break` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"normal"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow-wrap` | `fixed` | `"normal"` |
+| `word-break` | `fixed` | `"normal"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `break-normal` | `overflow-wrap: normal`; `word-break: normal` |
+
+## break-words
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.break-words` |
+| クラスパターン | `break-words` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow-wrap` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"break-word"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow-wrap` | `fixed` | `"break-word"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `break-words` | `overflow-wrap: break-word` |
+
+## truncate
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.truncate` |
+| クラスパターン | `truncate` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `3` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow`, `text-overflow`, `white-space` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"hidden"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow` | `fixed` | `"hidden"` |
+| `text-overflow` | `fixed` | `"ellipsis"` |
+| `white-space` | `fixed` | `"nowrap"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `truncate` | `overflow: hidden`; `text-overflow: ellipsis`; `white-space: nowrap` |

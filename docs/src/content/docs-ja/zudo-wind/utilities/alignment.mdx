@@ -1,0 +1,162 @@
+---
+title: 整列
+description: 対応する軸に沿って項目、個別の項目、グリッド内容を整列します。
+sidebar_position: 27
+generated: true
+---
+
+対応する軸に沿って項目、個別の項目、グリッド内容を整列します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## items
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.items` |
+| クラスパターン | `items-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `align-items` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `align-items` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `items-center` | `align-items: center` |
+
+## justify
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.justify` |
+| クラスパターン | `justify-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `6` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `justify-content` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"between"` | `"space-between"` |
+| `keyword` | `"around"` | `"space-around"` |
+| `keyword` | `"evenly"` | `"space-evenly"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `justify-content` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `justify-center` | `justify-content: center` |
+
+## place-items
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.place-items` |
+| クラスパターン | `place-items-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `place-items` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `place-items` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `place-items-center` | `place-items: center` |
+
+## self
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.self` |
+| クラスパターン | `self-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `align-self` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `align-self` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `self-center` | `align-self: center` |

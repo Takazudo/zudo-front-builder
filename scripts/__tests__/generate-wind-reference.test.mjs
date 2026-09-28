@@ -116,6 +116,16 @@ const strings = {
 };
 
 describe("generate-wind-reference", () => {
+  it("writes Japanese frontmatter without unnecessary quotes", () => {
+    const localized = structuredClone(strings);
+    localized.index.title = "ユーティリティリファレンス";
+    localized.index.description = "有限のカタログを参照します。";
+    localized.families.display.title = "表示";
+    const pages = renderReferencePages(catalog, localized, families);
+    expect(pages.get("index.mdx")).toContain("title: ユーティリティリファレンス\n");
+    expect(pages.get("display.mdx")).toContain("title: 表示\n");
+    expect(pages.get("index.mdx")).toContain("description: 有限のカタログを参照します。\n");
+  });
   it("escapes table delimiters and newlines", () => {
     expect(escapeTableCell("first|second\nthird")).toBe("first\\|second third");
   });

@@ -1,0 +1,42 @@
+---
+title: イージング
+description: 設定済みイージングトークンまたは任意のタイミング関数を指定します。
+sidebar_position: 57
+generated: true
+---
+
+設定済みイージングトークンまたは任意のタイミング関数を指定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## ease
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.ease` |
+| クラスパターン | `ease-<suffix>` |
+| 文法 | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"transition-timing-function","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | `easings` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `easing` (`37`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `transition-timing-function` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `transition-timing-function` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `ease-[ease-in]` | `transition-timing-function: ease-in` |
