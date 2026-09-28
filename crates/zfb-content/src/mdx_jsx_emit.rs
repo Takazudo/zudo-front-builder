@@ -28,8 +28,8 @@
 //!   caller's `components` prop and trigger an explicit
 //!   `throw new Error(...)` if missing.
 //! - MDX flow & text expressions: emitted verbatim inside `{...}`.
-//! - HTML literals: wrapped in a span using the selected dialect's raw-HTML
-//!   prop so the DOM gets the original markup. The embedded HTML
+//! - HTML literals: wrapped in a span using the owned `rawHtml` prop so the
+//!   DOM gets the original markup. The embedded HTML
 //!   is escaped once for the JS string literal, then injected raw at
 //!   runtime — visually faithful, no double-escape.
 //! - Frontmatter: NOT handled here. The caller is expected to strip
@@ -1773,7 +1773,7 @@ fn jsx_style_string_attr(css: &str) -> String {
 }
 
 /// True for HTML attributes whose presence alone means "true" and which
-/// React/Preact expose as boolean props.
+/// the owned JSX runtime represents as boolean props.
 ///
 /// Only consulted for EMPTY-valued attributes (see [`render_hast_attrs`]);
 /// an explicit value is always preserved verbatim.
@@ -2461,8 +2461,8 @@ fn jsx_render_table(
 /// serializes identically whether it sits at a document's top level or
 /// inside a JSX component's children. `disabled`/`checked` stay BARE
 /// (JSX `true`) rather than `=""`: they are real HTML boolean attributes,
-/// and an empty string is falsy as a React/Preact prop — a `checked=""`
-/// checkbox hydrates unchecked and enabled. `render_hast_attrs` applies
+/// and the owned JSX runtime receives these as booleans — a string-valued
+/// `checked=""` would not express the checked, disabled state. `render_hast_attrs` applies
 /// the same rule when bridging the hast path's empty-valued
 /// `disabled`/`checked` into JSX.
 fn task_list_checkbox_jsx(checked: bool) -> String {
@@ -6540,9 +6540,9 @@ mod tests {
 
     #[test]
     fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
-        // `sr-only` is a Tailwind utility, and this class is emitted from
-        // Rust — Tailwind's content scan never sees the string, so the
-        // utility is never generated; zfb ships no stylesheet defining it
+        // `sr-only` is in the wind catalog, but this class is emitted from
+        // Rust — candidate discovery never sees the rendered markup, so it
+        // cannot add the class to the utility set; zfb ships no stylesheet defining it
         // either. The inline style is what actually makes the documented
         // "visually hidden" landmark true.
         let jsx = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);

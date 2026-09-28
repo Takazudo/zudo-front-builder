@@ -181,7 +181,7 @@ pub struct AssetDeps {
     /// hydrates.
     pub islands: BTreeSet<String>,
     /// CSS-Modules source paths the page pulls in. Plain stylesheets that
-    /// land in the global Tailwind asset are not tracked here — those
+    /// land in the global CSS asset are not tracked here — those
     /// dirty every page through the regular `DepKind::Style` edge.
     pub css_modules: BTreeSet<PathBuf>,
 }

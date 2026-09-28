@@ -632,7 +632,7 @@ async function updateDOM(
       // a navigation that still owns the commit.
       currentNavigation.domCommitStarted = true;
       cancelPendingIslands();
-      // Unmount mounted islands on the OLD body before the swap so Preact/React
+      // Unmount mounted islands on the OLD body before the swap so component
       // trees receive render(null, element) / root.unmount() and their useEffect
       // cleanups fire. Pass the incoming body so persisted islands are kept.
       unmountIslands(document.body, preparationEvent.newDocument.body);

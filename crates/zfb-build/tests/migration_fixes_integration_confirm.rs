@@ -404,9 +404,8 @@ fn write_full_fixture(root: &std::path::Path) {
     )
     .unwrap();
 
-    // Split-import CSS (#191 / #159): using tailwindcss sub-paths so the
-    // engine does not prepend the full `@import "tailwindcss";` and avoids
-    // leaking default color tokens.
+    // Legacy split-import CSS fixture (#191 / #159), retained to cover the
+    // migration path without adding synthesized default color tokens.
     fs::write(
         root.join("styles/global.css"),
         "@import \"tailwindcss/preflight\";\n@import \"tailwindcss/utilities\";\n",
@@ -791,7 +790,7 @@ fn zzmod_all_five_migration_fixes_compose() {
     // #664 (load-bearing): a CJS-only bad story that lives in the ALIASED
     // dir with a glob-MATCHING name (`bad.story.tsx`), so the eager
     // `import.meta.glob('./*.story.tsx')` barrel WOULD statically import it.
-    // Under --platform=neutral (Preact path, no --main-fields) the CJS-only
+    // Under --platform=neutral (external package path, no --main-fields) the CJS-only
     // dep is unresolvable, so WITHOUT `bundle.exclude` the build fails — that
     // is what makes the exclude assertion non-vacuous. With exclude, the file
     // is dropped from BOTH shadow materialisation AND the glob expansion.

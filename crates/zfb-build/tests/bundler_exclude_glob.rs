@@ -18,7 +18,7 @@
 //!
 //! (Empirically confirmed against esbuild 0.27.7 while authoring this test;
 //! `--main-fields` is emitted only when the caller explicitly sets the knob,
-//! so the default Preact bundle has an empty main-fields list and cannot
+//! so the default external-runtime bundle has an empty main-fields list and cannot
 //! resolve such a package.)
 //!
 //! `bundle.exclude` is the control that keeps the migration build green: it
@@ -79,9 +79,9 @@ fn write_cjs_only_package(root: &std::path::Path, name: &str) {
     .unwrap();
 }
 
-/// Shared `BundlerInput` for these fixtures: Preact + neutral worker bundle
+/// Shared `BundlerInput` for these fixtures: external package + neutral worker bundle
 /// (the failing combination), node_modules adjacent to the project so the
-/// hand-rolled package is resolvable, runtime/preact bare specifiers marked
+/// hand-rolled package is resolvable, owned runtime bare specifiers marked
 /// external so the synthetic `entry.mjs` itself bundles.
 fn make_input(
     root: &std::path::Path,

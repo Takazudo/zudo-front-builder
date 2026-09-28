@@ -90,9 +90,9 @@ fn scaffold_project_importing(root: &std::path::Path, dep: &str) {
     .unwrap();
 }
 
-/// Preact + neutral worker bundle (the failing combination): node_modules
+/// external package + neutral worker bundle (the failing combination): node_modules
 /// adjacent to the project so the hand-rolled package is resolvable, and
-/// preact/runtime bare specifiers marked external so the synthetic `entry.mjs`
+/// owned runtime bare specifiers marked external so the synthetic `entry.mjs`
 /// itself bundles. `main_fields` / extra `external` are the knobs under test.
 fn make_input(
     root: &std::path::Path,
@@ -118,7 +118,7 @@ fn make_input(
     input
 }
 
-/// Core proof: a Preact/neutral bundle whose page imports a CJS-main-only dep
+/// Core proof: an external-runtime/neutral bundle whose page imports a CJS-main-only dep
 /// FAILS without `bundle.mainFields` and PASSES (with the dep actually
 /// resolved + inlined) when `main_fields = ["main", "module"]`.
 #[test]
@@ -140,7 +140,7 @@ fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
     ));
     assert!(
         fail.is_err(),
-        "WITHOUT bundle.mainFields the Preact/neutral pass has an empty \
+        "WITHOUT bundle.mainFields the external-runtime/neutral pass has an empty \
          main-fields list and must reject the CJS-main-only dep. A green build \
          here means the negative control is broken."
     );

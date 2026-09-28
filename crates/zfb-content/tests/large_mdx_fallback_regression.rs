@@ -136,7 +136,7 @@ fn build_residual_fallback_fixture() -> (String, String) {
     // Inline-code spans containing curly-brace patterns. Same emitter
     // path, same heuristic concern. The `{main-deploy,…}.yml` shape is
     // a brace-expansion idiom from shell scripts; `@theme { --color-*: initial; }`
-    // mirrors a Tailwind v4 pattern that appeared in zudo-doc.
+    // mirrors an arbitrary utility-class pattern that appeared in zudo-doc.
     const INLINE_CODE_CURLY_BRACE: &[&str] = &[
         "{main-deploy,preview-deploy,pr-checks}.yml",
         "@theme { --color-*: initial; }",

@@ -53,7 +53,7 @@
 //! `ssr_routes_published` bit. That matches the epic's "all routes
 //! `prerender = false`" acceptance shape exactly. No `node_modules` is
 //! provisioned; the project falls back to the binary-embedded vendor
-//! snapshot for `preact` (the same fallback `wasm_ssr_dev_smoke_e2e.rs`
+//! snapshot for the owned runtime (the same fallback `wasm_ssr_dev_smoke_e2e.rs`
 //! relies on).
 //!
 //! ## Falsifiability

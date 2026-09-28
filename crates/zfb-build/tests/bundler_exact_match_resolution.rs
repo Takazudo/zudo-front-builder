@@ -3088,7 +3088,7 @@ fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions
 // closure but left its SEED set incomplete: ordinary page/source imports and the
 // generated `entry.mjs` / hydration-shim framework imports were never seeded, so
 // a real workload failed to resolve `@takazudo/zfb-runtime/server`,
-// `preact-render-to-string`, and page-imported packages (issue #1645). These two
+// SSR/runtime packages, and page-imported packages (issue #1645). These two
 // tests pin both seed sources — the project module graph and the synthetic entry.
 
 /// A page imports a bare package that is NOT an exact tsconfig / plugin-alias

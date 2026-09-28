@@ -3240,8 +3240,8 @@ fn render_footnote_section(
             ("class".to_string(), "sr-only".to_string()),
             // Hiding is carried by the INLINE style, not by the class:
             // zfb ships no stylesheet defining `.sr-only`, and because
-            // the class is emitted from Rust, Tailwind's content scan
-            // never sees it and so never generates the utility either.
+            // the class is emitted from Rust, candidate discovery never
+            // sees the rendered markup or adds the utility.
             // Without this the "visually hidden" landmark documented in
             // `footnotes`' module docs would render as plain visible
             // body text in essentially every project.
@@ -4614,11 +4614,11 @@ mod tests {
 
     #[test]
     fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
-        // `sr-only` is a Tailwind utility and this class is emitted from
-        // Rust, so Tailwind's content scan never sees the string and never
-        // generates the utility; zfb ships no stylesheet defining it
-        // either. The inline style is what makes the documented "visually
-        // hidden" landmark actually true.
+        // `sr-only` is in the wind catalog, but this class is emitted from
+        // Rust, so candidate discovery never sees the rendered markup or
+        // adds the utility; zfb ships no stylesheet defining it either.
+        // The inline style is what makes the documented "visually hidden"
+        // landmark actually true.
         let h = run_with_footnotes("Ref[^a].\n\n[^a]: Body.\n");
         let mut elements = Vec::new();
         collect_elements(&h, &mut elements);

@@ -81,7 +81,7 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 /// Scaffold the zero-islands ClientRouter fixture into `root`.
 ///
-/// - `zfb.config.json` — preact framework.
+/// - `zfb.config.json` — zudo-react runtime.
 /// - `pages/index.tsx` — renders the SSR-only layout. NO `"use client"`.
 /// - `layouts/main.tsx` — SSR-only layout that does
 ///   `import { ClientRouter } from "@takazudo/zfb-runtime"` and renders it in

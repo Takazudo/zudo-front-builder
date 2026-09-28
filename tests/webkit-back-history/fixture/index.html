@@ -38,7 +38,9 @@
       Boot the ClientRouter. Served from /dist/client-router/router.js by
       serve-fixture.mjs, which maps /dist/ -> packages/zfb-runtime/dist/.
       We import from router.js directly (not index.js) to avoid pulling in
-      the React ClientRouter component which has a react/jsx-runtime dependency.
+      the ClientRouter component, which imports the bare package specifier
+      @takazudo/zfb/zudo-react/jsx-runtime unavailable without a bundler or
+      import-map entry.
       Build with: pnpm -C packages/zfb-runtime build
     -->
     <script type="module">

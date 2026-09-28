@@ -915,7 +915,7 @@ pub struct ServeOpts {
 
     /// Shared handle to the current dev-mode CSS bundle URL
     /// (issue #494 / #498). Mirrors `islands_bundle_url` for CSS.
-    /// `None` for projects with Tailwind disabled, or when the bin crate
+    /// `None` for projects with no emitted CSS, or when the bin crate
     /// has not yet seeded a bundle. When `Some`, the page handler splices
     /// a `<link rel="stylesheet" href="<url>">` tag into every served
     /// HTML response's `<head>` via

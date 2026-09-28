@@ -3,11 +3,11 @@
 //!
 //! ## Why this exists
 //!
-//! zfb shells out to the Tailwind v4 standalone CLI as an opaque `-i/-o`
-//! transform ([`crate::engine`]). Tailwind resolves `@import` targets
-//! invisibly and exposes **no machine-readable dependency manifest**, so zfb
-//! never learns the real on-disk paths of the CSS files an entry transitively
-//! pulls in. That breaks dev invalidation two ways:
+//! The owned CSS pipeline needs canonical input paths for development
+//! invalidation. This module resolves each authored import to its real file so
+//! the dev layer can watch dependencies that are otherwise hidden by package
+//! resolution. Without those paths, editing an imported file would not refresh
+//! `/assets/styles.css`:
 //!
 //! 1. editing a transitively-imported CSS file (`@import './tokens.css';`)
 //!    does not refresh `/assets/styles.css`, because no dependency edge / watch

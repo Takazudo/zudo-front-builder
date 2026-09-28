@@ -82,10 +82,10 @@ fn truncate(s: &str, n: usize) -> String {
 /// embedded-vendor tree the `zfb` binary itself would extract, per
 /// `css_modules_components_build.rs`'s `corp_shape_with_real_node_modules_...`
 /// variant) alive for the test's duration. The SIBLING's own automatic-JSX
-/// import (`preact/jsx-runtime`) resolves via `<work>/node_modules`, which
+/// import from the owned runtime resolves via `<work>/node_modules`, which
 /// the bundler symlinks to `<ws_root>/node_modules` regardless of
-/// `bundle.exclude` (issue #1693) — so the workspace root needs a real
-/// `node_modules/preact`, not just the project's own embedded fallback.
+/// `bundle.exclude` (issue #1693) — so the workspace root needs the owned
+/// runtime package, not just the project's own embedded fallback.
 fn write_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     fs::write(
         ws_root.join("pnpm-workspace.yaml"),
@@ -100,7 +100,7 @@ fn write_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     let project = ws_root.join("sub-packages/host");
     fs::create_dir_all(project.join("pages")).unwrap();
 
-    // No `tailwind` key -> CSS enabled by default (matches
+    // No `wind` setting -> utility CSS enabled by default (matches
     // `css_modules_components_build.rs`'s corp-shape fixture). An UNRELATED
     // non-empty `bundle.exclude` arms the shadow-only / no-live-fallback
     // regime issue #1685 broke under.
@@ -588,7 +588,7 @@ fn write_virtual_only_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     let project = ws_root.join("sub-packages/vhost");
     fs::create_dir_all(project.join("pages")).unwrap();
 
-    // No `tailwind` key -> CSS enabled by default. No tsconfig.json at all —
+    // No `wind` setting -> utility CSS enabled by default. No tsconfig.json at all —
     // the sibling below is reached ONLY via the registered virtual module.
     fs::write(
         project.join("zfb.config.json"),
@@ -1042,7 +1042,7 @@ fn sibling_only_utility_class_reaches_wind_source_scan_and_is_emitted() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "expected `zfb build` to succeed for a sibling-only Tailwind utility \
+        "expected `zfb build` to succeed for a sibling-only wind utility \
          class; got status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status,
     );

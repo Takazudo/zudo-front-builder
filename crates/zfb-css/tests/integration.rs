@@ -446,7 +446,7 @@ fn import_offset(css: &str) -> usize {
 
 #[test]
 fn acceptance_hoists_font_import_authored_engine_half() {
-    // Authored half (tailwind.enabled = false): global.css is passed verbatim
+    // Authored half (wind = false): global.css is passed verbatim
     // with no subprocess to inline anything, so a font @import sitting below
     // other rules reaches combine() in its authored position — a second,
     // independent manifestation of the same bug.

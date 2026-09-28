@@ -72,8 +72,8 @@ fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
     (tmp_root.to_path_buf(), project)
 }
 
-/// Shared `BundlerInput` defaults for these fixtures: Preact production
-/// build, real esbuild binary, runtime/preact bare specifiers marked
+/// Shared `BundlerInput` defaults for these fixtures: owned-runtime production
+/// build, real esbuild binary, owned runtime bare specifiers marked
 /// external (mirrors `bundler_exclude_glob.rs`'s `make_input`).
 fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(

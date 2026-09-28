@@ -510,8 +510,8 @@ mod tests {
     // -----------------------------------------------------------------------
     // PluginRefreshState::refresh — real PluginHost + Node subprocess.
     // Mirrors the self-skip convention in `plugin_runner.rs`'s own tests:
-    // no `#[ignore]` — Node is assumed present (unlike esbuild/tailwind,
-    // which are staged separately and DO need an env-gate).
+    // no `#[ignore]` — Node is assumed present (unlike esbuild,
+    // which is staged separately and DOES need an env-gate).
     // -----------------------------------------------------------------------
 
     fn host_node_available() -> bool {

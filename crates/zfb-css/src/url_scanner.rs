@@ -8,11 +8,10 @@
 //!
 //! ## Input contract
 //!
-//! The scanner runs on the Tailwind output text *after* the trailing
-//! `/*# sourceMappingURL=... */` comment has been stripped (done where the
-//! output is read — the comment is trailing, so stripping never shifts
-//! earlier byte offsets; scanner spans and sourcemap positions therefore
-//! describe the same text).
+//! The scanner runs on the exact stylesheet text a caller intends to
+//! rewrite. It preserves the input bytes and reports offsets into that
+//! same string, so the caller can splice replacements without reserializing
+//! the stylesheet.
 //!
 //! ## Output contract — per occurrence
 //!

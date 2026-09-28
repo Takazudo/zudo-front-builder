@@ -35,12 +35,11 @@ pub const PLUGIN_BUNDLE_TEMP_PREFIX: &str = ".zfb-plugin-bundle-";
 /// Filename suffix for staged plugin bundle artifacts.
 pub const PLUGIN_BUNDLE_TEMP_SUFFIX: &str = ".mjs";
 
-/// Age threshold for the stray-bundle sweep below, modelled on
-/// `zfb_css::engine`'s `ENTRY_TMP_STALE_AFTER` (zfb#821) but deliberately
-/// longer than that constant's 60s: a plugin bundle's staged file is left
-/// unlocked while esbuild writes it (see [`bundle_plugin_entry`]), so this
-/// window must comfortably exceed [`ESBUILD_BUNDLE_TIMEOUT`] or a concurrent
-/// process's sweep could reap an in-flight bundle purely on mtime.
+/// Age threshold for the stray-bundle sweep below. A plugin bundle's
+/// staged file is left unlocked while esbuild writes it (see
+/// [`bundle_plugin_entry`]), so this window must comfortably exceed
+/// [`ESBUILD_BUNDLE_TIMEOUT`] or a concurrent process's sweep could reap an
+/// in-flight bundle based only on its modification time.
 const PLUGIN_BUNDLE_TEMP_STALE_AFTER: Duration = Duration::from_secs(600);
 
 /// Wedge-guard deadline for the esbuild subprocess in [`bundle_plugin_entry`]
@@ -316,8 +315,7 @@ pub async fn bundle_plugin_entry(
 
 /// Delete `.zfb-plugin-bundle-*.mjs` files left in `stage_dir` by a
 /// previous run that died before its [`tempfile::NamedTempFile`] `Drop`
-/// could clean up (SIGKILL / crash / Ctrl-C) — see zfb#2371. Mirrors
-/// `zfb_css::engine`'s `sweep_stale_entry_files` (zfb#821): only files
+/// could clean up (SIGKILL / crash / Ctrl-C) — see zfb#2371. Only files
 /// matching the exact [`PLUGIN_BUNDLE_TEMP_PREFIX`]/[`PLUGIN_BUNDLE_TEMP_SUFFIX`]
 /// shape and older than [`PLUGIN_BUNDLE_TEMP_STALE_AFTER`] are candidates,
 /// so a sibling build's freshly-staged bundle is never touched.

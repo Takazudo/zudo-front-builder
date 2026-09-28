@@ -33,7 +33,7 @@
 //! `zfb-islands`'s engine internals — it consumes the bytes-only
 //! adapter outputs from S2 and S3. Forwarding raw `Vec<u8>` plus the
 //! stable URL keeps `zfb-build` opaque to how the bytes were produced
-//! (Tailwind subprocess, native engine, esbuild, …). The bin crate
+//! (the utility compiler, authored CSS bundler, or esbuild). The bin crate
 //! (`zfb`) constructs the engines and hands the bytes here.
 //!
 //! ## Empty-island case

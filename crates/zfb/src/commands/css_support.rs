@@ -461,7 +461,7 @@ pub(crate) fn resolve_framework_css_with_options(
     }
 }
 
-/// Compute the Tailwind `@source inline("...")` safelist for
+/// Collect the wind utility candidates configured by
 /// `codeHighlight.roleClasses`.
 ///
 /// Values are split on whitespace, deduplicated, and sorted so the generated

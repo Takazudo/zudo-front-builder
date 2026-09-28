@@ -571,7 +571,7 @@ fn declared_first_party_package_identity_from_canonical(
 ///
 /// Laziness alone would not have been enough: every ordinary third-party
 /// input reaches [`classify_package_shaped_input`] with a `node_modules`
-/// segment in its canonical path, so a build that merely imports `preact`
+/// segment in its canonical path, so a build that merely imports `vendor-lib`
 /// would have paid the walk. What actually keeps it off the common path is
 /// **gate 1 (locality)**: under an empty `bundle.exclude` — the ordinary
 /// configuration — `<shadow>/node_modules` is a wholesale symlink to the live
@@ -3493,7 +3493,7 @@ mod tests {
         // workspace — same fixture as the sibling tests above, so the claimed
         // roster is non-empty and really is consulted — an ordinary registry
         // dependency staged as a real copy must stay case 3. Nothing but its
-        // declared name separates it from the flagged sibling: `preact` is
+        // declared name separates it from the flagged sibling: `vendor-lib` is
         // claimed by no `packages:` glob, so it never reaches the
         // declared-entry rule at all.
         let tmp = tempfile::tempdir().unwrap();
@@ -3507,17 +3507,17 @@ mod tests {
         // A real-copy-staged registry dep, declaring only a root `main` — the
         // exact declaration shape that would make a CLAIMED sibling's
         // `src/`-side deep import an offender.
-        let third_party = stage.join("node_modules/preact");
+        let third_party = stage.join("node_modules/vendor-lib");
         write(
             &third_party,
             "package.json",
-            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+            r#"{ "name": "vendor-lib", "main": "dist/vendor-lib.js" }"#,
         );
-        write(&third_party, "src/index.js", "preact source");
+        write(&third_party, "src/index.js", "vendor-lib source");
 
         let metafile = br#"{"inputs": {
             "node_modules/@acme/ui/src/cta-button.tsx": {"imports": []},
-            "node_modules/preact/src/index.js": {"imports": []}
+            "node_modules/vendor-lib/src/index.js": {"imports": []}
         }}"#;
 
         let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
@@ -3742,14 +3742,14 @@ mod tests {
                 ("src/internal.ts", "internal source"),
             ],
         );
-        let third_party = stage.join("node_modules/preact");
-        write(&third_party, "package.json", r#"{ "name": "preact" }"#);
-        write(&third_party, "index.js", "preact");
+        let third_party = stage.join("node_modules/vendor-lib");
+        write(&third_party, "package.json", r#"{ "name": "vendor-lib" }"#);
+        write(&third_party, "index.js", "vendor-lib");
 
         let metafile = br#"{"inputs": {
             "node_modules/@acme/built/dist/index.js": {"imports": []},
             "node_modules/@acme/built/src/internal.ts": {"imports": []},
-            "node_modules/preact/index.js": {"imports": []}
+            "node_modules/vendor-lib/index.js": {"imports": []}
         }}"#;
 
         let enrolled = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party).unwrap();
@@ -3765,7 +3765,7 @@ mod tests {
              accepting it; got {enrolled:?}"
         );
         assert!(
-            !enrolled.contains("preact"),
+            !enrolled.contains("vendor-lib"),
             "an ordinary third-party dependency must never be enrolled; got {enrolled:?}"
         );
 
@@ -3799,18 +3799,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let stage = base.join("stage");
-        let store = base.join("store/.pnpm/preact@10.0.0/node_modules/preact");
-        write(&store, "index.js", "preact");
+        let store = base.join("store/.pnpm/vendor-lib@10.0.0/node_modules/vendor-lib");
+        write(&store, "index.js", "vendor-lib");
 
-        let link = stage.join("node_modules/preact/index.js");
+        let link = stage.join("node_modules/vendor-lib/index.js");
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(store.join("index.js"), &link).unwrap();
         #[cfg(not(unix))]
-        std::fs::write(&link, "preact").unwrap();
+        std::fs::write(&link, "vendor-lib").unwrap();
 
         let first_party = base.join("workspace");
-        let metafile = br#"{"inputs": {"node_modules/preact/index.js": {"imports": []}}}"#;
+        let metafile = br#"{"inputs": {"node_modules/vendor-lib/index.js": {"imports": []}}}"#;
 
         let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
         assert!(

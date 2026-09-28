@@ -7,13 +7,13 @@
 //! workspace (`apps/site` + `packages/core`, `exports` `./button`), a
 //! non-empty tsconfig `paths` (`"~/*": ["./*"]`), an empty `bundle.exclude`,
 //! a page importing `@x/core/button` (arming workspace-package staging), and
-//! a plugin alias `preact/hooks` -> `<site>/node_modules/preact/hooks/dist/hooks.mjs`.
-//! With those four ingredients the directory loop links `<shadow>/node_modules/preact`
-//! to the canonical `.pnpm/.../preact`, and the exact-target file loop then
+//! a plugin alias `vendor-lib/hooks` -> `<site>/node_modules/vendor-lib/hooks/dist/hooks.mjs`.
+//! With those four ingredients the directory loop links `<shadow>/node_modules/vendor-lib`
+//! to the canonical `.pnpm/.../vendor-lib`, and the exact-target file loop then
 //! used to write `hooks.mjs` through that link: `zfb build` deleted the
 //! installed file, `zfb dev` replaced the link with a partial directory.
 //!
-//! The installed preact is a small fake package inside the fixture's own
+//! The installed vendor-lib is a small fake package inside the fixture's own
 //! `.pnpm` store (a real directory the site reaches through a pnpm-style
 //! symlink), never the repository's install — a regression here deletes
 //! files from the store it stages from.
@@ -60,7 +60,7 @@ struct Fixture {
     site: PathBuf,
     /// The installed `hooks.mjs` inside the fixture's `.pnpm` store.
     installed_hooks: PathBuf,
-    /// Every regular file of the installed preact, with its bytes.
+    /// Every regular file of the installed vendor-lib, with its bytes.
     installed_files: BTreeMap<PathBuf, Vec<u8>>,
 }
 
@@ -71,22 +71,22 @@ fn write_fixture(ws: &Path) -> Fixture {
         "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
     );
 
-    let store = ws.join("node_modules/.pnpm/preact@10.29.8/node_modules/preact");
+    let store = ws.join("node_modules/.pnpm/vendor-lib@10.29.8/node_modules/vendor-lib");
     write(
         &store.join("package.json"),
         r#"{
-  "name": "preact",
+  "name": "vendor-lib",
   "version": "10.29.8",
   "type": "module",
   "exports": {
-    ".": { "import": "./dist/preact.mjs" },
+    ".": { "import": "./dist/vendor-lib.mjs" },
     "./hooks": { "import": "./hooks/dist/hooks.mjs" },
     "./jsx-runtime": { "import": "./jsx-runtime/dist/jsxRuntime.mjs" }
   }
 }"#,
     );
     write(
-        &store.join("dist/preact.mjs"),
+        &store.join("dist/vendor-lib.mjs"),
         "export const options = {};\n\
          export function h(type, props) { return { type, props }; }\n\
          export const createElement = h;\n\
@@ -104,14 +104,14 @@ fn write_fixture(ws: &Path) -> Fixture {
     let core = ws.join("packages/core");
     write(
         &core.join("package.json"),
-        r#"{"name":"@x/core","type":"module","exports":{"./button":"./button.tsx"},"dependencies":{"preact":"10.29.8"}}"#,
+        r#"{"name":"@x/core","type":"module","exports":{"./button":"./button.tsx"},"dependencies":{"vendor-lib":"10.29.8"}}"#,
     );
     write(
         &core.join("button.tsx"),
         "export default function Button() { return <button type=\"button\">CORE_BUTTON_MARKER</button>; }\n",
     );
     fs::create_dir_all(core.join("node_modules")).unwrap();
-    symlink(&store, core.join("node_modules/preact")).unwrap();
+    symlink(&store, core.join("node_modules/vendor-lib")).unwrap();
 
     let site = ws.join("apps/site");
     for dir in ["pages", "content", "components", "layouts", "scripts"] {
@@ -119,20 +119,20 @@ fn write_fixture(ws: &Path) -> Fixture {
     }
     write(
         &site.join("package.json"),
-        r#"{"name":"site","private":true,"dependencies":{"@x/core":"workspace:*","preact":"10.29.8"}}"#,
+        r#"{"name":"site","private":true,"dependencies":{"@x/core":"workspace:*","vendor-lib":"10.29.8"}}"#,
     );
     write(
         &site.join("pages/index.tsx"),
         r#"
             import Button from "@x/core/button";
-            import { HOOKS_MARKER } from "preact/hooks";
+            import { HOOKS_MARKER } from "vendor-lib/hooks";
             export default function Home() {
               return <main>{HOOKS_MARKER}<Button /></main>;
             }
         "#,
     );
     fs::create_dir_all(site.join("node_modules/@x")).unwrap();
-    symlink(&store, site.join("node_modules/preact")).unwrap();
+    symlink(&store, site.join("node_modules/vendor-lib")).unwrap();
     symlink(&core, site.join("node_modules/@x/core")).unwrap();
 
     let installed_files = walkdir_files(&store);
@@ -178,10 +178,10 @@ fn input(fixture: &Fixture, esbuild: PathBuf, mode: BundleMode) -> BundlerInput 
         vec![site.join("*").to_string_lossy().into_owned()],
     )]);
     // `plugins: [{ name: "./scripts/alias-plugin.mjs" }]` calling
-    // `addAlias("preact/hooks", resolve(projectRoot, "node_modules/preact/hooks/dist/hooks.mjs"))`.
+    // `addAlias("vendor-lib/hooks", resolve(projectRoot, "node_modules/vendor-lib/hooks/dist/hooks.mjs"))`.
     input.plugin_alias_entries = vec![(
-        "preact/hooks".to_string(),
-        site.join("node_modules/preact/hooks/dist/hooks.mjs")
+        "vendor-lib/hooks".to_string(),
+        site.join("node_modules/vendor-lib/hooks/dist/hooks.mjs")
             .to_string_lossy()
             .into_owned(),
     )];
@@ -200,7 +200,7 @@ fn assert_install_untouched(fixture: &Fixture, when: &str) {
     assert_eq!(
         walkdir_files(store),
         fixture.installed_files,
-        "{when}: the installed preact package must be byte-identical"
+        "{when}: the installed vendor-lib package must be byte-identical"
     );
 }
 
@@ -244,7 +244,9 @@ fn dev_session_keeps_the_linked_package_and_the_install_across_ticks() {
     let mut session = ShadowSession::new(&fixture.site).unwrap();
     // The session shadow mirrors the workspace; the project sits at its
     // workspace-relative slot, and staged dependencies at their logical paths.
-    let shadow_preact = session.shadow_root().join("apps/site/node_modules/preact");
+    let shadow_vendor_lib = session
+        .shadow_root()
+        .join("apps/site/node_modules/vendor-lib");
     for tick in 1..=2 {
         let when = format!("dev tick {tick}");
         let out = bundle_with_session(
@@ -254,17 +256,17 @@ fn dev_session_keeps_the_linked_package_and_the_install_across_ticks() {
         .unwrap_or_else(|e| panic!("#3185: {when} must succeed: {e:#}"));
 
         // Proof the linked-package path was taken (not a skipped scenario):
-        // the shadow's preact is a LINK to the installed package, never a
+        // the shadow's vendor-lib is a LINK to the installed package, never a
         // partial real directory holding only the alias target.
-        let meta = fs::symlink_metadata(&shadow_preact)
-            .unwrap_or_else(|e| panic!("{when}: {} must exist: {e}", shadow_preact.display()));
+        let meta = fs::symlink_metadata(&shadow_vendor_lib)
+            .unwrap_or_else(|e| panic!("{when}: {} must exist: {e}", shadow_vendor_lib.display()));
         assert!(
             meta.file_type().is_symlink(),
             "{when}: {} must stay linked to the install",
-            shadow_preact.display()
+            shadow_vendor_lib.display()
         );
         assert_eq!(
-            fs::canonicalize(&shadow_preact).unwrap(),
+            fs::canonicalize(&shadow_vendor_lib).unwrap(),
             fixture.installed_hooks.ancestors().nth(3).unwrap(),
         );
         assert_install_untouched(&fixture, &when);

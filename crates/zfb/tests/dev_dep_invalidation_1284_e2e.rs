@@ -140,8 +140,7 @@ fn workspace_root() -> PathBuf {
 /// Resolve a package inside the workspace pnpm store
 /// (`node_modules/.pnpm/<name>@<ver>*/node_modules/<name>`). Returns the
 /// lowest-sorted match so the choice is deterministic across peer-injected
-/// variants. The `<name>@` prefix is exact enough that e.g. `preact@` does not
-/// match `preact-render-to-string@…`.
+/// variants. The `<name>@` prefix limits the match to an exact package name.
 fn pnpm_store_pkg(ws: &Path, name: &str) -> Option<PathBuf> {
     let store = ws.join("node_modules").join(".pnpm");
     let prefix = format!("{name}@");
@@ -162,8 +161,8 @@ fn pnpm_store_pkg(ws: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Provision a COMPLETE project `node_modules` mirroring the binary-embedded
-/// vendor snapshot (`@takazudo/zfb`, `@takazudo/zfb-runtime`, `preact`,
-/// `preact-render-to-string`, `hono`) so esbuild and the SSR host can resolve
+/// vendor snapshot (`@takazudo/zfb`, `@takazudo/zfb-runtime`,
+/// `@takazudo/zfb/zudo-react`, `hono`) so esbuild and the SSR host can resolve
 /// the framework.
 ///
 /// Why this is required (symptom B only): `detect_project_node_modules`
@@ -172,7 +171,7 @@ fn pnpm_store_pkg(ws: &Path, name: &str) -> Option<PathBuf> {
 /// symlinked workspace-dep `@import`, which flips that detection ON and SHADOWS
 /// the binary-embedded vendor fallback (render_pipeline.rs
 /// `embedded_node_modules`, wired in commands/bundler_input.rs). Left partial,
-/// esbuild cannot resolve `@takazudo/*` / `preact*`, so the SSR boot times out.
+/// esbuild cannot resolve `@takazudo/*` runtime imports, so the SSR boot times out.
 ///
 /// esbuild runs with `--preserve-symlinks` OFF for a detected project
 /// `node_modules`, so it canonicalises each symlink to its real workspace path
@@ -736,7 +735,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
     // Creating `node_modules/@scope/design-system` below flips
     // `detect_project_node_modules` ON, which shadows the binary-embedded
     // vendor snapshot. Reconstruct a complete framework `node_modules` FIRST so
-    // esbuild + the SSR host can still resolve `@takazudo/*` / `preact*` (see
+    // esbuild + the SSR host can still resolve `@takazudo/*` runtime imports (see
     // `provision_framework_node_modules` docs).
     provision_framework_node_modules(&root);
 

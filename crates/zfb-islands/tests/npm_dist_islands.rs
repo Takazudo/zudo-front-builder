@@ -22,7 +22,7 @@
 //! 3. Once inside the package, RELATIVE imports are followed (so barrels
 //!    without `"use client"` are traversed through to the real modules).
 //! 4. Bare imports made from INSIDE a package are never followed — the
-//!    framework dependency graph (`preact`, `@takazudo/zfb-runtime`, …) is
+//!    runtime dependency graph (`@takazudo/zfb-runtime`, …) is
 //!    not crawled.
 
 use std::fs;
@@ -300,7 +300,7 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
 
 /// A bare import made from INSIDE a package's dist must NOT be followed:
 /// the package's own dist references its peer dependencies
-/// (`preact`-like) via bare specifiers, and the scanner must never crawl
+/// (a third-party package) via bare specifiers, and the scanner must never crawl
 /// into them — even when such a peer (mischievously) carries
 /// `"use client"`. Only the directly-imported package's own island
 /// surfaces.
@@ -320,17 +320,17 @@ fn bare_import_from_inside_a_package_is_not_followed() {
     write(
         &pkg.join("dist/index.js"),
         r#""use client";
-        import { render } from "fake-preact";
+        import { render } from "vendor-lib";
         export function Widget() { return null; }
         "#,
     );
 
     // A peer "framework" package with a sneaky island — reachable only via
-    // the bare `import "fake-preact"` made from inside @acme/widgets/dist.
-    let peer = root.join("node_modules/fake-preact");
+    // the bare `import "vendor-lib"` made from inside @acme/widgets/dist.
+    let peer = root.join("node_modules/vendor-lib");
     write(
         &peer.join("package.json"),
-        r#"{ "name": "fake-preact", "type": "module", "exports": { ".": { "default": "./index.js" } } }"#,
+        r#"{ "name": "vendor-lib", "type": "module", "exports": { ".": { "default": "./index.js" } } }"#,
     );
     write(
         &peer.join("index.js"),

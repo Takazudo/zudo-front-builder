@@ -60,7 +60,7 @@
 //!
 //! Note: because the project has a real `node_modules/` present,
 //! `detect_project_node_modules` returns `Some(...)` and the build uses it for
-//! framework-package resolution (no embedded_node_modules() extraction needed).
+//! runtime package resolution (no embedded_node_modules() extraction needed).
 //! The stub adapter entry lives within that same tree.
 
 #![cfg(unix)]
@@ -86,16 +86,16 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 ///
 /// # Fixture structure
 ///
-/// - `zfb.config.json` — adapter + preact framework.
+/// - `zfb.config.json` — adapter + zudo-react runtime.
 /// - `pages/index.tsx` — `export const prerender = false` (SSR route).
 /// - `node_modules/` — symlinked to the extracted embedded `@takazudo` tree so
 ///   `detect_project_node_modules` returns `Some(...)` and esbuild can resolve
-///   `@takazudo/zfb-runtime`, `preact`, etc.
+///   `@takazudo/zfb-runtime`, `@takazudo/zfb/zudo-react`, etc.
 /// - `node_modules/.bin/zfb-adapter-stub` (mode 0o755) — stub adapter bin that
 ///   writes `dist/_worker.js` and detaches a `sleep 60` grandchild.
 /// - `node_modules/zfb-adapter-stub/package.json` — declares the bin entry.
 fn scaffold_fixture(root: &std::path::Path) -> tempfile::TempDir {
-    // Config: adapter + preact framework.
+    // Config: adapter + zudo-react runtime.
     fs::write(
         root.join("zfb.config.json"),
         r#"{ "adapter": "zfb-adapter-stub" }

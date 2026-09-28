@@ -107,9 +107,9 @@ pub struct RawImportInvalidation {
     /// CSS sibling-mirror-root DIRECTORIES the CSS source-plan seam
     /// (`crate::commands::build::build_default_css_payload_with_source_plan`
     /// in the `zfb` crate, issue #1802 / epic #1799) publishes on every CSS
-    /// recompute — including when the Tailwind subprocess that consumes
-    /// them as `@source` globs later fails. Distinct in KIND from the three
-    /// sets above: those hold FILE targets matched by exact-path
+    /// recompute — including when later utility compilation fails. The
+    /// candidate roots are published independently of that result. Distinct
+    /// in KIND from the three sets above: those hold FILE targets matched by exact-path
     /// containment (`is_*_target`); this holds DIRECTORY roots consumed
     /// wholesale by `zfb_watcher::Watcher::sync_recursive_dir_watches`
     /// (issue #1801), which does its own alias/canonicalisation handling —
@@ -507,9 +507,9 @@ impl RawImportInvalidation {
     /// shrinks must stop watching the roots it no longer claims, or a stale
     /// root would stay registered forever.
     ///
-    /// Note `tailwind.enabled = false` is NOT such a case: that path still
-    /// publishes the full claimed set, because `.module.css` discovery runs
-    /// through the same claim plan regardless of Tailwind (issue #824).
+    /// Note `wind: false` is NOT such a case: that path still publishes the
+    /// full claimed set, because `.module.css` discovery runs through the
+    /// same claim plan regardless of wind configuration (issue #824).
     ///
     /// Because this is replace semantics, a caller must never publish a
     /// deliberately NARROWED set as a "partial" update — doing so unwatches
@@ -539,9 +539,9 @@ impl RawImportInvalidation {
     ///
     /// Containment, not exact membership — contrast with [`Self::contains`],
     /// which backs the file-shaped `is_*_target` predicates. These roots are
-    /// DIRECTORIES, and the question this answers is "would
-    /// `discover_css_source_files` / Tailwind's `@source` globs have scanned
-    /// this file", which is a subtree question.
+    /// DIRECTORIES, and the question this answers is whether
+    /// `discover_css_source_files` includes this file in the wind source
+    /// plan, which is a subtree question.
     ///
     /// `replace_css_mirror_roots` stores roots WITHOUT the alias expansion
     /// `Self::replace` applies to the file-shaped sets (its only other
@@ -1446,7 +1446,7 @@ impl GranularityPolicy {
 
     /// Whether `path` lies inside one of the registered CSS sibling-mirror
     /// roots (issue #1819, epic #1995) — the option-(b) gate that lets a
-    /// `PathClass::Content` change rerun the Tailwind content scan without
+    /// `PathClass::Content` change rerun wind candidate discovery without
     /// making EVERY markdown edit pay for one.
     pub fn is_under_css_mirror_root(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_under_css_mirror_root(path)
@@ -1544,7 +1544,7 @@ mod tests {
 
     /// Issue #1802: `css_mirror_roots` follows the same replace-not-union
     /// contract as the other `RawImportInvalidation` sets — a root dropped
-    /// by a later CSS recompute (the sibling claim shrank, or Tailwind got
+    /// by a later CSS recompute (the sibling claim shrank, or wind was
     /// disabled) must not linger, and a full clear must empty the set.
     #[test]
     fn css_mirror_roots_replace_semantics_drop_stale_roots() {
@@ -1572,7 +1572,7 @@ mod tests {
             "a replaced mirror-root set must not retain a stale root: {second:?}"
         );
 
-        // Clearing entirely (e.g. Tailwind gets disabled) empties the set.
+        // Clearing entirely (e.g. with `wind: false`) empties the set.
         invalidation.replace_css_mirror_roots(Vec::new());
         assert!(
             policy.css_mirror_root_paths().is_empty(),
@@ -1691,7 +1691,8 @@ mod tests {
         let project = root.join("site");
         let in_root = project.join("packages/data/value.json");
         let out_of_root = root.join("sibling/dist/index.js");
-        let pnpm_store = project.join("node_modules/.pnpm/preact@10/node_modules/preact/index.js");
+        let pnpm_store =
+            project.join("node_modules/.pnpm/vendor-lib@10/node_modules/vendor-lib/index.js");
         let shadow_copy = root.join("zfb-shadow-session-abc123/site/node_modules/data/value.json");
         for file in [&in_root, &out_of_root, &pnpm_store, &shadow_copy] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -2105,7 +2106,7 @@ mod tests {
             project.join(".zfb/graph.bin"),
             project.join(".zfb-build/dev-assets/assets/islands.js"),
             project.join("dist/index.html"),
-            project.join("node_modules/preact/index.js"),
+            project.join("node_modules/vendor-lib/index.js"),
             PathBuf::from("/tmp/zfb-shadow-session-1/site/lib/a.ts"),
             PathBuf::from("/tmp/zfb-islands-shadow-1/site/lib/a.ts"),
             PathBuf::from("/tmp/zfb-client-preprocess-1/site/lib/a.ts"),

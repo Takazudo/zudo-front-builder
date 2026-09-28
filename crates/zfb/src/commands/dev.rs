@@ -4672,15 +4672,15 @@ impl DevCssConfig {
 /// `zfb_build::GranularityPolicy::css_mirror_root_paths` by the
 /// orchestrator's dynamic-watch reconciliation
 /// (`register_dynamic_dependency_watches`) — UNCONDITIONALLY, even when the
-/// Tailwind subprocess that consumes those same roots as `@source` globs
-/// later fails. A failed boot CSS build must still register sibling
+/// utility CSS compilation that consumes those same roots for candidate
+/// discovery later fails. A failed boot CSS build must still register sibling
 /// watches, or there is no filesystem event through which recovery could
 /// ever trigger.
 ///
 /// `package_route_entrypoints` is the boot-frozen survivor
 /// `InjectedRouteSet` entrypoint list (#3024) — the same slice `zfb build`
 /// feeds `assemble_css_content_globs`, so a utility class used only inside
-/// a package-route page reaches Tailwind's `@source` scan in dev too.
+/// a package-route page reaches wind candidate discovery in dev too.
 #[allow(clippy::too_many_arguments)]
 fn build_dev_css_and_publish_mirror_roots(
     project_root: &Path,
@@ -19811,7 +19811,7 @@ mod tests {
         assert!(assets_dir.join("font-a-AAAAAAAA.woff2").exists());
 
         // The project stopped shipping CSS entirely (no authored globals,
-        // no CSS Modules, empty Tailwind scan) — mirrors `rebundle_islands`'s
+        // no CSS Modules, no discovered utility candidates) — mirrors `rebundle_islands`'s
         // "no bundle this run" branch.
         let changed =
             publish_dev_css_generation(&dev_assets_root, "", &url_handle, &companion_names, None)
@@ -20851,10 +20851,9 @@ mod tests {
     /// registries are POPULATED, don't assume" rule — a guard keyed on an
     /// empty registry is dead code that silently does nothing.
     ///
-    /// Whether the Tailwind subprocess itself then succeeds or fails is
-    /// irrelevant to this assertion (no tailwind binary is required for
-    /// this test to be meaningful): the seam publishes the mirror roots
-    /// BEFORE that subprocess ever runs, so the result is ignored here.
+    /// Whether utility CSS compilation itself then succeeds or fails is
+    /// irrelevant to this assertion: the seam publishes the mirror roots
+    /// before compilation, so the result is ignored here.
     #[test]
     fn build_dev_css_and_publish_mirror_roots_populates_registry_in_boot_scenario() {
         // Minimal pnpm-workspace-shaped fixture: a project claiming a
@@ -20884,14 +20883,13 @@ mod tests {
         )
         .unwrap();
 
-        // `config::Config::default()` leaves Tailwind ENABLED (the
-        // default), which is the branch this boot-scenario assertion is
-        // about. Note the seam publishes mirror roots on the
-        // `tailwind.enabled = false` path too — `.module.css` discovery
-        // runs through the same claim plan regardless of Tailwind (issue
+        // `config::Config::default()` leaves wind enabled (the default),
+        // which is the branch this boot-scenario assertion is about. The
+        // seam publishes mirror roots when wind is disabled too —
+        // `.module.css` discovery runs through the same claim plan (issue
         // #824), and `build_default_css_payload_with_source_plan` computes
-        // and publishes the roots BEFORE that branch. See
-        // `build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled`.
+        // and publishes the roots before that branch. See
+        // `build_default_css_payload_with_source_plan_publishes_mirror_roots_with_wind_disabled`.
         let cfg = config::Config::default();
         let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
 
@@ -20921,7 +20919,7 @@ mod tests {
     /// Issue #1819 (Mirror Root CSS Scan epic #1995) — the END-TO-END half
     /// of the mandatory registry-population assertion for option (b)'s gate.
     ///
-    /// The orchestrator now reruns the Tailwind content scan for a
+    /// The orchestrator now reruns wind candidate discovery for a
     /// `PathClass::Content` (`.md`/`.mdx`) change when
     /// `GranularityPolicy::is_under_css_mirror_root` says the path lies
     /// inside a published mirror root. The unit tests in `zfb-build`
@@ -20935,8 +20933,8 @@ mod tests {
     /// workspace fixture whose sibling holds ONLY an `.mdx` file, and the
     /// predicate is asserted against that exact file.
     ///
-    /// Deliberately does not require a Tailwind binary: the seam publishes
-    /// mirror roots BEFORE the Tailwind subprocess runs (see the test above).
+    /// The seam publishes mirror roots before CSS compilation begins (see
+    /// the test above).
     #[test]
     fn dev_boot_css_mirror_roots_cover_a_sibling_mdx_file() {
         let tmp = tempfile::tempdir().unwrap();

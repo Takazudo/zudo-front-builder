@@ -334,7 +334,7 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
     }
     write(&project.join(".gitignore"), ".zudo-doc/\n");
 
-    let ui = workspace.join("sub-packages/ui-preact");
+    let ui = workspace.join("sub-packages/ui-kit");
     let package_exports = [
         ("code", "code"),
         ("action-button", "action-button"),
@@ -360,7 +360,7 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
         .join(",");
     write(
         &ui.join("package.json"),
-        &format!(r#"{{"name":"@acme/ui-preact","exports":{{{exports}}}}}"#),
+        &format!(r#"{{"name":"@acme/ui-kit","exports":{{{exports}}}}}"#),
     );
     for (name, marker) in package_exports {
         let extension = if name == "story-contract" {
@@ -376,11 +376,11 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
         );
     }
     fs::create_dir_all(node_modules.join("@acme")).expect("create scoped node_modules directory");
-    std::os::unix::fs::symlink(&ui, node_modules.join("@acme/ui-preact"))
+    std::os::unix::fs::symlink(&ui, node_modules.join("@acme/ui-kit"))
         .expect("link declared workspace package into hoisted install");
     write(
         &project.join("package.json"),
-        r#"{"name":"host","dependencies":{"@acme/ui-preact":"workspace:*"}}"#,
+        r#"{"name":"host","dependencies":{"@acme/ui-kit":"workspace:*"}}"#,
     );
 
     let route_imports = route_files
@@ -395,7 +395,7 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
         .iter()
         .enumerate()
         .map(|(index, (name, _))| {
-            format!("import {{ packageMarker as package{index} }} from \"@acme/ui-preact/{name}\";")
+            format!("import {{ packageMarker as package{index} }} from \"@acme/ui-kit/{name}\";")
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -467,15 +467,15 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
         ".zudo-doc/routes-src/_context.ts",
         ".zudo-doc/routes-src/docs-slug.tsx",
         ".zudo-doc/routes-src/sitemap.xml.tsx",
-        "node_modules/@acme/ui-preact/src/code/code.tsx",
-        "node_modules/@acme/ui-preact/src/action-button/action-button.tsx",
-        "node_modules/@acme/ui-preact/src/h4/h4.tsx",
-        "node_modules/@acme/ui-preact/src/h5/h5.tsx",
-        "node_modules/@acme/ui-preact/src/h6/h6.tsx",
-        "node_modules/@acme/ui-preact/src/em/em.tsx",
-        "node_modules/@acme/ui-preact/src/hr/hr.tsx",
-        "node_modules/@acme/ui-preact/src/strong/strong.tsx",
-        "node_modules/@acme/ui-preact/src/story-contract/story-contract.ts",
+        "node_modules/@acme/ui-kit/src/code/code.tsx",
+        "node_modules/@acme/ui-kit/src/action-button/action-button.tsx",
+        "node_modules/@acme/ui-kit/src/h4/h4.tsx",
+        "node_modules/@acme/ui-kit/src/h5/h5.tsx",
+        "node_modules/@acme/ui-kit/src/h6/h6.tsx",
+        "node_modules/@acme/ui-kit/src/em/em.tsx",
+        "node_modules/@acme/ui-kit/src/hr/hr.tsx",
+        "node_modules/@acme/ui-kit/src/strong/strong.tsx",
+        "node_modules/@acme/ui-kit/src/story-contract/story-contract.ts",
         "../../src/data/generated/first.json",
         "../../src/data/generated/second.json",
     ];

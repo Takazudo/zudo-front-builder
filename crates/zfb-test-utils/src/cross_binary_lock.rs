@@ -75,9 +75,7 @@
 //! added for a since-removed miniflare e2e test — it is currently unused
 //! there). But `std::fs::File` has carried the same
 //! `lock`/`try_lock`/`lock_shared`/`try_lock_shared`/`unlock` API natively
-//! since Rust 1.89 (`zfb-css/src/engine.rs`'s `warm_oxide_cross_process`
-//! already relies on it for a similar cross-process warm-up lock), so no
-//! new dependency is needed here either.
+//! since Rust 1.89, so this helper needs no additional locking dependency.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};

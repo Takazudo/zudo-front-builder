@@ -19,8 +19,8 @@
 //!   dependencies (SWC's TSX→JS pipeline in `zfb-render`, and the
 //!   esbuild npm subprocess wrappers in `zfb-css` /
 //!   `zfb-islands`), and
-//! - tests can plug in fakes that count invocations rather than spinning
-//!   up Tailwind/esbuild subprocesses.
+//! - tests can plug in fakes that count invocations rather than invoking
+//!   the CSS engine or spawning esbuild.
 //!
 //! The whole thing is exposed via the [`AssetPipeline`] trait + the
 //! default [`DevAssetPipeline`] impl. Production / SSR / edge builds can

@@ -1,4 +1,4 @@
-//! Token-aware detection of Tailwind syntax in authored CSS.
+//! Token-aware detection of legacy Tailwind syntax in authored CSS.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftoverDirective {
     pub name: String,

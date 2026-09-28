@@ -152,7 +152,7 @@ pub const HTML5_DOCTYPE_PREFIX: &str = "<!doctype html>\n";
 /// `true` when `html` is an HTML document that should have
 /// [`HTML5_DOCTYPE_PREFIX`] prepended.
 ///
-/// `preact-render-to-string` renders the page's `<html>…</html>` shell
+/// The owned server renderer renders the page's `<html>…</html>` shell
 /// verbatim and (correctly) does not emit a doctype — a doctype is not a
 /// valid JSX node. Without `<!doctype html>` browsers fall back to quirks
 /// mode, which silently changes the box model and CSS the template relies
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn needs_doctype_for_bare_html_document() {
-        // The preact-render-to-string shell: starts with `<html …>`, no doctype.
+        // The owned renderer's shell starts with `<html …>`, without a doctype.
         assert!(needs_html5_doctype(
             "<html lang=\"en\"><head></head><body></body></html>"
         ));

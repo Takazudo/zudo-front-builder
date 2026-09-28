@@ -233,10 +233,10 @@ pub const FOOTNOTE_LABEL_TEXT: &str = "Footnotes";
 /// in the accessibility tree.
 ///
 /// This is deliberately an INLINE style rather than a rule keyed off the
-/// `sr-only` class the heading also carries. `sr-only` is a Tailwind
-/// utility, and zfb emits this class from Rust — Tailwind's content scan
-/// never sees the string, so the utility is never generated, and zfb ships
-/// no base stylesheet that could define it either (`zfb-css`'s
+/// `sr-only` class the heading also carries. `sr-only` is in the wind
+/// catalog, but zfb emits this class from Rust — candidate discovery never
+/// sees the rendered markup, so it cannot add the class to the utility set.
+/// zfb ships no base stylesheet that could define it either (`zfb-css`'s
 /// `assets/zfb-hi.css` is the syntax-highlighting token sheet and is
 /// opt-in). Without the inline style the heading renders as ordinary
 /// visible body text in essentially every project, contradicting the

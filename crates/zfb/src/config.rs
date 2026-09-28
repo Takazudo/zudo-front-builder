@@ -1285,7 +1285,7 @@ pub struct CodeHighlightConfig {
 
     /// Per-role class overrides for class mode, e.g.
     /// `{ "keyword": "text-violet-600 dark:text-violet-400" }` to map a
-    /// role onto Tailwind utilities instead of the default
+    /// role onto wind utilities instead of the default
     /// `{classPrefix}{role}` class. Keys must be one of the fixed role
     /// names in [`CODE_HIGHLIGHT_ROLES`]; a value may hold multiple
     /// space-separated classes. `None` (the default) uses
@@ -1313,7 +1313,7 @@ pub enum CodeHighlightMode {
     #[default]
     Inline,
     /// Per-token semantic role classes; colors resolved via CSS custom
-    /// properties or user-authored/Tailwind utilities instead of inline
+    /// properties or user-authored/wind utilities instead of inline
     /// styles.
     Class,
 }

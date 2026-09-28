@@ -171,7 +171,7 @@ fn write_fixture(root: &Path, emit_render_artifacts: bool, minify_html: bool) {
     )
     .unwrap();
 
-    // A plain (non-Tailwind) global stylesheet is enough to arm the CSS
+    // A plain authored global stylesheet is enough to arm the CSS
     // emitter slot — same fixture shape as `html_minify_build.rs`.
     fs::create_dir_all(root.join("styles")).unwrap();
     fs::write(root.join("styles/global.css"), "body { color: #1a2b3c; }\n").unwrap();

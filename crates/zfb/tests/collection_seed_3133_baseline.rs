@@ -35,8 +35,8 @@
 //!   (`button.tsx`, `orphan.tsx`) from the shadow, and the seed walk applies
 //!   the same filter, so they no longer seed the closure. Before #3142 they
 //!   did: they reached a workspace package, flipped staging on, and dragged
-//!   every deferred live dependency (preact, preact-render-to-string, the
-//!   zfb runtime, hono) plus the workspace packages' pnpm-private closure
+//!   every deferred live dependency (`@takazudo/zfb` runtime subpaths,
+//!   `@takazudo/zfb-runtime`, hono) plus the workspace packages' pnpm-private closure
 //!   through the import-parsing walk (`7/9/true`, measured in #3141 — the
 //!   RED state of this assertion). `button.mdx`'s own `import` is dropped
 //!   by the MDX compiler, so it seeds nothing either.
@@ -99,7 +99,7 @@
 //!   present in the isolated staged view — a symlink to the repo's
 //!   `packages/zfb-runtime` workspace package would canonicalise OUTSIDE
 //!   any `node_modules` and be rejected by `workspace_package_source_is_eligible`.
-//! - `<ws>/apps/site/node_modules/` — `preact`, `preact-render-to-string`
+//! - `<ws>/apps/site/node_modules/` — `@takazudo/zfb` runtime entry points
 //!   (this monorepo's installed store copies, found by prefix so a version
 //!   bump cannot strand the test), `@takazudo/{zfb,zfb-runtime}` (the store
 //!   copies above), and the `shared-utils` / `ui` workspace links
@@ -259,7 +259,7 @@ impl Variant {
     /// `packages/ui/node_modules/shared-utils`, its pnpm-private
     /// `leftpad-priv` / `shared-icons` aliases flipped workspace staging on,
     /// and the deferred live dependencies (`@takazudo/zfb-runtime`, `hono`,
-    /// `preact`, `preact-render-to-string`, `packages/ui`'s `leftpad-priv`)
+    /// `@takazudo/zfb` runtime subpaths, `packages/ui`'s `leftpad-priv`)
     /// were drained. See the fixture README for the full derivation.
     fn expected_stats(&self) -> StagingStats {
         match self {

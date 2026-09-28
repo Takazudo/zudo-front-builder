@@ -174,7 +174,7 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     mountNewIslands();
 
     // Node identity preserved through the whole swap — the lifted node IS the
-    // original element, so all internal Preact/React state rode along with it.
+    // original element, so all mounted component state rode along with it.
     const sidebarAfter = document.querySelector(`[${PERSIST}="sidebar"]`)!;
     expect(sidebarAfter).toBe(sidebarEl);
     expect(sidebarAfter.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);

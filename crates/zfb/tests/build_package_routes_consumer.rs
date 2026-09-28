@@ -1051,7 +1051,7 @@ fn write_combined_stage_escape_consumer_fixture(workspace: &Path) -> PathBuf {
         r#"{
   "name": "combined-host",
   "private": true,
-  "dependencies": { "@acme/ui-preact": "workspace:*" }
+  "dependencies": { "@acme/ui-kit": "workspace:*" }
 }"#,
     )
     .expect("write host package manifest");
@@ -1098,12 +1098,12 @@ export function RootCard() {
     )
     .expect("write root alias component");
 
-    let ui = workspace.join("sub-packages/ui-preact");
+    let ui = workspace.join("sub-packages/ui-kit");
     fs::create_dir_all(ui.join("src/code")).expect("create package source directory");
     fs::write(
         ui.join("package.json"),
         r#"{
-  "name": "@acme/ui-preact",
+  "name": "@acme/ui-kit",
   "exports": { "./code": "./src/code/code.tsx" }
 }"#,
     )
@@ -1116,13 +1116,13 @@ export function RootCard() {
     .expect("write sibling package source");
     fs::create_dir_all(workspace.join("node_modules/@acme"))
         .expect("create scoped hoisted node_modules directory");
-    std::os::unix::fs::symlink(&ui, workspace.join("node_modules/@acme/ui-preact"))
+    std::os::unix::fs::symlink(&ui, workspace.join("node_modules/@acme/ui-kit"))
         .expect("link declared workspace package into hoisted install");
 
     fs::write(
         root.join("pages/index.tsx"),
         r#"import { RootCard } from "@components/root-card";
-import { packageMarker } from "@acme/ui-preact/code";
+import { packageMarker } from "@acme/ui-kit/code";
 
 export default function Home() {
   return <main><RootCard />:{packageMarker}</main>;

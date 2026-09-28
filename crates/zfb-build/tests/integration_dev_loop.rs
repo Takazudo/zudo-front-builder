@@ -269,7 +269,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
 
     assert!(outcome.islands_rerun, "islands must rerun");
     // #1288 — a component (`Module`) edit now also re-runs the CSS content
-    // scan: a new Tailwind utility class authored inside the component must be
+    // scan: a new wind utility class authored inside the component must be
     // emitted into `/assets/styles.css` without touching the CSS entry
     // (symptom C of #1284). This flipped from the previous "css must NOT rerun".
     assert!(

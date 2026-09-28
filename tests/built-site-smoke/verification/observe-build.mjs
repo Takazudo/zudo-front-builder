@@ -1,7 +1,7 @@
 /** @verification W-A08: positive child-process observation for a dependency-free basic-blog build.
  * Run: node tests/built-site-smoke/verification/observe-build.mjs target/release/zfb
  * Linux traces execve with strace; macOS polls the process tree and can miss short-lived children.
- * A record without esbuild is invalid rather than a passing no-Tailwind result.
+ * A record without esbuild is invalid rather than a passing legacy-engine-free result.
  */
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
