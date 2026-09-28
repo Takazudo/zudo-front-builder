@@ -71,6 +71,7 @@ fn make_base_input(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
+        zudo_react_island_names: None,
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
