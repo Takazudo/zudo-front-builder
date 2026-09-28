@@ -20,7 +20,7 @@ test("one runtime definition exists across emitted JavaScript assets", () => {
 });
 
 test("two separately imported islands share a live signal", async ({ page }) => {
-  await page.goto("/shared-state.html");
+  await page.goto("/shared-state/index.html");
   await expect(page.locator('[data-zfb-island="SharedWriter"]')).toHaveAttribute(
     "data-zfb-island-mounted",
     "",

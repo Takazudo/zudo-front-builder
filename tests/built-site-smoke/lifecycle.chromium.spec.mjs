@@ -2,7 +2,7 @@
 import { test, expect } from "@playwright/test";
 
 test("a repeated zfb mount pass does not activate a root twice", async ({ page }) => {
-  await page.goto("/identity.html");
+  await page.goto("/identity/index.html");
   await expect(page.locator('[data-zfb-island="IdentityProbe"]').first()).toHaveAttribute(
     "data-zfb-island-mounted",
     "",
@@ -40,7 +40,7 @@ test("a removed deferred island never activates when its media trigger fires", a
       return media;
     };
   });
-  await page.goto("/identity.html");
+  await page.goto("/identity/index.html");
   await expect(page.locator('[data-zfb-island="IdentityProbe"]').first()).toHaveAttribute(
     "data-zfb-island-mounted",
     "",

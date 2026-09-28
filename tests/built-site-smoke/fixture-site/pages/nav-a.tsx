@@ -13,7 +13,7 @@ export default function NavA() {
       </head>
       <body>
         <h1>Navigation A</h1>
-        <a id="to-b" href="/nav-b.html">
+        <a id="to-b" href="/nav-b/index.html">
           To B
         </a>
         <Island when="load">

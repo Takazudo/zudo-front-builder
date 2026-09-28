@@ -13,7 +13,7 @@ test("SSR nodes survive hydration while the skip-SSR control is replaced", async
     await held;
     await route.continue();
   });
-  const navigation = page.goto("/identity.html", { waitUntil: "domcontentloaded" });
+  const navigation = page.goto("/identity/index.html", { waitUntil: "domcontentloaded" });
   try {
     await expect.poll(() => requested).toBe(true);
     await page.evaluate(() => {
@@ -52,18 +52,32 @@ test("SSR nodes survive hydration while the skip-SSR control is replaced", async
         "#identity-second",
       ];
       const before = window.__identityBefore;
+      const currentChildren = [...document.querySelector("#adjacent-first").childNodes];
+      const positions = before.adjacentChildren.map((node) => currentChildren.indexOf(node));
       return {
         elements: selectors.map(
           (selector, i) =>
             before.nodes[i] === document.querySelector(selector) && before.nodes[i].isConnected,
         ),
-        adjacentChildren: before.adjacentChildren.every(
-          (node, i) =>
-            node === document.querySelector("#adjacent-first").childNodes[i] && node.isConnected,
+        adjacentChildren: positions.every(
+          (position, i) =>
+            position >= 0 &&
+            before.adjacentChildren[i].isConnected &&
+            (i === 0 || position > positions[i - 1]),
+        ),
+        insertedEmptyText: currentChildren.some(
+          (node) =>
+            node.nodeType === Node.TEXT_NODE &&
+            node.textContent === "" &&
+            !before.adjacentChildren.includes(node),
         ),
       };
     });
-    expect(identity).toEqual({ elements: [true, true, true, true, true], adjacentChildren: true });
+    expect(identity).toEqual({
+      elements: [true, true, true, true, true],
+      adjacentChildren: true,
+      insertedEmptyText: true,
+    });
     expect(
       await page.evaluate(
         () =>

@@ -14,7 +14,7 @@ async function navigate(page, link, heading) {
 }
 
 test("disposal, equal-prop persistence, changed-prop remount and Back", async ({ page }) => {
-  await page.goto("/nav-a.html");
+  await page.goto("/nav-a/index.html");
   for (const name of ["DisposableProbe", "EqualProbe", "ChangedProbe"]) {
     await expect(page.locator(`[data-zfb-island="${name}"]`)).toHaveAttribute(
       "data-zfb-island-mounted",
