@@ -40,4 +40,4 @@ pub use config_eval::{ConfigEvalError, ThreadedConfigEvaluator};
 pub use dispatch_mode::DispatchMode;
 pub use error::{RenderError, Result};
 pub use render_host::{ModuleHandle, RenderHost};
-pub use swc_pipeline::{CompileOptions, CompiledModule, JsxRuntime, SwcPipeline};
+pub use swc_pipeline::{CompileOptions, CompiledModule, SwcPipeline};

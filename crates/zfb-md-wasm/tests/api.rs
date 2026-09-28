@@ -16,7 +16,7 @@
 //!   contract for malformed MDX, malformed options JSON, unknown syntect
 //!   theme names, YAML frontmatter errors, and non-markdown filenames;
 //!   frontmatter-line-offset arithmetic on parse positions; the
-//!   `jsxRuntime` switch; `version()`'s dev-build manifest fallback.
+//!   owned JSX imports and rejected `jsxRuntime`; `version()`'s dev-build manifest fallback.
 //! - **Blind spots** (explicitly NOT covered here): executing the
 //!   compiled wasm artifact (Node/browser instantiation is the npm
 //!   package's scope, zfb#1577); panic-freedom under adversarial fuzzed
@@ -99,8 +99,8 @@ fn compile_full_fixture_emits_mdx_content_module() {
         "compiled module must default-export MDXContent, got:\n{code}"
     );
     assert!(
-        code.contains("preact/jsx-runtime"),
-        "default jsxRuntime is preact, got:\n{code}"
+        code.contains("@takazudo/zfb/zudo-react/jsx-runtime"),
+        "owned JSX runtime import missing:\n{code}"
     );
     // The PascalCase component comes from the caller's `components` prop,
     // guarded by an explicit throw.
@@ -137,14 +137,14 @@ fn compile_full_fixture_emits_mdx_content_module() {
 
 #[cfg(feature = "compile")]
 #[test]
-fn compile_react_runtime_switches_import_source() {
+fn compile_rejects_removed_jsx_runtime_option() {
     let out = parse(zfb_md_wasm::compile("hello\n", r#"{"jsxRuntime":"react"}"#));
-    let code = out["code"].as_str().expect("code present");
-    assert!(
-        code.contains("import { jsx as _jsx } from \"react/jsx-runtime\""),
-        "react runtime must synthesize react/jsx-runtime imports:\n{code}"
-    );
-    assert_eq!(out["frontmatter"], Value::Null, "no frontmatter → null");
+    assert_eq!(out["code"], Value::Null);
+    assert_eq!(out["diagnostics"][0]["source"], "options");
+    assert!(out["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("jsxRuntime"));
 }
 
 #[cfg(feature = "compile")]
@@ -296,13 +296,28 @@ fn render_html_without_frontmatter_yields_null_frontmatter() {
 #[test]
 fn render_html_accepts_compile_tier_options_document() {
     // One options document must be shareable across both tiers:
-    // `jsxRuntime` / `development` are accepted (and ignored) here.
+    // `development` remains accepted (and ignored) here.
     let out = parse(zfb_md_wasm::render_html(
         "*hi*\n",
-        r#"{"jsxRuntime":"react","development":true}"#,
+        r#"{"development":true}"#,
     ));
     assert_eq!(out["html"], "<p><em>hi</em></p>");
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_html_rejects_removed_jsx_runtime_option() {
+    let out = parse(zfb_md_wasm::render_html(
+        "# hi\n",
+        r#"{"jsxRuntime":"react"}"#,
+    ));
+    assert_eq!(out["html"], Value::Null);
+    assert_eq!(out["diagnostics"][0]["source"], "options");
+    assert!(out["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("jsxRuntime"));
 }
 
 #[cfg(feature = "render")]

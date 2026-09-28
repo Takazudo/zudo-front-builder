@@ -367,7 +367,6 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
     // Snapshot side — mirror zudo-doc's actual pipeline shape so the
     // hashes computed match the production path.
     let pipeline_config = PipelineSpec {
-        jsx_dialect: zfb_content::JsxDialect::ReactCompat,
         code_highlight_theme: None,
         code_highlight_themes_dir: None,
         code_highlight_theme_light: None,

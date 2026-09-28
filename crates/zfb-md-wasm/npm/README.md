@@ -35,7 +35,7 @@ migration. `./highlight` is also backward-compatible. New `./render` and
 | ------------- | -------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.` | 1,516,383 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile/render/parse/raw-mdast/highlight surface |
 | `./highlight` | 817,951 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
-| `./render` | 1,091,678 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./render` | 1,091,678 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `HighlightRole` |
 | `./parse` | 283,991 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries own private resource pairs:
@@ -113,7 +113,7 @@ import { compile } from "@takazudo/zfb-md-wasm";
 
 const { code, frontmatter, diagnostics } = await compile(
   "---\ntitle: Hello\n---\n\n# Welcome\n\n<Callout>Sum is {1 + 2}</Callout>\n",
-  { filename: "post.mdx", jsxRuntime: "preact" },
+  { filename: "post.mdx" },
 );
 // code        -> ES-module JS source (string) or null on failure
 // frontmatter -> { title: "Hello" }
@@ -144,7 +144,8 @@ const { html, frontmatter, diagnostics } = await renderHtml("Budget <8 ms\n", {
 `dialect: "markdown" | "mdx"` overrides either valid extension. Omitting the
 filename uses `<anonymous>.md`, hence CommonMark. `compile` remains MDX-only
 and accepts/ignores `dialect`, while `renderHtml` accepts/ignores
-`jsxRuntime` / `development`, so one options object can serve both tiers.
+`development`, so one options object can serve both tiers. The removed
+`jsxRuntime` key is rejected by both calls.
 
 ### `version()` / `init()`
 
@@ -520,7 +521,6 @@ creates independent wasm state; no entry evicts or shares another's instance.
 interface ZfbMdWasmOptions {
   filename?: string; // must end .md/.mdx; drives frontmatter dispatch + diagnostics
   dialect?: "markdown" | "mdx"; // renderHtml only; inferred from filename when absent
-  jsxRuntime?: "preact" | "react"; // compile only; default "preact"
   development?: boolean; // compile only; default false
   pipeline?: {
     // A syntect theme name. Absent, or explicit `null`, keeps the built-in
@@ -619,33 +619,28 @@ URL.revokeObjectURL(url);
 Pass your PascalCase components (the `<Callout>` in the source above) through
 the module's `components` prop.
 
-### ⚠️ You must supply the JSX runtime — and the preact case needs one alias
+### Resolving the owned JSX runtime
 
-The compiled module imports its JSX runtime by bare specifier
-(`preact/jsx-runtime` or `react/jsx-runtime`), so the page must resolve those —
-via an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap)
-or your bundler.
-
-**There is one asymmetry to know about.** zfb's emitter takes the JSX _factory_
-from your chosen runtime but **always imports `Fragment` from
-`react/jsx-runtime`**, regardless of `jsxRuntime`. This is zfb's production
-emitter shape (so it's parity-correct, not a bug) — but it means a **preact**
-consumer must alias `react/jsx-runtime` onto preact's, or `Fragment` will fail
-to resolve at runtime:
+Compiled modules import JSX factories and `Fragment` from
+`@takazudo/zfb/zudo-react/jsx-runtime`. Development output uses
+`@takazudo/zfb/zudo-react/jsx-dev-runtime` for factories while `Fragment`
+still comes from the owned `jsx-runtime` subpath. A browser host must resolve
+these package subpaths through its bundler or an import map. For example, after
+serving the installed package's runtime modules at local asset URLs:
 
 ```html
 <script type="importmap">
   {
     "imports": {
-      "preact/jsx-runtime": "https://esm.sh/preact/jsx-runtime",
-      "react/jsx-runtime": "https://esm.sh/preact/jsx-runtime"
+      "@takazudo/zfb/zudo-react/jsx-runtime": "/assets/zudo-react/jsx-runtime.js",
+      "@takazudo/zfb/zudo-react/jsx-dev-runtime": "/assets/zudo-react/jsx-dev-runtime.js"
     }
   }
 </script>
 ```
 
-A `react` consumer just maps `react/jsx-runtime` to React's own and needs no
-alias.
+The paths above are host-owned assets, not CDN URLs. No React/Preact alias is
+needed for the emitted module.
 
 ## Node usage
 
