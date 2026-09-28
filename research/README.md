@@ -17,6 +17,12 @@ findings are no longer load-bearing.
 | `1898-parse-to-ast-interoperability-contract.md` | `referenced-from` | Raw `parseToAst` tier contract; implementation issues #1902, #1904, #1906, #1907, and #1908.                             |
 | `2013-request-time-capability-contract.md` | `referenced-from` | Request-time `fetch` + Web Crypto contract for the embedded V8 host; locks epic #2012's sub-issues #2014-#2020. |
 | `2036-styled-404-detection-diagnosis.md` | `referenced-from` | Why the styled 404 page is never substituted (the `content-length` conjunct in `assetHasStyled404Body`); locks epic #2035's sub-issues #2037 and #2038. |
+| `3242-owned-engines-ledger.md` | `referenced-from` | Epic #3242 decisions, measured inventory and test dispositions; referenced by epic #3242 and sub-issue #3244. |
+| `3242-owned-engines-baseline.md` | `referenced-from` | Owned-engine baseline and migration inputs; referenced by epic #3242 and sub-issue #3245. |
+| `3242-zudo-wind-v1-spec.md` | `referenced-from` | zudo-wind v1 language contract; referenced by epic #3242 and sub-issue #3246. |
+| `3242-zudo-react-v1-contract.md` | `referenced-from` | zudo-react v1 runtime contract; referenced by epic #3242 and sub-issue #3247. |
+| `3242-v3-release-notes-material.md` | `referenced-from` | Breaking-change and migration material; referenced by epic #3242 and sub-issue #3305. |
+| `3242-owned-engines-completion-report.md` | `referenced-from` | Owned-engine completion record; referenced by epic #3242 and sub-issue #3306. |
 
 ## Purgeable one-shots
 
