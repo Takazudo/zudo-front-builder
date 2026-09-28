@@ -213,8 +213,8 @@ fn barrel_without_use_client_is_traversed_to_relative_use_client_module() {
     write(
         &pkg.join("dist/toc/toc.js"),
         r#""use client";
-        import { useState } from "@takazudo/zfb/zudo-react";
-        export function Toc() { return null; }
+        import { signal } from "@takazudo/zfb/zudo-react";
+        export function Toc() { return signal("toc").value; }
         Toc.displayName = "Toc";
         "#,
     );
@@ -264,9 +264,9 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
         &pkg.join("dist/theme-toggle/index.js"),
         r#""use client";
         import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
-        import { useState } from "@takazudo/zfb/zudo-react";
+        import { signal } from "@takazudo/zfb/zudo-react";
         import { applyColorScheme } from "./color-scheme-sync.js";
-        function ThemeToggle() { return null; }
+        function ThemeToggle() { return jsx("button", { children: signal("theme").value }); }
         ThemeToggle.displayName = "ThemeToggle";
         export { ThemeToggle };
         "#,
