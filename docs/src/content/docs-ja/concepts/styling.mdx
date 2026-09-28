@@ -1,17 +1,17 @@
 ---
 title: スタイリング
-description: グローバル CSS、Tailwind v4、そして zfb におけるコンポーネントスコープなスタイリングの位置づけ。
+description: zfb のグローバル CSS、zudo-wind ユーティリティ、コンポーネント単位のスタイル。
 sidebar_position: 4
 category: Concepts
 ---
 
-zfb のスタイリングには 2 つのレイヤー（グローバル CSS と Tailwind v4）があり、それ以外のすべてに対しては 1 つの十分にサポートされたパターンがあります。マークアップそのものに付与するユーティリティクラスです。
+zfb のプロジェクトでは、自分で記述するグローバル CSS、zudo-wind が生成するユーティリティ、セレクタをコンポーネント内に閉じたいときの CSS Modules を組み合わせてスタイリングできます。
 
 ## グローバル CSS
 
-デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。デザイントークン、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
+デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。プロジェクトのプロパティ、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
 
-zfb はグローバルスタイルシートを `styles/global.css` または `src/styles/global.css` のどちらかから解決します。両方が存在する場合はトップレベルの `styles/global.css` が優先されます。`src/styles/` へのフォールバックは、ソースを `src/` 配下にまとめる構成（Vite・Astro・Next 風のよくあるレイアウト）のプロジェクト向けです。
+zfb はグローバルスタイルシートを `styles/global.css` または `src/styles/global.css` のどちらかから解決します。両方が存在する場合はトップレベルの `styles/global.css` が優先されます。`src/styles/` へのフォールバックは、ソースを `src/` 配下にまとめるプロジェクト向けです。
 
 ```css
 :root {
@@ -27,82 +27,58 @@ body {
 }
 ```
 
-CSS 内の `import` は期待どおりに動作します。スタイルを複数のファイルに分割し、`global.css` からまとめて読み込めます。
+CSS 内の import も使えます。スタイルを複数のファイルに分割し、`global.css` からまとめて読み込めます。
 
-## Tailwind v4
+## zudo-wind
 
-Tailwind v4 はデフォルトで有効です。`zfb.config.{ts,json}` に `tailwind` キーがないプロジェクトは、Tailwind が有効な状態でビルドされます。追加すべき設定も、立てるべきフラグもありません。このキーは、逆に無効化するために存在します。
+zudo-wind は zfb に組み込まれたユーティリティ CSS 言語です。設定には `wind` キーを使います。省略すると `{}` と同じ扱いになり、生成は有効、リセットは `none`、トークンとブレークポイントは暗黙には用意されません。プロジェクトで使う値だけを設定してください。詳しくは [zudo-wind の概要](../zudo-wind/overview.mdx)、[設定](../zudo-wind/configuration.mdx)、[ソース](../zudo-wind/sources-and-candidates.mdx)、[ユーティリティ](../zudo-wind/utilities/index.mdx) を参照してください。
+
+### zfb に組み込まれたエンジン
+
+コンパイラは zfb バイナリの一部です。別の CSS エンジンのプロセスを起動せず、バイナリパスによる上書きもプロジェクトへのインストールも必要ありません。生成されたユーティリティと並行して、手書きの CSS と CSS Modules も利用できます。
+
+### ソースの検出
+
+build と dev は、設定されたソースプランに含まれる `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` ファイルから、完全なクラス候補文字列を読み取ります。ソースプランには、慣例的なプロジェクトルート、宣言されたパッケージルート、ミラールート、明示的なソースを含められます。アプリケーションを実行してクラスを見つけるわけではありません。抽出と拡張については [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+
+単独の `zfb css --source` コマンドでは、明示的な `.html` と `.mjs` ソースも指定できます。build と dev はこれらの拡張子を自動検出しません。フラグと手書き CSS の扱いは [CLI リファレンス](../api/cli.mdx#zfb-css) を参照してください。
+
+### 手書きの CSS のみを使う
+
+`wind: false` を設定すると、wind の生成、トークン検証、マニフェストの読み込み、クラス候補の走査が無効になります。
 
 ```json
 {
-  "tailwind": {
-    "enabled": false
-  }
+  "wind": false
 }
 ```
 
-Tailwind が有効なとき、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。完全な契約は下記の [Tailwind は zfb に組み込まれている](#tailwind-v4-tailwind-は-zfb-に組み込まれている) を参照してください。
+グローバル CSS、CSS Modules、シンタックスハイライトは引き続き動作します。スタイルシートに残った wind ディレクティブの検査も続きます。`none` 以外のリセットはユーティリティ候補がなくても CSS を出力できます。一方、空の有効設定は、解決されたルールやトークンがなければ wind スタイルシートを出力しません。出力順は [カスケードとリセット](../zudo-wind/cascade-and-reset.mdx) を参照してください。
 
-ユーティリティクラスは、走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) を参照）。
+## コンポーネントスコープなスタイリング
+
+コンパクトなコンポーネントのスタイルには zudo-wind のユーティリティを使い、セレクタ名をコンポーネント内に閉じたい場合は CSS Modules を使います。
+
+### zudo-wind のユーティリティクラス
+
+ソースファイルには完全なクラス候補を記述します。設定されたトークンとブレークポイントによって、どの候補が CSS に解決されるかが決まります。たとえば、静的なレイアウト用ユーティリティを JSX に直接書けます。
 
 ```tsx
-export default function Hero() {
+export default function Toolbar() {
   return (
-    <section className="mx-auto max-w-2xl px-6 py-12">
-      <h1 className="text-3xl font-bold">Hello</h1>
-    </section>
+    <nav class="flex items-center justify-between">
+      <a href="/">Home</a>
+      <a href="/about">About</a>
+    </nav>
   );
 }
 ```
 
-Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` ディレクティブを通じてサポートされます。トークンのカスタマイズは JS の設定ファイルではなく CSS を編集して行います。
-
-### Tailwind は zfb に組み込まれている
-
-Tailwind まわりは zfb がすべて引き受けます — コンパイラ本体、実行されるバージョン、そして `tailwindcss` の CSS import の解決までです。契約は次の 4 点に尽きます。
-
-**コンパイラは `zfb` 実行ファイルに同梱されています。** Tailwind v4 の standalone CLI は zfb の vendor snapshot に埋め込まれており、実行時に展開されて `zfb-css` クレートからサブプロセスとして呼び出されます。Node.js も `node_modules` も、ビルド時のダウンロードも必要ありません（[Node なしでインストール](../install/node-free.mdx) を参照）。Tailwind の具体的なバージョンは zfb 自身のソースツリー（`crates/zfb/build.rs` の `TAILWIND_VERSION`）にピン留めされており、zfb 自体がリリースされるときにだけ変わります。
-
-**プロジェクト側で Tailwind をインストールしてはいけません。** `package.json` に `tailwindcss` や `@tailwindcss/vite` を追加しないでください。Vite や Astro の構成から移行したプロジェクトや、この契約より前に書かれたスキャフォールドツールが生成したプロジェクトで、すでにどちらかが記載されている場合は、削除して再インストールしてください。`zfb new` がスキャフォールドするプロジェクトには、どちらも入っていません。
-
-**`@import "tailwindcss"` は組み込みエンジンが解決します。`node_modules` は一切参照しません。** 実際に書くことになる 3 つの specifier は、いずれも仮想的なものです。
-
-```css title="styles/global.css"
-@import "tailwindcss";
-/* あるいは分割して: */
-@import "tailwindcss/preflight";
-@import "tailwindcss/utilities";
-```
-
-zfb の CSS import ウォーカーは、ちょうど `tailwindcss` という specifier と、`tailwindcss/` で始まるサブパスだけを認識し、それらの解決をまるごとスキップします（`crates/zfb-css/src/css_imports.rs` の `is_virtual_specifier`）。これらのスタイルシートは組み込みバイナリ自身が供給するからです。この判定が狭いのは意図的で、`tailwindcss-something` のように名前の先頭が一致しているだけの別パッケージは通常の import として扱われ、これまでどおり `node_modules` から解決されます。そのため `node_modules/tailwindcss` が読まれることはありません。そのまま残しておく構成もサポート対象外です。出力される CSS は変わらず、組み込みのバージョンを上書きすることもなく、lockfile を重くするだけです。
-
-**プロジェクト単位でのバージョン上書きはできません。ただしバイナリのパスは差し替えられます。** Tailwind のバージョンを選ぶ設定項目はなく、npm でインストールされた `tailwindcss` はバージョンを問わず参照されません。差し替えられるのは「どのバイナリを実行するか」です。`ZFB_TAILWIND_BIN` に Tailwind v4 バイナリの絶対パスを指定すると、CSS エンジンは組み込みのものではなくそちらを実行します。これは上級者向け / CI 向けの逃げ道です。エアギャップ環境や、自組織で検証済みのバイナリしか実行できない環境のためのものであり、Tailwind のバージョンを選ぶための手段ではありません。正確な挙動は [環境変数のリファレンス](../api/cli.mdx#環境変数) を参照してください。
-
-<Note title="依存を消してもビルドが通るのは、偶然ではなく仕様です">
-
-`package.json` から `tailwindcss` を削除しても出力されるスタイルシートがバイト単位で同一なら、何かが静かに壊れているわけでも、これから壊れる前触れでもありません。その依存はそもそも一度も読まれていなかった、というだけです。
-
-</Note>
-
-### Tailwind が見る場所
-
-Tailwind の `@source` コンテンツスキャンは、プロジェクトルートから解決される 5 つのデフォルトルートをカバーします。`pages/`・`components/`・`layouts/`・`content/`・`src/` です。ユーティリティクラスは、これら 5 つのいずれかの配下にあるファイルに実際に現れて初めて拾われます。5 つすべての外側でしか使われていないクラスはスキャンされないため、ビルドは成功するのにスタイルが当たらない、という結果が黙って発生します。
-
-`tailwind: { enabled: false }` を設定すると `AuthoredCssEngine` に切り替わり、あなたが書いた `styles/global.css` がそのまま素通りします。Tailwind の `@import` も、ユーティリティのスキャンも、preflight のリセットも、サブプロセスもありません。CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はすべて変わらず動作し続け、Tailwind 固有のステップだけがスキップされます。
-
-Tailwind が有効な間、ビルドパイプラインは CSS エントリの隣に `zfb-tailwind-entry-*.css` という名前の一時エントリファイルを（追跡対象のソースツリー内に）生成し、ビルド完了後に削除します。新規にスキャフォールドしたプロジェクトはこれを自動的に無視します。このグロブが導入される前にスキャフォールドしたプロジェクトでは、`.gitignore` に `**/zfb-tailwind-entry-*.css` を追加してください。
-
-## コンポーネントスコープなスタイリング
-
-コンポーネントレベルのスタイリングには、十分にサポートされたパターンが 2 つあります。Tailwind ユーティリティクラスと CSS Modules です。
-
-### Tailwind ユーティリティクラス
-
-最もシンプルなパターンは、**サイト全体の関心事にはグローバル CSS を、コンポーネントレベルのスタイリングには Tailwind ユーティリティクラスを使う** というものです。これによりビルドは高速に、ランタイムは些細なものに保たれ、Tailwind v4 のデザイントークンモデルにきれいにマッピングできます。
+サポートされるクラスは [ユーティリティリファレンス](../zudo-wind/utilities/index.mdx)、プロジェクトで定義する値は [トークン](../zudo-wind/tokens.mdx) を参照してください。
 
 ### CSS Modules
 
-真にコンポーネントスコープな CSS（コンポーネント間で衝突してはならないクラス名）には、zfb は CSS Modules をサポートしています。`*.module.css` という名前のファイルはすべて CSS Module です。そのクラス名はビルド時にスコープ付きでファイル安定な識別子へと書き換えられるため、2 つのコンポーネントが衝突することなく両方とも `.button` クラスを定義できます。
+コンポーネント間で衝突してはならないクラス名には CSS Modules を使えます。`*.module.css` という名前のファイルでは、クラス名がビルド時にファイルごとに安定したスコープ付き識別子へ書き換えられます。複数のコンポーネントが同じ `.button` クラスを定義しても衝突しません。
 
 スタイルは `.module.css` ファイルに記述します。
 
@@ -118,43 +94,43 @@ Tailwind が有効な間、ビルドパイプラインは CSS エントリの隣
 }
 ```
 
-モジュールは **デフォルトインポート** でインポートし、インポートしたオブジェクトからクラス名を読み取ります。
+モジュールを **デフォルトインポート** し、インポートしたオブジェクトからクラス名を読み取ります。
 
 ```tsx title="components/Card.tsx"
 import styles from "./card.module.css";
 
 export default function Card() {
   return (
-    <div className={styles.card}>
-      <h3 className={styles.title}>Hello</h3>
+    <div class={styles.card}>
+      <h3 class={styles.title}>Hello</h3>
     </div>
   );
 }
 ```
 
-ビルド時に zfb は `styles.card` をスコープ付きのクラス名（例: `KdPA9G_card`）に解決します。レンダリングされた HTML はそのスコープ付きクラスを持ち、スコープ付き CSS は残りの CSS と同じハッシュ付きの `dist/assets/styles-<hash>.css` スタイルシートに畳み込まれます。モジュールごとに別の `.css` ファイルが作られることはなく、ランタイムコストもありません。ルックアップはビルド中に解決されます。
+ビルド時に zfb は `styles.card` をスコープ付きクラス名（例: `KdPA9G_card`）に解決します。HTML にはそのクラスが入り、対応する CSS は他の CSS と同じハッシュ付きの `dist/assets/styles-<hash>.css` に含まれます。モジュールごとの別ファイルやランタイムコストは発生しません。
 
 仕組み:
 
-- `import styles from "./x.module.css"` は **デフォルトインポート** でなければなりません。`styles` は元のクラス名をスコープ付きのものへマッピングするプレーンオブジェクトです。
-- クラスへはメンバーアクセスでアクセスします（`styles.card` または `styles["card"]`）。どちらも動作しますが、動的なキーによる計算アクセスは動作しません。書き換えがビルド時に行われるためです。
-- プレーンな `.css` のインポート（`.module.css` で終わら *ない* ファイル）は引き続きグローバル CSS として扱われます。スコープ化を opt-in するのは `.module.css` サフィックスだけです。
-- `.module.css` ファイルは、`pages/`・`components/`・`layouts/`・`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
+- `import styles from "./x.module.css"` には **デフォルトインポート** が必要です。`styles` は元のクラス名をスコープ付きクラス名へ対応させるプレーンなオブジェクトです。
+- `styles.card` または `styles["card"]` でクラスを参照できます。動的なキーによるアクセスは、書き換えがビルド時に行われるため動作しません。
+- JavaScript/TypeScript モジュールからのプレーンな `.css` インポートは出力されません。esbuild がこれを解決すると zfb は警告し、`strictPlainCssImports: true`（または `zfb build --strict-plain-css-imports`）でビルドエラーになります。グローバル CSS は `styles/global.css` とその `@import` に置き、コンポーネント用にはデフォルトインポートした `.module.css` を使ってください。
+- `.module.css` ファイルは、`pages/`、`components/`、`layouts/`、`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
 
 制限:
 
-- `node_modules` から **ベア specifier** でインポートされる CSS Modules（例: `import s from "@org/pkg/x.module.css"`）はスコープ化されません。スコープ化されるのはプロジェクト相対の `./` / `../` インポートだけです。
-- `:export` ブロックと `composes` ディレクティブはサポートされていません。プレーンなクラスセレクタを使ってください。
+- `node_modules` から **ベア specifier** でインポートされる CSS Modules（例: `import s from "@org/pkg/x.module.css"`）はスコープ化されません。対象はプロジェクト相対の `./` / `../` インポートだけです。
+- `:export` ブロックと `composes` ディレクティブはサポートされません。プレーンなクラスセレクタを使ってください。
 
-## モノレポ / ワークスペース sibling パッケージ
+## モノレポとワークスペースの sibling パッケージ
 
-pnpm workspace 風のモノレポでは、相対 import ではなく tsconfig のパスエイリアス経由でのみ到達する sibling パッケージも、CSS パイプラインに拾われます。
+pnpm workspace 形式のモノレポでは、相対 import ではなく tsconfig のパスエイリアス経由でのみ到達する sibling パッケージも CSS パイプラインに拾われます。
 
-- sibling 自身の `*.module.css` ファイルは、プロジェクトローカルのファイルと同じ CSS Modules スキャンに加わるため、そのスコープ付きクラス名も他のモジュールと同じように解決されます。
-- sibling のソースファイルは Tailwind の `@source` コンテンツスキャンにも供給されるため、sibling パッケージ内でしか使われていないユーティリティクラスも生成されます。黙って落とされることはありません。
+- sibling 自身の `*.module.css` ファイルは、プロジェクト内のファイルと同じ CSS Modules 走査に加わり、スコープ付きクラス名が同じように解決されます。
+- sibling のソースファイルも zudo-wind のソースプランに含まれるため、そのパッケージだけで使うクラス候補も生成できます。
 
-エイリアス先は「mirror root」になります。CSS パイプラインは、主張された workspace sibling ディレクトリを、上記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) で説明した `pages/`・`components/` などのスキャン対象ルートと同じように扱います。
+エイリアス先は「ミラールート」になります。CSS パイプラインは、対象となるワークスペースの sibling ディレクトリをプロジェクトのソースルートと同じように扱います。ソースプランについては [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
 
 ## `dist/` に出力されるもの
 
-ビルドパイプラインは Tailwind v4 と lightningcss を実行し、ハッシュ付きのスタイルシートを `dist/assets/` に書き出し、レンダリングされた各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しているため、CDN キャッシュは内容が変わるまでデプロイをまたいで保持できます。
+ビルドパイプラインは手書きの CSS、生成された wind の出力、CSS Modules の出力をまとめて、`dist/assets/` 配下のハッシュ付きスタイルシートに書き出します。そのうえで、レンダリングした各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しており、内容が変わるまで CDN キャッシュに保持できます。

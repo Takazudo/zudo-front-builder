@@ -36,7 +36,6 @@ declare module "zfb/config" {
 - `host?: string` — dev / preview サーバーがバインドするホスト。
 - `port?: number` — dev / preview サーバーのポート。省略時の組み込みフォールバックはコマンドごとに異なり、`zfb dev` は `3000`、`zfb preview` は `4321` にフォールバックします。ここで `port` を設定すると両コマンドのフォールバックを上書きし、さらに CLI の `--port` フラグがこの設定値を上書きします。[CLI リファレンス](./cli.mdx)を参照してください。
 - `allowedHosts?: string[]` — 非 localhost インターフェースにバインドしたときに dev / preview サーバーが受け付ける Host ヘッダー値（Vite の `server.allowedHosts` に相当）。非ループバックバインドのときだけ参照されます。`localhost`・明示的にバインドしたホスト・IP リテラルの Host（`127.0.0.1`・`[::1]`・起動バナーが表示する LAN URL など）は常に許可されます（DNS リバインディングには DNS 名が必要なため、生の IP は安全です）。エントリは完全一致（大文字小文字を区別せず、リクエスト側のポートは除去して比較）。`".example.com"` のような先頭ドット付きエントリはサブドメインにもマッチします。
-- `framework?: "preact" | "react"` — JSX フレームワークのランタイム。デフォルト: `"preact"`。
 - `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは以下を持ちます。
   - `name: string` — `getCollection` 呼び出しで使う識別子。
   - `path: string` — プロジェクトルートからの相対ディレクトリ。
@@ -45,7 +44,7 @@ declare module "zfb/config" {
   - `exclude?: string[]` — glob パターン。マッチするエントリは除外されます（`include` の後に評価されます）。
   - `idStripSuffix?: string` — 各エントリの slug とモジュール specifier から取り除かれるサフィックス（例: 多言語レイアウトでの `".en"`）。
   - `allowOutsideRoot?: boolean` — `..` によってプロジェクトルートを抜け出す `path` をオプトインします（例: このパッケージの外にあるモノレポ共有のコンテンツディレクトリ）。デフォルトの `false` は `path` をプロジェクトルート内に制限します。絶対パスはこのフラグにかかわらず拒否されます — 緩和されるのは `..` 相対の脱出だけです。モノレポでの使用例や、プリセットの信頼・dev 監視に関する注意点については[プロジェクトルート外のコレクション](../concepts/content-collections.mdx#プロジェクトルート外のコレクション)を参照してください。
-- `tailwind?: { enabled?: boolean }` — Tailwind オプション。`enabled` のデフォルトは `true` です。作成済みの CSS と CSS Modules は残したまま Tailwind を無効化するには、`tailwind: { enabled: false }` を設定します。
+- `wind?: false | WindConfig` — zudo-wind の生成と設定。省略時は `{}` と同じで、リセット `none`、空のトークンマップ、zfb が提供するソースプランで生成が有効になります。`false` では wind の生成、トークン検証、マニフェスト、クラス候補の走査を無効にしますが、手書き CSS、CSS Modules、ハイライトは続き、残ったスタイルシートディレクティブの検査も実行されます。`WindConfig` には任意の `spec?: 1`、`reset?: "none" | "minimal-v1" | "owned-v1"`、`tokens`、`breakpoints`、`dark`、`safelist`、`authoredClasses`、`manifests` があり、ネストしたオブジェクトも厳密に検証されます。完全なスキーマとデフォルトは [zudo-wind の設定](../zudo-wind/configuration.mdx) を参照してください。
 - `prefetch?: { disabled?: boolean }` — プリフェッチオプション。`disabled: true` のとき、ランタイムのプリフェッチ配線はビルド時の meta タグを通じて完全にスキップされます。
 - `minifyHtml?: boolean` — プロダクション HTML ミニファイを有効にします。デフォルト: `false`（オフ）。ミニファイは Rust 側の後処理として実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。`zfb build --minify-html` / `--no-minify-html` で 1 回のビルドだけ設定値を上書きできます。
 - `strictBrokenLinks?: boolean` — マークダウンのリンク検証が出す壊れたリンクの診断をエラーに引き上げ、警告にとどめる代わりに `zfb build` を非ゼロ終了で失敗させます。デフォルト: `false`（オフ。キー自体を省略しても構いません）。`markdown.features.linkValidation` がない場合、これを `true` にすると何もしないのではなく、デフォルト設定でリンク検証を**強制的に有効化**します。すでにある場合は、その `failOnBroken` だけが上書きされ、他の設定はすべて保持されます。`zfb build --strict-broken` / `--no-strict-broken` で 1 回のビルドだけ設定値を上書きできます。build 専用で、`zfb dev` は影響を受けません。対象は `linkValidation` の仕組みのみで、後述の別物である `resolveMarkdownLinks.onBrokenLinks` のつまみには影響しません。[リンク検証](../markdown-features/link-validation.mdx)を参照してください。
@@ -87,9 +86,15 @@ declare module "zfb/config" {
   - `themeDark?: string` — デュアルテーマハイライト用のダークモード syntect テーマ名。`themeLight` と**必ずセットで**指定し、`theme` とは排他です。デュアルモードの完全な仕様は `themeLight` を参照してください。
   - `mode?: "inline" | "class"` — トークンの出力モード。`"inline"`（**デフォルト**）はトークンごとの色を `style="color:…"`（またはデュアルの `--shiki-*` プロパティ）に焼き込みます。`"class"` は代わりにトークンごとに意味的なロールクラスを出力し、色は再テーマ可能な CSS カスタムプロパティ経由で解決されます。**クラスモードはすべてのテーマ関連オプション（`theme`、`themeLight`、`themeDark`、`themesDir`）と排他** です。テーマはクラス出力に影響しないため、`mode: "class"` と同時に指定するとビルドエラーになります。ガイドの[クラスモード](../guides/syntax-highlighting.mdx#クラスモード（推奨）)の節を参照してください。
   - `classPrefix?: string` — クラスモードのクラス名プレフィックス（デフォルトは `"hi-"` で、`hi-root`、`hi-kw`、… を生成）。`/^[A-Za-z][A-Za-z0-9_-]*$/` に一致する必要があります（先頭は ASCII 英字、残りは英字・数字・`_`・`-`）。空・先頭が数字・その他一致しないプレフィックスはビルドエラーです。クラスモードでのみ意味を持ちます。同梱のデフォルトスタイルシートの `.hi-*` セレクタは設定したプレフィックスへ書き換えられますが、`--zfb-hi-*` カスタムプロパティは `--zfb-hi-*` のままです。
-  - `roleClasses?: Partial<Record<Role, string>>` — クラスモードでのロールごとのクラス上書き（例: `{ keyword: "text-violet-600 dark:text-violet-400" }`）。キーは 18 個の固定ロール名（`escape`、`operator`、`comment`、`string`、`number`、`constant`、`keyword`、`function`、`type`、`namespace`、`property`、`variable`、`tag`、`attribute`、`punctuation`、`inserted`、`deleted`、`heading`）のいずれかである必要があり、未知のキーはビルドエラーです。値はスペース区切りで複数のクラスを持てますが、素の `line` トークンを含めることはできません（code-enrichment の行ラッパーと衝突します）。マッピングされた Tailwind ユーティリティは `@source inline` で自動セーフリスト化されます。`tailwind.enabled` が `false` の状態で `roleClasses` を設定することは許可されますが、ビルド警告が出ます（オーサリング CSS 経路ではセーフリストを生成できません）。
+  - `roleClasses?: Partial<Record<Role, string>>` — class モードのロール別クラス上書きです。例: `{ keyword: "text-violet" }`。キーは固定の 18 ロール名（`escape`、`operator`、`comment`、`string`、`number`、`constant`、`keyword`、`function`、`type`、`namespace`、`property`、`variable`、`tag`、`attribute`、`punctuation`、`inserted`、`deleted`、`heading`）のいずれかでなければならず、未知のキーはビルドエラーになります。値はスペース区切りで複数のクラスを含められますが、裸の `line` は指定できません。有効な zudo-wind ユーティリティは出力され、無効または未知のロール値はビルド診断なしの通常クラスとして残ります。`wind: false` では必要なロールの CSS を手書きしてください。audit は無視されたロール値を報告できます。[診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
   - `defaultStylesheet?: boolean` — 組み込みの `--zfb-hi-*` トークンスタイルシート（`zfb-hi.css`）を、まとめられた `styles.css` に注入するかどうか。デフォルトは `true`。クラスモードでのみ意味を持ちます。完全に自前のスタイルシートを使う場合は `false` に設定します。
 - `pluginHookTimeoutSecs` — プラグインフック呼び出しのタイムアウト（秒）。
+
+<Note title="削除されたキー">
+
+トップレベルに残った `tailwind` または `"framework"` キーは、キーごとの移行エラーで設定の読み込みに失敗します。必要なスタイル設定は `wind` に移し、手書き CSS だけを使う場合は `wind: false` を指定してください。古いランタイムセレクタを削除し、[v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
+
+</Note>
 
 ## `bundle` 設定
 
@@ -138,7 +143,7 @@ export default defineConfig({
 
 変更前: `The "main" field here was ignored. Main fields must be configured explicitly when using the "neutral" platform.` 変更後: esbuild は `main` そして `module` を参照し、依存を解決します。
 
-`bundle.external` — neutral パス向けに `--external` としてマークするベア specifier。esbuild はそれらの解決を試みる代わりに、バンドルせずそのまま残します。`mainFields` だけでは満たせない CJS 専用の依存向けのもう 1 つのエスケープハッチです。フレームワークが提供する externals に追加されます。
+`bundle.external` — neutral パス向けに `--external` としてマークするベア specifier。esbuild はそれらの解決を試みる代わりに、バンドルせずそのまま残します。`mainFields` だけでは満たせない CJS 専用の依存向けのもう 1 つのエスケープハッチです。zfb 自身が提供する external specifier に追加されます。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -319,14 +324,12 @@ import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   outDir: "dist",
-  framework: "preact",
   collections: [
     {
       name: "blog",
       path: "content/blog",
     },
   ],
-  tailwind: { enabled: true },
 });
 ```
 
@@ -336,14 +339,12 @@ export default defineConfig({
 // zfb.config.json — レガシー形式。現在もサポート
 {
   "outDir": "dist",
-  "framework": "preact",
   "collections": [
     {
       "name": "blog",
       "path": "content/blog"
     }
-  ],
-  "tailwind": { "enabled": true }
+  ]
 }
 ```
 
