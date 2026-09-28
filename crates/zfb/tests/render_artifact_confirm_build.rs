@@ -62,10 +62,7 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 /// esbuild), matching the pattern used across sibling build-command tests
 /// (`html_minify_build.rs`, `end_to_end_basic_blog_build.rs`).
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {

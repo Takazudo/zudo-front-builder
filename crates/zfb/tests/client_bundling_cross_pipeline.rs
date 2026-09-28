@@ -1489,7 +1489,7 @@ fn write_sibling_macro_workspace(root: &Path) -> PathBuf {
     .expect("write project package.json");
     fs::write(
         project.join("zfb.config.json"),
-        r#"{ "framework": "preact", "tailwind": { "enabled": false } }"#,
+        r#"{ "framework": "preact", "wind": false }"#,
     )
     .expect("write zfb.config.json");
     fs::write(
@@ -1691,7 +1691,7 @@ fn write_root_claimed_workspace_shell(root: &Path) {
     .expect("write host package.json");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "tailwind": { "enabled": false } }"#,
+        r#"{ "framework": "preact", "wind": false }"#,
     )
     .expect("write zfb.config.json");
     fs::create_dir_all(root.join("pages")).expect("create pages dir");

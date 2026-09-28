@@ -602,11 +602,7 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path),
             );
-            if combined.contains("embed_v8")
-                || combined.contains("no esbuild")
-                || combined.contains("no tailwind")
-                || combined.contains("tailwindcss") && combined.contains("not found")
-            {
+            if combined.contains("embed_v8") || combined.contains("no esbuild") {
                 eprintln!(
                     "[dev_content_reload_2063_e2e] known unavailable dependency; skipping.\n{}",
                     session.logs(),
@@ -786,7 +782,7 @@ async fn poll_until_response_contains(
 enum ScenarioOutcome {
     Completed,
     /// The binary exited with a known environmental skip indicator (no
-    /// V8 / no esbuild / no Tailwind) — skip without failing.
+    /// V8 / no esbuild) — skip without failing.
     Skipped,
 }
 

@@ -203,14 +203,10 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
     let combined = format!("{stdout}{stderr}");
 
     if !status.success() {
-        if combined.contains("embed_v8")
-            || combined.contains("no esbuild")
-            || combined.contains("no tailwind")
-            || (combined.contains("tailwindcss") && combined.contains("not found"))
-        {
+        if combined.contains("embed_v8") || combined.contains("no esbuild") {
             eprintln!(
                 "[page_extension_route_table_build] zfb build exited non-zero with \
-                 a known-skip indicator (V8/esbuild/tailwind unavailable); \
+                 a known-skip indicator (V8/esbuild unavailable); \
                  skipping test.\nstdout: {stdout}\nstderr: {stderr}"
             );
             return;

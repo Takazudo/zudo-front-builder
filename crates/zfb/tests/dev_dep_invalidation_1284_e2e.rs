@@ -14,7 +14,7 @@
 //!   workspace dep reached via `@import`) does not refresh `/assets/styles.css`.
 //!   Acceptance: after the fix, editing the imported CSS makes
 //!   `/assets/styles.css` serve the new bytes.
-//! - **C** — a NEW Tailwind utility class added inside a component is not
+//! - **C** — a NEW wind utility class added inside a component is not
 //!   emitted into `/assets/styles.css` until the CSS entry is touched.
 //!   Acceptance: after the fix, the new class appears in `/assets/styles.css`
 //!   without touching the CSS entry.
@@ -35,7 +35,7 @@
 //! `poll_until_contains` / `subscribe_sse`) — these are no longer stubs.
 //! They stay `#[ignore]`d (tagged `heavy:`, see crates/CLAUDE.md's taxonomy)
 //! because each scenario boots a real `zfb dev` server (esbuild + embedded
-//! V8 + Tailwind for symptom C) and polls it over HTTP: too slow, and too
+//! V8 + wind for symptom C) and polls it over HTTP: too slow, and too
 //! reliant on a free port, for the T1 PR gate. Run locally with
 //! `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`.
 //! They are kept as a separate file so the acceptance contract is
@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
-// Serialise the three tests: each boots a full V8 + esbuild + Tailwind dev
+// Serialise the three tests: each boots a full V8 + esbuild + wind dev
 // session; running them concurrently would double/triple memory and produce
 // flaky boot deadlines. Each test also acquires `CrossBinaryE2eLock` BEFORE
 // this mutex to serialize against sibling e2e binaries (issue #1339) — see
@@ -88,6 +88,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 // ---------------------------------------------------------------------------
 // Harness types and helpers (mirrors dev_serve_e2e.rs)
 // ---------------------------------------------------------------------------
+
+fn select_wind_for_fixture(root: &Path) {
+    fs::write(
+        root.join("zfb.config.json"),
+        r##"{
+  "framework": "preact",
+  "collections": [{ "name": "posts", "path": "content/posts" }],
+  "wind": { "tokens": {
+    "colors": { "marker": "#123456" },
+    "spacing": { "hgap-2xs": "0.125rem" },
+    "fontWeights": { "bold": "700" }
+  } }
+}"##,
+    )
+    .expect("select wind for dev invalidation fixture");
+}
 
 fn base_fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -359,7 +375,7 @@ async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Durat
 enum ScenarioOutcome {
     Completed,
     /// The binary exited with a known environmental skip indicator (no V8 /
-    /// no esbuild / no Tailwind) — skip without failing.
+    /// no esbuild) — skip without failing.
     Skipped,
 }
 
@@ -376,14 +392,10 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8")
-                || combined.contains("no esbuild")
-                || combined.contains("no tailwind")
-                || combined.contains("tailwindcss") && combined.contains("not found")
-            {
+            if combined.contains("embed_v8") || combined.contains("no esbuild") {
                 eprintln!(
                     "[dep_inval_e2e] `zfb dev` exited with a known-skip indicator \
-                     (V8/esbuild/tailwind unavailable); skipping test.\n{}",
+                     (V8/esbuild unavailable); skipping test.\n{}",
                     session.logs(),
                 );
                 return None;
@@ -483,7 +495,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 /// selection), no tick fires / the bundle is not refreshed and the route keeps
 /// serving the old marker until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (wind selected in each fixture); too slow / port-bound for the T1 gate"]
 async fn e2e_src_component_edit_rerenders_route() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -505,6 +517,7 @@ async fn e2e_src_component_edit_rerenders_route() {
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&base_fixture_dir(), &root).expect("copy dev-loop-basic fixture");
+    select_wind_for_fixture(&root);
 
     // Add src/components/Widget.tsx with a unique initial marker.
     fs::create_dir_all(root.join("src").join("components")).expect("create src/components/");
@@ -572,6 +585,16 @@ export default function HomePage({ posts }: Props) {
         let Some((base, client)) = boot_and_handshake(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+
+        poll_until_contains(
+            &client,
+            &format!("{base}/assets/styles.css"),
+            "--zw-color-marker",
+            SCENARIO_DEADLINE,
+            "wind engine marker in served CSS",
+            &session,
+        )
+        .await;
 
         // Baseline: `GET /` serves the initial Widget marker.
         poll_until_contains(
@@ -691,7 +714,7 @@ export default function HomePage({ posts }: Props) {
 /// symlinked dep edit is observed by nobody and `/assets/styles.css` stays
 /// stale until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (wind selected in each fixture); too slow / port-bound for the T1 gate"]
 async fn e2e_transitive_css_import_refreshes_stylesheet() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -710,6 +733,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&base_fixture_dir(), &root).expect("copy dev-loop-basic fixture");
+    select_wind_for_fixture(&root);
 
     // Creating `node_modules/@scope/design-system` below flips
     // `detect_project_node_modules` ON, which shadows the binary-embedded
@@ -726,7 +750,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
     let pkg_real_path = pkg_dir.path().canonicalize().expect("canonicalize pkg dir");
     // The package provides a single CSS file. The observable is a hand-authored
     // class selector (`.ds-marker-vN`) rather than a custom-property value:
-    // Tailwind/Lightning passes user rules in an `@import`ed file through
+    // The authored CSS bundler passes user rules in an `@import`ed file through
     // verbatim, so the selector survives minification unambiguously (a
     // pseudo-hex like `#V2DS` risks being normalised or dropped as an invalid
     // color).
@@ -753,26 +777,12 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
     std::os::unix::fs::symlink(&pkg_real_path, nm_scope_dir.join("design-system"))
         .expect("symlink node_modules/@scope/design-system");
 
-    // `styles/global.css` — the project CSS entry (zfb convention). Only the
-    // Tailwind import and the symlinked workspace-dep `@import` are exercised
-    // here.
-    //
-    // Deliberately NARROWED to the `@scope/design-system` sub-case: the earlier
-    // draft also covered a LOCAL sibling `@import './tokens.css'`, but that path
-    // is a genuine design mismatch, not a fixture bug. #1288's watcher resolves
-    // `./tokens.css` relative to `styles/global.css`, whereas the Tailwind
-    // engine inlines global.css into a temp entry at `working_dir =
-    // project_root` and resolves `./tokens.css` against the PROJECT ROOT
-    // (crates/zfb-css/src/engine.rs) — an irreconcilable base mismatch. Whether
-    // a relative sibling `@import` should refresh under `zfb dev` is a design
-    // decision to surface to the user, so it is intentionally out of scope for
-    // this acceptance gate (spun out of #1294 into #1300).
+    // The project CSS entry imports a symlinked workspace package. The
+    // package's canonical CSS path is the watched dependency under test.
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(
         root.join("styles/global.css"),
-        "@import \"tailwindcss\";\n\
-         @import '@scope/design-system';\n\
-         \n\
+        "@import '@scope/design-system';\n\
          body { font-family: sans-serif; }\n",
     )
     .expect("write styles/global.css");
@@ -790,6 +800,16 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         let Some((base, client)) = boot_and_handshake(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+
+        poll_until_contains(
+            &client,
+            &format!("{base}/assets/styles.css"),
+            "--zw-color-marker",
+            SCENARIO_DEADLINE,
+            "wind engine marker in served CSS",
+            &session,
+        )
+        .await;
 
         // Baseline: GET /assets/styles.css serves the V1 design-system marker.
         // This is a real assertion (not just a 200 check): it proves the
@@ -898,7 +918,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
 /// roots, the class never enters the content scan and the stylesheet never
 /// gains the rule.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (wind selected in each fixture); too slow / port-bound for the T1 gate"]
 async fn e2e_new_utility_class_in_component_is_emitted() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -917,37 +937,24 @@ async fn e2e_new_utility_class_in_component_is_emitted() {
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&base_fixture_dir(), &root).expect("copy dev-loop-basic fixture");
+    select_wind_for_fixture(&root);
 
-    // `styles/global.css` — project CSS entry with the Tailwind import so the
-    // CSS pipeline actually runs Tailwind's content scan and emits utility
-    // class rules. The fixture starts with one known class (`font-bold`) so we
-    // can confirm the Tailwind pipeline ran at boot before asserting the new
-    // one appears after the component edit.
+    // Wind's spacing token is declared in zfb.config.json. The authored CSS
+    // entry remains present, and the component edit below introduces a new
+    // utility without changing this stylesheet.
     fs::create_dir_all(root.join("styles")).expect("create styles/");
-    // The `@theme` block defines the `hgap-2xs` spacing token so that
-    // `gap-x-hgap-2xs` is a REAL, emittable Tailwind v4 utility (gap utilities
-    // resolve their value from the `--spacing-*` theme namespace). Without a
-    // token, `gap-x-hgap-2xs` is an unknown utility Tailwind never emits, so the
-    // assertion below would fail regardless of whether the Module→re-scan under
-    // test works — the token makes the test actually exercise the re-scan.
     fs::write(
         root.join("styles/global.css"),
-        "@import \"tailwindcss\";\n\
-         \n\
-         @theme {\n\
-         \x20 --spacing-hgap-2xs: 0.125rem;\n\
-         }\n\
-         \n\
-         /* symptom-C fixture: Tailwind content scan baseline */\n\
+        "/* symptom-C wind fixture */\n\
          body { font-family: sans-serif; }\n",
     )
     .expect("write styles/global.css");
 
     // `src/components/CardWidget.tsx` — a component that starts with a
-    // commonly-generated Tailwind class (`font-bold`) at boot. The test edits
+    // commonly-generated wind class (`font-bold`) at boot. The test edits
     // it mid-session to add the NEVER-BEFORE-SEEN class `gap-x-hgap-2xs`.
     // This class is chosen because:
-    //   - It is a legitimate Tailwind v4 utility (gap-x with a custom value).
+    //   - It is a legitimate wind utility (gap-x with a custom value).
     //   - It looks distinctive enough that a substring match in the CSS body is
     //     unambiguous (`.gap-x-hgap-2xs`).
     // Without the #1284 fix the content scan is not re-run on Module ticks,
@@ -961,7 +968,7 @@ async fn e2e_new_utility_class_in_component_is_emitted() {
     .expect("write src/components/CardWidget.tsx");
 
     // Wire CardWidget into `pages/index.tsx` so the component IS part of the
-    // project's source tree and is included in the Tailwind content scan.
+    // project's source tree and is included in the wind source-plan scan.
     fs::write(
         root.join("pages/index.tsx"),
         r#"
@@ -1020,8 +1027,18 @@ export default function HomePage({ posts }: Props) {
             return ScenarioOutcome::Skipped;
         };
 
+        poll_until_contains(
+            &client,
+            &format!("{base}/assets/styles.css"),
+            "--zw-color-marker",
+            SCENARIO_DEADLINE,
+            "wind engine marker in served CSS",
+            &session,
+        )
+        .await;
+
         // Baseline: GET /assets/styles.css serves a 200.
-        // We do not assert `font-bold` specifically because Tailwind v4's
+        // We do not assert `font-bold` specifically because wind's
         // generated output format varies (it may inline or merge utilities
         // differently). The key assertion is that a NEW class added mid-session
         // eventually appears without touching the CSS entry.
@@ -1044,10 +1061,10 @@ export default function HomePage({ posts }: Props) {
 
         // ── THE EDIT ──────────────────────────────────────────────────────
         // Add `gap-x-hgap-2xs` to the component WITHOUT touching styles/global.css.
-        // Before #1284: the Module tick does NOT re-run the Tailwind content scan,
+        // Before #1284: the Module tick does NOT re-run the wind source-plan scan,
         // so this new class never enters the stylesheet.
         // After  #1284: a Module tick with a `.tsx` change fires mark_css which
-        // triggers a Tailwind re-scan, surfacing the new class.
+        // triggers a wind re-scan, surfacing the new class.
         //
         // We subscribe to SSE to observe the tick, but a Module tick may or may
         // not emit a `page` event depending on the route fan-out. The authoritative
@@ -1081,12 +1098,12 @@ export default function HomePage({ posts }: Props) {
         }
 
         // The authoritative assertion (D3): GET /assets/styles.css on the next
-        // request must contain a CSS rule for `gap-x-hgap-2xs`. Tailwind v4
+        // request must contain a CSS rule for `gap-x-hgap-2xs`. Wind
         // emits utility classes as `.gap-x-hgap-2xs { … }` or within a layer.
         // We match the class selector fragment to stay output-format-agnostic.
         //
         // Falsifiability: revert the #1284 Module→mark_css re-scan addition.
-        // The Tailwind content scan is not re-run on this tick; the class
+        // The wind source-plan scan is not re-run on this tick; the class
         // is never seen; this assertion times out on the old CSS body.
         poll_until_contains(
             &client,
@@ -1107,7 +1124,7 @@ export default function HomePage({ posts }: Props) {
         Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
         Err(_) => panic!(
             "[watchdog] symptom-C e2e did not finish within {}s — hang or \
-             new Tailwind class was never emitted into /assets/styles.css after \
+             new wind class was never emitted into /assets/styles.css after \
              component edit. Process group {pgid} will be killed.\n{}",
             OVERALL_DEADLINE.as_secs(),
             session.logs(),

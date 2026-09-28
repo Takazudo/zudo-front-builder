@@ -267,10 +267,7 @@ export default function Page({{ marker }}) {{
 // ---------------------------------------------------------------------------
 
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 /// Wall-clock deadline for the `zfb build` subprocess itself, comfortably

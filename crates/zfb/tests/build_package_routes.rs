@@ -1965,17 +1965,17 @@ fn dynamic_package_route_missing_paths_hard_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// fix-A [5]: Tailwind utility classes used ONLY in a package-route page must
+// fix-A [5]: utility classes used ONLY in a package-route page must
 // survive into the emitted stylesheet.
 // ---------------------------------------------------------------------------
 
-/// A package-route page uses a Tailwind utility class (`bg-blue-500`) that
+/// A package-route page uses a wind utility class (`bg-brand`) that
 /// appears in NO user page. Its entrypoint lives outside the conventional
-/// project content roots (`pkg/`), so Tailwind's `@source` scan would miss it
-/// unless the materialized entrypoint dir is threaded into the content globs.
+/// project content roots (`pkg/`), so the wind source plan would miss it
+/// unless the materialized entrypoint dir is included.
 /// Assert the class survives into `dist/assets/styles-*.css`.
 #[test]
-fn package_route_page_tailwind_class_survives_in_stylesheet() {
+fn package_route_page_wind_class_survives_in_stylesheet() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[pkg_tw_class] no esbuild; skipping.");
         return;
@@ -1989,7 +1989,7 @@ fn package_route_page_tailwind_class_survives_in_stylesheet() {
     let root = tmp.path();
     let _nm = link_embedded_node_modules(root);
 
-    // The package page uses a Tailwind utility class that no user page uses.
+    // The package page uses a wind utility class that no user page uses.
     fs::create_dir_all(root.join("pkg")).unwrap();
     fs::write(
         root.join("pkg/styled.tsx"),
@@ -1997,7 +1997,7 @@ fn package_route_page_tailwind_class_survives_in_stylesheet() {
   return (
     <html lang="en">
       <head><title>styled</title></head>
-      <body><p className="bg-blue-500">PKG_STYLED_MARKER</p></body>
+      <body><p className="bg-brand">PKG_STYLED_MARKER</p></body>
     </html>
   );
 }
@@ -2018,19 +2018,19 @@ fn package_route_page_tailwind_class_survives_in_stylesheet() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
-"#,
+        r##"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }], "wind": { "tokens": { "colors": { "brand": "#123456" } } } }
+"##,
     )
     .unwrap();
 
-    // A user page WITHOUT the `bg-blue-500` class, so the class can only enter
+    // A user page WITHOUT the `bg-brand` class, so the class can only enter
     // the stylesheet via the package page's content glob.
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("USER_HOME")).unwrap();
 
-    // An authored global stylesheet importing Tailwind so the utility scan runs.
+    // An authored global stylesheet accompanies the explicitly selected wind engine.
     fs::create_dir_all(root.join("styles")).unwrap();
-    fs::write(root.join("styles/global.css"), "@import \"tailwindcss\";\n").unwrap();
+    fs::write(root.join("styles/global.css"), "/* authored CSS */\n").unwrap();
 
     let Some(dist) = build_or_skip(root, &esbuild, "pkg_tw_class") else {
         return;
@@ -2044,13 +2044,13 @@ fn package_route_page_tailwind_class_survives_in_stylesheet() {
     );
     let any_has_class = css_files.iter().any(|p| {
         fs::read_to_string(p)
-            .map(|c| c.contains("bg-blue-500"))
+            .map(|c| c.contains(".bg-brand") && c.contains("--zw-color-brand"))
             .unwrap_or(false)
     });
     assert!(
         any_has_class,
-        "the package-route page's Tailwind class `bg-blue-500` must be scanned into \
-         the emitted stylesheet (package entrypoint dir threaded into @source globs); \
+        "the package-route page's wind class `bg-brand` must be scanned into \
+         the emitted stylesheet (package entrypoint dir threaded into source plan); \
          css files: {css_files:#?}"
     );
 }

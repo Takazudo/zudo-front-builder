@@ -404,7 +404,7 @@ async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Durat
 enum ScenarioOutcome {
     Completed,
     /// The binary exited with a known environmental skip indicator (no V8 /
-    /// no esbuild / no Tailwind) — skip without failing.
+    /// no esbuild) — skip without failing.
     Skipped,
 }
 
@@ -428,14 +428,10 @@ async fn boot_and_handshake(
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8")
-                || combined.contains("no esbuild")
-                || combined.contains("no tailwind")
-                || combined.contains("tailwindcss") && combined.contains("not found")
-            {
+            if combined.contains("embed_v8") || combined.contains("no esbuild") {
                 eprintln!(
                     "[out_of_root_e2e] `zfb dev` exited with a known-skip indicator \
-                     (V8/esbuild/tailwind unavailable); skipping test.\n{}",
+                     (V8/esbuild unavailable); skipping test.\n{}",
                     session.logs(),
                 );
                 return None;

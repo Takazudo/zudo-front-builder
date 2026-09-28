@@ -201,13 +201,10 @@ fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) ->
 }
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary) — same convention as
+/// esbuild binary) — same convention as
 /// `end_to_end_basic_blog_build.rs`'s `is_known_skip`.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).
@@ -482,7 +479,7 @@ fn zfb_build_staging_stats_match_expectation_for_both_fixture_variants() {
             if is_known_skip(&outcome.combined) {
                 eprintln!(
                     "[collection_seed_3133_baseline] zfb build exited non-zero with a \
-                     known-skip indicator (V8/esbuild/tailwind unavailable); skipping test."
+                     known-skip indicator (V8/esbuild unavailable); skipping test."
                 );
                 return;
             }
@@ -645,7 +642,7 @@ struct DevReadyOutcome {
 /// Boots a real `zfb dev --port 0` over `project_root` and waits for the
 /// FIRST `GET /` 200 — the "dev-ready" instant reported as `elapsed_ms`
 /// telemetry (no latency bound — #3146). Returns `None` when the process exits with a known
-/// environmental skip indicator (no V8 / no esbuild / no tailwind),
+/// environmental skip indicator (no V8 / no esbuild),
 /// matching `is_known_skip`'s convention above and
 /// `dev_out_of_root_collection_e2e.rs`'s `boot_and_handshake`.
 #[cfg(unix)]
