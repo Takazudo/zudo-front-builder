@@ -146,9 +146,10 @@ SSR framework is the right tool.
 
 **You need broad multi-framework support.** Astro's adapter ecosystem
 lets you swap between React, Vue, Svelte, Solid, and others inside the
-same site. zfb's client side is TSX (React or Preact). If your team
-owns components in multiple frameworks and you want them all in one
-site, zfb is not the right host.
+same site. zfb's client side is TSX with its own zudo-react runtime; it does
+not provide interop for components written for those frameworks. If your team
+owns components in multiple frameworks and wants them all in one site, zfb is
+not the right host.
 
 **You have 100 000+ pages.** zfb builds an in-memory content snapshot
 and embeds it into the V8 host for the duration of the render pass.

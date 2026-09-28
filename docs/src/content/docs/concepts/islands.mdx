@@ -1,6 +1,6 @@
 ---
 title: Islands
-description: "Mark client-interactive components with \"use client\" and let zfb hydrate them in the browser."
+description: "Mark client-interactive components with \"use client\" and let zfb adopt their server-rendered DOM in the browser."
 sidebar_position: 5
 category: Concepts
 ---
@@ -16,12 +16,12 @@ Add the `"use client"` directive at the top of a `.tsx` file:
 ```tsx
 "use client";
 
-import { useState } from "preact/hooks";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
-  const [count, setCount] = useState(0);
+  const count = signal(0);
   return (
-    <button onClick={() => setCount(count + 1)}>
+    <button on:click={() => { count.value += 1; }}>
       Count: {count}
     </button>
   );
@@ -30,32 +30,57 @@ export default function Counter() {
 
 That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
 
-`components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state, and mirrors the active theme to `document.documentElement.dataset.theme`. The key pattern is that it renders a deterministic SSR-safe default on first paint, then syncs to the user preference inside `useEffect`:
+`components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed:
 
 ```tsx
 "use client";
 
-import { useEffect, useState } from "preact/hooks";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
 export default function ThemeToggle() {
-  // Deterministic SSR-safe default. Real preference is applied in useEffect.
-  const [theme, setTheme] = useState<Theme>("light");
+  const theme = signal<Theme>("light");
+  const scope = getScope();
+  const isDark = computed(() => theme.value === "dark");
+  const next = computed(() => isDark.value ? "light" : "dark");
+  const ariaLabel = computed(() => `Switch to ${next.value} mode`);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("theme");
-    if (saved === "light" || saved === "dark") setTheme(saved);
-  }, []);
+  scope.onActivate(() => {
+    try {
+      const saved = window.localStorage.getItem("theme");
+      if (saved === "light" || saved === "dark") {
+        theme.value = saved;
+        return;
+      }
+    } catch {
+      // Storage may be unavailable; use the system preference.
+    }
+    if (typeof window.matchMedia === "function") {
+      theme.value = window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    }
+  });
 
-  const next: Theme = theme === "dark" ? "light" : "dark";
+  scope.effect(() => {
+    const activeTheme = theme.value;
+    document.documentElement.dataset.theme = activeTheme;
+    try {
+      window.localStorage.setItem("theme", activeTheme);
+    } catch {
+      // The document theme still updates when storage is unavailable.
+    }
+  });
+
   return (
     <button
       type="button"
-      aria-pressed={theme === "dark"}
-      onClick={() => setTheme(next)}
+      aria-pressed={isDark}
+      aria-label={ariaLabel}
+      on:click={() => { theme.value = next.value; }}
     >
-      {theme === "dark" ? "Light mode" : "Dark mode"}
+      {next} mode
     </button>
   );
 }
@@ -81,23 +106,27 @@ If any island uses a dynamic `import()` internally, esbuild may also emit code-s
 dist/assets/islands-chunk-<hash>.js
 ```
 
-The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module to hydrate every `[data-zfb-island]` element on the page.
+The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module. The runtime checks each wrapper's identity and schedules the corresponding client entry to adopt its child DOM.
 
 **The `ProductionAssetPipeline` is the single source of truth for hashing** — the bundler writes a stable `islands.js` first, and the pipeline performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
 
 ## How islands are loaded
 
-After render, each island's server-rendered HTML is wrapped in a `<div>` that carries metadata:
+After render, each island's server-rendered HTML is wrapped in a `<div>` that carries its component identity and transport metadata. The wrapper and `data-zfb-island*` boundary attributes remain part of zfb's island contract; runtime comment regions are confined to the child subtree:
 
 ```html
 <div data-zfb-island="ThemeToggle"
+     data-when="load"
+     data-zfb-transport="json/1"
+     data-zfb-protocol="zudo-react/1"
+     data-zfb-build="build-identity"
      data-props="{}">
-  <!-- server-rendered island HTML -->
-  <button type="button" aria-pressed="false">Dark mode</button>
+  <!-- zudo-react's child-subtree markers live here -->
+  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
 </div>
 ```
 
-The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. The JSX API for non-default timing is the [`<Island>` wrapper](../api/island.mdx); for media-query hydration, pass both `when="media"` and a `media` query:
+The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -116,13 +145,13 @@ The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attr
 
 ```html
 <!-- visible timing -->
-<div data-zfb-island="SearchBox" data-props="{}" data-when="visible">…</div>
+<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 
 <!-- idle timing -->
-<div data-zfb-island="Counter" data-props="{}" data-when="idle">…</div>
+<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 
 <!-- media timing — hydrates when (max-width: 768px) first matches -->
-<div data-zfb-island="MobileMenu" data-props="{}" data-when="media" data-media="(max-width: 768px)">…</div>
+<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 ```
 
 On builds that include at least one island, **one `<script>` tag** is injected project-wide into `<head>`:
@@ -131,7 +160,7 @@ On builds that include at least one island, **one `<script>` tag** is injected p
 <script type="module" src="/assets/islands-<hash>.js"></script>
 ```
 
-The shared islands bundle (`islands-<hash>.js`) contains all island components. It registers each one by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which walks every `[data-zfb-island]` element on the page, reads the serialised `data-props`, and calls `hydrate()` on the existing server-rendered DOM.
+The shared islands bundle (`islands-<hash>.js`) contains all island components. It registers each one by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which checks wrapper metadata, reads the JSON `data-props`, and adopts the existing child DOM when the scheduled entry runs.
 
 ### Observing mount state
 
@@ -148,10 +177,9 @@ CSS:
 }
 ```
 
-The marker means **"the runtime called the mount function and it returned"**, not **"the
-component is interactive"**. React's `hydrateRoot` is internally concurrent, and the generated
-`mount()` can silently no-op, so this attribute is a runtime lifecycle signal rather than proof
-that event handlers or other interaction are ready.
+The marker means **"the client root was successfully mounted"**. It is observational; the live
+root handle is the runtime's duplicate-mount guard. A mounted marker does not mean that later
+asynchronous application work has completed.
 
 The marker is removed when an island is unmounted. During the real client-router body-swap
 sequence, an unchanged persisted island keeps its marker and mounted instance when its
@@ -169,28 +197,16 @@ Because all islands are bundled together into a single file:
 - **Pages with no islands get no islands script.** If a page contains no island markers, the build pipeline skips the shared islands `<script>` injection for that page. Other client-script mechanisms, if used, can still add JavaScript.
 - **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
 
-## Framework choices
+## One runtime
 
-zfb supports two frameworks for islands:
+Every island uses zudo-react, the runtime shipped with `@takazudo/zfb`. Its
+components create signals during setup, and the client adopts the island's
+existing child DOM after checking the wrapper identity and strict JSON props.
+There is no per-project framework setting or compatibility alias. Start with
+the [zudo-react overview](../zudo-react/overview.mdx) for its JSX dialect and
+component model.
 
-| Config value | Runtime |
-|---|---|
-| `"preact"` (default) | Preact + `preact/jsx-runtime` |
-| `"react"` | React 18 + `react-dom/client` |
-
-Set it once in `zfb.config.ts`:
-
-```ts
-export default {
-  framework: "preact", // or "react"
-};
-```
-
-This is a **project-wide setting** — one framework per project. The bundler (`FrameworkKind` enum in `crates/zfb-islands`) threads the choice through JSX transform options (`--jsx-import-source`) and the framework-specific hydration glue embedded in the shared bundle. You cannot mix Preact islands and React islands in the same project.
-
-zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentionally a two-variant enum, not a plugin point. If you need a different framework, the escape hatches below cover the common cases.
-
-For a deeper look at how the two adapters work, see [Framework adapters](../architecture/framework-adapters.mdx).
+For the server/client boundary details, see [The zudo-react runtime](../architecture/framework-adapters.mdx).
 
 ## Browser bundle mode and configuration
 
@@ -378,11 +394,7 @@ export default function Layout({ children }) {
   return (
     <html>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`,
-          }}
-        />
+        <script rawHtml={`document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`} />
       </head>
       <body>{children}</body>
     </html>

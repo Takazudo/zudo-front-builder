@@ -47,7 +47,7 @@ Eagerly instantiate the wasm module. Calling it up front only controls **when** 
 function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
 ```
 
-MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `options` defaults to `{}`. `jsxRuntime` and `development` are consumed only here — `renderHtml` accepts and silently ignores both. Conversely, `dialect` is consumed only by `renderHtml`; `compile` accepts and ignores it, so one options object can serve either call.
+MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `options` defaults to `{}`. `development` is consumed only here and ignored by `renderHtml`; `dialect` is consumed only by `renderHtml` and ignored by `compile`. The former `jsxRuntime` option is removed: the emitter uses zfb's owned JSX dialect, and passing the old field is rejected as unknown by the v3 options contract. Re-verify that rejection against the md-wasm cutover in #3290.
 
 ## `renderHtml(source, options?)`
 
@@ -105,7 +105,6 @@ The options document shared by `compile` and `renderHtml`. Every field is option
 |---|---|---|
 | `filename?` | `string` | Must end in `.md` or `.mdx`. Defaults to `"<anonymous>.mdx"` for `compile`, `"<anonymous>.md"` for `renderHtml`. |
 | `dialect?` | `"markdown" \| "mdx"` | Consumed only by `renderHtml`; overrides filename inference. `compile` accepts and ignores it. |
-| `jsxRuntime?` | `"preact" \| "react"` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
 | `development?` | `boolean` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
 | `pipeline?` | `PipelineOptions` | Shared pipeline configuration. |
 
