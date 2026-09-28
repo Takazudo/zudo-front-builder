@@ -1,0 +1,18 @@
+{
+  "page": "r-a07-disposal",
+  "roots": [
+    { "component": "component.tsx", "props": {}, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "aborted" },
+      "mode": "hydrate",
+      "abortDuringSetup": true
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "preflight" },
+      "mode": "hydrate",
+      "mutate": { "type": "wrong-text", "from": "preflight expected", "to": "preflight typed" }
+    }
+  ]
+}
