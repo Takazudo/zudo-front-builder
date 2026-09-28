@@ -2804,59 +2804,154 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 /// A pre-bundle identity shared by owned SSR and browser island glue.
 /// Hash logical paths and bytes so temporary shadow paths never enter the token.
 pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
-    let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(project_root)
-        .into_iter()
-        .filter_entry(|entry| {
-            !matches!(
-                entry.file_name().to_str(),
-                Some("node_modules" | "dist" | ".git" | ".zfb" | "target")
-            )
-        })
-    {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let extension = path.extension().and_then(|ext| ext.to_str());
-        if !matches!(
-            extension,
-            Some(
-                "ts" | "tsx"
-                    | "mts"
-                    | "js"
-                    | "jsx"
-                    | "mjs"
-                    | "cjs"
-                    | "json"
-                    | "jsonc"
-                    | "yaml"
-                    | "yml"
-                    | "md"
-                    | "mdx"
-                    | "html"
-                    | "css"
-            )
-        ) {
-            continue;
-        }
-        files.push(path.to_path_buf());
-    }
-    files.sort();
+    let project_canonical = fs::canonicalize(project_root)?;
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut visited_packages = BTreeSet::new();
+    collect_zudo_react_token_tree(
+        project_root,
+        Path::new(""),
+        &project_canonical,
+        false,
+        &mut visited_packages,
+        &mut files,
+    )?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
     let mut digest = Sha256::new();
     digest.update(b"zudo-react/1\njson/1\n");
-    for path in files {
-        digest.update(
-            path.strip_prefix(project_root)?
-                .to_string_lossy()
-                .as_bytes(),
-        );
+    for (logical, physical) in files {
+        digest.update(logical.to_string_lossy().replace('\\', "/").as_bytes());
         digest.update([0]);
-        digest.update(fs::read(path)?);
+        digest.update(fs::read(physical)?);
         digest.update([0]);
     }
     Ok(hex::encode(digest.finalize())[..16].to_string())
+}
+
+fn zudo_react_token_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some(
+            "ts" | "tsx"
+                | "mts"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "json"
+                | "jsonc"
+                | "yaml"
+                | "yml"
+                | "md"
+                | "mdx"
+                | "html"
+                | "css"
+        )
+    )
+}
+
+/// Walk project files and local linked packages, excluding vendor stores and
+/// generated project output. Logical `node_modules/<name>` paths make the
+/// digest independent of checkout and symlink target locations.
+fn collect_zudo_react_token_tree(
+    physical_root: &Path,
+    logical_root: &Path,
+    project_canonical: &Path,
+    linked_package: bool,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let mut node_modules_dirs = Vec::new();
+    for entry in walkdir::WalkDir::new(physical_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            let name = entry.file_name().to_str();
+            !matches!(name, Some("node_modules" | ".git" | ".zfb" | "target"))
+                && (linked_package || name != Some("dist"))
+        })
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            let node_modules = path.join("node_modules");
+            if node_modules.is_dir() {
+                node_modules_dirs.push(node_modules);
+            }
+        } else if entry.file_type().is_file() && zudo_react_token_source(path) {
+            files.push((
+                logical_root.join(path.strip_prefix(physical_root)?),
+                path.to_path_buf(),
+            ));
+        }
+    }
+    node_modules_dirs.sort();
+    for node_modules in node_modules_dirs {
+        let logical_node_modules = logical_root.join(node_modules.strip_prefix(physical_root)?);
+        let mut entries = fs::read_dir(&node_modules)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('@') && path.is_dir() {
+                let mut scoped = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
+                scoped.sort_by_key(|entry| entry.file_name());
+                for package in scoped {
+                    collect_zudo_react_linked_package(
+                        &package.path(),
+                        &logical_node_modules
+                            .join(entry.file_name())
+                            .join(package.file_name()),
+                        project_canonical,
+                        visited_packages,
+                        files,
+                    )?;
+                }
+            } else {
+                collect_zudo_react_linked_package(
+                    &path,
+                    &logical_node_modules.join(entry.file_name()),
+                    project_canonical,
+                    visited_packages,
+                    files,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_zudo_react_linked_package(
+    link: &Path,
+    logical: &Path,
+    project_canonical: &Path,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    if !fs::symlink_metadata(link)?.file_type().is_symlink() {
+        return Ok(());
+    }
+    let target = match fs::canonicalize(link) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !target.is_dir()
+        || !target.join("package.json").is_file()
+        || target.starts_with(project_canonical)
+        || target.components().any(|part| part.as_os_str() == ".pnpm")
+        || !visited_packages.insert(target.clone())
+    {
+        return Ok(());
+    }
+    collect_zudo_react_token_tree(
+        &target,
+        logical,
+        project_canonical,
+        true,
+        visited_packages,
+        files,
+    )
 }
 
 /// [`bundle`] with an optional persistent dev [`ShadowSession`]
@@ -12877,6 +12972,71 @@ mod framework_esbuild_flags_tests {
         )
         .unwrap();
         assert_ne!(first, zudo_react_build_token(project.path()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_linked_package_source_under_logical_path() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("pages")).unwrap();
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "import '@demo/widget'",
+        )
+        .unwrap();
+        fs::create_dir(package.path().join("src")).unwrap();
+        fs::write(
+            package.path().join("package.json"),
+            r#"{"name":"@demo/widget"}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.path().join("src/index.tsx"),
+            "export const value = 1",
+        )
+        .unwrap();
+        let scope = project.path().join("node_modules/@demo");
+        fs::create_dir_all(&scope).unwrap();
+        symlink(package.path(), scope.join("widget")).unwrap();
+        let first = zudo_react_build_token(project.path()).unwrap();
+
+        let other_project = tempfile::tempdir().unwrap();
+        let other_package = tempfile::tempdir().unwrap();
+        fs::create_dir(other_project.path().join("pages")).unwrap();
+        fs::write(
+            other_project.path().join("pages/index.tsx"),
+            "import '@demo/widget'",
+        )
+        .unwrap();
+        fs::create_dir(other_package.path().join("src")).unwrap();
+        fs::write(
+            other_package.path().join("package.json"),
+            r#"{"name":"@demo/widget"}"#,
+        )
+        .unwrap();
+        fs::write(
+            other_package.path().join("src/index.tsx"),
+            "export const value = 1",
+        )
+        .unwrap();
+        let other_scope = other_project.path().join("node_modules/@demo");
+        fs::create_dir_all(&other_scope).unwrap();
+        symlink(other_package.path(), other_scope.join("widget")).unwrap();
+        assert_eq!(first, zudo_react_build_token(other_project.path()).unwrap());
+
+        fs::write(
+            package.path().join("src/index.tsx"),
+            "export const value = 2",
+        )
+        .unwrap();
+        let changed = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(first, changed);
+        fs::create_dir(project.path().join("dist")).unwrap();
+        fs::write(project.path().join("dist/index.html"), "generated output").unwrap();
+        assert_eq!(changed, zudo_react_build_token(project.path()).unwrap());
     }
 
     #[test]
