@@ -1508,7 +1508,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_SIBLING_MACRO_PAGE</title>
       </head>
       <body>
@@ -1705,7 +1705,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_LEGIT_PAGE</title>
       </head>
       <body>
@@ -1763,7 +1763,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_ESCAPE_SSR_PAGE</title>
       </head>
       <body>
@@ -1810,7 +1810,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_ESCAPE_ISLANDS_PAGE</title>
       </head>
       <body>

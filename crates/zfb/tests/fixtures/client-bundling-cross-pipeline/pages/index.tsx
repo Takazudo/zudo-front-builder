@@ -5,7 +5,7 @@ export default function CrossPipelinePage() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_CROSS_PIPELINE_PAGE</title>
         <script type="module" src={clientScript("cross-pipeline")} />
       </head>
