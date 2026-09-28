@@ -14141,7 +14141,7 @@ mod tests {
         let (project, [in_root, _, _]) = ssr_dep_fixture(&root);
         std::fs::write(
             project.join("pages/index.tsx"),
-            "export default function Broken( {\n",
+            "import missing from '@missing/refresh-fixture';\nexport default function Broken() { return missing; }\n",
         )
         .unwrap();
         let session = ssr_dep_session(&project, Vec::new());
@@ -14150,9 +14150,8 @@ mod tests {
         session.populate_module_edges(&route_deps(std::slice::from_ref(&in_root)), &[], None);
         assert!(registry.is_ssr_module_dependency(&in_root));
 
-        // The stub project fails inside esbuild (the syntax error, or the
-        // unresolved runtime import this stub has no node_modules for) —
-        // either way at the bundle step, which is the path under test.
+        // The source is syntactically valid for scanner preflight, then fails
+        // in esbuild because the stub project has no dependency to resolve.
         let Err(err) = session.refresh_bundle_and_routes() else {
             panic!("the broken page must fail the refresh");
         };
