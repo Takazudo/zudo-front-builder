@@ -21869,10 +21869,24 @@ mod tests {
                 "layouts/default.tsx",
                 "pages/index.tsx",
                 "tsconfig.json",
+                "zudo-react-build.mjs",
             ],
-            "the flat SSR shadow must contain exactly the entry, tsconfig and project sources"
+            "the flat SSR shadow must contain the entry, owned identity metadata, tsconfig and project sources"
         );
         for file in &flat_files {
+            if file == "zudo-react-build.mjs" {
+                // The workspace manifest is a token input, so the two build
+                // identities may differ even though their project files match.
+                for path in [
+                    flat_session.shadow_root().join(file),
+                    ws_session.shadow_root().join(prefix).join(file),
+                ] {
+                    let source = fs::read_to_string(path).unwrap();
+                    assert!(source.contains("zudoReactBuild"), "{source}");
+                    assert!(source.contains("zudoReactIslands"), "{source}");
+                }
+                continue;
+            }
             assert_eq!(
                 fs::read(flat_session.shadow_root().join(file)).unwrap(),
                 fs::read(ws_session.shadow_root().join(prefix).join(file)).unwrap(),
