@@ -2836,7 +2836,9 @@ pub fn zudo_react_build_token_with_inputs(
         &mut visited_packages,
         &mut files,
     )?;
-    for (name, target) in plugin_aliases {
+    let mut sorted_aliases = plugin_aliases.to_vec();
+    sorted_aliases.sort();
+    for (name, target) in &sorted_aliases {
         let target_path = Path::new(target);
         let target_path = if target_path.is_absolute() {
             target_path.to_path_buf()
@@ -2933,7 +2935,14 @@ fn collect_zudo_react_external_target(
                 )?;
             }
         } else if zudo_react_token_source(&canonical) {
-            collect_zudo_react_external_file_closure(&canonical, logical, files)?;
+            collect_zudo_react_external_file_closure(
+                vec![(
+                    canonical.clone(),
+                    logical.join(canonical.file_name().unwrap()),
+                )],
+                None,
+                files,
+            )?;
         }
     } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
         collect_zudo_react_token_tree(
@@ -2952,17 +2961,18 @@ fn collect_zudo_react_external_target(
 /// the module-worker graph. Follow relative imports rather than hashing an
 /// arbitrary parent directory when an external file has no package manifest.
 fn collect_zudo_react_external_file_closure(
-    entry: &Path,
-    logical_root: &Path,
+    mut seeds: Vec<(PathBuf, PathBuf)>,
+    already_scanned_root: Option<&Path>,
     files: &mut Vec<(PathBuf, PathBuf)>,
 ) -> Result<()> {
-    let mut pending = vec![(
-        entry.to_path_buf(),
-        logical_root.join(entry.file_name().unwrap()),
-    )];
+    seeds.sort_by(|left, right| left.1.cmp(&right.1));
+    let mut pending: Vec<_> = seeds
+        .into_iter()
+        .map(|(physical, logical)| (physical, logical, already_scanned_root.is_none()))
+        .collect();
     let mut visited = BTreeSet::new();
     let mut total_bytes = 0_u64;
-    while let Some((physical, logical)) = pending.pop() {
+    while let Some((physical, logical, strict)) = pending.pop() {
         let physical = fs::canonicalize(physical)?;
         if !visited.insert(physical.clone()) {
             continue;
@@ -2970,17 +2980,21 @@ fn collect_zudo_react_external_file_closure(
         if visited.len() > 4096 {
             bail!(
                 "owned island build token external import closure exceeds 4096 files at {}",
-                entry.display()
+                logical.display()
             );
         }
         total_bytes += fs::metadata(&physical)?.len();
         if total_bytes > 64 * 1024 * 1024 {
             bail!(
                 "owned island build token external import closure exceeds 64 MiB at {}",
-                entry.display()
+                logical.display()
             );
         }
-        files.push((logical.clone(), physical.clone()));
+        if !already_scanned_root
+            .is_some_and(|root| physical.starts_with(root) && zudo_react_token_source(&physical))
+        {
+            files.push((logical.clone(), physical.clone()));
+        }
         let extension = physical.extension().and_then(|ext| ext.to_str());
         if !matches!(
             extension,
@@ -2988,7 +3002,11 @@ fn collect_zudo_react_external_file_closure(
         ) {
             continue;
         }
-        let mut specifiers = collect_runtime_import_specifiers_from_file(&physical)?;
+        let mut specifiers = match collect_runtime_import_specifiers_from_file(&physical) {
+            Ok(specifiers) => specifiers,
+            Err(_error) if !strict => continue,
+            Err(error) => return Err(error),
+        };
         specifiers.sort();
         for specifier in specifiers.into_iter().rev() {
             let path = specifier.split(['?', '#']).next().unwrap_or(&specifier);
@@ -3004,7 +3022,7 @@ fn collect_zudo_react_external_file_closure(
             if let Some(extension) = target.extension() {
                 next_logical.set_extension(extension);
             }
-            pending.push((target, next_logical));
+            pending.push((target, next_logical, true));
         }
     }
     Ok(())
@@ -3043,6 +3061,7 @@ fn collect_zudo_react_token_tree(
     visited_packages: &mut BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, PathBuf)>,
 ) -> Result<()> {
+    let first_file = files.len();
     let mut node_modules_dirs = Vec::new();
     for entry in walkdir::WalkDir::new(physical_root)
         .into_iter()
@@ -3101,6 +3120,21 @@ fn collect_zudo_react_token_tree(
                 )?;
             }
         }
+    }
+    if linked_package {
+        let canonical_root = fs::canonicalize(physical_root)?;
+        let seeds = files[first_file..]
+            .iter()
+            .filter(|(_, physical)| {
+                physical.starts_with(&canonical_root)
+                    && matches!(
+                        physical.extension().and_then(|ext| ext.to_str()),
+                        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
+                    )
+            })
+            .map(|(logical, physical)| (physical.clone(), logical.clone()))
+            .collect();
+        collect_zudo_react_external_file_closure(seeds, Some(&canonical_root), files)?;
     }
     Ok(())
 }
@@ -13385,6 +13419,73 @@ mod framework_esbuild_flags_tests {
         assert_eq!(
             with_aliases,
             zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_alias_order_is_stable_for_one_external_package() {
+        let project = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        fs::write(package.path().join("package.json"), r#"{"name":"shared"}"#).unwrap();
+        fs::write(package.path().join("widget.ts"), "export const widget = 1").unwrap();
+        let target = package
+            .path()
+            .join("widget.ts")
+            .to_string_lossy()
+            .into_owned();
+        let forward = vec![
+            ("plugin:zeta".to_string(), target.clone()),
+            ("plugin:alpha".to_string(), target),
+        ];
+        let reverse = forward.iter().cloned().rev().collect::<Vec<_>>();
+        assert_eq!(
+            zudo_react_build_token_with_aliases(project.path(), &forward).unwrap(),
+            zudo_react_build_token_with_aliases(project.path(), &reverse).unwrap(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_imports_escaping_external_directory_and_package_roots() {
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::create_dir(external.path().join("src")).unwrap();
+        fs::write(
+            external.path().join("src/widget.ts"),
+            "import '../shared.ts'; export const widget = 1",
+        )
+        .unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 1").unwrap();
+        fs::write(project.path().join("tsconfig.json"), serde_json::json!({
+            "compilerOptions": { "baseUrl": ".", "paths": { "@external/*": [format!("{}/*", external.path().join("src").display())] } }
+        }).to_string()).unwrap();
+        let directory_before = zudo_react_build_token(project.path()).unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 2").unwrap();
+        let directory_after = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(
+            directory_before, directory_after,
+            "wildcard directory must include ../shared.ts"
+        );
+
+        let package = external.path().join("pkg");
+        fs::create_dir(&package).unwrap();
+        fs::write(package.join("package.json"), r#"{"name":"external-pkg"}"#).unwrap();
+        fs::write(
+            package.join("widget.ts"),
+            "import '../shared.ts'; export const widget = 1",
+        )
+        .unwrap();
+        let aliases = vec![(
+            "plugin:pkg".to_string(),
+            package.join("widget.ts").to_string_lossy().into_owned(),
+        )];
+        let package_before = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 3").unwrap();
+        let package_after = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(
+            package_before, package_after,
+            "package root must include ../shared.ts"
         );
     }
 
