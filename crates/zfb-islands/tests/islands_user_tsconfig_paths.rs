@@ -45,6 +45,8 @@ use zfb_islands::{
 };
 use zfb_test_utils::locate_esbuild;
 
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
 /// A unique marker symbol exported from the `@/`-aliased target module. Asserting
 /// it reaches the bundle proves the `@/marker` import resolved through the user's
 /// tsconfig `paths`.
@@ -126,7 +128,9 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
         "export default function Unrelated() { return null; }\n".to_string(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
@@ -228,7 +232,9 @@ fn island_bundle_resolves_user_tsconfig_path_without_plugin() {
     .with_binary_path(esbuild)
     .with_working_dir(&root);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)

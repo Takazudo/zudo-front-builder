@@ -179,6 +179,8 @@ impl BundleMode {
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
     /// Identity shared with the owned server entry before either bundle is emitted.
+    /// Required for a nonempty owned islands bundle; zfb produces a 16-character
+    /// lowercase hex digest and the public bundler rejects missing or invalid values.
     pub zudo_react_build: Option<String>,
     /// Production / development mode for compile-time environment defines.
     pub mode: BundleMode,

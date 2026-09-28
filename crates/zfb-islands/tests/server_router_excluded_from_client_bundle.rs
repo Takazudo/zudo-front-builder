@@ -62,6 +62,8 @@ use zfb_islands::{
 };
 use zfb_test_utils::locate_esbuild;
 
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
 /// The post-fix `@takazudo/zfb-runtime` stub bodies, shared by both cases.
 ///
 /// The barrel (`index.js`) is the **fixed** shape: it re-exports only the
@@ -190,7 +192,9 @@ fn root_barrel_import_excludes_server_router_and_hono() {
     .with_binary_path(esbuild)
     .with_working_dir(root);
 
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let out = bundler
@@ -257,7 +261,9 @@ fn literal_1298_pnpm_store_layout_islands_build_succeeds() {
     .with_binary_path(esbuild)
     .with_working_dir(root);
 
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let out = bundler

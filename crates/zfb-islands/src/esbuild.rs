@@ -59,6 +59,36 @@ use crate::bundler::{
 };
 use crate::client_scripts::ClientScriptWorkerEntry;
 
+/// Invalid or missing owned build identity for a nonempty public islands bundle.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum IslandsBundleBuildIdentityError {
+    #[error("nonempty owned islands bundle requires zudo_react_build")]
+    Missing,
+    #[error("nonempty owned islands bundle requires a 16-character lowercase hex zudo_react_build token")]
+    Invalid,
+}
+
+fn validate_owned_build_identity(
+    islands: &[Island],
+    config: &BundleConfig,
+) -> std::result::Result<(), IslandsBundleBuildIdentityError> {
+    if islands.is_empty() {
+        return Ok(());
+    }
+    let build = config
+        .zudo_react_build
+        .as_deref()
+        .ok_or(IslandsBundleBuildIdentityError::Missing)?;
+    if build.len() != 16
+        || !build
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(IslandsBundleBuildIdentityError::Invalid);
+    }
+    Ok(())
+}
+
 /// In-memory output of one client-script bundle plus its module-worker
 /// companions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -629,7 +659,9 @@ impl EsbuildSubprocessConfig {
 ///
 /// let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default());
 /// let islands = vec![Island::new("Counter", PathBuf::from("components/counter.tsx"))];
-/// let out = bundler.bundle(&islands, &BundleConfig::production()).unwrap();
+/// let config = BundleConfig::production()
+///     .with_zudo_react_build(Some("0123456789abcdef".to_string()));
+/// let out = bundler.bundle(&islands, &config).unwrap();
 /// assert_eq!(out.asset_url, "/assets/islands.js");
 /// ```
 #[derive(Debug, Clone)]
@@ -2514,8 +2546,11 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
 /// (downstream tests rely on this for the bundle's content hash to be
 /// stable across runs).
 ///
+/// Deterministic source-shape helper for tests and tooling. This uses a fixed
+/// synthetic build identity; shipping callers must use [`ClientBundler::bundle`],
+/// which validates the real owned identity before invoking esbuild.
 pub fn render_shared_bundle_entry_source(islands: &[Island], client_router: bool) -> String {
-    render_shared_bundle_entry_source_with_build(islands, client_router, None)
+    render_shared_bundle_entry_source_with_build(islands, client_router, Some("0123456789abcdef"))
 }
 
 fn render_shared_bundle_entry_source_with_build(
@@ -2551,7 +2586,7 @@ fn render_shared_bundle_entry_source_with_build(
         return out;
     }
     {
-        let build = build.unwrap_or("test-build");
+        let build = build.expect("nonempty island entry source requires a build identity");
         out.push_str("import { mountIslands } from \"@takazudo/zfb/runtime\";\n");
         out.push_str("import { h } from \"@takazudo/zfb/zudo-react\";\n");
         out.push_str("import { hydrate, mount } from \"@takazudo/zfb/zudo-react/client\";\n");
@@ -2590,6 +2625,7 @@ fn render_shared_bundle_entry_source_with_build(
 
 impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
+        validate_owned_build_identity(islands, config)?;
         self.sweep_stranded_entries();
 
         let OneEntryOutput {
@@ -2841,6 +2877,8 @@ pub fn hash_8(js: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
     /// Write an in-project entry-shaped file and backdate its mtime by `age`.
     fn write_entry_aged(dir: &Path, name: &str, age: std::time::Duration) -> PathBuf {
@@ -3969,7 +4007,9 @@ mod tests {
             Island::new("Modal", "/abs/components/Modal.tsx"),
             Island::new("Sidebar", "/abs/components/Sidebar.tsx"),
         ];
-        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
 
         let out = bundler.bundle(&islands, &cfg).expect("multi-island bundle");
 
@@ -4234,7 +4274,9 @@ mod tests {
             .with_stage_audit(policy);
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let tmp = tempfile::tempdir().unwrap();
-        let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+        let bundle_cfg = BundleConfig::production()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(tmp.path());
         let result = bundler.bundle(
             &[Island::new(
                 "Counter",
@@ -4398,10 +4440,12 @@ mod tests {
             let bundler = EsbuildSubprocessBundler::new(
                 EsbuildSubprocessConfig::default().with_mock_output("export {};"),
             );
-            let cfg = BundleConfig::default().with_loaders(BTreeMap::from([(
-                extension.to_string(),
-                "empty".to_string(),
-            )]));
+            let cfg = BundleConfig::default()
+                .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+                .with_loaders(BTreeMap::from([(
+                    extension.to_string(),
+                    "empty".to_string(),
+                )]));
             let err = bundler
                 .bundle(&[Island::new("ResourceIsland", "/tmp/resource.tsx")], &cfg)
                 .expect_err("reserved shared resource loader must be rejected");
@@ -4521,7 +4565,9 @@ mod tests {
         let source = project.path().join("worker.ts");
         std::fs::write(&source, "self.postMessage('ok');").unwrap();
         let worker = ModuleWorkerBundleEntry::new(project.path(), &source, &source).unwrap();
-        let config = BundleConfig::dev().with_module_workers(vec![worker.clone(), worker]);
+        let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_module_workers(vec![worker.clone(), worker]);
         let bundler = EsbuildSubprocessBundler::new(
             EsbuildSubprocessConfig::default().with_mock_output("export {};"),
         );
@@ -5142,7 +5188,9 @@ mod tests {
         };
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
         // Mock output is returned in-memory — no disk write.
         assert_eq!(out.bytes, b"// alias mock output");
@@ -5163,7 +5211,9 @@ mod tests {
         };
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
         // Mock output is returned in-memory — no disk write.
         assert_eq!(out.bytes, b"// virtual mock output");

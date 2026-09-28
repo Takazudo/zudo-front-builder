@@ -44,8 +44,8 @@ pub use client_scripts::{
 };
 pub use esbuild::{
     hash_8, is_zfb_islands_temp_file, render_shared_bundle_entry_source, ClientScriptBundleOutput,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, StageAuditPolicy, EXPECTED_ESBUILD_SHA256,
-    EXPECTED_ESBUILD_VERSION,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, IslandsBundleBuildIdentityError,
+    StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
