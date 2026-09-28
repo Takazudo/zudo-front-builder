@@ -50,6 +50,9 @@ serde_path_to_error = "0.1"
 # the one parser.
 sourcemap = "9"
 base64 = "0.22"
+# One resolved version for zfb-css and zudo-wind; deny.toml's advisory
+# exception is justified against this exact locked version.
+lightningcss = "1.0.0-alpha.71"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and

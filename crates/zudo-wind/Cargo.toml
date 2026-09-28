@@ -1,0 +1,8 @@
+[package]
+name = "zudo-wind"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Owned utility CSS language parser and engine"
+
+[dependencies]
