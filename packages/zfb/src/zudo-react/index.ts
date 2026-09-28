@@ -4,6 +4,9 @@ import type { Child, ElementType } from "./description.js";
 export { Fragment, isDescription, flattenChildren } from "./description.js";
 export type { Key, Scalar, Child, Component, ElementType, Description } from "./description.js";
 export type { ReadonlySignal, Signal } from "./reactive-types.js";
+export { signal, computed } from "./reactive.js";
+export { batch, flush } from "./scheduler.js";
+export { getScope } from "./scope.js";
 
 export type Cleanup = () => void;
 export interface Scope {
