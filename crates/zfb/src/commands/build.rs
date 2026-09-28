@@ -11758,7 +11758,7 @@ mod tests {
 
         let worker_context = module_worker_build_context(
             false,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[],
             &virtual_panel_module(ws),
@@ -11787,7 +11787,7 @@ mod tests {
 
         let worker_context = module_worker_build_context(
             false,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[],
             &virtual_panel_module(ws),
@@ -11845,7 +11845,7 @@ mod tests {
 
         let worker_context = module_worker_build_context(
             false,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[],
             &plugin_virtual_modules,
@@ -11931,7 +11931,7 @@ mod tests {
 
         let worker_context = module_worker_build_context(
             false,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[],
             &virtual_direct_css_module(ws),
@@ -11993,7 +11993,7 @@ mod tests {
 
         let worker_context = module_worker_build_context(
             false,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[],
             &plugin_virtual_modules,
@@ -12030,7 +12030,7 @@ mod tests {
         let (_tmp, project) = sibling_css_workspace_fixture();
         let worker_context = module_worker_build_context(
             true,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &[("@shared/*".to_string(), "unused".to_string())],
             &[],
@@ -12374,7 +12374,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12409,7 +12409,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12448,7 +12448,7 @@ mod tests {
         // so it is rejected and no island is registered.
         std::fs::write(
             project_root.join("components/counter.tsx"),
-            "import { useState } from \"preact/hooks\";\n\
+            "import { signal } from \"@takazudo/zfb/zudo-react\";\n\
              \"use client\";\n\
              export function Counter() { return null; }\n",
         )
@@ -12458,7 +12458,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12511,7 +12511,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12559,7 +12559,7 @@ mod tests {
             &root.join("pages"),
             &[],
             &root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -13654,7 +13654,7 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Development,
             &plugin_config,
@@ -13709,7 +13709,7 @@ mod tests {
         let client_payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &outdir,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -13757,7 +13757,7 @@ mod tests {
         let dev_outcome = build_dev_client_scripts_to_disk_with_plugin_config(
             root,
             &dev_assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &zfb_build::ClientEntryList::new(),
@@ -13904,7 +13904,7 @@ mod tests {
         std::fs::create_dir_all(&zfb_runtime).unwrap();
         std::fs::write(
             zfb_runtime.join("package.json"),
-            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -13912,16 +13912,14 @@ mod tests {
             "export function mountIslands() {}\n",
         )
         .unwrap();
-        let preact = nm.join("preact");
-        std::fs::create_dir_all(&preact).unwrap();
         std::fs::write(
-            preact.join("package.json"),
-            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+            zfb_runtime.join("zudo-react.js"),
+            "export function h() {}\n",
         )
         .unwrap();
         std::fs::write(
-            preact.join("index.js"),
-            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+            zfb_runtime.join("zudo-react-client.js"),
+            "export function hydrate() {} export function mount() {}\n",
         )
         .unwrap();
         // The genuine pnpm-style symlink into the first-party child package.
@@ -13997,7 +13995,7 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14189,7 +14187,7 @@ mod tests {
         std::fs::create_dir_all(&zfb_runtime).unwrap();
         std::fs::write(
             zfb_runtime.join("package.json"),
-            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -14197,16 +14195,14 @@ mod tests {
             "export function mountIslands() {}\n",
         )
         .unwrap();
-        let preact = nm.join("preact");
-        std::fs::create_dir_all(&preact).unwrap();
         std::fs::write(
-            preact.join("package.json"),
-            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+            zfb_runtime.join("zudo-react.js"),
+            "export function h() {}\n",
         )
         .unwrap();
         std::fs::write(
-            preact.join("index.js"),
-            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+            zfb_runtime.join("zudo-react-client.js"),
+            "export function hydrate() {} export function mount() {}\n",
         )
         .unwrap();
         // The genuine pnpm-style symlink into the first-party
@@ -14252,7 +14248,7 @@ mod tests {
             &project.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14300,7 +14296,7 @@ mod tests {
         let error = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -14356,7 +14352,7 @@ mod tests {
         let payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -15444,7 +15440,7 @@ mod tests {
         let first = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15461,7 +15457,7 @@ mod tests {
         let second = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &first.output_filenames,
             &registered,
@@ -15479,7 +15475,7 @@ mod tests {
         let third = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &second.output_filenames,
             &registered,
@@ -15533,7 +15529,7 @@ mod tests {
         let first_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15583,7 +15579,7 @@ mod tests {
         let second_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &first_outputs,
             &registered,
@@ -15614,7 +15610,7 @@ mod tests {
         let third_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &second_outputs,
             &registered,
@@ -16049,7 +16045,7 @@ mod tests {
         let outcome = build_dev_client_scripts_to_disk(
             &project_root,
             &assets_root,
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -17089,7 +17085,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -17122,7 +17118,7 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
+            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::WarnAndSkip,
             None,
