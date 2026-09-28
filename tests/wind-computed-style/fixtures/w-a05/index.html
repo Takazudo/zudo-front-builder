@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>W-A05 client state and authored classes</title>
+    <link rel="stylesheet" href="../../dist/w-a05/wind.css" />
+    <style>
+      :where(#authored) {
+        padding: 0;
+      }
+
+      :where(#client-state, #dynamic-state) {
+        background-color: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="authored" class="custom-card p-4">Authored classes</div>
+    <button id="activate">Add client class</button>
+    <div id="client-state" class=""></div>
+    <button id="activate-dynamic">Add dynamic class</button>
+    <div id="dynamic-state" class=""></div>
+    <script>
+      const clientState = document.getElementById("client-state");
+      document.getElementById("activate").addEventListener("click", () => {
+        clientState.className = "bg-panel";
+      });
+
+      const dynamicState = document.getElementById("dynamic-state");
+      const color = "missing";
+      document.getElementById("activate-dynamic").addEventListener("click", () => {
+        dynamicState.className = `bg-${color}`;
+      });
+    </script>
+  </body>
+</html>

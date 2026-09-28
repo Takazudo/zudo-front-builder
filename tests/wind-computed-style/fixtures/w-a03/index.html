@@ -1,0 +1,31 @@
+<!doctype html>
+<html id="dark-root" lang="en" data-theme="dark" class="dark:bg-panel">
+  <head>
+    <meta charset="utf-8" />
+    <title>W-A03 states, breakpoints, and layers</title>
+    <link rel="stylesheet" href="../../dist/w-a03/wind.css" />
+    <style>
+      @layer components {
+        .component-color {
+          color: rgb(255, 0, 0);
+        }
+      }
+
+      .late-color {
+        color: rgb(0, 128, 0);
+      }
+
+      :where(#hover-target) {
+        background-color: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="focus-visible" class="focus-visible:bg-panel">Focus me</button>
+    <div id="hover-target" class="hover:bg-panel">Hover me</div>
+    <div id="breakpoint" class="hidden sm:block">Breakpoint</div>
+    <div id="dark-descendant" class="dark:bg-panel">Dark ancestor match</div>
+    <div id="layered-utility" class="text-panel component-color">Layered author color</div>
+    <div id="late-unlayered" class="text-panel late-color">Later unlayered color</div>
+  </body>
+</html>

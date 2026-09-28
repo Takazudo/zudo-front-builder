@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>W-A02 spacing conflicts</title>
+    <link rel="stylesheet" href="../../dist/w-a02/wind.css" />
+    <style>
+      :root {
+        font-size: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div data-kind="padding" class="p-4 px-2 pl-1"></div>
+    <div data-kind="padding" class="p-4 pl-1 px-2"></div>
+    <div data-kind="padding" class="px-2 p-4 pl-1"></div>
+    <div data-kind="padding" class="px-2 pl-1 p-4"></div>
+    <div data-kind="padding" class="pl-1 p-4 px-2"></div>
+    <div data-kind="padding" class="pl-1 px-2 p-4"></div>
+
+    <div data-kind="margin" class="m-4 mx-2 ml-1"></div>
+    <div data-kind="margin" class="m-4 ml-1 mx-2"></div>
+    <div data-kind="margin" class="mx-2 m-4 ml-1"></div>
+    <div data-kind="margin" class="mx-2 ml-1 m-4"></div>
+    <div data-kind="margin" class="ml-1 m-4 mx-2"></div>
+    <div data-kind="margin" class="ml-1 mx-2 m-4"></div>
+
+    <div data-kind="gap" class="gap-4 gap-x-2 gap-y-1"></div>
+    <div data-kind="gap" class="gap-4 gap-y-1 gap-x-2"></div>
+    <div data-kind="gap" class="gap-x-2 gap-4 gap-y-1"></div>
+    <div data-kind="gap" class="gap-x-2 gap-y-1 gap-4"></div>
+    <div data-kind="gap" class="gap-y-1 gap-4 gap-x-2"></div>
+    <div data-kind="gap" class="gap-y-1 gap-x-2 gap-4"></div>
+  </body>
+</html>
