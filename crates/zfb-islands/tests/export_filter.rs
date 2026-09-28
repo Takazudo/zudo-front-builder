@@ -414,60 +414,56 @@ fn ts_cast_const_exports_are_retained_as_ambiguous() {
 fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
 
-    for framework in [FrameworkKind::Preact, FrameworkKind::React] {
-        let src = render_shared_bundle_entry_source(framework, &islands, false);
-        // The old truthy-only guard must be gone.
-        assert!(
-            !src.contains("if (!C) return;"),
-            "truthy-only guard `if (!C) return;` must be replaced ({framework:?}):\n{src}"
-        );
-        // Component-shape guard present.
-        assert!(
-            src.contains("typeof C === \"function\""),
-            "expected typeof-function check ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("C.$$typeof"),
-            "expected $$typeof object check for memo/forwardRef ({framework:?}):\n{src}"
-        );
-        // Loud, non-silent rejection naming the export + module.
-        assert!(
-            src.contains("console.warn(") && src.contains("is not a component"),
-            "expected a loud console.warn on rejection ({framework:?}):\n{src}"
-        );
-        // The module label is threaded through as the 4th register arg.
-        assert!(
-            src.contains(
-                "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
-            ),
-            "expected module label passed as the 4th __zfb_register arg ({framework:?}):\n{src}"
-        );
-    }
+    let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+    // The old truthy-only guard must be gone.
+    assert!(
+        !src.contains("if (!C) return;"),
+        "truthy-only guard `if (!C) return;` must be replaced:\n{src}"
+    );
+    // Component-shape guard present.
+    assert!(
+        src.contains("typeof C === \"function\""),
+        "expected typeof-function check:\n{src}"
+    );
+    assert!(
+        src.contains("C.$$typeof"),
+        "expected $$typeof object check for memo/forwardRef:\n{src}"
+    );
+    // Loud, non-silent rejection naming the export + module.
+    assert!(
+        src.contains("console.warn(") && src.contains("is not a component"),
+        "expected a loud console.warn on rejection:\n{src}"
+    );
+    // The module label is threaded through as the 4th register arg.
+    assert!(
+        src.contains(
+            "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
+        ),
+        "expected module label passed as the 4th __zfb_register arg:\n{src}"
+    );
 }
 
 #[test]
 fn per_island_entry_guards_mount_with_component_shape_check() {
     let island = Island::new("Counter", "/abs/components/Counter.tsx");
 
-    for framework in [FrameworkKind::Preact, FrameworkKind::React] {
-        let src = render_island_entry_source(framework, &island);
-        assert!(
-            src.contains("typeof Component === \"function\""),
-            "expected typeof-function guard ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("$$typeof"),
-            "expected $$typeof object check ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("if (!__zfb_ok) return;"),
-            "mount must bail out when the export is not a component ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("console.warn(")
-                && src.contains("is not a component")
-                && src.contains("/abs/components/Counter.tsx"),
-            "expected a loud console.warn naming the module ({framework:?}):\n{src}"
-        );
-    }
+    let src = render_island_entry_source(FrameworkKind::Preact, &island);
+    assert!(
+        src.contains("typeof Component === \"function\""),
+        "expected typeof-function guard:\n{src}"
+    );
+    assert!(
+        src.contains("$$typeof"),
+        "expected $$typeof object check:\n{src}"
+    );
+    assert!(
+        src.contains("if (!__zfb_ok) return;"),
+        "mount must bail out when the export is not a component:\n{src}"
+    );
+    assert!(
+        src.contains("console.warn(")
+            && src.contains("is not a component")
+            && src.contains("/abs/components/Counter.tsx"),
+        "expected a loud console.warn naming the module:\n{src}"
+    );
 }

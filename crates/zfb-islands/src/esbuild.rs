@@ -1082,9 +1082,8 @@ impl EsbuildSubprocessBundler {
         validate_locked_resource_loader_overrides(&config.loaders)?;
         // Derive the mount-glue framework from `config.jsx_import_source`
         // — the single field the orchestrator already sets via
-        // `with_jsx_import_source(config.framework…)`. This guarantees the
-        // emitted hydration glue (Preact `h()` vs React `createRoot`)
-        // and the esbuild `--jsx-import-source` flag can never disagree.
+        // `with_jsx_import_source(config.framework…)`. This keeps the emitted
+        // Preact hydration glue and esbuild's `--jsx-import-source` flag aligned.
         let framework = FrameworkKind::from_jsx_import_source(&config.jsx_import_source);
         let entry_source =
             render_shared_bundle_entry_source(framework, islands, config.client_router);
@@ -2528,7 +2527,7 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
         config.jsx_import_source
     )));
     // Mirror the main SSR bundler's Preact `--alias` block in
-    // `crates/zfb-build/src/bundler.rs` (the `Framework::Preact` arm of the
+    // `crates/zfb-build/src/bundler.rs` (the Preact framework branch of the
     // SSR esbuild command builder). next.18 dist modules carry an explicit,
     // framework-neutral `import { jsx } from "react/jsx-runtime"` (e.g.
     // `@takazudo/zfb-runtime/client-router`, which the shared islands bundle
@@ -2536,11 +2535,9 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     // `render_shared_bundle_entry_source`). In a Preact project `react` is not
     // installed, so esbuild cannot resolve `react/jsx-runtime` and the islands
     // build aborts (issue #633). Rewrite it (and the dev-runtime sibling) to the
-    // Preact runtime — the same trick the SSR bundler and the wider Preact
-    // ecosystem use. React projects resolve `react/jsx-runtime` natively, so the
-    // alias is Preact-only (same gate as the SSR bundler), leaving the React
-    // argv byte-identical. `--alias`'s prefix-with-slash semantics are safe here
-    // because `react/jsx-runtime` has no deeper subpath to corrupt.
+    // Preact runtime. The gate remains for the framework seam in #3282.
+    // `--alias`'s prefix-with-slash semantics are safe here because
+    // `react/jsx-runtime` has no deeper subpath to corrupt.
     if matches!(
         FrameworkKind::from_jsx_import_source(&config.jsx_import_source),
         FrameworkKind::Preact
@@ -2589,7 +2586,7 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
             "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
         )));
     }
-    // Inline NODE_ENV so React/Preact pick their mode-specific build.
+    // Inline NODE_ENV so framework packages pick their mode-specific build.
     // Mode is intentionally independent from minification. esbuild expects
     // the define value to be a JS literal, hence the embedded quotes.
     if config.mode.is_prod() {
@@ -2765,21 +2762,11 @@ fn non_component_warn(
 ///
 /// # Framework
 ///
-/// The synthesised wrapper emits framework-specific imports + mount
-/// glue selected by `framework`, mirroring the per-island path's
-/// `FrameworkKind` branches in `render_island_entry_source`:
-/// - `Preact` → bare `preact` imports + `h()/hydrate()/render()` glue.
-/// - `React` → `react` `createElement` + `react-dom/client`
-///   `hydrateRoot`/`createRoot` glue with a module-scope `WeakMap` of
-///   roots so `unmount` can dispose the right root.
-///
-/// Mixed-framework projects are not supported by the production
-/// shared-bundle path today (the per-island path is the right home for
-/// that, since it composes the framework glue per-island). The whole
-/// project shares one `framework`, derived from the configured
-/// `jsx_import_source`.
+/// The synthesised wrapper emits Preact imports and `h()/hydrate()/render()`
+/// mount glue, mirroring the per-island path. The framework argument remains
+/// at the call site for compatibility while the selector has one value.
 pub fn render_shared_bundle_entry_source(
-    framework: FrameworkKind,
+    _framework: FrameworkKind,
     islands: &[Island],
     client_router: bool,
 ) -> String {
@@ -2812,25 +2799,9 @@ pub fn render_shared_bundle_entry_source(
     }
     out.push_str(r#"import { mountIslands } from "@takazudo/zfb/runtime";"#);
     out.push('\n');
-    // Framework-specific hydration imports. Both branches mirror the
-    // per-island path's `FrameworkKind` arms in
-    // `render_island_entry_source`. For React the roots map is declared
-    // at module scope (one WeakMap shared across all islands) so each
-    // manifest entry's `unmount` thunk can find and dispose the root it
-    // created with `hydrateRoot`/`createRoot`.
-    match framework {
-        FrameworkKind::Preact => {
-            out.push_str(r#"import { h, hydrate, render } from "preact";"#);
-            out.push('\n');
-        }
-        FrameworkKind::React => {
-            out.push_str(r#"import { createElement } from "react";"#);
-            out.push('\n');
-            out.push_str(r#"import { hydrateRoot, createRoot } from "react-dom/client";"#);
-            out.push('\n');
-            out.push_str("const __zfb_roots = new WeakMap();\n");
-        }
-    }
+    // Preact hydration imports used by the generated mount thunks.
+    out.push_str(r#"import { h, hydrate, render } from "preact";"#);
+    out.push('\n');
     for (i, island) in islands.iter().enumerate() {
         let path = island.source_path.to_string_lossy();
         out.push_str(&format!(
@@ -2867,13 +2838,8 @@ function __zfb_pick(ns, exportName) {\n\
   return (named !== undefined && named !== null) ? named : ns.default;\n\
 }\n",
     );
-    // The mount / unmount thunk bodies are framework-specific and mirror
-    // the per-island path's `FrameworkKind` arms exactly. Keeping the
-    // helper-function shape identical across frameworks (same name, same
-    // args, same `__zfb_manifest[markerName]` slot) means only the thunk
-    // internals change. The guard prelude (component-shape check + the
-    // non-component skip warning) is identical for both frameworks, so it
-    // is built once from the shared helpers (#998).
+    // The guard prelude (component-shape check + the non-component skip
+    // warning) is shared with the per-island path (#998).
     let register_prelude = format!(
         "function __zfb_register(ns, exportName, markerName, moduleLabel) {{\n\
   const C = __zfb_pick(ns, exportName);\n\
@@ -2884,11 +2850,9 @@ function __zfb_pick(ns, exportName) {\n\
         predicate = component_shape_predicate("C", "C"),
         warn = non_component_warn("C", "exportName", "moduleLabel", "registration"),
     );
-    match framework {
-        FrameworkKind::Preact => {
-            out.push_str(&register_prelude);
-            out.push_str(
-                "  __zfb_manifest[markerName] = {\n\
+    out.push_str(&register_prelude);
+    out.push_str(
+        "  __zfb_manifest[markerName] = {\n\
     mount: (props, element, mode) => {\n\
       const v = h(C, props);\n\
       if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
@@ -2896,32 +2860,7 @@ function __zfb_pick(ns, exportName) {\n\
     unmount: (element) => { render(null, element); },\n\
   };\n\
 }\n",
-            );
-        }
-        FrameworkKind::React => {
-            out.push_str(&register_prelude);
-            out.push_str(
-                "  __zfb_manifest[markerName] = {\n\
-    mount: (props, element, mode) => {\n\
-      const v = createElement(C, props);\n\
-      if (mode === \"hydrate\") {\n\
-        const root = hydrateRoot(element, v);\n\
-        __zfb_roots.set(element, root);\n\
-      } else {\n\
-        const root = createRoot(element);\n\
-        root.render(v);\n\
-        __zfb_roots.set(element, root);\n\
-      }\n\
-    },\n\
-    unmount: (element) => {\n\
-      const root = __zfb_roots.get(element);\n\
-      if (root) { root.unmount(); __zfb_roots.delete(element); }\n\
-    },\n\
-  };\n\
-}\n",
-            );
-        }
-    }
+    );
     // One register call per island. The `__zfb_register(...)` calls
     // are top-level side effects esbuild MUST preserve, and they
     // reference each namespace identifier — so tree-shaking retains
@@ -2951,11 +2890,11 @@ function __zfb_pick(ns, exportName) {\n\
     out
 }
 
-/// Generate the per-island entry script for `framework`.
+/// Generate the per-island entry script with Preact hydration glue.
 ///
 /// The entry imports the component module by its resolved source path
 /// (esbuild resolves it from the bundler's working directory), wraps
-/// it in framework-specific `mount(props, element, mode)` glue, and
+/// it in `mount(props, element, mode)` glue, and
 /// exposes the function as the bundle's default export. The hydration
 /// runtime dynamic-imports this default export.
 ///
@@ -2964,20 +2903,19 @@ function __zfb_pick(ns, exportName) {\n\
 /// - `"render"` — used for SSR-skip islands
 ///   (`[data-zfb-island-skip-ssr]`); avoids hydrate-mismatch warnings
 ///   because the DOM is empty when we mount.
-pub fn render_island_entry_source(framework: FrameworkKind, island: &Island) -> String {
+pub fn render_island_entry_source(_framework: FrameworkKind, island: &Island) -> String {
     let path = island.source_path.to_string_lossy();
     let path_lit = json_string(&path);
     let component_name = &island.component_name;
     let component_lit = json_string(component_name);
     // Component-shape guard + non-component skip warning, hoisted into the
-    // shared helpers so the shared-bundle path and both per-island framework
-    // arms emit one identical snippet (#998). `Component` is typed `any`
+    // shared helpers so the shared-bundle and per-island paths emit one
+    // identical snippet (#998). `Component` is typed `any`
     // here (it comes off `(Mod as any)[…]`), so the `$$typeof` read is cast.
     let predicate = component_shape_predicate("Component", "(Component as any)");
     let warn = non_component_warn("Component", &component_lit, &path_lit, "mount");
-    match framework {
-        FrameworkKind::Preact => format!(
-            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
+    format!(
+        r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
 import * as Mod from {path_lit};
 import {{ h, hydrate, render }} from "preact";
 const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
@@ -3005,45 +2943,7 @@ export function unmount(element) {{
 }}
 export default mount;
 "#
-        ),
-        FrameworkKind::React => format!(
-            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
-import * as Mod from {path_lit};
-import {{ createElement }} from "react";
-import {{ hydrateRoot, createRoot }} from "react-dom/client";
-const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
-// Issue #998: only mount component-shaped exports. A plain function is a
-// component; react memo()/forwardRef() produce an object carrying
-// `$$typeof`. Anything else (a string/object constant that slipped through
-// as an island marker) is skipped with a loud warning rather than handed to
-// createElement() — which would otherwise try to build a DOM element from a
-// bogus type.
-const __zfb_ok = {predicate};
-if (!__zfb_ok) {{
-  {warn}
-}}
-const __zfb_roots = new WeakMap();
-export function mount(props, element, mode) {{
-  if (!__zfb_ok) return;
-  const vnode = createElement(Component, props);
-  if (mode === "hydrate") {{
-    const root = hydrateRoot(element, vnode);
-    __zfb_roots.set(element, root);
-  }} else {{
-    const root = createRoot(element);
-    root.render(vnode);
-    __zfb_roots.set(element, root);
-  }}
-}}
-export function unmount(element) {{
-  if (!__zfb_ok) return;
-  const root = __zfb_roots.get(element);
-  if (root) {{ root.unmount(); __zfb_roots.delete(element); }}
-}}
-export default mount;
-"#
-        ),
-    }
+    )
 }
 
 /// Generate the runtime entry script from a manifest of
@@ -4169,35 +4069,6 @@ mod tests {
     }
 
     #[test]
-    fn render_island_entry_source_react_uses_client_apis() {
-        let island = Island::new("Modal", "/abs/components/Modal.tsx");
-        let src = render_island_entry_source(FrameworkKind::React, &island);
-        assert!(src.contains(r#"from "react-dom/client""#));
-        assert!(src.contains("hydrateRoot"));
-        assert!(src.contains("createRoot"));
-        // Distinguish hydrate path (SSR'd) from render path (SSR-skip).
-        assert!(src.contains(r#"mode === "hydrate""#));
-        // Per-island React bundles must export unmount using WeakMap-tracked Root.
-        assert!(
-            src.contains("export function unmount"),
-            "expected unmount export in React bundle: {src}"
-        );
-        assert!(
-            src.contains("__zfb_roots"),
-            "expected WeakMap __zfb_roots in React bundle: {src}"
-        );
-        assert!(
-            src.contains("root.unmount()"),
-            "expected root.unmount() call in React unmount: {src}"
-        );
-        // #1002: unmount must carry the same __zfb_ok gate as the Preact arm.
-        assert!(
-            src.contains("export function unmount(element) {\n  if (!__zfb_ok) return;"),
-            "expected __zfb_ok gate in React unmount: {src}"
-        );
-    }
-
-    #[test]
     fn render_runtime_entry_source_inlines_manifest_and_calls_mount() {
         // Stable URLs per the S0 contract.
         let manifest = vec![
@@ -4618,75 +4489,6 @@ mod tests {
         );
 
         // Final invocation hands the populated manifest to the runtime.
-        assert!(src.contains("mountIslands(__zfb_manifest);"));
-    }
-
-    #[test]
-    fn render_shared_bundle_entry_source_react_uses_client_apis() {
-        // React-mode shared bundle: a project with `framework: "react"`
-        // must emit React hydration glue (createElement + react-dom/client
-        // hydrateRoot/createRoot + a module-scope WeakMap of roots) instead
-        // of the Preact `h()/hydrate()/render()` shape — mirroring the
-        // per-island React branch in `render_island_entry_source`. Without
-        // this, a React project's shared bundle ships bare `from "preact"`
-        // imports that crash at hydrate time.
-        let islands = vec![
-            Island::new("Counter", "/abs/components/Counter.tsx"),
-            Island::new("Modal", "/abs/components/Modal.tsx"),
-        ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::React, &islands, false);
-
-        // React client imports present; no bare Preact import.
-        assert!(
-            src.contains(r#"import { createElement } from "react""#),
-            "missing react createElement import: {src}"
-        );
-        assert!(
-            src.contains(r#"import { hydrateRoot, createRoot } from "react-dom/client""#),
-            "missing react-dom/client import: {src}"
-        );
-        assert!(
-            !src.contains(r#"from "preact""#),
-            "react-mode bundle must NOT contain a bare preact import: {src}"
-        );
-
-        // Module-scope roots map (declared once, not per-register).
-        assert_eq!(
-            src.matches("const __zfb_roots = new WeakMap();").count(),
-            1,
-            "expected exactly one module-scope WeakMap of roots: {src}"
-        );
-
-        // The shared helper shape is unchanged; only the thunk bodies differ.
-        assert!(src.contains("function __zfb_pick("));
-        assert!(src.contains("function __zfb_register("));
-        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
-        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
-
-        // React mount glue: createElement + hydrateRoot/createRoot, and an
-        // unmount thunk that disposes the stored root.
-        assert!(
-            src.contains("const v = createElement(C, props);"),
-            "missing React createElement mount: {src}"
-        );
-        assert!(
-            src.contains("const root = hydrateRoot(element, v);"),
-            "missing hydrateRoot call: {src}"
-        );
-        assert!(
-            src.contains("const root = createRoot(element);"),
-            "missing createRoot call: {src}"
-        );
-        assert!(
-            src.contains("root.unmount(); __zfb_roots.delete(element);"),
-            "missing React unmount glue: {src}"
-        );
-        // No Preact `h()` / `render()` thunk leakage into the React path.
-        assert!(
-            !src.contains("const v = h(C, props);"),
-            "react-mode bundle must NOT contain the Preact h() thunk: {src}"
-        );
-
         assert!(src.contains("mountIslands(__zfb_manifest);"));
     }
 
@@ -5741,7 +5543,7 @@ mod tests {
     /// Regression for issue #151 (zudolab/zudo-doc#1355 Wave 8).
     ///
     /// The esbuild subprocess argument list MUST include
-    /// `--jsx=automatic` AND `--jsx-import-source=preact` (the default
+    /// `--jsx=automatic` AND `--jsx-import-source=preact` (the supported
     /// framework). Without those two flags esbuild's classic JSX
     /// transform emits bare `React.createElement` references that
     /// throw `ReferenceError: React is not defined` at mount time when
@@ -5908,20 +5710,19 @@ mod tests {
     }
 
     /// `BundleConfig::jsx_import_source` is honoured verbatim — the
-    /// helper does not hardcode `"preact"`, so callers that bundle for
-    /// React (or any future adapter) get the right
-    /// `--jsx-import-source=<value>` flag.
+    /// helper does not hardcode `"preact"`, so callers can supply another
+    /// source and get the corresponding `--jsx-import-source=<value>` flag.
     #[test]
     fn build_esbuild_args_honours_custom_jsx_import_source() {
-        let cfg = BundleConfig::default().with_jsx_import_source("react");
+        let cfg = BundleConfig::default().with_jsx_import_source("solid");
         let args = args_as_strings(&cfg, true);
         assert!(
             args.iter().any(|a| a == "--jsx=automatic"),
             "missing --jsx=automatic in args: {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "--jsx-import-source=react"),
-            "missing --jsx-import-source=react in args: {args:?}"
+            args.iter().any(|a| a == "--jsx-import-source=solid"),
+            "missing --jsx-import-source=solid in args: {args:?}"
         );
         // The Preact default must NOT leak when the caller overrode it.
         assert!(
@@ -5954,28 +5755,6 @@ mod tests {
             args.iter()
                 .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
             "missing --alias:react/jsx-dev-runtime=preact/jsx-dev-runtime in args: {args:?}"
-        );
-    }
-
-    /// Companion to the #633 regression: React projects resolve
-    /// `react/jsx-runtime` natively, so the alias is Preact-only and the React
-    /// argv MUST NOT carry either `react/jsx-runtime` alias (same Preact-only
-    /// gate as the SSR bundler — keeps the React bundle byte-stable).
-    #[test]
-    fn build_esbuild_args_omits_react_jsx_runtime_alias_for_react() {
-        let cfg = BundleConfig::default().with_jsx_import_source("react");
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            !args
-                .iter()
-                .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
-            "react path must not alias react/jsx-runtime: {args:?}"
-        );
-        assert!(
-            !args
-                .iter()
-                .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
-            "react path must not alias react/jsx-dev-runtime: {args:?}"
         );
     }
 

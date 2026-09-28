@@ -16,11 +16,11 @@ describe("definePreset", () => {
   it("passes through non-plugin fields unchanged", () => {
     const result = definePreset("my-preset-pkg", {
       outDir: "build",
-      framework: "react",
+      framework: "preact",
       plugins: [{ name: "p" }],
     });
     expect(result.outDir).toBe("build");
-    expect(result.framework).toBe("react");
+    expect(result.framework).toBe("preact");
   });
 
   it("returns config unchanged when plugins is absent", () => {

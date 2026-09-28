@@ -14,7 +14,7 @@
 // The shape mirrors the Rust `Config` struct one-for-one. Keep them in
 // sync; the `defineConfig` identity helper is the single anchor point.
 
-export type Framework = "preact" | "react";
+export type Framework = "preact";
 
 export type CollectionDef = {
   /** Identifier used at the call site (e.g. `"blog"`). */
@@ -125,9 +125,8 @@ export type BundleConfig = {
    * is rejected ("The "main" field here was ignored. Main fields must be
    * configured explicitly when using the neutral platform."). Set e.g.
    * `["main", "module"]` to let such CJS-main-only deps resolve (#676 —
-   * `msw` → `path-to-regexp@6`). Applies to every framework; unset/empty →
-   * byte-identical to a build without the knob (the React-only `main,module`
-   * shim still applies).
+   * `msw` → `path-to-regexp@6`). When unset or empty, no
+   * `--main-fields` argument is emitted.
    *
    * Mirrors `BundleConfig::main_fields` in `crates/zfb/src/config.rs`.
    */
