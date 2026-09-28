@@ -1,11 +1,72 @@
 ---
 title: Scopes and lifecycle
-description: Use getScope during setup to register cleanup, activation, and effects, and understand disposal boundaries.
+description: Register setup resources, browser activation, effects, and cleanup with the current component scope.
 sidebar_position: 4
 ---
 
-<Note>
+## Get the current owner
 
-This page is being written. owned-engines-stub
+Call **getScope** during synchronous component setup, or inside a Show or For factory, to register work with the owner that is rendering that function. A direct helper call during setup shares the same owner; it does not create a detached scope.
 
-</Note>
+~~~tsx
+import type { ReadonlySignal } from "@takazudo/zfb/zudo-react";
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function Clock() {
+  const scope = getScope();
+  const now = signal(Date.now());
+
+  scope.onActivate(() => {
+    const timer = window.setInterval(() => {
+      now.value = Date.now();
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  });
+
+  return <time>{now}</time>;
+}
+~~~
+
+getScope is setup-only. Calling it outside a current render owner throws ZR_NO_SCOPE. No owner survives an await, so async setup is not supported. Pure SDK constructors can be called without a scope because they only create descriptions.
+
+## Separate setup from activation
+
+Register synchronous resource cleanup with **onCleanup**. Register browser-only startup with **onActivate**; an activation callback may return a synchronous cleanup. Register a tracked browser effect with **effect**:
+
+~~~tsx
+function PageTitle({ title }: { title: ReadonlySignal<string> }) {
+  const scope = getScope();
+
+  scope.effect(() => {
+    document.title = title.value;
+  });
+
+  return <h1>{title}</h1>;
+}
+~~~
+
+Activation callbacks run only in the browser, after the DOM has been committed. The renderer assigns every ref before any callback. Child scopes activate before their parents; siblings follow output order, and callbacks in one scope follow registration order. Effects begin in the scheduler's first effect phase after all activation callbacks finish. The server never runs browser activation or effects.
+
+An effect tracks values read during its callback. Before an effect reruns, its prior cleanup runs without tracking. The final cleanup runs when the scope is disposed. A throwing effect is reported, its old dependencies detach, and other effects continue.
+
+If activation fails, the runtime disposes that root's runtime resources and reports the failure. User code that already changed external state must provide its own cleanup; the runtime cannot reverse arbitrary side effects.
+
+Promise-valued cleanup is invalid. Cleanup callbacks are synchronous and must be registered while the scope is active. Callbacks should use the supplied abort signal for later asynchronous work and check it before applying results.
+
+## Disposal does not remove DOM
+
+Scope disposal marks the owner inactive, aborts its signal, blocks queued jobs, disposes child scopes, runs cleanup callbacks in reverse registration order while the nodes still exist, and finally clears refs. It continues through cleanup errors and reports them. Disposed work cannot be reactivated.
+
+At a mounted root, **dispose** releases runtime resources but leaves the wrapper and its DOM in place. **unmount** disposes and removes the nodes owned by that handle, while retaining the wrapper. zfb uses disposal before replacing a wrapper's body itself. Removing a root or cancelling a pending trigger prevents future activation.
+
+The client root handle exposes hydrate and render outcomes together with its identity and disposed state. hydrate adopts existing nodes; mount creates new child DOM. Either reports expected failures and returns null rather than a partly active handle. zfb isolates root errors, so a broken island does not prevent other roots from being processed.
+
+Server rendering owns a temporary scope graph and always disposes it when the render ends, including on error. Put request-specific mutable state inside rendering rather than in module-level variables.
+
+## See also
+
+- [Reactivity](./reactivity.mdx)
+- [Hydration](./hydration.mdx)
+- [Conditionals and lists](./conditionals-and-lists.mdx)
+- [API reference](./api-reference.mdx)

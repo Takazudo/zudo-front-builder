@@ -1,11 +1,78 @@
 ---
 title: Conditionals and lists
-description: Build conditional branches with Show and keyed lists with For, using owned scopes and range updates.
+description: Use Show for owned conditional branches and For for transactional keyed list updates.
 sidebar_position: 8
 ---
 
-<Note>
+## Conditional branches with Show
 
-This page is being written. owned-engines-stub
+**Show** selects a branch from a readonly boolean signal. Its children and optional fallback are factories, so the selected branch is created under a new child scope:
 
-</Note>
+~~~tsx
+import { Show, signal } from "@takazudo/zfb/zudo-react";
+
+function Details() {
+  const expanded = signal(false);
+
+  return (
+    <section>
+      <button on:click={() => { expanded.value = !expanded.value; }}>
+        Toggle details
+      </button>
+      <Show
+        when={expanded}
+        fallback={() => <p>More details are available.</p>}
+      >
+        {() => <p>The expanded content is mounted here.</p>}
+      </Show>
+    </section>
+  );
+}
+~~~
+
+The selected factory runs once during that branch's lifetime. Switching away disposes its scope once and removes its range; switching back creates a fresh branch instance. When false with no fallback, no child scope is created. A reactive hidden attribute only hides existing DOM; it does not dispose the branch or its resources.
+
+## Keyed items with For
+
+**For** reads a readonly array signal and calls by for each plain item to obtain a string or finite number key:
+
+~~~tsx
+import { For, signal } from "@takazudo/zfb/zudo-react";
+
+function TodoList() {
+  const todos = signal([
+    { id: "a", title: "Read the guide" },
+    { id: "b", title: "Ship the feature" }
+  ]);
+
+  return (
+    <ul>
+      <For each={todos} by={(todo) => todo.id}>
+        {(todo, index) => (
+          <li>{index}: {todo.value.title}</li>
+        )}
+      </For>
+    </ul>
+  );
+}
+~~~
+
+The item and index arguments are readonly signals. Passing one to JSX creates a live binding; reading its value takes a snapshot. Retained keys keep their range, child scope, refs, event handlers, control state, and item/index signal objects. A replacement object with the same key updates those readonly views but does not run the factory again.
+
+Keys are strings or finite numbers. Negative zero normalizes to zero, while the number 1 and string "1" are distinct keys. Before changing DOM or scope state, For validates the complete next key set. A duplicate key reports ZR_DUPLICATE_KEY; an unsupported key reports ZR_KEY_TYPE. The prior list remains intact. Duplicate initial keys fail server rendering, and invalid keys during hydration fail that island.
+
+New items are built provisionally before old ranges are replaced. If setup fails, provisional scopes are disposed and the prior list stays live. Removing a key disposes its scope exactly once; adding it later creates a new item. Moving a retained key moves its existing DOM, preserving focus and selection when possible.
+
+## Parser positions and composition
+
+For and Show regions need positions where comment-delimited ranges are valid. They are unsupported at table-structural levels and inside select option structure. Check the [parser context rules](./hydration.mdx) before placing a dynamic region in unusual HTML.
+
+If a focused item is composing text, a reorder that would detach it waits until composition ends or blur, then applies the latest list. Removing that item is an explicit unmount and cancels its resources.
+
+## See also
+
+- [Reactivity](./reactivity.mdx)
+- [Scopes and lifecycle](./scopes-and-lifecycle.mdx)
+- [Hydration](./hydration.mdx)
+- [Forms](./forms.mdx)
+- [API reference](./api-reference.mdx)

@@ -1,11 +1,461 @@
 ---
 title: API reference
-description: Reference zudo-react core, JSX, server, and client entry points and their exported types.
+description: The frozen zudo-react v1 exports grouped by their five package entry points.
 sidebar_position: 9
 ---
 
-<Note>
+## Core: @takazudo/zfb/zudo-react
 
-This page is being written. owned-engines-stub
+The core entry provides description helpers, reactivity, scopes, and structural primitives; only the exports listed under this entry are available from it.
 
-</Note>
+### Fragment
+
+~~~ts
+export const Fragment: unique symbol;
+~~~
+
+Use Fragment to group sibling descriptions without adding a host element; see [Components and JSX](./components-and-jsx.mdx).
+
+### h
+
+~~~ts
+export function h(type: ElementType, props: Record<string, unknown> | null,
+  ...children: Child[]): Description;
+~~~
+
+Use h to construct a validated description without JSX; see [Components and JSX](./components-and-jsx.mdx).
+
+### isDescription
+
+~~~ts
+export function isDescription(value: unknown): value is Description;
+~~~
+
+Use isDescription to check for the branded description shape; see [Components and JSX](./components-and-jsx.mdx).
+
+### flattenChildren
+
+~~~ts
+export function flattenChildren(children: Child): readonly Exclude<Child, readonly Child[] | boolean | null | undefined>[];
+~~~
+
+Use flattenChildren to normalize supported child arrays without executing components or reading reactive values; see [Components and JSX](./components-and-jsx.mdx).
+
+### signal
+
+~~~ts
+export function signal<T>(initial: T): Signal<T>;
+~~~
+
+signal creates a writable value with both the reactive and required writable brands; see [Reactivity](./reactivity.mdx) and [Forms](./forms.mdx).
+
+### computed
+
+~~~ts
+export function computed<T>(read: () => T): ReadonlySignal<T>;
+~~~
+
+computed creates a lazy readonly value and is not valid as a form model; see [Reactivity](./reactivity.mdx).
+
+### batch
+
+~~~ts
+export function batch<T>(fn: () => T): T;
+~~~
+
+batch groups synchronous writes for the scheduler; see [Reactivity](./reactivity.mdx).
+
+### flush
+
+~~~ts
+export function flush(): Promise<void>;
+~~~
+
+flush resolves after the current DOM and effect queues settle, subject to the 100-pass limit; see [Reactivity](./reactivity.mdx).
+
+### getScope
+
+~~~ts
+export function getScope(): Scope;
+~~~
+
+getScope returns the current owner only during synchronous setup or a structural factory; see [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### Show
+
+~~~ts
+export function Show(props: ShowProps): Description;
+~~~
+
+Show creates an owned conditional region whose branch factories run for each branch lifetime; see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### For
+
+~~~ts
+export function For<T>(props: ForProps<T>): Description;
+~~~
+
+For creates owned keyed item regions with readonly item and index signals; see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### Key
+
+~~~ts
+export type Key = string | number;
+~~~
+
+Keys accept strings or finite numbers, with negative zero normalized to zero; see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### Scalar
+
+~~~ts
+export type Scalar = string | number | boolean | null | undefined;
+~~~
+
+Scalar is the primitive value set accepted for descriptions and reactive text; see [Components and JSX](./components-and-jsx.mdx).
+
+### ReadonlySignal
+
+~~~ts
+export interface ReadonlySignal<T> {
+  readonly value: T;
+  readonly $$zudoReactive: "zudo-react.reactive.v1";
+}
+~~~
+
+ReadonlySignal describes a readable reactive value and deliberately omits the writable model brand; see [Reactivity](./reactivity.mdx).
+
+### Signal
+
+~~~ts
+export interface Signal<T> extends ReadonlySignal<T> {
+  value: T;
+  readonly $$zudoWritable: "zudo-react.writable.v1";
+}
+~~~
+
+Signal is the writable signal type required by every model prop; see [Reactivity](./reactivity.mdx) and [Forms](./forms.mdx).
+
+### Child
+
+~~~ts
+export type Child = Scalar | Description | ReadonlySignal<Scalar> | readonly Child[];
+~~~
+
+Child is the recursive set of values accepted by components and renderers; see [Components and JSX](./components-and-jsx.mdx).
+
+### Component
+
+~~~ts
+export type Component<P = Record<string, unknown>> = (props: P) => Child;
+~~~
+
+Component is a synchronous function from props to a supported child result; see [Overview](./overview.mdx).
+
+### ElementType
+
+~~~ts
+export type ElementType = string | Component<any> | typeof Fragment;
+~~~
+
+ElementType covers intrinsic names, function components, and Fragment; see [Components and JSX](./components-and-jsx.mdx).
+
+### Description
+
+~~~ts
+export interface Description {
+  readonly $$zudo: "zudo-react.description.v1";
+  readonly type: ElementType;
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: Key | null;
+}
+~~~
+
+Description is an inert branded value that can be reused or copied between renders; see [Components and JSX](./components-and-jsx.mdx).
+
+### Cleanup
+
+~~~ts
+export type Cleanup = () => void;
+~~~
+
+Cleanup is a synchronous callback registered with a scope; see [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### Scope
+
+~~~ts
+export interface Scope {
+  readonly abortSignal: AbortSignal;
+  onActivate(fn: () => void | Cleanup): void;
+  onCleanup(fn: Cleanup): void;
+  effect(fn: () => void | Cleanup): void;
+}
+~~~
+
+Scope owns activation, tracked effects, cleanup, and an abort signal; see [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### Ref
+
+~~~ts
+export interface Ref<T> { current: T | null }
+~~~
+
+Ref is a mutable object populated before activation, with no callback form; see [Components and JSX](./components-and-jsx.mdx).
+
+### Style
+
+~~~ts
+export type Style = string | Readonly<Record<string, string | number | null | undefined>>;
+~~~
+
+Style accepts a CSS string or a flat CSS-spelled object; see [Components and JSX](./components-and-jsx.mdx).
+
+### Listener
+
+~~~ts
+export type Listener<E extends Event = Event> = (event: E) => void | Promise<void>;
+~~~
+
+Listener receives a native event and is attached with the on:event spelling; see [Components and JSX](./components-and-jsx.mdx).
+
+### IslandIdentity
+
+~~~ts
+export interface IslandIdentity {
+  readonly component: string;
+  readonly build: string;
+}
+~~~
+
+IslandIdentity binds an island to its component name and opaque build identity; see [Hydration](./hydration.mdx).
+
+### Diagnostic
+
+~~~ts
+export interface Diagnostic {
+  readonly code: string;
+  readonly phase: "setup" | "preflight" | "commit" | "activation" | "update" | "cleanup";
+  readonly component: string;
+  readonly componentStack: readonly string[];
+  readonly path: string;
+  readonly expected: string;
+  readonly actual: string;
+  readonly protocol: string;
+  readonly build: string;
+}
+~~~
+
+Diagnostic records a phase, root path, and short expected/actual summaries without complete props or input values; see [Hydration](./hydration.mdx).
+
+### Reporter
+
+~~~ts
+export type Reporter = (diagnostic: Diagnostic) => void;
+~~~
+
+Reporter receives one structured runtime diagnostic; see [Hydration](./hydration.mdx).
+
+### ShowProps
+
+~~~ts
+export interface ShowProps {
+  when: ReadonlySignal<boolean>;
+  children: () => Child;
+  fallback?: (() => Child) | undefined;
+}
+~~~
+
+ShowProps requires a readonly boolean signal and deferred branch factories; see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### ForProps
+
+~~~ts
+export interface ForProps<T> {
+  each: ReadonlySignal<readonly T[]>;
+  by: (item: T) => Key;
+  children: (item: ReadonlySignal<T>, index: ReadonlySignal<number>) => Child;
+}
+~~~
+
+ForProps accepts a readonly array signal, a pure key selector, and an item factory; see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+## JSX runtime: @takazudo/zfb/zudo-react/jsx-runtime
+
+The automatic production JSX transform imports these values and the JSX namespace from this subpath.
+
+### Fragment
+
+~~~ts
+export { Fragment } from "./index.js";
+~~~
+
+The JSX runtime re-exports the core Fragment marker; see [Components and JSX](./components-and-jsx.mdx).
+
+### jsx
+
+~~~ts
+export function jsx(type: ElementType, props: Record<string, unknown> | null,
+  key?: Key | undefined): Description;
+~~~
+
+jsx creates one inert element description for the automatic JSX transform; see [Overview](./overview.mdx).
+
+### jsxs
+
+~~~ts
+export const jsxs: typeof jsx;
+~~~
+
+jsxs is the multiple-children helper with the same description signature as jsx; see [Components and JSX](./components-and-jsx.mdx).
+
+### JSX
+
+~~~ts
+export type { JSX } from "./jsx-types.js";
+~~~
+
+The JSX namespace exports Element, ElementType, IntrinsicElements, IntrinsicAttributes with an optional key, and ElementChildrenAttribute with children, using a finite HTML/SVG/custom-element map without a catch-all string index; see [Components and JSX](./components-and-jsx.mdx).
+
+## JSX development runtime: @takazudo/zfb/zudo-react/jsx-dev-runtime
+
+The TypeScript development transform imports its diagnostic helper from this subpath.
+
+### Fragment
+
+~~~ts
+export { Fragment } from "./index.js";
+~~~
+
+The development JSX runtime re-exports the same core Fragment marker; see [Components and JSX](./components-and-jsx.mdx).
+
+### jsxDEV
+
+~~~ts
+export function jsxDEV(type: ElementType, props: Record<string, unknown> | null,
+  key: Key | undefined, isStaticChildren: boolean,
+  source: { fileName: string; lineNumber: number; columnNumber: number } | undefined,
+  self: unknown): Description;
+~~~
+
+jsxDEV creates the same inert description while accepting development transform metadata; see [Overview](./overview.mdx).
+
+### JSX
+
+~~~ts
+export type { JSX } from "./jsx-types.js";
+~~~
+
+The development entry re-exports the same JSX namespace with its finite intrinsic map; see [Components and JSX](./components-and-jsx.mdx).
+
+## Server: @takazudo/zfb/zudo-react/server
+
+The server entry can render documents without importing client runtime code or accessing the DOM.
+
+### RenderOptions
+
+~~~ts
+export interface RenderOptions {
+  island?: IslandIdentity | undefined;
+}
+~~~
+
+RenderOptions selects standalone inner-island marker mode when an identity is supplied; see [Server rendering](./server-rendering.mdx).
+
+### IslandOptions
+
+~~~ts
+export interface IslandOptions {
+  identity: IslandIdentity;
+  when?: "load" | "idle" | "visible" | "media" | undefined;
+  media?: string | undefined;
+  skipSsr?: boolean | undefined;
+  fallback?: Child;
+}
+~~~
+
+IslandOptions defines the wrapper identity, scheduling mode, optional media query, and skip-SSR fallback; see [Server rendering](./server-rendering.mdx).
+
+### renderToString
+
+~~~ts
+export function renderToString(node: Child, options?: RenderOptions): string;
+~~~
+
+renderToString serializes a complete synchronous description tree with escaping and no markers outside explicit island roots; see [Server rendering](./server-rendering.mdx).
+
+### islandRoot
+
+~~~ts
+export function islandRoot(child: Description, options: IslandOptions): Description;
+~~~
+
+islandRoot creates the explicit zfb-facing island wrapper description; see [Server rendering](./server-rendering.mdx).
+
+### serializeProps
+
+~~~ts
+export function serializeProps(props: Record<string, unknown>): string;
+~~~
+
+serializeProps validates strict JSON data and returns JSON text for the wrapper attribute; see [Server rendering](./server-rendering.mdx).
+
+## Client: @takazudo/zfb/zudo-react/client
+
+The client entry owns DOM hydration, client rendering, and island prop parsing.
+
+### RootOptions
+
+~~~ts
+export interface RootOptions {
+  identity: IslandIdentity;
+  signal?: AbortSignal | undefined;
+  report?: Reporter | undefined;
+}
+~~~
+
+RootOptions supplies the identity, optional cancellation signal, and diagnostic reporter; see [Hydration](./hydration.mdx).
+
+### RootHandle
+
+~~~ts
+export interface RootHandle {
+  readonly protocol: "zudo-react/1";
+  readonly identity: IslandIdentity;
+  readonly disposed: boolean;
+  dispose(): void;
+  unmount(): void;
+}
+~~~
+
+RootHandle separates releasing resources from removing its owned DOM; see [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### hydrate
+
+~~~ts
+export function hydrate(node: Child, container: Element, options: RootOptions): RootHandle | null;
+~~~
+
+hydrate adopts existing child nodes after preflight and returns null on an expected failure; see [Hydration](./hydration.mdx).
+
+### mount
+
+~~~ts
+export function mount(node: Child, container: Element, options: RootOptions): RootHandle | null;
+~~~
+
+mount creates client DOM under a validated wrapper and returns null on an expected failure; see [Hydration](./hydration.mdx).
+
+### parseProps
+
+~~~ts
+export function parseProps(json: string): Record<string, unknown>;
+~~~
+
+parseProps parses and validates the strict island props record, throwing a named transport error for invalid input; see [Hydration](./hydration.mdx).
+
+## See also
+
+- [Overview](./overview.mdx)
+- [Components and JSX](./components-and-jsx.mdx)
+- [Reactivity](./reactivity.mdx)
+- [Server rendering](./server-rendering.mdx)
+- [Hydration](./hydration.mdx)

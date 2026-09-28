@@ -1,11 +1,76 @@
 ---
 title: Reactivity
-description: Use signals, lazy computed values, batches, and the bounded microtask scheduler for live DOM updates.
+description: Use writable signals and readonly computed values as live bindings with bounded microtask updates.
 sidebar_position: 3
 ---
 
-<Note>
+## Writable and readonly values
 
-This page is being written. owned-engines-stub
+Create a writable value with **signal** and derive a readonly value with **computed**. Signals compare assignments with Object.is: assigning the same value does not notify, while NaN and signed zero follow Object.is semantics. Mutating an object in place is not a signal assignment and does not notify subscribers.
 
-</Note>
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+  const doubled = computed(() => count.value * 2);
+
+  return (
+    <button on:click={() => { count.value += 1; }}>
+      {count} × 2 = {doubled}
+    </button>
+  );
+}
+~~~
+
+Computed values are lazy. They track the signals read during their latest evaluation, discard stale dependencies, and detect cycles. A computed value can be read inside or outside a batch and returns a settled value. An unobserved computed value retains no upstream subscriptions.
+
+## Keep snapshots distinct from bindings
+
+Pass the reactive object to JSX or to a child prop when the receiver needs updates. Reading value returns the current snapshot.
+
+~~~tsx
+const name = signal("Ada");
+const snapshot = name.value;
+
+return <Profile liveName={name} initialName={snapshot} />;
+~~~
+
+The liveName prop is a signal; initialName is a string captured during setup. Reading value inside a JSX expression does not make that read reactive. This rule applies to computed values too.
+
+Writable and readonly signals share the reactive brand, but writable signals also have the required writable brand. Keep a writable model typed as **Signal<T>**; use **ReadonlySignal<T>** for readable inputs. A writable signal can be passed where a readonly signal is expected. A computed value or readonly view cannot be used as a form model, either in TypeScript or at runtime. Calling signal produces the writable brand; there is no separate setter API.
+
+~~~tsx
+import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+const name = signal("Ada");
+const label = computed(() => name.value.toUpperCase());
+const readable: ReadonlySignal<string> = name;
+const writable: Signal<string> = name;
+~~~
+
+## Batch synchronous writes
+
+**batch** groups synchronous assignments so observers see the settled result. It restores scheduler state even when the callback throws. It does not delay the callback or await application promises.
+
+The scheduler drains in microtasks. In each pass it settles computed derivations, commits structural and DOM bindings, then runs effects. A subscriber runs at most once per phase in a pass, so intermediate values in a diamond-shaped dependency graph are not written to the DOM. Writes during a pass schedule a later pass.
+
+Use **flush** when code needs to wait for the current DOM and effect work to become quiet:
+
+~~~tsx
+count.value = 2;
+await flush();
+// Reactive DOM and effects from the write have settled here.
+~~~
+
+flush includes work enqueued by the drain but does not wait for unrelated promises. It resolves immediately while idle. Each drain allows at most 100 passes, including its initial pass. If another pass would be needed, the runtime reports ZR_FLUSH_LIMIT, drops that drain's queued work, and rejects its outstanding flush waiters. A later external write starts a new drain; disposed jobs and the failed root stay isolated from unrelated roots.
+
+On the server, rendering reads each value once without creating subscriptions. The render's scope graph is disposed whether rendering succeeds or throws.
+
+## See also
+
+- [Overview](./overview.mdx)
+- [Scopes and lifecycle](./scopes-and-lifecycle.mdx)
+- [Forms](./forms.mdx)
+- [API reference](./api-reference.mdx)

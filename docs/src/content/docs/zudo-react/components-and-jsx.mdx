@@ -1,11 +1,73 @@
 ---
 title: Components and JSX
-description: Create components with JSX using HTML and SVG spellings and the zudo-react prop dialect.
+description: Build inert JSX descriptions with HTML and SVG spellings, explicit listeners, and trusted raw HTML.
 sidebar_position: 2
 ---
 
-<Note>
+## JSX creates a description
 
-This page is being written. owned-engines-stub
+The automatic JSX helpers create inert descriptions. Creating one does not call its component, touch the DOM, or store render state on the description. The renderer calls a function component once for each instance and uses its result to build the page or island.
 
-</Note>
+Descriptions expose a type, props, and key, and carry the runtime's description brand. Factories copy props rather than mutating the object passed by the caller. A description can be reused or copied as an ordinary object. Use the public **h** helper to construct one without JSX; **isDescription** checks the brand, and **flattenChildren** applies the same child normalization used by the runtime.
+
+With h, variadic children replace props.children; when no variadic children are supplied, h uses props.children. The JSX factory's explicit key argument takes precedence over props.key, and a missing key is normalized to null.
+
+## Child values
+
+Children may be strings, finite numbers, descriptions, scalar-valued reactive signals, or arrays of those values. Nested arrays are flattened. Null, undefined, and booleans are omitted, while an empty string is retained. Functions, promises, symbols, bigints, non-finite numbers, and arbitrary objects are errors.
+
+A component may return one description, an array, a string or number, or an empty value. These are synchronous results. A promise nested in the rendered tree is an error; the runtime does not suspend or await nested components. zfb may await a top-level page function before rendering its result.
+
+Fragments and arrays returned by components preserve sibling groups without adding a visible element. Plain intrinsic child arrays are just traversal lists. Copying a description does not create a new component instance by itself.
+
+## Use HTML and SVG names
+
+Intrinsic attributes follow HTML and SVG spelling. Use class, for, readonly, tabindex, and viewBox. React spellings such as className, htmlFor, readOnly, tabIndex, strokeWidth, and dangerouslySetInnerHTML fail validation; they are not rewritten or emitted as-is. Unknown HTML attributes also fail. Data and ARIA attributes accept scalar string, number, or boolean values; a boolean ARIA value is serialized as the corresponding string, including false.
+
+Boolean HTML attributes use presence for true and absence for false. Enumerated attributes such as contenteditable are strings. Null and undefined omit ordinary attributes. A reactive value is allowed for a supported scalar attribute, subject to the form-control rules in the [forms guide](./forms.mdx).
+
+The hidden attribute accepts booleans only, not until-found, and inert is boolean. The runtime does not add hiding CSS, so the page's authored styles remain responsible for display behavior.
+
+SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, and foreignObject. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
+
+## Styles and events
+
+The style prop accepts a CSS string or a flat object with CSS-spelled keys. A numeric value is emitted as written; the runtime does not add px. Null and undefined entries are skipped, and object entries keep their insertion order. On update, a previously owned style property missing from the next object is removed. CamelCase keys, nested objects, arrays, and reactive values inside the style object are rejected. The entire style prop may be reactive.
+
+Function listeners use a native, case-sensitive event name after on:, with an optional final :capture suffix:
+
+~~~tsx
+<button on:click={save} on:keydown:capture={handleKey}>Save</button>
+~~~
+
+Listeners receive the browser's native event and currentTarget. There is no synthetic event system or event delegation. The runtime removes listeners with their owning scope. A rejected promise returned by a listener is reported, including if the scope is later disposed.
+
+Lowercase string event attributes such as onload are a separate, static inline-handler form. The runtime escapes them as ordinary HTML attributes and never evaluates them. Do not supply both an inline attribute and a function listener for the same event. The React-style onClick spelling and function-valued onclick are rejected.
+
+Refs are simple objects with a current field, initially null. The runtime assigns all refs before activation callbacks. There are no callback refs or ref factories.
+
+## Custom elements
+
+A custom element name must be lowercase and contain a hyphen. Its attributes must be strings, with reactive strings or nullish values also allowed. Native listeners and reserved runtime props are supported. The runtime does not assign arbitrary objects to element properties or infer property types.
+
+Custom element constructors can run browser code when the browser creates an element; the runtime cannot undo those external effects if rendering later fails.
+
+## Trusted raw HTML
+
+Use rawHtml only when the caller already trusts the string. It accepts a string or a reactive string and is mutually exclusive with children, even when children is explicitly empty. It is a prop for the renderer, never an HTML attribute. Raw HTML is unsupported in SVG.
+
+~~~tsx
+const markup = signal("<em>trusted</em>");
+return <section rawHtml={markup} />;
+~~~
+
+In an island, raw HTML occupies one opaque region. Hydration checks its boundaries but does not inspect or bind the contents. A changed string replaces only the contents of that region. The caller is responsible for valid markup, trust, and any external resources it adds. Reserved zudo-react comment shapes and nested island wrappers are rejected. Scripts inserted by a client rawHtml update are inert.
+
+Inside script and style elements, only static string rawHtml is allowed; no children, reactive payload, or internal comment markers are supported. A case-insensitive closing script or style sequence for the current element is rejected. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
+
+## See also
+
+- [Overview](./overview.mdx)
+- [Reactivity](./reactivity.mdx)
+- [Server rendering](./server-rendering.mdx)
+- [Forms](./forms.mdx)

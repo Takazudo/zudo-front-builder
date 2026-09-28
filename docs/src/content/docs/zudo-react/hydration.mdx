@@ -1,11 +1,79 @@
 ---
 title: Hydration
-description: Understand island identity, hydration preflight, DOM adoption, mismatch handling, and minified HTML tolerance.
+description: Adopt existing island DOM through identity checks, preflight, and a fail-closed commit.
 sidebar_position: 6
 ---
 
-<Note>
+## Hydrate the island contents
 
-This page is being written. owned-engines-stub
+The client entry is **@takazudo/zfb/zudo-react/client**. **hydrate** adopts the existing child DOM inside the supplied island wrapper. It receives the child description, the wrapper element, and the component/build identity expected by the client bundle. The wrapper itself belongs to zfb.
 
-</Note>
+~~~tsx
+import { hydrate, parseProps } from "@takazudo/zfb/zudo-react/client";
+
+function Counter({ label }: { label: string }) {
+  return <p>{label}</p>;
+}
+
+const wrapper = document.querySelector("[data-zfb-island='Counter']");
+if (wrapper instanceof Element) {
+  const component = wrapper.getAttribute("data-zfb-island");
+  const build = wrapper.getAttribute("data-zfb-build");
+  const json = wrapper.getAttribute("data-props");
+  if (component === "Counter" && build && json !== null) {
+    const identity = { component, build };
+    const props = parseProps(json);
+    if (typeof props.label === "string") {
+      hydrate(<Counter label={props.label} />, wrapper, { identity });
+    }
+  }
+}
+~~~
+
+In an integrated zfb application, the island boundary reads and checks this metadata for you. Use direct hydrate or mount calls when you own the client boundary; see the [zfb island guide](../concepts/islands.mdx) for scheduling and persistence.
+
+## Adoption has a preflight phase
+
+Hydration validates the connected wrapper, identity, transport, cancellation state, and duplicate-root state before component setup. It creates one provisional scope tree and calls each component once. The runtime then checks existing nodes without changing the DOM, assigning refs, or attaching listeners.
+
+After preflight succeeds, the runtime checks cancellation and connection again, attaches bindings to the existing nodes, assigns refs, reconciles live form values, and starts activation. It does not re-run components to reconcile updates.
+
+The protocol uses balanced local comment regions for dynamic text, component ranges, fragments, conditions, lists, and opaque raw HTML. These markers exist only within an island subtree. The wrapper element and its data-zfb-island attributes remain the zfb boundary. Authors should preserve the markers produced by server rendering.
+
+## Identity and props must agree
+
+The component name, build identity, transport version, and runtime protocol are checked before setup. The RootOptions identity supplied to hydrate must match the wrapper. A stale bundle or mismatched wrapper fails closed for that island.
+
+The island data-props value must be present and contain a valid JSON record. **parseProps** rejects malformed JSON, top-level arrays or scalars, and recursively forbidden keys. The transport does not revive descriptions, signals, or class instances. Recreate reactive state inside component setup.
+
+The zfb island boundary requires one registered synchronous function component. It rejects multiple children, host-element children, nested islands, and nonempty children props because they cannot be transported as island props. Recursively empty arrays and empty values are allowed and omitted.
+
+## Mismatches fail closed
+
+Preflight compares parsed structure, namespaces, range identity, expected text, and form-control shape. It does not compare the raw HTML source, so attribute order, quote style, and equivalent entity spellings do not matter after parsing. Ordinary attributes are preserved during adoption and are not mismatch inputs; later reactive writes apply the value owned by the binding. Wrapper identity and form-control shape remain strict, including type, multiple, radio name/value, option value, and form association.
+
+Ordinary text comparison normalizes HTML line endings, then collapses runs of ASCII HTML whitespace and trims ASCII spaces for matching only. NBSP and other Unicode whitespace are preserved. Preformatted text is compared exactly after HTML newline normalization. Whitespace-only text nodes outside dynamic text regions are ignored. Raw HTML contents are opaque. Existing elements and nonempty text are never recreated just to make their spelling match.
+
+Form controls are read before any model is written. Dirty values, checked state, selection, and focus are not hydration mismatches. The forms guide explains how the browser's current value wins at activation.
+
+Failures such as ZR_HYDRATION_MISMATCH, ZR_IDENTITY, ZR_PROPS, ZR_UNSUPPORTED_POSITION, ZR_DUPLICATE_ROOT, and ZR_CANCELLED report a diagnostic and return null. A preflight failure leaves the server DOM and user state unchanged. Hydration does not silently fall back to mount. The affected island stays inert; other roots are isolated and may continue.
+
+Diagnostics include the component, DOM path, phase, expected and actual summaries, protocol, and build. They do not include complete props, raw HTML, input values, or secrets by default.
+
+## Respect HTML parser contexts
+
+Island hydration supports comment-delimited regions only where parsed HTML preserves their positions. Keep table structure explicit with tbody, and do not put scalar text, components, or dynamic regions directly at table-structural levels such as table, tbody, or tr. Dynamic regions are also unsupported inside select, optgroup, and option; keep their option structure and labels static.
+
+Title content is static scalar text. Textarea content belongs to its form adapter. Inside an island, template is unsupported. Script and style accept only static rawHtml under the restrictions in [Components and JSX](./components-and-jsx.mdx). Hydrated content and rawHtml are rejected in parser-sensitive noscript, xmp, iframe, noembed, noframes, and plaintext contexts. Unsupported structures fail with an element, island, and path diagnostic instead of relying on browser parser repair.
+
+## Mount is client rendering
+
+**mount** uses the same child description and wrapper contract but creates new DOM rather than adopting server children. This is the client-only path. For skip-SSR islands, zfb applies the same load, idle, visible, and media scheduling and cancellation rules, then the runtime builds the new subtree off-DOM, validates it, and replaces the fallback in one step before activation. If setup or validation fails, the fallback stays in place; if a scheduling API is unavailable, the runtime uses its immediate fallback.
+
+## See also
+
+- [Server rendering](./server-rendering.mdx)
+- [Scopes and lifecycle](./scopes-and-lifecycle.mdx)
+- [Forms](./forms.mdx)
+- [Islands](../concepts/islands.mdx)
+- [Island API](../api/island.mdx)
