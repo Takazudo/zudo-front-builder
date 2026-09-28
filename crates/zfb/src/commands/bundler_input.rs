@@ -51,6 +51,10 @@ pub(crate) fn pipeline_spec_from_config(
     config: &Config,
 ) -> zfb_content::PipelineSpec {
     zfb_content::PipelineSpec {
+        jsx_dialect: match config.framework {
+            crate::config::Framework::Preact => zfb_content::JsxDialect::ReactCompat,
+            crate::config::Framework::ZudoReact => zfb_content::JsxDialect::ZudoReact,
+        },
         // `codeHighlight.theme` — named syntect theme for fenced code
         // blocks instead of the default `base16-ocean.dark`.
         // Mutually exclusive with the dual pair below; validation in

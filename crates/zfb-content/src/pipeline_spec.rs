@@ -36,7 +36,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use crate::pipeline::{Pipeline, ResolvedGfmConstructs};
+use crate::pipeline::{JsxDialect, Pipeline, ResolvedGfmConstructs};
 
 /// Resolved `codeHighlight.mode` — mirrors the `"inline"` / `"class"`
 /// string-literal union in `zfb.config.ts` (`CodeHighlightConfig::mode` in
@@ -87,6 +87,8 @@ pub struct PipelineSpecError {
 /// the same effective pipeline shape.
 #[derive(Debug, Clone)]
 pub struct PipelineSpec {
+    /// Generated Markdown JSX spelling, shared by snapshot and bundler walks.
+    pub jsx_dialect: JsxDialect,
     /// Optional syntect highlight theme name (e.g. `"InspiredGitHub"`).
     /// `None` keeps the built-in default theme (`base16-ocean.dark`).
     /// Custom themes are loaded via [`Self::code_highlight_themes_dir`].
@@ -219,6 +221,7 @@ pub struct PipelineSpec {
 impl Default for PipelineSpec {
     fn default() -> Self {
         Self {
+            jsx_dialect: JsxDialect::default(),
             code_highlight_theme: None,
             code_highlight_themes_dir: None,
             code_highlight_theme_light: None,
@@ -266,6 +269,7 @@ impl PipelineSpec {
         // crates/zfb/src/commands/bundler_input.rs breaks too, forcing the
         // Config-resolution decision). Never add `..` to this pattern.
         let Self {
+            jsx_dialect,
             code_highlight_theme,
             code_highlight_themes_dir,
             code_highlight_theme_light,
@@ -361,6 +365,7 @@ impl PipelineSpec {
         if let Some((root, public)) = build_context_roots.clone() {
             pipeline.set_build_context_roots(root, public);
         }
+        pipeline.set_jsx_dialect(*jsx_dialect);
         Ok(pipeline)
     }
 }

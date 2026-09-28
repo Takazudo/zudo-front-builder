@@ -28,10 +28,10 @@
 //!   caller's `components` prop and trigger an explicit
 //!   `throw new Error(...)` if missing.
 //! - MDX flow & text expressions: emitted verbatim inside `{...}`.
-//! - HTML literals: wrapped in `dangerouslySetInnerHTML` on a span so
-//!   the DOM gets the original markup. (Trade-off: the embedded HTML
+//! - HTML literals: wrapped in a span using the selected dialect's raw-HTML
+//!   prop so the DOM gets the original markup. The embedded HTML
 //!   is escaped once for the JS string literal, then injected raw at
-//!   runtime — visually faithful, no double-escape.)
+//!   runtime — visually faithful, no double-escape.
 //! - Frontmatter: NOT handled here. The caller is expected to strip
 //!   YAML/TOML frontmatter via `crate::frontmatter::parse` first.
 //!
@@ -59,7 +59,8 @@ use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
     code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with_model, FootnoteRenderCtx,
-    HastNode, HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
+    HastNode, HastVisitor, JsxDialect, JsxEmitStrategy, Pipeline, PipelineError,
+    ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -263,6 +264,9 @@ fn mdx_to_jsx_module_inner(
     // through hast (#121). Otherwise stay on the original mdast→JSX
     // path so existing no-pipeline output stays byte-identical.
     let mut pipeline_mut: Option<&mut Pipeline> = pipeline;
+    let dialect = pipeline_mut
+        .as_deref()
+        .map_or(JsxDialect::default(), Pipeline::jsx_dialect);
     let take_hast_detour = pipeline_mut.is_some();
 
     // Per-file BuildContext threading (zfb#944): when the pipeline armed
@@ -466,6 +470,7 @@ fn mdx_to_jsx_module_inner(
         // below still needs mutably.
         let slug_ctx = NestedRenderCtx {
             nested_slugs: &nested_slugs,
+            dialect,
             cursor: std::cell::Cell::new(0),
             code_chain: pipeline_mut
                 .as_deref()
@@ -537,7 +542,7 @@ fn mdx_to_jsx_module_inner(
                 None => p.apply_hast_visitors(&mut hast),
             }
         }
-        let mut bridge = HastJsxBridge::new();
+        let mut bridge = HastJsxBridge::with_dialect(dialect);
         let body = bridge.emit_root(&hast);
         (
             body,
@@ -606,7 +611,14 @@ fn mdx_to_jsx_module_inner(
     }
 
     let mut out = String::new();
-    out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n");
+    match dialect {
+        JsxDialect::ReactCompat => {
+            out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n")
+        }
+        JsxDialect::ZudoReact => out.push_str(
+            "import { Fragment as _Fragment } from \"@takazudo/zfb/zudo-react/jsx-runtime\";\n\n",
+        ),
+    }
     out.push_str(&render_headings_export(&headings));
     out.push('\n');
     // Emit synthesized module-level exports (e.g. readingTimeMinutes).
@@ -1544,7 +1556,7 @@ fn is_module_level_esm(s: &str) -> bool {
 /// - Plain text → JS string literal in braces (so JSX never sees raw
 ///   `<` / `>` in content).
 /// - [`HastNode::Raw`] (HTML — produced by syntect, `MdastNode::Html`,
-///   etc.) → wrapped in a span with `dangerouslySetInnerHTML` so the
+///   etc.) → wrapped in a span with the dialect's raw-HTML prop so the
 ///   DOM still receives the original markup. JSX cannot embed
 ///   arbitrary HTML such as inline `<span style="...">` verbatim
 ///   because the JSX transform would treat unknown attribute shapes as
@@ -1570,14 +1582,21 @@ struct HastJsxBridge {
     /// before `function _createMdxContent`, so the emitted module is valid
     /// ESM regardless of which hast plugin injected the node.
     hoisted_esm: Vec<String>,
+    dialect: JsxDialect,
 }
 
 impl HastJsxBridge {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_dialect(JsxDialect::default())
+    }
+
+    fn with_dialect(dialect: JsxDialect) -> Self {
         Self {
             html_tags: std::collections::BTreeSet::new(),
             component_names: std::collections::BTreeSet::new(),
             hoisted_esm: Vec::new(),
+            dialect,
         }
     }
 
@@ -1639,7 +1658,7 @@ impl HastJsxBridge {
                 void,
             } => self.emit_element(tag, attrs, children, *void),
             HastNode::Text(s) => js_string_literal_in_braces(s),
-            // HTML passthrough — wrap in dangerouslySetInnerHTML so the
+            // HTML passthrough — use the selected raw-HTML prop so the
             // browser receives the original markup untouched. JSX
             // cannot inline arbitrary HTML safely.
             HastNode::Raw(s) => {
@@ -1650,16 +1669,10 @@ impl HastJsxBridge {
                     // be wrapped in a <span> per HTML5 content model. Use <div> so
                     // preact-render-to-string emits <div>…</div>, which is flow
                     // content and may contain block elements.
-                    format!(
-                        "<div dangerouslySetInnerHTML={{{{__html: {}}}}} />",
-                        js_string_literal(s),
-                    )
+                    raw_html_element("div", s, self.dialect)
                 } else {
                     // Inline raw HTML stays in a <span> — same shape as today.
-                    format!(
-                        "<span dangerouslySetInnerHTML={{{{__html: {}}}}} />",
-                        js_string_literal(s),
-                    )
+                    raw_html_element("span", s, self.dialect)
                 }
             }
             // JSX-shaped passthrough (MDX components, `{…}` expressions)
@@ -1697,7 +1710,7 @@ impl HastJsxBridge {
         // so authors can override anything. Pascal-case tags do not
         // appear in hast Element nodes (mdast emits them as JsxRaw).
         self.html_tags.insert(tag.to_string());
-        let attrs_str = render_hast_attrs(attrs);
+        let attrs_str = render_hast_attrs(attrs, self.dialect);
         if void || is_void_html_tag(tag) {
             return format!("<_components.{tag}{attrs_str} />");
         }
@@ -1752,18 +1765,30 @@ fn is_void_html_tag(tag: &str) -> bool {
 /// enabled and unchecked. Data attributes keep `=""` — they are ordinary
 /// strings, and `true` would serialize as the visibly different
 /// `data-footnote-ref="true"`.
-fn render_hast_attrs(attrs: &[(String, String)]) -> String {
+fn render_hast_attrs(attrs: &[(String, String)], dialect: JsxDialect) -> String {
     if attrs.is_empty() {
         return String::new();
     }
     let mut out = String::new();
     for (k, v) in attrs {
         if k == "style" {
-            out.push_str(&jsx_style_attr(v));
+            out.push_str(&style_attr_for_dialect(v, dialect));
             continue;
         }
         out.push(' ');
-        out.push_str(k);
+        out.push_str(match dialect {
+            JsxDialect::ReactCompat => k,
+            JsxDialect::ZudoReact => match k.as_str() {
+                "className" => "class",
+                "htmlFor" => "for",
+                "charSet" => "charset",
+                "dateTime" => "datetime",
+                "tabIndex" => "tabindex",
+                "readOnly" => "readonly",
+                "strokeWidth" => "stroke-width",
+                _ => k,
+            },
+        });
         if v.is_empty() && is_html_boolean_attr(k) {
             continue;
         }
@@ -1771,6 +1796,23 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
         out.push_str(&jsx_string_attr(v));
     }
     out
+}
+
+fn raw_html_element(tag: &str, html: &str, dialect: JsxDialect) -> String {
+    let value = js_string_literal(html);
+    match dialect {
+        JsxDialect::ReactCompat => {
+            format!("<{tag} dangerouslySetInnerHTML={{{{__html: {value}}}}} />")
+        }
+        JsxDialect::ZudoReact => format!("<{tag} rawHtml={{{value}}} />"),
+    }
+}
+
+fn style_attr_for_dialect(css: &str, dialect: JsxDialect) -> String {
+    match dialect {
+        JsxDialect::ReactCompat => jsx_style_attr(css),
+        JsxDialect::ZudoReact => format!(" style={}", jsx_string_attr(css)),
+    }
 }
 
 /// Render a CSS declaration string as a JSX `style` **object** prop:
@@ -2056,6 +2098,7 @@ fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<
 /// renderer.
 struct NestedRenderCtx<'a> {
     nested_slugs: &'a [String],
+    dialect: JsxDialect,
     cursor: std::cell::Cell<usize>,
     code_chain: Option<std::cell::RefCell<Vec<Box<dyn HastVisitor>>>>,
     /// Diagnostics produced while rendering JSX-nested attributes — today
@@ -2134,7 +2177,7 @@ fn nested_code_via_chain(c: &markdown::mdast::Code, ctx: &NestedRenderCtx) -> Op
         // Defensive: no chain plugin replaces the Root itself.
         return None;
     };
-    let mut bridge = HastJsxBridge::new();
+    let mut bridge = HastJsxBridge::with_dialect(ctx.dialect);
     Some(children.iter().map(|n| bridge.emit_node(n)).collect())
 }
 
@@ -2470,7 +2513,7 @@ fn jsx_render_table(
         t.align
             .get(col)
             .and_then(align_style)
-            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
+            .map(|v| style_attr_for_dialect(&format!("text-align: {v}"), ctx.dialect))
             .unwrap_or_default()
     };
 
@@ -4329,6 +4372,88 @@ mod tests {
             "a different pipeline config must not alias the cached entry"
         );
         assert_eq!(cache.len(), 2, "different config must add its own entry");
+    }
+
+    #[test]
+    fn owned_dialect_emits_runtime_props_and_preserves_authored_jsx() {
+        let source = "# Heading\n\n```js\nconst n = 1;\n```\n\n| Value |\n| :---: |\n| cell |\n\n<div className=\"authored\" />\n\n<b>raw</b>\n";
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.set_jsx_dialect(JsxDialect::ZudoReact);
+        let owned =
+            mdx_to_jsx_module_with_pipeline(source, MdxJsxOptions::default(), &mut pipeline)
+                .expect("owned emit");
+        assert!(owned.contains("from \"@takazudo/zfb/zudo-react/jsx-runtime\""));
+        assert!(owned.contains(" rawHtml={"), "{owned}");
+        assert!(owned.contains(" class=\""), "{owned}");
+        assert!(owned.contains(" style=\"text-align: center\""), "{owned}");
+        assert!(
+            owned.contains("<_components.div className=\"authored\" />"),
+            "{owned}"
+        );
+        assert!(!owned.contains("from \"react/jsx-runtime\""));
+        assert!(!owned.contains("dangerouslySetInnerHTML"));
+        assert!(!owned.contains(" className=\"language-"));
+        assert!(!owned.contains(" style={{"));
+
+        let mut legacy_pipeline = Pipeline::with_defaults();
+        let legacy =
+            mdx_to_jsx_module_with_pipeline(source, MdxJsxOptions::default(), &mut legacy_pipeline)
+                .expect("legacy emit");
+        assert!(legacy.contains("from \"react/jsx-runtime\""));
+        assert!(legacy.contains("dangerouslySetInnerHTML"));
+        assert!(legacy.contains("<_components.div className=\"authored\" />"));
+    }
+
+    #[test]
+    fn owned_hast_attributes_keep_html_and_css_spelling() {
+        let attrs = vec![
+            ("htmlFor".to_string(), "target".to_string()),
+            ("charSet".to_string(), "utf-8".to_string()),
+            ("className".to_string(), "name".to_string()),
+            (
+                "style".to_string(),
+                "--shade:#111;text-align: center".to_string(),
+            ),
+        ];
+        let owned = render_hast_attrs(&attrs, JsxDialect::ZudoReact);
+        assert_eq!(
+            owned,
+            " for=\"target\" charset=\"utf-8\" class=\"name\" style=\"--shade:#111;text-align: center\""
+        );
+        let legacy = render_hast_attrs(&attrs, JsxDialect::ReactCompat);
+        assert!(legacy.contains("htmlFor=\"target\""));
+        assert!(legacy.contains("charSet=\"utf-8\""));
+        assert!(legacy.contains("className=\"name\""));
+        assert!(legacy.contains("style={{"));
+        assert_eq!(
+            raw_html_element("span", "<b>ok</b>", JsxDialect::ZudoReact),
+            "<span rawHtml={\"<b>ok</b>\"} />"
+        );
+    }
+
+    #[test]
+    fn dialect_separates_cached_modules_and_specifiers() {
+        let cache = MdxModuleCache::new();
+        let path = Path::new("/virtual/posts/entry.mdx");
+        let source = "# Heading\n\n```js\nconst n = 1;\n```\n";
+        let mut legacy_pipeline = Pipeline::with_defaults();
+        let legacy_fingerprint = legacy_pipeline.config_fingerprint();
+        let legacy = compile_mdx_to_jsx_module_cached(
+            source,
+            path,
+            Some(&cache),
+            Some(&mut legacy_pipeline),
+        )
+        .expect("legacy compile");
+        let mut owned_pipeline = Pipeline::with_defaults();
+        owned_pipeline.set_jsx_dialect(JsxDialect::ZudoReact);
+        assert_ne!(owned_pipeline.config_fingerprint(), legacy_fingerprint);
+        let owned =
+            compile_mdx_to_jsx_module_cached(source, path, Some(&cache), Some(&mut owned_pipeline))
+                .expect("owned compile");
+        assert_eq!(cache.len(), 2);
+        assert_ne!(legacy.specifier, owned.specifier);
+        assert_ne!(legacy.jsx_source, owned.jsx_source);
     }
 
     /// #2423: the render-artifact metadata channel must resolve on a

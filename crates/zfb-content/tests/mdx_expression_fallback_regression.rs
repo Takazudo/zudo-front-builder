@@ -394,6 +394,7 @@ fn snapshot_bridge_hash_parity_holds_for_recovered_fixture() {
     std::fs::write(&path, &combined).unwrap();
 
     let pipeline_config = PipelineSpec {
+        jsx_dialect: zfb_content::JsxDialect::ReactCompat,
         code_highlight_theme: None,
         code_highlight_themes_dir: None,
         code_highlight_theme_light: None,

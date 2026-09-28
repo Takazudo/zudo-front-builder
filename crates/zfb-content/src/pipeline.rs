@@ -300,9 +300,19 @@ pub enum PipelineError {
     Parse(String),
 }
 
+/// JSX spelling used for markup generated from Markdown. Authored JSX is
+/// passed through unchanged in either dialect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JsxDialect {
+    #[default]
+    ReactCompat,
+    ZudoReact,
+}
+
 /// Pipeline configuration: the chain of mdast + hast visitors and the
 /// markdown-rs parse options used to produce the initial mdast tree.
 pub struct Pipeline {
+    jsx_dialect: JsxDialect,
     mdast_visitors: Vec<Box<dyn MdastVisitor>>,
     hast_visitors: Vec<Box<dyn HastVisitor>>,
     parse_options: markdown::ParseOptions,
@@ -583,6 +593,7 @@ impl Pipeline {
     pub fn with_resolved_gfm_constructs(resolved: ResolvedGfmConstructs) -> Self {
         let constructs = constructs_for_pipeline(resolved);
         Self {
+            jsx_dialect: JsxDialect::default(),
             mdast_visitors: Vec::new(),
             hast_visitors: Vec::new(),
             parse_options: markdown::ParseOptions {
@@ -679,6 +690,9 @@ impl Pipeline {
         let mut hasher = Sha256::new();
         hasher.update(base.as_bytes());
         let mut extras = self.config_fingerprint_extras.clone();
+        if self.jsx_dialect == JsxDialect::ZudoReact {
+            extras.push("jsx_dialect=zudo-react".to_string());
+        }
         extras.sort();
         for segment in &extras {
             // NUL separator: descriptor segments never contain NUL, so
@@ -687,6 +701,16 @@ impl Pipeline {
             hasher.update(segment.as_bytes());
         }
         Some(hex::encode(hasher.finalize()))
+    }
+
+    /// Select the generated JSX dialect for this pipeline.
+    pub fn set_jsx_dialect(&mut self, dialect: JsxDialect) {
+        self.jsx_dialect = dialect;
+    }
+
+    #[must_use]
+    pub fn jsx_dialect(&self) -> JsxDialect {
+        self.jsx_dialect
     }
 
     /// Replace the fingerprint base descriptor (constructors only).
