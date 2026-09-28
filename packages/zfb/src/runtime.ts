@@ -21,6 +21,8 @@
 // `requestIdleCallback` / `matchMedia` is handled gracefully.
 
 import { resolveWhen, type When } from "./types.js";
+import { ROOT_KEY, type RootHandle } from "./zudo-react/root.js";
+import { parseProps as parseOwnedProps } from "./zudo-react/props-transport.js";
 
 /**
  * Subset of the global object that this module touches. Cast once at the
@@ -241,18 +243,10 @@ function scheduleMedia(target: Element, fire: () => void): { fired: boolean; can
 // markers emitted by the server-side hydration step and the `<Island>`
 // JSX wrapper:
 //
-//   1. `[data-zfb-island]` — SSR'd islands. We `hydrate()` (Preact) /
-//      `hydrateRoot()` (React) against the existing server-rendered
-//      DOM, gated by `scheduleHydrate(when)`.
+//   1. `[data-zfb-island]` — adopt server-rendered owned DOM.
+//   2. `[data-zfb-island-skip-ssr]` — mount over the fallback when scheduled.
 //
-//   2. `[data-zfb-island-skip-ssr]` — SSR-skip islands. The server
-//      emitted no markup for these, so we `render()` (Preact) /
-//      `createRoot().render()` (React). Skipping hydrate for this case
-//      avoids the hydrate-mismatch warnings React/Preact would emit
-//      against an empty DOM container.
-//
-// The shared bundle supplies each island's mount module inline. The
-// framework-specific glue is built into that bundle.
+// The generated shared bundle supplies strict identity and a RootHandle.
 // ---------------------------------------------------------------------------
 
 /**
@@ -265,23 +259,11 @@ type IslandMount = (
   props: Record<string, unknown>,
   element: Element,
   mode: "hydrate" | "render",
-) => void | IslandRootHandle | null;
-
-interface IslandRootHandle {
-  dispose(): void;
-  unmount?(): void;
-  readonly disposed?: boolean;
-}
-
-type IslandUnmount = (element: Element) => void;
-
-import { parseProps as parseOwnedProps } from "./zudo-react/props-transport.js";
+) => RootHandle | null;
 
 interface IslandModule {
-  identity?: { component: string; build: string };
-  mount?: IslandMount;
-  default?: IslandMount;
-  unmount?: IslandUnmount;
+  identity: { component: string; build: string };
+  mount: IslandMount;
 }
 
 /**
@@ -318,18 +300,17 @@ const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
  * - bundle re-import: dispose the old symbol handle before render mode replaces it.
  */
 export const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
-const ROOT_KEY = Symbol.for("@takazudo/zfb/zudo-react/root-v1");
 const COMPOSITION_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
 const TRACKER_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-tracker-v1");
 
 // A fresh bundle instance replaces roots installed by a previous instance.
 // Ordinary repeat scans in the same instance keep their live handles.
 const owned = new WeakSet<Element>();
-function rootHandle(element: Element): IslandRootHandle | undefined {
-  return (element as unknown as Record<symbol, IslandRootHandle | undefined>)[ROOT_KEY];
+function rootHandle(element: Element): RootHandle | undefined {
+  return (element as unknown as Record<symbol, RootHandle | undefined>)[ROOT_KEY];
 }
-function setRootHandle(element: Element, handle: IslandRootHandle | undefined): void {
-  const target = element as unknown as Record<symbol, IslandRootHandle | undefined>;
+function setRootHandle(element: Element, handle: RootHandle | undefined): void {
+  const target = element as unknown as Record<symbol, RootHandle | undefined>;
   if (handle) target[ROOT_KEY] = handle;
   else delete target[ROOT_KEY];
 }
@@ -584,11 +565,11 @@ function fireInlineMount(
   mode: "hydrate" | "render",
   options: { force?: boolean } = {},
 ): void {
-  const fn = mod.mount ?? mod.default;
+  const fn = mod.mount;
   if (typeof fn !== "function") {
     if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
       // eslint-disable-next-line no-console
-      console.warn("[zfb] inline island manifest entry did not export mount() or default()");
+      console.warn("[zfb] owned island manifest entry did not export mount()");
     }
     return;
   }
@@ -611,10 +592,12 @@ function fireInlineMount(
       const props = readProps(element, mod.identity);
       const result = fn(props, element, mode);
       if (result === null) return;
-      const handle: IslandRootHandle =
-        result && typeof result.dispose === "function"
-          ? result
-          : { dispose: () => mod.unmount?.(element) };
+      if (!result || typeof result.dispose !== "function" || typeof result.unmount !== "function") {
+        throw new TypeError(
+          `ZR_ROOT_HANDLE: island ${mod.identity.component} returned no root handle`,
+        );
+      }
+      const handle: RootHandle = result;
       setRootHandle(element, handle);
       owned.add(element);
       element.setAttribute(ISLAND_MOUNTED_ATTR, "");
@@ -624,7 +607,7 @@ function fireInlineMount(
     }
   };
 
-  if (options.force || (mode === "render" && !element.hasAttribute("data-zfb-transport"))) {
+  if (options.force) {
     fire();
     return;
   }
@@ -679,50 +662,31 @@ function collectPersistIds(incomingBody?: ParentNode | null): Set<string> {
 
 function readProps(
   element: Element,
-  identity?: { component: string; build: string },
+  identity: { component: string; build: string },
 ): Record<string, unknown> {
   const raw = element.getAttribute("data-props");
-  if (identity) {
-    const hasHydrate = element.hasAttribute("data-zfb-island");
-    const hasSkipSsr = element.hasAttribute("data-zfb-island-skip-ssr");
-    const component =
-      element.getAttribute("data-zfb-island") ?? element.getAttribute("data-zfb-island-skip-ssr");
-    if (
-      hasHydrate === hasSkipSsr ||
-      component !== identity.component ||
-      element.getAttribute("data-zfb-transport") !== "json/1" ||
-      element.getAttribute("data-zfb-protocol") !== "zudo-react/1" ||
-      element.getAttribute("data-zfb-build") !== identity.build ||
-      raw === null
-    ) {
-      throw new TypeError(
-        `ZR_IDENTITY: island ${identity.component} has invalid transport identity`,
-      );
-    }
-    if (element.querySelector("[data-zfb-island],[data-zfb-island-skip-ssr]")) {
-      throw new TypeError(`ZR_NESTED_ISLAND: island ${identity.component} contains another island`);
-    }
-    try {
-      return parseOwnedProps(raw);
-    } catch (error) {
-      throw new TypeError(`ZR_PROPS: island ${identity.component}: ${String(error)}`);
-    }
+  const hasHydrate = element.hasAttribute("data-zfb-island");
+  const hasSkipSsr = element.hasAttribute("data-zfb-island-skip-ssr");
+  const component =
+    element.getAttribute("data-zfb-island") ?? element.getAttribute("data-zfb-island-skip-ssr");
+  if (
+    hasHydrate === hasSkipSsr ||
+    component !== identity.component ||
+    element.getAttribute("data-zfb-transport") !== "json/1" ||
+    element.getAttribute("data-zfb-protocol") !== "zudo-react/1" ||
+    element.getAttribute("data-zfb-build") !== identity.build ||
+    raw === null
+  ) {
+    throw new TypeError(`ZR_IDENTITY: island ${identity.component} has invalid transport identity`);
   }
-  if (!raw) return {};
+  if (element.querySelector("[data-zfb-island],[data-zfb-island-skip-ssr]")) {
+    throw new TypeError(`ZR_NESTED_ISLAND: island ${identity.component} contains another island`);
+  }
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    // Reject arrays explicitly: `typeof [] === "object"` is true but
-    // an array is not a valid props bag, and passing it through would
-    // mean the component receives index-keyed values where it
-    // expected a record. Fall through to the empty-object default
-    // instead of forwarding a malformed shape.
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // fall through
+    return parseOwnedProps(raw);
+  } catch (error) {
+    throw new TypeError(`ZR_PROPS: island ${identity.component}: ${String(error)}`);
   }
-  return {};
 }
 
 /**

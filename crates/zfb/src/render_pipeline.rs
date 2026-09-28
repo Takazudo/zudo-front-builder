@@ -1517,15 +1517,6 @@ pub(crate) fn check_runtime_installed_with_overrides(
     .context("zfb runtime resolution check failed")
 }
 
-/// Convert the project's [`crate::config::Framework`] into the
-/// renderer/bundler-facing [`zfb_render::adapters::Framework`].
-pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapters::Framework {
-    match f {
-        crate::config::Framework::Preact => zfb_render::adapters::Framework::Preact,
-        crate::config::Framework::ZudoReact => zfb_render::adapters::Framework::ZudoReact,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2240,7 +2231,6 @@ mod tests {
             ),
             ("./zudo-react/server", "src/zudo-react/server.ts"),
             ("./zudo-react/client", "src/zudo-react/client.ts"),
-            ("./jsx-factory", "src/jsx-factory.ts"),
         ];
         let sdk_package: serde_json::Value = serde_json::from_slice(
             &std::fs::read(nm_path.join("@takazudo/zfb/package.json")).unwrap(),
@@ -2900,8 +2890,7 @@ export default function PostPage({ title, params }: Props) {
             content_collections: vec![zfb_build::ContentCollectionSpec::new("blog", &blog_dir)],
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: zfb_render::adapters::Framework::Preact,
-            zudo_react_island_names: None,
+            zudo_react_island_names: Some(vec![]),
             define_vars: std::collections::BTreeMap::new(),
             public_env_vars: std::collections::HashMap::new(),
             tsconfig_paths: BTreeMap::new(),

@@ -99,7 +99,7 @@ const DYNAMIC_TS_BETA_MARKER: &str = "MARKER_DYNAMIC_TS_beta";
 fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react" }
+        r#"{ }
 "#,
     )
     .unwrap();

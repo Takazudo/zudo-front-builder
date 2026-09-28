@@ -23,7 +23,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { jsx, jsxs } from "@takazudo/zfb/jsx-factory";
+import { jsx, jsxs } from "../zudo-react/jsx-runtime.js";
 
 import { getCollection, setContentSnapshot } from "../content.js";
 import type { CollectionEntry, ContentProps, Snapshot } from "../content.js";

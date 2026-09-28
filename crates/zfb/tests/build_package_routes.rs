@@ -215,7 +215,7 @@ fn static_package_route_prerenders_alongside_user_pages() {
 
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -317,7 +317,7 @@ export default function Page() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -386,7 +386,6 @@ export default function Page() {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }],
   "bundle": { "exclude": ["does-not-exist/**"] }
 }
@@ -528,7 +527,6 @@ export default {{
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }],
   "bundle": { "exclude": ["e2e/fixtures/**", "_temp-resource/**"] }
 }
@@ -590,7 +588,7 @@ fn empty_pages_with_root_package_route_builds() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -651,7 +649,7 @@ fn user_index_wins_over_root_package_route_in_build() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -712,7 +710,7 @@ fn nested_package_route_imports_correct_module() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -795,7 +793,7 @@ export default function Page() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -854,7 +852,7 @@ fn output_static_rejects_ssr_shaped_package_route() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "output": "static", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "output": "static", "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -963,7 +961,7 @@ export default function Page() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1057,7 +1055,7 @@ export default function Page() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1168,7 +1166,7 @@ export default function Page() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1313,7 +1311,7 @@ export default {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1451,7 +1449,7 @@ fn no_package_routes_build_is_unaffected() {
     // No plugins at all → no injected routes → overlay fully bypassed.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react" }
+        r#"{ }
 "#,
     )
     .unwrap();
@@ -1540,7 +1538,7 @@ export default function Page({ title }) {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1640,7 +1638,6 @@ export default function Page({ slug }: { slug: string }) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "collections": [{ "name": "docs", "path": "content/docs" }],
   "plugins": [{ "name": "./preset.mjs" }]
 }
@@ -1767,7 +1764,6 @@ export { CompiledRuntimePage as default, paths };
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "collections": [{ "name": "docs", "path": "content/docs" }],
   "plugins": [{ "name": "./preset.mjs" }]
 }
@@ -1869,7 +1865,7 @@ export default function Page({ label }) {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -1940,7 +1936,7 @@ fn dynamic_package_route_missing_paths_hard_errors() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -2021,7 +2017,7 @@ fn package_route_page_wind_class_survives_in_stylesheet() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r##"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }], "wind": { "tokens": { "colors": { "brand": "#123456" } } } }
+        r##"{ "plugins": [{ "name": "./preset.mjs" }], "wind": { "tokens": { "colors": { "brand": "#123456" } } } }
 "##,
     )
     .unwrap();
@@ -2106,7 +2102,7 @@ fn dangling_symlink_under_pages_does_not_break_build_with_package_route() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -2174,7 +2170,7 @@ fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -2302,7 +2298,7 @@ export default function Page() { return <html><body><RouteSignal /><Story /><Ui 
     .unwrap();
     let entry = serde_json::to_string(&preset.join("src/catalog.tsx").to_string_lossy()).unwrap();
     fs::write(preset.join("preset.mjs"), format!("export default {{ name: 'identity-preset', setup({{ injectRoute }}) {{ injectRoute('/catalog', {entry}); }} }};\n")).unwrap();
-    fs::write(site.join("zfb.config.json"), r#"{"framework":"zudo-react","plugins":[{"name":"../../packages/preset/preset.mjs"}],"bundle":{"exclude":[],"mainFields":["main","module"]}}"#).unwrap();
+    fs::write(site.join("zfb.config.json"), r#"{"plugins":[{"name":"../../packages/preset/preset.mjs"}],"bundle":{"exclude":[],"mainFields":["main","module"]}}"#).unwrap();
     let context = serde_json::to_string(&ws.join("components/*").to_string_lossy()).unwrap();
     let stories = serde_json::to_string(&ws.join("stories/*").to_string_lossy()).unwrap();
     let preset_src = serde_json::to_string(&preset.join("src/*").to_string_lossy()).unwrap();

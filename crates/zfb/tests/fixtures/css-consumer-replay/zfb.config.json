@@ -1,5 +1,4 @@
 {
-  "framework": "zudo-react",
   "wind": {
     "tokens": {
       "spacingUnit": "0.25rem",

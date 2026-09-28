@@ -31,9 +31,8 @@ zfb-graph = { path = "../zfb-graph" }
 # We reuse `compile_mdx_to_jsx_module_cached` rather than re-wrapping MDX
 # compilation so the bundler speaks the same MDX dialect as `zfb-render`.
 zfb-content = { path = "../zfb-content" }
-# Read-only consumption of the framework adapter contract.
-# The bundler only touches `Framework`, `make_adapter`, and the adapter's
-# three strings. V8 inclusion remains controlled by the feature below.
+# Read-only consumption of the renderer; V8 inclusion remains controlled by
+# the feature below. Owned runtime module constants live in zfb-types.
 #
 # `default-features = false` so this crate controls V8 inclusion via the
 # pass-through `embed_v8` feature above instead of silently inheriting

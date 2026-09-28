@@ -200,24 +200,6 @@ pub struct BundleConfig {
     /// Default: `"/"`.
     pub base_url: String,
 
-    /// JSX import source the esbuild subprocess should target via
-    /// `--jsx=automatic --jsx-import-source=<value>`. Mirrors
-    /// `zfb_render::adapters::Adapter::jsx_import_source()` and
-    /// `zfb_build::bundler::BundleConfig::jsx_import_source`.
-    ///
-    /// Why this matters: without `--jsx=automatic --jsx-import-source=…`
-    /// esbuild's default classic JSX transform emits bare
-    /// `React.createElement(…)` / `React.Fragment` references in the
-    /// bundled island code. When host components have been migrated to
-    /// `preact/compat` for hooks (no `React` namespace import), those
-    /// references are dangling and the bundle throws
-    /// `ReferenceError: React is not defined` at mount time
-    /// (issue #151 / zudolab/zudo-doc#1355 Wave 8). Setting this
-    /// field to `"preact"` (the default, matching
-    /// [`FrameworkKind::Preact`]) routes the JSX transform through
-    /// `preact/jsx-runtime` so no `React` symbol is ever emitted.
-    pub jsx_import_source: String,
-
     /// When `true`, the islands bundler injects a side-effect
     /// `import "@takazudo/zfb-runtime/client-router";` into the synthetic
     /// shared-bundle entry so the `<ClientRouter />` View Transitions
@@ -297,7 +279,6 @@ impl Default for BundleConfig {
             sourcemap: true,
             outdir: PathBuf::from("dist"),
             base_url: "/".to_string(),
-            jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
             client_router: false,
             preserve_symlinks: false,
             loaders: BTreeMap::new(),
@@ -348,17 +329,6 @@ impl BundleConfig {
     /// Toggle sourcemap emission (chainable).
     pub fn with_sourcemap(mut self, sourcemap: bool) -> Self {
         self.sourcemap = sourcemap;
-        self
-    }
-
-    /// Override the JSX import source the esbuild subprocess targets via
-    /// `--jsx-import-source=<value>` (chainable). Use the framework's
-    /// `jsx_import_source` accessor (e.g.
-    /// `FrameworkKind::Preact.jsx_import_source()`,
-    /// `zfb_render::adapters::Adapter::jsx_import_source()`) to derive
-    /// the value rather than hardcoding a literal at the call site.
-    pub fn with_jsx_import_source(mut self, jsx_import_source: impl Into<String>) -> Self {
-        self.jsx_import_source = jsx_import_source.into();
         self
     }
 
@@ -600,62 +570,6 @@ pub trait ClientBundler {
     /// Bundle `islands` according to `config`. Must be deterministic for a
     /// given `(islands, config)` pair.
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput>;
-}
-
-/// Which JS runtime the islands pipeline should target.
-///
-/// This is intentionally a small enum local to `zfb-islands` so the
-/// crate stays free of a `zfb-render` dependency (mirroring the
-/// `Adapter` contract from there). The orchestrator wires the two
-/// together at the seam where it constructs the bundler.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FrameworkKind {
-    /// Preact — bare `preact` + `preact/jsx-runtime`.
-    #[default]
-    Preact,
-    /// zfb's owned runtime.
-    ZudoReact,
-}
-
-impl FrameworkKind {
-    /// Stable lowercase name. Mirrors `zfb_render::Adapter::name()`.
-    pub fn name(self) -> &'static str {
-        match self {
-            FrameworkKind::Preact => "preact",
-            FrameworkKind::ZudoReact => "zudo-react",
-        }
-    }
-
-    /// JSX import source for esbuild's automatic JSX transform.
-    /// Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
-    /// the bundler passes this to esbuild as
-    /// `--jsx-import-source=<value>` so the compiled output routes
-    /// through `<value>/jsx-runtime` instead of the classic
-    /// `React.createElement` shape.
-    pub fn jsx_import_source(self) -> &'static str {
-        match self {
-            FrameworkKind::Preact => "preact",
-            FrameworkKind::ZudoReact => "@takazudo/zfb/zudo-react",
-        }
-    }
-
-    /// Recover the [`FrameworkKind`] from a `jsx_import_source` string
-    /// (the inverse of [`Self::jsx_import_source`]). Used by the
-    /// shared-bundle path to derive the mount-glue framework from
-    /// [`BundleConfig::jsx_import_source`] — the single source of truth
-    /// the orchestrator already sets via `with_jsx_import_source`. Keeping
-    /// one field drive both the esbuild `--jsx-import-source` flag AND the
-    /// emitted hydration glue makes the two structurally incapable of
-    /// diverging. Unknown values are errors rather than silently using Preact.
-    pub fn from_jsx_import_source(s: &str) -> Result<Self> {
-        match s {
-            "preact" => Ok(Self::Preact),
-            "@takazudo/zfb/zudo-react" => Ok(Self::ZudoReact),
-            _ => anyhow::bail!(
-                "unknown JSX import source {s:?}; expected `preact` or `@takazudo/zfb/zudo-react`"
-            ),
-        }
-    }
 }
 
 /// Build the public URL for the islands JS asset.
@@ -971,63 +885,6 @@ mod tests {
         // A workspace-sibling target rejected by `new` (project-scoped)
         // still succeeds through `new_scoped`.
         assert!(ModuleWorkerBundleEntry::new(project_root, &logical, "/shadow/worker.ts").is_err());
-    }
-
-    #[test]
-    fn bundle_config_default_jsx_import_source_is_preact() {
-        // Issue #151: the default JSX import source must match the
-        // default `FrameworkKind` (Preact) so esbuild's
-        // --jsx=automatic transform routes through `preact/jsx-runtime`
-        // instead of emitting bare `React.createElement` references.
-        assert_eq!(BundleConfig::default().jsx_import_source, "preact");
-        assert_eq!(BundleConfig::production().jsx_import_source, "preact");
-        assert_eq!(BundleConfig::dev().jsx_import_source, "preact");
-    }
-
-    #[test]
-    fn bundle_config_with_jsx_import_source_overrides() {
-        let cfg = BundleConfig::default().with_jsx_import_source("solid");
-        assert_eq!(cfg.jsx_import_source, "solid");
-    }
-
-    #[test]
-    fn framework_kind_jsx_import_source_matches_zfb_render_adapter_contract() {
-        // Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
-        // the value the bundler hands to esbuild via
-        // `--jsx-import-source=<value>` must agree with what the
-        // renderer's SWC pipeline targets, otherwise the SSR'd HTML
-        // and the hydrated bundle disagree on how JSX compiles.
-        assert_eq!(FrameworkKind::Preact.jsx_import_source(), "preact");
-        assert_eq!(
-            FrameworkKind::ZudoReact.jsx_import_source(),
-            "@takazudo/zfb/zudo-react"
-        );
-    }
-
-    #[test]
-    fn framework_kind_from_jsx_import_source_round_trips() {
-        // `from_jsx_import_source` derives the mount-glue framework from
-        // `BundleConfig::jsx_import_source` (one field drives both the
-        // esbuild flag and the emitted glue). Confirm the Preact value and
-        // the owned value and strict rejection of unknown sources.
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("preact").unwrap(),
-            FrameworkKind::Preact
-        );
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("@takazudo/zfb/zudo-react").unwrap(),
-            FrameworkKind::ZudoReact
-        );
-        for source in ["solid", ""] {
-            let error = FrameworkKind::from_jsx_import_source(source)
-                .unwrap_err()
-                .to_string();
-            assert!(
-                error.contains(source)
-                    && error.contains("preact")
-                    && error.contains("@takazudo/zfb/zudo-react")
-            );
-        }
     }
 
     #[test]

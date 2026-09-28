@@ -48,7 +48,6 @@ use zfb_build::{
     bundle, render_all, Backend, BundleMode, BundlerInput, BundlerOutput, RendererInput,
     RouteUniverseEntry,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -326,7 +325,6 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
 
 fn build_bundle(
     fixture_root: &Path,
-    framework: Framework,
     esbuild: &Path,
     dist: &Path,
     node_modules: &Path,
@@ -342,7 +340,6 @@ fn build_bundle(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework,
         zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: Default::default(),
@@ -421,13 +418,7 @@ fn e2e_routing_rendering_with_embedded_host() {
         return;
     };
     let dist_owned = tempfile::tempdir().expect("tempdir");
-    let bundle_owned = build_bundle(
-        &fixture,
-        Framework::ZudoReact,
-        &esbuild,
-        dist_owned.path(),
-        node_modules.path(),
-    );
+    let bundle_owned = build_bundle(&fixture, &esbuild, dist_owned.path(), node_modules.path());
 
     eprintln!("[e2e_routing_rendering] rendering all routes with the embedded V8 host…");
     let renderer_out = render_all(RendererInput {

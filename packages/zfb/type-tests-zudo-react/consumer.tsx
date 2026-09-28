@@ -41,8 +41,7 @@ function ExampleIsland() {
   return <span>example</span>;
 }
 void island;
-// The public return type also covers the unbranded legacy JSX path.
-// @ts-expect-error Callers must narrow the shared return before treating it as branded.
+// Island now returns an owned branded description directly.
 const assumedOwned: Description = Island({ children: <ExampleIsland /> });
 void assumedOwned;
 // @ts-expect-error SVG dimensions do not accept booleans.

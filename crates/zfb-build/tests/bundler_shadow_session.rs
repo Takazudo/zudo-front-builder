@@ -29,7 +29,6 @@ use zfb_build::{
     bundle, bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec, ShadowSession,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Write the base fixture project: pages (a css-module consumer, an
@@ -117,7 +116,6 @@ fn make_input(root: &Path, esbuild: Option<&Path>, outdir_name: &str) -> Bundler
         zudo_react_island_names: Some(vec![]),
         ..BundlerInput::for_project(
             root.to_path_buf(),
-            Framework::ZudoReact,
             BundleMode::Development,
             root.join(outdir_name),
             None,

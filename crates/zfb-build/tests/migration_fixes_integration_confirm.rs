@@ -48,7 +48,6 @@ use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -428,7 +427,6 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::ZudoReact,
         zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
@@ -816,7 +814,6 @@ fn zzmod_all_five_migration_fixes_compose() {
     let paths = tsconfig_paths_absolute(&root, &[("@lib/*", "src/lib/*")]);
     let mut input = BundlerInput::for_project(
         root.clone(),
-        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,

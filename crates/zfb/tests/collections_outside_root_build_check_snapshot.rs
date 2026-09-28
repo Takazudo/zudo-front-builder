@@ -46,7 +46,6 @@ use zfb_build::{
     bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession,
 };
 use zfb_content::{build_snapshot_with_config, CollectionConfig, PipelineSpec};
-use zfb_render::adapters::Framework;
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -174,7 +173,6 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
         mock_subprocess_output: Some("export default {};".to_string()),
         ..BundlerInput::for_project(
             project_root.clone(),
-            Framework::Preact,
             BundleMode::Production,
             outdir_tmp.path().join("dist"),
             None,

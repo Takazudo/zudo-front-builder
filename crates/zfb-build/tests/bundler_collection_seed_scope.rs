@@ -28,7 +28,6 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, NodeModulesStagingStats};
-use zfb_render::adapters::Framework;
 
 const COLLECTION_ROOT: &str = "../../packages/ui/src/components";
 
@@ -184,7 +183,6 @@ fn staging_stats(
         zudo_react_island_names: Some(vec![]),
         ..BundlerInput::for_project(
             site.to_path_buf(),
-            Framework::ZudoReact,
             BundleMode::Production,
             site.join("dist"),
             None,

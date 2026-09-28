@@ -10,8 +10,6 @@ import { defineConfig } from "zfb/config";
  * `zfb check` the matching types.
  */
 export default defineConfig({
-  framework: "zudo-react",
-
   // All utility values are project owned; the engine supplies no default palette.
   wind: {
     spec: 1,

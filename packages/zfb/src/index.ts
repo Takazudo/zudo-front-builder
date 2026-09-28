@@ -10,7 +10,6 @@
 import "./wasm.js";
 
 export {
-  ANONYMOUS_COMPONENT_NAME,
   HYDRATE_MARKER_ATTR,
   Island,
   SKIP_SSR_MARKER_ATTR,

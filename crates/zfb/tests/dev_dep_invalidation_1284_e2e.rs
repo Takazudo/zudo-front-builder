@@ -93,7 +93,6 @@ fn select_wind_for_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r##"{
-  "framework": "zudo-react",
   "collections": [{ "name": "posts", "path": "content/posts" }],
   "wind": { "tokens": {
     "colors": { "marker": "#123456" },

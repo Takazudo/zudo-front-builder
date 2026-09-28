@@ -7,9 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToString } from "../../zudo-react/server.js";
 import { jsxContractMatrix } from "./jsx-contract-matrix.js";
 
-// Select the owned implementation of the temporary SDK factory subpath.
-vi.mock("@takazudo/zfb/jsx-factory", async () => await import("../../zudo-react/jsx-runtime.js"));
-
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../");
 
 beforeEach(() => {

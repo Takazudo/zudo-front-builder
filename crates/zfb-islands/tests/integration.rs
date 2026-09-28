@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, Island, Manifest,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
     ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
 };
 
@@ -239,9 +239,7 @@ fn subprocess_bundler_against_real_binary() {
     let entry = tmp.path().join("entry.js");
     std::fs::write(&entry, "export const Counter = () => null;\n").expect("write entry");
 
-    let bundle_cfg = BundleConfig::production()
-        .with_outdir(tmp.path())
-        .with_jsx_import_source(FrameworkKind::ZudoReact.jsx_import_source());
+    let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
     let out = bundler
         .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
@@ -1438,7 +1436,6 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
             false,
             &std::collections::BTreeMap::new(),
             &define,
-            "preact",
         )
         .with_output_semantics(false, false);
         let rewrite = zfb_build::rewrite_module_worker_urls_with_context(

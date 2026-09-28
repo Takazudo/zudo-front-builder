@@ -44,7 +44,6 @@
 use std::fs;
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Write a hand-rolled CJS-only package into `<root>/node_modules/<name>`.
@@ -91,7 +90,6 @@ fn make_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,

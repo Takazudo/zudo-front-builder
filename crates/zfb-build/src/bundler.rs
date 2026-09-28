@@ -11,7 +11,7 @@
 //!
 //! This module targets the *server side*: every page module the router
 //! can serve, every layout/component they transitively pull in, plus the
-//! framework's render-to-string module and the server router. The
+//! owned server router. The
 //! output is one ESM file the runtime imports to dispatch SSR for any
 //! route. Mixing both jobs into `zfb-islands` would conflate "what runs
 //! in the browser" with "what runs on the worker"; keeping them in
@@ -37,8 +37,7 @@
 //!    reads this via `--tsconfig=` and uses it to resolve the user's
 //!    path aliases (`@/components/foo` → `./components/foo`).
 //! 4. **Emit a synthetic `entry.mjs`** that imports every page module
-//!    found under `pages/`, plus the framework's
-//!    `renderToString`, plus `createPageRouter` from
+//!    found under `pages/`, plus `createPageRouter` from
 //!    `@takazudo/zfb-runtime/server`, and re-exports a `routes` map of
 //!    route-path → page module and a Workers
 //!    entry shape `default { fetch }`. This is the single load-bearing
@@ -58,9 +57,9 @@
 //!   to import-and-introspect to know what routes the bundle serves.
 //! - `default` — a Workers-style `{ fetch }` object whose `fetch` field
 //!   is a `(Request) => Promise<Response>` constructed by passing
-//!   `routes`, an embedded `ContentSnapshot` placeholder, and an inline
-//!   framework adapter (the framework's own `renderToString` import) to
-//!   `createPageRouter` from `@takazudo/zfb-runtime/server`. This is the entry
+//!   `routes` and an embedded `ContentSnapshot` to `createPageRouter` from
+//!   `@takazudo/zfb-runtime/server`. The router imports the owned renderer
+//!   directly. This is the entry
 //!   shape the embedded V8 host expects (`export default { fetch }`);
 //!   without it, the host boot fails with a missing-export
 //!   workerd error. Even when the route map is empty the wrapper is
@@ -124,7 +123,6 @@ use zfb_content::{
     compile_mdx_to_jsx_module_cached, compile_mdx_to_jsx_module_cached_with_deps, CompiledMdx,
     CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
 };
-use zfb_render::adapters::{make_adapter, Framework};
 use zfb_types::{
     json_string as json_str, normalize_path_lexical, path_to_posix_string, RenderRegionEdge,
     REGION_ID_ATTR, RENDER_REGION_ATTR,
@@ -346,9 +344,6 @@ pub struct BundlerInput {
     pub components_dir: PathBuf,
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
-    /// Which JSX framework supplies the JSX runtime and render-to-string module.
-    /// Drives [`make_adapter`] selection.
-    pub framework: Framework,
     /// Static scanner marker names available before owned page evaluation.
     pub zudo_react_island_names: Option<Vec<String>>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
@@ -383,9 +378,8 @@ pub struct BundlerInput {
     /// graceful fallback). Targets NOT under `project_root` (plugin /
     /// virtual / out-of-tree) are written unchanged.
     pub tsconfig_paths: BTreeMap<String, Vec<String>>,
-    /// Bare specifiers to leave unresolved in the bundle. Use for
-    /// `preact`, `preact-render-to-string`, etc. — packages the
-    /// runtime SSR adapter (T2) provides at embedded V8 host load time. An
+    /// Bare specifiers to leave unresolved in the bundle for the deployment
+    /// runtime to provide at embedded V8 host load time. An
     /// empty vec means "bundle everything from node_modules".
     pub external: Vec<String>,
     /// Explicit esbuild `--main-fields` list for the `--platform=neutral`
@@ -555,7 +549,7 @@ pub struct BundlerInput {
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
     /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
-    /// flags alongside the hard-coded preact shim aliases.
+    /// flags.
     ///
     /// Populated by the command layer from `setup_registries.aliases` for
     /// both `zfb build` and `zfb dev`. Default: empty.
@@ -765,7 +759,6 @@ impl BundlerInput {
     /// new_value, ..BundlerInput::for_project(...) }`.
     pub fn for_project(
         project_root: PathBuf,
-        framework: Framework,
         mode: BundleMode,
         outdir: PathBuf,
         content_snapshot_json: Option<String>,
@@ -780,7 +773,6 @@ impl BundlerInput {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework,
             zudo_react_island_names: None,
             define_vars: Default::default(),
             public_env_vars: Default::default(),
@@ -3249,8 +3241,6 @@ pub fn bundle_with_session(
         );
     }
 
-    let adapter = make_adapter(input.framework);
-
     // `copy_mode` — when esbuild will run WITHOUT `--preserve-symlinks`
     // (branch 4: project node_modules + non-empty tsconfig paths), every
     // symlinked source file in the shadow tree is canonicalised by esbuild
@@ -3394,10 +3384,7 @@ pub fn bundle_with_session(
     let effective_spec = {
         let mut spec = input.pipeline_spec.clone();
         spec.resolve_source_map = resolve_source_map;
-        spec.jsx_dialect = match input.framework {
-            Framework::Preact => zfb_content::JsxDialect::ReactCompat,
-            Framework::ZudoReact => zfb_content::JsxDialect::ZudoReact,
-        };
+        spec.jsx_dialect = zfb_content::JsxDialect::ZudoReact;
         spec
     };
 
@@ -3447,7 +3434,6 @@ pub fn bundle_with_session(
         input.mode.is_prod(),
         &input.extra_loader_args,
         &input.define_vars,
-        make_adapter(input.framework).jsx_import_source(),
     )
     .with_plugins(
         input.plugin_alias_entries.clone(),
@@ -3778,13 +3764,12 @@ pub fn bundle_with_session(
         // project source file, so the file-driven seed above can never discover
         // them.
         synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
-        if input.framework == Framework::ZudoReact {
-            synthetic_entry_import_specifiers
-                .insert("@takazudo/zfb/zudo-react/jsx-runtime".to_string());
-            synthetic_entry_import_specifiers.insert("@takazudo/zfb/jsx-factory".to_string());
-        }
+        synthetic_entry_import_specifiers
+            .insert(zfb_types::owned_runtime::JSX_IMPORT_SOURCE.to_string());
+        synthetic_entry_import_specifiers
+            .insert("@takazudo/zfb/zudo-react/jsx-runtime".to_string());
+        synthetic_entry_import_specifiers
+            .insert(zfb_types::owned_runtime::SERVER_MODULE.to_string());
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -5229,8 +5214,12 @@ pub fn bundle_with_session(
     //    real-root fallback safe.
     let rebased_paths =
         rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
-    write_synthetic_tsconfig(shadow, &rebased_paths, adapter.jsx_import_source())
-        .context("bundler: failed writing synthetic tsconfig.json")?;
+    write_synthetic_tsconfig(
+        shadow,
+        &rebased_paths,
+        zfb_types::owned_runtime::JSX_IMPORT_SOURCE,
+    )
+    .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
     //
@@ -5274,7 +5263,6 @@ pub fn bundle_with_session(
         shadow,
         entry_routes_for_write,
         &EntryModuleInputs {
-            render_to_string_module: adapter.render_to_string_module(),
             content_snapshot_json: entry_snapshot_for_write,
             content_imports: entry_content_imports_for_write,
             site: input.site.as_deref(),
@@ -5289,18 +5277,17 @@ pub fn bundle_with_session(
         },
     )
     .context("bundler: failed writing entry.mjs")?;
-    if input.framework == Framework::ZudoReact {
-        let build = zudo_react_build_token_with_inputs_and_output(
-            &input.project_root,
-            &input.plugin_alias_entries,
-            &input.plugin_virtual_modules,
-            &input.outdir,
-        )?;
-        let names = input
-            .zudo_react_island_names
-            .as_ref()
-            .ok_or_else(|| anyhow!("owned runtime requires scanner island identity metadata"))?;
-        fs::write(
+    let build = zudo_react_build_token_with_inputs_and_output(
+        &input.project_root,
+        &input.plugin_alias_entries,
+        &input.plugin_virtual_modules,
+        &input.outdir,
+    )?;
+    let names = input
+        .zudo_react_island_names
+        .as_ref()
+        .ok_or_else(|| anyhow!("owned runtime requires scanner island identity metadata"))?;
+    fs::write(
             shadow.join("zudo-react-build.mjs"),
             format!(
                 "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {}; globalThis.__zfb.zudoReactIslands = {};\n",
@@ -5308,13 +5295,12 @@ pub fn bundle_with_session(
                 serde_json::to_string(names)?
             ),
         )?;
-        let entry_path = shadow.join("entry.mjs");
-        let entry = fs::read_to_string(&entry_path)?;
-        fs::write(
-            entry_path,
-            format!("import \"./zudo-react-build.mjs\";\n{entry}"),
-        )?;
-    }
+    let entry_path = shadow.join("entry.mjs");
+    let entry = fs::read_to_string(&entry_path)?;
+    fs::write(
+        entry_path,
+        format!("import \"./zudo-react-build.mjs\";\n{entry}"),
+    )?;
 
     // 5b. Prune stale shadow files (#993 — session mode only, no-op
     //     otherwise). MUST run before esbuild: a deleted/renamed/newly-
@@ -5351,10 +5337,8 @@ pub fn bundle_with_session(
     };
     fs::create_dir_all(&outdir)
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
-    if input.framework == Framework::ZudoReact {
-        fs::write(outdir.join(OWNED_OUTPUT_MARKER), b"")
-            .context("bundler: failed to mark owned output directory")?;
-    }
+    fs::write(outdir.join(OWNED_OUTPUT_MARKER), b"")
+        .context("bundler: failed to mark owned output directory")?;
     // Bundle filename — `bundle_basename` lets callers run two bundle()
     // passes in the same outdir (full SSG vs runtime-only) without clobber.
     let bundle_filename: &str = input.bundle_basename.as_deref().unwrap_or("bundle.mjs");
@@ -9086,7 +9070,6 @@ fn materialise_shadow(
                 &slug_fallback,
                 &body_import,
                 render_region_id,
-                ctx.pipeline_spec.jsx_dialect,
             );
             ctx.writer
                 .write_if_changed(&to, shell.as_bytes())
@@ -12550,7 +12533,6 @@ fn write_synthetic_tsconfig(
 // future `globalThis.__zfb.*` slots add a field here instead of widening the
 // function signature.
 struct EntryModuleInputs<'a> {
-    render_to_string_module: &'a str,
     content_snapshot_json: Option<&'a str>,
     content_imports: &'a [ContentImport],
     site: Option<&'a str>,
@@ -12577,13 +12559,8 @@ struct EntryModuleInputs<'a> {
 /// the single load-bearing module the embedded V8 host (T6/T7) and the
 /// runtime SSR adapter (T2) consume.
 ///
-/// `render_to_string_module` is the framework's `renderToString`
-/// specifier (currently `"preact-render-to-string"`) — drawn from
-/// [`zfb_render::adapters::Adapter::render_to_string_module`]. The
-/// wrapper imports `renderToString` by name from this specifier and
-/// hands it to `createPageRouter` as the framework adapter, so the
-/// bundle pins its own SSR call without leaking the framework choice
-/// into the embedded V8 host's boot.
+/// The server router imports the owned renderer directly. The generated
+/// entry supplies pages and the content snapshot without a renderer selector.
 ///
 /// The default-fetch wrapper is emitted unconditionally, even when
 /// `routes` is empty: an empty Hono app simply 404s every request, but
@@ -12615,7 +12592,6 @@ fn write_entry_module(
     routes: &[RouteEntry],
     inputs: &EntryModuleInputs<'_>,
 ) -> Result<()> {
-    let render_to_string_module = inputs.render_to_string_module;
     let content_snapshot_json = inputs.content_snapshot_json;
     let content_imports = inputs.content_imports;
     let site = inputs.site;
@@ -12646,12 +12622,6 @@ fn write_entry_module(
     writeln!(
         &mut src,
         "import {{ createPageRouter }} from \"{ZFB_RUNTIME_SERVER_SPECIFIER}\";"
-    )
-    .unwrap();
-    writeln!(
-        &mut src,
-        "import {{ renderToString as __zfb_renderToString }} from {spec};",
-        spec = json_str(render_to_string_module),
     )
     .unwrap();
 
@@ -12738,9 +12708,6 @@ fn write_entry_module(
     //     content-using pages must still be authored to handle an
     //     empty snapshot. The wrapper is emitted unconditionally so
     //     embedded V8 host boot is decoupled from the snapshot deliverable.
-    //   - `framework`: an inline adapter pinning `renderToString` to
-    //     the framework's import. This keeps `@takazudo/zfb-runtime`
-    //     framework-agnostic and lets the bundle pick its own SSR call.
     // -----------------------------------------------------------------
     // The `__zfb_pages` array feeds Hono's router via `createPageRouter`.
     // Hono uses `:param` / `:param{.+}` syntax for dynamic segments, not
@@ -12952,7 +12919,6 @@ fn write_entry_module(
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
-    src.push_str("  framework: { renderToString: __zfb_renderToString },\n");
     src.push_str("});\n\n");
     src.push_str("export default {\n");
     src.push_str("  fetch: (request) => __zfb_router(request),\n");
@@ -13048,7 +13014,6 @@ pub(crate) fn render_md_page_shell(
     slug_fallback: &str,
     body_import: &str,
     render_region_id: Option<&str>,
-    dialect: zfb_content::JsxDialect,
 ) -> String {
     // Extract title: string from frontmatter, else slug fallback.
     let title = frontmatter
@@ -13089,10 +13054,6 @@ pub(crate) fn render_md_page_shell(
         None => (String::new(), String::new()),
     };
 
-    let charset_prop = match dialect {
-        zfb_content::JsxDialect::ReactCompat => "charSet",
-        zfb_content::JsxDialect::ZudoReact => "charset",
-    };
     format!(
         "// AUTO-GENERATED by zfb_build::bundler (md page shell). Do not edit.\n\
          import MdBody from {import_spec};\n\
@@ -13105,7 +13066,7 @@ pub(crate) fn render_md_page_shell(
          \u{0020} return (\n\
          \u{0020}   <html lang={{__lang}}>\n\
          \u{0020}     <head>\n\
-         \u{0020}       <meta {charset_prop}=\"utf-8\" />\n\
+         \u{0020}       <meta charset=\"utf-8\" />\n\
          \u{0020}       <title>{{__title}}</title>\n\
          \u{0020}     </head>\n\
          \u{0020}     <body>\n\
@@ -13220,20 +13181,6 @@ fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
 // The shadow layout roots (`shadow`/`first_party_root`/`work_root`) are passed
 // separately rather than folded into a struct so each stays explicit at the
 // single call site (issue #1668).
-fn framework_esbuild_flags(framework: Framework) -> &'static [&'static str] {
-    match framework {
-        Framework::Preact => &[
-            "--alias:react/jsx-runtime=preact/jsx-runtime",
-            "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
-        ],
-        Framework::ZudoReact => &[
-            "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",
-            "--alias:@takazudo/zfb/island-boundary=@takazudo/zfb/island-boundary-zudo-react",
-            "--keep-names",
-        ],
-    }
-}
-
 #[cfg(test)]
 mod framework_esbuild_flags_tests {
     use super::*;
@@ -13614,25 +13561,6 @@ mod framework_esbuild_flags_tests {
             "package root must include ../shared.ts"
         );
     }
-
-    #[test]
-    fn framework_esbuild_flags_keep_preact_and_isolate_owned_factory() {
-        assert_eq!(
-            framework_esbuild_flags(Framework::Preact),
-            [
-                "--alias:react/jsx-runtime=preact/jsx-runtime",
-                "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
-            ]
-        );
-        assert_eq!(
-            framework_esbuild_flags(Framework::ZudoReact),
-            [
-                "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",
-                "--alias:@takazudo/zfb/island-boundary=@takazudo/zfb/island-boundary-zudo-react",
-                "--keep-names",
-            ]
-        );
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13691,18 +13619,7 @@ fn run_esbuild(
         cmd.arg(format!("--metafile={}", meta.display()));
     }
 
-    // MDX modules emitted by `compile_mdx_to_jsx_module_cached` carry a
-    // hard-coded `import { Fragment as _Fragment } from "react/jsx-runtime";`
-    // (the emitter targets the React JSX-runtime convention). Esbuild's
-    // own JSX transform handles JSX *syntax* through tsconfig's
-    // `jsxImportSource`, but **explicit import statements** are passed
-    // through unchanged. So when the project's framework is Preact, we
-    // rewrite `react/jsx-runtime` (and the dev-runtime sibling) to the
-    // Preact equivalents at the bundler level. This is the same trick
-    // the Preact ecosystem uses with bundlers like Vite.
-    for flag in framework_esbuild_flags(input.framework) {
-        cmd.arg(flag);
-    }
+    cmd.arg("--keep-names");
 
     // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`
     // esbuild's main-fields list is EMPTY by default, so a package resolved
@@ -13931,14 +13848,8 @@ fn run_esbuild(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
     );
-    // Recreate the adapter to get `jsx_import_source` — cheap (adapters
-    // are zero-state) and avoids threading another parameter
-    // through `run_esbuild`. Stays in sync with step 4 above so a
-    // future framework switch can't make the two writes diverge.
-    let jsx_import_source = make_adapter(input.framework)
-        .jsx_import_source()
-        .to_string();
-    write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
+    let jsx_import_source = zfb_types::owned_runtime::JSX_IMPORT_SOURCE;
+    write_synthetic_tsconfig(shadow, &merged_paths, jsx_import_source)
         .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
 
     // Virtual-module `--alias:<spec>=<tmp.mjs>` flags (#1263). esbuild does
@@ -14622,7 +14533,6 @@ mod tests {
             )]),
             ..BundlerInput::for_project(
                 site.to_path_buf(),
-                Framework::ZudoReact,
                 BundleMode::Production,
                 site.join("dist"),
                 None,
@@ -16563,7 +16473,6 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::ZudoReact,
             zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::new(),
             public_env_vars: HashMap::new(),
@@ -16704,7 +16613,6 @@ mod tests {
             shadow,
             &routes,
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16718,15 +16626,15 @@ mod tests {
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
-        // Imports the runtime factory and the framework's renderToString.
+        // The generated entry delegates owned rendering to the server router.
         assert!(
             body.contains("from \"@takazudo/zfb-runtime/server\""),
             "entry.mjs must import createPageRouter from the server-only subpath \
              @takazudo/zfb-runtime/server (issue #1298); got:\n{body}"
         );
         assert!(
-            body.contains("\"@takazudo/zfb/zudo-react/server\""),
-            "entry.mjs must import renderToString from the framework module; got:\n{body}"
+            !body.contains("renderToString"),
+            "entry.mjs must not carry a renderer selector; got:\n{body}"
         );
 
         // Constructs the router with the routes-derived pages array.
@@ -16739,8 +16647,8 @@ mod tests {
             "createPageRouter call must hand it the pages array; got:\n{body}"
         );
         assert!(
-            body.contains("renderToString: __zfb_renderToString"),
-            "createPageRouter call must hand it the framework adapter; got:\n{body}"
+            !body.contains("framework"),
+            "createPageRouter call must not carry a framework adapter; got:\n{body}"
         );
         assert!(
             body.contains("route: \"/\", module: () => Promise.resolve(__zfb_route_0)"),
@@ -16796,7 +16704,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -16874,7 +16781,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16911,7 +16817,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: Some("https://example.com"),
@@ -16960,7 +16865,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16992,7 +16896,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17041,7 +16944,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17073,7 +16975,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17122,7 +17023,6 @@ mod tests {
         fs::create_dir_all(&off).unwrap();
         fs::create_dir_all(&on).unwrap();
         let inputs = |emit_render_artifacts: bool| EntryModuleInputs {
-            render_to_string_module: "@takazudo/zfb/zudo-react/server",
             content_snapshot_json: None,
             content_imports: &[],
             site: Some("https://example.com"),
@@ -17171,7 +17071,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17219,7 +17118,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17250,7 +17148,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17364,7 +17261,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17420,7 +17316,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[], // zero content imports
                 site: None,
@@ -17456,7 +17351,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17499,7 +17393,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17763,7 +17656,6 @@ mod tests {
             &shadow_root,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -20175,7 +20067,6 @@ mod tests {
             ],
             ..BundlerInput::for_project(
                 root.to_path_buf(),
-                Framework::ZudoReact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -21581,7 +21472,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "react-dom/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -21594,7 +21484,8 @@ mod tests {
         .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
-        assert!(body.contains("\"react-dom/server\""));
+        assert!(body.contains("import { createPageRouter } from \"@takazudo/zfb-runtime/server\""));
+        assert!(!body.contains("renderToString"));
         assert!(body.contains("export default {"));
         assert!(body.contains("fetch: (request) => __zfb_router(request)"));
         // pages array exists but is empty.
@@ -21610,7 +21501,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "react-dom/server",
                 content_snapshot_json: snapshot,
                 content_imports: &[],
                 site: None,
@@ -21705,7 +21595,6 @@ mod tests {
         // discovered route, and the bundle filename stays `bundle.mjs`.
         let input = BundlerInput::for_project(
             PathBuf::from("/tmp/dummy"),
-            Framework::ZudoReact,
             BundleMode::Production,
             PathBuf::from("/tmp/dummy/dist"),
             None,
@@ -21823,7 +21712,6 @@ mod tests {
             ],
             ..BundlerInput::for_project(
                 project_root.to_path_buf(),
-                Framework::ZudoReact,
                 BundleMode::Production,
                 project_root.join("dist"),
                 None,
@@ -22577,7 +22465,6 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::ZudoReact,
             zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::from([
                 (
@@ -22719,7 +22606,6 @@ mod tests {
             mdx_components_file: Some(root.join("mdx-components.tsx")),
             ..BundlerInput::for_project(
                 root.clone(),
-                Framework::ZudoReact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -23415,7 +23301,6 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let input = BundlerInput::for_project(
             root.clone(),
-            zfb_render::adapters::Framework::ZudoReact,
             BundleMode::Production,
             root.join("dist"),
             None,
@@ -23533,7 +23418,6 @@ mod tests {
             "owned",
             "./_zfb_md_body_owned.jsx",
             Some("mdx://pages/owned#12345678"),
-            zfb_content::JsxDialect::ZudoReact,
         );
         assert!(shell.contains("<meta charset=\"utf-8\" />"), "{shell}");
         assert!(!shell.contains("charSet"));
@@ -23544,13 +23428,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_uses_title_from_frontmatter() {
         let fm = serde_json::json!({"title": "About Us"});
-        let shell = render_md_page_shell(
-            &fm,
-            "about",
-            "./_zfb_md_body_about.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
         // Title const must be the frontmatter value, not the slug.
         assert!(
             shell.contains("const __title = \"About Us\";"),
@@ -23567,7 +23445,7 @@ mod tests {
             "html element with lang; got:\n{shell}"
         );
         assert!(
-            shell.contains("<meta charSet=\"utf-8\" />"),
+            shell.contains("<meta charset=\"utf-8\" />"),
             "charset meta; got:\n{shell}"
         );
         assert!(
@@ -23583,13 +23461,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_falls_back_to_slug_when_no_title() {
         let fm = serde_json::json!({});
-        let shell = render_md_page_shell(
-            &fm,
-            "about",
-            "./_zfb_md_body_about.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
         assert!(
             shell.contains("const __title = \"about\";"),
             "expected slug fallback; got:\n{shell}"
@@ -23600,13 +23472,7 @@ mod tests {
     fn render_md_page_shell_falls_back_to_index_for_root() {
         // pages/index.md → slug_fallback is "index"
         let fm = serde_json::json!({});
-        let shell = render_md_page_shell(
-            &fm,
-            "index",
-            "./_zfb_md_body_index.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "index", "./_zfb_md_body_index.jsx", None);
         assert!(
             shell.contains("const __title = \"index\";"),
             "root page slug fallback should be \"index\"; got:\n{shell}"
@@ -23616,13 +23482,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_uses_lang_from_frontmatter() {
         let fm = serde_json::json!({"title": "Page", "lang": "ja"});
-        let shell = render_md_page_shell(
-            &fm,
-            "page",
-            "./_zfb_md_body_page.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         assert!(
             shell.contains("const __lang = \"ja\";"),
             "expected lang from frontmatter; got:\n{shell}"
@@ -23632,13 +23492,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_defaults_lang_to_en() {
         let fm = serde_json::json!({"title": "Page"});
-        let shell = render_md_page_shell(
-            &fm,
-            "page",
-            "./_zfb_md_body_page.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         assert!(
             shell.contains("const __lang = \"en\";"),
             "expected default lang \"en\"; got:\n{shell}"
@@ -23649,13 +23503,7 @@ mod tests {
     fn render_md_page_shell_ignores_non_string_title() {
         // Non-string title falls back to slug, not to garbage.
         let fm = serde_json::json!({"title": 42});
-        let shell = render_md_page_shell(
-            &fm,
-            "slug-fallback",
-            "./_zfb_md_body_x.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "slug-fallback", "./_zfb_md_body_x.jsx", None);
         assert!(
             shell.contains("const __title = \"slug-fallback\";"),
             "non-string title must fall back to slug; got:\n{shell}"
@@ -23670,13 +23518,7 @@ mod tests {
         // escaping at render time. The test verifies the const assignment
         // shape (not raw HTML injection).
         let fm = serde_json::json!({"title": "A & <B>"});
-        let shell = render_md_page_shell(
-            &fm,
-            "page",
-            "./_zfb_md_body_page.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         // The title must be assigned to a const (JSON string literal form).
         // json_str produces a valid JSON string; the const is referenced
         // via {__title} in JSX so the renderer handles escaping at render time.
@@ -23705,7 +23547,6 @@ mod tests {
             "about",
             "./_zfb_md_body_about.jsx",
             Some("mdx://pages/about#deadbeef"),
-            zfb_content::JsxDialect::ReactCompat,
         );
         assert!(
             shell.contains("const __zfbRegionId = \"mdx://pages/about#deadbeef\";"),
@@ -23732,18 +23573,12 @@ mod tests {
     }
 
     #[test]
-    fn render_md_page_shell_is_byte_identical_to_the_pre_marker_shell_without_a_region_id() {
+    fn render_md_page_shell_is_byte_identical_without_a_region_id() {
         // Flag-off parity: the emitted shell must be exactly what the
         // pre-#2421 generator produced, so a build with the feature off
         // cannot differ by a byte.
         let fm = serde_json::json!({"title": "About Us", "lang": "ja"});
-        let shell = render_md_page_shell(
-            &fm,
-            "about",
-            "./_zfb_md_body_about.jsx",
-            None,
-            zfb_content::JsxDialect::ReactCompat,
-        );
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
         assert_eq!(
             shell,
             "// AUTO-GENERATED by zfb_build::bundler (md page shell). Do not edit.\n\
@@ -23756,7 +23591,7 @@ mod tests {
              \u{0020} return (\n\
              \u{0020}   <html lang={__lang}>\n\
              \u{0020}     <head>\n\
-             \u{0020}       <meta charSet=\"utf-8\" />\n\
+             \u{0020}       <meta charset=\"utf-8\" />\n\
              \u{0020}       <title>{__title}</title>\n\
              \u{0020}     </head>\n\
              \u{0020}     <body>\n\

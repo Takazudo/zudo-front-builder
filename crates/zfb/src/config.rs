@@ -6,10 +6,8 @@
 //! ## Bootstrap rule
 //!
 //! The JS runtime used to *parse* this config is fixed by the zfb binary
-//! itself — the config CANNOT choose its own runtime. The config CAN choose
-//! `framework: "preact"` (applied after config is loaded by the framework
-//! adapter), `outDir`, `publicDir`, content + Tailwind options, and plugins.
-//! There is exactly one runtime; it is not user-overridable in v1.
+//! itself. The removed `framework` key is rejected with a migration error.
+//! Other settings include `outDir`, `publicDir`, content options, and plugins.
 //!
 //! See issue #9 (Wave 2 / Sub 3).
 //!
@@ -252,10 +250,6 @@ pub struct Config {
     /// `allowedHosts` in `packages/zfb/src/config.ts`.
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
-
-    /// Supported JSX framework runtime. Default: `Preact`.
-    #[serde(default)]
-    pub framework: Framework,
 
     /// Content collections.
     #[serde(default)]
@@ -731,7 +725,6 @@ impl Default for Config {
             host: None,
             port: None,
             allowed_hosts: Vec::new(),
-            framework: Framework::default(),
             collections: Vec::new(),
             wind: None,
             prefetch: None,
@@ -796,36 +789,6 @@ pub enum OutputMode {
     /// Detection-driven (default).
     #[default]
     Auto,
-}
-
-/// The supported JSX runtime.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Framework {
-    #[default]
-    Preact,
-    #[serde(rename = "zudo-react")]
-    ZudoReact,
-}
-
-#[cfg(test)]
-mod framework_selection_tests {
-    use super::Framework;
-
-    #[test]
-    fn owned_framework_deserializes_and_unknown_names_both_choices() {
-        assert_eq!(
-            serde_json::from_str::<Framework>("\"zudo-react\"").unwrap(),
-            Framework::ZudoReact
-        );
-        let error = serde_json::from_str::<Framework>("\"vue\"")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("preact") && error.contains("zudo-react"),
-            "{error}"
-        );
-    }
 }
 
 /// One content collection (e.g. blog posts under `content/blog/`).
@@ -2497,10 +2460,13 @@ fn strip_presets(mut value: serde_json::Value) -> serde_json::Value {
 }
 
 /// Top-level configuration keys that no longer deserialize in zfb 3.
-const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] = &[(
+const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] = &[
+(
     "tailwind",
     "the tailwind key was removed in zfb 3; utilities are compiled by the built-in zudo-wind engine. Replace tailwind: { enabled: false } with wind: false, or delete the key. See the v3 migration guide",
-)];
+),
+("framework", "the framework key was removed in zfb 3; delete the key. zfb now uses zudo-react."),
+];
 
 fn reject_removed_top_level_keys(value: &serde_json::Value) -> Result<(), String> {
     for (key, message) in REMOVED_TOP_LEVEL_KEYS {
@@ -3543,6 +3509,67 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn removed_framework_key_json_config_fails_with_migration_message() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"framework":"zudo-react"}"#,
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+        assert!(message.contains("zfb.config.json"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn removed_framework_key_preset_fragment_fails_with_index() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"presets":[{"framework":"zudo-react"}]}"#,
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("presets[0]"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
+    #[test]
+    fn removed_framework_key_ts_loader_value_fails_with_migration_message() {
+        let loaded = zfb_config_loader::LoadedTsConfig {
+            config: serde_json::json!({ "framework": "zudo-react" }),
+            resolved_plugins: Vec::new(),
+        };
+        let message = format!(
+            "{:#}",
+            parse_loaded_config(loaded, Path::new("zfb.config.ts"), Path::new(".")).unwrap_err()
+        );
+        assert!(message.contains("zfb.config.ts"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn removed_framework_key_real_ts_config_fails_with_migration_message() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.ts"),
+            "export default { framework: 'zudo-react' };\n",
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("zfb.config.ts"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
     #[test]
     fn removed_tailwind_key_is_rejected_in_project_and_preset_ts_values() {
         for value in [
@@ -3851,7 +3878,6 @@ mod tests {
         assert_eq!(cfg.public_dir, PathBuf::from("public"));
         assert_eq!(cfg.host, None);
         assert_eq!(cfg.port, None);
-        assert_eq!(cfg.framework, Framework::Preact);
         assert!(cfg.collections.is_empty());
         assert!(cfg.wind.is_none());
         assert!(cfg.plugins.is_empty());
@@ -4598,7 +4624,6 @@ mod tests {
             "publicDir": "static",
             "host": "0.0.0.0",
             "port": 4000,
-            "framework": "preact",
             "collections": [
                 { "name": "blog", "path": "content/blog" },
                 { "name": "docs", "path": "content/docs" }
@@ -4616,7 +4641,6 @@ mod tests {
         assert_eq!(cfg.public_dir, PathBuf::from("static"));
         assert_eq!(cfg.host.as_deref(), Some("0.0.0.0"));
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::Preact);
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "blog");
         assert_eq!(cfg.collections[1].path, PathBuf::from("content/docs"));
@@ -5278,7 +5302,7 @@ mod tests {
         .unwrap();
         let opts = LoadOptions {
             test_default_export_json: Some(
-                r#"{"port": 4000, "framework": "preact", "collections": [{"name":"blog","path":"content/blog"}]}"#
+                r#"{"port": 4000, "collections": [{"name":"blog","path":"content/blog"}]}"#
                     .to_string(),
             ),
             ..LoadOptions::default()
@@ -5287,7 +5311,6 @@ mod tests {
             .await
             .expect("ts loader (mocked) should succeed");
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::Preact);
         assert_eq!(cfg.collections.len(), 1);
         assert_eq!(cfg.collections[0].name, "blog");
     }
@@ -6628,44 +6651,42 @@ mod tests {
     /// `test_default_export_json` mock — this is Level 3 (executes the
     /// emitted bundle in real V8), not a logic-only test.
     ///
-    /// `framework` is deliberately given a WRONG VALUE, not omitted:
-    /// `Config.framework` is `#[serde(default)]` (defaults to `Preact`), so a
-    /// missing field loads cleanly and could never make this test fail.
+    /// An invalid enum value must name its field and the source file.
     #[cfg(feature = "embed_v8")]
     #[tokio::test]
     async fn invalid_zfb_config_ts_points_at_field_and_file() {
         let tmp = TempDir::new().unwrap();
         let ts_path = tmp.path().join("zfb.config.ts");
-        tokio::fs::write(&ts_path, "export default { framework: \"vue\" };\n")
+        tokio::fs::write(&ts_path, "export default { output: \"invalid\" };\n")
             .await
             .unwrap();
 
         let err = load_from_dir(tmp.path())
             .await
-            .expect_err("unknown framework variant should be rejected");
+            .expect_err("unknown output variant should be rejected");
         let msg = format!("{err:#}");
 
         assert!(
             msg.contains(ts_path.to_str().unwrap()),
             "error should name the absolute zfb.config.ts path: {msg}"
         );
-        // The `framework: unknown variant` shape is serde_path_to_error's
-        // `{path}: {inner}` rendering — a bare `contains("framework")` would
+        // The `output: unknown variant` shape is serde_path_to_error's
+        // `{path}: {inner}` rendering — a bare `contains("output")` would
         // also pass via the `--- received ---` JSON echo, which is exactly
         // the failure mode this test exists to rule out.
         assert!(
-            msg.contains("framework: unknown variant"),
+            msg.contains("output: unknown variant"),
             "error should name the bad field via its serde path: {msg}"
         );
         assert!(
-            msg.contains("`preact`") && msg.contains("`zudo-react`") && !msg.contains("`react`"),
-            "error should list both supported framework values: {msg}"
+            msg.contains("`static`") && msg.contains("`hybrid`") && msg.contains("`auto`"),
+            "error should list supported output values: {msg}"
         );
     }
 
     /// Second real-pipeline error-quality case (issue #1359): a collection
     /// entry missing its required `path` field. `CollectionDef.path` has no
-    /// `#[serde(default)]`, so — unlike `framework` — omitting it is a
+    /// `#[serde(default)]`, so omitting it is a
     /// genuine schema error, letting this case exercise the missing-field
     /// branch of `serde_path_to_error` rather than the unknown-variant
     /// branch the sibling test above covers.

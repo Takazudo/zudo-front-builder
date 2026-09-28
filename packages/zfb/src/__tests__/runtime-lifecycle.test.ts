@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mountIslands, mountNewIslands, unmountIslands } from "../runtime.js";
+import { mountIslands as mountOwnedIslands, unmountIslands } from "../runtime.js";
+import {
+  mountTestIslands as mountIslands,
+  mountNewTestIslands as mountNewIslands,
+} from "./owned-manifest-fixture.js";
 
 const key = Symbol.for("@takazudo/zfb/zudo-react/root-v1");
 const composition = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
@@ -12,6 +16,25 @@ beforeEach(() => {
 });
 
 describe("island root lifecycle", () => {
+  it("rejects a void mount result without installing a root handle", () => {
+    document.body.innerHTML =
+      '<div data-zfb-island="Void" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="b1" data-props="{}"></div>';
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const element = document.body.firstElementChild!;
+    mountOwnedIslands({
+      Void: {
+        identity: { component: "Void", build: "b1" },
+        mount: (() => undefined) as never,
+      },
+    });
+    expect(element.hasAttribute("data-zfb-island-mounted")).toBe(false);
+    expect((element as unknown as Record<symbol, unknown>)[key]).toBeUndefined();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('island "Void" mount failed'),
+      expect.objectContaining({ message: expect.stringContaining("ZR_ROOT_HANDLE") }),
+    );
+  });
+
   it("fails one owned island closed on metadata or props mismatch and mounts its neighbour", () => {
     document.body.innerHTML =
       '<div data-zfb-island="Bad" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="old" data-props="{}"></div><div data-zfb-island="Good" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="new" data-props="{&quot;value&quot;:1}"></div>';
@@ -85,14 +108,17 @@ describe("island root lifecycle", () => {
     mountIslands({ Fresh: { mount: () => ({ dispose: () => order.push("dispose") }) } });
     vi.resetModules();
     const fresh = await import("../runtime.js");
-    fresh.mountIslands({
-      Fresh: {
-        mount: (_props, _el, mode) => {
-          order.push(mode);
-          return { dispose: vi.fn() };
+    mountIslands(
+      {
+        Fresh: {
+          mount: (_props, _el, mode) => {
+            order.push(mode);
+            return { dispose: vi.fn() };
+          },
         },
       },
-    });
+      fresh.mountIslands,
+    );
     expect(order).toEqual(["dispose", "render"]);
   });
 

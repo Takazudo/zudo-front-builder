@@ -848,8 +848,8 @@ mod tests {
         );
         let config = parsed.unwrap();
         assert!(
-            config.get("framework").is_some(),
-            "node-free/zfb.config.json must declare 'framework'"
+            config.get("framework").is_none(),
+            "node-free/zfb.config.json must omit removed 'framework'"
         );
     }
 
@@ -894,8 +894,8 @@ mod tests {
         let config: Value = serde_json::from_str(&config_raw)
             .expect("scaffolded zfb.config.json must be valid JSON");
         assert!(
-            config.get("framework").is_some(),
-            "scaffolded zfb.config.json must declare 'framework'"
+            config.get("framework").is_none(),
+            "scaffolded zfb.config.json must omit removed 'framework'"
         );
 
         // At least one .tsx page must be present somewhere under pages/.

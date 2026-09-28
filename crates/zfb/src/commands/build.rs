@@ -69,7 +69,7 @@ use zfb_islands::{
     discover_client_scripts, scan_islands_with_meta_and_first_party_root,
     scan_reachable_modules_with_meta, scan_reachable_modules_with_meta_and_first_party_root,
     BundleConfig, ClientScriptBundleOutput, ClientScriptEntry, ClientScriptWorkerEntry,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, StageAuditPolicy,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -957,7 +957,6 @@ impl BuildRunner for DefaultRunner {
             user_pages_dir,
             package_route_entrypoints,
             outdir,
-            config.framework,
             config.bundle.as_ref(),
             zfb_islands::BundleMode::Production,
             &self.islands_plugin_config,
@@ -968,7 +967,6 @@ impl BuildRunner for DefaultRunner {
         let client_scripts = build_default_client_scripts_payloads_with_plugin_config(
             project_root,
             outdir,
-            config.framework,
             &self.registered_client_entries,
             config.bundle.as_ref(),
             &self.islands_plugin_config,
@@ -1367,7 +1365,6 @@ fn build_css_payload_with_index(
     let wind = config.wind.as_ref();
     let virtual_worker_context = module_worker_build_context(
         true,
-        config.framework,
         config.bundle.as_ref(),
         plugin_alias_entries,
         plugin_virtual_modules,
@@ -2231,36 +2228,25 @@ impl PluginPreprocessingMeta {
 
 /// Construct the [`zfb_build::ModuleWorkerBuildContext`] shape esbuild will
 /// actually see, from the same bundle options and plugin registrations every
-/// caller already threads (mode, loaders, defines, framework JSX source,
+/// caller already threads (mode, loaders, defines,
 /// plugin aliases/virtual modules, output semantics). Shared by the islands
 /// bundler wiring and the command-layer CSS discovery pass (issue #1775) so
 /// the two flows cannot silently drift on what "the bundler's context"
 /// means — this is the ONE place that shape is assembled.
 pub(crate) fn module_worker_build_context(
     production: bool,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
 ) -> zfb_build::ModuleWorkerBuildContext {
-    let jsx_import_source = match framework {
-        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::ZudoReact => zfb_islands::FrameworkKind::ZudoReact,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    zfb_build::ModuleWorkerBuildContext::new(
-        production,
-        &bundle_loaders,
-        &bundle_define,
-        jsx_import_source,
-    )
-    .with_plugins(
-        plugin_alias_entries.to_vec(),
-        plugin_virtual_modules.to_vec(),
-    )
-    .with_output_semantics(production, !production)
+    zfb_build::ModuleWorkerBuildContext::new(production, &bundle_loaders, &bundle_define)
+        .with_plugins(
+            plugin_alias_entries.to_vec(),
+            plugin_virtual_modules.to_vec(),
+        )
+        .with_output_semantics(production, !production)
 }
 
 /// Discover the file-reachability set behind registered plugin virtual
@@ -3863,7 +3849,6 @@ pub(crate) fn build_default_islands_payload(
     user_pages_dir: &Path,
     package_route_entrypoints: &[PathBuf],
     outdir: &Path,
-    framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
     islands_glob_policy: IslandsGlobPolicy,
     raw_invalidation: Option<&zfb_build::RawImportInvalidation>,
@@ -3876,7 +3861,6 @@ pub(crate) fn build_default_islands_payload(
         user_pages_dir,
         package_route_entrypoints,
         outdir,
-        framework,
         None,
         zfb_islands::BundleMode::Production,
         plugin_config,
@@ -4382,7 +4366,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // while the user-page seed uses the real pages tree.
     package_route_entrypoints: &[PathBuf],
     outdir: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     bundle_mode: zfb_islands::BundleMode,
     plugin_config: &IslandsPluginConfig,
@@ -4519,16 +4502,10 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // applied ONLY to the bundle's island slice (built just before the
     // bundle call), NOT to `islands_set` itself, so the marker-name and
     // collision passes below keep seeing the real project paths.
-    let islands_jsx_import_source = match framework {
-        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::ZudoReact => zfb_islands::FrameworkKind::ZudoReact,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
     let worker_build_context = module_worker_build_context(
         matches!(bundle_mode, zfb_islands::BundleMode::Production),
-        framework,
         bundle_config,
         &plugin_config.alias_entries,
         &plugin_config.virtual_modules,
@@ -4670,7 +4647,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // no bundle is needed (client-router-only projects).
     let registered_marker_names: std::collections::BTreeSet<String> =
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
-    if framework == crate::config::Framework::ZudoReact {
+    {
         for island in &islands_set {
             if island.marker_name.is_empty()
                 || island.marker_name == "default"
@@ -4709,22 +4686,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         if zfb_islands::is_same_package_duplicate(collision) {
             continue;
         }
-        if framework == crate::config::Framework::ZudoReact {
-            anyhow::bail!(
-                "ambiguous owned island marker {:?}: {} and {}",
-                collision.name,
-                collision.kept_path.display(),
-                collision.dropped_path.display()
-            );
-        }
-        output::warn(format!(
-            "island marker name collision: \"{}\" is produced by two different source files — \
-             keeping {} and dropping {}. Only the kept island will hydrate; rename one component \
-             or give it a distinct `displayName` so both register under unique marker names.",
+        anyhow::bail!(
+            "ambiguous owned island marker {:?}: {} and {}",
             collision.name,
             collision.kept_path.display(),
-            collision.dropped_path.display(),
-        ));
+            collision.dropped_path.display()
+        );
     }
 
     // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
@@ -4743,9 +4710,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // 2. node_modules resolution: esbuild walks UP from each importing
     //    file's directory looking for `node_modules`. When the consumer
     //    project has no on-disk `node_modules`, every bare import in
-    //    user-authored components (`preact/hooks`, `preact/jsx-runtime`,
-    //    etc.) and in the synthesised entry (`@takazudo/zfb/runtime`,
-    //    `preact`) fails. The main bundler addresses this via a "shadow
+    //    user-authored components and in the synthesised entry
+    //    (`@takazudo/zfb/runtime`, owned JSX modules) fails. The main bundler
+    //    addresses this via a "shadow
     //    tree" with a `node_modules` symlink (see
     //    `crates/zfb-build/src/bundler.rs:751`); the islands bundler runs
     //    esbuild directly against the user's source tree so a shadow tree
@@ -4874,12 +4841,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // bundler so the synthetic islands entry picks up the client-router
     // runtime's side-effect import. When false the generated entry is
     // byte-identical to a pre-#289 build.
-    // Thread the configured framework's JSX import source into the
-    // islands BundleConfig (gap: previously hardcoded to Preact via the
-    // `BundleConfig::production()` default). This drives BOTH esbuild's
-    // `--jsx-import-source` AND — because `produce_bundle_js` derives the
-    // mount-glue framework back from this same field — the Preact hydration
-    // glue emitted into the shared bundle.
+    // The islands bundler uses the owned JSX source and mount glue directly.
     // Issue #1501: turn the scanner's direct + nested worker edges into one
     // deterministic entry per logical source. Worker code is read from the
     // preprocessing shadow (where `?raw` and nested worker URLs have already
@@ -4924,19 +4886,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
     }
     .with_outdir(outdir.to_path_buf())
-    .with_jsx_import_source(islands_jsx_import_source)
-    .with_zudo_react_build(if framework == crate::config::Framework::ZudoReact {
-        Some(
-            zfb_build::bundler::zudo_react_build_token_with_inputs_and_output(
-                project_root,
-                &plugin_config.alias_entries,
-                &plugin_config.virtual_modules,
-                outdir,
-            )?,
-        )
-    } else {
-        None
-    })
+    .with_zudo_react_build(Some(
+        zfb_build::bundler::zudo_react_build_token_with_inputs_and_output(
+            project_root,
+            &plugin_config.alias_entries,
+            &plugin_config.virtual_modules,
+            outdir,
+        )?,
+    ))
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(bundle_loaders)
     .with_define(bundle_define)
@@ -5918,14 +5875,12 @@ fn stage_client_script_preprocessing_with_worker_context(
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
-    framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
     bundle_config: Option<&crate::config::BundleConfig>,
 ) -> Result<Vec<AssetEmitterPayload>> {
     build_default_client_scripts_payloads_with_plugin_config(
         project_root,
         outdir,
-        framework,
         registered,
         bundle_config,
         &IslandsPluginConfig::default(),
@@ -5935,7 +5890,6 @@ pub(crate) fn build_default_client_scripts_payloads(
 pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     project_root: &Path,
     outdir: &Path,
-    framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
     bundle_config: Option<&crate::config::BundleConfig>,
     plugin_config: &IslandsPluginConfig,
@@ -5986,25 +5940,15 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     if entries.is_empty() {
         return Ok(Vec::new());
     }
-
-    let client_scripts_jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::ZudoReact => FrameworkKind::ZudoReact,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
-        true,
-        &bundle_loaders,
-        &bundle_define,
-        client_scripts_jsx_import_source,
-    )
-    .with_plugins(
-        plugin_config.alias_entries.clone(),
-        plugin_config.virtual_modules.clone(),
-    )
-    .with_output_semantics(true, false);
+    let worker_build_context =
+        zfb_build::ModuleWorkerBuildContext::new(true, &bundle_loaders, &bundle_define)
+            .with_plugins(
+                plugin_config.alias_entries.clone(),
+                plugin_config.virtual_modules.clone(),
+            )
+            .with_output_semantics(true, false);
     let preprocess_stage = stage_client_script_preprocessing_with_worker_context(
         project_root,
         &entries,
@@ -6118,7 +6062,6 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     // client scripts.
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
-        .with_jsx_import_source(client_scripts_jsx_import_source)
         .with_loaders(bundle_loaders)
         .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
@@ -6578,7 +6521,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     // Where dev client scripts are written + served from (issue #1189: the
     // isolated `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
@@ -6586,7 +6528,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     build_dev_client_scripts_to_disk_with_plugin_config(
         project_root,
         assets_root,
-        framework,
         bundle_config,
         prev_output_filenames,
         registered,
@@ -6597,7 +6538,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
 pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     project_root: &Path,
     assets_root: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
@@ -6642,25 +6582,15 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let client_dir = assets_root
         .join(zfb_types::DIST_ASSETS_DIR)
         .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
-
-    let jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::ZudoReact => FrameworkKind::ZudoReact,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
-        false,
-        &bundle_loaders,
-        &bundle_define,
-        jsx_import_source,
-    )
-    .with_plugins(
-        plugin_config.alias_entries.clone(),
-        plugin_config.virtual_modules.clone(),
-    )
-    .with_output_semantics(false, true);
+    let worker_build_context =
+        zfb_build::ModuleWorkerBuildContext::new(false, &bundle_loaders, &bundle_define)
+            .with_plugins(
+                plugin_config.alias_entries.clone(),
+                plugin_config.virtual_modules.clone(),
+            )
+            .with_output_semantics(false, true);
     let preprocess_stage = if entries.is_empty() {
         None
     } else {
@@ -6809,7 +6739,6 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
-        .with_jsx_import_source(jsx_import_source)
         .with_loaders(bundle_loaders)
         .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
@@ -7407,7 +7336,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the build succeeds; the warning is the signal.  Runs even when
     // `registered_marker_names` is empty (zero registered islands + a
     // rendered marker is exactly the scenario this check targets).
-    if config.framework == crate::config::Framework::ZudoReact {
+    {
         for page in &post_processable_pages {
             let html = std::fs::read_to_string(page)?;
             for name in crate::commands::island_marker_check::collect_marker_names_in_page(&html) {
@@ -11759,13 +11688,8 @@ mod tests {
         let ws = project.parent().unwrap().parent().unwrap();
         let sibling_tsx = zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.tsx"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::ZudoReact,
-            None,
-            &[],
-            &virtual_panel_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_panel_module(ws));
         let discovered = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         assert!(
@@ -11788,13 +11712,8 @@ mod tests {
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.module.css"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::ZudoReact,
-            None,
-            &[],
-            &virtual_panel_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_panel_module(ws));
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
 
@@ -11846,13 +11765,7 @@ mod tests {
         .expect("virtual-only sibling module must ship a non-empty payload");
         let css = String::from_utf8(payload.bytes).unwrap();
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::ZudoReact,
-            None,
-            &[],
-            &plugin_virtual_modules,
-        );
+        let worker_context = module_worker_build_context(false, None, &[], &plugin_virtual_modules);
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
@@ -11932,13 +11845,8 @@ mod tests {
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/vdirect/styles.module.css"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::ZudoReact,
-            None,
-            &[],
-            &virtual_direct_css_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_direct_css_module(ws));
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         assert!(
@@ -11994,13 +11902,7 @@ mod tests {
         .expect("direct virtual CSS module must ship a non-empty payload");
         let css = String::from_utf8(payload.bytes).unwrap();
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::ZudoReact,
-            None,
-            &[],
-            &plugin_virtual_modules,
-        );
+        let worker_context = module_worker_build_context(false, None, &[], &plugin_virtual_modules);
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
@@ -12033,7 +11935,6 @@ mod tests {
         let (_tmp, project) = sibling_css_workspace_fixture();
         let worker_context = module_worker_build_context(
             true,
-            crate::config::Framework::ZudoReact,
             None,
             &[("@shared/*".to_string(), "unused".to_string())],
             &[],
@@ -12377,7 +12278,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12412,7 +12312,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12461,7 +12360,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12514,7 +12412,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12562,7 +12459,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -13657,7 +13553,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Development,
             &plugin_config,
@@ -13712,7 +13607,6 @@ mod tests {
         let client_payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &outdir,
-            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -13760,7 +13654,6 @@ mod tests {
         let dev_outcome = build_dev_client_scripts_to_disk_with_plugin_config(
             root,
             &dev_assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &zfb_build::ClientEntryList::new(),
@@ -13998,7 +13891,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14251,7 +14143,6 @@ mod tests {
             &project.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::ZudoReact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14299,7 +14190,6 @@ mod tests {
         let error = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -14355,7 +14245,6 @@ mod tests {
         let payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -15443,7 +15332,6 @@ mod tests {
         let first = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15460,7 +15348,6 @@ mod tests {
         let second = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &first.output_filenames,
             &registered,
@@ -15478,7 +15365,6 @@ mod tests {
         let third = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &second.output_filenames,
             &registered,
@@ -15532,7 +15418,6 @@ mod tests {
         let first_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15579,15 +15464,9 @@ mod tests {
             "constructor importer must remain an invalidation target until the next build"
         );
 
-        let second_outcome = build_dev_client_scripts_to_disk(
-            root,
-            &assets_root,
-            crate::config::Framework::ZudoReact,
-            None,
-            &first_outputs,
-            &registered,
-        )
-        .unwrap();
+        let second_outcome =
+            build_dev_client_scripts_to_disk(root, &assets_root, None, &first_outputs, &registered)
+                .unwrap();
         let second_changed = second_outcome.changed;
         let second_outputs = second_outcome.output_filenames;
         let second_raw = second_outcome.raw_targets;
@@ -15613,7 +15492,6 @@ mod tests {
         let third_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &second_outputs,
             &registered,
@@ -16048,7 +15926,6 @@ mod tests {
         let outcome = build_dev_client_scripts_to_disk(
             &project_root,
             &assets_root,
-            crate::config::Framework::ZudoReact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -17088,7 +16965,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -17121,7 +16997,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::ZudoReact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::WarnAndSkip,
             None,

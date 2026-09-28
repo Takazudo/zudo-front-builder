@@ -33,8 +33,8 @@ pub mod scanner;
 
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, BundleChunk, BundleConfig, BundleMode,
-    BundleOutput, BundleResource, ClientBundler, FrameworkKind, Island, IslandsChunk,
-    IslandsResource, ModuleId, ModuleWorkerBundleEntry, ProductionIslandsAsset,
+    BundleOutput, BundleResource, ClientBundler, Island, IslandsChunk, IslandsResource, ModuleId,
+    ModuleWorkerBundleEntry, ProductionIslandsAsset,
 };
 pub use client_scripts::{
     build_production_client_scripts, build_production_client_scripts_with_workers,

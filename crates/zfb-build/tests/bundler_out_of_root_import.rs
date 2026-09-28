@@ -13,7 +13,6 @@
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 #[test]
@@ -60,7 +59,6 @@ fn escaping_relative_import_gets_actionable_boundary_error() {
 
     let mut input = BundlerInput::for_project(
         app_root.clone(),
-        Framework::ZudoReact,
         BundleMode::Production,
         app_root.join("dist"),
         None,

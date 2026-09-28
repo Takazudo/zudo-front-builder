@@ -19,9 +19,7 @@
 
 use std::path::PathBuf;
 
-use zfb_islands::{
-    render_shared_bundle_entry_source, scan_islands, FrameworkKind, InMemoryResolver, Island,
-};
+use zfb_islands::{render_shared_bundle_entry_source, scan_islands, InMemoryResolver, Island};
 
 fn root() -> PathBuf {
     PathBuf::from("/proj")
@@ -411,7 +409,7 @@ fn ts_cast_const_exports_are_retained_as_ambiguous() {
 fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
 
-    let src = render_shared_bundle_entry_source(FrameworkKind::ZudoReact, &islands, false);
+    let src = render_shared_bundle_entry_source(&islands, false);
     // The old truthy-only guard must be gone.
     assert!(
         !src.contains("if (!C) return;"),

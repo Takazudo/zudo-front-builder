@@ -6,7 +6,7 @@
 //   user pages/ + content/ + layouts/ + components/
 //     → esbuild bundle (T3)            // single ESM file
 //     → embedded V8 host (T6)          // same WinterCG surface as CF Workers
-//     → createPageRouter({ pages, contentSnapshot, framework })
+//     → createPageRouter({ pages, contentSnapshot })
 //     → (request) => Promise<Response>
 //
 // The bundle's Worker entry point shape is documented in the package
@@ -41,7 +41,7 @@
 import { Hono } from "hono";
 import { setContentSnapshot } from "@takazudo/zfb/content";
 
-import type { FrameworkAdapter } from "./framework.js";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
 import type { ContentSnapshot } from "./snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ export interface PageHeading {
  * - `default`: the JSX page component. Called with the props returned by
  *   `getStaticProps` (if exported) or the `props` from the matching
  *   `paths()` entry (for dynamic routes). The return value is fed straight
- *   to the framework adapter's `renderToString`. A dynamic route with no
+ *   to the owned server renderer's `renderToString`. A dynamic route with no
  *   `paths()` export is called with `{ params: urlParams }` instead of
  *   `{}` — see `createPageRouter`'s JSDoc for the full componentInput
  *   derivation table.
@@ -125,8 +125,6 @@ export interface CreatePageRouterOptions {
    * `getCollection(...)` resolve synchronously from memory.
    */
   readonly contentSnapshot: ContentSnapshot;
-  /** Framework adapter pinning the SSR call. */
-  readonly framework: FrameworkAdapter;
   /**
    * When `true`, the 500 body for render errors includes the full JS stack
    * trace. When `false`, only the message + route are included. When
@@ -143,7 +141,7 @@ export interface CreatePageRouterOptions {
 /**
  * Fetch-handler shape returned by [`createPageRouter`]. Shaped as a plain
  * function (not a Hono `app`) so the consumer's contract is exactly
- * "Worker-style fetch handler" with no leaked framework types.
+ * "Worker-style fetch handler" with no leaked renderer types.
  */
 export type PageRouter = (request: Request) => Promise<Response>;
 
@@ -231,7 +229,7 @@ async function getOrEvalPaths(
  *      under `pages/api/` — actually reaches its handler instead of being
  *      404'd by the inner router. See the comment at the `app.all` call
  *      site below. The handler imports the page module, calls
- *      `framework.renderToString(module.default(componentInput))`, and
+ *      `renderToString(module.default(componentInput))`, and
  *      returns the string in a `Response` with the appropriate
  *      `Content-Type`. (`componentInput` is the page's props object — see
  *      the derivation table below; it is never the incoming `Request`.)
@@ -467,7 +465,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         if (!match) {
           // The URL params do not correspond to any paths() entry —
           // this is the dev-mode equivalent of a build-time miss.
-          // Hono's `c.notFound()` returns the framework's default 404,
+          // Hono's `c.notFound()` returns Hono's default 404,
           // which is cleaner than fabricating an empty-props render.
           return c.notFound();
         }
@@ -532,7 +530,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         // directly (e.g. `pages/api/*.tsx` handlers that use Web Fetch
         // primitives instead of returning JSX) is responsible for its own
         // status, headers, and body — return it as-is rather than running
-        // it through the framework SSR path. A `return` from inside a
+        // it through the owned SSR renderer. A `return` from inside a
         // `try` does not trigger the `catch`, so this passes through
         // correctly without special-casing.
         if (result instanceof Response) {
@@ -540,11 +538,11 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         }
         // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
         // return their body as a pre-serialised `string` instead of a
-        // VNode. Routing those through `framework.renderToString` would
+        // VNode. Routing those through `renderToString` would
         // HTML-escape the angle brackets and ampersands, producing
         // garbage XML. Pass strings through verbatim; only wrap actual
         // VNodes.
-        const html = typeof result === "string" ? result : opts.framework.renderToString(result);
+        const html = typeof result === "string" ? result : renderToString(result as never);
         const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
         return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
       } catch (err) {

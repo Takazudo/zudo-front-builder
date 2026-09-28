@@ -2413,7 +2413,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // visible on the islands bundle's very next tick rather than only
         // at boot.
         let plugin_virtual_module_store_for_islands = plugin_refresh.store().clone();
-        let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
@@ -2437,7 +2436,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
-                framework,
                 bundle_config.as_ref(),
                 &plugin_cfg,
                 &url_prefix,
@@ -2588,7 +2586,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &project_root,
         // Issue #1189: client scripts go to the isolated dev-assets root.
         &dev_assets_root,
-        cfg.framework,
         cfg.bundle.as_ref(),
         &protected_client_script_outputs,
         &registered_client_entries,
@@ -2658,7 +2655,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let project_root_for_cs = project_root.clone();
         // Issue #1189: rebuild client scripts into the isolated dev-assets root.
         let dev_assets_root_for_cs = dev_assets_root.clone();
-        let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let client_ledger = Arc::clone(&client_script_companion_ledger);
         // #1196 — capture registered entries for the watcher closure.
@@ -2696,7 +2692,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 match crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
-                    framework,
                     bundle_config.as_ref(),
                     &prev,
                     &registered_for_cs,
@@ -2955,14 +2950,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // bundle (the last size-bound step that used to gate the bind). Clone
     // its inputs now, before `ServeOpts` / `run_islands` consume the
     // originals: `rebundle_islands` needs the project + dev-assets roots, the
-    // framework, the islands plugin config, the URL prefix, the shared
+    // islands plugin config, the URL prefix, the shared
     // bundle-URL handle, and the live-companion tracker.
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
     let islands_companion_ledger_for_boot = Arc::clone(&islands_companion_ledger);
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let raw_import_invalidation_for_boot = raw_import_invalidation.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
-    let framework_for_boot = cfg.framework;
     let bundle_config_for_boot = cfg.bundle.clone();
     // #3011 — same survivor injected-route entrypoints the watcher-tick
     // closure above captured; the boot task's own eager islands rebundle
@@ -3282,7 +3276,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let islands_info = match rebundle_islands(
                 &project_root_for_boot,
                 &dev_assets_root_for_boot,
-                framework_for_boot,
                 bundle_config_for_boot.as_ref(),
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
@@ -4129,7 +4122,6 @@ fn rebundle_islands(
     // Where dev assets are written + served from (issue #1189: the isolated
     // `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
@@ -4170,7 +4162,6 @@ fn rebundle_islands(
             &project_root.join("pages"),
             package_route_entrypoints,
             assets_root,
-            framework,
             bundle_config,
             zfb_islands::BundleMode::Development,
             plugin_config,
