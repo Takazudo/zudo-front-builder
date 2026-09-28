@@ -13,6 +13,9 @@ import {
 import { DEFAULT_WHEN, isWhen, WHEN_VALUES } from "../types.js";
 import type { VNodeObject } from "../jsx-types.js";
 
+// This suite pins the legacy structural wrapper until #3288 removes that seam.
+vi.mock("@takazudo/zfb/island-boundary", async () => await import("../island-boundary.js"));
+
 /**
  * Build a minimal, JSX-runtime-agnostic VNode.
  *
