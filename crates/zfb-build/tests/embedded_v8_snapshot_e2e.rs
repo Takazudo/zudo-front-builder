@@ -1009,8 +1009,6 @@ fn html_page_written_verbatim_via_render_all() {
 ///
 /// ```text
 /// <tmp>/
-///   preact/                                  -> pnpm store /preact
-///   preact-render-to-string/                 -> pnpm store /preact-render-to-string
 ///   hono/                                    -> pnpm store /hono
 ///   @takazudo/
 ///     zfb/                                   -> packages/zfb            (path A)
