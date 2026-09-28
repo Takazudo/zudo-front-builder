@@ -2825,7 +2825,29 @@ pub fn zudo_react_build_token_with_inputs(
     plugin_aliases: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
 ) -> Result<String> {
+    zudo_react_build_token_with_inputs_and_output(
+        project_root,
+        plugin_aliases,
+        plugin_virtual_modules,
+        &project_root.join("dist"),
+    )
+}
+
+/// Exclude the selected output directory from the source digest, including
+/// custom outdir names used by dev sessions and production builds.
+pub fn zudo_react_build_token_with_inputs_and_output(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    output_dir: &Path,
+) -> Result<String> {
     let project_canonical = fs::canonicalize(project_root)?;
+    let output_dir = if output_dir.is_absolute() {
+        output_dir.to_path_buf()
+    } else {
+        project_root.join(output_dir)
+    };
+    let output_dir = zfb_types::normalize_path_lexical(&output_dir);
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut visited_packages = BTreeSet::new();
     collect_zudo_react_token_tree(
@@ -2833,6 +2855,7 @@ pub fn zudo_react_build_token_with_inputs(
         Path::new(""),
         &project_canonical,
         false,
+        Some(&output_dir),
         &mut visited_packages,
         &mut files,
     )?;
@@ -2931,6 +2954,7 @@ fn collect_zudo_react_external_target(
                     logical,
                     project_canonical,
                     true,
+                    None,
                     visited_packages,
                     files,
                 )?;
@@ -2951,6 +2975,7 @@ fn collect_zudo_react_external_target(
             logical,
             project_canonical,
             true,
+            None,
             visited_packages,
             files,
         )?;
@@ -3072,6 +3097,7 @@ fn collect_zudo_react_token_tree(
     logical_root: &Path,
     project_canonical: &Path,
     linked_package: bool,
+    output_dir: Option<&Path>,
     visited_packages: &mut BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, PathBuf)>,
 ) -> Result<()> {
@@ -3082,6 +3108,11 @@ fn collect_zudo_react_token_tree(
         .filter_entry(|entry| {
             if entry.depth() == 0 {
                 return true;
+            }
+            if output_dir
+                .is_some_and(|output| zfb_types::normalize_path_lexical(entry.path()) == output)
+            {
+                return false;
             }
             let name = entry.file_name().to_str();
             !matches!(name, Some("node_modules" | ".git" | ".zfb" | "target"))
@@ -3182,6 +3213,7 @@ fn collect_zudo_react_linked_package(
         logical,
         project_canonical,
         true,
+        None,
         visited_packages,
         files,
     )
@@ -5251,10 +5283,11 @@ pub fn bundle_with_session(
     )
     .context("bundler: failed writing entry.mjs")?;
     if input.framework == Framework::ZudoReact {
-        let build = zudo_react_build_token_with_inputs(
+        let build = zudo_react_build_token_with_inputs_and_output(
             &input.project_root,
             &input.plugin_alias_entries,
             &input.plugin_virtual_modules,
+            &input.outdir,
         )?;
         let names = input
             .zudo_react_island_names
@@ -13217,6 +13250,25 @@ mod framework_esbuild_flags_tests {
         )
         .unwrap();
         assert_ne!(first, zudo_react_build_token(project.path()).unwrap());
+    }
+
+    #[test]
+    fn owned_build_token_ignores_selected_custom_output_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let output = project.path().join("dist-session");
+        fs::write(project.path().join("page.tsx"), "export const page = 1;").unwrap();
+        let token = || {
+            zudo_react_build_token_with_inputs_and_output(project.path(), &[], &[], &output)
+                .unwrap()
+        };
+        let first = token();
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("bundle.mjs"), "generated first").unwrap();
+        assert_eq!(first, token());
+        fs::write(output.join("bundle.mjs"), "generated second").unwrap();
+        assert_eq!(first, token());
+        fs::write(project.path().join("page.tsx"), "export const page = 2;").unwrap();
+        assert_ne!(first, token());
     }
 
     #[cfg(unix)]
