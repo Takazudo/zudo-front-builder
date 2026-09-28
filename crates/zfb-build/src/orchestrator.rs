@@ -1582,32 +1582,23 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
             }
-            // #1819 (epic #1995), widened by #2077 — DELETING a path under a
-            // registered CSS mirror root always changes the Tailwind content
-            // set: its classes must stop being emitted. Unlike the live-edit
-            // arms above (which gate on `content_under_css_mirror_root`'s
-            // `Content`/`Data`/`External` class list, because the narrower
-            // `Module`/`Style` classes already `mark_css` unconditionally on
-            // a LIVE edit), a removal has no such per-class shortcut — none
-            // of the match arms above already covers a mirror-root deletion
-            // — so this consults the class-agnostic
-            // [`Self::path_under_css_mirror_root`] directly, unconditionally,
-            // for EVERY removed-path class reached above: `Global` and
-            // `Style` already call `mark_css` unconditionally (this is a
-            // harmless no-op re-set for them), and `Page`/`Module`/`Content`/
-            // `Data`/`External`/`Asset`/`Unclassified` all now gain the
-            // mirror-root signal a `content_under_css_mirror_root(class, ..)`
-            // call could never give `Module`/`Asset`/`Unclassified` — those
-            // classes never pass its class gate.
-            //
-            // In-root deletions (any class) remain UNCHANGED:
-            // `path_under_css_mirror_root` only matches a path inside a
-            // REGISTERED mirror root, and a mirror root can never swallow the
-            // project (`root_swallows_the_project`, checked inside the
-            // helper), so a deleted in-root `.tsx` still does not rerun the
-            // scan. That gap is PRE-EXISTING (deleted in-root modules have
-            // always behaved this way) and deliberately out of scope here;
-            // closing it is a broader behaviour change tracked separately.
+            // #3316: an in-root source removal must reach the CSS runner
+            // on this tick. Its change hints alone do not request a pass,
+            // and a later unrelated pass cannot recover this owner's removal.
+            // Include source directories (classified by their root segment),
+            // without relying on metadata for a path that no longer exists.
+            // Page selection remains the precise former-consumer set above.
+            if path.starts_with(&self.config.project_root)
+                && matches!(
+                    class,
+                    PathClass::Page | PathClass::Module | PathClass::Content
+                )
+            {
+                plan.mark_css();
+            }
+            // #1819/#2077: sibling removals use the existing class-agnostic
+            // mirror claim and infra-directory exclusions. The in-root rule
+            // above must not widen those external claims.
             if self.path_under_css_mirror_root(path) {
                 plan.mark_css();
             }
@@ -2883,9 +2874,16 @@ mod tests {
 
     #[test]
     fn css_changes_in_root_deletion() {
-        let path = "/proj/components/Widget.tsx";
-        let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], &[], false);
-        assert_css_change_paths(&plan, &[], &[path]);
+        for path in [
+            "/proj/components/Widget.tsx",
+            "/proj/src/deleted.tsx",
+            "/proj/pages/deleted.tsx",
+            "/proj/content/deleted.mdx",
+            "/proj/src/removed-directory",
+        ] {
+            let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], &[], true);
+            assert_css_change_paths(&plan, &[], &[path]);
+        }
     }
 
     #[test]
@@ -2896,7 +2894,7 @@ mod tests {
             &[(old, ChangeKind::Removed), (new, ChangeKind::Modified)],
             &[],
             CSS_CHANGE_ALL_PAGES,
-            false,
+            true,
         );
         assert_css_change_paths(&plan, &[new], &[old]);
     }
@@ -2940,7 +2938,7 @@ mod tests {
             ],
             &[child, both],
             CSS_CHANGE_ALL_PAGES,
-            false,
+            true,
         );
         assert!(!plan.content_narrowing.as_ref().unwrap().fan_out_safe);
         assert_css_change_paths(&plan, &[child, both], &[directory, both]);
@@ -4395,13 +4393,10 @@ mod tests {
         );
     }
 
-    /// Negative paired with the RED test above: an ORDINARY in-root Module
-    /// removal must NOT gain a Tailwind rescan — that gap is documented,
-    /// pre-existing, and deliberately out of scope for #2077 (see the fold's
-    /// own doc comment). Must pass BOTH before and after the fix, proving
-    /// in-root behavior is genuinely unchanged rather than merely uncovered.
+    /// #3316 closes the in-root removal gap left outside #2077: a deleted
+    /// source must deliver its removal hint to the CSS consumer immediately.
     #[test]
-    fn in_root_module_removal_does_not_rerun_css() {
+    fn in_root_module_removal_reruns_css() {
         use zfb_watcher::ChangeKind;
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().canonicalize().unwrap();
@@ -4423,7 +4418,7 @@ mod tests {
         assert!(
             !policy.is_under_css_mirror_root(&in_root_tsx),
             "fixture sanity: the in-root path must not itself be under the registered \
-             mirror root, or this negative proves nothing"
+             mirror root, or this test does not isolate in-root invalidation"
         );
 
         let pipeline = CountingPipeline::default();
@@ -4441,9 +4436,8 @@ mod tests {
 
         let plan = applies.lock().unwrap().last().unwrap().clone();
         assert!(
-            !plan.rerun_css,
-            "an in-root Module deletion must NOT rerun the Tailwind content scan — that \
-             gap is documented and deliberately out of scope for #2077"
+            plan.rerun_css,
+            "an in-root Module deletion must retract its CSS candidates on this tick"
         );
     }
 

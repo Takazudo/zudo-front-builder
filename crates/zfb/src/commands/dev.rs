@@ -11583,6 +11583,163 @@ mod tests {
         assert!(!index.live_set().contains("flex"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn wind_missing_source_alias_removes_stable_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let source = project.join("src/deleted.tsx");
+        wind_write(&source, "flex");
+        let alias = project.join("source-alias");
+        std::os::unix::fs::symlink(project.join("src"), &alias).unwrap();
+        let plan = wind_test_plan(&project);
+        let expanded = zfb_css::expand_file_set(&plan);
+        assert_eq!(expanded.files[0].id.render(), "project:deleted.tsx");
+        let mut index = crate::commands::build::WindSessionIndex::fresh(plan.clone());
+        std::fs::remove_file(&source).unwrap();
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_removal(alias.join("deleted.tsx"));
+        assert_eq!(index.apply(&changes), (0, 1));
+        assert_eq!(
+            index.live_set(),
+            crate::commands::build::WindSessionIndex::fresh(plan).live_set()
+        );
+        assert!(!index.live_set().contains("flex"));
+    }
+
+    #[tokio::test]
+    async fn wind_native_source_deletion_publishes_clean_css_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let deleted = project.join("src/deleted.tsx");
+        let duplicate = project.join("src/duplicate.tsx");
+        wind_write(&deleted, "bg-deleted flex bg-safelist");
+        wind_write(&duplicate, "flex");
+        wind_write(&project.join("src/renamed.tsx"), "bg-renamed");
+        std::fs::write(
+            project.join("zfb.config.json"),
+            r#"{"wind":{"tokens":{"colors":{"deleted":"red","renamed":"blue","safelist":"green"}},"safelist":{"app":["bg-safelist"]}}}"#,
+        )
+        .unwrap();
+        let config = config::load_from_dir(&project).await.unwrap();
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let outdir = project.join("dev-assets");
+        let boot = build_dev_css_and_publish_mirror_roots(
+            &project,
+            &outdir,
+            &config,
+            &[],
+            &[],
+            &[],
+            &invalidation,
+            &mut session,
+            None,
+        )
+        .unwrap();
+        assert!(session.as_ref().unwrap().live_set().contains("bg-deleted"));
+        let url: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let publication = Arc::new(Mutex::new(CssPublicationState::default()));
+        publish_dev_css_generation(&outdir, "", &url, &publication, boot).unwrap();
+        let css_file = outdir
+            .join(zfb_types::DIST_ASSETS_DIR)
+            .join(zfb_types::STABLE_CSS_FILENAME);
+        assert!(std::fs::read_to_string(&css_file)
+            .unwrap()
+            .contains(".bg-deleted"));
+
+        let session = Arc::new(Mutex::new(session));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let ctx = zfb_build::BuildContext {
+            dist_root: outdir.clone(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: Some(Arc::new({
+                let project = project.clone();
+                let outdir = outdir.clone();
+                let session = session.clone();
+                let observed = observed.clone();
+                move |request| {
+                    if !css_pass_request_should_build(request) {
+                        return Ok(false);
+                    }
+                    observed.lock().unwrap().push(request.changes.clone());
+                    let payload = build_dev_css_and_publish_mirror_roots(
+                        &project,
+                        &outdir,
+                        &config,
+                        &[],
+                        &[],
+                        &[],
+                        &invalidation,
+                        &mut session.lock().unwrap(),
+                        Some(&request.changes),
+                    )?;
+                    publish_dev_css_generation(&outdir, "", &url, &publication, payload)
+                }
+            })),
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+        let orchestrator = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project, vec![PathBuf::from("src")]),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            DevAssetPipeline::new(),
+        );
+        let (watcher, mut events) = start_wind_config_watch(&project).await;
+        // Each source is deleted once. Only its exact native event enters the
+        // tick, so marker/config events and later writes cannot rescue it.
+        for (path, duplicate_survives) in [(&deleted, true), (&duplicate, false)] {
+            std::fs::remove_file(path).unwrap();
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let event = events.recv().await.expect("source watcher closed");
+                    if event.path == *path {
+                        break event;
+                    }
+                }
+            })
+            .await
+            .expect("one source deletion must reach its existing recursive watch");
+            assert_eq!(event.kind, zfb_watcher::ChangeKind::Removed);
+            assert!(!event.path.exists());
+            let outcome = orchestrator
+                .tick_with_kinds(vec![(event.path, event.kind)], &ctx, None)
+                .unwrap()
+                .expect("source removal must run the CSS pipeline");
+            assert!(outcome.css_rerun, "planner must request CSS for deletion");
+            assert!(outcome.css_changed, "deletion must publish changed bytes");
+            let expected = zfb_build::CssChangeSet {
+                removed: [path.clone()].into(),
+                ..Default::default()
+            };
+            assert_eq!(observed.lock().unwrap().last(), Some(&expected));
+            let live = session.lock().unwrap().as_ref().unwrap().live_set();
+            assert!(!live.contains("bg-deleted"));
+            assert_eq!(live.contains("flex"), duplicate_survives);
+            let css = std::fs::read_to_string(&css_file).unwrap();
+            assert!(!css.contains(".bg-deleted"), "{css}");
+            assert_eq!(css.contains(".flex"), duplicate_survives);
+            assert!(css.contains(".bg-renamed"));
+            assert!(css.contains(".bg-safelist"));
+            let clean = crate::commands::build::build_default_css_payload_with_details(
+                &project,
+                &outdir,
+                &config::load_from_dir(&project).await.unwrap(),
+                &[],
+                &[],
+                &[],
+                &|_| {},
+            )
+            .unwrap()
+            .payload
+            .unwrap();
+            assert_eq!(css.as_bytes(), clean.bytes);
+        }
+        assert_eq!(observed.lock().unwrap().len(), 2);
+        watcher.shutdown().await;
+    }
+
     #[test]
     fn wind_outside_change_does_not_revisit_missing_required_root() {
         let dir = tempfile::tempdir().unwrap();
