@@ -9,8 +9,10 @@
 //! module used by the production SSR bundle.
 
 pub mod preact;
+pub mod zudo_react;
 
 pub use preact::PreactAdapter;
+pub use zudo_react::ZudoReactAdapter;
 
 /// Which framework to render with. Preact is selected at config-load time.
 ///
@@ -22,6 +24,8 @@ pub enum Framework {
     #[default]
     #[serde(alias = "preact")]
     Preact,
+    #[serde(rename = "zudo-react")]
+    ZudoReact,
 }
 
 /// The portable, stateless framework adapter contract.
@@ -48,6 +52,7 @@ pub trait Adapter {
 pub fn make_adapter(framework: Framework) -> Box<dyn Adapter> {
     match framework {
         Framework::Preact => Box::new(PreactAdapter),
+        Framework::ZudoReact => Box::new(ZudoReactAdapter),
     }
 }
 
@@ -64,11 +69,14 @@ mod tests {
     fn framework_deserializes_lowercase() {
         let f: Framework = serde_json::from_str("\"preact\"").unwrap();
         assert_eq!(f, Framework::Preact);
+        let owned: Framework = serde_json::from_str("\"zudo-react\"").unwrap();
+        assert_eq!(owned, Framework::ZudoReact);
     }
 
     #[test]
     fn make_adapter_returns_correct_name() {
         assert_eq!(make_adapter(Framework::Preact).name(), "preact");
+        assert_eq!(make_adapter(Framework::ZudoReact).name(), "zudo-react");
     }
 
     #[test]
@@ -77,6 +85,10 @@ mod tests {
             make_adapter(Framework::Preact).jsx_import_source(),
             "preact"
         );
+        assert_eq!(
+            make_adapter(Framework::ZudoReact).jsx_import_source(),
+            "@takazudo/zfb/zudo-react"
+        );
     }
 
     #[test]
@@ -84,6 +96,10 @@ mod tests {
         assert_eq!(
             make_adapter(Framework::Preact).render_to_string_module(),
             "preact-render-to-string"
+        );
+        assert_eq!(
+            make_adapter(Framework::ZudoReact).render_to_string_module(),
+            "@takazudo/zfb/zudo-react/server"
         );
     }
 }

@@ -5,13 +5,11 @@
  * data-zfb-render-region>` pair around every bridge-resolved content
  * region when the build-only `globalThis.__zfb.renderArtifacts` switch is
  * on, and must be byte-neutral when it is off. The wrapper builds its
- * Fragment from `react/jsx-runtime`, which the engine alias-rewrites to
- * `preact/jsx-runtime` for the supported Preact runtime.
+ * Fragment from the SDK factory subpath selected by the bundler.
  *
  * The cases therefore live here once and are driven by
  * `content-render-markers-preact.test.ts` (`preact-render-to-string`, with
- * the same `react/jsx-runtime` → `preact/jsx-runtime` swap the bundler
- * performs). Assertions are on ACTUAL rendered bytes, never on
+ * the Preact factory selected by the bundler). Assertions are on ACTUAL rendered bytes, never on
  * JSX structure: a stray whitespace or text node between the sentinels and
  * the region would be invisible to a structural check and fatal to the
  * build's exact-byte extraction pass.
@@ -25,7 +23,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { jsx, jsxs } from "react/jsx-runtime";
+import { jsx, jsxs } from "@takazudo/zfb/jsx-factory";
 
 import { getCollection, setContentSnapshot } from "../content.js";
 import type { CollectionEntry, ContentProps, Snapshot } from "../content.js";

@@ -44,7 +44,7 @@
 // loaded synchronously on first fs-path use. Type-only imports below stay
 // at the top because TypeScript erases them at compile time — they leave
 // no runtime traces for esbuild to chase.
-import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "@takazudo/zfb/jsx-factory";
 
 import type * as NodeFs from "node:fs";
 import type * as NodePath from "node:path";
@@ -510,10 +510,8 @@ const REGION_ID_ATTR = "data-zfb-region-id";
  * extraction state machine matches identical-id pairs by nesting order.
  *
  * **Runtime-agnostic by construction.** `Fragment` / `jsxs` come from
- * the same `react/jsx-runtime` specifier `mintElement` already uses,
- * which the engine alias-rewrites to `preact/jsx-runtime` in Preact mode
- * (bundler.rs `--alias:react/jsx-runtime=preact/jsx-runtime`) — so both
- * modes get their own real Fragment, and neither imports the other's.
+ * the same SDK factory subpath `mintElement` uses, so each bundler
+ * selects its own Fragment and JSX calls.
  * `jsxs` (not `jsx`) is the static-children form: it tells React the
  * child array is compiler-generated, which is what keeps the runtime
  * from demanding `key` props on the three children.
@@ -539,10 +537,8 @@ function renderRegionMarker(edge: "start" | "end", regionId: string): ContentEle
 /**
  * Mint a content element through the per-project JSX runtime.
  *
- * Calls `jsx` from `react/jsx-runtime` — alias-rewritten to
- * `preact/jsx-runtime` in Preact mode by the engine (bundler.rs ~2886),
- * native in React mode — so the returned value is a real element for
- * whichever framework the project configured. This replaces the previous
+ * Calls `jsx` from the SDK factory subpath, which each bundler resolves
+ * to the project's chosen runtime. This replaces the previous
  * hand-rolled `{ type, props, key, constructor: undefined }` object literal
  * (the Preact diff-path sentinel): that shape made `preact-render-to-string`
  * treat it as a VNode, but React's renderer rejects it as a child with

@@ -3351,6 +3351,11 @@ pub fn bundle_with_session(
         synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
         synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
         synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        if input.framework == Framework::ZudoReact {
+            synthetic_entry_import_specifiers
+                .insert("@takazudo/zfb/zudo-react/jsx-runtime".to_string());
+            synthetic_entry_import_specifiers.insert("@takazudo/zfb/jsx-factory".to_string());
+        }
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -12750,6 +12755,38 @@ fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
 // The shadow layout roots (`shadow`/`first_party_root`/`work_root`) are passed
 // separately rather than folded into a struct so each stays explicit at the
 // single call site (issue #1668).
+fn framework_esbuild_flags(framework: Framework) -> &'static [&'static str] {
+    match framework {
+        Framework::Preact => &[
+            "--alias:react/jsx-runtime=preact/jsx-runtime",
+            "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
+        ],
+        Framework::ZudoReact => {
+            &["--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime"]
+        }
+    }
+}
+
+#[cfg(test)]
+mod framework_esbuild_flags_tests {
+    use super::*;
+
+    #[test]
+    fn framework_esbuild_flags_keep_preact_and_isolate_owned_factory() {
+        assert_eq!(
+            framework_esbuild_flags(Framework::Preact),
+            [
+                "--alias:react/jsx-runtime=preact/jsx-runtime",
+                "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
+            ]
+        );
+        assert_eq!(
+            framework_esbuild_flags(Framework::ZudoReact),
+            ["--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",]
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_esbuild(
     input: &BundlerInput,
@@ -12815,9 +12852,8 @@ fn run_esbuild(
     // rewrite `react/jsx-runtime` (and the dev-runtime sibling) to the
     // Preact equivalents at the bundler level. This is the same trick
     // the Preact ecosystem uses with bundlers like Vite.
-    if matches!(input.framework, Framework::Preact) {
-        cmd.arg("--alias:react/jsx-runtime=preact/jsx-runtime");
-        cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
+    for flag in framework_esbuild_flags(input.framework) {
+        cmd.arg(flag);
     }
 
     // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`

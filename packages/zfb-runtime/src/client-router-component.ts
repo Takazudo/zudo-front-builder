@@ -12,7 +12,7 @@
 //   via `init()`. No inline <script> dangerouslySetInnerHTML is emitted.
 //
 // Component/activation split (#2437): this module is the pure component —
-// it imports ONLY `react/jsx-runtime` and `./client-router/prefetch.js`
+// it imports ONLY `@takazudo/zfb/jsx-factory` and `./client-router/prefetch.js`
 // (`prefetch.ts` has zero module-scope side effects), never
 // `./client-router/router.js`, and performs no top-level `document`/`window`
 // access. Importing it — including via the root barrel `@takazudo/zfb-runtime`
@@ -23,11 +23,9 @@
 //
 // Framework-agnostic element minting (no JSX syntax):
 //   `@takazudo/zfb-runtime` does not depend on a framework runtime. Head nodes
-//   are minted by calling `jsx` from `react/jsx-runtime` directly — NOT JSX
-//   syntax, so this stays a plain `.ts` file with no tsconfig JSX changes. The
-//   engine alias-rewrites `react/jsx-runtime` → `preact/jsx-runtime` in Preact
-//   mode (bundler.rs ~2886) and resolves it natively in React mode, so the same
-//   call mints a real element for whichever framework the project configured.
+//   are minted through the SDK factory subpath — NOT JSX syntax, so this
+//   stays a plain `.ts` file with no tsconfig JSX changes. Each bundler
+//   selects its own runtime for that subpath.
 //   The previous approach (a hand-rolled `{ type, props, key, constructor:
 //   undefined }` object literal — the Preact diff-path sentinel) only worked for
 //   Preact: React's renderer rejects such an object as a child with React error
@@ -44,7 +42,7 @@
 // The route-announcer <div> is injected into <body> by `announce()` in
 // `client-router/router.ts` on every navigation.
 
-import { jsx } from "react/jsx-runtime";
+import { Fragment, jsx } from "@takazudo/zfb/jsx-factory";
 
 import { init as prefetchInit } from "./client-router/prefetch.js";
 
@@ -113,8 +111,7 @@ export type ClientRouterElement = {
 /**
  * Mint a head element through the per-project JSX runtime.
  *
- * Calls `jsx` from `react/jsx-runtime` (alias-rewritten to
- * `preact/jsx-runtime` in Preact mode by the engine, native in React mode)
+ * Calls `jsx` from the SDK factory subpath
  * so the returned value is a real element for whichever framework the
  * project configured — NOT a hand-rolled `{ type, props, key }` literal,
  * which only Preact accepts and which makes React throw error #31. A stable
@@ -149,6 +146,11 @@ const announcerCss = `
 }
 `;
 
+// During the framework seam the same SDK module serves both factories. The
+// owned runtime requires trusted static style text in `rawHtml`; the default
+// Preact path keeps its existing `dangerouslySetInnerHTML` prop unchanged.
+const ownedFactory = Object.is(Fragment, Symbol.for("@takazudo/zfb/zudo-react/fragment-v1"));
+
 /**
  * `<ClientRouter />` — SPA soft-swap navigation with View Transition animations.
  *
@@ -182,7 +184,13 @@ export function ClientRouter({
 
   const nodes: ClientRouterElement[] = [
     // Global styles for the ARIA route-announcer div injected into <body>.
-    makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }, "zfb-vt-style"),
+    makeVNode(
+      "style",
+      ownedFactory
+        ? { rawHtml: announcerCss }
+        : { dangerouslySetInnerHTML: { __html: announcerCss } },
+      "zfb-vt-style",
+    ),
     // Opt-in meta tag: router checks for this to decide whether to intercept navigations.
     makeVNode("meta", { name: "zfb-view-transitions-enabled", content: "true" }, "zfb-vt-enabled"),
     // Fallback strategy meta tag: read by getFallback() in router.ts.

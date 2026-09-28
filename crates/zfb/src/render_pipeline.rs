@@ -1522,6 +1522,7 @@ pub(crate) fn check_runtime_installed_with_overrides(
 pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapters::Framework {
     match f {
         crate::config::Framework::Preact => zfb_render::adapters::Framework::Preact,
+        crate::config::Framework::ZudoReact => zfb_render::adapters::Framework::ZudoReact,
     }
 }
 
@@ -2230,6 +2231,31 @@ mod tests {
             nm_path.join("@takazudo/zfb/src/index.ts").exists(),
             "missing @takazudo/zfb/src/index.ts"
         );
+        let owned_entries = [
+            ("./zudo-react", "src/zudo-react/index.ts"),
+            ("./zudo-react/jsx-runtime", "src/zudo-react/jsx-runtime.ts"),
+            (
+                "./zudo-react/jsx-dev-runtime",
+                "src/zudo-react/jsx-dev-runtime.ts",
+            ),
+            ("./zudo-react/server", "src/zudo-react/server.ts"),
+            ("./zudo-react/client", "src/zudo-react/client.ts"),
+            ("./jsx-factory", "src/jsx-factory.ts"),
+        ];
+        let sdk_package: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(nm_path.join("@takazudo/zfb/package.json")).unwrap(),
+        )
+        .unwrap();
+        for (key, source) in owned_entries {
+            assert!(
+                nm_path.join("@takazudo/zfb").join(source).exists(),
+                "missing embedded {source}"
+            );
+            assert_eq!(
+                sdk_package["exports"][key]["default"],
+                format!("./{source}")
+            );
+        }
         assert!(
             nm_path.join("@takazudo/zfb-runtime/src/index.ts").exists(),
             "missing @takazudo/zfb-runtime/src/index.ts"

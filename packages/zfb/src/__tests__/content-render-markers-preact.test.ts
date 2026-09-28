@@ -1,11 +1,8 @@
 /**
  * Render-region markers under the Preact JSX runtime (epic #2421).
  *
- * A Preact-mode project never resolves `react/jsx-runtime`: the engine
- * passes `--alias:react/jsx-runtime=preact/jsx-runtime` to esbuild
- * (`crates/zfb-build/src/bundler.rs`), so `content.ts`'s `Fragment` /
- * `jsx` / `jsxs` are Preact's. The `vi.mock` below reproduces exactly
- * that rewrite — same specifier, same replacement — for the whole module
+ * A Preact-mode project resolves the SDK factory through the default
+ * Preact alias. The `vi.mock` below selects the same factory for this module
  * graph of this file, and the oracle is the real
  * `preact-render-to-string`, the SSR entry point the Preact adapter pins.
  *
@@ -21,12 +18,12 @@ import { expect, it, vi } from "vitest";
 
 import { describeRenderRegionMarkers } from "./render-region-marker-cases.js";
 
-vi.mock("react/jsx-runtime", async () => await import("preact/jsx-runtime"));
+vi.mock("@takazudo/zfb/jsx-factory", async () => await import("preact/jsx-runtime"));
 
 // Pin the replacement itself instead of trusting rendered output: the
 // `Fragment` `content.ts` closes over must BE Preact's.
 it("really runs against the Preact JSX runtime", async () => {
-  const { Fragment } = await import("react/jsx-runtime");
+  const { Fragment } = await import("@takazudo/zfb/jsx-factory");
   expect(Fragment).toBe(PreactFragment);
 });
 

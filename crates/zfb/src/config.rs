@@ -804,6 +804,28 @@ pub enum OutputMode {
 pub enum Framework {
     #[default]
     Preact,
+    #[serde(rename = "zudo-react")]
+    ZudoReact,
+}
+
+#[cfg(test)]
+mod framework_selection_tests {
+    use super::Framework;
+
+    #[test]
+    fn owned_framework_deserializes_and_unknown_names_both_choices() {
+        assert_eq!(
+            serde_json::from_str::<Framework>("\"zudo-react\"").unwrap(),
+            Framework::ZudoReact
+        );
+        let error = serde_json::from_str::<Framework>("\"vue\"")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("preact") && error.contains("zudo-react"),
+            "{error}"
+        );
+    }
 }
 
 /// One content collection (e.g. blog posts under `content/blog/`).
@@ -6636,8 +6658,8 @@ mod tests {
             "error should name the bad field via its serde path: {msg}"
         );
         assert!(
-            msg.contains("`preact`") && !msg.contains("`react`"),
-            "error should list only the supported framework value: {msg}"
+            msg.contains("`preact`") && msg.contains("`zudo-react`") && !msg.contains("`react`"),
+            "error should list both supported framework values: {msg}"
         );
     }
 
