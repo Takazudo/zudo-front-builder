@@ -1,7 +1,7 @@
 # basic-blog
 
 A zfb starter: a content collection, static routes, one client island, and
-Tailwind. Everything in here is meant to be read and edited — there is no
+zudo-wind. Everything in here is meant to be read and edited — there is no
 hidden layer.
 
 ## Quickstart
@@ -20,7 +20,7 @@ The same commands are available as package scripts (`dev`, `build`,
 
 ```
 .
-├── zfb.config.ts        # framework, collections + schema, markdown features
+├── zfb.config.ts        # wind tokens, framework, collections + schema, markdown
 ├── mdx-components.tsx   # component map applied to every rendered entry
 ├── tsconfig.json        # one path alias: ~/* → project root
 ├── pages/
@@ -40,7 +40,7 @@ The same commands are available as package scripts (`dev`, `build`,
 ├── lib/
 │   └── types.ts         # frontmatter + entry types shared by routes
 └── styles/
-    └── global.css       # Tailwind entry, theme tokens, .prose styles
+    └── global.css       # authored CSS, accent values, .prose styles
 ```
 
 ## Markdown features

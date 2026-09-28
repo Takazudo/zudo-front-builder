@@ -11,9 +11,8 @@
 //! `pages/index.tsx` (home — lists every post), `pages/about.tsx`, and
 //! `pages/404.tsx` (emits a flat `dist/404.html`, not `dist/404/index.html`
 //! — see that file's own header comment). A full build emits 6 pages.
-//! Tailwind is ENABLED in the template's `zfb.config.ts`, so this build also
-//! exercises the tailwindcss-v4 subprocess slot staged by
-//! `crates/zfb/build.rs`.
+//! The template selects zudo-wind in `zfb.config.ts`, so this build also
+//! exercises the owned CSS engine with its project-defined tokens and reset.
 //!
 //! `content/blog/markdown-showcase.md` renders one example of every
 //! markdown feature the template's `zfb.config.ts` `markdown` block turns
@@ -42,10 +41,10 @@
 //! the embedded `@takazudo/zfb`, `@takazudo/zfb-runtime`, `preact`, and
 //! `preact-render-to-string` packages (staged into the binary by
 //! `crates/zfb/build.rs`) are extracted on demand
-//! (`render_pipeline::embedded_node_modules`), and the embedded esbuild /
-//! tailwindcss-v4 helper binaries are extracted the same way
-//! (`render_pipeline::embedded_binary`). See `build.rs:1344-1379` for the
-//! fallback wiring. This mirrors `content_snapshot_no_deferred.rs`, which
+//! (`render_pipeline::embedded_node_modules`), and the embedded esbuild
+//! helper binary is extracted the same way
+//! (`render_pipeline::embedded_binary`); wind runs inside `zfb`. This mirrors
+//! `content_snapshot_no_deferred.rs`, which
 //! runs `zfb build` with no extra env vars for the same reason.
 //!
 //! ## Skip behaviour
@@ -66,7 +65,7 @@ use zfb_test_utils::zfb_binary;
 
 /// The 3 post slugs in `templates/basic-blog/content/blog/` (filename stem,
 /// per `zfb_content::collection::derive_slug_for_file`).
-const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-tailwind"];
+const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-zudo-wind"];
 
 /// Substrings expected in the built `markdown-showcase` page, one per
 /// enabled markdown feature it demonstrates. Paired with a label naming the

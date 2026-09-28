@@ -18,7 +18,7 @@ type Variant = "note" | "tip" | "important" | "warning" | "caution";
 type VariantSpec = {
   label: string;
   /**
-   * Full utility strings rather than interpolated fragments — Tailwind
+   * Full utility strings rather than interpolated fragments — zudo-wind
    * scans source text, so a class assembled at runtime is never generated.
    */
   tone: string;
