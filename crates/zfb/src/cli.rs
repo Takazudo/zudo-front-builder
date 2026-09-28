@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 /// The detailed version report shown by `zfb --version`.
 ///
@@ -26,9 +26,7 @@ fn long_version() -> &'static str {
         .get_or_init(|| {
             let release_version =
                 option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-            format!(
-                "{release_version}\nembedded Tailwind CSS: {EXPECTED_TAILWIND_VERSION}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}"
-            )
+            format!("{release_version}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}")
         })
         .as_str()
 }

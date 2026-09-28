@@ -47,20 +47,13 @@ pub const EXPECTED_WORKERD_VERSION: &str = "1.20260424.1";
 /// `crates/zfb/binaries/esbuild/esbuild`.
 pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
 
-/// Pinned `tailwindcss` v4 standalone CLI version. `crates/zfb/build.rs`
-/// consumes this string to construct the GitHub release download URL for the
-/// embedded binary; the fetch script and CSS README parity test keep their
-/// user-facing mirrors in sync with this source of truth.
-pub const EXPECTED_TAILWIND_VERSION: &str = "4.2.0";
-
 // ---------------------------------------------------------------------------
 // Vendor binary override policy (issue #1772)
 // ---------------------------------------------------------------------------
 //
-// `crates/zfb/build.rs` stages two vendor binaries (esbuild, tailwindcss-v4)
-// into the embedded vendor snapshot, each either downloaded into a
-// platform-specific slot or overridden via `ZFB_ESBUILD_BIN` /
-// `ZFB_TAILWIND_BIN`. The types and function below are the **pure** decision
+// `crates/zfb/build.rs` stages esbuild into the embedded vendor snapshot,
+// either from a platform-specific slot or via `ZFB_ESBUILD_BIN`. The types
+// and function below are the **pure** decision
 // logic for "where does this binary's bytes come from" — build.rs collects
 // the facts (env var value, resolved `TARGET`, whether the on-disk slot
 // already matches the pinned SHA-256) and hands them here; all filesystem
@@ -304,16 +297,16 @@ mod override_policy_tests {
     }
 
     #[test]
-    fn mixed_override_and_download_are_independent_per_binary() {
-        // esbuild overridden, tailwind still needs a download — the
+    fn override_and_download_choices_are_independent() {
+        // esbuild overridden, another binary still needs a download — the
         // documented per-binary independence contract.
         let esbuild = resolve_binary_source(Some(OsStr::new("/abs/esbuild")), true, false);
-        let tailwind = resolve_binary_source(None, true, false);
+        let second_binary = resolve_binary_source(None, true, false);
         assert_eq!(
             esbuild,
             BinarySource::Override(OsString::from("/abs/esbuild"))
         );
-        assert_eq!(tailwind, BinarySource::NeedsDownload);
+        assert_eq!(second_binary, BinarySource::NeedsDownload);
     }
 
     #[test]

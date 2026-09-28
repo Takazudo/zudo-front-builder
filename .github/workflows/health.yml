@@ -271,29 +271,26 @@ jobs:
           # the `shared-key` on exam.yml's quarantine-heavy rust-cache step.
           shared-key: "workspace-all-targets"
 
-      # Cache the SHA-verified staged esbuild + tailwindcss binaries so the
-      # zfb build script skips its downloads in the steady state (issue 2385
-      # — a GitHub-release CDN blip failed the tailwind fetch and turned this
-      # required check red twice on main). Keyed on the two files holding
-      # every version + SHA-256 pin; slot content is target-specific, so the
+      # Cache the SHA-verified staged esbuild binary so the
+      # zfb build script skips its download in the steady state (issue 2385).
+      # Keyed on the files holding the version and SHA-256 pins; slot content is target-specific, so the
       # key names the target triple (shared with every other x86_64-linux job
       # carrying this step). Opportunistic by design: continue-on-error keeps
       # a cache-infrastructure failure falling through to the SHA-verified
       # download instead of becoming a new way to fail the job, and there are
       # deliberately no restore-keys — an old pin's binaries would only be
       # hashed and re-downloaded anyway.
-      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+      - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
-          # Only the two gitignored executable slots — never the whole dir:
+          # Only the gitignored executable slot — never the whole dir:
           # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
           # and an exact-key restore would untar stale cached copies of those
           # over the checkout whenever a PR edits them without touching the
           # hashed pin files (codex review, zfb#2385 PR).
           path: |
             crates/zfb/binaries/esbuild/esbuild
-            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       - run: pnpm install --frozen-lockfile
@@ -390,24 +387,16 @@ jobs:
       # upstream by crates/zfb/build.rs before staging; the `--version` run here is
       # just a smoke test that the staged binary actually executes on this runner's
       # architecture — a corrupt or wrong-arch binary fails the step.)
-      #
-      # Extended (issue #1393) to also assert the tailwindcss-v4 slot, which
-      # crates/zfb/build.rs stages as the same side effect of the
-      # `cargo build --workspace --all-targets` step above — it was already
-      # staged here, just never asserted or exercised by any T1 step. Mirrors
-      # exam.yml's combined esbuild+tailwindcss assert step.
-      - name: Assert esbuild + tailwindcss binaries were provisioned for the test suite
+      - name: Assert esbuild binary was provisioned for the test suite
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
-          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
+          for slot in "$ESBUILD_SLOT"; do
             if [ ! -x "$slot" ]; then
               echo "::error::$slot not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
               exit 1
             fi
           done
           "$ESBUILD_SLOT" --version
-          "$TAILWIND_SLOT" --version
 
       # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
       # `#[ignore]`d tests (tagged `env-gate:` per crates/CLAUDE.md's taxonomy) were
@@ -738,18 +727,17 @@ jobs:
       # downloads too); see that step's comment for the full rationale.
       # The key is deliberately identical: slot content depends only on the
       # target platform, so both jobs share one cache entry.
-      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+      - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
-          # Only the two gitignored executable slots — never the whole dir:
+          # Only the gitignored executable slot — never the whole dir:
           # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
           # and an exact-key restore would untar stale cached copies of those
           # over the checkout whenever a PR edits them without touching the
           # hashed pin files (codex review, zfb#2385 PR).
           path: |
             crates/zfb/binaries/esbuild/esbuild
-            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # crates/zfb/build.rs vendors framework npm packages (preact, react,

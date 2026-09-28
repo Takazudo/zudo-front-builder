@@ -8,7 +8,7 @@
 use std::process::Command;
 
 use zfb_test_utils::zfb_binary;
-use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 #[test]
 fn long_version_reports_embedded_toolchain_and_short_version_stays_single_line() {
@@ -29,16 +29,13 @@ fn long_version_reports_embedded_toolchain_and_short_version_stays_single_line()
         "long version must retain the zfb version prefix, got: {long_stdout:?}"
     );
     assert!(
-        long_stdout.contains(EXPECTED_TAILWIND_VERSION),
-        "long version must report embedded Tailwind CSS {EXPECTED_TAILWIND_VERSION}, got: {long_stdout:?}"
-    );
-    assert!(
         long_stdout.contains(EXPECTED_ESBUILD_VERSION),
         "long version must report embedded esbuild {EXPECTED_ESBUILD_VERSION}, got: {long_stdout:?}"
     );
-    assert!(
-        long_stdout.lines().count() >= 3,
-        "long version must be multi-line, got: {long_stdout:?}"
+    assert_eq!(
+        long_stdout.lines().count(),
+        2,
+        "long version must have exactly two lines, got: {long_stdout:?}"
     );
 
     let short = Command::new(zfb_binary!())

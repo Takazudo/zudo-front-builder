@@ -4,8 +4,7 @@
 # tests/unit/release-binary-slot-restore.sh — offline unit tests for
 # scripts/release-binary-slot-restore.sh, the save/restore helpers
 # scripts/build-macos-x64-local.sh uses to keep the shared, arch-unqualified
-# vendor binary slots (crates/zfb/binaries/esbuild/esbuild,
-# crates/zfb/binaries/tailwindcss-v4) byte- and permission-identical to their
+# vendor binary slot (crates/zfb/binaries/esbuild/esbuild) byte- and permission-identical to their
 # pre-cross-build state (issue #2189, fixing the pollution source behind
 # #2178).
 #
@@ -39,18 +38,16 @@ if [ ! -f "$LIB" ]; then
   exit 1
 fi
 
-# make_fixture <dir> — creates the two slot paths (arm64 placeholder content,
+# make_fixture <dir> — creates the slot path (arm64 placeholder content,
 # mode 0755) under a fresh throwaway "repo root" directory.
 make_fixture() {
   fixture_dir="$1"
   mkdir -p "$fixture_dir/crates/zfb/binaries/esbuild"
   printf 'arm64-esbuild-fixture-bytes' >"$fixture_dir/crates/zfb/binaries/esbuild/esbuild"
   chmod 0755 "$fixture_dir/crates/zfb/binaries/esbuild/esbuild"
-  printf 'arm64-tailwind-fixture-bytes' >"$fixture_dir/crates/zfb/binaries/tailwindcss-v4"
-  chmod 0755 "$fixture_dir/crates/zfb/binaries/tailwindcss-v4"
 }
 
-# ── Case 1: both slots present pre-build — restore puts back byte-identical
+# ── Case 1: slot present pre-build — restore puts back byte-identical
 # content AND the executable permission bit, after the "cross-build" leaves
 # different bytes AND a different (non-executable) mode ────────────────────
 
@@ -65,8 +62,6 @@ bash -c '
   save_binary_slots
   printf "x64-esbuild-bytes" > crates/zfb/binaries/esbuild/esbuild
   chmod 0644 crates/zfb/binaries/esbuild/esbuild
-  printf "x64-tailwind-bytes" > crates/zfb/binaries/tailwindcss-v4
-  chmod 0644 crates/zfb/binaries/tailwindcss-v4
   echo "$BINARY_SLOT_BACKUP_DIR" > "'"$BACKUP_DIR_FILE1"'"
   restore_binary_slots
 '
@@ -77,22 +72,10 @@ else
   fail "case 1: esbuild slot content NOT restored (got: $(cat "$WORK1/crates/zfb/binaries/esbuild/esbuild"))"
 fi
 
-if [ "$(cat "$WORK1/crates/zfb/binaries/tailwindcss-v4")" = "arm64-tailwind-fixture-bytes" ]; then
-  pass "case 1: tailwindcss-v4 slot content restored byte-identical"
-else
-  fail "case 1: tailwindcss-v4 slot content NOT restored (got: $(cat "$WORK1/crates/zfb/binaries/tailwindcss-v4"))"
-fi
-
 if [ -x "$WORK1/crates/zfb/binaries/esbuild/esbuild" ]; then
   pass "case 1: esbuild slot executable bit restored"
 else
   fail "case 1: esbuild slot executable bit NOT restored"
-fi
-
-if [ -x "$WORK1/crates/zfb/binaries/tailwindcss-v4" ]; then
-  pass "case 1: tailwindcss-v4 slot executable bit restored"
-else
-  fail "case 1: tailwindcss-v4 slot executable bit NOT restored"
 fi
 
 BACKUP_DIR1=$(cat "$BACKUP_DIR_FILE1")
@@ -110,36 +93,25 @@ rm -rf "$WORK1"
 
 WORK2=$(mktemp -d)
 mkdir -p "$WORK2/crates/zfb/binaries/esbuild"
-printf 'arm64-esbuild-fixture-bytes' >"$WORK2/crates/zfb/binaries/esbuild/esbuild"
-chmod 0755 "$WORK2/crates/zfb/binaries/esbuild/esbuild"
-# tailwindcss-v4 deliberately absent pre-build.
-
 bash -c '
   set -eu
   cd "'"$WORK2"'"
   . "'"$LIB"'"
   save_binary_slots
-  printf "x64-tailwind-bytes" > crates/zfb/binaries/tailwindcss-v4
-  chmod 0755 crates/zfb/binaries/tailwindcss-v4
+  printf "x64-esbuild-bytes" > crates/zfb/binaries/esbuild/esbuild
+  chmod 0755 crates/zfb/binaries/esbuild/esbuild
   restore_binary_slots
 '
-
-if [ ! -e "$WORK2/crates/zfb/binaries/tailwindcss-v4" ]; then
-  pass "case 2: pre-absent tailwindcss-v4 slot restored to absent (cross-build leftover removed)"
+if [ ! -e "$WORK2/crates/zfb/binaries/esbuild/esbuild" ]; then
+  pass "case 2: pre-absent esbuild slot restored to absent"
 else
-  fail "case 2: pre-absent tailwindcss-v4 slot still present after restore"
-fi
-
-if [ "$(cat "$WORK2/crates/zfb/binaries/esbuild/esbuild")" = "arm64-esbuild-fixture-bytes" ]; then
-  pass "case 2: untouched esbuild slot still intact"
-else
-  fail "case 2: untouched esbuild slot content changed unexpectedly"
+  fail "case 2: pre-absent esbuild slot still present after restore"
 fi
 
 rm -rf "$WORK2"
 
 # ── Case 3: EXIT-trap failure path — a mid-build failure must still restore
-# both slots AND preserve the original (non-zero) exit status ──────────────
+# the slot AND preserve the original (non-zero) exit status ──────────────
 
 WORK3=$(mktemp -d)
 make_fixture "$WORK3"
@@ -200,7 +172,7 @@ rm -rf "$WORK3"
 #
 # The failure is forced deterministically and WITHOUT relying on file modes
 # (a root/CI uid would bypass a chmod-based guard): after save_binary_slots
-# has snapshotted both slots, the esbuild slot's parent DIRECTORY is replaced
+# has snapshotted the slot, the esbuild slot's parent DIRECTORY is replaced
 # by a regular file, so `cp -p <backup> crates/zfb/binaries/esbuild/esbuild`
 # fails with ENOTDIR ("Not a directory") for every uid.
 
@@ -216,8 +188,6 @@ if bash -c '
   . "'"$LIB"'"
   save_binary_slots
   echo "$BINARY_SLOT_BACKUP_DIR" > "'"$BACKUP_DIR_FILE4"'"
-  printf "x64-tailwind-bytes" > crates/zfb/binaries/tailwindcss-v4
-  chmod 0644 crates/zfb/binaries/tailwindcss-v4
   # Replace the esbuild slot directory with a regular file → the restore cp
   # into crates/zfb/binaries/esbuild/esbuild cannot succeed (ENOTDIR).
   rm -rf crates/zfb/binaries/esbuild
@@ -268,14 +238,6 @@ if [ "$(cat "$BACKUP_DIR_AFTER_FILE4")" = "$BACKUP_DIR4" ]; then
   pass "case 4: BINARY_SLOT_BACKUP_DIR left set after a failed restore (a retry is still possible)"
 else
   fail "case 4: BINARY_SLOT_BACKUP_DIR cleared after a failed restore — a retry could not find the backup"
-fi
-
-# The still-restorable slot must have been restored anyway (restore attempts
-# every slot rather than stopping at the first failure).
-if [ "$(cat "$WORK4/crates/zfb/binaries/tailwindcss-v4")" = "arm64-tailwind-fixture-bytes" ]; then
-  pass "case 4: the other slot was still restored despite the failing one"
-else
-  fail "case 4: the other slot was not restored after the first slot failed"
 fi
 
 rm -rf "$BACKUP_DIR4"
