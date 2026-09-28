@@ -1,11 +1,98 @@
 ---
 title: フォーム
-description: 対応する text input、textarea、checkbox、単一選択 select、radio group を writable signal に結び付ける方法を説明します。
+description: コントロールはデフォルトで非制御とし、五種類の書き込み可能な signal アダプターを必要に応じて使います。
 sidebar_position: 7
 ---
 
-<Note>
+## デフォルトでは非制御
 
-このページは執筆中です。 owned-engines-stub
+明示的なモデルを渡さない限り、コントロールはブラウザのネイティブな状態を使います。静的な value と checked の props は初期値を設定します。リアクティブな value と checked は拒否されるため、コントロールを signal に接続し続けたい場合は model prop を使います。
 
-</Note>
+予約済みの props は **defaultValue**、**defaultChecked**、**modelValue**、**modelChecked** です。HTML 属性にはなりません。モデルと対応する default、value と defaultValue、checked と defaultChecked を同時に指定するとエラーになります。
+
+## 書き込み可能な signal をバインドする
+
+テキスト入力、textarea、checkbox、単一選択の select、radio グループでモデルを使えます。
+
+| コントロール | モデル | サーバー出力と初期値 |
+| --- | --- | --- |
+| テキスト入力（type の省略を含む）、search、email、URL、tel、password | 書き込み可能な文字列の signal を modelValue に指定 | エスケープ済みの value 属性 |
+| textarea | 書き込み可能な文字列の signal を modelValue に指定 | エスケープ済みのテキスト内容 |
+| checkbox 入力 | 書き込み可能な真偽値の signal を modelChecked に指定 | 真偽値の checked 属性 |
+| 単一選択の select | 書き込み可能な文字列の signal を modelValue に指定 | 一致する静的な option の selected |
+| radio グループ | 共有する書き込み可能な文字列または null の signal を modelValue に指定 | 一致する静的な選択肢の checked。null ならどれも選択しない |
+
+対応するイベントは、テキスト入力と textarea では input、checkbox、select、radio では change です。radio のモデルはグループ内で共有します。textarea のデフォルト内容の先頭にある改行は、HTML の解析後も保たれます。
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Preferences() {
+  const displayName = signal("Ada");
+  const updatesEnabled = signal(true);
+  const delivery = signal<string | null>("email");
+
+  return (
+    <form>
+      <label>
+        Display name
+        <input modelValue={displayName} />
+      </label>
+      <label>
+        <input type="checkbox" modelChecked={updatesEnabled} />
+        Email me updates
+      </label>
+      <label>
+        <input type="radio" name="delivery" value="email" modelValue={delivery} />
+        Email
+      </label>
+      <label>
+        <input type="radio" name="delivery" value="post" modelValue={delivery} />
+        Post
+      </label>
+    </form>
+  );
+}
+~~~
+
+グループ内の各 radio には静的な value と、同じ空でない name、フォームとの関連付け、ルートが必要です。radio と select の選択肢の値は一意の文字列にします。radio モデルが null ならどれも選択されません。単一選択の select モデルは静的な選択肢に一致する必要がありますが、ハイドレーション時にはブラウザの未選択状態を選択を強制せずに記録できます。
+
+## モデルには書き込み可能な signal が必要
+
+すべてのモデルには signal() で作った `Signal<T>` が必要です。`ReadonlySignal<T>` や computed 値は、共通のリアクティブなブランドを持っていてもモデルにはできません。Signal は必須の writable ブランドも持ちます。TypeScript に加え、h で作った動的な記述も含めて、サーバーとクライアントのランタイムで検証されます。
+
+~~~tsx
+import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+const name = signal("Ada");
+const view: ReadonlySignal<string> = name;
+const writable: Signal<string> = name;
+const label = computed(() => name.value.toUpperCase());
+
+<input modelValue={name} />;
+<p>{label}</p>;
+~~~
+
+computed と読み取り専用の signal は、テキストなど読み取り用のバインディングに使います。子が signal を読むだけなら有効な入力です。readonly 型注釈を付けても実行時の writable ブランドは消えませんが、その TypeScript 型のままモデルに渡すことはできません。ランタイムはモデルへの書き込み前に、writable ブランドのないモデルを拒否します。
+
+v1 は複数選択に対応しません。multiple の select は島モードで拒否され、model や defaultValue も使えません。file、contenteditable、数値、日付、range のモデルにも対応しません。select、optgroup、option の構造は静的にし、選択肢のラベルやリストをリアクティブにはできません。一致する選択肢のないプログラムからのモデル値やデフォルト値は、部分的に更新せず ZR_MODEL_VALUE を報告します。
+
+## ハイドレーションは入力済みの値を保つ
+
+ハイドレーション時、ランタイムはモデルに書き込む前にすべての生きたコントロールの値を読み、検証します。一つのルート全体に対する batch で現在の DOM が優先されるため、有効化前に入力された内容が保たれます。同じ signal にバインドされた複数の radio 以外のコントロールは、値が一致する必要があります。radio グループは走査順に依存せず、グループ単位で同期します。
+
+mount は新しいコントロールを作るため、モデルかデフォルト値から初期化します。有効化後、アダプターは同じ値のプロパティ代入を省いてカーソルと選択範囲を保ちます。ネイティブのフォーム reset では、ブラウザがデフォルトの動作を適用した後に関係するモデルを更新します。reset 時のデフォルトは、後の signal 値ではなく元のデフォルトのままです。
+
+## 変換中の入力と日本語 IME
+
+テキスト用アダプターは compositionstart、compositionend、input.isComposing、blur を監視します。変換中の入力でモデルが更新されることはありますが、signal の通知は変換中のコントロールへ書き戻しません。外部からの書き込みは保留され、変換の終了または blur 時には最終的な DOM 上の編集を正とみなして読み取ります。
+
+共通の zfb 起動処理は島のスケジュールより前に capture リスナーを登録し、アダプターがバンドルをまたいで進行中の変換を識別できるようにします。フォーカス中で変換状態が不明なコントロールへの書き込みは compositionend または blur まで延期し、フォーカスしていないコントロールは更新できます。合成 composition イベントでこの状態プロトコルを自動検証できますが、実際の日本語 IME の動作を検証したことにはなりません。実際の IME 動作は DD17 に基づく人手での検証として保留されています。
+
+## 関連ページ
+
+- [リアクティビティ](./reactivity.mdx)
+- [ハイドレーション](./hydration.mdx)
+- [コンポーネントと JSX](./components-and-jsx.mdx)
+- [API リファレンス](./api-reference.mdx)
