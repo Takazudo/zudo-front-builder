@@ -11,7 +11,7 @@
 //!
 //! This module targets the *server side*: every page module the router
 //! can serve, every layout/component they transitively pull in, plus the
-//! framework's hydration shim for parity with the islands bundle. The
+//! framework's render-to-string module and the server router. The
 //! output is one ESM file the runtime imports to dispatch SSR for any
 //! route. Mixing both jobs into `zfb-islands` would conflate "what runs
 //! in the browser" with "what runs on the worker"; keeping them in
@@ -345,7 +345,7 @@ pub struct BundlerInput {
     pub components_dir: PathBuf,
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
-    /// Which JSX framework's hydration shim to fold into the bundle.
+    /// Which JSX framework supplies the JSX runtime and render-to-string module.
     /// Drives [`make_adapter`] selection.
     pub framework: Framework,
     /// Operator-authored raw esbuild `--define` substitutions populated from
@@ -1683,7 +1683,7 @@ pub struct ShadowSession {
     lock_file: Option<std::fs::File>,
     /// SHA-256 of the last-written bytes per shadow-relative path. Only
     /// real files written through [`ShadowWriter`] are recorded; symlinks
-    /// and the always-write infra files (entry.mjs / shim / tsconfig)
+    /// and the always-write infra files (entry.mjs / tsconfig)
     /// are not.
     written: HashMap<PathBuf, [u8; 32]>,
     /// Shadow-relative paths visited by the previous call's materialise
@@ -2900,7 +2900,7 @@ pub fn bundle_with_session(
 
     // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
     // `materialise` (tempdir alloc + every materialise walk + diagnostics
-    // gates + css rewrite + entry/shim/tsconfig writes), `esbuild` (the
+    // gates + css rewrite + entry/tsconfig writes), `esbuild` (the
     // subprocess), `post` (manifest assembly after the subprocess), and
     // `teardown` (the shadow TempDir's recursive delete, timed via an
     // explicit drop). One stderr line per successful call; error paths
@@ -2943,7 +2943,7 @@ pub fn bundle_with_session(
     // tree — the workspace root in a pnpm workspace — and the PROJECT mirror
     // (`shadow`) is nested at the project's workspace-relative subpath. Every
     // downstream step keeps keying off `shadow` (entry.mjs / synthetic
-    // tsconfig / hydration shim live there; esbuild's cwd is `shadow`), so
+    // tsconfig live there; esbuild's cwd is `shadow`), so
     // without a workspace `first_party_root == project_root`, `workspace_rel`
     // is empty, and `shadow == work` — a byte-identical no-op vs the pre-#1668
     // single-mirror layout. Sibling-package sources are NOT staged in this
@@ -3277,8 +3277,8 @@ pub fn bundle_with_session(
     // "2a-sibling" section and `mirror_derived_preprocessing_files`.
 
     // Seed the staged-dependency closure from the materialized project module
-    // graph and the framework packages the generated entry/hydration shim
-    // import (issue #1645). Source discovery also runs with an empty exclude so
+    // graph and the framework packages the generated entry and JSX imports
+    // need (issue #1645). Source discovery also runs with an empty exclude so
     // package-name workspace siblings can be detected and copied before the
     // stage-escape audit. Ordinary dependencies remain live-link-resolved in
     // that mode; the root-seed loop below only admits workspace sources.
@@ -3345,8 +3345,7 @@ pub fn bundle_with_session(
         );
 
         // The server runtime subpath (`createPageRouter`), the framework
-        // render-to-string module, and the JSX runtime source (which also
-        // covers the hydration shim's bare framework import) appear in NO
+        // render-to-string module, and the JSX runtime source appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
         synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
@@ -7108,7 +7107,7 @@ fn is_reserved_shadow_root_name(name: &str) -> bool {
 /// by the extra-dirs pass; only depth-1 files are handled here.
 ///
 /// Reserved generated names ([`is_reserved_shadow_root_name`]) are SKIPPED so
-/// the generated `tsconfig.json` / `entry.mjs` / hydrate shim / `.zfb-*`
+/// the generated `tsconfig.json` / `entry.mjs` / `.zfb-*`
 /// infra files always win. `mdx-components.tsx` keeps its own dedicated pass.
 /// Hidden dotfiles are skipped (never resolved by a bare `@/<name>` import).
 fn stage_project_root_loose_files(
@@ -11192,7 +11191,7 @@ fn extend_node_modules_dependency_staging(
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
 
-    // Packages the generated `entry.mjs` and hydration shim import but which
+    // Packages the generated `entry.mjs` and JSX imports need but which
     // appear in no project source file (issue #1645). Resolve them from a
     // synthetic project-root importer so the closure stages them like any other
     // bare dependency; subpath specifiers collapse to their owning package via
@@ -15875,6 +15874,12 @@ mod tests {
 
         // The route export must still be present for the runtime adapter.
         assert!(body.contains("export const routes = {"));
+
+        // Browser hydration belongs to zfb-islands' generated client entry (#3315).
+        assert!(
+            !body.contains("__zfb_internal_hydrate.jsx") && !body.contains("hydrateIsland"),
+            "the SSR entry must not import or export the retired hydration shim; got:\n{body}"
+        );
     }
 
     #[test]
@@ -20975,10 +20980,8 @@ mod tests {
         // and as a claimed member of a pnpm workspace. The workspace build must
         // nest the WHOLE project mirror under the project's workspace-relative
         // subpath, and its layout — stripped of that prefix — must equal the
-        // standalone (flat) layout. That single equality proves BOTH acceptance
-        // criteria: a non-workspace build is a byte-identical no-op, and a
-        // workspace build nests the project mirror carrying project-only
-        // content.
+        // standalone (flat) layout. Compare file contents too, so rerooting
+        // preserves both the inventory and the generated/source bytes.
         fn seed_project(root: &Path) {
             for dir in ["pages", "content", "components", "layouts"] {
                 fs::create_dir_all(root.join(dir)).unwrap();
@@ -21043,16 +21046,22 @@ mod tests {
             ws_stripped, flat_files,
             "the workspace layout minus its project-rel prefix must equal the flat layout"
         );
-        for expected in [
-            "__zfb_internal_hydrate.jsx",
-            "entry.mjs",
-            "layouts/default.tsx",
-            "pages/index.tsx",
-            "tsconfig.json",
-        ] {
-            assert!(
-                flat_files.iter().any(|file| file == expected),
-                "the flat layout must contain {expected}: {flat_files:?}"
+        // The SSR shim was retired in a991a870; reject stale generated files too (#3315).
+        assert_eq!(
+            flat_files,
+            [
+                "entry.mjs",
+                "layouts/default.tsx",
+                "pages/index.tsx",
+                "tsconfig.json",
+            ],
+            "the flat SSR shadow must contain exactly the entry, tsconfig and project sources"
+        );
+        for file in &flat_files {
+            assert_eq!(
+                fs::read(flat_session.shadow_root().join(file)).unwrap(),
+                fs::read(ws_session.shadow_root().join(prefix).join(file)).unwrap(),
+                "rerooting must preserve the bytes of {file}"
             );
         }
     }
