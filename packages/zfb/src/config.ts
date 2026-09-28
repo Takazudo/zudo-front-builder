@@ -14,7 +14,7 @@
 // The shape mirrors the Rust `Config` struct one-for-one. Keep them in
 // sync; the `defineConfig` identity helper is the single anchor point.
 
-export type Framework = "preact";
+export type Framework = "preact" | "zudo-react";
 
 export type CollectionDef = {
   /** Identifier used at the call site (e.g. `"blog"`). */

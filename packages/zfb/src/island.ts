@@ -40,7 +40,7 @@
 // values and fall back to the default. In production we silently fall
 // back to keep the bundle path small.
 
-import { jsx } from "react/jsx-runtime";
+import { jsx } from "@takazudo/zfb/jsx-factory";
 
 import type { VNode } from "./jsx-types.js";
 import { DEFAULT_WHEN, resolveWhen, type When } from "./types.js";
@@ -225,11 +225,11 @@ function resolveMediaProps(props: IslandProps): { when: When; media: string | un
  * object as a child with "Objects are not valid as a React child"
  * (minified error #31) because a real React element carries
  * `$$typeof: Symbol.for("react.element")`, which a literal cannot fake
- * portably. Calling `jsx` from `react/jsx-runtime` mints a real element:
- * in React mode it resolves natively; in Preact mode the engine rewrites
- * `react/jsx-runtime` → `preact/jsx-runtime` (bundler.rs ~2886), so the
- * Preact runtime mints the element. Same result the JSX `<div>` delegation
- * produced — but as plain `.ts`.
+ * portably. Calling `jsx` from the SDK factory subpath mints an element
+ * from the selected runtime. The default Preact path retains its existing
+ * React-to-Preact aliases; the owned path aliases only this factory.
+ * This produces the same result as the former JSX `<div>` delegation while
+ * keeping the module plain `.ts`.
  *
  * Why `.ts` and NOT `.tsx`: esbuild rewrites a `.js` import specifier to
  * `.ts` but NOT to `.tsx`. The barrel `index.ts` imports `./island.js`;

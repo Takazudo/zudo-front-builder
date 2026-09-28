@@ -2245,6 +2245,7 @@ pub(crate) fn module_worker_build_context(
 ) -> zfb_build::ModuleWorkerBuildContext {
     let jsx_import_source = match framework {
         crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
+        crate::config::Framework::ZudoReact => zfb_islands::FrameworkKind::ZudoReact,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -4520,6 +4521,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // collision passes below keep seeing the real project paths.
     let islands_jsx_import_source = match framework {
         crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
+        crate::config::Framework::ZudoReact => zfb_islands::FrameworkKind::ZudoReact,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -5953,6 +5955,7 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 
     let client_scripts_jsx_import_source = match framework {
         crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::ZudoReact => FrameworkKind::ZudoReact,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -6608,6 +6611,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
 
     let jsx_import_source = match framework {
         crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::ZudoReact => FrameworkKind::ZudoReact,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);

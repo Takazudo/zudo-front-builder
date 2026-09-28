@@ -350,15 +350,14 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     () => clientRouterNodes.slice(1) as unknown as Child,
     '<meta name="zfb-view-transitions-enabled" content="true"><meta name="zfb-view-transitions-fallback" content="animate">',
   ),
-  rejected(
+  accepted(
     "ClientRouter style raw-content prop",
     "packages/zfb-runtime/src/client-router-component.ts",
     "makeVNode",
-    'jsx("style", { dangerouslySetInnerHTML: { __html: announcerCss } }, key)',
-    "The dialect reserves `rawHtml`; React's `dangerouslySetInnerHTML` spelling is rejected.",
+    'jsx("style", { rawHtml: announcerCss }, key)',
+    "The owned factory selects trusted static `rawHtml` for the style element.",
     () => clientRouterNodes[0] as unknown as Child,
-    "ZR_PROP_DIALECT",
-    "SDK",
+    `<style>${clientRouterNodes[0]?.props.rawHtml}</style>`,
   ),
   accepted(
     "template HTML class attribute",

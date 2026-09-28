@@ -606,6 +606,8 @@ pub enum FrameworkKind {
     /// Preact — bare `preact` + `preact/jsx-runtime`.
     #[default]
     Preact,
+    /// zfb's owned runtime.
+    ZudoReact,
 }
 
 impl FrameworkKind {
@@ -613,6 +615,7 @@ impl FrameworkKind {
     pub fn name(self) -> &'static str {
         match self {
             FrameworkKind::Preact => "preact",
+            FrameworkKind::ZudoReact => "zudo-react",
         }
     }
 
@@ -625,6 +628,7 @@ impl FrameworkKind {
     pub fn jsx_import_source(self) -> &'static str {
         match self {
             FrameworkKind::Preact => "preact",
+            FrameworkKind::ZudoReact => "@takazudo/zfb/zudo-react",
         }
     }
 
@@ -635,9 +639,15 @@ impl FrameworkKind {
     /// the orchestrator already sets via `with_jsx_import_source`. Keeping
     /// one field drive both the esbuild `--jsx-import-source` flag AND the
     /// emitted hydration glue makes the two structurally incapable of
-    /// diverging. Unknown values fall back to Preact.
-    pub fn from_jsx_import_source(_s: &str) -> Self {
-        FrameworkKind::Preact
+    /// diverging. Unknown values are errors rather than silently using Preact.
+    pub fn from_jsx_import_source(s: &str) -> Result<Self> {
+        match s {
+            "preact" => Ok(Self::Preact),
+            "@takazudo/zfb/zudo-react" => Ok(Self::ZudoReact),
+            _ => anyhow::bail!(
+                "unknown JSX import source {s:?}; expected `preact` or `@takazudo/zfb/zudo-react`"
+            ),
+        }
     }
 }
 
@@ -981,6 +991,10 @@ mod tests {
         // renderer's SWC pipeline targets, otherwise the SSR'd HTML
         // and the hydrated bundle disagree on how JSX compiles.
         assert_eq!(FrameworkKind::Preact.jsx_import_source(), "preact");
+        assert_eq!(
+            FrameworkKind::ZudoReact.jsx_import_source(),
+            "@takazudo/zfb/zudo-react"
+        );
     }
 
     #[test]
@@ -988,20 +1002,25 @@ mod tests {
         // `from_jsx_import_source` derives the mount-glue framework from
         // `BundleConfig::jsx_import_source` (one field drives both the
         // esbuild flag and the emitted glue). Confirm the Preact value and
-        // the fallback for unknown sources.
+        // the owned value and strict rejection of unknown sources.
         assert_eq!(
-            FrameworkKind::from_jsx_import_source("preact"),
-            FrameworkKind::Preact
-        );
-        // Unknown / empty falls back to the Preact default.
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("solid"),
+            FrameworkKind::from_jsx_import_source("preact").unwrap(),
             FrameworkKind::Preact
         );
         assert_eq!(
-            FrameworkKind::from_jsx_import_source(""),
-            FrameworkKind::Preact
+            FrameworkKind::from_jsx_import_source("@takazudo/zfb/zudo-react").unwrap(),
+            FrameworkKind::ZudoReact
         );
+        for source in ["solid", ""] {
+            let error = FrameworkKind::from_jsx_import_source(source)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(source)
+                    && error.contains("preact")
+                    && error.contains("@takazudo/zfb/zudo-react")
+            );
+        }
     }
 
     #[test]

@@ -54,6 +54,54 @@ const WORKER_RESULT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_RESULT";
 const WORKER_PROJECT_PARENT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_PROJECT_PARENT";
 
 #[test]
+fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[framework_packages_no_pnpm] no esbuild binary available; skipping owned subpaths"
+        );
+        return;
+    };
+    let project = tempfile::tempdir().unwrap();
+    let (lease, embedded) = embedded_node_modules().expect("extract embedded packages");
+    let source = r#"
+      import * as core from "@takazudo/zfb/zudo-react";
+      import * as jsx from "@takazudo/zfb/zudo-react/jsx-runtime";
+      import * as dev from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+      import * as server from "@takazudo/zfb/zudo-react/server";
+      import * as client from "@takazudo/zfb/zudo-react/client";
+      import * as factory from "@takazudo/zfb/jsx-factory";
+      export const resolved = [core, jsx, dev, server, client, factory];
+      export const transformed = <div>owned JSX</div>;
+    "#;
+    fs::write(project.path().join("entry.tsx"), source).unwrap();
+    for (mode, flags) in [
+        ("ssr", "--platform=neutral"),
+        ("islands", "--platform=browser"),
+    ] {
+        let output = Command::new(&esbuild)
+            .current_dir(project.path())
+            .env("NODE_PATH", &embedded)
+            .arg("entry.tsx")
+            .arg("--bundle")
+            .arg(flags)
+            .arg("--format=esm")
+            .arg("--jsx=automatic")
+            .arg("--jsx-import-source=@takazudo/zfb/zudo-react")
+            .arg("--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime")
+            .arg("--outfile=out.js")
+            .output()
+            .expect("run esbuild");
+        assert!(
+            output.status.success(),
+            "{mode} embedded resolution failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(project.path().join("out.js").exists());
+    }
+    drop(lease);
+}
+
+#[test]
 fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

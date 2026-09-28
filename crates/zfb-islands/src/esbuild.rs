@@ -1081,7 +1081,10 @@ impl EsbuildSubprocessBundler {
         // — the single field the orchestrator already sets via
         // `with_jsx_import_source(config.framework…)`. This keeps the emitted
         // Preact hydration glue and esbuild's `--jsx-import-source` flag aligned.
-        let framework = FrameworkKind::from_jsx_import_source(&config.jsx_import_source);
+        let framework = FrameworkKind::from_jsx_import_source(&config.jsx_import_source)?;
+        if framework == FrameworkKind::ZudoReact && !islands.is_empty() {
+            anyhow::bail!("zudo-react island bundling awaits the owned mount glue in #3284");
+        }
         let entry_source =
             render_shared_bundle_entry_source(framework, islands, config.client_router);
         // Shared-bundle path: splitting ON. This is the ONLY path that ships
@@ -1105,6 +1108,7 @@ impl EsbuildSubprocessBundler {
         splitting: bool,
         job_label: &str,
     ) -> Result<OneEntryOutput> {
+        FrameworkKind::from_jsx_import_source(&config.jsx_import_source)?;
         if splitting {
             validate_module_worker_entries(&config.module_workers)?;
         }
@@ -2369,15 +2373,16 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     // Preact runtime. The gate remains for the framework seam in #3282.
     // `--alias`'s prefix-with-slash semantics are safe here because
     // `react/jsx-runtime` has no deeper subpath to corrupt.
-    if matches!(
-        FrameworkKind::from_jsx_import_source(&config.jsx_import_source),
-        FrameworkKind::Preact
-    ) {
+    if config.jsx_import_source == FrameworkKind::Preact.jsx_import_source() {
         args.push(OsString::from(
             "--alias:react/jsx-runtime=preact/jsx-runtime",
         ));
         args.push(OsString::from(
             "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
+        ));
+    } else if config.jsx_import_source == FrameworkKind::ZudoReact.jsx_import_source() {
+        args.push(OsString::from(
+            "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",
         ));
     }
     if config.minify {
@@ -2590,11 +2595,11 @@ fn non_component_warn(
 ///
 /// # Framework
 ///
-/// The synthesised wrapper emits Preact imports and `h()/hydrate()/render()`
-/// mount glue. The framework argument remains
-/// at the call site for compatibility while the selector has one value.
+/// The Preact path emits `h()/hydrate()/render()` mount glue. The owned path
+/// remains a placeholder until #3284; its fallible caller rejects nonempty
+/// island sets before this generator is used.
 pub fn render_shared_bundle_entry_source(
-    _framework: FrameworkKind,
+    framework: FrameworkKind,
     islands: &[Island],
     client_router: bool,
 ) -> String {
@@ -2623,6 +2628,10 @@ pub fn render_shared_bundle_entry_source(
         // `true` (#289); a defensive zero-island call without it still
         // produces valid JS rather than a tail comma in a generated
         // array literal.
+        return out;
+    }
+    if framework == FrameworkKind::ZudoReact {
+        // produce_bundle_js rejects this until #3284 provides owned mount glue.
         return out;
     }
     out.push_str(r#"import { mountIslands } from "@takazudo/zfb/runtime";"#);
@@ -2823,6 +2832,7 @@ impl EsbuildSubprocessBundler {
         workers: &[ClientScriptWorkerEntry],
         config: &BundleConfig,
     ) -> Result<ClientScriptBundleOutput> {
+        FrameworkKind::from_jsx_import_source(&config.jsx_import_source)?;
         self.sweep_stranded_entries();
 
         let workers = validate_client_script_worker_entries(entry_name, workers)?;
@@ -5206,6 +5216,21 @@ mod tests {
             !args.iter().any(|a| a == "--jsx-import-source=preact"),
             "stale --jsx-import-source=preact present: {args:?}"
         );
+    }
+
+    #[test]
+    fn owned_args_use_only_owned_factory_alias() {
+        let cfg = BundleConfig::default()
+            .with_jsx_import_source(FrameworkKind::ZudoReact.jsx_import_source());
+        let args = args_as_strings(&cfg, true);
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--jsx-import-source=@takazudo/zfb/zudo-react"));
+        assert!(args
+            .iter()
+            .any(|arg| arg
+                == "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime"));
+        assert!(!args.iter().any(|arg| arg.starts_with("--alias:react")));
     }
 
     /// Regression for issue #633.

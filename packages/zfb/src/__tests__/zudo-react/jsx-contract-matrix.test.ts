@@ -7,9 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToString } from "../../zudo-react/server.js";
 import { jsxContractMatrix } from "./jsx-contract-matrix.js";
 
-// This is a test-graph-only runtime substitution for SDK producers that
-// intentionally still import react/jsx-runtime until the #3282 seam.
-vi.mock("react/jsx-runtime", async () => await import("../../zudo-react/jsx-runtime.js"));
+// Select the owned implementation of the temporary SDK factory subpath.
+vi.mock("@takazudo/zfb/jsx-factory", async () => await import("../../zudo-react/jsx-runtime.js"));
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../");
 

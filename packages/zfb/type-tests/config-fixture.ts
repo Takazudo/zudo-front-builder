@@ -21,6 +21,8 @@ export const bundleInlineLoadersAndRawDefines = defineConfig({
   },
 });
 
+export const ownedFramework = defineConfig({ framework: "zudo-react" });
+
 export const bundleRejectsAssetEmittingLoaders = defineConfig({
   bundle: {
     loaders: {
