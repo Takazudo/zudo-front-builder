@@ -49,9 +49,9 @@ jobs:
   wind-computed-style:
     name: wind-computed-style (Chromium computed styles)
     runs-on: ubuntu-latest
-    # Provisional budget for a cold zudo-wind compile, dependency install and Chromium setup.
-    # Replace with measured headroom after the first guarded Chromium run.
-    timeout-minutes: 20
+    # A fresh-target guarded suite run completed locally in 42s; 10 minutes leaves
+    # headroom for hosted dependency installation and Chromium setup.
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
