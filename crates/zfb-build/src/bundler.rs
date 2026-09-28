@@ -2901,6 +2901,7 @@ fn collect_zudo_react_external_target(
         target.to_path_buf()
     } else {
         let mut resolved = None;
+        // page-extension-drift-guard: allow — external token input probe, not a route allowlist.
         for extension in ["ts", "tsx", "js", "jsx", "mjs"] {
             let candidate = target.with_extension(extension);
             if candidate.is_file() {
@@ -2998,6 +2999,7 @@ fn collect_zudo_react_external_file_closure(
         let extension = physical.extension().and_then(|ext| ext.to_str());
         if !matches!(
             extension,
+            // page-extension-drift-guard: allow — external token import graph inputs, not pages.
             Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
         ) {
             continue;
@@ -3053,6 +3055,7 @@ fn zudo_react_token_source(path: &Path) -> bool {
                 | "jsonc"
                 | "yaml"
                 | "yml"
+                // page-extension-drift-guard: allow — build token source files, not pages.
                 | "md"
                 | "mdx"
                 | "html"
@@ -3140,6 +3143,7 @@ fn collect_zudo_react_token_tree(
                 physical.starts_with(&canonical_root)
                     && matches!(
                         physical.extension().and_then(|ext| ext.to_str()),
+                        // page-extension-drift-guard: allow — linked package token inputs, not pages.
                         Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
                     )
             })
