@@ -16632,7 +16632,7 @@ mod tests {
             shadow,
             &routes,
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16653,7 +16653,7 @@ mod tests {
              @takazudo/zfb-runtime/server (issue #1298); got:\n{body}"
         );
         assert!(
-            body.contains("\"preact-render-to-string\""),
+            body.contains("\"@takazudo/zfb/zudo-react/server\""),
             "entry.mjs must import renderToString from the framework module; got:\n{body}"
         );
 
@@ -16724,7 +16724,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -16802,7 +16802,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16839,7 +16839,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: Some("https://example.com"),
@@ -16888,7 +16888,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16920,7 +16920,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16969,7 +16969,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17001,7 +17001,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17050,7 +17050,7 @@ mod tests {
         fs::create_dir_all(&off).unwrap();
         fs::create_dir_all(&on).unwrap();
         let inputs = |emit_render_artifacts: bool| EntryModuleInputs {
-            render_to_string_module: "preact-render-to-string",
+            render_to_string_module: "@takazudo/zfb/zudo-react/server",
             content_snapshot_json: None,
             content_imports: &[],
             site: Some("https://example.com"),
@@ -17099,7 +17099,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17147,7 +17147,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17178,7 +17178,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17292,7 +17292,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17348,7 +17348,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[], // zero content imports
                 site: None,
@@ -17384,7 +17384,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17427,7 +17427,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17691,7 +17691,7 @@ mod tests {
             &shadow_root,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
