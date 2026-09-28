@@ -194,6 +194,6 @@ EXTRACTION METHOD + BLIND SPOTS. Python regex over tracked files. Tier A = strin
   - What is the sanctioned raw-HTML escape hatch for the inline pre-paint script in layouts/default.tsx and for highlighted-code output in islands?
   - Is packages/zudo-react published as an 11th lockstep package (sixth changelog lane) or kept private/embedded-only at first?
   - Is the runtime specimen's CI job allowed to become a required check later, or does it stay informational (root CLAUDE.md: verification specs do not self-graduate)?
-  - Is cross-repo inventory of the local sibling checkouts ($HOME/repos/myoss/zudo-doc, $HOME/repos/myoss/zudo-sg, $HOME/repos/zp/zzmod) in scope for this plan? I did not scan their sources, only the installed zudo-doc 5.27.0 package.
+  - Is cross-repo inventory of the local sibling checkouts (zudo-doc, zudo-sg and one private consumer) in scope for this plan? I did not scan their sources, only the installed zudo-doc 5.27.0 package.
   - Should codeHighlight.roleClasses keep a utility-mapping feature under wind?
   - Baseline timings and CSS sizes for the chosen slice were not measured here (no compile allowed); who runs them and on which host?
