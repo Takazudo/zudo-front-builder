@@ -1,11 +1,223 @@
 ---
 title: Coming from Tailwind
-description: Map Tailwind syntax and directives to zudo-wind configuration, authored CSS, and its defined utility language.
+description: Map Tailwind CSS constructs to zudo-wind tokens, variants, authored CSS, and explicit source inputs.
 sidebar_position: 9
 ---
 
-<Note>
+## What changes in one minute
 
-This page is being written. owned-engines-stub
+- zudo-wind is a versioned utility language. V1 is identified by `spec: 1`; familiar spellings do not promise compatibility with another engine.
+- There are no utility plugins. The accepted catalog is closed for each language version.
+- Configuration is data in the top-level `wind` key of `zfb.config.ts` or `zfb.config.json`. CSS directives do not configure the engine.
+- No palette, spacing unit, named scale, breakpoint, font, radius, shadow, or easing is supplied implicitly. Configure every project value you use.
+- The source scanner needs complete class candidates. A prefix joined to a runtime value does not become a utility.
+- An unrecognized project class stays ordinary class text and emits no utility rule. A recognized utility with a missing token is diagnosed instead of receiving an invented default.
+- Keep declarations and selectors outside the catalog in authored CSS or CSS Modules.
 
-</Note>
+## Directives
+
+Wind configuration and candidate discovery live outside CSS. Remove Tailwind-only directives when migrating a stylesheet. If one remains in the entry sheet or any imported sheet, zfb reports ZW009 with its spelling and source location and fails the pass, even when `wind: false` disables utility generation.
+
+| Tailwind construct | zudo-wind disposition |
+| --- | --- |
+| `@import "tailwindcss"` | Remove it. Wind supplies its own layer prelude and emits the selected reset, configured tokens, and resolved utilities. A remaining Tailwind import is a ZW009 error. |
+| `@import "tailwindcss/preflight"` | Remove it and choose an explicit `wind.reset`. The reset choices are listed below; an import left behind is a ZW009 error. |
+| `@import "tailwindcss/utilities"` | Remove it. Utilities are generated from complete candidates and the closed catalog; a remaining import is a ZW009 error. |
+| `@tailwind base`, `@tailwind components`, or `@tailwind utilities` | There is no CSS expansion directive. Choose a reset and write component rules in authored CSS; use complete candidates for catalog utilities. A leftover directive is a ZW009 error. |
+| `@theme` | Put validated values in `wind.tokens`. Keep CSS-only properties as ordinary custom properties in authored CSS, then point tokens at those properties when a utility needs them. |
+| `@source` | CSS does not select scan roots. zfb's source plan owns scanned files and package roots; see [Sources and candidates](./sources-and-candidates.mdx). |
+| `@source inline(...)` | Use an owner-keyed `wind.safelist` array for app-owned candidates. Put package-owned candidates in an explicit versioned `wind.manifests` file filtered to complete v1 utilities or markers; every manifest entry is strict, so an invalid or unknown entry fails. There is no pattern, brace expansion, or runtime interpolation syntax. |
+| `@source not(...)` | There is no CSS negation directive. Use the source plan's root and exclusion rules; see [Sources and candidates](./sources-and-candidates.mdx). |
+| `@custom-variant` | Only the built-in `dark` variant is configurable. Set its attribute and value under `wind.dark`; write other selector conditions in authored CSS. |
+| `@apply` | There is no directive that expands utility names into declarations. Put declarations in the authored selector that needs them. |
+| `@utility` | Custom utilities do not extend the language. Define a class in authored CSS and, if its exact token appears in markup, reserve that token with `wind.authoredClasses`. |
+| `@variant` | There is no stylesheet variant-expansion directive. Use a supported complete candidate in markup or write the selector and condition in authored CSS. |
+| `@plugin` | Plugins are not loaded. Use the built-in catalog or authored CSS. |
+| `@config` | Move configuration data to the project's `wind` key; CSS does not load a utility config file. |
+| `@reference` | There is no utility reference import for stylesheet expansion. Keep CSS Modules and global CSS authored, and configure utility values under `wind.tokens`. |
+
+The scanner also rejects the legacy declaration-value functions `theme()`, `--spacing()`, `--alpha()`, and `--value()` with ZW009. It ignores comments and string contents. Ordinary `@layer` statements and CSS imports that explicitly name a layer remain valid. See [Diagnostics and tools](./diagnostics-and-tools.mdx) for the error contract.
+
+## Configuration
+
+The old top-level `tailwind` key has no zudo-wind meaning. A leftover key is a hard configuration error with a named migration message. Replace it with `wind`. A missing `wind` key enables the empty v1 configuration after cutover; that means generation is enabled, reset is `none`, and the token maps start empty.
+
+~~~ts
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: {
+      sm: { minWidthPx: 640 }
+    },
+    dark: { attribute: "data-theme", value: "dark" }
+  }
+});
+~~~
+
+The old opt-out `tailwind: { enabled: false }` becomes `wind: false`. That disables wind generation, token validation, manifest loading, and candidate scanning. Authored global CSS, CSS Modules, and syntax highlighting still run, and the leftover-directive check still runs. For all fields and merge rules, see [Configuration](./configuration.mdx).
+
+## Theme and tokens
+
+V1 ships no color palette or spacing scale. It also supplies no named sizes, font families or weights, font sizes, line heights, tracking, radii, shadows, z-index values, easing values, or breakpoints. The constants `0`, `px`, and catalog keywords do not imply a theme.
+
+Move the values that utilities need into `wind.tokens`. Numeric spacing such as `p-4` multiplies the configured `spacingUnit`; named values come from their family map. For example, this binds both color utilities to a project-owned property:
+
+~~~json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "var(--app-panel)"
+      }
+    }
+  }
+}
+~~~
+
+~~~css
+:root {
+  --app-panel: #f4f1ec;
+}
+~~~
+
+Then `bg-panel` and `text-panel` resolve from `colors.panel`. Token entries are validated data, not executable CSS or JavaScript. A referenced custom property remains authored CSS; the generated token variable points to it. Missing tokens and missing numeric spacing units are reported at strict candidate origins instead of being repaired with defaults. See [Tokens](./tokens.mdx) for the supported maps and value rules.
+
+Uppercase `DEFAULT` is invalid. Use the lowercase key `default` only in maps that define that meaning: `radii.default` supplies bare `rounded`, and `shadows.default` supplies bare `shadow`. It is not a fallback for colors or spacing.
+
+## Reset
+
+The default `reset` is `none`, which emits no reset declarations. Select a reset for the assumptions a page makes about browser defaults.
+
+| Reset | Relevant behavior |
+| --- | --- |
+| `none` | No reset bytes. Lists, heading sizes, border defaults, and controls keep the browser's normal styles unless authored CSS changes them. |
+| `minimal-v1` | Sets border-box sizing, removes the body margin, and makes form controls inherit the font. It does not remove list markers or normalize heading sizes. |
+| `owned-v1` | Sets border-box sizing and clears margins, padding, and default border width while making borders solid. It removes list markers, gives headings inherited size and weight, and normalizes control fonts and button backgrounds. |
+
+With `owned-v1`, add list markers back where the design calls for them; the scaffold's `.prose` rules explicitly restore disc and decimal lists. Headings do not retain browser heading sizes, so set them in authored CSS or with configured font-size utilities. Bare border utilities set their own solid border under every reset choice. Controls inherit font styling, and the reset leaves native focus outlines and appearance alone. Wind utilities are unlayered and follow authored global CSS: they beat normal declarations in named layers, while an unlayered authored rule can still win by specificity or later order. The reset is an explicit zudo-wind choice, not a promise to reproduce another preflight byte for byte. See [Cascade and reset](./cascade-and-reset.mdx) for the complete declarations and layer order.
+
+## Variants and grammar
+
+The table names the v1 disposition for each construct. Supported chains use the order responsive, dark, relation, state, pseudo-element, utility, with no repeated category.
+
+| Construct | Spec disposition and rule |
+| --- | --- |
+| Breakpoints, including `max-*` | **Adopt changed (W02).** Configure each name with a positive integer `minWidthPx`. `sm` is a minimum-width query; `max-sm` is the exclusive range below that width. Widths are pixels and do not follow changes to the root font size. |
+| `dark` | **Adopt changed (W09).** Dark mode is off until configured with an attribute and value. The condition may match the element or an ancestor and adds zero specificity. |
+| State variants | **Adopt (W03).** V1 admits `hover`, `focus`, `focus-visible`, `active`, `disabled`, `focus-within`, `open`, `first`, and `last`. Every hover condition is guarded by a hover-capability media query. |
+| `first` and `last` | **Adopt (W03).** They target `:first-child` and `:last-child`, respectively. |
+| `group-*` and `peer-*`, including named forms | **Adopt changed (W04).** Unnamed `group` and `peer` markers work with the admitted states; a group is an ancestor and a peer is a preceding sibling. Markers must stand alone and emit no CSS by themselves. Named markers and forms such as `group/menu` or `group-hover/menu:block` are rejected. |
+| Pseudo-element variants | **Adopt (W05).** `before`, `after`, `marker`, `placeholder`, and `backdrop` are admitted. `before` and `after` do not add a `content` declaration; author it when needed. |
+| `aria-*` and `data-[...]` variants | **Reject with diagnostic (W06).** Attribute variants are ZW004. Put the selector in authored CSS. |
+| Arbitrary-selector variants | **Reject with diagnostic (W07).** A selector such as `[&_a]:underline` is ZW004. Write the selector in authored CSS. |
+| Stacked variants | **Adopt changed (W08).** Use at most one responsive, dark, relation, state, and pseudo-element variant, in that order. For example, `sm:dark:hover:bg-panel` is canonical when each feature and token is configured. Duplicate or out-of-order chains are diagnosed. |
+| Color opacity modifier | **Adopt (W10).** A color suffix is an integer from 0 to 100 and mixes the configured color in oklab against transparent; `bg-panel/40` is valid. This modifier does not apply to spacing or sizing utilities. |
+| Fractions | **Adopt changed (W11).** Positive integer ratios are accepted only by eligible sizing and translate roots. `w-1/2` means half the available sizing basis; a sizing slash never means color opacity. |
+| Arbitrary values | **Adopt changed (W12).** A supported utility root may carry a balanced bracket value that passes CSS property validation. Write spaces as underscores; an escaped underscore stays literal. `url()` is rejected, as are values that inject declarations or other syntax. |
+| Arbitrary properties | **Reject with diagnostic (W13).** A token such as `[overflow-wrap:anywhere]` is ZW004. Write the declaration in authored CSS or a CSS Module. |
+| `!important` spellings | **Reject with diagnostic (W14).** Leading and trailing forms are both rejected with ZW004. Put an intentional important declaration in authored CSS. |
+| Negative utilities | **Adopt (W15).** Only catalog families that permit negatives accept the sign, with the family-defined sign applied to its value. For example, `-mt-2` is admitted while `-p-2` is invalid. |
+| `space-*` and `divide-*` | **Adopt changed (W20).** The utilities target later visible direct-child siblings, filtered by the `hidden` attribute. Spacing sets the relevant margin; divide sets a solid left or top border. There are no reverse flags, and pseudo-element variants cannot combine with these child utilities. |
+
+The candidate grammar balances brackets, parentheses, and quotes before splitting separators, so a colon or slash inside a bracket value is not treated as a variant or modifier separator. See [Variants](./variants.mdx), [Utility grammar](./utility-grammar.mdx), and the [utility reference](./utilities/index.mdx) for the full catalog.
+
+## Classes that used to emit nothing
+
+Not every class-shaped string is meant to create a utility rule. A project name such as `site-header` remains an ordinary class; it is emitted in markup as authored but wind emits no rule for it. A standalone `group` or `peer` marker also emits no rule, while still supplying relation metadata to matching candidates.
+
+| Candidate outcome | What happens |
+| --- | --- |
+| Resolved utility | Wind emits its rule. |
+| Ordinary class or marker | No utility rule is emitted. The class can still be styled in authored CSS. |
+| Recognized but invalid utility | A strict class, safelist, or manifest origin receives a diagnostic; lower-confidence source text is audit information. A missing token is not filled in automatically. |
+| Malformed, unsupported, or unknown explicit utility input | The pass fails with a diagnostic. Unknown ordinary source classes remain ordinary class text. |
+
+Run `zfb wind audit` to list ordinary class-position names, missing or dead utility candidates, dynamic fragments, and property conflicts within a class-list literal. Audit helps distinguish an intentionally authored class from a misspelled utility; it does not invent a replacement. For a class owned entirely by CSS, an exact `wind.authoredClasses` entry suppresses utility validation and generation for that full token. See [Diagnostics and tools](./diagnostics-and-tools.mdx).
+
+## A worked migration
+
+The basic-blog scaffold's callout uses actual candidates such as `my-6`, `rounded-md`, `border-l-4`, `px-4`, `py-3`, `dark:bg-sky-950/40`, and `group-hover:text-accent`. The migration table keeps these spellings. Adoption means they resolve only after the scaffold explicitly configures their tokens and variants.
+
+The old stylesheet begins with the Tailwind import and a custom dark variant, and declares three project colors through `@theme`:
+
+~~~css
+@import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --color-accent: oklch(0.53 0.21 258);
+  --color-code-bg: #2b303b;
+  --color-code-fg: #c0c5ce;
+}
+~~~
+
+The callout source supplies these tone strings:
+
+~~~ts
+tone: "border-sky-500 bg-sky-50 dark:bg-sky-950/40",
+accent: "text-sky-700 dark:text-sky-300",
+~~~
+
+Remove the two Tailwind directives. Move utility values to config and keep the CSS-only theme properties authored:
+
+~~~ts
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: {
+        accent: "var(--color-accent)",
+        "sky-50": "#f0f9ff",
+        "sky-300": "#7dd3fc",
+        "sky-500": "#0ea5e9",
+        "sky-700": "#0369a1",
+        "sky-950": "#082f49"
+      },
+      radii: { md: "0.375rem" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    authoredClasses: { prose: true }
+  }
+});
+~~~
+
+This config excerpt covers the shown callout tokens. A complete scaffold config also declares every color and scale used by the remaining candidates and authored CSS; nothing fills those maps implicitly.
+
+Merge the theme properties into the existing authored base layer, retaining its color-scheme and selection rules:
+
+~~~css
+@layer base {
+  :root {
+    --color-accent: oklch(0.53 0.21 258);
+    --color-code-bg: #2b303b;
+    --color-code-fg: #c0c5ce;
+    color-scheme: light;
+  }
+
+  [data-theme="dark"] {
+    --color-accent: oklch(0.79 0.13 254);
+    color-scheme: dark;
+  }
+}
+~~~
+
+Keep the existing base and component layers; wind's prelude establishes their order. The authored `.prose` class remains in the stylesheet and is entered exactly in `authoredClasses`. Where authored CSS formerly referenced `var(--color-neutral-900)`, update it to `var(--zw-color-neutral-900)`, the emitted token variable. The configured `accent` token points back to the authored `--color-accent` property, so the theme toggle can continue changing that value. The scaffold reset is `owned-v1`; other projects still default to `none`. These are language and stylesheet changes only; the full ordered project upgrade is in [Migrating to v3](../guides/migrating-to-v3.mdx).
+
+## What is not supported, and what to do instead
+
+- No implicit palette or spacing scale: declare project values under `wind.tokens`.
+- No ring, animation, scale, transform-string, or arbitrary-property utility: write the declarations in authored CSS or a CSS Module.
+- No attribute or arbitrary-selector variant and no named group or peer: use an authored selector.
+- No plugin-defined classes or `@apply` expansion: use catalog candidates for supported utilities and keep custom declarations in CSS.
+- No runtime-built candidate or regex safelist: write a finite literal map, an owner-keyed safelist, or a strict versioned package manifest.
+
+Use the [utility reference](./utilities/index.mdx) for the v1 catalog and [Diagnostics and tools](./diagnostics-and-tools.mdx) to inspect candidates and migration errors.
