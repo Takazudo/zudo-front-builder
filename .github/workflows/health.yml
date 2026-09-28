@@ -552,25 +552,6 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
           fi
 
-      # The CSS engine's own subprocess test remains in the Tailwind lane until
-      # the engine is deleted by #3270. All zfb and zfb-build ports run in
-      # normal discovery or in the esbuild-only lane above.
-      - name: Run ignored env gates (tailwind-only, workspace resolution)
-        shell: bash
-        env:
-          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
-        run: |
-          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
-            (package(zfb-css) & binary(=integration))
-          ' 2>&1 | tee target/nextest-logs/env-tailwind-only.log
-
-      - name: Stash tailwind-only env-gate JUnit
-        if: always()
-        run: |
-          if [ -f target/nextest/ci/junit.xml ]; then
-            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-tailwind-only.xml
-          fi
-
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
@@ -608,10 +589,9 @@ jobs:
 
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.
-      # Current baseline: 5 doctests execute + pass (zfb-css 2, zfb-islands 3),
-      # plus 6 example blocks the harness lists but marks ignored/no_run
-      # (zfb-islands 3, zfb-server 2, zfb-test-utils 1) — 11 total across 4
-      # crates. Must not regress below this.
+      # Current baseline: 3 doctests execute + pass (zfb-css 1, zfb-islands 2),
+      # plus 8 ignored/no_run examples across zfb-islands, zfb-server,
+      # zfb-test-utils, and zfb-render — 11 entries across 5 crates.
       - run: cargo test --workspace --doc
 
       # Run the zfb-md-extras integration suite gated behind the `test-utils`
@@ -643,8 +623,8 @@ jobs:
       # emits JUnit on failure too) — this is deliberately trend data, not
       # just failure diagnostics: a pass-on-retry only shows up in a run that
       # otherwise went green. junit-workspace.xml is the stashed
-      # full-workspace run; the three junit-env-*.xml files are the immediately
-      # stashed env-gate lanes; junit.xml is the last writer (the zfb-md-extras
+      # full-workspace run; junit-env-esbuild-only.xml is the immediately
+      # stashed env-gate lane; junit.xml is the last writer (the zfb-md-extras
       # lane). `if-no-files-found: warn` tolerates an early failure (e.g. a
       # compile error) that produced no report. `retention-days: 7` — short
       # retention is fine since #1341's flaky-detection step below consumes
@@ -657,14 +637,13 @@ jobs:
           name: nextest-junit-ci
           path: |
             target/nextest/ci/junit-env-esbuild-only.xml
-            target/nextest/ci/junit-env-tailwind-only.xml
             target/nextest/ci/junit-workspace.xml
             target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
 
       # Failure-only diagnostics (issue #1341): the raw nextest stdout (teed
-      # by the four nextest run steps above) — per-test TRY/PASS/FAIL lines and
+      # by the remaining nextest run steps above) — per-test TRY/PASS/FAIL lines and
       # panic messages that the JUnit report's structured fields don't fully
       # carry. Only uploaded `if: failure()` — a healthy run has nothing
       # worth attaching beyond the JUnit trend data already uploaded above.
@@ -675,7 +654,6 @@ jobs:
           name: nextest-diagnostics
           path: |
             target/nextest-logs/env-esbuild-only.log
-            target/nextest-logs/env-tailwind-only.log
             target/nextest-logs/workspace.log
             target/nextest-logs/md-extras.log
           if-no-files-found: warn
@@ -700,7 +678,6 @@ jobs:
         run: >-
           scripts/report-flaky-tests.sh
           target/nextest/ci/junit-env-esbuild-only.xml
-          target/nextest/ci/junit-env-tailwind-only.xml
           target/nextest/ci/junit-workspace.xml
           target/nextest/ci/junit.xml
 

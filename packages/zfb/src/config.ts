@@ -62,11 +62,6 @@ export type CollectionDef = {
   allowOutsideRoot?: boolean;
 };
 
-export type TailwindConfig = {
-  /** Whether Tailwind is enabled. Default: `true`. */
-  enabled?: boolean;
-};
-
 /**
  * zudo-wind v1 configuration data. Absent fields use the version 1 defaults;
  * no palette, named spacing scale, or breakpoint is implicit.
@@ -264,9 +259,7 @@ export type ZfbConfig = {
   framework?: Framework;
   /** Content collections. Mirrors the JSON form one-for-one. */
   collections?: CollectionDef[];
-  /** Tailwind options; absent = defaults. */
-  tailwind?: TailwindConfig;
-  /** zudo-wind v1 configuration; absent is preserved during the transition. */
+  /** zudo-wind v1 configuration; absent enables the default empty configuration. */
   wind?: WindConfig | false;
   /**
    * Prefetch options. When `disabled: true`, the build emits a meta tag
@@ -817,17 +810,15 @@ export type CodeHighlightConfig = {
   /**
    * Per-role class overrides for class mode, e.g.
    * `{ keyword: "text-violet-600 dark:text-violet-400" }` to map a role
-   * onto Tailwind utilities instead of the default `{classPrefix}{role}`
+   * onto zudo-wind utilities or authored classes instead of the default `{classPrefix}{role}`
    * class. Keys must be one of the 18 fixed role names (see
    * {@link CodeHighlightRole}); a value may hold multiple
    * space-separated classes and must not contain the bare token `"line"`
    * (collides with the code-enrichment line wrapper class). Absent uses
    * `{classPrefix}{role}` for every role.
    *
-   * Setting this while `tailwind.enabled` is `false` (the authored-CSS
-   * path) is allowed but emits a build warning — no Tailwind safelist can
-   * be generated on that path, so the mapped utilities must already exist
-   * in your own CSS.
+   * Setting this with `wind: false` is allowed but emits a build warning: the
+   * mapped classes must exist in authored CSS.
    */
   roleClasses?: Partial<Record<CodeHighlightRole, string>>;
   /**

@@ -1,18 +1,7 @@
-//! Tailwind-free CSS engine: pass authored global CSS through verbatim.
+//! Authored-only CSS engine for `wind: false` projects.
 //!
-//! When a project sets `tailwind: { enabled: false }` in its config it
-//! wants to opt out of the Tailwind layers — the `@import "tailwindcss"`,
-//! the `@source` utility scan, the preflight/reset, and the subprocess —
-//! while keeping its authored global stylesheet and CSS Modules.
-//!
-//! [`AuthoredCssEngine`] is the engine half of that path. It implements
-//! [`crate::CssEngine`] by returning a fixed CSS string (the project's
-//! authored `styles/global.css`, or empty when none exists) without
-//! spawning any subprocess or synthesising any Tailwind directives. The
-//! rest of the pipeline — CSS Modules compilation, concatenation,
-//! hashing, asset emission — is engine-agnostic and runs unchanged, so
-//! the disabled path reuses [`crate::CssPipeline`] instead of
-//! hand-rolling its own combine + hash logic.
+//! Passes authored global CSS and its companion assets through the shared
+//! pipeline, which also handles CSS Modules and stylesheet emission.
 
 use std::path::PathBuf;
 
@@ -22,9 +11,7 @@ use crate::engine::CssEngine;
 use crate::{AuthoredCssBundle, CssEngineId, CssEngineOutput, CssInputDependency, PackageUrlAsset};
 
 /// A [`CssEngine`] that emits a pre-supplied authored CSS string and runs
-/// no subprocess. Used for the `tailwind.enabled = false` path so the
-/// authored global stylesheet still reaches the combined output while the
-/// Tailwind import/scan/preflight are skipped entirely.
+/// no subprocess. Used for the `wind: false` path.
 #[derive(Debug, Clone, Default)]
 pub struct AuthoredCssEngine {
     css: String,

@@ -925,24 +925,10 @@ mod tests {
             has_md_post,
             "scaffolded content/posts/ must contain at least one .md seed post"
         );
-
-        // The emitted .gitignore must carry the Tailwind entry temp-file glob
-        // (issue #1538) so node-free projects (Tailwind defaults to enabled
-        // when the config key is absent) don't re-discover the need for it.
-        let gitignore = fs::read_to_string(dest.join(".gitignore"))
-            .expect("scaffolded node-free site must have a .gitignore");
-        assert!(
-            gitignore.contains("**/zfb-tailwind-entry-*.css"),
-            "scaffolded node-free .gitignore must ignore the Tailwind entry temp file, got:\n{gitignore}"
-        );
     }
 
     #[test]
     fn templates_gitignore_ignores_generated_entry_temp_files() {
-        // The CSS glob is derived from zfb-css's exported ENTRY_TMP_PREFIX /
-        // ENTRY_TMP_SUFFIX constants (made public in #2345), closing the
-        // #1538 drift risk for this glob: if the create site's shape changes,
-        // this test fails until the shipped .gitignore templates follow.
         // The remaining globs are still hand-derived. The islands glob comes
         // from zfb-islands's private IN_PROJECT_ENTRY_PREFIX
         // (".zfb-esbuild-entry-") / IN_PROJECT_ENTRY_SUFFIX (".tsx")
@@ -960,21 +946,15 @@ mod tests {
         // kind of window: after a zfb process is killed mid-bundle. The
         // plugin-bundle glob is derived from zfb-build's public
         // PLUGIN_BUNDLE_TEMP_PREFIX/PLUGIN_BUNDLE_TEMP_SUFFIX constants
-        // (crates/zfb-build/src/plugin_bundler.rs) the same way the CSS glob
-        // is derived, closing the same drift risk (issue #2372); it needs
+        // (crates/zfb-build/src/plugin_bundler.rs), closing the
+        // drift risk (issue #2372); it needs
         // the "**/" prefix because plugin sources live at arbitrary depth.
-        let css_glob = format!(
-            "**/{}*{}",
-            zfb_css::ENTRY_TMP_PREFIX,
-            zfb_css::ENTRY_TMP_SUFFIX
-        );
         let plugin_bundle_glob = format!(
             "**/{}*{}",
             zfb_build::PLUGIN_BUNDLE_TEMP_PREFIX,
             zfb_build::PLUGIN_BUNDLE_TEMP_SUFFIX
         );
-        let expected_globs: [&str; 6] = [
-            css_glob.as_str(),
+        let expected_globs: [&str; 5] = [
             ".zfb-esbuild-entry-*.tsx",
             ".zfb-islands-tsconfig-*.json",
             ".zfb-worker-tsconfig-*.json",
