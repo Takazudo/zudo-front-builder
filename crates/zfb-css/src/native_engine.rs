@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 
 use crate::engine::CssEngine;
+use crate::CssEngineOutput;
 
 /// A non-functional placeholder for a future pure-Rust Tailwind-equivalent
 /// engine. Construction succeeds; every method returns an error.
@@ -45,7 +46,7 @@ impl NativeRustEngine {
 }
 
 impl CssEngine for NativeRustEngine {
-    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
+    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<CssEngineOutput> {
         Err(anyhow!(
             "NativeRustEngine: not yet implemented. \
              Use TailwindSubprocessEngine for now; see crate::native_engine for the roadmap."

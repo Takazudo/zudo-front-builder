@@ -31,11 +31,9 @@
 //!
 //! - The **real** `CssPipeline::build_emitter` path runs (the orphan
 //!   bug ships from this exact slot when it is not invoked from the
-//!   build command). The Tailwind subprocess is mocked via
-//!   `TailwindSubprocessConfig::with_mock_output` so the test does
-//!   not need the v4 binary on disk; the synthesised entry CSS,
-//!   CSS-Modules processing, hashing, and bytes assembly are still
-//!   real code paths.
+//!   build command). `StubCssEngine` supplies canned CSS without
+//!   needing the v4 binary; CSS Modules processing, hashing, and bytes
+//!   assembly are still real code paths.
 //! - The renderer is **simulated** by writing HTML files that match
 //!   the byte shape `render_all` would produce when handed
 //!   `prod_head_assets: Some(...)` — i.e. a `<link>` and `<script>`
@@ -61,8 +59,8 @@ use zfb_build::pipeline::{
     ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_css::{
-    css_relative_path, scan_css_urls, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    css_relative_path, scan_css_urls, CssPipeline, CssPipelineConfig, StubCssEngine,
+    TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_types::{
     DIST_ASSETS_DIR, STABLE_CSS_FILENAME, STABLE_CSS_URL, STABLE_ISLANDS_FILENAME,
@@ -122,29 +120,15 @@ fn stage_minimal_fixture() -> StagedFixture {
 }
 
 /// Construct the same `CssPipeline` shape `zfb`'s `DefaultRunner`
-/// builds, except the subprocess is mocked. The mock output is a
+/// builds, except the engine output is canned. The output is a
 /// recognisable snippet (the `body{font-family:system-ui}` rule) so
 /// the test can later assert hashed bytes match.
 fn mock_css_pipeline(
     project_root: &Path,
     outdir: &Path,
     mock_css: &str,
-) -> CssPipeline<TailwindSubprocessEngine> {
-    // Match the bin's `build_default_css_payload` shape: globs rooted
-    // at the project, optional `styles/global.css` as input.
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
-        .iter()
-        .map(|root| project_root.join(root).to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let mut tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs)
-        .with_mock_output(mock_css.to_string());
-    let global_css = project_root.join("styles").join("global.css");
-    if global_css.is_file() {
-        tw_cfg = tw_cfg.with_input_css(global_css);
-    }
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
+) -> CssPipeline<StubCssEngine> {
+    let engine = StubCssEngine::new(mock_css);
     let pipe_cfg = CssPipelineConfig {
         sources: discover_css_source_files(project_root),
         class_map_dir: None,

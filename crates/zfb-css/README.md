@@ -143,7 +143,7 @@ provides the same workspace copy for local development without a full build.
 
 ```rust
 pub trait CssEngine {
-    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String>;
+    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<CssEngineOutput>;
 }
 ```
 

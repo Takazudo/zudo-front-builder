@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::engine::CssEngine;
+use crate::{CssEngineId, CssEngineOutput};
 
 /// A [`CssEngine`] that emits a pre-supplied authored CSS string and runs
 /// no subprocess. Used for the `tailwind.enabled = false` path so the
@@ -40,8 +41,11 @@ impl AuthoredCssEngine {
 }
 
 impl CssEngine for AuthoredCssEngine {
-    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
-        Ok(self.css.clone())
+    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<CssEngineOutput> {
+        Ok(CssEngineOutput::new(
+            self.css.clone(),
+            CssEngineId::new("authored", None),
+        ))
     }
 }
 
@@ -53,13 +57,13 @@ mod tests {
     fn returns_authored_css_verbatim() {
         let engine = AuthoredCssEngine::new("body { margin: 0; }");
         let out = engine.produce_utility_css(&[]).unwrap();
-        assert_eq!(out, "body { margin: 0; }");
+        assert_eq!(out.css, "body { margin: 0; }");
     }
 
     #[test]
     fn empty_when_no_authored_css() {
         let engine = AuthoredCssEngine::default();
         let out = engine.produce_utility_css(&[]).unwrap();
-        assert!(out.is_empty());
+        assert!(out.css.is_empty());
     }
 }

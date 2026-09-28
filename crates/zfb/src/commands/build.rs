@@ -8258,27 +8258,6 @@ mod tests {
         );
     }
 
-    /// Stub [`CssEngine`] that returns canned utility CSS and a canned
-    /// package-`url()` companion set on demand — lets a test exercise
-    /// `run_css_emitter`'s companion conversion without a real Tailwind
-    /// subprocess (companions only ever come from
-    /// `TailwindSubprocessEngine`'s real-binary path, never its mock path;
-    /// see [`zfb_css::engine::TailwindSubprocessConfig::with_mock_output`]).
-    struct CompanionStubCssEngine {
-        css: String,
-        companions: RefCell<Vec<zfb_css::url_attribution::PackageUrlAsset>>,
-    }
-
-    impl CssEngine for CompanionStubCssEngine {
-        fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
-            Ok(self.css.clone())
-        }
-
-        fn take_package_url_companions(&self) -> Vec<zfb_css::url_attribution::PackageUrlAsset> {
-            std::mem::take(&mut *self.companions.borrow_mut())
-        }
-    }
-
     /// Companion boundary crossing for CSS (issue #2318 review finding):
     /// `run_css_emitter` — the real CLI-layer function every `zfb build`
     /// invocation calls — must thread `CssEmitterOutput::companions`
@@ -8295,7 +8274,7 @@ mod tests {
     /// real Tailwind subprocess is needed to prove wiring, and this crate is
     /// the one place the real function lives). This test closes that gap
     /// cheaply — no real Tailwind, no `#[ignore]` — by driving
-    /// `run_css_emitter` itself through the [`CompanionStubCssEngine`]: if a
+    /// `run_css_emitter` itself through the [`zfb_css::StubCssEngine`]: if a
     /// future edit ever drops or mangles the `.companions` mapping at
     /// `run_css_emitter`'s call site, this test fails without needing the
     /// tailwindcss-v4 binary staged.
@@ -8303,13 +8282,15 @@ mod tests {
     fn run_css_emitter_threads_package_url_companions_into_asset_payload() {
         let project_root = tempdir().unwrap();
         let outdir = tempdir().unwrap();
-        let engine = CompanionStubCssEngine {
-            css: ".icon{background:url(./icon-abc12345.svg)}".to_string(),
-            companions: RefCell::new(vec![zfb_css::url_attribution::PackageUrlAsset {
-                filename: "icon-abc12345.svg".to_string(),
-                bytes: b"<svg>icon</svg>".to_vec(),
-            }]),
-        };
+        let mut result = zfb_css::CssEngineOutput::new(
+            ".icon{background:url(./icon-abc12345.svg)}",
+            zfb_css::CssEngineId::new("stub", None),
+        );
+        result.companions.push(zfb_css::PackageUrlAsset {
+            filename: "icon-abc12345.svg".to_string(),
+            bytes: b"<svg>icon</svg>".to_vec(),
+        });
+        let engine = zfb_css::StubCssEngine::with_output(result);
 
         let payload = run_css_emitter(
             engine,

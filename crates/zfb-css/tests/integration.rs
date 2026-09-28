@@ -14,9 +14,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use zfb_css::{
-    build_synthesised_entry_css, link_href, scan_css_module_imports, AuthoredCssEngine, CssEngine,
-    CssModulesOutput, CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine,
-    OxideWarmupPolicy, TailwindSubprocessConfig, TailwindSubprocessEngine,
+    build_synthesised_entry_css, link_href, scan_css_module_imports, AuthoredCssEngine,
+    CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngine, CssEngineId,
+    CssEngineOutput, CssInputDependency, CssInputDependencyKind, CssModulesOutput,
+    CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine, OxideWarmupPolicy,
+    StubCssEngine, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 
 #[test]
@@ -42,7 +44,20 @@ fn subprocess_engine_mock_short_circuits_command() {
     let css = engine
         .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
         .expect("mock engine should succeed");
-    assert!(css.contains(".mock-utility"));
+    assert_eq!(css.css, ".mock-utility { color: red; }\n");
+    assert!(css.companions.is_empty());
+}
+
+#[test]
+fn subprocess_engine_second_mock_call_has_no_stale_companions() {
+    let engine = TailwindSubprocessEngine::new(
+        TailwindSubprocessConfig::default().with_mock_output(".mock{}"),
+    );
+    let first = engine.produce_utility_css(&[]).unwrap();
+    let second = engine.produce_utility_css(&[]).unwrap();
+    assert_eq!(first.css, second.css);
+    assert!(first.companions.is_empty());
+    assert!(second.companions.is_empty());
 }
 
 #[cfg(unix)]
@@ -172,8 +187,9 @@ printf '.source-list-regression { color: red; }\n' > "$output"
         .expect("large source inventory must not prevent child spawn");
 
     assert!(
-        css.contains(".source-list-regression"),
-        "fake child output should be returned, got: {css}"
+        css.css.contains(".source-list-regression"),
+        "fake child output should be returned, got: {:?}",
+        css.css
     );
 }
 
@@ -186,12 +202,15 @@ fn subprocess_engine_against_real_binary() {
     let css = engine
         .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
         .expect("real tailwindcss binary should produce CSS");
-    assert!(!css.is_empty(), "real engine should not return empty CSS");
+    assert!(
+        !css.css.is_empty(),
+        "real engine should not return empty CSS"
+    );
     // #2315: the engine now passes `--map` for url() attribution; the inline
     // sourcemap comment must be stripped back out before the CSS is returned
     // (the CssEngine contract: no source maps embedded in the string).
     assert!(
-        !css.contains("sourceMappingURL"),
+        !css.css.contains("sourceMappingURL"),
         "the --map inline sourcemap comment must be stripped from the returned CSS"
     );
 }
@@ -328,9 +347,7 @@ fn pipeline_writes_hashed_asset_with_mock_engine() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let output_root = tmp.path().to_path_buf();
 
-    let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default().with_mock_output(".u-text-red { color: red; }\n"),
-    );
+    let engine = StubCssEngine::new(".u-text-red { color: red; }\n");
     let cfg = CssPipelineConfig {
         sources: vec![PathBuf::from("pages/index.tsx")],
         css_modules: vec![],
@@ -361,9 +378,7 @@ fn pipeline_hash_changes_when_engine_output_changes() {
     let tmp2 = tempfile::tempdir().expect("tempdir");
 
     let make = |output: &str, root: &Path| {
-        let engine = TailwindSubprocessEngine::new(
-            TailwindSubprocessConfig::default().with_mock_output(output),
-        );
+        let engine = StubCssEngine::new(output);
         let cfg = CssPipelineConfig {
             output_root: root.to_path_buf(),
             ..CssPipelineConfig::default()
@@ -389,11 +404,11 @@ fn pipeline_hash_changes_when_engine_output_changes() {
 // 1. Materialises a fake user project + a fake framework package on
 //    disk — they each contain TSX with both Tailwind utility classes
 //    and `import * from "*.module.css"` statements.
-// 2. Runs the pipeline with a mocked Tailwind engine. The mock returns
+// 2. Runs the pipeline with StubCssEngine. The stub returns
 //    a CSS string that includes class names from both packages — this
 //    simulates the real binary scanning both `@source` directives and
 //    keeping framework-only classes.
-// 3. Asserts the synthesised entry CSS the engine *would have* fed to
+// 3. In a separate Tailwind test, asserts the synthesised entry CSS fed to
 //    Tailwind contains `@source` directives for both packages, in the
 //    correct order, plus the user's `@theme {…}` block.
 // 4. Asserts CSS Modules auto-discovery picked up the modules from
@@ -460,21 +475,11 @@ export function DocShell() {
     let fw_module = fw_components.join("shell.module.css");
     std::fs::write(&fw_module, ".shell { padding: 1rem; }\n").unwrap();
 
-    // ---- Tailwind engine config (mocked subprocess) ----
-    // We feed a mock output that simulates the real binary scanning
+    // The stub output simulates the real binary scanning
     // both @source globs and emitting utilities for both pages —
     // including the framework-only `prose-zfb-only` class.
     let mock_tailwind =
         ".flex{display:flex}.items-center{align-items:center}.prose-zfb-only{max-width:65ch}\n";
-
-    let tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(&user_proj)
-        .with_input_css(&user_global_css_file)
-        .with_content_globs(vec!["pages/**/*.{tsx,jsx,ts,js}"])
-        .with_framework_package_globs(vec![format!("{}/**/*.{{tsx,jsx,ts,js}}", fw_pkg.display())])
-        .with_theme_block("@theme inline {\n  --font-display: 'Inter';\n}\n")
-        .with_mock_output(mock_tailwind);
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
 
     // Sources fed to the pipeline: the user's TSX *and* the framework
     // TSX. The pipeline's auto-discover will pull in both .module.css
@@ -493,46 +498,8 @@ export function DocShell() {
     };
 
     // ---- Run ----
-    let pipeline = CssPipeline::new(engine, cfg);
+    let pipeline = CssPipeline::new(StubCssEngine::new(mock_tailwind), cfg);
     let out = pipeline.build().expect("acceptance pipeline build");
-
-    // Re-borrow the engine to inspect the synthesised entry CSS.
-    let engine_ref: &TailwindSubprocessEngine = pipeline.engine_ref();
-    let entry = engine_ref
-        .last_entry_css()
-        .expect("synthesised entry CSS must be recorded");
-
-    // (3) Synthesised entry CSS contains both user-project and
-    // framework-package @source directives, plus the user's @theme.
-    assert!(
-        entry.contains("@import \"tailwindcss\""),
-        "entry CSS must include the tailwind import; got:\n{entry}"
-    );
-    assert!(
-        entry.contains("@source \"pages/**/*.{tsx,jsx,ts,js}\""),
-        "entry CSS must include the user-project content glob; got:\n{entry}"
-    );
-    let fw_marker = format!("{}/**/", fw_pkg.display());
-    assert!(
-        entry.contains(&fw_marker),
-        "entry CSS must include the framework-package content glob ({fw_marker}); got:\n{entry}"
-    );
-    let user_at_pos = entry
-        .find("@source \"pages/**/*.{tsx,jsx,ts,js}\"")
-        .expect("user @source position");
-    let fw_at_pos = entry.find(&fw_marker).expect("fw @source position");
-    assert!(
-        user_at_pos < fw_at_pos,
-        "user-project @source must precede framework @source in cascade order"
-    );
-    assert!(
-        entry.contains("--color-brand"),
-        "entry CSS must include the user's @theme block contents; got:\n{entry}"
-    );
-    assert!(
-        entry.contains("--font-display"),
-        "entry CSS must include the inline theme_block contents; got:\n{entry}"
-    );
 
     // (4) Auto-discovery picked up *both* modules. Per-source
     // metadata reflects which TSX uses which module.
@@ -573,8 +540,7 @@ export function DocShell() {
     assert_eq!(fw_usage.modules, vec![fw_module.clone()]);
 
     // (5) Framework-only utility class survives in the combined
-    // stylesheet — proves the cross-package content-glob plumbing
-    // would carry it through the real binary too.
+    // stylesheet.
     assert!(
         out.css.contains(".prose-zfb-only"),
         "framework-only utility class must survive in the combined output:\n{}",
@@ -610,6 +576,72 @@ export function DocShell() {
     assert!(out.asset_path.exists());
     let href = link_href("/", &out.asset_path);
     assert_eq!(href, format!("/assets/styles-{}.css", out.hash));
+}
+
+#[test]
+fn acceptance_tailwind_entry_with_framework_package_globs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let user_proj = root.join("project");
+    std::fs::create_dir_all(&user_proj).unwrap();
+    let user_global_css_file = user_proj.join("global.css");
+    std::fs::write(
+        &user_global_css_file,
+        "@theme {\n  --color-brand: #123456;\n}\n",
+    )
+    .unwrap();
+    let fw_pkg = root.join("packages").join("zudo-doc-v2");
+    let tw_cfg = TailwindSubprocessConfig::default()
+        .with_working_dir(&user_proj)
+        .with_input_css(&user_global_css_file)
+        .with_content_globs(vec!["pages/**/*.{tsx,jsx,ts,js}"])
+        .with_framework_package_globs(vec![format!("{}/**/*.{{tsx,jsx,ts,js}}", fw_pkg.display())])
+        .with_theme_block("@theme inline {\n  --font-display: 'Inter';\n}\n")
+        .with_mock_output("");
+    let engine = TailwindSubprocessEngine::new(tw_cfg);
+    let sources = vec![
+        user_proj.join("pages/index.tsx"),
+        fw_pkg.join("components/doc-shell.tsx"),
+    ];
+    // The Tailwind-specific entry synthesis remains on its own engine.
+    engine
+        .produce_utility_css(&sources)
+        .expect("mock Tailwind output");
+    let entry = engine
+        .last_entry_css()
+        .expect("synthesised entry CSS must be recorded");
+
+    // (3) Synthesised entry CSS contains both user-project and
+    // framework-package @source directives, plus the user's @theme.
+    assert!(
+        entry.contains("@import \"tailwindcss\""),
+        "entry CSS must include the tailwind import; got:\n{entry}"
+    );
+    assert!(
+        entry.contains("@source \"pages/**/*.{tsx,jsx,ts,js}\""),
+        "entry CSS must include the user-project content glob; got:\n{entry}"
+    );
+    let fw_marker = format!("{}/**/", fw_pkg.display());
+    assert!(
+        entry.contains(&fw_marker),
+        "entry CSS must include the framework-package content glob ({fw_marker}); got:\n{entry}"
+    );
+    let user_at_pos = entry
+        .find("@source \"pages/**/*.{tsx,jsx,ts,js}\"")
+        .expect("user @source position");
+    let fw_at_pos = entry.find(&fw_marker).expect("fw @source position");
+    assert!(
+        user_at_pos < fw_at_pos,
+        "user-project @source must precede framework @source in cascade order"
+    );
+    assert!(
+        entry.contains("--color-brand"),
+        "entry CSS must include the user's @theme block contents; got:\n{entry}"
+    );
+    assert!(
+        entry.contains("--font-display"),
+        "entry CSS must include the inline theme_block contents; got:\n{entry}"
+    );
 }
 
 #[test]
@@ -728,13 +760,40 @@ fn scanner_finds_module_imports_in_real_tsx_file() {
 // ----------------------------------------------------------------------
 
 #[test]
+fn build_emitter_threads_engine_metadata() {
+    let mut result = CssEngineOutput::new(".x{}", CssEngineId::new("canned", Some("1".into())));
+    result.input_dependencies.push(CssInputDependency {
+        path: "styles/base.css".into(),
+        kind: CssInputDependencyKind::Stylesheet,
+    });
+    result.diagnostics.push(CssDiagnostic {
+        severity: CssDiagnosticSeverity::Warning,
+        code: "W001".into(),
+        message: "example".into(),
+        origin: CssDiagnosticOrigin::default(),
+        candidate: None,
+    });
+    let pipeline = CssPipeline::new(
+        StubCssEngine::with_output(result),
+        CssPipelineConfig::default(),
+    );
+    let emitted = pipeline.build_emitter().unwrap();
+    assert!(String::from_utf8(emitted.bytes).unwrap().contains(".x{}"));
+    assert_eq!(
+        emitted.input_dependencies[0].path,
+        PathBuf::from("styles/base.css")
+    );
+    assert_eq!(emitted.diagnostics[0].code, "W001");
+    assert_eq!(emitted.engine.name, "canned");
+    assert_eq!(emitted.engine.version.as_deref(), Some("1"));
+}
+
+#[test]
 fn build_emitter_returns_bytes_and_stable_url_without_writing_asset() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let output_root = tmp.path().to_path_buf();
 
-    let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default().with_mock_output(".u-text-red { color: red; }\n"),
-    );
+    let engine = StubCssEngine::new(".u-text-red { color: red; }\n");
     let cfg = CssPipelineConfig {
         sources: vec![PathBuf::from("pages/index.tsx")],
         css_modules: vec![],
@@ -785,10 +844,7 @@ fn build_emitter_bytes_match_build_output_for_same_inputs() {
         output_root: tmp1.path().to_path_buf(),
         ..CssPipelineConfig::default()
     };
-    let p1 = CssPipeline::new(
-        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock)),
-        cfg1,
-    );
+    let p1 = CssPipeline::new(StubCssEngine::new(mock), cfg1);
     let built = p1.build().expect("build");
 
     let tmp2 = tempfile::tempdir().expect("tempdir");
@@ -797,10 +853,7 @@ fn build_emitter_bytes_match_build_output_for_same_inputs() {
         output_root: tmp2.path().to_path_buf(),
         ..CssPipelineConfig::default()
     };
-    let p2 = CssPipeline::new(
-        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock)),
-        cfg2,
-    );
+    let p2 = CssPipeline::new(StubCssEngine::new(mock), cfg2);
     let emitted = p2.build_emitter().expect("build_emitter");
 
     assert_eq!(emitted.bytes, built.css.as_bytes());
@@ -830,8 +883,7 @@ fn build_emitter_still_writes_class_map_jsons_when_configured() {
         class_map_dir: Some(class_map_dir.clone()),
         ..CssPipelineConfig::default()
     };
-    let engine =
-        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(""));
+    let engine = StubCssEngine::new("");
     let pipeline = CssPipeline::new(engine, cfg);
     let _ = pipeline.build_emitter().expect("build_emitter");
 
@@ -872,8 +924,7 @@ fn acceptance_hoists_font_import_tailwind_engine_half() {
     // subprocess output that triggered #1280.
     let mock = "@layer a, b;\n.x { color: red }\n.y { color: blue }\n\
                 @import url(\"https://fonts.googleapis.com/css2?family=Noto+Sans+JP\");\n";
-    let engine =
-        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock));
+    let engine = StubCssEngine::new(mock);
     let cfg = CssPipelineConfig {
         sources: vec![PathBuf::from("pages/index.tsx")],
         ..CssPipelineConfig::default()
