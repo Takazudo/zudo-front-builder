@@ -4,8 +4,567 @@ description: Move from Preact hooks to zudo-react setup scopes, signals, and its
 sidebar_position: 10
 ---
 
-<Note>
+## The one idea
 
-This page is being written. owned-engines-stub
+A function component runs once for each instance in a render. The server runs it to create HTML; an island runs setup in the browser when it is activated. A signal assignment updates the bindings that received the signal. It does not call the component again.
 
-</Note>
+The first distinction to learn is snapshot versus live binding. Reading value produces a plain value at setup time; passing the signal object lets the renderer keep that binding current:
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+
+  return (
+    <section>
+      <p>Snapshot from setup: {count.value}</p>
+      <p>Live binding: {count}</p>
+      <button on:click={() => { count.value += 1; }}>Add</button>
+    </section>
+  );
+}
+~~~
+
+The first paragraph keeps the number that was read while setup ran. The second receives the signal, so it changes with the signal. This rule also applies to computed values and to signals passed as child props. See [Reactivity](./reactivity.mdx) and [Components and JSX](./components-and-jsx.mdx).
+
+## Hook by hook
+
+| Preact or React habit | zudo-react replacement | Read next |
+| --- | --- | --- |
+| useState | Create a signal during setup; pass the signal to bindings and assign its value in event handlers. | [Reactivity](./reactivity.mdx) |
+| useEffect | With an empty dependency list, use getScope().onActivate for browser startup and synchronous cleanup. With dependencies, use getScope().effect to track signal reads and rerun after committed updates. | [Scopes and lifecycle](./scopes-and-lifecycle.mdx), [Reactivity](./reactivity.mdx) |
+| useRef for a DOM element | Pass a Ref object with a current field. The runtime assigns it before activation callbacks. | [Components and JSX](./components-and-jsx.mdx), [Scopes and lifecycle](./scopes-and-lifecycle.mdx) |
+| useMemo | Use computed for a value derived from signals. A value that does not depend on signals can be calculated once during setup. | [Reactivity](./reactivity.mdx) |
+| useCallback | No replacement is needed for stabilizing a closure: setup creates the closure once for that instance. | [Components and JSX](./components-and-jsx.mdx) |
+
+An activation callback is for one browser startup, not a render-time effect. A scope effect tracks reads made by the callback; before it reruns, its prior cleanup runs, and its first run follows activation and DOM commit. Both forms are browser-only. If setup needs browser storage, media queries, or another browser API, read it from an activation callback rather than setup so server output and hydration setup start from the same deterministic values. The lifecycle guide covers cleanup and activation order.
+
+## Patterns
+
+Each old sample below is labeled before its code. Each replacement uses the owned zudo-react dialect; the guide links give the full behavior and limits.
+
+### Conditional rendering
+
+Old Preact way:
+
+~~~tsx
+{visible && <Details />}
+~~~
+
+After:
+
+~~~tsx
+import { Show, signal } from "@takazudo/zfb/zudo-react";
+
+function Details() {
+  return <p>Extra details.</p>;
+}
+
+function Panel() {
+  const visible = signal(false);
+  return (
+    <section>
+      <button on:click={() => { visible.value = !visible.value; }}>Toggle</button>
+      <Show when={visible}>{() => <Details />}</Show>
+    </section>
+  );
+}
+~~~
+
+Show creates its selected branch in an owned child scope. Switching away disposes that branch and removes its range; switching back creates a new branch instance. If the element should remain mounted, bind a reactive hidden value instead. Read [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### Lists with keys
+
+Old Preact way:
+
+~~~tsx
+items.map((item) => <li key={item.id}>{item.label}</li>)
+~~~
+
+After:
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function ItemList() {
+  const items = signal([
+    { id: "a", label: "First" },
+    { id: "b", label: "Second" }
+  ]);
+
+  return (
+    <ul>
+      <For each={items} by={(item) => item.id}>
+        {(item) => {
+          const label = computed(() => item.value.label);
+          return <li>{label}</li>;
+        }}
+      </For>
+    </ul>
+  );
+}
+~~~
+
+For retains a keyed item's DOM and scope when it moves or its object is replaced with the same key. Its item argument is a readonly signal; the computed label makes the changed object property a live scalar binding. Duplicate or unsupported keys leave the previous list intact. See [Conditionals and lists](./conditionals-and-lists.mdx).
+
+### Controlled inputs
+
+Old Preact way:
+
+~~~tsx
+const [name, setName] = useState("Ada");
+<input value={name} onInput={(event) => setName(event.currentTarget.value)} />
+~~~
+
+After:
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function NameField() {
+  const name = signal("Ada");
+  return <input modelValue={name} />;
+}
+~~~
+
+An explicit model connects a supported control to a writable signal. Use signal for the model; computed and readonly signals are valid readable bindings, not writable models. The browser's current value wins when an island hydrates. The [Forms guide](./forms.mdx) lists the supported controls and their model props.
+
+### Derived class names
+
+Old Preact way:
+
+~~~tsx
+const className = useMemo(
+  () => active ? "tab tab-active" : "tab",
+  [active]
+);
+return <button className={className}>Settings</button>;
+~~~
+
+After:
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function TabButton() {
+  const active = signal(false);
+  const className = computed(() => active.value ? "tab tab-active" : "tab");
+  return (
+    <button class={className} on:click={() => { active.value = !active.value; }}>
+      Settings
+    </button>
+  );
+}
+~~~
+
+Computed is a readonly live value, and class uses the HTML spelling. Use computed for a reactive derivation, not as a render-cache optimization; setup itself does not repeat. See [Reactivity](./reactivity.mdx) and [Components and JSX](./components-and-jsx.mdx).
+
+### A ref to a DOM node
+
+Old Preact way:
+
+~~~tsx
+const input = useRef<HTMLInputElement>(null);
+useEffect(() => { input.current?.focus(); }, []);
+return <input ref={input} />;
+~~~
+
+After:
+
+~~~tsx
+import type { Ref } from "@takazudo/zfb/zudo-react";
+import { getScope } from "@takazudo/zfb/zudo-react";
+
+function SearchField() {
+  const input: Ref<HTMLInputElement> = { current: null };
+  getScope().onActivate(() => { input.current?.focus(); });
+  return <input ref={input} />;
+}
+~~~
+
+Refs are plain objects, not callback factories. The runtime assigns all refs before activation callbacks run, so focus can happen there. See [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### An event handler that fetches
+
+Old Preact way:
+
+~~~tsx
+const load = useCallback(async () => {
+  const response = await fetch("/api/items");
+  setItems(await response.json());
+}, []);
+return <button onClick={load}>Load</button>;
+~~~
+
+After:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function LoadButton() {
+  const scope = getScope();
+  const body = signal("");
+  return (
+    <section>
+      <button
+        on:click={async () => {
+          try {
+            const response = await fetch("/api/items", { signal: scope.abortSignal });
+            const text = await response.text();
+            if (!scope.abortSignal.aborted) body.value = text;
+          } catch (error) {
+            if (!scope.abortSignal.aborted) {
+              body.value = error instanceof Error ? error.message : "Request failed";
+            }
+          }
+        }}
+      >
+        Load
+      </button>
+      <p>{body}</p>
+    </section>
+  );
+}
+~~~
+
+Listeners are native events and receive the browser's native event and currentTarget. on:click is a function listener; onClick is not part of this dialect. The scope abort signal lets in-flight work stop or ignore its result after disposal. See [Components and JSX](./components-and-jsx.mdx) and [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### A subscription with cleanup
+
+Old Preact way:
+
+~~~tsx
+useEffect(() => {
+  const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const update = () => setReducedMotion(query.matches);
+  query.addEventListener("change", update);
+  return () => query.removeEventListener("change", update);
+}, []);
+~~~
+
+After:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function MotionPreference() {
+  const reduced = signal(false);
+  getScope().onActivate(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => { reduced.value = query.matches; };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
+  return <span>{reduced}</span>;
+}
+~~~
+
+The subscription is created only in the browser and its synchronous cleanup runs when its scope is disposed. Use onActivate for a one-time subscription; use effect when signal reads should trigger cleanup and resubscription. Read [Scopes and lifecycle](./scopes-and-lifecycle.mdx).
+
+### An effect that reruns on state
+
+Old Preact way:
+
+~~~tsx
+useEffect(() => {
+  document.documentElement.dataset.count = String(count);
+  return () => { delete document.documentElement.dataset.count; };
+}, [count]);
+~~~
+
+After:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function CountMarker() {
+  const count = signal(0);
+  getScope().effect(() => {
+    document.documentElement.dataset.count = String(count.value);
+    return () => { delete document.documentElement.dataset.count; };
+  });
+  return <button on:click={() => { count.value += 1; }}>{count}</button>;
+}
+~~~
+
+The effect tracks count because it reads count.value inside the callback. Its previous cleanup runs before a rerun, and the effect phase follows DOM binding commits. Effects start after activation callbacks. See [Scopes and lifecycle](./scopes-and-lifecycle.mdx) and [Reactivity](./reactivity.mdx).
+
+### Trusted raw HTML
+
+Old Preact way:
+
+~~~tsx
+return <section dangerouslySetInnerHTML={{ __html: trustedMarkup }} />;
+~~~
+
+After:
+
+~~~tsx
+function TrustedFragment({ markup }: { markup: string }) {
+  return <section rawHtml={markup} />;
+}
+~~~
+
+rawHtml is a trusted-content hatch, not a general sanitizer. Its payload is opaque to hydration, mutually exclusive with children, and must be valid for its parent element. Do not pass user-controlled markup without an application-owned trust and sanitization decision. See [Components and JSX](./components-and-jsx.mdx).
+
+## Custom hooks become functions
+
+A helper can take the current scope and the signals it uses as ordinary arguments. Call it during component setup; no call-order registry or hook ordering rules exist.
+
+~~~tsx
+import type { ReadonlySignal, Scope } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function connectionLabel(scope: Scope, online: ReadonlySignal<boolean>) {
+  const label = computed(() => online.value ? "Online" : "Offline");
+  scope.effect(() => {
+    document.documentElement.dataset.connection = online.value ? "online" : "offline";
+    return () => { delete document.documentElement.dataset.connection; };
+  });
+  return label;
+}
+
+function ConnectionStatus() {
+  const online = signal(false);
+  const label = connectionLabel(getScope(), online);
+  return <span>{label}</span>;
+}
+~~~
+
+getScope is valid during synchronous setup and returns the current owner. Passing it explicitly makes resource ownership visible; a direct helper call during setup shares that same owner and creates no scope of its own. The helper may return computed values, closures, or other ordinary values. See [Scopes and lifecycle](./scopes-and-lifecycle.mdx) and [Reactivity](./reactivity.mdx).
+
+## What does not exist
+
+| Preact or React feature | Use instead |
+| --- | --- |
+| Context | Within one runtime tree, pass explicit props, including a signal when several descendants need the same live value. Create request-specific state within the rendered tree. |
+| Portals | Keep the description in its normal owned tree. For dialog-like UI, use the native dialog element and its browser behavior. There is no general DOM teleport. |
+| forwardRef | Pass a Ref object as an ordinary typed prop when a child needs to expose an element. |
+| Suspense and lazy components | Nested promises do not suspend rendering. Start dynamic import from an event handler or browser activation callback, track pending/error state explicitly, and render the resulting state with ordinary bindings or a conditional region. |
+| Class components | Use synchronous function components that create descriptions. Component setup owns its signals and registered work. |
+| Error boundaries | Handle expected application failures in explicit state. Runtime diagnostics isolate a failed island; the runtime does not provide a component boundary that catches arbitrary descendant render errors. |
+| Synthetic events | Use native events with on:event listeners, native event objects, and native currentTarget. |
+
+These are design boundaries, not missing hook aliases. The runtime does not promise React or Preact compatibility, a compatibility wrapper, or mixed ownership between both runtimes. For the wider project upgrade procedure, see [Migrating to v3](../guides/migrating-to-v3.mdx).
+
+## A worked example
+
+The scaffold toggle begins with deterministic light state, then reads browser preferences and mirrors changes in effects. This is the old Preact implementation as it exists in the scaffold:
+
+~~~tsx
+"use client";
+
+import { useEffect, useState } from "preact/hooks";
+
+type Theme = "light" | "dark";
+
+const STORAGE_KEY = "basic-blog:theme";
+
+/**
+ * Theme toggle island.
+ *
+ * SSR contract: the very first render — both on the server and during the
+ * client hydration pass — MUST return identical HTML. Reading
+ * `localStorage` / `matchMedia` from a `useState` initialiser breaks that
+ * contract: the server has neither, so it defaults to `"light"`, but the
+ * client reads the user's saved preference and immediately renders the
+ * opposite label. That mismatch produces a hydration warning and a brief
+ * flash of the wrong toggle.
+ *
+ * Fix: render a deterministic default (`"light"`) on first paint, then
+ * sync to the persisted/system preference inside `useEffect`. To avoid a
+ * FOUC of the wrong colour scheme on the surrounding page, an inline
+ * pre-hydration script in `<head>` (see `layouts/default.tsx`) sets
+ * `document.documentElement.dataset.theme` synchronously, BEFORE the
+ * stylesheet is parsed, so the page paints in the correct theme on the
+ * very first frame regardless of which label this island renders.
+ */
+function readPersistedTheme(): Theme | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === "light" || saved === "dark") {
+      return saved;
+    }
+  } catch {
+    // Private browsing / disabled storage: fall through to system default.
+  }
+  return null;
+}
+
+function readSystemTheme(): Theme {
+  if (typeof window.matchMedia !== "function") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export default function ThemeToggle() {
+  // Deterministic SSR-safe default. Real preference is applied below.
+  const [theme, setTheme] = useState<Theme>("light");
+
+  // Sync once on mount: read persisted (or system) preference and apply it.
+  useEffect(() => {
+    const initial = readPersistedTheme() ?? readSystemTheme();
+    setTheme(initial);
+  }, []);
+
+  // Mirror the active theme to the document and persist on change.
+  useEffect(() => {
+    document.documentElement.dataset["theme"] = theme;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, theme);
+    } catch {
+      // Storage unavailable; persistence is best-effort.
+    }
+  }, [theme]);
+
+  const isDark = theme === "dark";
+  const next: Theme = isDark ? "light" : "dark";
+  return (
+    <button
+      type="button"
+      class="flex size-8 cursor-pointer items-center justify-center rounded-full border border-neutral-200 text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-800 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:text-neutral-100"
+      aria-pressed={isDark}
+      aria-label={`Switch to ${next} theme`}
+      onClick={() => setTheme(next)}
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        {isDark ? (
+          <>
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+          </>
+        ) : (
+          <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" />
+        )}
+      </svg>
+    </button>
+  );
+}
+~~~
+
+After, the same setup model keeps the server and hydration setup deterministic. Browser reads happen in activation, the document and storage effect starts after activation, and Show owns the changing icon subtree:
+
+~~~tsx
+import { computed, getScope, Show, signal } from "@takazudo/zfb/zudo-react";
+
+type Theme = "light" | "dark";
+
+const STORAGE_KEY = "basic-blog:theme";
+
+function readPersistedTheme(): Theme | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === "light" || saved === "dark") {
+      return saved;
+    }
+  } catch {
+    // Storage can be unavailable; use the system preference.
+  }
+  return null;
+}
+
+function readSystemTheme(): Theme {
+  if (typeof window.matchMedia !== "function") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export default function ThemeToggle() {
+  const theme = signal<Theme>("light");
+  const scope = getScope();
+  const isDark = computed(() => theme.value === "dark");
+  const next = computed(() => isDark.value ? "light" : "dark");
+  const ariaLabel = computed(() =>
+    next.value === "light" ? "Switch to light theme" : "Switch to dark theme"
+  );
+
+  scope.onActivate(() => {
+    theme.value = readPersistedTheme() ?? readSystemTheme();
+  });
+
+  scope.effect(() => {
+    const activeTheme = theme.value;
+    document.documentElement.dataset.theme = activeTheme;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, activeTheme);
+    } catch {
+      // Storage can be unavailable; the document theme still updates.
+    }
+  });
+
+  return (
+    <button
+      type="button"
+      class="flex size-8 cursor-pointer items-center justify-center rounded-full border border-neutral-200 text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-800 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:text-neutral-100"
+      aria-pressed={isDark}
+      aria-label={ariaLabel}
+      on:click={() => { theme.value = next.value; }}
+    >
+      <Show
+        when={isDark}
+        fallback={() => (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" />
+          </svg>
+        )}
+      >
+        {() => (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+          </svg>
+        )}
+      </Show>
+    </button>
+  );
+}
+~~~
+
+The signal carries writable state; computed values derive the pressed state, next label, and accessible label. The icon is a real conditional region, so switching themes replaces only that owned branch while the button remains. This keeps the changing SVG structure explicit rather than asking a scalar binding to reconcile a tree. See [Reactivity](./reactivity.mdx), [Scopes and lifecycle](./scopes-and-lifecycle.mdx), and [Conditionals and lists](./conditionals-and-lists.mdx).
+
+## Island props
+
+Only JSON-compatible initial props cross an island boundary. A callback, DOM node, signal, computed value, or component description does not cross with identity or behavior attached. The browser imports the component module, runs setup for the island instance, and rebuilds its signals and closures from the transported data.
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+type ProfileProps = { initialName: string };
+
+export function Profile({ initialName }: ProfileProps) {
+  const name = signal(initialName);
+  return <p>{name}</p>;
+}
+~~~
+
+Keep server-to-browser props as data; construct live state and event handlers inside the component. The [Server rendering](./server-rendering.mdx) and [Hydration](./hydration.mdx) guides explain the boundary and its checks. For JSX, reactive values, and component behavior, continue to [Overview](./overview.mdx) and the [API reference](./api-reference.mdx).
