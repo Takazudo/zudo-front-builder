@@ -4660,7 +4660,7 @@ fn build_dev_css_and_publish_mirror_roots(
     plugin_virtual_modules: &[(String, String)],
     raw_import_invalidation: &zfb_build::RawImportInvalidation,
 ) -> Result<Option<AssetEmitterPayload>> {
-    crate::commands::build::build_default_css_payload_with_source_plan(
+    let pass = crate::commands::build::build_default_css_payload_with_details(
         project_root,
         dev_assets_root,
         cfg,
@@ -4668,7 +4668,14 @@ fn build_dev_css_and_publish_mirror_roots(
         plugin_alias_entries,
         plugin_virtual_modules,
         &|roots| raw_import_invalidation.replace_css_mirror_roots(roots.to_vec()),
-    )
+    )?;
+    for diagnostic in &pass.diagnostics {
+        if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+            output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+        }
+    }
+    let _css_input_dependencies = &pass.input_dependencies;
+    Ok(pass.payload)
 }
 
 /// Rebuild and publish one dev CSS generation: validates + writes CSS
