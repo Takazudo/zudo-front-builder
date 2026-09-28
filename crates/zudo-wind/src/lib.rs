@@ -46,3 +46,9 @@ pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
 pub const SPEC_VERSION: u32 = 1;
 
 pub const SPEC_REVISION: u32 = 2;
+
+pub mod extract;
+pub use extract::{
+    extract_candidates, ExtractedCandidate, ExtractionNote, ExtractionResult, NoteKind, Occurrence,
+    PositionKind, SourceKind,
+};
