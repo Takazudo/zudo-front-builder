@@ -59,7 +59,7 @@ pub use tokenizer::{structural_split, StructuralSplit};
 pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};
 pub use value_check::ValueStatus;
 pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
-pub use walk::{expand_file_set, ExpandedFile, FileSet, WalkDiagnostic};
+pub use walk::{expand_changed_path, expand_file_set, ExpandedFile, FileSet, WalkDiagnostic};
 
 pub const SPEC_VERSION: u32 = 1;
 

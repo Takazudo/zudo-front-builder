@@ -120,10 +120,10 @@ pub use url_attribution::{
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 pub use wind_engine::WindEngine;
 pub use zudo_wind::{
-    expand_file_set, extract_candidates, BreakpointConfig, CandidateIndex, DarkModeConfig,
-    ExpandedFile, ExtractedCandidate, ExtractionNote, ExtractionResult, FileSet, FontSizeToken,
-    NoteKind, Occurrence, Origin, OriginCandidate, PositionKind, PositiveRoot, ResetMode, SourceId,
-    SourceKind, SourcePlan, SourcePositionKind, WalkDiagnostic, WindConfig,
+    expand_changed_path, expand_file_set, extract_candidates, BreakpointConfig, CandidateIndex,
+    DarkModeConfig, ExpandedFile, ExtractedCandidate, ExtractionNote, ExtractionResult, FileSet,
+    FontSizeToken, NoteKind, Occurrence, Origin, OriginCandidate, PositionKind, PositiveRoot,
+    ResetMode, SourceId, SourceKind, SourcePlan, SourcePositionKind, WalkDiagnostic, WindConfig,
 };
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's
