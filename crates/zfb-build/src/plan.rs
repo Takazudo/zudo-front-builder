@@ -13,6 +13,39 @@ use std::path::PathBuf;
 
 use zfb_graph::{DirtySet, PageId};
 
+/// Source paths the CSS pass should reconsider for this tick.
+///
+/// Paths are exactly as the watcher delivered them. The sets are hints: a
+/// consumer keys on what exists on disk and never trusts the difference
+/// between a created path and a modified one. A consumer applies `removed`
+/// before `upserted`, because one tick can carry a removed directory and a
+/// file created beneath it. Directory paths may appear in either set, and
+/// one path may appear in both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CssChangeSet {
+    /// Paths that may now exist or have changed.
+    pub upserted: BTreeSet<PathBuf>,
+    /// Paths that may no longer exist.
+    pub removed: BTreeSet<PathBuf>,
+}
+
+impl CssChangeSet {
+    /// True when the watcher supplied no CSS path hints.
+    pub fn is_empty(&self) -> bool {
+        self.upserted.is_empty() && self.removed.is_empty()
+    }
+
+    /// Record a path that may now exist or have changed.
+    pub fn record_upsert(&mut self, path: PathBuf) {
+        self.upserted.insert(path);
+    }
+
+    /// Record a path that may no longer exist.
+    pub fn record_removal(&mut self, path: PathBuf) {
+        self.removed.insert(path);
+    }
+}
+
 /// The tick's directly-edited content-collection files
 /// (`PathClass::Content`), carried so the dev render callback can act on
 /// the changed entries' own routes. Two consumers, two strictness levels:
@@ -100,6 +133,11 @@ pub struct RebuildPlan {
     /// See [`ContentNarrowing`]. [`RebuildPlan::empty`] and
     /// [`RebuildPlan::full_rebuild`] set `None`.
     pub content_narrowing: Option<ContentNarrowing>,
+
+    /// Watcher path hints for the CSS pass. Advisory only; must not affect
+    /// `is_noop()` or plan merge logic. [`RebuildPlan::empty`] and
+    /// [`RebuildPlan::full_rebuild`] set an empty change set.
+    pub css_changes: CssChangeSet,
 }
 
 /// Which pages to re-render this tick.
@@ -166,6 +204,7 @@ impl RebuildPlan {
             prune_paths: Vec::new(),
             triggers: Vec::new(),
             content_narrowing: None,
+            css_changes: CssChangeSet::default(),
         }
     }
 
@@ -181,6 +220,7 @@ impl RebuildPlan {
             prune_paths: Vec::new(),
             triggers: Vec::new(),
             content_narrowing: None,
+            css_changes: CssChangeSet::default(),
         }
     }
 
@@ -265,6 +305,16 @@ mod tests {
             changed_content: vec![PathBuf::from("/proj/content/post.md")],
             fan_out_safe: true,
         });
+        assert!(plan.is_noop());
+    }
+
+    /// CSS path hints are advisory too: carrying them alone does not turn
+    /// an otherwise empty plan into work.
+    #[test]
+    fn css_change_set_hint_does_not_affect_is_noop() {
+        let mut plan = RebuildPlan::empty();
+        plan.css_changes
+            .record_upsert(PathBuf::from("/proj/styles/site.css"));
         assert!(plan.is_noop());
     }
 

@@ -113,13 +113,13 @@ pub use orchestrator::{
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, validate_companion_file_set,
     AssetEmitter, AssetEmitterPayload, AssetKind, AssetPipeline, BuildContext, BuildMode,
-    BuildOutcome, ClientScriptsRunner, CssRunner, DevAssetPipeline, DevBuildContext,
-    DynamicInjectedProbe, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
-    ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
-    ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
-    SsrPublishProbe, StaleProbe,
+    BuildOutcome, ClientScriptsRunner, CssPassRequest, CssRunner, DevAssetPipeline,
+    DevBuildContext, DynamicInjectedProbe, EmittedAsset, IslandsBundleInfo, IslandsRunner,
+    PageRenderer, ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile,
+    ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage,
+    RendererReloader, SsrPublishProbe, StaleProbe,
 };
-pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
+pub use plan::{ContentNarrowing, CssChangeSet, PageSelection, RebuildPlan};
 pub use plugin_bundler::{
     bundle_plugin_entry, needs_bundling, resolve_esbuild_for_plugins, EmbeddedEsbuildGetter,
     StagedPluginBundle, PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
