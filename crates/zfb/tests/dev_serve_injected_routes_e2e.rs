@@ -867,7 +867,7 @@ fn write_package_css_preset(root: &Path) {
     fs::write(
         &entrypoint,
         format!(
-            r#"import {{ jsx as _jsx }} from "preact/jsx-runtime";
+            r#"import {{ jsx as _jsx }} from "@takazudo/zfb/zudo-react/jsx-runtime";
 function CssPage() {{
   return _jsx("html", {{
     children: _jsx("body", {{
@@ -2712,7 +2712,7 @@ fn write_zero_pages_consumer_fixture(root: &Path) {
     let root_entrypoint = routes_dir.join("index.js");
     fs::write(
         &root_entrypoint,
-        r#"import { jsx as _jsx } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
 function IndexPage() {
   return _jsx("html", {
     children: _jsx("body", {
@@ -2728,7 +2728,7 @@ export { IndexPage as default };
     let docs_entrypoint = routes_dir.join("docs-slug.js");
     fs::write(
         &docs_entrypoint,
-        r#"import { jsx as _jsx } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
 import { docSlugs } from "virtual:zudo-doc-route-slugs";
 function paths() {
   return docSlugs.map((slug) => ({
@@ -2820,7 +2820,7 @@ export { DocsPage as default, paths };
     .expect("write zero-pages preset");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .expect("write zero-pages config");

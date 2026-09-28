@@ -93,7 +93,7 @@ fn select_wind_for_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r##"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "collections": [{ "name": "posts", "path": "content/posts" }],
   "wind": { "tokens": {
     "colors": { "marker": "#123456" },
@@ -195,7 +195,7 @@ fn provision_framework_node_modules(root: &Path) {
         ws.join("packages/zfb-runtime"),
         nm.join("@takazudo").join("zfb-runtime"),
     );
-    for pkg in ["preact", "preact-render-to-string", "hono"] {
+    for pkg in ["hono"] {
         let src = pnpm_store_pkg(&ws, pkg)
             .unwrap_or_else(|| panic!("pnpm store missing {pkg}; run `pnpm install`"));
         link(src, nm.join(pkg));
