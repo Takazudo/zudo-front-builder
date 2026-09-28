@@ -1,0 +1,17 @@
+{
+  "framework": "preact",
+  "outDir": "dist",
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "tokens": {
+      "colors": {
+        "asset-probe": "#336699",
+        "client-only": "#669933"
+      }
+    },
+    "authoredClasses": {
+      "ordinary-card": true
+    }
+  }
+}
