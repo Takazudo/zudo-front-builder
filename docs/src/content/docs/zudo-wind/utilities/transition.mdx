@@ -1,0 +1,51 @@
+---
+title: Transition
+description: Choose the property set used by a transition and its built-in timing defaults.
+sidebar_position: 55
+generated: true
+---
+
+Choose the property set used by a transition and its built-in timing defaults.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## transition
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.transition` |
+| Class pattern | `transition` or `transition-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"transition-property","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `6` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `transition` (`35`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `transition-property`, `transition-duration`, `transition-timing-function` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `null` | `"all"` |
+| `keyword` | `"all"` | `"all"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"colors"` | `"color,background-color,border-color,text-decoration-color,fill,stroke"` |
+| `keyword` | `"opacity"` | `"opacity"` |
+| `keyword` | `"transform"` | `"transform,translate,rotate,scale"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `transition-property` | `resolved` | `null` |
+| `transition-duration` | `transitionDuration` | `null` |
+| `transition-timing-function` | `transitionTimingFunction` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `transition-colors` | `transition-property: color,background-color,border-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |

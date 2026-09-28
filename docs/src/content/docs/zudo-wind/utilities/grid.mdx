@@ -1,0 +1,284 @@
+---
+title: Grid
+description: Define grid tracks and place items by row or column span and line.
+sidebar_position: 26
+generated: true
+---
+
+Define grid tracks and place items by row or column span and line.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## col-end
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.col-end` |
+| Class pattern | `col-end-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-column-end` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-column-end` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `col-end-auto` | `grid-column-end: auto` |
+
+## col-span
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.col-span` |
+| Class pattern | `col-span-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-column` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"full"` | `"1 / -1"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-column` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `col-span-full` | `grid-column: 1 / -1` |
+
+## col-start
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.col-start` |
+| Class pattern | `col-start-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-column-start` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-column-start` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `col-start-auto` | `grid-column-start: auto` |
+
+## grid-cols
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.grid-cols` |
+| Class pattern | `grid-cols-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer","arbitrary"],"arbitraryProperty":"grid-template-columns","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-template-columns` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"subgrid"` | `"subgrid"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-template-columns` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `grid-cols-none` | `grid-template-columns: none` |
+
+## grid-rows
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.grid-rows` |
+| Class pattern | `grid-rows-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer","arbitrary"],"arbitraryProperty":"grid-template-rows","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-template-rows` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"subgrid"` | `"subgrid"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-template-rows` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `grid-rows-none` | `grid-template-rows: none` |
+
+## row-end
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.row-end` |
+| Class pattern | `row-end-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-row-end` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-row-end` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `row-end-auto` | `grid-row-end: auto` |
+
+## row-span
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.row-span` |
+| Class pattern | `row-span-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-row` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"full"` | `"1 / -1"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-row` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `row-span-full` | `grid-row: 1 / -1` |
+
+## row-start
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.row-start` |
+| Class pattern | `row-start-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `grid` (`6`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `grid-row-start` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `grid-row-start` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `row-start-auto` | `grid-row-start: auto` |

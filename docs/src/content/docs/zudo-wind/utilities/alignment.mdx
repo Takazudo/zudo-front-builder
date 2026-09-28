@@ -1,0 +1,162 @@
+---
+title: Alignment
+description: Align items, individual items, and grid content along supported axes.
+sidebar_position: 27
+generated: true
+---
+
+Align items, individual items, and grid content along supported axes.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## items
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.items` |
+| Class pattern | `items-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `5` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `align-items` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `align-items` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `items-center` | `align-items: center` |
+
+## justify
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.justify` |
+| Class pattern | `justify-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `6` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `justify-content` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"between"` | `"space-between"` |
+| `keyword` | `"around"` | `"space-around"` |
+| `keyword` | `"evenly"` | `"space-evenly"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `justify-content` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `justify-center` | `justify-content: center` |
+
+## place-items
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.place-items` |
+| Class pattern | `place-items-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `4` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `place-items` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `place-items` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `place-items-center` | `place-items: center` |
+
+## self
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.self` |
+| Class pattern | `self-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `5` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `align-self` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"flex-start"` |
+| `keyword` | `"end"` | `"flex-end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `align-self` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `self-center` | `align-self: center` |

@@ -1,0 +1,42 @@
+---
+title: Letter spacing
+description: Set letter spacing with a configured token or arbitrary value; negatives are allowed.
+sidebar_position: 39
+generated: true
+---
+
+Set letter spacing with a configured token or arbitrary value; negatives are allowed.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## tracking
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.tracking` |
+| Class pattern | `tracking-<suffix>` |
+| Grammar | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"letter-spacing","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Token categories | `letterSpacings` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `tracking` (`19`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `letter-spacing` |
+
+### Accepted values
+
+The catalog has no separate accepted-value records for this entry.
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `letter-spacing` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `tracking-[0.08em]` | `letter-spacing: 0.08em` |

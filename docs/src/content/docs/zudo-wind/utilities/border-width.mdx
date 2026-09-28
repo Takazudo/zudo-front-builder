@@ -1,0 +1,265 @@
+---
+title: Border width
+description: Set physical border widths in pixels and establish a solid border style.
+sidebar_position: 44
+generated: true
+---
+
+Set physical border widths in pixels and establish a solid border style.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## border
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width` |
+| Class pattern | `border` or `border-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-width`, `border-top-style`, `border-right-width`, `border-right-style`, `border-bottom-width`, `border-bottom-style`, `border-left-width`, `border-left-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border` | `border-top-width: 1px`; `border-top-style: solid`; `border-right-width: 1px`; `border-right-style: solid`; `border-bottom-width: 1px`; `border-bottom-style: solid`; `border-left-width: 1px`; `border-left-style: solid` |
+
+## border-x
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.x` |
+| Class pattern | `border-x` or `border-x-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-left-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-left-width`, `border-left-style`, `border-right-width`, `border-right-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-x` | `border-left-width: 1px`; `border-left-style: solid`; `border-right-width: 1px`; `border-right-style: solid` |
+
+## border-y
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.y` |
+| Class pattern | `border-y` or `border-y-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-width`, `border-top-style`, `border-bottom-width`, `border-bottom-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-y` | `border-top-width: 1px`; `border-top-style: solid`; `border-bottom-width: 1px`; `border-bottom-style: solid` |
+
+## border-b
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.b` |
+| Class pattern | `border-b` or `border-b-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-bottom-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-bottom-width`, `border-bottom-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-bottom-width` | `resolved` | `null` |
+| `border-bottom-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-b` | `border-bottom-width: 1px`; `border-bottom-style: solid` |
+
+## border-l
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.l` |
+| Class pattern | `border-l` or `border-l-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-left-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-left-width`, `border-left-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-l` | `border-left-width: 1px`; `border-left-style: solid` |
+
+## border-r
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.r` |
+| Class pattern | `border-r` or `border-r-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-right-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-right-width`, `border-right-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-right-width` | `resolved` | `null` |
+| `border-right-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-r` | `border-right-width: 1px`; `border-right-style: solid` |
+
+## border-t
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.border.width.t` |
+| Class pattern | `border-t` or `border-t-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `border-width` (`24`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-width`, `border-top-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-t` | `border-top-width: 1px`; `border-top-style: solid` |

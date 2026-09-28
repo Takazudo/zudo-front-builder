@@ -1,0 +1,116 @@
+---
+title: Gap
+description: Set row and column gaps between items in a layout container.
+sidebar_position: 31
+generated: true
+---
+
+Set row and column gaps between items in a layout container.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## gap
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.gap` |
+| Class pattern | `gap-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `gap` (`11`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `column-gap`, `row-gap` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `column-gap` | `resolved` | `null` |
+| `row-gap` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `gap-0` | `column-gap: 0`; `row-gap: 0` |
+
+## gap-x
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.gap-x` |
+| Class pattern | `gap-x-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `gap` (`11`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `column-gap` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `column-gap` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `gap-x-0` | `column-gap: 0` |
+
+## gap-y
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.gap-y` |
+| Class pattern | `gap-y-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `gap` (`11`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `row-gap` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `row-gap` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `gap-y-0` | `row-gap: 0` |
