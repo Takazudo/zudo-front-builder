@@ -61,7 +61,7 @@ export default function HomePage({ posts }: Props) {
                 </p>
               ) : null}
               <time
-                dateTime={post.data.date}
+                datetime={post.data.date}
                 class="mt-2 block text-xs text-neutral-500 tabular-nums"
               >
                 {post.data.date}

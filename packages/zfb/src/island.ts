@@ -44,6 +44,7 @@ import { jsx } from "@takazudo/zfb/jsx-factory";
 import { ownedIslandBoundary } from "@takazudo/zfb/island-boundary";
 
 import type { VNode } from "./jsx-types.js";
+import type { Description } from "./zudo-react/description.js";
 import { DEFAULT_WHEN, resolveWhen, type When } from "./types.js";
 
 // Re-export `resolveWhen` for back-compat: tests and downstream consumers
@@ -117,16 +118,12 @@ export interface IslandProps {
 }
 
 /**
- * Public JSX-element shape returned by [`Island`]. Intentionally widened
- * to a structural type so consumers don't infer through the internal
- * `{ type, props, key }` VNode shape of either Preact or React. Both
- * jsx-runtimes accept this object on either side of the boundary.
+ * Public JSX-element shape returned by [`Island`]. The owned JSX runtime
+ * requires the description brand, while the legacy JSX runtimes accept the
+ * same structural `type`/`props`/`key` fields. The legacy wrapper is cast to
+ * this shared type below; it remains a React element at runtime.
  */
-export type IslandElement = {
-  readonly type: string;
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly key: unknown;
-};
+export type IslandElement = Description;
 
 /**
  * `<Island>` JSX wrapper.

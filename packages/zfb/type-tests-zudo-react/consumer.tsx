@@ -1,4 +1,5 @@
 import { h, isDescription, signal, Show, For, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
+import { Island } from "@takazudo/zfb";
 
 const name = {
   value: "ok",
@@ -14,6 +15,7 @@ const view = (
     >
       {name}
       <svg viewBox="0 0 10 10">
+        <svg width="16" height="16" />
         <path d="M0 0" stroke-width={2} />
       </svg>
       <my-widget data-label="hi" on:change={() => {}} />
@@ -22,6 +24,15 @@ const view = (
   </>
 );
 isDescription(view);
+const island = (
+  <Island>
+    <ExampleIsland />
+  </Island>
+);
+function ExampleIsland() {
+  return <span>example</span>;
+}
+void island;
 h("div", null, "text");
 const visible = signal(true);
 const records = signal([{ id: "a" }]);

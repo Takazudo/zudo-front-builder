@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "preact/hooks";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 /**
  * The interactive island this whole smoke lane exists to exercise (issue
@@ -9,9 +9,14 @@ import { useState } from "preact/hooks";
  * and hydrated — which is exactly what the #1385 bug class breaks.
  */
 export function Counter() {
-  const [count, setCount] = useState(0);
+  const count = signal(0);
   return (
-    <button type="button" onClick={() => setCount(count + 1)}>
+    <button
+      type="button"
+      on:click={() => {
+        count.value += 1;
+      }}
+    >
       Count: {count}
     </button>
   );

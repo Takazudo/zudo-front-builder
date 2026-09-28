@@ -1,4 +1,4 @@
-import type { ComponentChildren, VNode } from "preact";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
 /**
  * Alert components for the `githubAlerts` markdown feature.
@@ -23,7 +23,7 @@ type VariantSpec = {
    */
   tone: string;
   accent: string;
-  icon: VNode;
+  icon: Child;
 };
 
 const SPECS: Record<Variant, VariantSpec> = {
@@ -81,7 +81,7 @@ const SPECS: Record<Variant, VariantSpec> = {
 
 type CalloutProps = {
   variant: Variant;
-  children: ComponentChildren;
+  children: Child;
 };
 
 export function Callout({ variant, children }: CalloutProps) {
@@ -113,7 +113,7 @@ export function Callout({ variant, children }: CalloutProps) {
   );
 }
 
-type AlertProps = { children: ComponentChildren };
+type AlertProps = { children: Child };
 
 export function Note({ children }: AlertProps) {
   return <Callout variant="note">{children}</Callout>;

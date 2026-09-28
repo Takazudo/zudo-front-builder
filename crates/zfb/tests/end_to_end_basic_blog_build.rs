@@ -38,9 +38,8 @@
 //! ## No pnpm install required
 //!
 //! `zfb build` needs no project-level `node_modules`: when none is present,
-//! the embedded `@takazudo/zfb`, `@takazudo/zfb-runtime`, `preact`, and
-//! `preact-render-to-string` packages (staged into the binary by
-//! `crates/zfb/build.rs`) are extracted on demand
+//! the embedded `@takazudo/zfb` and `@takazudo/zfb-runtime` packages
+//! (staged into the binary by `crates/zfb/build.rs`) are extracted on demand
 //! (`render_pipeline::embedded_node_modules`), and the embedded esbuild
 //! helper binary is extracted the same way
 //! (`render_pipeline::embedded_binary`); wind runs inside `zfb`. This mirrors

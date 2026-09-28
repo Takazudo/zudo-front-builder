@@ -15,7 +15,7 @@
  *   2. The Counter island actually hydrated: clicking its button increments
  *      the rendered count. Static SSR markup alone renders "Count: 0" but
  *      cannot respond to a click — only a live, successfully-hydrated
- *      Preact instance can, so this assertion is also the sensitivity check
+ *      owned runtime island can, so this assertion is also the sensitivity check
  *      that a broken bundle (one that loads but throws before attaching
  *      event listeners) fails this lane even when it produces no visible
  *      page error.

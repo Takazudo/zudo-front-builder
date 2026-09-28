@@ -171,6 +171,8 @@ type SelectProps = HtmlProps<HTMLSelectElement> & {
 };
 
 interface SvgAttributes extends CommonAttributes<SVGElement> {
+  width?: ScalarAttribute;
+  height?: ScalarAttribute;
   viewBox?: StringAttribute;
   preserveAspectRatio?: StringAttribute;
   gradientUnits?: StringAttribute;
