@@ -61,8 +61,8 @@ fn copy_source_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Preserve the fixture's tracked package under `node_modules/@fixture` while
-/// linking the binary's framework snapshot beside it for real SSR/esbuild.
+/// Preserve the fixture's package under `node_modules/@fixture` while linking
+/// the binary's framework snapshot beside it for real SSR/esbuild.
 fn link_embedded_framework_packages(root: &Path) -> tempfile::TempDir {
     let (lease, embedded_node_modules) =
         zfb::render_pipeline::embedded_node_modules().expect("extract embedded node_modules");
@@ -357,6 +357,13 @@ async fn warm_source_sequence_matches_a_fresh_dev_session_byte_for_byte() {
     let warm_temp = tempfile::tempdir().expect("create warm project tempdir");
     let warm_root = warm_temp.path().join("project");
     copy_source_tree(&fixture_dir(), &warm_root).expect("copy wind-ownership fixture");
+    let initial_manifest = warm_root.join("node_modules/@fixture/wind-ownership/wind.json");
+    fs::create_dir_all(initial_manifest.parent().unwrap()).expect("create fixture package");
+    fs::write(
+        &initial_manifest,
+        r#"{"schemaVersion":1,"specVersion":1,"producer":"wind-ownership-fixture","candidates":["bg-manifest-v1"]}"#,
+    )
+    .expect("create initial package candidate manifest");
     let _warm_node_modules = link_embedded_framework_packages(&warm_root);
     let mut warm_session = spawn_dev(warm_root.clone(), &esbuild);
     let Some((warm_base, warm_client, warm_marker_count)) =
