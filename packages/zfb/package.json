@@ -61,7 +61,27 @@
       "types": "./src/slugify.ts",
       "default": "./src/slugify.ts"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./zudo-react": {
+      "types": "./src/zudo-react/index.ts",
+      "default": "./src/zudo-react/index.ts"
+    },
+    "./zudo-react/jsx-runtime": {
+      "types": "./src/zudo-react/jsx-runtime.ts",
+      "default": "./src/zudo-react/jsx-runtime.ts"
+    },
+    "./zudo-react/jsx-dev-runtime": {
+      "types": "./src/zudo-react/jsx-dev-runtime.ts",
+      "default": "./src/zudo-react/jsx-dev-runtime.ts"
+    },
+    "./zudo-react/server": {
+      "types": "./src/zudo-react/server.ts",
+      "default": "./src/zudo-react/server.ts"
+    },
+    "./zudo-react/client": {
+      "types": "./src/zudo-react/client.ts",
+      "default": "./src/zudo-react/client.ts"
+    }
   },
   "bin": {
     "zfb": "./bin/zfb.mjs"
@@ -117,7 +137,27 @@
         "types": "./dist/slugify.d.ts",
         "default": "./dist/slugify.js"
       },
-      "./package.json": "./package.json"
+      "./package.json": "./package.json",
+      "./zudo-react": {
+        "types": "./dist/zudo-react/index.d.ts",
+        "default": "./dist/zudo-react/index.js"
+      },
+      "./zudo-react/jsx-runtime": {
+        "types": "./dist/zudo-react/jsx-runtime.d.ts",
+        "default": "./dist/zudo-react/jsx-runtime.js"
+      },
+      "./zudo-react/jsx-dev-runtime": {
+        "types": "./dist/zudo-react/jsx-dev-runtime.d.ts",
+        "default": "./dist/zudo-react/jsx-dev-runtime.js"
+      },
+      "./zudo-react/server": {
+        "types": "./dist/zudo-react/server.d.ts",
+        "default": "./dist/zudo-react/server.js"
+      },
+      "./zudo-react/client": {
+        "types": "./dist/zudo-react/client.d.ts",
+        "default": "./dist/zudo-react/client.js"
+      }
     }
   },
   "engines": {
@@ -127,7 +167,7 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "vitest run && tsc -p tsconfig.preact-fixture.json",
+    "test": "vitest run && tsc -p tsconfig.preact-fixture.json && tsc -p tsconfig.zudo-react-fixture.json && tsc -p tsconfig.zudo-react-dev-fixture.json",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },

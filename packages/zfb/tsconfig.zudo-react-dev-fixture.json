@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.zudo-react-fixture.json",
+  "compilerOptions": {
+    "jsx": "react-jsxdev"
+  }
+}
