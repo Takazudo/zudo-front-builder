@@ -16,11 +16,11 @@ Text inputs, textarea, checkbox, single select, and radio groups are the support
 
 | Control | Model | Initial server/default form |
 | --- | --- | --- |
-| Text input (including omitted type), search, email, URL, tel, or password input | modelValue with Signal<string> | Escaped value attribute |
-| textarea | modelValue with Signal<string> | Escaped text content |
-| checkbox input | modelChecked with Signal<boolean> | Boolean checked attribute |
-| single select | modelValue with Signal<string> | selected on the matching static option |
-| radio group | shared modelValue with Signal<string \| null> | checked on the matching static option; null checks none |
+| Text input (including omitted type), search, email, URL, tel, or password input | modelValue with a writable string signal | Escaped value attribute |
+| textarea | modelValue with a writable string signal | Escaped text content |
+| checkbox input | modelChecked with a writable boolean signal | Boolean checked attribute |
+| single select | modelValue with a writable string signal | selected on the matching static option |
+| radio group | shared modelValue with a writable string-or-null signal | checked on the matching static option; null checks none |
 
 The corresponding live events are input for text inputs and textarea, and change for checkbox, select, and radio controls. Radio models are shared across each group. A leading line feed in textarea default content is preserved through HTML parsing.
 
@@ -59,7 +59,7 @@ Each radio in a group needs a static value and the same nonempty name, form asso
 
 ## Models must be writable
 
-Every model requires a **Signal<T>** from signal(). A ReadonlySignal or computed value is not a model, even though both have the shared reactive brand. Signal also carries the required writable brand. This is checked by TypeScript and by server and client runtime validation, including dynamic descriptions created with h.
+Every model requires a `Signal<T>` from signal(). A `ReadonlySignal<T>` or computed value is not a model, even though both have the shared reactive brand. Signal also carries the required writable brand. This is checked by TypeScript and by server and client runtime validation, including dynamic descriptions created with h.
 
 ~~~tsx
 import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";

@@ -38,7 +38,7 @@ return <Profile liveName={name} initialName={snapshot} />;
 
 The liveName prop is a signal; initialName is a string captured during setup. Reading value inside a JSX expression does not make that read reactive. This rule applies to computed values too.
 
-Writable and readonly signals share the reactive brand, but writable signals also have the required writable brand. Keep a writable model typed as **Signal<T>**; use **ReadonlySignal<T>** for readable inputs. A writable signal can be passed where a readonly signal is expected. A computed value or readonly view cannot be used as a form model, either in TypeScript or at runtime. Calling signal produces the writable brand; there is no separate setter API.
+Writable and readonly signals share the reactive brand, but writable signals also have the required writable brand. Keep a writable model typed as `Signal<T>`; use `ReadonlySignal<T>` for readable inputs. A writable signal can be passed where a readonly signal is expected. A computed value or readonly view cannot be used as a form model, either in TypeScript or at runtime. Calling signal produces the writable brand; there is no separate setter API.
 
 ~~~tsx
 import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";

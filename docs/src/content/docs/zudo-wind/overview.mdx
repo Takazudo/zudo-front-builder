@@ -20,31 +20,37 @@ Source discovery reads eligible file contents as text. It does not run the appli
 
 This configuration supplies every non-static value used below. The default reset is none, and no palette or spacing scale is added for you.
 
-    {
-      "wind": {
-        "tokens": {
-          "spacingUnit": "0.25rem",
-          "colors": {
-            "panel": "var(--app-panel)"
-          },
-          "radii": {
-            "default": "0.5rem"
-          }
-        }
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "var(--app-panel)"
+      },
+      "radii": {
+        "default": "0.5rem"
       }
     }
+  }
+}
+```
 
 Place the same top-level `wind` value in `zfb.config.ts` or `zfb.config.json`. An authored stylesheet can define the project property that the color token references:
 
-    :root {
-      --app-panel: #f4f1ec;
-    }
+```css
+:root {
+  --app-panel: #f4f1ec;
+}
+```
 
 A component can then use these complete candidates:
 
-    <section className="rounded bg-panel p-4 text-panel">
-      Welcome
-    </section>
+```html
+<section className="rounded bg-panel p-4 text-panel">
+  Welcome
+</section>
+```
 
 `rounded` uses `radii.default`, `bg-panel` and `text-panel` use `colors.panel`, and `p-4` multiplies four by the configured spacing unit. If a required token or unit is absent, the recognized utility produces a missing-token diagnostic instead of receiving an invented value. The [token guide](./tokens.mdx) explains these bindings.
 

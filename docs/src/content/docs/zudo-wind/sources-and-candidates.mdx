@@ -18,8 +18,10 @@ Comments, Markdown prose, inline code, and fenced code are ignored. A script str
 
 Candidates must be complete tokens. A finite map provides known alternatives:
 
-    const stateClasses = ["text-muted", "text-accent"];
-    const className = stateClasses[active ? 1 : 0];
+```ts
+const stateClasses = ["text-muted", "text-accent"];
+const className = stateClasses[active ? 1 : 0];
+```
 
 Both `text-muted` and `text-accent` are present as complete literals and can be extracted independently; whether they resolve as utilities still depends on configuration. Concatenating a prefix such as `bg-` with a runtime value does not form a candidate. A partial fragment such as `bg-` or `-500` is never expanded, so a dynamically constructed class is never covered. Use a literal map or an explicit candidate source for a finite set of possibilities.
 
@@ -31,12 +33,14 @@ A `safelist` entry is an owner ID mapped to an array of full candidates. There i
 
 A package can publish a versioned JSON manifest. The consumer declares its path under a producer ID in `wind.manifests`; the manifest's `producer` must match that ID. Its shape is:
 
-    {
-      "schemaVersion": 1,
-      "specVersion": 1,
-      "producer": "widgets",
-      "candidates": ["group", "p-0", "hover:bg-panel"]
-    }
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "widgets",
+  "candidates": ["group", "p-0", "hover:bg-panel"]
+}
+```
 
 The schema version is separate from the language version. A manifest contains candidates only: it cannot define tokens, run code, or be found through ambient dependency discovery. The consumer must configure any tokens used by manifest candidates. Manifest paths resolve from their declaring config or package. Missing files, invalid JSON or schema, and unsupported source extensions are errors. Unknown or invalid explicit entries retain their candidate diagnostics and manifest index. Duplicate strings are deduplicated. If two declared origins claim the same producer, the conflict is an error rather than a traversal-order choice; replacing or removing a producer retracts its previous candidates.
 

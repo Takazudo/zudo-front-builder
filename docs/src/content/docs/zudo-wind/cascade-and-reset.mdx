@@ -8,7 +8,9 @@ sidebar_position: 7
 
 Whenever wind emits a reset, token, or utility rule, the generated layer prelude is:
 
-    @layer zw-reset, zw-tokens, zfb-hi, base, components;
+```css
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+```
 
 Wind appends authored layer-order statements after this prelude. They cannot move the five listed layers ahead of or behind one another. Other layer names follow ordinary CSS first-declaration order. Imported stylesheets are not wrapped in a layer implicitly; an explicit import layer remains valid.
 
@@ -31,117 +33,121 @@ An entirely empty wind result emits no prelude. A selected reset can emit the pr
 
 The default is `none`, which emits no reset bytes. `minimal-v1` contains exactly these declarations:
 
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-    }
-    body {
-      margin: 0;
-    }
-    button,
-    input,
-    optgroup,
-    select,
-    textarea {
-      font: inherit;
-    }
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+}
+```
 
 `owned-v1` is a complete reset, not an extension of `minimal-v1`:
 
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      border-width: 0;
-      border-style: solid;
-      border-color: currentColor;
-    }
-    html {
-      line-height: 1.5;
-      font-family: ui-sans-serif, system-ui, sans-serif;
-      -webkit-text-size-adjust: 100%;
-      tab-size: 4;
-    }
-    body {
-      line-height: inherit;
-    }
-    h1,
-    h2,
-    h3,
-    h4,
-    h5,
-    h6 {
-      font-size: inherit;
-      font-weight: inherit;
-    }
-    a {
-      color: inherit;
-      text-decoration: inherit;
-    }
-    b,
-    strong {
-      font-weight: bolder;
-    }
-    code,
-    kbd,
-    samp,
-    pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 1em;
-    }
-    ol,
-    ul,
-    menu {
-      list-style: none;
-    }
-    button,
-    input,
-    optgroup,
-    select,
-    textarea {
-      font: inherit;
-      letter-spacing: inherit;
-      color: inherit;
-    }
-    button,
-    input:where([type="button"], [type="reset"], [type="submit"]) {
-      background-color: transparent;
-      background-image: none;
-    }
-    textarea {
-      resize: vertical;
-    }
-    img,
-    svg,
-    video,
-    canvas,
-    audio,
-    iframe,
-    embed,
-    object {
-      display: block;
-      vertical-align: middle;
-    }
-    img,
-    video {
-      max-width: 100%;
-      height: auto;
-    }
-    table {
-      border-collapse: collapse;
-      border-color: inherit;
-      text-indent: 0;
-    }
-    summary {
-      display: list-item;
-    }
-    hr {
-      height: 0;
-      border-top-width: 1px;
-    }
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
+}
+html {
+  line-height: 1.5;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+body {
+  line-height: inherit;
+}
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+a {
+  color: inherit;
+  text-decoration: inherit;
+}
+b,
+strong {
+  font-weight: bolder;
+}
+code,
+kbd,
+samp,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1em;
+}
+ol,
+ul,
+menu {
+  list-style: none;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+button,
+input:where([type="button"], [type="reset"], [type="submit"]) {
+  background-color: transparent;
+  background-image: none;
+}
+textarea {
+  resize: vertical;
+}
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block;
+  vertical-align: middle;
+}
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+table {
+  border-collapse: collapse;
+  border-color: inherit;
+  text-indent: 0;
+}
+summary {
+  display: list-item;
+}
+hr {
+  height: 0;
+  border-top-width: 1px;
+}
+```
 
 Both resets leave native focus outlines and `appearance` alone. Neither forces a display rule for `[hidden]`. Bare border utilities set a solid border themselves under every reset choice.
 
@@ -149,8 +155,10 @@ Both resets leave native focus outlines and `appearance` alone. Neither forces a
 
 Rules sort by this ascending tuple:
 
-    (responsive_rank, dark_rank, relation_rank, state_rank, pseudo_rank,
-     conflict_group_rank, scope_rank, catalog_rank, raw_candidate_utf8_bytes)
+```text
+(responsive_rank, dark_rank, relation_rank, state_rank, pseudo_rank,
+ conflict_group_rank, scope_rank, catalog_rank, raw_candidate_utf8_bytes)
+```
 
 The base responsive rank is 0. For each configured breakpoint in ascending width order, minimum ranks are `2*i + 1` and maximum ranks are `2*i + 2`, with `i` starting at zero. Dark has rank 0 or 1. Relation, state, and pseudo ranks follow the orders in [Variants](./variants.mdx). Conflict groups use catalog table order starting at 1. Scope ranks are broad 0, axis 1, and side or corner 2; single-property families use 0. Catalog subentries use their listed order, then root bytes; raw candidate UTF-8 bytes break the final tie. This is emitted source order; it does not replace selector specificity.
 
