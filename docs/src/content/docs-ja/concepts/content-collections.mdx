@@ -115,7 +115,7 @@ export default function FeaturedPost() {
 各エントリには、信頼して利用できる 3 つの要素があります。
 
 - `data` — パース済みで検証済みのフロントマター（スキーマに照らして型付けされています）。
-- `Content` — 本文からコンパイルされたレンダリング可能な React/Preact コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](./mdx-components.mdx) を参照してください。
+- `Content` — 本文からコンパイルされたレンダリング可能な zudo-react コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](./mdx-components.mdx) を参照してください。
 - `slug` — ファイル名から導出されます（`my-first-post.md` → `my-first-post`）。ネストしたディレクトリはスラッシュ区切りの slug になります。
 
 この関数のシグネチャは [`getCollection`](../api/get-collection.mdx) に記載されています。

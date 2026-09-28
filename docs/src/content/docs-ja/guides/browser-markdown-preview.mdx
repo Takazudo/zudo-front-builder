@@ -118,7 +118,7 @@ import { compile } from "@takazudo/zfb-md-wasm";
 
 const { code, frontmatter, diagnostics } = await compile(
   "---\ntitle: Hello\n---\n\n# Welcome\n\n<Callout>Sum is {1 + 2}</Callout>\n",
-  { filename: "post.mdx", jsxRuntime: "preact" },
+  { filename: "post.mdx" },
 );
 // code        -> ES-module JS source (string), or null on failure
 // frontmatter -> { title: "Hello" }
@@ -155,36 +155,9 @@ PascalCase のコンポーネント（上記ソースの `<Callout>`）は、モ
 
 ### JSX ランタイムを供給する
 
-コンパイル済みモジュールは JSX ランタイムを裸の指定子 — `preact/jsx-runtime` または
-`react/jsx-runtime` — でインポートするため、それを評価するページは、
-[import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap)
-やバンドラを通じて、それらの指定子を自分で解決しなければなりません。`zfb-md-wasm` は
-どちらのランタイムも同梱・バンドルしません。
+出力されるモジュールは、単一の裸の指定子 `@takazudo/zfb/zudo-react/jsx-runtime` から `jsx`、`jsxs`、`Fragment` をインポートします。バンドラまたは [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap) で、対応する `@takazudo/zfb` インストールのサブパスに解決してください。`zfb-md-wasm` が返すのはモジュールのソースであり、ランタイムをバンドルしません。
 
-<Warning title="Fragment の癖 — preact 利用者はエイリアスが 1 つ必要">
-
-zfb のエミッタは JSX の _ファクトリ_ をあなたが選んだ `jsxRuntime` から取りますが、
-どちらのランタイムを選んだかにかかわらず、**`Fragment` は常に `react/jsx-runtime` から
-インポートします**。これは zfb の本番エミッタの形であり — パリティとして正しく、バグでは
-ありません — しかしこれは、**preact** 利用者が `react/jsx-runtime` を preact 自身の
-ランタイムへエイリアスしなければならないことを意味します。さもなければ `Fragment` は
-実行時に解決に失敗します:
-
-```html
-<script type="importmap">
-  {
-    "imports": {
-      "preact/jsx-runtime": "https://esm.sh/preact/jsx-runtime",
-      "react/jsx-runtime": "https://esm.sh/preact/jsx-runtime"
-    }
-  }
-</script>
-```
-
-`react` 利用者は `react/jsx-runtime` を React 自身のランタイムにマッピングするだけでよく、
-エイリアスは不要です。
-
-</Warning>
+エミッタは zfb 固有の JSX 方言とランタイムを使います。ランタイムを選ぶオプションや互換エイリアスはありません。旧 `jsxRuntime` フィールドは v3 のオプション契約で未知として拒否されます。この正確な拒否動作は #3290 の md-wasm 切り替え時に再確認してください。
 
 ### `renderHtml()` — Markdown から HTML へ
 
@@ -203,9 +176,7 @@ const { html, frontmatter, diagnostics } = await renderHtml("Budget <8 ms\n", {
 `renderHtml` は `.md` から CommonMark、`.mdx` から MDX を推論し、明示的な
 `dialect: "markdown" | "mdx"` はどちらの有効な拡張子も上書きします。ファイル名を
 省略すると `<anonymous>.md` が使われるため CommonMark になります。`compile` は MDX
-専用のままで `dialect` を受け取って無視し、`renderHtml` は `jsxRuntime` / `development`
-を受け取って無視するため、オプションオブジェクトを動的に組み立てれば 1 つで両方の階層に
-使えます。
+専用のままで `dialect` を受け取って無視し、`renderHtml` は `development` を受け取って無視します。旧 `jsxRuntime` を含む未知のフィールドは、ランタイムを選んだり黙って無視したりせず拒否されます。
 
 ## AST へのパース（parseToAst）
 

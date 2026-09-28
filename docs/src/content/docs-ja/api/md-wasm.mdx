@@ -47,7 +47,7 @@ wasm モジュールを事前にインスタンス化します。前もって呼
 function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
 ```
 
-MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使うのと同じエミッタです。`options` のデフォルトは `{}` です。`jsxRuntime` と `development` はここでのみ消費され、`renderHtml` は両方を受け取りますが黙って無視します。反対に、`dialect` は `renderHtml` だけが消費し、`compile` は受け取って無視するため、1 つのオプションオブジェクトでどちらの呼び出しにも使えます。
+MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使うのと同じエミッタです。`options` のデフォルトは `{}` です。`development` はここでのみ消費され、`renderHtml` は無視します。一方、`dialect` は `renderHtml` だけが消費し、`compile` は無視します。旧 `jsxRuntime` オプションは削除されました。エミッタは zfb 固有の JSX 方言を使い、v3 のオプション契約では旧フィールドを未知のものとして拒否します。この拒否動作は #3290 の md-wasm 切り替え時に再確認してください。
 
 ## `renderHtml(source, options?)`
 
@@ -105,7 +105,6 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 |---|---|---|
 | `filename?` | `string` | `.md` または `.mdx` で終わる必要があります。デフォルトは `compile` では `"<anonymous>.mdx"`、`renderHtml` では `"<anonymous>.md"` です。 |
 | `dialect?` | `"markdown" \| "mdx"` | `renderHtml` だけが消費し、ファイル名による推論を上書きします。`compile` は受け取って無視します。 |
-| `jsxRuntime?` | `"preact" \| "react"` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
 | `development?` | `boolean` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
 | `pipeline?` | `PipelineOptions` | 共有のパイプライン設定。 |
 

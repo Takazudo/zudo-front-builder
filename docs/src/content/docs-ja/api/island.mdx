@@ -1,12 +1,12 @@
 ---
 title: Island
-description: Island JSX ラッパーを使って、コンポーネントをクライアントでハイドレートされる島としてラップします。
+description: 登録済みコンポーネント 1 つを、検証される JSON props 境界を持つクライアントの島としてラップします。
 sidebar_position: 4
 ---
 
 ## `<Island>` ラッパー
 
-`"@takazudo/zfb"` から `Island` をインポートし、ブラウザでハイドレートしたいコンポーネントをラップします。それ以外はサーバーレンダリングされた HTML のままになります。
+`@takazudo/zfb` から `Island` をインポートし、ブラウザーで動かすコンポーネント 1 つをラップします。ページとツリーの残りは通常の HTML としてレンダリングされます。
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -17,52 +17,64 @@ export default function Page() {
     <main>
       <h1>My Page</h1>
       <Island when="visible">
-        <Counter />
+        <Counter label="Clicks" />
       </Island>
     </main>
   );
 }
 ```
 
-SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。生成されるハイドレーション bootstrap は `"@takazudo/zfb/runtime"` から `mountIslands` をインポートし、これらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。生成された `mount()` 関数が返ると、ランタイムは `data-zfb-island-mounted` マーカーを追加します。
+ラッパーは既存の `data-zfb-island*` 境界属性を持つ `<div>` として残ります。通常の島には `data-zfb-island`、SSR をスキップする島には `data-zfb-island-skip-ssr` が付きます。ラッパーにはスケジュール値、`data-zfb-transport="json/1"`、`data-zfb-protocol="zudo-react/1"`、空ではない `data-zfb-build` 識別子、props が `{}` の場合も含む `data-props` が付きます。クライアントはコンポーネントのセットアップ前に、このメタデータを検証します。
 
-## IslandProps
+`Island` は SDK の境界ヘルパーです。ランタイムのコアエントリは、ブランド付きの記述と子のモデルを公開します。
 
 ```ts
-interface IslandProps {
-  when?: When;
-  media?: string;
-  ssrFallback?: VNode;
-  children?: VNode;
-}
+import type {
+  Child,
+  Component,
+  Description,
+  ElementType,
+} from "@takazudo/zfb/zudo-react";
 ```
 
-- `when` — ハイドレーション戦略。デフォルトは `"load"`。後述の [ハイドレーション戦略](#ハイドレーション戦略) を参照してください。
-- `media` — `when="media"` 島用の CSS メディアクエリ文字列。このクエリが最初にマッチしたとき（リサイズや回転による後続のビューポート変更を含む）にハイドレートします。`when="media"` のときに必須で、他の戦略には無視されます（開発時に警告が出ます）。
-- `ssrFallback` — SSR スキップモードを有効にします（Astro の `client:only` に相当）。指定すると、重い `children` はサーバーサイドで評価され**ません**。代わりに `ssrFallback` がレンダリングされ、クライアントはハイドレーション時に本物のコンポーネントに差し替えます。
-- `children` — ハイドレートするコンポーネント。
+`Description` は `$$zudo` ブランドとともに `type`、`props`、`key` を公開します。ファクトリは props をコピーし、コンポーネントは実行しません。`Child` は同期的なスカラー値、記述、リアクティブなスカラー値、またはそれらを入れ子にした配列です。通常のオブジェクトスプレッドによる記述のコピーはサポートされますが、ブランドのない類似オブジェクトの自作はサポートされません。
+
+## 島の境界
+
+空の JSX 子を取り除いた後、ラッパーが受け取るのは、登録済みの同期関数コンポーネントを型とする記述 1 つだけです。生の文字列、ホスト要素、複数のコンポーネント記述、未登録の関数、入れ子の島境界はサーバーレンダリング時に失敗します。子コンポーネントには空でない `props.children` を渡せません。children は暗黙には島の境界を越えません。null、undefined、boolean、再帰的に空の配列は空として省略されます。
+
+サーバー上のコンポーネント名は、zfb が静的に走査したマーカー名（`type.displayName ?? type.name`）と正確に一致する必要があります。匿名、衝突、未登録の名前は、クライアントエントリを推測せずに失敗します。クライアントもセットアップ前に、ラッパーのコンポーネント名と空ではないビルド識別子を検証します。
+
+`data-props` を越えられるのは JSON データだけです。トップレベルの値はプレーンなレコードでなければなりません。通常のレコードと null プロトタイプのレコードを受け付けます。入れ子の値は null、boolean、string、有限の number、密な配列、プレーンなレコードを使えます。繰り返し参照は値としてシリアライズされます。getter や独自の `toJSON` は呼び出しません。
+
+シリアライザーは undefined 値、配列の穴、関数、symbol、bigint、非有限数、循環参照、クラスのインスタンス、date、map、set、DOM ノード、promise、記述、signal を拒否します。アクセサー、列挙不能または symbol のプロパティ、自身のキー `__proto__`、`prototype`、`constructor` も拒否します。入れ子の `children` プロパティは通常の JSON データです。省略されるのはラッパーのトップレベルにある空の `children` だけです。不正なサーバーペイロードはページのレンダリングを失敗させ、不正なクライアントペイロードはその島だけを失敗させます。
+
+ラッパー要素と `data-zfb-island*` 名は、セレクターと永続化のために維持されます。ハイドレーション用のコメント領域は島の部分ツリー内だけに発行されます。手書きの永続ラッパーも、完全なマーカー、スケジュール、transport、protocol、build、props のメタデータを持ち、内部 HTML が `renderToString(child, { island: identity })` でレンダリングされていればサポートされます。一部だけを備えた旧ラッパーには、不足するメタデータを推測して補いません。そのラッパーでは、既存の `data-zfb-transition-persist` と `data-zfb-transition-persist-props` 属性も使えます。
 
 ## ハイドレーション戦略
 
-`when` プロップは 4 つの値を受け付けます。いずれも現在出荷済みです。
+`when` prop は 4 つの値を受け付けます。デフォルトは `"load"` で、発行されるラッパーには常に `data-when` 値が付きます。
 
 | 値 | 振る舞い |
 | --- | --- |
-| `"load"` | ページの JavaScript が実行されたら即座にハイドレートします。`when` を省略した場合のデフォルトです。 |
-| `"visible"` | 島のルート要素がビューポートに入ったときにハイドレートします（IntersectionObserver、しきい値 0）。画面外コンテンツに対して最も低コストの遅延手段です。 |
-| `"idle"` | ブラウザの次のアイドルコールバック時にハイドレートします。`requestIdleCallback` がないプラットフォームでは `setTimeout(0)` にフォールバックします。 |
-| `"media"` | CSS メディアクエリが最初にマッチしたときにハイドレートします（`window.matchMedia`）。同伴の `media` プロップが必要です。後続のビューポート変更（リサイズ、画面向き変更）にも対応します。`matchMedia` が使用できない場合は即座にハイドレートにフォールバックします。**注意:** SSR スキップ（`ssrFallback`）島は `when` を完全に無視し、即座にレンダリングします。 |
+| `"load"` | クライアントバンドルの実行後すぐにサーバー DOM を引き受けます。 |
+| `"visible"` | ラッパーがビューポートに入ったときに引き受けます。 |
+| `"idle"` | ブラウザーの次の idle コールバックで引き受けます。 |
+| `"media"` | 必須の `media` クエリが最初に一致したときに引き受けます。 |
+
+media によるスケジュールには、戦略と空ではないクエリの両方を渡します。
 
 ```tsx
-// 狭いビューポート（例: モバイルメニュー）でのみハイドレートする
 <Island when="media" media="(max-width: 768px)">
   <MobileMenu />
 </Island>
 ```
 
+ルートが除去されれば、ブラウザーは待機中のトリガーを取り消せます。必要なスケジュール API が利用できない場合、ランタイムは即時実行にフォールバックします。同じスケジュール規則が SSR スキップの島にも適用されます。
+
 ## SSR スキップモード
 
-`ssrFallback` を渡すと、重い子要素のサーバーレンダリングを完全にスキップできます。
+子をサーバーで実行してはいけない場合は `ssrFallback` を渡します。サーバーは識別子と props を検査し、ハイドレーションマーカーなしでフォールバックをレンダリングします。クライアントのトリガーが発火すると、`mount` は DOM 外で子を構築し、セットアップと検証が成功した後にだけフォールバックを置き換えます。
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -70,147 +82,51 @@ import HeavyChart from "./HeavyChart";
 
 export default function Page() {
   return (
-    <Island ssrFallback={<div>Loading chart…</div>}>
-      <HeavyChart data={data} />
+    <Island ssrFallback={<div>Loading chart…</div>} when="visible">
+      <HeavyChart data={chartData} />
     </Island>
   );
 }
 ```
 
-サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングし、生成された `mount()` 関数が返った後に、同じ `data-zfb-island-mounted` マーカーを追加します。
+セットアップが失敗するか起動が取り消された場合、フォールバックはそのまま残ります。
 
 ## マウント後のマーカー
 
-`data-zfb-island-mounted` は、ハイドレートされるマーカー（`data-zfb-island`）と SSR スキップのマーカー（`data-zfb-island-skip-ssr`）の両方に、ランタイムの `mount()` 関数が返った後にだけ追加されます。このマーカーが意味するのは **「ランタイムがマウント関数を呼び出し、その関数が返った」** ことであり、**「コンポーネントがインタラクティブになった」** ことではありません。React の `hydrateRoot` は内部的に並行処理を行い、生成された `mount()` が何もせず静かに終了する場合もあります。この属性はライフサイクルを示すシグナルとして扱い、インタラクションの準備が整ったことの証明には使わないでください。
+ランタイムはルートのマウントに成功した後だけ `data-zfb-island-mounted` を書き込みます。このマーカーは観測用です。重複マウントを防ぐのは、ラッパーに保存された生きたハンドルです。コンポーネントが始めた任意の非同期処理の完了を保証するものではありません。
 
-利用者は、次のセレクターでハイドレーション前のスタイルを切り替えられます。
-
-```css
-[data-zfb-island]:not([data-zfb-island-mounted]) {
-  opacity: 0.7;
-}
-```
-
-島がアンマウントされると、ランタイムはマーカーを削除します。クライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーが削除され、受信したマークアップから再びマウントされます。永続化された島の props が変わった場合は、古いインスタンスを破棄する間マーカーが削除され、強制再マウントの `mount()` が返った後に再度追加されます。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
-
-## VNode 型のエクスポート
-
-`VNode`、`VNodeArray`、`VNodeObject` は `"@takazudo/zfb"` からパブリック型としてエクスポートされます。
-
-```ts
-import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
-```
-
-これらの構造的型はフレームワーク非依存です。`VNode` には素の `object` メンバーが含まれており（Preact 自身の `ComponentChild` 設計と同じパターン）、Preact の `ComponentChildren`・`VNode<Props>`・`JSX.Element`・`JSX.Element[]` は `Island` の入力境界（`children` と `ssrFallback`）に `as unknown as` キャストなしで直接代入できます。
-
-```tsx
-import type { ComponentChildren } from "preact";
-import { Island } from "@takazudo/zfb";
-
-// ComponentChildren を children として転送 — キャスト不要
-function Wrapper({ children }: { children: ComponentChildren }) {
-  return <Island when="load">{children}</Island>;
-}
-
-// ComponentChildren を ssrFallback として転送 — キャスト不要
-function SkipWrapper({ fallback }: { fallback: ComponentChildren }) {
-  return (
-    <Island ssrFallback={fallback}>
-      <HeavyWidget />
-    </Island>
-  );
-}
-```
-
-### スロットを ComponentChildren として型注釈する（返却方向）
-
-スロット変数が `<Island>` の返り値を保持する場合は、型を `IslandElement` ではなく `ComponentChildren` や `JSX.Element` で注釈してください。`IslandElement` は `props.children` を必須とする意図的な狭い構造型であり、Preact の `VNode<{}>` はこれに代入できません。代わりに Preact ネイティブの型を使用してください。
-
-```tsx
-import type { ComponentChildren } from "preact";
-
-function Page() {
-  const slot: ComponentChildren = (
-    <Island when="visible">
-      <Counter />
-    </Island>
-  );
-  return <main>{slot}</main>;
-}
-```
-
-### Preact 利用者向けの名前衝突に関する注意
-
-ファイルがすでに `import { VNode } from "preact"` を持っている場合は、名前の衝突を避けるために修飾インポートを使用してください。
-
-```ts
-import type { VNode as ZfbVNode } from "@takazudo/zfb";
-```
-
-## エクスポートされる定数とヘルパー
-
-以下は `Island` とともに `"@takazudo/zfb"` からエクスポートされます。
-
-- `HYDRATE_MARKER_ATTR` — `data-zfb-island` 属性名。
-- `SKIP_SSR_MARKER_ATTR` — `data-zfb-island-skip-ssr` 属性名。
-- `ISLAND_MOUNTED_ATTR` — ランタイムの `mount()` 関数が返った後に書き込まれる `data-zfb-island-mounted` 属性名。
-- `ANONYMOUS_COMPONENT_NAME` — ラップした子要素の素性を特定できないときに使われるフォールバック名。
-- `DEFAULT_WHEN` — デフォルトのハイドレーション戦略（`"load"`）。
-- `WHEN_VALUES` — 有効なハイドレーション戦略の readonly リスト: `"visible"`、`"idle"`、`"load"`、`"media"`。
-- `isWhen(value: unknown): value is When` — ハイドレーション戦略値の型ガード。
-- `resolveWhen(when: unknown): When` — `when` 値を検証して正規化します。不明な入力は `"load"` にフォールバックします（開発時は警告つき）。
+`dispose()` は signal、effect、リスナーを解放しますが、子 DOM は残します。`unmount()` は破棄とともにルートが所有するノードを除去し、ラッパーを残します。ナビゲーション中、変更のない永続化された島は生きたルートを保持します。コンポーネント識別子の変更や props の更新があれば、古いルートを破棄し、置き換えには `hydrate` ではなく `render` を使います。
 
 ## "use client" ディレクティブ
 
-zfb は代替の記述スタイルとして、ファイルレベルの `"use client"` ディレクティブもサポートします。最初の文がリテラル文字列 `"use client"` であるコンポーネントファイルは、ビルドスキャナ（`crates/zfb-islands`）によって島のエントリとして扱われます。esbuild ベースのバンドラは、それを独自の依存グラフとともに ESM へ個別にコンパイルします。
+呼び出し元でコンポーネントをラップする代わりに、`.tsx` ファイルの最初の文に `"use client"` ディレクティブを書けます。ビルドスキャナーはそのコンポーネントを島のエントリとして登録します。
 
 ```tsx
 "use client";
 
-import { useState } from "preact/hooks";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
-  const [count, setCount] = useState(0);
+  const count = signal(0);
   return (
-    <button onClick={() => setCount(count + 1)}>
+    <button on:click={() => { count.value += 1; }}>
       Count: {count}
     </button>
   );
 }
 ```
 
-サーバーコンポーネントやページモジュールから島をインポートします。ビルドパイプラインがハイドレーションのブートストラップを自動的に配線します。
+生成されたクライアントマニフェストは、検証済みの JSON props とラッパーを受け取ります。その mount 関数は、既存の子 DOM を引き受けるときは `"hydrate"`、新しい部分ツリーを作るときは `"render"` を選びます。事前検査が失敗すると `null` を返し、サーバー DOM は非活性のまま残します。破壊的なクライアントレンダリングにはフォールバックしません。
 
-島のアーキテクチャ全般や、いつ島に手を伸ばすべきかについては [Islands](../concepts/islands.mdx) を参照してください。
+島の境界を使う場面については[島](../concepts/islands.mdx)、ランタイムのコンポーネントモデルについては[zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
 
 ## 落とし穴: 島を自己ラップしない
 
-<Warning title="ネストされた島マーカーはハイドレーションの不具合を引き起こします">
-
-コンポーネント自身のレンダリング出力に `<Island>` ラッパーを置かないでください。ランタイムは DOM 内のすべての島マーカーを検出して各コンポーネントをマウントします。マーカーが別のマーカーの内側にネストされていると、2 つの独立したフレームワークインスタンスが同じ DOM サブツリーを所有しようとして競合が発生します。
-
-**誤り** — コンポーネント自身の中に `<Island>` を置く:
+すでに島を所有するコンポーネント内に `<Island>` 境界を置かないでください。2 つの独立した所有者が同じ DOM 部分ツリーを安全に引き受けることはできないため、入れ子のルートは拒否されます。
 
 ```tsx
-// Counter.tsx — こうしてはいけません
-export default function Counter() {
-  return (
-    <Island when="idle">
-      <InnerWidget />
-    </Island>
-  );
-}
-```
-
-**正しい** — 呼び出し元で `<Island>` を適用する:
-
-```tsx
-// Page.tsx
+// Page.tsx — place the boundary at the call site.
 <Island when="idle">
   <Counter />
 </Island>
 ```
-
-開発時、このパターンを検出するとランタイムが問題のあるコンポーネント名を示す `console.warn` を出力します。
-
-</Warning>

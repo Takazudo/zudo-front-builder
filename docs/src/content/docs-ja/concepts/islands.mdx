@@ -1,6 +1,6 @@
 ---
 title: Islands
-description: "クライアントでインタラクティブなコンポーネントを \"use client\" でマークすると、zfb がブラウザでハイドレートします。"
+description: "クライアントでインタラクティブなコンポーネントを \"use client\" でマークすると、zfb がブラウザーでサーバー描画済み DOM を引き受けます。"
 sidebar_position: 5
 category: Concepts
 ---
@@ -16,12 +16,12 @@ zfb のページはデフォルトで静的 HTML にレンダリングされま�
 ```tsx
 "use client";
 
-import { useState } from "preact/hooks";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
-  const [count, setCount] = useState(0);
+  const count = signal(0);
   return (
-    <button onClick={() => setCount(count + 1)}>
+    <button on:click={() => { count.value += 1; }}>
       Count: {count}
     </button>
   );
@@ -30,32 +30,57 @@ export default function Counter() {
 
 この 1 つのディレクティブが opt-in のすべてです。これを持たないファイルは純粋なサーバーコンポーネントです。ビルド時に一度レンダリングされるだけで、ブラウザには決して届きません。
 
-同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、その後 `useEffect` 内でユーザーの設定に同期する点です。
+同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。
 
 ```tsx
 "use client";
 
-import { useEffect, useState } from "preact/hooks";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
 export default function ThemeToggle() {
-  // 決定論的で SSR セーフなデフォルト。実際の設定は useEffect で適用される。
-  const [theme, setTheme] = useState<Theme>("light");
+  const theme = signal<Theme>("light");
+  const scope = getScope();
+  const isDark = computed(() => theme.value === "dark");
+  const next = computed(() => isDark.value ? "light" : "dark");
+  const ariaLabel = computed(() => `Switch to ${next.value} mode`);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("theme");
-    if (saved === "light" || saved === "dark") setTheme(saved);
-  }, []);
+  scope.onActivate(() => {
+    try {
+      const saved = window.localStorage.getItem("theme");
+      if (saved === "light" || saved === "dark") {
+        theme.value = saved;
+        return;
+      }
+    } catch {
+      // Storage may be unavailable; use the system preference.
+    }
+    if (typeof window.matchMedia === "function") {
+      theme.value = window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    }
+  });
 
-  const next: Theme = theme === "dark" ? "light" : "dark";
+  scope.effect(() => {
+    const activeTheme = theme.value;
+    document.documentElement.dataset.theme = activeTheme;
+    try {
+      window.localStorage.setItem("theme", activeTheme);
+    } catch {
+      // The document theme still updates when storage is unavailable.
+    }
+  });
+
   return (
     <button
       type="button"
-      aria-pressed={theme === "dark"}
-      onClick={() => setTheme(next)}
+      aria-pressed={isDark}
+      aria-label={ariaLabel}
+      on:click={() => { theme.value = next.value; }}
     >
-      {theme === "dark" ? "Light mode" : "Dark mode"}
+      {next} mode
     </button>
   );
 }
@@ -81,23 +106,27 @@ dist/assets/islands-<hash>.js
 dist/assets/islands-chunk-<hash>.js
 ```
 
-バンドルは各島を静的なマーカー名で登録し、モジュールの末尾で `mountIslands()` を呼び出して、ページ上のすべての `[data-zfb-island]` 要素をハイドレートします。
+バンドルは各島を静的なマーカー名で登録し、モジュールの末尾で `mountIslands()` を呼び出して、ページ上の各ラッパーの識別子を検証し、対応するクライアントエントリが子 DOM を引き受けるようスケジュールします。
 
 **`ProductionAssetPipeline` がハッシュ化の単一の真実の源です** — バンドラはまず安定した `islands.js` を書き出し、パイプラインがハッシュ付きへのリネームを行い、出力された HTML 内の注入されたスクリプト URL を書き換えます。下流の処理がファイル名を推測する必要はありません。
 
 ## 島がどうロードされるか
 
-レンダリング後、各島のサーバーレンダリングされた HTML は、メタデータを持つ `<div>` でラップされます。
+レンダリング後、各島のサーバー描画済み HTML は、コンポーネント識別子と transport メタデータを持つ `<div>` でラップされます。`data-zfb-island*` 境界属性は残り、ランタイムのコメント領域は子の部分ツリーに限定されます。
 
 ```html
 <div data-zfb-island="ThemeToggle"
+     data-when="load"
+     data-zfb-transport="json/1"
+     data-zfb-protocol="zudo-react/1"
+     data-zfb-build="build-identity"
      data-props="{}">
-  <!-- server-rendered island HTML -->
-  <button type="button" aria-pressed="false">Dark mode</button>
+  <!-- zudo-react's child-subtree markers live here -->
+  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
 </div>
 ```
 
-`data-when` 属性はハイドレーションのタイミングを制御し、デフォルト以外のタイミングを要求したときにのみ出力されます。`"load"` タイミング（即座にハイドレート）がデフォルトで、`data-when` 属性は生成されません。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
+`data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -116,13 +145,13 @@ export default function Header() {
 
 ```html
 <!-- visible timing -->
-<div data-zfb-island="SearchBox" data-props="{}" data-when="visible">…</div>
+<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 
 <!-- idle timing -->
-<div data-zfb-island="Counter" data-props="{}" data-when="idle">…</div>
+<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 
-<!-- media timing — (max-width: 768px) が最初にマッチしたときにハイドレート -->
-<div data-zfb-island="MobileMenu" data-props="{}" data-when="media" data-media="(max-width: 768px)">…</div>
+<!-- media timing — hydrates when (max-width: 768px) first matches -->
+<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
 ```
 
 少なくとも 1 つの島を含むビルドには、**1 つの `<script>` タグ** がプロジェクト全体で `<head>` に注入されます。
@@ -131,11 +160,11 @@ export default function Header() {
 <script type="module" src="/assets/islands-<hash>.js"></script>
 ```
 
-共有 islands バンドル（`islands-<hash>.js`）はすべての島コンポーネントを含みます。スキャナが発見した静的なマーカー名（`data-zfb-island` 属性の値）で各島を登録し、その後 `mountIslands()` を呼び出します。これはページ上のすべての `[data-zfb-island]` 要素を走査し、シリアライズされた `data-props` を読み取り、既存のサーバーレンダリング済み DOM に対して `hydrate()` を呼び出します。
+共有 islands バンドル（`islands-<hash>.js`）はすべての島コンポーネントを含みます。スキャナが発見した静的なマーカー名（`data-zfb-island` 属性の値）で各島を登録し、その後 `mountIslands()` を呼び出します。これはページ上のすべての `[data-zfb-island]` 要素を走査し、ラッパーのメタデータを検証して JSON の `data-props` を読み取り、予定されたエントリの実行時に既存の子 DOM を引き受けます。
 
 ### マウント状態を監視する
 
-ランタイムは、マウント後のマーカー `data-zfb-island-mounted` を 2 種類の島要素に公開します。ハイドレートされる `data-zfb-island` マーカーと、SSR をスキップする `data-zfb-island-skip-ssr` マーカーの両方が対象です。この属性は、生成された `mount()` 関数が返った後にだけ追加されます。そのため、遅延されている島には `data-when` の条件を待っている間はマウント済みマーカーがなく、利用者は次のような CSS セレクターでハイドレーション前のスタイルを切り替えられます。
+ランタイムは、マウント後のマーカー `data-zfb-island-mounted` を 2 種類の島要素に公開します。ハイドレートされる `data-zfb-island` マーカーと、SSR をスキップする `data-zfb-island-skip-ssr` マーカーの両方が対象です。この属性は、クライアントルートのマウントに成功した後だけ追加されます。そのため、遅延されている島には `data-when` の条件を待っている間はマウント済みマーカーがなく、利用者は次のような CSS セレクターでハイドレーション前のスタイルを切り替えられます。
 
 ```css
 [data-zfb-island]:not([data-zfb-island-mounted]) {
@@ -143,9 +172,9 @@ export default function Header() {
 }
 ```
 
-このマーカーが意味するのは **「ランタイムがマウント関数を呼び出し、その関数が返った」** ことであり、**「コンポーネントがインタラクティブになった」** ことではありません。React の `hydrateRoot` は内部的に並行処理を行い、生成された `mount()` が何もせず静かに終了する場合もあります。したがって、この属性はランタイムのライフサイクルを示すシグナルであり、イベントハンドラーなどのインタラクションの準備が整ったことを証明するものではありません。
+このマーカーは **「クライアントルートのマウントに成功した」** ことを示します。観測用の属性であり、重複マウントを防ぐのは生きたルートハンドルです。マーカーが付いていても、その後の非同期アプリケーション処理が完了したとは限りません。
 
-島がアンマウントされると、マーカーは削除されます。実際のクライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーを失い、受信したマークアップから再びマウントされます。永続化された島の props が変わった場合、ランタイムは古いインスタンスを破棄する間マーカーを削除し、強制再マウントの `mount()` が返った後に再度追加します。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
+島がアンマウントされると、マーカーは削除されます。実際のクライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーを失い、受信したマークアップから再びマウントされます。永続化された島のコンポーネント識別子または props が変わった場合、ランタイムは古いルートを破棄してマーカーを削除し、`hydrate` ではなく `render` モードで新しいルートを作ります。マウント成功後にマーカーを再度追加します。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
 
 ## 共有バンドルモデルの帰結
 
@@ -155,28 +184,11 @@ export default function Header() {
 - **島のないページには islands スクリプトが入りません。** ページに島マーカーが含まれない場合、ビルドパイプラインはそのページへの共有 islands `<script>` 注入をスキップします。使われている場合、他の client-script 仕組みは引き続き JavaScript を追加できます。
 - **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
 
-## フレームワークの選択
+## 単一のランタイム
 
-zfb は島について 2 つのフレームワークをサポートしています。
+すべての島は `@takazudo/zfb` に同梱される zudo-react を使います。コンポーネントはセットアップ中に signal を作り、クライアントはラッパーの識別子と厳格な JSON props を検証してから、既存の子 DOM を引き受けます。プロジェクトごとのフレームワーク設定や互換エイリアスはありません。JSX 方言とコンポーネントモデルは [zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
 
-| Config value | Runtime |
-|---|---|
-| `"preact"`（デフォルト） | Preact + `preact/jsx-runtime` |
-| `"react"` | React 18 + `react-dom/client` |
-
-`zfb.config.ts` で一度だけ設定します。
-
-```ts
-export default {
-  framework: "preact", // または "react"
-};
-```
-
-これは **プロジェクト全体の設定** です。プロジェクトごとに 1 つのフレームワークです。バンドラ（`crates/zfb-islands` の `FrameworkKind` enum）が、その選択を JSX 変換オプション（`--jsx-import-source`）と共有バンドルに埋め込まれるフレームワーク固有のハイドレーション接着コードに通します。同じプロジェクト内で Preact の島と React の島を混在させることはできません。
-
-zfb は Vue・Svelte・Solid をサポートしていません。`FrameworkKind` enum は意図的に 2 バリアントの enum であり、プラグインポイントではありません。別のフレームワークが必要な場合は、以下の抜け道が一般的なケースをカバーします。
-
-2 つのアダプタがどう動作するかの詳細は [Framework adapters](../architecture/framework-adapters.mdx) を参照してください。
+サーバーとクライアントの境界については [zudo-react ランタイム](../architecture/framework-adapters.mdx)を参照してください。
 
 ## ブラウザバンドルのモードと設定
 
@@ -314,11 +326,7 @@ export default function Layout({ children }) {
   return (
     <html>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`,
-          }}
-        />
+        <script rawHtml={`document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`} />
       </head>
       <body>{children}</body>
     </html>
