@@ -2,10 +2,12 @@
  * Build the packed-SDK server/browser fixture pages used by this harness.
  *
  * Scenario contract for #3280: each directory in fixtures/ contains a
- * scenario.json with `page`, `component`, `props`, and `mode` (`hydrate`,
- * `mount`, or `none`), plus a TSX module whose default export is the component.
- * An optional `run()` export may publish scenario-specific observations. The
- * generated bootstrap stores `{ root, flush, result, mode, identity }` on
+ * scenario.json with `page` and either the legacy single-root fields
+ * (`component`, `props`, `mode`) or a `roots` array. Root entries may point at
+ * different TSX modules and may request a pre-commit abort or a deliberate
+ * post-SSR mutation. An optional fixture `page.css` can be loaded with the
+ * scenario's `stylesheet` field. The generated bootstrap stores `{ roots,
+ * root, flush, result, mode, identity, client, h }` on
  * `globalThis.__zudoReactBrowser`; its URL under /generated/ can be held with
  * `page.route` to inspect SSR DOM before the module executes.
  */
@@ -66,25 +68,40 @@ function readScenarios() {
       if (typeof config.page !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(config.page)) {
         throw new Error(`Invalid page name in ${configPath}`);
       }
-      if (typeof config.component !== "string" || extname(config.component) !== ".tsx") {
-        throw new Error(`Scenario ${config.page} must name a .tsx component`);
+      const roots = config.roots ?? [
+        { component: config.component, props: config.props, mode: config.mode },
+      ];
+      if (!Array.isArray(roots) || roots.length === 0)
+        throw new Error(`Scenario ${config.page} must define at least one root`);
+      const normalizedRoots = roots.map((root, index) => {
+        if (typeof root.component !== "string" || extname(root.component) !== ".tsx") {
+          throw new Error(`Scenario ${config.page} root ${index} must name a .tsx component`);
+        }
+        if (!MODES.has(root.mode)) {
+          throw new Error(
+            `Scenario ${config.page} root ${index} has unsupported mode: ${root.mode}`,
+          );
+        }
+        if (root.props === null || typeof root.props !== "object" || Array.isArray(root.props)) {
+          throw new Error(`Scenario ${config.page} root ${index} props must be an object`);
+        }
+        const componentPath = resolve(directory, root.component);
+        assertInside(directory, componentPath, `Scenario ${config.page} root ${index} component`);
+        if (!statSync(componentPath).isFile()) {
+          throw new Error(`Scenario ${config.page} component is not a file: ${componentPath}`);
+        }
+        return { ...root, props: root.props, componentPath, index };
+      });
+      let stylesheetPath;
+      if (config.stylesheet !== undefined) {
+        if (typeof config.stylesheet !== "string")
+          throw new Error(`Scenario ${config.page} stylesheet must be a path`);
+        stylesheetPath = resolve(directory, config.stylesheet);
+        assertInside(directory, stylesheetPath, `Scenario ${config.page} stylesheet`);
+        if (!statSync(stylesheetPath).isFile())
+          throw new Error(`Scenario ${config.page} stylesheet is not a file: ${stylesheetPath}`);
       }
-      if (!MODES.has(config.mode)) {
-        throw new Error(`Scenario ${config.page} has unsupported mode: ${config.mode}`);
-      }
-      if (
-        config.props === null ||
-        typeof config.props !== "object" ||
-        Array.isArray(config.props)
-      ) {
-        throw new Error(`Scenario ${config.page} props must be an object`);
-      }
-      const componentPath = resolve(directory, config.component);
-      assertInside(directory, componentPath, `Scenario ${config.page} component`);
-      if (!statSync(componentPath).isFile()) {
-        throw new Error(`Scenario ${config.page} component is not a file: ${componentPath}`);
-      }
-      return { config, directory, componentPath };
+      return { config, directory, roots: normalizedRoots, stylesheetPath };
     });
 }
 
@@ -115,26 +132,83 @@ function createImportMap(stagedPackage) {
   return imports;
 }
 
-function createBootstrap({ config, identity, componentUrl, containerSelector }) {
-  return `import * as scenario from ${inlineJson(componentUrl)};
+function createBootstrap(roots) {
+  const imports = roots
+    .map(
+      ({ componentUrl }, index) => `import * as scenario${index} from ${inlineJson(componentUrl)};`,
+    )
+    .join("\n");
+  const entries = roots
+    .map(({ config, identity, mode, index, abortDuringSetup, useTransportProps }) => {
+      const selector = `#scenario-root > [data-zudo-browser-root="root-${index}"]`;
+      return `{
+  const scenario = scenario${index};
+  const component = scenario.default;
+  const serverProps = ${inlineJson(config.props)};
+  const mode = ${inlineJson(mode)};
+  const identity = ${inlineJson(identity)};
+  const container = document.querySelector(${inlineJson(selector)});
+  if (!(container instanceof Element)) throw new Error("Generated scenario root ${index} was not found");
+  const diagnostics = [];
+  let transportError;
+  const options = { identity, report: (diagnostic) => diagnostics.push(diagnostic) };
+  ${abortDuringSetup ? "const abortController = new AbortController(); options.signal = abortController.signal; window.__zudoReactAbortDuringSetup = () => abortController.abort();" : ""}
+  let props = serverProps;
+  ${useTransportProps ? "try { props = client.parseProps(container.getAttribute('data-props') ?? ''); } catch (error) { transportError = String(error); }" : ""}
+  const node = h(component, props);
+  const root = !transportError && (mode === "hydrate" || mode === "mount") ? client[mode](node, container, options) : null;
+  roots.push({ index: ${index}, root, node, container, identity, mode, diagnostics, scenario, transportError });
+}`;
+    })
+    .join("\n");
+  return `${imports}
 import { flush, h } from "@takazudo/zfb/zudo-react";
 
-const component = scenario.default;
-const props = ${inlineJson(config.props)};
-const mode = ${inlineJson(config.mode)};
-const identity = ${inlineJson(identity)};
-const container = document.querySelector(${inlineJson(containerSelector)});
-if (!(container instanceof Element)) throw new Error("Generated scenario root was not found");
-
-let root = null;
-if (mode === "hydrate" || mode === "mount") {
-  const client = await import("@takazudo/zfb/zudo-react/client");
-  root = client[mode](h(component, props), container, { identity });
-}
+const modes = ${inlineJson(roots.map(({ mode }) => mode))};
+const client = modes.some((mode) => mode === "hydrate" || mode === "mount")
+  ? await import("@takazudo/zfb/zudo-react/client")
+  : null;
+const roots = [];
+${entries}
 await flush();
-const result = typeof scenario.run === "function" ? await scenario.run() : undefined;
-globalThis.__zudoReactBrowser = { root, flush, result, mode, identity };
+for (const entry of roots) entry.result = typeof entry.scenario.run === "function"
+  ? await entry.scenario.run(entry.index)
+  : undefined;
+const first = roots[0];
+globalThis.__zudoReactBrowser = {
+  roots,
+  root: first?.root ?? null,
+  flush,
+  result: first?.result,
+  mode: first?.mode,
+  identity: first?.identity,
+  client,
+  h,
+};
 `;
+}
+
+function mutateServerHtml(html, mutation) {
+  if (!mutation) return html;
+  switch (mutation.type) {
+    case "wrong-tag":
+      return html
+        .replace(`<${mutation.from}>`, `<${mutation.to}>`)
+        .replace(`</${mutation.from}>`, `</${mutation.to}>`);
+    case "remove-region-marker":
+      return html.replace(/<!--zr:1:\d+:[^>]+-->/, "");
+    case "wrong-text":
+      return html.replace(mutation.from, mutation.to);
+    case "identity-attribute": {
+      const name = mutation.name;
+      const expression = new RegExp(`${name}="[^"]*"`);
+      return html.replace(expression, `${name}="${mutation.value}"`);
+    }
+    case "malformed-props":
+      return html.replace(/data-props="[^"]*"/, 'data-props="{"');
+    default:
+      throw new Error(`Unsupported server HTML mutation: ${mutation.type}`);
+  }
 }
 
 async function main() {
@@ -153,52 +227,72 @@ async function main() {
   if (scenarios.length === 0) throw new Error("No scenario directories found");
   const pageNames = new Set();
 
-  for (const { config, componentPath } of scenarios) {
+  for (const { config, roots, stylesheetPath } of scenarios) {
     if (pageNames.has(config.page)) throw new Error(`Duplicate scenario page name: ${config.page}`);
     pageNames.add(config.page);
 
-    const compiledRelative = relative(FIXTURES_DIR, componentPath).replace(/\.tsx$/, ".js");
-    const compiledPath = join(GENERATED_DIR, "compiled", compiledRelative);
-    const componentModule = await import(pathToFileURL(compiledPath).href);
-    const component = componentModule.default;
-    if (typeof component !== "function" || !component.name) {
-      throw new Error(`Scenario ${config.page} must default-export a named component`);
-    }
+    const generatedRoots = [];
+    const serverHtml = roots.map(async (root) => {
+      const compiledRelative = relative(FIXTURES_DIR, root.componentPath).replace(/\.tsx$/, ".js");
+      const compiledPath = join(GENERATED_DIR, "compiled", compiledRelative);
+      const componentModule = await import(pathToFileURL(compiledPath).href);
+      const component = componentModule.default;
+      if (typeof component !== "function" || !component.name) {
+        throw new Error(
+          `Scenario ${config.page} root ${root.index} must default-export a named component`,
+        );
+      }
 
-    const identity = { component: component.name, build: BUILD_ID };
-    const serverTree = islandRoot(h(component, config.props), { identity });
-    const serverHtml = renderToString(serverTree);
-    const componentUrl = `/compiled/${compiledRelative
-      .split(sep)
-      .map(encodeURIComponent)
-      .join("/")}`;
+      const identity = { component: component.name, build: BUILD_ID };
+      const serverTree = islandRoot(h(component, root.props), { identity });
+      let html = renderToString(serverTree);
+      html = html.replace(/^<div /, `<div data-zudo-browser-root="root-${root.index}" `);
+      html = mutateServerHtml(html, root.mutate);
+      const componentUrl = `/compiled/${compiledRelative
+        .split(sep)
+        .map(encodeURIComponent)
+        .join("/")}`;
+      generatedRoots[root.index] = {
+        config: root,
+        identity,
+        mode: root.mode,
+        index: root.index,
+        componentUrl,
+        abortDuringSetup: root.abortDuringSetup === true,
+        useTransportProps: root.useTransportProps === true,
+      };
+      return html;
+    });
+    const renderedRootHtml = (await Promise.all(serverHtml)).join("");
     const bootstrapPath = join(GENERATED_DIR, "generated", `${config.page}.js`);
     mkdirSync(dirname(bootstrapPath), { recursive: true });
-    writeFileSync(
-      bootstrapPath,
-      createBootstrap({
-        config,
-        identity,
-        componentUrl,
-        containerSelector: "#scenario-root > [data-zfb-island]",
-      }),
-    );
+    writeFileSync(bootstrapPath, createBootstrap(generatedRoots));
+
+    const style = stylesheetPath
+      ? `<link rel="stylesheet" href="/fixtures/${encodeURIComponent(config.page)}/${encodeURIComponent(config.stylesheet)}">`
+      : "";
 
     const pageHtml = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
     <title>${escapeHtml(config.page)}</title>
+    ${style}
     <script type="importmap">${inlineJson({ imports: importMap })}</script>
   </head>
   <body>
-    <main id="scenario-root">${serverHtml}</main>
+    <main id="scenario-root">${renderedRootHtml}</main>
     <script type="module" src="/generated/${encodeURIComponent(config.page)}.js"></script>
   </body>
 </html>
 `;
     writeFileSync(join(GENERATED_DIR, `${config.page}.html`), pageHtml);
-    console.log(`fixture generated: ${config.page} (${config.mode})`);
+    console.log(`fixture generated: ${config.page} (${roots.map((root) => root.mode).join(", ")})`);
+    if (stylesheetPath) {
+      const outputStylesheet = join(GENERATED_DIR, "fixtures", config.page, config.stylesheet);
+      mkdirSync(dirname(outputStylesheet), { recursive: true });
+      writeFileSync(outputStylesheet, readFileSync(stylesheetPath));
+    }
   }
 
   const defaultPage = scenarios.find(({ config }) => config.mode === "none") ?? scenarios[0];

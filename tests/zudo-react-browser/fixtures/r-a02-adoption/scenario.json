@@ -1,0 +1,8 @@
+{
+  "page": "r-a02-adoption",
+  "roots": [
+    { "component": "component.tsx", "props": { "id": "first" }, "mode": "hydrate" },
+    { "component": "component.tsx", "props": { "id": "second" }, "mode": "hydrate" },
+    { "component": "component.tsx", "props": { "id": "mount-control" }, "mode": "mount" }
+  ]
+}

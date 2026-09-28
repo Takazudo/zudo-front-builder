@@ -1,0 +1,8 @@
+.zudo-tab-panel {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.zudo-tab-panel[hidden] {
+  display: none !important;
+}

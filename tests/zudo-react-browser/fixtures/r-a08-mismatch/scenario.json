@@ -1,0 +1,41 @@
+{
+  "page": "r-a08-mismatch",
+  "roots": [
+    {
+      "component": "component.tsx",
+      "props": { "variant": "wrong-tag" },
+      "mode": "hydrate",
+      "mutate": { "type": "wrong-tag", "from": "button", "to": "aside" }
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "missing-marker" },
+      "mode": "hydrate",
+      "mutate": { "type": "remove-region-marker" }
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "wrong-text" },
+      "mode": "hydrate",
+      "mutate": {
+        "type": "wrong-text",
+        "from": "server text expected",
+        "to": "server text altered"
+      }
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "identity" },
+      "mode": "hydrate",
+      "mutate": { "type": "identity-attribute", "name": "data-zfb-build", "value": "other-build" }
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "malformed-props" },
+      "mode": "hydrate",
+      "mutate": { "type": "malformed-props" },
+      "useTransportProps": true
+    },
+    { "component": "component.tsx", "props": { "variant": "healthy" }, "mode": "hydrate" }
+  ]
+}
