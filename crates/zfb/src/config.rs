@@ -890,7 +890,7 @@ pub struct TailwindConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindSetting {
     Disabled,
-    Enabled(WindConfig),
+    Enabled(Box<WindConfig>),
 }
 
 fn deserialize_present_wind<'de, D>(
@@ -946,6 +946,7 @@ impl<'de> Deserialize<'de> for WindSetting {
                 M: de::MapAccess<'de>,
             {
                 WindConfig::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(Box::new)
                     .map(WindSetting::Enabled)
             }
         }
