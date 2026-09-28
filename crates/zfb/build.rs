@@ -44,29 +44,19 @@ use zfb_toolchain_pins::{
 };
 
 // ---------------------------------------------------------------------------
-// Framework package version pins (sub #209 — embed framework runtimes)
+// Runtime dependency version pin (sub #209 — embed framework dependencies)
 //
-// `preact`, `preact-render-to-string`, and `hono` are the runtime framework
-// packages a `zfb`-built app imports at bundle time. They are NOT
-// downloaded by `build.rs`; instead, zfb's own `pnpm install` resolves the
-// versions in `pnpm-lock.yaml`, and `embed_framework_packages()` copies the
-// resolved trees from `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>`
-// into `$OUT_DIR/vendor/<name>/`. The constants below are the contract
-// between zfb and its consumers — bump these whenever you bump the
-// corresponding entry in zfb's `pnpm-lock.yaml`.
+// `hono` is not downloaded by `build.rs`; zfb's own `pnpm install` resolves
+// its version in `pnpm-lock.yaml`, and `embed_framework_packages()` copies
+// its resolved tree from `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>`
+// into `$OUT_DIR/vendor/<name>/`. This constant must match the lockfile.
 //
 // Source of truth: zfb's own `pnpm-lock.yaml`. To verify alignment, run:
 //
-//   pnpm list preact preact-render-to-string hono --depth 0 -r
+//   pnpm list hono --depth 0 -r
 //
-// from the workspace root and confirm the output matches the constants below.
+// from the workspace root and confirm the output matches the constant below.
 // ---------------------------------------------------------------------------
-
-/// Pinned `preact` version. Mirror of the `preact` entry in `pnpm-lock.yaml`.
-const PREACT_VERSION: &str = "10.29.1";
-
-/// Pinned `preact-render-to-string` version.
-const PREACT_RTS_VERSION: &str = "6.6.7";
 
 /// Pinned `hono` version (transitive dep of `@takazudo/zfb-runtime`).
 const HONO_VERSION: &str = "4.12.25";
@@ -573,9 +563,8 @@ fn main() {
     // installed binary works on a consumer with no node_modules.
     embed_runtime();
 
-    // Sub 209 — embed the framework runtime packages (preact,
-    // preact-render-to-string, hono) so a consumer with no node_modules can
-    // still bundle a page that imports them.
+    // Sub 209 — embed Hono so a consumer with no node_modules can still
+    // bundle the runtime dependency.
     embed_framework_packages();
 
     // Sub 197 — download pinned esbuild standalone binary.
@@ -684,13 +673,12 @@ fn copy_ts_src(src: &Path, dst: &Path) {
 }
 
 // ---------------------------------------------------------------------------
-// Sub 209 — embed framework runtime packages (preact, preact-render-to-string,
-// hono) so esbuild can resolve them from the embedded extraction with no
-// consumer-side node_modules.
+// Sub 209 — embed Hono so esbuild can resolve it from the embedded extraction
+// with no consumer-side node_modules.
 // ---------------------------------------------------------------------------
 
-/// Copy the published trees of `preact`, `preact-render-to-string`, and `hono`
-/// from zfb's pnpm-installed `node_modules/.pnpm/` store into
+/// Copy the published tree of `hono` from zfb's pnpm-installed
+/// `node_modules/.pnpm/` store into
 /// `$OUT_DIR/vendor/<pkg>/` so they ride along inside `EMBEDDED_VENDOR` (the
 /// `include_dir!` snapshot in `crates/zfb/src/render_pipeline.rs`). The
 /// extraction at runtime then produces `node_modules/<pkg>/` siblings beside
@@ -698,22 +686,16 @@ fn copy_ts_src(src: &Path, dst: &Path) {
 ///
 /// pnpm's content-addressable layout puts each direct dep at
 /// `node_modules/.pnpm/<name>@<version>/node_modules/<name>/`. When a package
-/// has injected peer deps (e.g. `preact-render-to-string`), pnpm appends a
-/// `_<peer>@<peerver>` suffix to the directory name, so we match on the
-/// `<name>@<version>` prefix and accept the first match.
+/// has injected peer deps, pnpm appends a suffix to the directory name, so
+/// we match on the `<name>@<version>` prefix and accept the first match.
 ///
 /// Only files needed at bundle time are copied — `node_modules/` (no nested
 /// deps), `__tests__/`, hidden dirs, and source-map files are filtered out to
-/// keep the embedded snapshot lean. The three packages currently have
-/// no nested deps that need following:
-///
-/// - `preact`: zero runtime deps.
-/// - `preact-render-to-string`: peer-only on `preact` (resolved via the
-///   embedded `node_modules/preact` sibling at runtime).
-/// - `hono`: zero runtime deps.
+/// keep the embedded snapshot lean. Hono has no nested deps that need
+/// following.
 ///
 /// Source of truth for versions: `pnpm-lock.yaml` (mirrored by the
-/// `*_VERSION` constants near the top of this file).
+/// `HONO_VERSION` constant near the top of this file).
 fn embed_framework_packages() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir
@@ -727,16 +709,12 @@ fn embed_framework_packages() {
 
     let pnpm_store = workspace_root.join("node_modules").join(".pnpm");
 
-    let packages: [(&str, &str); 3] = [
-        ("preact", PREACT_VERSION),
-        ("preact-render-to-string", PREACT_RTS_VERSION),
-        ("hono", HONO_VERSION),
-    ];
+    let packages: [(&str, &str); 1] = [("hono", HONO_VERSION)];
 
     for (name, version) in &packages {
         let src_pkg = locate_pnpm_pkg(&pnpm_store, name, version).unwrap_or_else(|| {
             panic!(
-                "framework package `{name}@{version}` not found under {}.\n\
+                "runtime dependency `{name}@{version}` not found under {}.\n\
                  Run `pnpm install --frozen-lockfile` from the workspace root, \
                  then re-run cargo build.\n\
                  If the package has been bumped in pnpm-lock.yaml, also update \

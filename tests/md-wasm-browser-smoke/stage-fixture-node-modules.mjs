@@ -53,8 +53,6 @@ const frameworkLinks = [
   // Resolve through the consuming workspace packages. Another test fixture
   // may install a different version in pnpm's shared store; this fixture
   // needs the exact dependency identities used by zfb and its runtime.
-  ["preact", installedDependency("zfb", "preact")],
-  ["preact-render-to-string", installedDependency("zfb", "preact-render-to-string")],
   ["hono", installedDependency("zfb-runtime", "hono")],
 ];
 

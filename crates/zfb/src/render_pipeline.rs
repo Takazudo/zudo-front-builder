@@ -81,18 +81,15 @@ use zfb_router::{Route, RouteKind, Segment};
 //
 // 1. `@takazudo/zfb` and `@takazudo/zfb-runtime` (sub #198): TypeScript source
 //    of the runtime packages, copied from the `packages/` workspace dirs.
-// 2. `preact`, `preact-render-to-string`, `hono` (sub #209): published trees
-//    copied from zfb's pnpm-installed `node_modules/.pnpm/<name>@<ver>*/` so
-//    consumers without their own node_modules can still resolve framework
-//    imports.
+// 2. `hono` (sub #209): the published tree copied from zfb's pnpm-installed
+//    `node_modules/.pnpm/<name>@<ver>*/` so consumers without their own
+//    node_modules can still resolve the runtime dependency.
 //
 // Both groups land as siblings under `$OUT_DIR/vendor/`:
 //
 //   $OUT_DIR/vendor/
 //     @takazudo/zfb/             (TS source + package.json)
 //     @takazudo/zfb-runtime/     (TS source + package.json)
-//     preact/                    (published dist/ + package.json + ...)
-//     preact-render-to-string/   (published dist/ + package.json + ...)
 //     hono/                      (published dist/ + package.json)
 //
 // `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<this dir>` so the
@@ -103,8 +100,8 @@ use zfb_router::{Route, RouteKind, Segment};
 // for esbuild resolution. The tempdir is kept alive for the duration of the
 // build by returning the `TempDir` handle alongside the path.
 
-/// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` + framework
-/// runtime packages, staged by `build.rs`).
+/// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` packages and
+/// Hono, staged by `build.rs`).
 ///
 /// `include_dir!` expands `$VAR` using the env var set via `cargo:rustc-env`.
 /// `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<path>` pointing at
@@ -2173,16 +2170,7 @@ mod tests {
             .map(|entry| entry.path().to_str().expect("vendor entry is UTF-8"))
             .collect();
         actual.sort_unstable();
-        assert_eq!(
-            actual,
-            [
-                "@takazudo",
-                "bin",
-                "hono",
-                "preact",
-                "preact-render-to-string"
-            ]
-        );
+        assert_eq!(actual, ["@takazudo", "bin", "hono"]);
 
         let bin = EMBEDDED_VENDOR
             .get_dir("bin")
@@ -2199,8 +2187,8 @@ mod tests {
 
     /// Smoke-test that [`embedded_node_modules`] extracts a proper
     /// `node_modules/@takazudo/zfb/package.json`,
-    /// `node_modules/@takazudo/zfb-runtime/package.json`, and the framework
-    /// runtime packages (`preact`, `preact-render-to-string`, `hono`) layout
+    /// `node_modules/@takazudo/zfb-runtime/package.json`, and Hono's
+    /// `node_modules/hono/` layout
     /// that `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
     #[test]
     fn embedded_node_modules_extracts_runtime_layout() {
@@ -2271,15 +2259,13 @@ mod tests {
              export condition (issue #1298); got:\n{runtime_pkg_json}"
         );
 
-        // Sub #209 — framework runtime package roots must exist alongside.
-        for pkg in ["preact", "preact-render-to-string", "hono"] {
-            let pkg_json = nm_path.join(pkg).join("package.json");
-            assert!(
-                pkg_json.exists(),
-                "missing {pkg}/package.json in extracted layout: {}",
-                pkg_json.display()
-            );
-        }
+        // Sub #209 — Hono's runtime dependency root must exist alongside.
+        let hono_package_json = nm_path.join("hono/package.json");
+        assert!(
+            hono_package_json.exists(),
+            "missing hono/package.json in extracted layout: {}",
+            hono_package_json.display()
+        );
 
         // Verify check_runtime_installed sees the embedded runtime via the
         // exe-dir path (the nm_path is the node_modules dir; its parent is
