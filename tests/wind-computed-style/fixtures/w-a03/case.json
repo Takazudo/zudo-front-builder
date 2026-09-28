@@ -1,0 +1,14 @@
+{
+  "caseId": "W-A03",
+  "colors": {
+    "panel": "#123456"
+  },
+  "breakpoints": {
+    "sm": 640
+  },
+  "dark": {
+    "attribute": "data-theme",
+    "value": "dark"
+  },
+  "explicitCandidates": ["hover:sm:block"]
+}

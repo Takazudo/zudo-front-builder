@@ -1,0 +1,9 @@
+{
+  "caseId": "W-A05",
+  "colors": {
+    "panel": "#123456"
+  },
+  "authoredClasses": {
+    "p-4": true
+  }
+}

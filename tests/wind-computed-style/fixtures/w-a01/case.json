@@ -1,0 +1,8 @@
+{
+  "caseId": "W-A01",
+  "spacingUnit": "0.25rem",
+  "colors": {
+    "panel": "#123456"
+  },
+  "explicitCandidates": ["w-[red]"]
+}

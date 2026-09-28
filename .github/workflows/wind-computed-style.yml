@@ -1,0 +1,92 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing version comment names the
+# release for human readability; copy pins from router-chromium.yml or health.yml.
+
+name: wind-computed-style
+
+# Path-filtered computed-style confirmation for zudo-wind. This optional workflow
+# is not a required check: unrelated pull requests must not wait on a skipped job.
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "crates/zudo-wind/**"
+      - "tests/wind-computed-style/**"
+      - ".github/workflows/wind-computed-style.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+  push:
+    branches:
+      - main
+      - "base/**"
+    paths:
+      - "crates/zudo-wind/**"
+      - "tests/wind-computed-style/**"
+      - ".github/workflows/wind-computed-style.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wind-computed-style-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wind-computed-style:
+    name: wind-computed-style (Chromium computed styles)
+    runs-on: ubuntu-latest
+    # Provisional budget for a cold zudo-wind compile, dependency install and Chromium setup.
+    # Replace with measured headroom after the first guarded Chromium run.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - name: Cache zudo-wind Rust artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: "v1-wind-computed-style"
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run wind computed-style suite
+        run: pnpm test:wind-computed-style
+
+      - name: Upload Playwright traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wind-computed-style-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
