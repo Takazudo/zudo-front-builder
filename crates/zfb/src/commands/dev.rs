@@ -31,9 +31,9 @@
 //! ## Configuration
 //!
 //! Project configuration is loaded via [`crate::config::load_from_dir`]
-//! at startup. Today this resolves to a `zfb.config.json` if present, or
-//! sensible defaults otherwise; encountering a `zfb.config.ts` produces a
-//! clear "not yet supported" error.
+//! at startup. CSS engine settings are reloaded on watched root config
+//! changes using the same TS/JSON precedence and validation. Other settings
+//! (server roots, renderer, plugins and routes) remain fixed for the session.
 //!
 //! **Precedence rule:** CLI args (`--host`, `--port`) override the
 //! corresponding config values when supplied.
@@ -2523,7 +2523,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let project_root_for_css = project_root.clone();
         // Issue #1189: build + write CSS into the isolated dev-assets root.
         let dev_assets_root_for_css = dev_assets_root.clone();
-        let cfg_for_css = cfg.clone();
+        let cfg_for_css = Mutex::new(DevCssConfig::new(cfg.clone()));
+        // CssRunner executes on the orchestrator blocking pool. Use the
+        // existing runtime for the normal async TS/JSON config loader.
+        let runtime_for_css = tokio::runtime::Handle::current();
         // #3024 — the same frozen-at-boot survivor list the boot pass uses;
         // no per-tick recompute, matching `run_islands`'s seed.
         let package_route_entrypoints_for_css = injected_route_seed_entrypoints.clone();
@@ -2545,19 +2548,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if !css_pass_request_should_build(request) {
                 return Ok(false);
             }
+            let mut css_config = cfg_for_css.lock().unwrap_or_else(|p| p.into_inner());
+            let mut wind_session = wind_session_index_for_css
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let cfg = runtime_for_css.block_on(css_config.refresh(
+                &project_root_for_css,
+                &request.changes,
+                &mut wind_session,
+            ))?;
             let plugin_virtual_modules_for_css =
                 plugin_virtual_module_store_for_css.snapshot_pairs();
             let payload = build_dev_css_and_publish_mirror_roots(
                 &project_root_for_css,
                 &dev_assets_root_for_css,
-                &cfg_for_css,
+                cfg,
                 &package_route_entrypoints_for_css,
                 &plugin_alias_entries_for_css,
                 &plugin_virtual_modules_for_css,
                 &raw_import_invalidation_for_css,
-                &mut wind_session_index_for_css
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()),
+                &mut wind_session,
                 Some(&request.changes),
             )?;
             // Propagate any write/companion failure loudly (unlike the boot
@@ -4626,6 +4636,53 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
 
 fn css_pass_request_should_build(request: &CssPassRequest) -> bool {
     request.rerun_requested
+}
+
+/// Only engine settings are live: renderer, plugin, route, output and highlight
+/// configuration must keep their boot identity until the whole server restarts.
+/// Retrying a rejected load prevents a later source tick from silently publishing
+/// against the old config while the file on disk is still invalid.
+struct DevCssConfig {
+    config: config::Config,
+    refresh_pending: bool,
+}
+
+impl DevCssConfig {
+    fn new(config: config::Config) -> Self {
+        Self {
+            config,
+            refresh_pending: false,
+        }
+    }
+
+    async fn refresh(
+        &mut self,
+        project_root: &Path,
+        changes: &zfb_build::CssChangeSet,
+        session: &mut Option<crate::commands::build::WindSessionIndex>,
+    ) -> Result<&config::Config> {
+        self.refresh_pending |= changes
+            .upserted
+            .iter()
+            .chain(&changes.removed)
+            .any(|path| zfb_build::policy::is_css_config_path(project_root, path));
+        if self.refresh_pending {
+            // Load the full config through the authoritative loader so preset
+            // merging, manifest provenance, TS precedence and validation agree
+            // with a clean build. Publish only the paired engine-selection fields.
+            let fresh = config::load_from_dir(project_root)
+                .await
+                .context("failed to refresh CSS configuration; keeping last published CSS")?;
+            // Sources may have changed while generation was disabled or a
+            // config load was failing. Even restoring identical settings must
+            // rescan: those intervening events never reached the CSS index.
+            *session = None;
+            self.config.wind = fresh.wind;
+            self.config.tailwind = fresh.tailwind;
+            self.refresh_pending = false;
+        }
+        Ok(&self.config)
+    }
 }
 
 /// Shared tail for the boot CSS pass and the `run_css` watcher-tick closure
@@ -11836,6 +11893,419 @@ mod tests {
             .unwrap();
             assert!(String::from_utf8_lossy(&recovered.bytes).contains(".grid"));
         }
+    }
+
+    async fn refresh_wind_test_payload(
+        project: &Path,
+        config: &mut DevCssConfig,
+        session: &mut Option<crate::commands::build::WindSessionIndex>,
+        invalidation: &zfb_build::RawImportInvalidation,
+        changes: &zfb_build::CssChangeSet,
+    ) -> Result<Option<AssetEmitterPayload>> {
+        let cfg = config.refresh(project, changes, session).await?;
+        build_dev_css_and_publish_mirror_roots(
+            project,
+            &project.join("dev-assets"),
+            cfg,
+            &[],
+            &[],
+            &[],
+            invalidation,
+            session,
+            Some(changes),
+        )
+    }
+
+    #[tokio::test]
+    async fn wind_config_watch_retracts_manifest_and_matches_clean_final_css() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let config_path = project.join("zfb.config.json");
+        let manifest = project.join("node_modules/widgets/wind.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("src/page.tsx"),
+            "<div className=\"bg-brand\" />",
+        )
+        .unwrap();
+        let write_manifest = |candidate: &str| {
+            std::fs::write(&manifest, format!(
+                r#"{{"schemaVersion":1,"specVersion":1,"producer":"widgets","candidates":["{candidate}"]}}"#
+            )).unwrap();
+        };
+        write_manifest("flex");
+        std::fs::write(&config_path, r#"{"wind":{"tokens":{"colors":{"brand":"red"}},"safelist":{"app":["block"]},"manifests":{"widgets":{"path":"./node_modules/widgets/wind.json"}}}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let initial = refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8_lossy(&initial.bytes).contains(".flex"));
+        assert!(invalidation.css_manifest_paths().contains(&manifest));
+        write_manifest("grid");
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_upsert(manifest.clone());
+        let replaced =
+            refresh_wind_test_payload(&project, &mut config, &mut session, &invalidation, &changes)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(String::from_utf8_lossy(&replaced.bytes).contains(".grid"));
+        assert!(!String::from_utf8_lossy(&replaced.bytes).contains(".flex"));
+
+        // A required file disappearing is an error until its declaration is
+        // removed. Keep its recovery watch through the failed generation.
+        std::fs::remove_file(&manifest).unwrap();
+        let mut missing = zfb_build::CssChangeSet::default();
+        missing.record_removal(manifest.clone());
+        assert!(refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &missing,
+        )
+        .await
+        .is_err());
+        assert!(invalidation.css_manifest_paths().contains(&manifest));
+
+        // Use ONLY the existing config-file watch. No source or manifest watch
+        // can rescue this event; the removed required file becomes intentional
+        // owner removal when the new configuration reaches the CSS pass.
+        let (watcher, mut events) = zfb_watcher::Watcher::start_with_debounce(
+            &project,
+            ["zfb.config.json"],
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap();
+        let sentinel_config = config_path.clone();
+        let original_config = std::fs::read_to_string(&config_path).unwrap();
+        let live = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(std::time::Duration::from_secs(10)),
+            move |idx| {
+                std::fs::write(
+                    &sentinel_config,
+                    format!("{original_config}{}", " ".repeat(idx as usize + 1)),
+                )
+                .unwrap();
+            },
+            || loop {
+                match events.try_recv() {
+                    Ok(change) if change.path == config_path => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            },
+        )
+        .await;
+        assert!(live.live, "config file watch must become live");
+        std::fs::write(
+            &config_path,
+            r#"{"wind":{"tokens":{"colors":{"brand":"blue"}}}}"#,
+        )
+        .unwrap();
+        let changed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let change = events.recv().await.expect("config watcher closed");
+                if change.path == config_path {
+                    break change.path;
+                }
+            }
+        })
+        .await
+        .expect("one config write must reach existing watch");
+        watcher.shutdown().await;
+        let orchestrator = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project, vec![PathBuf::from("zfb.config.json")]),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            DevAssetPipeline::new(),
+        );
+        let plan = orchestrator.plan_for_changes([changed]);
+        assert!(plan.rerun_css, "config-only event must request CSS");
+        assert!(plan.css_changes.upserted.contains(&config_path));
+        let warm = refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &plan.css_changes,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let css = String::from_utf8_lossy(&warm.bytes);
+        assert!(!css.contains(".grid"));
+        assert!(!css.contains(".block"));
+        assert!(css.contains("--zw-color-brand: blue"), "{css}");
+        assert!(invalidation.css_manifest_paths().is_empty());
+        let clean = crate::commands::build::build_default_css_payload_with_details(
+            &project,
+            &project.join("dev-assets"),
+            &config::load_from_dir(&project).await.unwrap(),
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap()
+        .payload
+        .unwrap();
+        assert_eq!(warm.bytes, clean.bytes);
+    }
+
+    #[tokio::test]
+    async fn wind_config_invalid_keeps_publication_and_retries_on_source_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        let config_path = project.join("zfb.config.json");
+        let valid = r#"{"wind":{"safelist":{"app":["flex"]}}}"#;
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let source = project.join("src/page.tsx");
+        std::fs::write(&source, "<div className=\"block\" />").unwrap();
+        std::fs::write(&config_path, valid).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(project).await.unwrap());
+        let boot_config = config.config.clone();
+        let mut session = None;
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let payload = refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        let assets = project.join("dev-assets");
+        let url = Arc::new(std::sync::RwLock::new(None));
+        let publication = Arc::new(Mutex::new(CssPublicationState::default()));
+        publish_dev_css_generation(&assets, "/assets/", &url, &publication, payload).unwrap();
+        let old_bytes = publication.lock().unwrap().bytes.clone();
+        let old_url = url.read().unwrap().clone();
+        for invalid in ["{", r#"{"wind":{"unexpected":true}}"#] {
+            std::fs::write(&config_path, invalid).unwrap();
+            let mut changes = zfb_build::CssChangeSet::default();
+            changes.record_upsert(config_path.clone());
+            let error = refresh_wind_test_payload(
+                project,
+                &mut config,
+                &mut session,
+                &invalidation,
+                &changes,
+            )
+            .await
+            .and_then(|payload| {
+                publish_dev_css_generation(&assets, "/assets/", &url, &publication, payload)
+            })
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("failed to refresh CSS configuration"));
+            assert_eq!(config.config.wind, boot_config.wind);
+            assert!(config.refresh_pending);
+            assert_eq!(publication.lock().unwrap().bytes, old_bytes);
+            assert_eq!(*url.read().unwrap(), old_url);
+            std::fs::write(&source, "<div className=\"grid\" />").unwrap();
+            let mut source_changes = zfb_build::CssChangeSet::default();
+            source_changes.record_upsert(project.join("src/page.tsx"));
+            assert!(
+                refresh_wind_test_payload(
+                    project,
+                    &mut config,
+                    &mut session,
+                    &invalidation,
+                    &source_changes,
+                )
+                .await
+                .is_err(),
+                "source edits must not publish using stale valid config"
+            );
+        }
+        // Restoring identical config must still catch source edits whose
+        // earlier passes failed before they reached the candidate index.
+        std::fs::write(&config_path, valid).unwrap();
+        let mut source_changes = zfb_build::CssChangeSet::default();
+        source_changes.record_upsert(config_path.clone());
+        let recovered = refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &source_changes,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8_lossy(&recovered.bytes).contains(".grid"));
+        assert!(String::from_utf8_lossy(&recovered.bytes).contains(".flex"));
+        assert!(!String::from_utf8_lossy(&recovered.bytes).contains(".block"));
+        assert!(!config.refresh_pending);
+    }
+
+    #[tokio::test]
+    async fn wind_config_reenable_reindexes_sources_and_preserves_server_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        let config_path = project.join("zfb.config.json");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let source = project.join("src/page.tsx");
+        std::fs::write(&source, "<div className=\"flex\" />").unwrap();
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(project).await.unwrap());
+        let old_output = config.config.out_dir.clone();
+        let mut session = None;
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        assert!(session.is_some());
+        let mut config_changes = zfb_build::CssChangeSet::default();
+        config_changes.record_upsert(config_path.clone());
+        std::fs::write(
+            &config_path,
+            r#"{"wind":false,"outDir":"different-output"}"#,
+        )
+        .unwrap();
+        assert!(refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &config_changes
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(session.is_none());
+        assert_eq!(config.config.out_dir, old_output);
+        std::fs::write(&source, "<div className=\"grid\" />").unwrap();
+        let mut source_changes = zfb_build::CssChangeSet::default();
+        source_changes.record_upsert(source);
+        refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &source_changes,
+        )
+        .await
+        .unwrap();
+        std::fs::write(
+            &config_path,
+            r#"{"presets":[{"wind":{"safelist":{"preset":["block"]}}}],"wind":{}}"#,
+        )
+        .unwrap();
+        let enabled = refresh_wind_test_payload(
+            project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &config_changes,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let css = String::from_utf8_lossy(&enabled.bytes);
+        assert!(css.contains(".grid"));
+        assert!(
+            css.contains(".block"),
+            "preset merge must use normal loader"
+        );
+        assert!(!css.contains(".flex"));
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn wind_config_ts_priority_and_removal_reload_on_blocking_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        std::fs::write(
+            project.join("zfb.config.json"),
+            r#"{"wind":{"safelist":{"app":["flex"]}}}"#,
+        )
+        .unwrap();
+        let initial = config::load_from_dir(&project).await.unwrap();
+        let ts_path = project.join("zfb.config.ts");
+        std::fs::write(
+            &ts_path,
+            "export default { wind: { safelist: { app: ['grid'] } } };",
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let mut state = DevCssConfig::new(initial);
+            let mut session = None;
+            let invalidation = zfb_build::RawImportInvalidation::default();
+            let mut changes = zfb_build::CssChangeSet::default();
+            changes.record_upsert(ts_path.clone());
+            // Same bridge as CssRunner: loader async work runs on the server
+            // runtime while the orchestrator dispatches the pass off-thread.
+            let first = runtime
+                .block_on(refresh_wind_test_payload(
+                    &project,
+                    &mut state,
+                    &mut session,
+                    &invalidation,
+                    &changes,
+                ))
+                .unwrap()
+                .unwrap();
+            assert!(String::from_utf8_lossy(&first.bytes).contains(".grid"));
+            assert!(!String::from_utf8_lossy(&first.bytes).contains(".flex"));
+            std::fs::remove_file(&ts_path).unwrap();
+            let mut removed = zfb_build::CssChangeSet::default();
+            removed.record_removal(ts_path);
+            let fallback = runtime
+                .block_on(refresh_wind_test_payload(
+                    &project,
+                    &mut state,
+                    &mut session,
+                    &invalidation,
+                    &removed,
+                ))
+                .unwrap()
+                .unwrap();
+            assert!(String::from_utf8_lossy(&fallback.bytes).contains(".flex"));
+            assert!(!String::from_utf8_lossy(&fallback.bytes).contains(".grid"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn wind_config_events_match_removed_aliases_but_not_nested_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let canonical = root.canonicalize().unwrap();
+        assert!(zfb_build::policy::is_css_config_path(
+            root,
+            &canonical.join("zfb.config.json")
+        ));
+        assert!(zfb_build::policy::is_css_config_path(
+            root,
+            Path::new("zfb.config.ts")
+        ));
+        assert!(!zfb_build::policy::is_css_config_path(
+            root,
+            &root.join("src/zfb.config.json")
+        ));
+        assert!(!zfb_build::policy::is_css_config_path(
+            root,
+            &root.join("tsconfig.json")
+        ));
     }
 
     #[test]

@@ -55,6 +55,33 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
+/// Whether an event names either root project config, including deletion.
+/// CSS settings use this independently of graph globals: a cold graph need not
+/// have registered config files, and unrelated page/SSR planning stays intact.
+pub fn is_css_config_path(project_root: &Path, path: &Path) -> bool {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    if name != "zfb.config.json" && name != "zfb.config.ts" {
+        return false;
+    }
+    // Resolve the surviving parent, not the file: a removed config still
+    // matches through macOS /var aliases and symlinked project roots.
+    path.parent().is_some_and(|parent| {
+        parent
+            .canonicalize()
+            .unwrap_or_else(|_| zfb_types::normalize_path_lexical(parent))
+            == project_root
+                .canonicalize()
+                .unwrap_or_else(|_| zfb_types::normalize_path_lexical(project_root))
+    })
+}
+
 /// Live dependency sets consumed by the islands and client-script dev
 /// sub-pipelines.
 ///

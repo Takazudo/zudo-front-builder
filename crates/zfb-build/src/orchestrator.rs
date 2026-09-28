@@ -51,7 +51,9 @@ use zfb_watcher::{Change, ChangeKind, WatchBackend, WatchOptions, Watcher};
 
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
-use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
+use crate::policy::{
+    classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
+};
 
 trait DynamicWatchRegistrar: Send + 'static {
     fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf>;
@@ -1027,8 +1029,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // path, including those claimed by the external override below.
             plan.css_changes.record_upsert(path.clone());
             // A declared package manifest is CSS input even when its .json
-            // path lies under node_modules and classifies as Data.
-            if self.config.policy.is_css_manifest(&path) {
+            // path lies under node_modules and classifies as Data. Root
+            // config edits also invalidate CSS without relying on graph globals.
+            if self.config.policy.is_css_manifest(&path)
+                || is_css_config_path(&self.config.project_root, &path)
+            {
                 plan.mark_css();
             }
 
@@ -1528,7 +1533,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // Keep removals separate from upserts: a path can occur in both
             // sets, and a removed directory can contain a recreated file.
             plan.css_changes.record_removal(path.clone());
-            if self.config.policy.is_css_manifest(path) {
+            if self.config.policy.is_css_manifest(path)
+                || is_css_config_path(&self.config.project_root, path)
+            {
                 plan.mark_css();
             }
             let class = {
@@ -2234,6 +2241,43 @@ mod tests {
         )
         .unwrap();
         assert!(applies.lock().unwrap().last().unwrap().rerun_css);
+    }
+
+    #[test]
+    fn css_config_events_request_css_without_graph_globals() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![]),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        for path in ["/proj/zfb.config.json", "/proj/zfb.config.ts"] {
+            assert!(!orch.graph.lock().unwrap().is_global(Path::new(path)));
+            let plan = orch.plan_for_changes([path]);
+            assert!(plan.rerun_css);
+            assert!(!plan.rerun_islands);
+            assert_css_change_paths(&plan, &[path], &[]);
+            // With no pages, deletion would otherwise be a CSS no-op too.
+            orch.tick_with_kinds(
+                vec![(PathBuf::from(path), ChangeKind::Removed)],
+                &noop_ctx(Path::new("/tmp")),
+                None,
+            )
+            .unwrap();
+            let recorded = applies.lock().unwrap();
+            let removed = recorded.last().expect("config removal must reach pipeline");
+            assert!(removed.rerun_css);
+            assert!(!removed.rerun_islands);
+            assert_css_change_paths(removed, &[], &[path]);
+        }
+        for path in [
+            "/proj/data/config.json",
+            "/proj/data/zfb.config.json",
+            "/proj/node_modules/pkg/zfb.config.json",
+        ] {
+            assert!(!orch.plan_for_changes([path]).rerun_css, "{path}");
+        }
     }
 
     #[tokio::test]
