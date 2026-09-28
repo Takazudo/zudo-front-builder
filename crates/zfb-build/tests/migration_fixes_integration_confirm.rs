@@ -429,6 +429,7 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
+        zudo_react_island_names: None,
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
