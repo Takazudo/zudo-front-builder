@@ -4658,6 +4658,15 @@ fn build_dev_css_and_publish_mirror_roots(
     changes: Option<&zfb_build::CssChangeSet>,
 ) -> Result<Option<AssetEmitterPayload>> {
     let read_start = zfb_build::ssr_read_start();
+    // The declaration is authoritative before its contents validate. Keep
+    // the direct parent watch live through a failed boot/tick so a single
+    // create or repair of a required package manifest can trigger recovery.
+    if let Ok(manifests) =
+        crate::commands::css_source_plan::resolve_declared_manifest_watch_paths(project_root, cfg)
+    {
+        raw_import_invalidation
+            .replace_css_manifests_read_since(manifests.into_values(), read_start);
+    }
     let pass = crate::commands::build::build_dev_css_payload_with_index(
         project_root,
         dev_assets_root,
@@ -11640,6 +11649,192 @@ mod tests {
                 invalidation.css_stylesheet_paths().contains(&imported),
                 "the boot registry must hold an imported stylesheet on the {wind} arm"
             );
+        }
+    }
+
+    #[test]
+    fn wind_declared_package_manifest_is_published_on_boot_and_replaced_on_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("node_modules/@fixture/widgets/wind.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let write_manifest = |candidate: &str| {
+            std::fs::write(
+                &manifest,
+                format!(
+                    "{{\"schemaVersion\":1,\"specVersion\":1,\"producer\":\"widgets\",\"candidates\":[\"{candidate}\"]}}"
+                ),
+            )
+            .unwrap();
+        };
+        write_manifest("flex");
+        let mut wind = config::WindConfig::default();
+        wind.manifests.insert(
+            "widgets".into(),
+            config::WindManifest {
+                path: "./node_modules/@fixture/widgets/wind.json".into(),
+                source_package: None,
+            },
+        );
+        let cfg = config::Config {
+            wind: Some(config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let build = |session: &mut Option<crate::commands::build::WindSessionIndex>,
+                     changes: Option<&zfb_build::CssChangeSet>| {
+            build_dev_css_and_publish_mirror_roots(
+                dir.path(),
+                &dir.path().join("dev-assets"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &invalidation,
+                session,
+                changes,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let first = build(&mut session, None);
+        assert!(invalidation.css_manifest_paths().contains(&manifest));
+        assert!(String::from_utf8_lossy(&first.bytes).contains(".flex"));
+
+        write_manifest("grid");
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_upsert(manifest.clone());
+        let second = build(&mut session, Some(&changes));
+        let second_css = String::from_utf8_lossy(&second.bytes);
+        assert!(second_css.contains(".grid"));
+        assert!(!second_css.contains(".flex"));
+    }
+
+    #[tokio::test]
+    async fn wind_failed_boot_manifest_keeps_watch_for_one_create_or_fix() {
+        for (initially_missing, exports_mapped) in [(true, false), (false, false), (true, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().canonicalize().unwrap();
+            let package = project.join("node_modules/@fixture/widgets");
+            let manifest = if exports_mapped {
+                package.join("dist/wind.json")
+            } else {
+                package.join("wind.json")
+            };
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                if exports_mapped {
+                    "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":{\"import\":\"./dist/wind.json\",\"default\":\"./fallback/wind.json\"}}}"
+                } else {
+                    "{\"name\":\"@fixture/widgets\",\"version\":\"1.0.0\"}"
+                },
+            )
+            .unwrap();
+            if !initially_missing {
+                std::fs::write(&manifest, "not JSON").unwrap();
+            }
+            let mut wind = config::WindConfig::default();
+            wind.manifests.insert(
+                "widgets".into(),
+                config::WindManifest {
+                    path: "@fixture/widgets/wind.json".into(),
+                    source_package: None,
+                },
+            );
+            let cfg = config::Config {
+                wind: Some(config::WindSetting::Enabled(Box::new(wind))),
+                ..Default::default()
+            };
+            let invalidation = zfb_build::RawImportInvalidation::default();
+            let mut session = None;
+            let boot = build_dev_css_and_publish_mirror_roots(
+                &project,
+                &project.join("dev-assets"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &invalidation,
+                &mut session,
+                None,
+            );
+            assert!(
+                boot.is_err(),
+                "boot must fail for missing/malformed manifest"
+            );
+            let policy = zfb_build::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone());
+            assert!(policy.dynamic_dependency_paths().contains(&manifest));
+            assert!(policy.is_css_manifest(&manifest));
+
+            let (mut watcher, mut events) = zfb_watcher::Watcher::start_with_debounce(
+                &project,
+                std::iter::once("styles"),
+                std::time::Duration::from_millis(50),
+            )
+            .unwrap();
+            assert_eq!(
+                watcher.watch_additional_files(policy.dynamic_dependency_paths()),
+                vec![manifest.parent().unwrap().to_path_buf()]
+            );
+            let sentinel_dir = manifest.parent().unwrap().to_path_buf();
+            let live = zfb_test_utils::watcher_live_handshake(
+                zfb_test_utils::HandshakeOpts::new(std::time::Duration::from_secs(10)),
+                move |idx| {
+                    std::fs::write(sentinel_dir.join(format!("watch-ready-{idx}.txt")), "ready")
+                        .unwrap();
+                },
+                || loop {
+                    match events.try_recv() {
+                        Ok(change)
+                            if change.path.file_name().is_some_and(|name| {
+                                name.to_string_lossy().starts_with("watch-ready-")
+                            }) =>
+                        {
+                            return true
+                        }
+                        Ok(_) => {}
+                        Err(_) => return false,
+                    }
+                },
+            )
+            .await;
+            assert!(live.live, "declared manifest parent watch must become live");
+
+            std::fs::write(
+                &manifest,
+                "{\"schemaVersion\":1,\"specVersion\":1,\"producer\":\"widgets\",\"candidates\":[\"grid\"]}",
+            )
+            .unwrap();
+            let observed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while let Some(change) = events.recv().await {
+                    if change.path == manifest {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await
+            .expect("one manifest create/fix must reach the watcher");
+            assert!(observed, "watcher closed before the manifest event");
+            watcher.shutdown().await;
+            let mut changes = zfb_build::CssChangeSet::default();
+            changes.record_upsert(manifest.clone());
+            let recovered = build_dev_css_and_publish_mirror_roots(
+                &project,
+                &project.join("dev-assets"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &invalidation,
+                &mut session,
+                Some(&changes),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(String::from_utf8_lossy(&recovered.bytes).contains(".grid"));
         }
     }
 
