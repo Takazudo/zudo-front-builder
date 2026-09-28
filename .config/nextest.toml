@@ -99,7 +99,7 @@
 #     #3138/#3141/#3142) is the newest flock-adopting member: it gained a
 #     real `zfb dev --port 0` test alongside its existing `zfb build` test,
 #     so the whole binary moved here from the build-only lane below.
-#   • 19 build-command binaries (build_cleans_outdir, build_package_routes,
+#   • 20 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
 #     end_to_end_basic_blog_build, framework_packages_no_pnpm,
@@ -109,7 +109,7 @@
 #     plugin_diagnostics_confirm_2375_e2e, render_artifact_confirm_build,
 #     render_artifact_determinism_build,
 #     sibling_css_module_command_layer_build, strict_broken_links_e2e,
-#     wind_real_build_confirm_build,
+#     wind_real_build_confirm_build, zudo_react_build,
 #     css_command) —
 #     each runs `zfb build`,
 #     which likewise boots the embedded V8 host and shells out to esbuild.
@@ -140,12 +140,12 @@
 #     and `--no-strict-broken` never downgrading an independently-configured
 #     nested `failOnBroken`) exits with the correct status and names the
 #     broken hrefs. The later additions are recorded in the chronological
-#     recount below; the drift guard keeps this 19-binary list authoritative.
+#     recount below; the drift guard keeps this 20-binary list authoritative.
 #
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
 # .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. The
-# mechanical guard classifies every integration-test source: 45 heavy binaries,
+# mechanical guard classifies every integration-test source: 46 heavy binaries,
 # five documented exclusions (`check_command`,
 # `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`,
 # `embedded_node_modules_cache`, and `version_report`), plus `version_stamp`,
@@ -160,7 +160,7 @@ max-threads = 1
 [test-groups.e2e-heavy-unlocked]
 max-threads = 1
 
-# The overrides that assign all 45 heavy binaries to the two lanes AND grant
+# The overrides that assign all 46 heavy binaries to the two lanes AND grant
 # them a long per-test timeout live in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
@@ -393,7 +393,7 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 test-group = 'e2e-heavy-unlocked'
 # The three shared-target predicate classes hold no flock, so they belong in
 # this lane deliberately. This lane is their CPU/memory admission control and
-# is the sole serialization guard for all 19 build-only binaries above.
+# is the sole serialization guard for all 20 build-only binaries above.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # ── CI profile: the authoritative T1 gate (health.yml) ───────────────────────
