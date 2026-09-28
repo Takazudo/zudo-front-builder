@@ -118,12 +118,17 @@ export interface IslandProps {
 }
 
 /**
- * Public JSX-element shape returned by [`Island`]. The owned JSX runtime
- * requires the description brand, while the legacy JSX runtimes accept the
- * same structural `type`/`props`/`key` fields. The legacy wrapper is cast to
- * this shared type below; it remains a React element at runtime.
+ * Public return shape of [`Island`]. The owned boundary returns a branded
+ * description; the legacy boundary returns a React JSX element. Both have
+ * `type`, `props`, and `key`, but only owned descriptions carry `$$zudo`.
  */
-export type IslandElement = Description;
+export type IslandElement =
+  | Description
+  | {
+      readonly type: string;
+      readonly props: Readonly<Record<string, unknown>>;
+      readonly key: unknown;
+    };
 
 /**
  * `<Island>` JSX wrapper.
@@ -150,7 +155,7 @@ export function Island(props: IslandProps): IslandElement {
   const when = resolvedWhen.when;
   const media = resolvedWhen.media;
   const owned = ownedIslandBoundary(props.children, props.ssrFallback, when, media);
-  if (owned !== undefined) return owned as IslandElement;
+  if (owned !== undefined) return owned;
   const componentName = captureComponentName(props.children);
   const isSkipSsr = props.ssrFallback !== undefined;
   // Always source props from `props.children` (the heavy component VNode),

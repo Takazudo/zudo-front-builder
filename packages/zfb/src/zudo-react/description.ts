@@ -7,7 +7,11 @@ export type Component<P = Record<string, unknown>> = (props: P) => Child;
 export const Fragment: unique symbol = Symbol.for(
   "@takazudo/zfb/zudo-react/fragment-v1",
 ) as typeof Fragment;
-export type ElementType = string | Component<any> | typeof Fragment;
+export type ElementType =
+  | string
+  | Component<any>
+  | typeof import("../island.js").Island
+  | typeof Fragment;
 
 export interface Description {
   readonly $$zudo: "zudo-react.description.v1";

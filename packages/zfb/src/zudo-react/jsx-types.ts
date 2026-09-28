@@ -4,6 +4,7 @@ import type { ReadonlySignal, Signal } from "./reactive-types.js";
 
 type Value<T> = T | ReadonlySignal<T> | undefined;
 type ScalarAttribute = Value<string | number | boolean | null>;
+type DimensionAttribute = Value<string | number | null>;
 type StringAttribute = Value<string | null>;
 type BooleanAttribute = Value<boolean | null>;
 type CssProperty =
@@ -171,8 +172,8 @@ type SelectProps = HtmlProps<HTMLSelectElement> & {
 };
 
 interface SvgAttributes extends CommonAttributes<SVGElement> {
-  width?: ScalarAttribute;
-  height?: ScalarAttribute;
+  width?: DimensionAttribute;
+  height?: DimensionAttribute;
   viewBox?: StringAttribute;
   preserveAspectRatio?: StringAttribute;
   gradientUnits?: StringAttribute;
@@ -354,7 +355,11 @@ type SvgTag =
 
 export namespace JSX {
   export type Element = Child;
-  export type ElementType = string | Component<any> | typeof import("./description.js").Fragment;
+  export type ElementType =
+    | string
+    | Component<any>
+    | typeof import("../island.js").Island
+    | typeof import("./description.js").Fragment;
   export type IntrinsicElements = {
     [K in HtmlTag]: K extends "input"
       ? InputProps

@@ -1,4 +1,12 @@
-import { h, isDescription, signal, Show, For, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
+import {
+  h,
+  isDescription,
+  signal,
+  Show,
+  For,
+  type Description,
+  type ReadonlySignal,
+} from "@takazudo/zfb/zudo-react";
 import { Island } from "@takazudo/zfb";
 
 const name = {
@@ -33,6 +41,15 @@ function ExampleIsland() {
   return <span>example</span>;
 }
 void island;
+// The public return type also covers the unbranded legacy JSX path.
+// @ts-expect-error Callers must narrow the shared return before treating it as branded.
+const assumedOwned: Description = Island({ children: <ExampleIsland /> });
+void assumedOwned;
+// @ts-expect-error SVG dimensions do not accept booleans.
+const badSvgWidth = <svg width={true} />;
+// @ts-expect-error Reactive SVG dimensions do not accept booleans.
+const badSvgHeight = <svg height={signal(true)} />;
+void [badSvgWidth, badSvgHeight];
 h("div", null, "text");
 const visible = signal(true);
 const records = signal([{ id: "a" }]);
@@ -68,6 +85,9 @@ For({ each: records, by: (record) => record.id, children: "invalid" });
 
 // @ts-expect-error Function children are reserved for structural components.
 const badChild = <div>{() => "text"}</div>;
+const unbrandedVNode = { type: "span", props: {}, key: null };
+// @ts-expect-error Ordinary unbranded vnode objects are not owned JSX children.
+const badUnbrandedChild = <div>{unbrandedVNode}</div>;
 // @ts-expect-error React spelling is not an HTML attribute.
 const badClass = <div className="box" />;
 // @ts-expect-error React spelling is not an HTML attribute.
@@ -83,4 +103,14 @@ const badModel = <input modelValue={{ value: true, $$zudoReactive: "zudo-react.r
 // @ts-expect-error A div cannot own form model state.
 const badModelPlacement = <div modelChecked={name} />;
 
-void [badChild, badClass, badDanger, badRaw, badStyle, badRef, badModel, badModelPlacement];
+void [
+  badChild,
+  badUnbrandedChild,
+  badClass,
+  badDanger,
+  badRaw,
+  badStyle,
+  badRef,
+  badModel,
+  badModelPlacement,
+];

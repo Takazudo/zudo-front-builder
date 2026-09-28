@@ -94,6 +94,10 @@ export function islandReturnInComponentChildren(): ComponentChildren {
   return <div>{el}</div>;
 }
 
+export function directIslandReturnInComponentChildren(): ComponentChildren {
+  return Island({ children: <Button label="direct" count={1} /> });
+}
+
 // ---------------------------------------------------------------------------
 // 7. Negative control — symbol is not assignable (should @ts-expect-error)
 // ---------------------------------------------------------------------------
