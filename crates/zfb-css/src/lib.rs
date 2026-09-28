@@ -113,6 +113,11 @@ pub use url_attribution::{
     PackageUrlAsset, UrlOrigin,
 };
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
+pub use zudo_wind::{
+    expand_file_set, extract_candidates, CandidateIndex, ExpandedFile, ExtractedCandidate,
+    ExtractionNote, ExtractionResult, FileSet, NoteKind, Occurrence, PositionKind, PositiveRoot,
+    SourceId, SourceKind, SourcePlan, WalkDiagnostic,
+};
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's
 /// class-mode syntax highlighting (see `assets/zfb-hi.css`).

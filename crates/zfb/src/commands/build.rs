@@ -1584,7 +1584,10 @@ fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<
     }
 }
 
-fn root_package_css_excluded_dirs(project_root: &Path, first_party_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn root_package_css_excluded_dirs(
+    project_root: &Path,
+    first_party_root: &Path,
+) -> Vec<PathBuf> {
     let first_party_root = zfb_types::normalize_path_lexical(first_party_root);
     let mut excluded = zfb_types::first_party::claimed_workspace_member_names(&first_party_root)
         .into_values()

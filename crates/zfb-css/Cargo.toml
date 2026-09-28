@@ -13,6 +13,7 @@ description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via 
 # adapter and the renderer / `ProductionAssetPipeline` consumer in
 # `zfb-build` without string duplication.
 zfb-types = { path = "../zfb-types" }
+zudo-wind = { path = "../zudo-wind" }
 
 # Workspace-shared helpers.
 anyhow = { workspace = true }
