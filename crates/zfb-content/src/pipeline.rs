@@ -1219,7 +1219,7 @@ impl Pipeline {
     /// leave the plugins inert and the fingerprint byte-identical to the
     /// pre-arming shape (zfb#952).
     ///
-    /// The `zfb-render ModuleLoader` (`crates/zfb-render/src/loader.rs`) is
+    /// The retired library loader was
     /// a library/embedder path that does NOT go through `PipelineSpec`; it
     /// stays unarmed by design — embedder callers do not have a
     /// `project_root` at hand.

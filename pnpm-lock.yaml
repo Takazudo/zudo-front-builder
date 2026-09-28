@@ -34,22 +34,6 @@ importers:
         specifier: ^8.18.0
         version: 8.18.0
 
-  crates/zfb-islands/npm:
-    dependencies:
-      '@takazudo/zfb':
-        specifier: workspace:*
-        version: link:../../../packages/zfb
-    devDependencies:
-      happy-dom:
-        specifier: ^15.11.7
-        version: 15.11.7
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.9
-        version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
-
   crates/zfb-md-wasm/npm:
     dependencies:
       '@types/mdast':

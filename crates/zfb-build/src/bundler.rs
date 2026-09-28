@@ -31,41 +31,31 @@
 //!    text is parsed as JSX. This means user-authored `.mdx` import
 //!    paths keep working without a custom esbuild plugin (the CLI
 //!    cannot load JS plugins).
-//! 3. **Materialise the framework hydration shim** as a real file under
-//!    the shadow tree (`__zfb_internal_hydrate.jsx`). The synthetic
-//!    `zfb:internal/...` specifier from
-//!    [`zfb_render::adapters::Adapter::hydrate_shim_specifier`] is
-//!    recorded in the [`BundleManifest`] for downstream consumers; the
-//!    generated entry-point file imports the shim by relative path so
-//!    we don't need esbuild's URL-scheme resolver.
-//! 4. **Emit a synthetic `tsconfig.json`** in the shadow root that
+//! 3. **Emit a synthetic `tsconfig.json`** in the shadow root that
 //!    carries the user's [`BundlerInput::tsconfig_paths`] (resolved
 //!    against the project's `extends` chain by the caller). esbuild
 //!    reads this via `--tsconfig=` and uses it to resolve the user's
 //!    path aliases (`@/components/foo` → `./components/foo`).
-//! 5. **Emit a synthetic `entry.mjs`** that imports every page module
-//!    found under `pages/`, plus the hydration shim, plus the framework's
+//! 4. **Emit a synthetic `entry.mjs`** that imports every page module
+//!    found under `pages/`, plus the framework's
 //!    `renderToString`, plus `createPageRouter` from
 //!    `@takazudo/zfb-runtime/server`, and re-exports a `routes` map of
-//!    route-path → page module, a `hydrateIsland` function, and a Workers
+//!    route-path → page module and a Workers
 //!    entry shape `default { fetch }`. This is the single load-bearing
 //!    module the embedded V8 host and the runtime SSR adapter consume.
-//! 6. **Spawn esbuild** with the configured `--define`s, `--alias`es,
+//! 5. **Spawn esbuild** with the configured `--define`s, `--alias`es,
 //!    and the synthetic `tsconfig.json`.
 //!
 //! ## What the consumer (T6) sees
 //!
 //! The output bundle is a single ESM file at [`BundlerOutput::bundle_path`]
-//! with three exports the runtime contract pins:
+//! with two exports the runtime contract pins:
 //!
 //! - `routes` — an object literal mapping route path strings to the page
 //!   module's namespace (`{ default, getStaticProps?, … }`). The set of
 //!   keys is also enumerated in
 //!   [`BundleManifest::routes`][BundleManifest] so consumers don't have
 //!   to import-and-introspect to know what routes the bundle serves.
-//! - `hydrateIsland` — re-exported from the framework adapter shim;
-//!   the Worker entry bundle expects this symbol so the same bundle
-//!   can also feed the islands hydration runtime.
 //! - `default` — a Workers-style `{ fetch }` object whose `fetch` field
 //!   is a `(Request) => Promise<Response>` constructed by passing
 //!   `routes`, an embedded `ContentSnapshot` placeholder, and an inline
@@ -345,8 +335,7 @@ pub struct BundlerInput {
     /// can `import * as __zfb_content_<i> from "./content/<name>/..."`
     /// for every `.mdx` entry. The paired bridge installer
     /// (`globalThis.__zfb.content`) is then emitted in `entry.mjs`
-    /// before `createPageRouter`, matching the contract documented in
-    /// `crates/zfb-render/src/loader.rs`.
+    /// before `createPageRouter`, matching the content bridge contract.
     ///
     /// Empty by default. Callers that want the bridge wired (i.e. all
     /// production builds whose `zfb.config.ts` declares collections)
@@ -499,9 +488,7 @@ pub struct BundlerInput {
     /// `None`), so callers cannot desync the map from the route spec.
     /// Set every other knob here; leave the map alone.
     ///
-    /// The dev loader at `crates/zfb-render/src/loader.rs` honours the
-    /// same knobs via its own `with_*` builders so `zfb dev` and
-    /// `zfb build` produce the same output shape.
+    /// Both `zfb dev` and `zfb build` use this pipeline specification.
     pub pipeline_spec: zfb_content::PipelineSpec,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
@@ -826,7 +813,7 @@ impl BundlerInput {
 #[derive(Debug, Clone)]
 pub struct BundlerOutput {
     /// Final ESM bundle on disk. ESM, not CommonJS — exports `routes`
-    /// and `hydrateIsland` per the module-level contract.
+    /// and a default Workers-style fetch handler.
     pub bundle_path: PathBuf,
     /// Linked sourcemap next to `bundle_path` (esbuild's
     /// `--sourcemap=linked` shape). When the bundler ran in
@@ -936,19 +923,6 @@ impl NodeModulesStagingStats {
 /// having to import the bundle itself.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BundleManifest {
-    /// Framework name the bundle was built for. Mirrors
-    /// [`zfb_render::adapters::Adapter::name`] and is the same string the
-    /// runtime adapter (T2) keys on to load its render-to-string module.
-    pub framework: String,
-    /// JSX import source the bundler injected. Mirrors
-    /// [`zfb_render::adapters::Adapter::jsx_import_source`].
-    pub jsx_import_source: String,
-    /// Synthetic `zfb:internal/...` specifier that **identifies** the
-    /// hydration shim. The bundle itself does not import
-    /// the shim under this specifier (the CLI cannot resolve URL
-    /// schemes; we use a relative import internally). Consumers (T6,
-    /// docs) use this string for tracing / diagnostics.
-    pub hydrate_shim_specifier: String,
     /// Filename of the bundle on disk (matches `bundle_path.file_name()`).
     pub bundle_basename: String,
     /// Routes the bundle serves, in `pages_dir` walk order.
@@ -1002,7 +976,6 @@ pub struct RouteEntry {
     pub rel_under_pages: PathBuf,
 }
 
-const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
 const SHADOW_ENTRY_FILENAME: &str = "entry.mjs";
 const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 /// Server-only runtime subpath the generated `entry.mjs` imports `createPageRouter`
@@ -4812,20 +4785,6 @@ pub fn bundle_with_session(
         .context("bundler: failed rewriting CSS Modules in node_modules isolation")?;
     }
 
-    // 3. Hydration shim.
-    //
-    // Always-write infra file: written unconditionally every call (like
-    // the tsconfig and entry.mjs below), so it bypasses the #993
-    // ShadowWriter — never recorded as visited, therefore never eligible
-    // for the prune pass, which only deletes previously-visited paths.
-    let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
-    fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
-        format!(
-            "bundler: failed writing hydration shim to {}",
-            shim_path.display()
-        )
-    })?;
-
     // 4. Synthetic tsconfig.json honouring the user's `paths`. Rebase
     //    under-project_root alias targets to a shadow-first dual-target so
     //    an aliased import reaches the in-shadow transform (see
@@ -5175,9 +5134,6 @@ pub fn bundle_with_session(
         None
     };
     let manifest = BundleManifest {
-        framework: adapter.name().to_string(),
-        jsx_import_source: adapter.jsx_import_source().to_string(),
-        hydrate_shim_specifier: adapter.hydrate_shim_specifier().to_string(),
         bundle_basename: bundle_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -7136,7 +7092,6 @@ fn is_reserved_shadow_root_name(name: &str) -> bool {
     // different directory or purpose.
     name == SHADOW_TSCONFIG_FILENAME
         || name == SHADOW_ENTRY_FILENAME
-        || name == SHADOW_HYDRATE_FILENAME
         || name == ".zfb-metafile.json"
         || name.starts_with(zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX)
 }
@@ -8419,7 +8374,7 @@ fn materialise_shadow(
     // See zfb#127 / #128.
     //
     // Note: `zfb dev` is the bundler in Development mode — it also goes
-    // through this path.  The `zfb-render ModuleLoader` is a separate
+    // through this path.  The former library loader was a separate
     // library/embedder path not used by the `zfb` CLI at all.
     //
     // The opt-in `StripMdExtensionPlugin` is appended here when the
@@ -12153,7 +12108,7 @@ struct EntryModuleInputs<'a> {
 }
 
 /// Generate the `entry.mjs` module that re-exports `routes`,
-/// `hydrateIsland`, and a Workers-style `default { fetch }` wrapper
+/// a Workers-style `default { fetch }` wrapper
 /// driven by `createPageRouter` from `@takazudo/zfb-runtime/server`. This is
 /// the single load-bearing module the embedded V8 host (T6/T7) and the
 /// runtime SSR adapter (T2) consume.
@@ -12185,8 +12140,7 @@ struct EntryModuleInputs<'a> {
 ///    `globalThis.__zfb.content` bridge map. Both the hash-bearing
 ///    `mdx://<collection>/<slug>#<hash>` form (Rust snapshot) and the
 ///    hash-stripped `mdx://<collection>/<slug>` form (JS stub) are
-///    registered so `bridge.get(...)` resolves either flavour, per
-///    the contract documented in `crates/zfb-render/src/loader.rs`.
+///    registered so `bridge.get(...)` resolves either flavour.
 ///
 /// When `content_imports` is empty the bridge installer is omitted —
 /// runtime `bridge?.get(...)` calls fall through to the
@@ -12218,10 +12172,7 @@ fn write_entry_module(
     src.push_str(
         "// Single ESM entry shared by the embedded V8 host (T6/T7) and the runtime SSR adapter.\n",
     );
-    src.push_str("// Exports: { routes, hydrateIsland, default: { fetch } }.\n\n");
-    src.push_str(&format!(
-        "import {{ hydrateIsland }} from \"./{SHADOW_HYDRATE_FILENAME}\";\n",
-    ));
+    src.push_str("// Exports: { routes, default: { fetch } }.\n\n");
     // `createPageRouter` lives at the server-only subpath so the client-safe
     // root barrel (`@takazudo/zfb-runtime`) never pulls Hono into an island's
     // `--platform=browser` bundle (issue #1298). This SSR entry runs on the
@@ -12303,7 +12254,6 @@ fn write_entry_module(
         .unwrap();
     }
     src.push_str("};\n\n");
-    src.push_str("export { hydrateIsland };\n\n");
 
     // -----------------------------------------------------------------
     // Workers-style default-fetch wrapper.
@@ -12490,8 +12440,7 @@ fn write_entry_module(
     // bridge before `createPageRouter` so the very first SSR call
     // already sees the populated map.
     //
-    // Both forms documented in `crates/zfb-render/src/loader.rs`
-    // are registered:
+    // Both content module specifier forms are registered:
     //
     // - `mdx://<collection>/<slug>#<hash>` — the Rust snapshot's
     //   `module_specifier`, baked by
@@ -15738,10 +15687,7 @@ mod tests {
             mode: BundleMode::Production,
             minify: false,
             esbuild_binary: None,
-            mock_subprocess_output: Some(
-                "// mock bundle\nexport const routes = {};\nexport const hydrateIsland = () => {};\n"
-                    .to_string(),
-            ),
+            mock_subprocess_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
@@ -15927,10 +15873,8 @@ mod tests {
             "default export must carry a fetch field delegating to the router; got:\n{body}"
         );
 
-        // Existing exports must still be present so the runtime
-        // adapter (T2) and the islands hydration path keep working.
+        // The route export must still be present for the runtime adapter.
         assert!(body.contains("export const routes = {"));
-        assert!(body.contains("export { hydrateIsland };"));
     }
 
     #[test]
@@ -20851,12 +20795,6 @@ mod tests {
 
         let out = bundle(input).expect("mock bundle should succeed");
         assert!(out.bundle_path.exists());
-        assert_eq!(out.manifest.framework, "preact");
-        assert_eq!(out.manifest.jsx_import_source, "preact");
-        assert!(out
-            .manifest
-            .hydrate_shim_specifier
-            .starts_with("zfb:internal/"));
         assert_eq!(out.manifest.routes.len(), 1);
         assert_eq!(out.manifest.routes[0].route, "/");
         assert_eq!(

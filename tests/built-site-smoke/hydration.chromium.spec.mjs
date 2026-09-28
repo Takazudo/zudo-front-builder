@@ -24,7 +24,7 @@
  *
  * The `[data-zfb-island="Counter"]` selector targets the wrapper `<div>`
  * emitted by the `<Island>` JSX component (packages/zfb/src/island.ts) —
- * the same marker attribute crates/zfb-islands/src/hydration.rs documents
+ * the same marker attribute the server emits
  * and crates/zfb/src/commands/island_marker_check.rs cross-checks against
  * the islands registry at build time.
  *

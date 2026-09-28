@@ -44,7 +44,7 @@
 //!    they are skipped from `dist/`.
 //!
 //! 2. **Worker entry wrapping.** The bundler ([`zfb_build::bundle`])
-//!    emits an ESM bundle that exports `routes` + `hydrateIsland` but
+//!    emits an ESM bundle that exports `routes` but
 //!    not `default { fetch }`, while
 //!    [`zfb_build::renderer::render_all`] expects a Worker-shaped
 //!    bundle. Wrapping is its own sub-task; today the renderer call

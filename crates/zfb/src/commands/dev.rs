@@ -18597,9 +18597,6 @@ mod tests {
             bundle_path: bundle_path.clone(),
             sourcemap_path: bundle_path.with_extension("js.map"),
             manifest: BundleManifest {
-                framework: "preact".into(),
-                jsx_import_source: "preact".into(),
-                hydrate_shim_specifier: "zfb:internal/hydrate".into(),
                 bundle_basename: "bundle.js".into(),
                 routes: Vec::new(),
             },

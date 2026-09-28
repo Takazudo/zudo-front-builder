@@ -251,21 +251,12 @@ function scheduleMedia(target: Element, fire: () => void): { fired: boolean; can
 //      avoids the hydrate-mismatch warnings React/Preact would emit
 //      against an empty DOM container.
 //
-// The per-island bundles each export a `mount(props, element, mode)`
-// function (see zfb_islands::render_island_entry_source). The
-// framework-specific glue lives inside that bundle, so this runtime is
-// framework-agnostic.
-//
-// ## Module-level singleton
-//
-// Dynamic imports of the same URL are cached by the JS runtime, so
-// "switching pages" (in an SPA shell) reuses the loaded bundle for free.
-// We keep an extra in-memory dedup map keyed by element so an island is
-// never mounted twice (e.g. on hot-reload / repeat-mount scenarios).
+// The shared bundle supplies each island's mount module inline. The
+// framework-specific glue is built into that bundle.
 // ---------------------------------------------------------------------------
 
 /**
- * The shape of the default export each per-island bundle ships.
+ * The mount function supplied by a shared-bundle island module.
  *
  * `mode === "hydrate"` is used for SSR'd islands, `"render"` for
  * SSR-skip islands.
@@ -287,24 +278,10 @@ interface IslandModule {
 /**
  * Map of `componentName → island descriptor` baked into the runtime entry.
  *
- * Two descriptor shapes are accepted so the same `mountIslands` runtime
- * handles both bundling strategies the build emits:
- *
- *   1. `string` — a per-island bundle URL. The runtime fetches it via
- *      dynamic `import()` and reads `mount` / `default` off the loaded
- *      module. Used by the per-island bundling path
- *      (`bundle_per_island` / `render_runtime_entry_source`).
- *
- *   2. `IslandModule` — an inline module-shaped object whose `mount` (or
- *      `default`) is called directly. Used by the shared-bundle path
- *      (`render_shared_bundle_entry_source`): every island's source code
- *      is already in the same bundle, so the synthesised entry can hand
- *      the runtime the constructed mount functions inline without a
- *      second HTTP fetch. This preserves the one-request shared-bundle
- *      contract while giving up nothing on hydration semantics
- *      (zudolab/zudo-doc#1355 wave 6).
+ * Each manifest value is an inline module with `mount` or `default`.
+ * The shared bundle imports island sources at build time.
  */
-export type IslandManifestValue = string | IslandModule;
+export type IslandManifestValue = IslandModule;
 export type IslandManifest = Readonly<Record<string, IslandManifestValue>>;
 
 // data-zfb-transition-persist marker attribute — the client-router's persist
@@ -328,19 +305,11 @@ const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
  * - initial: absent; `mountIslands` / `mountNewIslands` strip a marker that is
  *   stale relative to this module instance's `mounted` map before scheduling.
  * - deferred idle / visible / media: absent while the scheduler is waiting.
- * - importing: absent while the URL module is in `pending`.
- * - mounted via URL: `scheduleMount`'s URL success handler writes it only after
- *   `fn(propsForMount, element, mode)` returns, alongside the `mounted` entry.
- * - mounted via inline module: `fireInlineMount` writes it only after
- *   `fn(props, element, mode)` returns, alongside the `mounted` entry.
+ * - mounted: `fireInlineMount` writes it after the mount function returns.
  * - missing manifest entry: absent; `scheduleMount` returns without writing.
- * - no `mount` export: absent; both manifest paths return without writing.
+ * - no `mount` export: absent; the inline path returns without writing.
  * - synchronous mount throw: absent; the `mounted` entry is not written, so a
  *   later walk can retry the element.
- * - rejected import: absent; the URL rejection handler clears `pending` and
- *   any defensive `mounted` entry.
- * - detached during import: absent; the URL success handler clears `pending`
- *   and returns before calling mount.
  * - unmounted (discarded): `unmountIslands` clears the marker and `mounted`
  *   entry in `finally`, even when the unmount thunk throws.
  * - unmounted (persisted-lifted): retained together with the `mounted` entry;
@@ -360,16 +329,6 @@ const mounted = new WeakMap<Element, () => void>();
 // Elements for which the nested-island self-wrap warning has already been
 // emitted. Guards against repeated warn spam across re-walks (e.g. SPA swaps).
 const warnedNested = new WeakSet<Element>();
-// Elements with an in-flight dynamic import that has not yet resolved.
-// Two concurrent `mountIslands` invocations (or two `scheduleMount`
-// calls hitting the same element through different code paths) could
-// otherwise both pass the `mounted` guard and both spawn an
-// `importIsland(url)` -> `fn()` chain, double-mounting the component.
-// Adding the element to `pending` synchronously, before the import is
-// fired, closes that window; the entry is removed in both the success
-// (after `mounted.set`) and failure branches.
-const pending = new WeakSet<Element>();
-
 // Module-level captured manifest — set by the first `mountIslands` call and reused by
 // `mountNewIslands()` so the client-router does not need to know the manifest directly.
 // Named technical cause (W1B §12.1): the router lives in @takazudo/zfb-runtime; the
@@ -483,11 +442,6 @@ export function mountNewIslands(): void {
  * instead of re-entering any deferred scheduler. This keeps a deferred persisted
  * island from blanking while it waits for idle/visible/media to fire again.
  *
- * On a flagged element whose URL import is still pending, leave the flag in
- * place. The already-running import's success handler consumes it after the
- * module resolves and re-reads `data-props` at that point, so a props refresh
- * that happened during the import wins without starting a duplicate import.
- *
  * A no-op for elements without the flag (the common case: fresh markers and
  * props-unchanged persisted islands).
  *
@@ -497,7 +451,6 @@ export function mountNewIslands(): void {
  */
 function clearMountedForRemount(el: Element): boolean {
   if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return false;
-  if (pending.has(el)) return false;
 
   const thunk = mounted.get(el);
   if (thunk) {
@@ -575,10 +528,7 @@ function scheduleMount(
   mode: "hydrate" | "render",
   options: { force?: boolean } = {},
 ): void {
-  // Skip elements already mounted OR currently importing — the latter
-  // prevents two concurrent `mountIslands` calls from each firing a
-  // separate dynamic import for the same element.
-  if (mounted.has(element) || pending.has(element)) return;
+  if (mounted.has(element)) return;
 
   const entry = manifest[componentName];
   if (entry == null) {
@@ -592,137 +542,7 @@ function scheduleMount(
     return;
   }
 
-  const when = element.getAttribute("data-when") ?? undefined;
-
-  // Two manifest shapes:
-  //
-  //   - `string` (per-island bundle URL): fetch via dynamic `import()`
-  //     and call `mount` / `default` on the resolved module.
-  //   - `IslandModule` (inline descriptor): the shared-bundle path has
-  //     already imported every island's source into the same bundle and
-  //     constructed a mount function for it. Skip the dynamic import
-  //     and call the supplied function directly.
-  if (typeof entry !== "string") {
-    fireInlineMount(element, entry, mode, options);
-    return;
-  }
-
-  const url: string = entry;
-
-  const fire = (): void => {
-    // Re-check both guards in case `fire` is invoked from a deferred
-    // scheduler (rIC/rAF/visibility) after a sibling caller already
-    // mounted or started importing for this element.
-    if (mounted.has(element) || pending.has(element)) return;
-
-    // When the deferred fire actually runs, the cancel handle is no longer
-    // needed — remove it so pendingCancels doesn't hold stale entries.
-    pendingCancels.delete(element);
-
-    // Lazy props parse: read and parse data-props only now that we know we
-    // are actually going to mount this island. For deferred strategies
-    // (media, visible, idle) this avoids JSON.parse work at boot time for
-    // islands that may never hydrate (e.g. media query never matches).
-    const props = readProps(element);
-
-    // Mark as pending BEFORE firing the import so any concurrent
-    // `mountIslands` invocation that arrives during the await window
-    // is short-circuited by `scheduleMount`'s guard.
-    pending.add(element);
-
-    // Dynamic-import is cached by the JS runtime, so repeat hits for
-    // the same URL share the resolved module — module-level
-    // singletons are fine.
-    //
-    // We move the element from `pending` to `mounted` only on the
-    // success path so a failed import (e.g. transient network blip
-    // in dev) doesn't permanently block a retry of the same element.
-    let started: Promise<IslandModule>;
-    try {
-      started = importIsland(url);
-    } catch (err) {
-      // Some implementations of dynamic-import wrappers can throw
-      // synchronously (e.g. URL parsing errors). Treat the same as
-      // an async rejection.
-      pending.delete(element);
-      // eslint-disable-next-line no-console
-      console.error(`[zfb] failed to start dynamic import for ${url}`, err);
-      return;
-    }
-    started.then(
-      (mod) => {
-        const fn = mod.mount ?? mod.default;
-        if (typeof fn !== "function") {
-          pending.delete(element);
-          if (
-            typeof process !== "undefined" &&
-            process.env &&
-            process.env["NODE_ENV"] !== "production"
-          ) {
-            // eslint-disable-next-line no-console
-            console.warn(`[zfb] island bundle at ${url} did not export mount() or default()`);
-          }
-          return;
-        }
-        // Stale-mount race guard: if the element was detached while the
-        // dynamic import was in-flight (e.g. a body swap happened), skip
-        // mounting — the element is no longer in the live document and
-        // its useEffect listeners would never receive a cleanup call.
-        if (!element.isConnected) {
-          pending.delete(element);
-          return;
-        }
-        const shouldRefreshProps = element.hasAttribute(ISLAND_REMOUNT_ATTR);
-        const propsForMount = shouldRefreshProps ? readProps(element) : props;
-        if (shouldRefreshProps) element.removeAttribute(ISLAND_REMOUNT_ATTR);
-        const unmountThunk = mod.unmount
-          ? () => mod.unmount!(element)
-          : () => {
-              // noop — bundle does not expose unmount
-            };
-        try {
-          fn(propsForMount, element, mode);
-          mounted.set(element, unmountThunk);
-          element.setAttribute(ISLAND_MOUNTED_ATTR, "");
-        } finally {
-          pending.delete(element);
-        }
-      },
-      (err: unknown) => {
-        // Surface the error in dev so the user notices, then clear
-        // both guards so a later retry (e.g. another scheduleHydrate
-        // fire) can attempt the import again.
-        pending.delete(element);
-        mounted.delete(element);
-        // eslint-disable-next-line no-console
-        console.error(`[zfb] failed to load island bundle ${url}`, err);
-      },
-    );
-  };
-
-  if (mode === "render") {
-    // SSR-skip islands ignore data-when: there is nothing to defer
-    // hydration of, just an empty container we paint into. Mount
-    // immediately so the user sees output.
-    fire();
-    return;
-  }
-
-  if (options.force) {
-    fire();
-    return;
-  }
-
-  const { fired, cancel } = scheduleHydrateInternal(element, when, fire);
-  // Track deferred-hydration cancel handle so cancelPendingIslands() can abort
-  // idle / visibility callbacks before a body swap. (W1B §12.5)
-  // Only register when the scheduler did NOT fire synchronously — a synchronous
-  // fire means the island is already handling its import and there is no
-  // deferred callback to cancel. Registering noop after a sync fire would leave
-  // a stale pendingCancels entry for an already-handled element. (#743)
-  if (when && when !== "load" && !fired) {
-    pendingCancels.set(element, cancel);
-  }
+  fireInlineMount(element, entry, mode, options);
 }
 
 /**
@@ -730,7 +550,7 @@ function scheduleMount(
  * shared-bundle path. The module is already in memory (it was imported
  * into the bundle at build time), so there is no async window to
  * coordinate around — we just call `mount` / `default` directly,
- * gated by the same `data-when` semantics as the URL path.
+ * gated by `data-when` semantics.
  */
 function fireInlineMount(
   element: Element,
@@ -881,34 +701,6 @@ function readProps(element: Element): Record<string, unknown> {
     // fall through
   }
   return {};
-}
-
-/**
- * Indirection so tests can stub the dynamic import without intercepting
- * the global `import()`. In production this is a thin wrapper over
- * native `import(url)`.
- */
-let importImpl: (url: string) => Promise<IslandModule> = (url) =>
-  // Modern bundlers (esbuild, Vite, Rollup, webpack) preserve a plain
-  // `import(<dynamic>)` call when the argument isn't a static literal,
-  // so we no longer need the `new Function(...)` indirection — which
-  // also failed under strict CSPs that disallow `unsafe-eval`.
-  import(/* @vite-ignore */ /* webpackIgnore: true */ url) as Promise<IslandModule>;
-
-function importIsland(url: string): Promise<IslandModule> {
-  return importImpl(url);
-}
-
-/**
- * Test-only seam. Replace the module dynamic-import with a fake.
- * Returns the previous implementation so tests can restore it.
- */
-export function __setIslandImporterForTests(
-  impl: (url: string) => Promise<IslandModule>,
-): (url: string) => Promise<IslandModule> {
-  const prev = importImpl;
-  importImpl = impl;
-  return prev;
 }
 
 /**

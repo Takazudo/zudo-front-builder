@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, Island, Manifest,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
     ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
 };
 
@@ -2276,16 +2276,9 @@ fn node_available() -> bool {
 // In-project entry temp-file hygiene (#1970, fixed in #1976) — real-esbuild
 // -----------------------------------------------------------------------------
 
-/// Acceptance test for issue #1970: after a successful multi-entry bundle the
-/// project root must carry no `.zfb-esbuild-entry-*.tsx` — neither this run's
-/// own entries nor one stranded by an earlier zfb process that was killed
-/// mid-bundle.
-///
-/// `bundle_per_island` is used because it is genuinely multi-entry: it drives
-/// `bundle_one_entry` once per island plus once for the runtime bundle, so a
-/// handle leaked on any single pass (rather than only on the last one) still
-/// fails this test. The shared-bundle entry point runs afterwards against the
-/// same working dir for the production-wired path's own coverage.
+/// Acceptance test for issue #1970: after a successful shared bundle the
+/// project root must carry no `.zfb-esbuild-entry-*.tsx`, including one
+/// stranded by an earlier process killed mid-bundle.
 ///
 /// The stranded file is aged past `ORPHANED_ENTRY_GRACE` because the sweep
 /// deliberately spares recent entries — a concurrent `zfb dev` in the same
@@ -2327,10 +2320,6 @@ fn working_dir_is_clean_after_multi_entry_bundle() {
         Island::new("Beta", beta.clone()),
     ];
 
-    let per_island = bundler
-        .bundle_per_island(&islands, FrameworkKind::Preact, &bundle_cfg)
-        .expect("per-island bundle");
-    assert_eq!(per_island.islands.len(), 2);
     let shared = bundler
         .bundle(&islands, &bundle_cfg)
         .expect("shared bundle");
@@ -2518,10 +2507,10 @@ fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker(
 
 /// Issue #2111, Scenario B: a dedicated client-script-only proof. Extending
 /// Scenario A's fixture is NOT sufficient to prove #2109's fix — Scenario-A-
-/// style tests exercise `bundle()`/`bundle_per_island()`, which already
+/// style tests exercise `bundle()`, which already
 /// called the sweep before this epic (only `bundle_client_script_file_with_workers`
 /// was missing the call, per #2109's Part 4). This test makes that call the
-/// FIRST operation — never preceded by `bundle()` or `bundle_per_island()` —
+/// FIRST operation — never preceded by `bundle()` —
 /// so it directly proves the newly-wired call site reaps strays for a
 /// project that never runs an islands build at all.
 #[test]
@@ -2601,7 +2590,7 @@ fn client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_is
     let config = BundleConfig::production().with_outdir(out_dir.path());
 
     // The FIRST operation in this test is a real client-script-only bundle
-    // call — never `bundle()`, never `bundle_per_island()`, and no islands
+    // call — never `bundle()`, and no islands
     // operation precedes it anywhere in this test. This is the only direct
     // proof that the call site #2109 wired into
     // `bundle_client_script_file_with_workers` actually reaps strays for a

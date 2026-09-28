@@ -1,41 +1,20 @@
 //! Anchor-based HTML parse handle.
 //!
-//! [`HtmlTree`] is the central type introduced by the anchor-splicing
-//! refactor (issue #65). Callers parse the page HTML **once** and then
-//! pass a `&mut HtmlTree` to each of the rewrite/inject helpers:
+//! [`HtmlTree`] stores markup for the server HTML injection pass. Callers
+//! parse once, apply mutations, then serialize the result:
 //!
 //! ```rust,ignore
-//! use zfb_islands::html_tree::HtmlTree;
-//! use zfb_islands::hydration::{rewrite_islands, inject_runtime_script_into_head};
-//!
-//! let mut tree = HtmlTree::parse(page_html);
-//! rewrite_islands(&mut tree, &islands)?;
-//! inject_runtime_script_into_head(&mut tree, runtime_url);
+//! use zfb_islands::HtmlTree;
+//! let mut tree = HtmlTree::parse("<html><head></head><body></body></html>");
+//! // zfb-server::inject mutates the tree here.
 //! let output = tree.serialize();
 //! ```
-//!
-//! Internally each mutation method drives a single `lol_html` rewriting
-//! pass on the stored HTML, updating the buffer in place. Using lol_html's
-//! CSS-selector-based element handlers is more robust than the previous
-//! substring / regex scans:
-//!
-//! - `inject_runtime_script_into_head` uses the CSS selector `head` to
-//!   locate the `<head>` element, so it never fires on a literal
-//!   `</head>` string inside a code block.
-//! - `rewrite_islands_in_attr_skeleton` uses the selector
-//!   `div[data-zfb-island=""]` — it matches *elements*, not text content,
-//!   so a Markdown code fence that happens to contain the literal string
-//!   `data-zfb-island=""` will not be miscounted.
-//!
-//! The type is intentionally kept opaque so the implementation can
-//! evolve (e.g. to a full in-memory DOM tree) without touching callers.
 
 use lol_html::errors::RewritingError;
 
 /// An HTML document parse handle.
 ///
-/// Construct with [`HtmlTree::parse`], mutate with the helpers in
-/// [`crate::hydration`] and [`zfb_server::inject`], then retrieve the
+/// Construct with [`HtmlTree::parse`], mutate with [`zfb_server::inject`], then retrieve the
 /// final markup with [`HtmlTree::serialize`].
 ///
 /// The handle currently stores the document as a `String` and applies
@@ -65,9 +44,7 @@ impl HtmlTree {
 
     /// Run a `lol_html` rewriting pass on the stored HTML.
     ///
-    /// This is the primary mutation seam used by helpers in
-    /// `hydration` (in this crate) and `zfb-server::inject` (external
-    /// crate). Callers build a [`lol_html::RewriteStrSettings`] with
+    /// This is the primary mutation seam used by helpers in `zfb-server::inject`. Callers build a [`lol_html::RewriteStrSettings`] with
     /// their element and document content handlers and pass it here;
     /// the existing HTML is replaced with the rewriter's output.
     pub fn rewrite(

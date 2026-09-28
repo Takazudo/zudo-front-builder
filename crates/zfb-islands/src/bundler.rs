@@ -595,61 +595,6 @@ pub trait ClientBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput>;
 }
 
-/// One per-island bundle output, produced by
-/// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
-///
-/// Per-island bundles land at the stable path
-/// `{outdir}/islands/island-{i}.js` (0-based sequential index) so the
-/// runtime can dynamic-import each island's JS independently. The
-/// sequential index avoids filename collisions when multiple source files
-/// export identically-named functions (same `marker_name`). Sharing is
-/// the bundler's concern — at this layer we just record one entry per
-/// island. The content-hash field is still computed and exposed (see
-/// [`IslandBundle::hash`]) for dev-mode change detection and for
-/// downstream consumers that wrap this output through
-/// `ProductionAssetPipeline`, but it is **not** baked into the
-/// filename or URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IslandBundle {
-    /// Component export name. Mirrors [`Island::component_name`] of the
-    /// input island so callers can pair entries by name.
-    pub component_name: String,
-    /// Output file path on disk — the stable sequential form
-    /// `dist/islands/island-{i}.js` (0-based index into the input slice).
-    pub asset_path: PathBuf,
-    /// Public URL the runtime should `import()` from — the stable sequential
-    /// form `/islands/island-{i}.js` (0-based index into the input slice).
-    pub asset_url: String,
-    /// 8-char content hash (lowercase hex) of the bundled JS. Reported
-    /// for dev-mode change detection and for downstream consumers
-    /// that delegate hashing to `ProductionAssetPipeline`. The hash is
-    /// **not** part of the on-disk filename or URL — those are
-    /// stable-named per the S0 single-source-of-truth-for-hashing
-    /// contract.
-    pub hash: String,
-}
-
-/// Result of a successful per-island bundle pass.
-///
-/// In addition to the per-island bundles, the per-island pipeline emits
-/// a small **runtime** bundle — the framework-agnostic shim that walks
-/// `[data-zfb-island]` / `[data-zfb-island-skip-ssr]` elements in the
-/// DOM, dynamic-imports the matching per-island bundle, and dispatches
-/// to `hydrate` / `render`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PerIslandBundleOutput {
-    /// One entry per island, in the same order the input slice provided.
-    pub islands: Vec<IslandBundle>,
-    /// Runtime bundle file path — the stable form
-    /// `dist/islands/islands-runtime.js`. Hashing, when needed, is
-    /// applied later by `ProductionAssetPipeline`.
-    pub runtime_asset_path: PathBuf,
-    /// Runtime bundle public URL — the `<script type="module" src="…">`
-    /// the page-router HTML pass injects into `<head>`. Stable form:
-    /// `/islands/islands-runtime.js`.
-    pub runtime_asset_url: String,
-}
-
 /// Which JS runtime the islands pipeline should target.
 ///
 /// This is intentionally a small enum local to `zfb-islands` so the
@@ -694,23 +639,6 @@ impl FrameworkKind {
     pub fn from_jsx_import_source(_s: &str) -> Self {
         FrameworkKind::Preact
     }
-}
-
-/// Build the public URL for a per-island JS asset.
-///
-/// Mirrors [`bundle_link_href`] but lives under `/islands/` instead of
-/// `/assets/` so per-island and shared bundles can share an outdir
-/// without colliding. With S0's stable-naming contract the typical
-/// inputs look like `dist/islands/Counter.js` →
-/// `/islands/Counter.js`; `ProductionAssetPipeline` is the only
-/// component allowed to substitute hashed forms.
-pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
-    let filename = asset_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let trimmed = base_url.trim_end_matches('/');
-    format!("{trimmed}/islands/{filename}")
 }
 
 /// Build the public URL for the islands JS asset.

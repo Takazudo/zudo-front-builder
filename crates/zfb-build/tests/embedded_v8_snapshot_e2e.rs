@@ -62,7 +62,7 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
 
 /// Build a minimal `BundlerInput` that uses `mock_subprocess_output` so
 /// the test doesn't need a real esbuild binary. The mock output satisfies
-/// the bundler's post-processing expectations (routes export + hydrateIsland).
+/// the bundler's post-processing expectations (routes export).
 fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> BundlerInput {
     let root = tmp.path().to_path_buf();
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -95,10 +95,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         mode: BundleMode::Production,
         minify: false,
         esbuild_binary: None,
-        mock_subprocess_output: Some(
-            "// mock bundle\nexport const routes = {};\nexport const hydrateIsland = () => {};\n"
-                .to_string(),
-        ),
+        mock_subprocess_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
         content_snapshot_json: snapshot_json,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -950,9 +947,6 @@ fn html_page_written_verbatim_via_render_all() {
         bundle_path: PathBuf::from("/dev/null"),
         sourcemap_path: PathBuf::from("/dev/null"),
         manifest: BundleManifest {
-            framework: "preact".into(),
-            jsx_import_source: "preact".into(),
-            hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
             bundle_basename: "bundle.mjs".into(),
             routes: vec![],
         },

@@ -49,7 +49,7 @@
 //!   takes a `bundle_path` that already exports `default { fetch }`.
 //!   The bundler emits that wrapper today (synthetic `entry.mjs` —
 //!   see `zfb_build::bundler::write_entry_module`) by importing the
-//!   page modules' `routes`/`hydrateIsland` and constructing a
+//!   page modules' `routes` and constructing a
 //!   `createPageRouter` instance. Keeping the wrapping decision
 //!   (framework choice, `ContentSnapshot` shape, render-to-string
 //!   adapter) in the bundler layer means the renderer stays neutral
@@ -1566,9 +1566,6 @@ mod tests {
 
     fn dummy_manifest() -> BundleManifest {
         BundleManifest {
-            framework: "preact".into(),
-            jsx_import_source: "preact".into(),
-            hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
             bundle_basename: "bundle.mjs".into(),
             routes: vec![],
         }
