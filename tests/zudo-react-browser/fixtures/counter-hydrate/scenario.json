@@ -1,0 +1,8 @@
+{
+  "page": "counter-hydrate",
+  "component": "./component.tsx",
+  "props": {
+    "initial": 0
+  },
+  "mode": "hydrate"
+}
