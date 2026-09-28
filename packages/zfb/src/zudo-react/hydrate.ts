@@ -66,7 +66,7 @@ const htmlAttrs = words(
   "href target rel download src alt width height type name value placeholder for charset datetime readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate maxlength minlength min max step pattern autocomplete accept accept-charset http-equiv content media method action enctype rows cols colspan rowspan scope cite poster loading decoding sizes srcset crossorigin referrerpolicy sandbox allow allowfullscreen",
 );
 const svgAttrs = words(
-  "viewBox preserveAspectRatio gradientUnits gradientTransform markerWidth markerHeight refX refY xlink:href xml:lang stroke-width fill-rule clip-rule stroke-linecap stroke-linejoin stop-color stop-opacity fill stroke d x y x1 x2 y1 y2 cx cy r rx ry points transform opacity offset",
+  "width height viewBox preserveAspectRatio gradientUnits gradientTransform markerWidth markerHeight refX refY xlink:href xml:lang stroke-width fill-rule clip-rule stroke-linecap stroke-linejoin stop-color stop-opacity fill stroke d x y x1 x2 y1 y2 cx cy r rx ry points transform opacity offset",
 );
 
 type Operation = (map: Map<Node, Node>, cleanups: Array<() => void>) => void;
@@ -397,6 +397,13 @@ function element(
     if (/^on[a-z]/.test(name) && typeof initial === "function")
       fail("ZR_PROP_DIALECT", "setup", "on:event", name, path);
     if (initial != null) {
+      if (
+        ownNamespace === SVG &&
+        (name === "width" || name === "height") &&
+        typeof initial !== "string" &&
+        !(typeof initial === "number" && Number.isFinite(initial))
+      )
+        fail("ZR_ATTRIBUTE", "setup", "SVG dimension string or number", typeof initial, path);
       if (name === "style") styleText(initial);
       else if (booleanAttrs.has(name) && typeof initial !== "boolean")
         fail("ZR_ATTRIBUTE", "setup", "boolean", typeof initial, path);
@@ -418,7 +425,19 @@ function element(
           context.options,
           context.container,
           path,
-          (value) => setAttribute(node, name, value),
+          (value) => {
+            if (
+              ownNamespace === SVG &&
+              (name === "width" || name === "height") &&
+              value != null &&
+              typeof value !== "string" &&
+              !(typeof value === "number" && Number.isFinite(value))
+            )
+              throw new TypeError(
+                `ZR_ATTRIBUTE: SVG dimension ${name} requires a string or number`,
+              );
+            setAttribute(node, name, value);
+          },
           initial,
         );
         cleanups.push(() => subscription.dispose());

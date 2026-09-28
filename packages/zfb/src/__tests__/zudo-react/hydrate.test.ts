@@ -21,6 +21,26 @@ beforeEach(() => {
 });
 
 describe("hydrate", () => {
+  it("adopts SVG dimensions accepted by the server", () => {
+    function Demo() {
+      return h("svg", { width: "16", height: 24 }, h("path", { d: "M0 0" }));
+    }
+    container = server(h(Demo, {}));
+    expect(hydrate(h(Demo, {}), container, options())).not.toBeNull();
+    expect(container.querySelector("svg")?.getAttribute("width")).toBe("16");
+    expect(container.querySelector("svg")?.getAttribute("height")).toBe("24");
+    expect(diagnostics).toEqual([]);
+  });
+  it("rejects a boolean SVG dimension during mount", () => {
+    const width = signal<string | boolean>("16");
+    function Demo() {
+      return h("svg", { width });
+    }
+    container = server(h(Demo, {}));
+    width.value = true;
+    expect(mount(h(Demo, {}), container, options())).toBeNull();
+    expect(diagnostics[0]?.code).toBe("ZR_ATTRIBUTE");
+  });
   it("adopts server elements and text; mount replaces equal nodes", async () => {
     const text = signal("hello");
     function Demo() {
