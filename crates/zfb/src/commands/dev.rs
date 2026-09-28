@@ -4662,7 +4662,7 @@ fn build_dev_css_and_publish_mirror_roots(
     // the direct parent watch live through a failed boot/tick so a single
     // create or repair of a required package manifest can trigger recovery.
     if let Ok(manifests) =
-        crate::commands::css_source_plan::resolve_declared_manifest_paths(project_root, cfg)
+        crate::commands::css_source_plan::resolve_declared_manifest_watch_paths(project_root, cfg)
     {
         raw_import_invalidation
             .replace_css_manifests_read_since(manifests.into_values(), read_start);

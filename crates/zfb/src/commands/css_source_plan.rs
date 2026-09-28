@@ -199,22 +199,32 @@ fn resolve_manifest_path(
     if path.starts_with("./") || path.starts_with("../") || Path::new(path).is_absolute() {
         return Ok(absolute(&base, Path::new(path)));
     }
-    let url = match zfb_config_loader::resolve_node_bare_specifier(path, &base) {
-        Ok(url) => url,
-        Err(error) => {
-            // A package may declare a subpath whose file has not been
-            // created yet. Resolve its installed package directory and
-            // exports mapping without requiring the target file, so dev can
-            // watch its parent and recover from the first create.
-            if let Some(missing) = missing_package_subpath(&base, path) {
-                return Ok(missing);
-            }
-            return Err(error).with_context(|| format!("manifest package path {path}"));
-        }
-    };
+    let url = zfb_config_loader::resolve_node_bare_specifier(path, &base)
+        .with_context(|| format!("manifest package path {path}"))?;
     url::Url::parse(&url)?
         .to_file_path()
         .map_err(|_| anyhow::anyhow!("manifest path {path} is not a file URL"))
+}
+
+/// A speculative identity for dev's direct watch only. Production source
+/// plans always call `resolve_manifest_path`, so an invalid exports map or
+/// active condition still fails exactly as the authoritative resolver says.
+fn resolve_manifest_watch_path(
+    project_root: &Path,
+    path: &str,
+    source_package: Option<&str>,
+) -> Result<PathBuf> {
+    match resolve_manifest_path(project_root, path, source_package) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) => {
+            let base = if let Some(package) = source_package {
+                zfb_config_loader::resolve_package_dir(package, project_root)?
+            } else {
+                project_root.to_path_buf()
+            };
+            missing_package_subpath(&base, path).ok_or(error)
+        }
+    }
 }
 
 /// Preserve object insertion order because Node picks the first matching
@@ -402,16 +412,16 @@ fn missing_package_subpath(base: &Path, specifier: &str) -> Option<PathBuf> {
 }
 
 /// Resolve declared manifest identities without reading or validating their
-/// contents. Dev must arm watches even when a required file is absent or
-/// malformed, so one subsequent create/fix can recover the CSS pass.
-pub(crate) fn resolve_declared_manifest_paths(
+/// contents. The production and dev-watch callers choose their own resolver.
+fn resolve_declared_manifest_paths_with(
     project_root: &Path,
     config: &Config,
+    resolve: impl Fn(&Path, &str, Option<&str>) -> Result<PathBuf>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let mut manifests = BTreeMap::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         for (producer, declaration) in &wind.manifests {
-            let path = resolve_manifest_path(
+            let path = resolve(
                 project_root,
                 &declaration.path,
                 declaration.source_package.as_deref(),
@@ -421,6 +431,13 @@ pub(crate) fn resolve_declared_manifest_paths(
         }
     }
     Ok(manifests)
+}
+
+pub(crate) fn resolve_declared_manifest_watch_paths(
+    project_root: &Path,
+    config: &Config,
+) -> Result<BTreeMap<String, PathBuf>> {
+    resolve_declared_manifest_paths_with(project_root, config, resolve_manifest_watch_path)
 }
 
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
@@ -436,7 +453,8 @@ pub(crate) fn gather_css_source_plan_inputs(
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(&project_root);
-    let manifests = resolve_declared_manifest_paths(&project_root, config)?;
+    let manifests =
+        resolve_declared_manifest_paths_with(&project_root, config, resolve_manifest_path)?;
     let mut safelist = BTreeMap::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         safelist = wind
@@ -704,7 +722,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
+            resolve_manifest_watch_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
             package.join("wind.json")
         );
         fs::write(
@@ -713,7 +731,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
+            resolve_manifest_watch_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
             package.join("dist/wind.json")
         );
         fs::write(
@@ -735,6 +753,34 @@ mod tests {
             missing_package_subpath(&project, "@fixture/widgets/wind.json").unwrap(),
             package.join("dist/wind.json"),
             "the most specific export pattern wins"
+        );
+    }
+
+    #[test]
+    fn production_manifest_resolution_rejects_invalid_active_and_mixed_exports() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let package = project.join("node_modules/@fixture/widgets");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("wind.json"), "{}").unwrap();
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":{\"import\":\"../outside.json\",\"default\":\"./wind.json\"}}}",
+        )
+        .unwrap();
+        assert!(
+            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).is_err(),
+            "invalid active import target must not fall through to default"
+        );
+
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":\"./wind.json\",\"default\":\"./wind.json\"}}",
+        )
+        .unwrap();
+        assert!(
+            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).is_err(),
+            "mixed subpath and condition keys must remain invalid"
         );
     }
 
