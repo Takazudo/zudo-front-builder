@@ -203,12 +203,10 @@ jobs:
       - name: Assert esbuild binary was provisioned
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          for slot in "$ESBUILD_SLOT"; do
-            if [ ! -x "$slot" ]; then
-              echo "::error::$slot not staged — the env-gated manifest tests would not run for real. Failing the job instead."
-              exit 1
-            fi
-          done
+          if [ ! -x "$ESBUILD_SLOT" ]; then
+            echo "::error::$ESBUILD_SLOT not staged — the env-gated manifest tests would not run for real. Failing the job instead."
+            exit 1
+          fi
           "$ESBUILD_SLOT" --version
 
       # The reconciled manifest, env-gate + heavy tags only (55 exact-name
@@ -446,12 +444,10 @@ jobs:
       - name: Assert esbuild binary was provisioned
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          for slot in "$ESBUILD_SLOT"; do
-            if [ ! -x "$slot" ]; then
-              echo "::error::$slot not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
-              exit 1
-            fi
-          done
+          if [ ! -x "$ESBUILD_SLOT" ]; then
+            echo "::error::$ESBUILD_SLOT not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
+            exit 1
+          fi
           "$ESBUILD_SLOT" --version
 
       # Full platform re-exam: EVERY non-ignored test in the workspace,

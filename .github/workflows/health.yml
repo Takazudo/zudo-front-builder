@@ -390,12 +390,10 @@ jobs:
       - name: Assert esbuild binary was provisioned for the test suite
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          for slot in "$ESBUILD_SLOT"; do
-            if [ ! -x "$slot" ]; then
-              echo "::error::$slot not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
-              exit 1
-            fi
-          done
+          if [ ! -x "$ESBUILD_SLOT" ]; then
+            echo "::error::$ESBUILD_SLOT not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
+            exit 1
+          fi
           "$ESBUILD_SLOT" --version
 
       # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
