@@ -22,7 +22,7 @@ Astro はすべてを `src/` の下に配置します。zfb はそうしませ�
 
 ## コンポーネント: モデルは 1 つ、2 つではない
 
-Astro の目玉機能は `.astro` ファイル — サーバー専用のテンプレート言語であり、オプションでフレームワークコードのアイランドを含められます。zfb はこれを単一のコンポーネントモデルに統合します。すべてのコンポーネントは `.tsx` ファイルです。`zfb.config` の `framework` フィールドで Preact か React のどちらかを選択し、レイアウト・ページ・コンポーネントのすべてで同じ JSX の流儀を使います。
+Astro の目玉機能は `.astro` ファイル — サーバー専用のテンプレート言語であり、オプションでフレームワークコードのアイランドを含められます。zfb はこれを単一のコンポーネントモデルに統合します。すべてのコンポーネントは `.tsx` ファイルです。すべての `.tsx` コンポーネントは独自の zudo-react ランタイムを使います。レイアウト、ページ、コンポーネントで同じ JSX 方言を使い、インタラクティブな状態はレンダリング時の hooks ではなく signal に置きます。モデルと制限は [zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
 
 ```tsx
 export default function MarketingPage() {
@@ -68,13 +68,15 @@ Astro はインポートしたフレームワークコンポーネントの JSX 
 ```tsx
 "use client";
 
+import { signal } from "@takazudo/zfb/zudo-react";
+
 export default function Counter() {
-  const [n, setN] = useState(0);
-  return <button onClick={() => setN(n + 1)}>{n}</button>;
+  const n = signal(0);
+  return <button on:click={() => { n.value += 1; }}>{n}</button>;
 }
 ```
 
-`"use client"` ファイルからインポートされたものは、自動的にアイランドになります。[`island`](../api/island.mdx) を参照してください。
+`"use client"` ファイルからインポートされたものは、自動的に島になります。セットアップは一度実行され、signal のバインディングが島の DOM を更新します。[`Island`](../api/island.mdx) を参照してください。
 
 ## スロットとレイアウト
 
@@ -82,7 +84,7 @@ Astro の `<slot />` は素の JSX `children` になります:
 
 ```tsx
 export default function DocsLayout({ children }) {
-  return <div className="prose">{children}</div>;
+  return <div class="prose">{children}</div>;
 }
 ```
 
@@ -187,142 +189,63 @@ export default defineConfig({
 
 ## ユーザースペースに移行するパターン
 
-zfb はいくつかの Astro 機能を意図的に省略しています。これは見落としではありません — これらのパターンは、純粋な JSX/Preact モデルにおいてエンジンのサポートを必要としないクリーンなユーザーランドの解決策を持っています。以下の各セクションでは、それぞれについて推奨されるレシピを示します。
+Astro の機能の一部には、zfb エンジンの一対一の API がありません。以下では、zudo-react または通常のルートとレイアウトの合成で、近い振る舞いを記述する方法を示します。
 
 ### `client:media` — メディアクエリによる条件付きハイドレーション
 
-Astro の `client:media="(max-width: 768px)"` は、メディアクエリがマッチするまでハイドレーションを遅延させます。zfb の `"use client"` ディレクティブは常にロード時にハイドレーションします。
-
-Preact での同等物は、コンポーネント自身の内部での早期リターンです:
+Astro の `client:media="(max-width: 768px)"` は、クエリが一致するまで島の起動を遅らせます。zfb では島の境界に `when="media"` と必須のクエリを指定して、同じタイミングを表します。
 
 ```tsx
-"use client";
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
 
-import { useEffect, useState } from "preact/hooks";
-
-interface Props {
-  children: preact.ComponentChildren;
-}
-
-/** Renders children only on viewports that match the query. */
-export default function MediaMount({ children }: Props) {
-  const [matches, setMatches] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    setMatches(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-
-  if (!matches) return null;
-  return <>{children}</>;
+export default function Header() {
+  return <Island when="media" media="(max-width: 768px)"><MobileMenu /></Island>;
 }
 ```
 
-これはラッパーとして使います: `<MediaMount><MobileMenu /></MediaMount>`。ラップされたコンポーネントはクエリがマッチしたときにのみマウントされ、クエリがマッチしなくなるとアンマウントされます。
+クエリが最初に一致したときに島が起動します。このクエリは起動をスケジュールするものであり、その後の変化に応じてコンポーネントを繰り返しマウント、アンマウントしません。
 
 ### ページごとの `<head>` 追加（Astro の `<Fragment slot="head">`）
 
-Astro はページが `<Fragment slot="head">` を介して任意の `<head>` 要素を注入できるようにします。zfb にはエンジンレベルでのスロット機構はありません。
+Astro はページから `<Fragment slot="head">` を使って任意の `<head>` 要素を追加できます。zfb エンジンにはスロット機構がありません。
 
-ユーザーランドのパターンは **Preact コンテキストベースのヘルメット** です。レイアウトがまずページボディをレンダリングし（コレクターを満たし）、その後収集されたヘッドノードを出力します。これにより 2 回目のレンダーパスを避けられます:
-
-```tsx
-// components/head-context.tsx
-import { createContext } from "preact";
-import { useContext, useRef } from "preact/hooks";
-
-interface HeadContextValue {
-  nodes: preact.VNode[];
-  add(node: preact.VNode): void;
-}
-
-export const HeadContext = createContext<HeadContextValue>({
-  nodes: [],
-  add() {},
-});
-
-export function useHead() {
-  return useContext(HeadContext);
-}
-```
-
-```tsx
-// components/head.tsx — drop inside a page to register head nodes
-import { useHead } from "./head-context";
-
-interface Props {
-  children: preact.VNode | preact.VNode[];
-}
-
-export function Head({ children }: Props) {
-  const { add } = useHead();
-  const registered = useRef(false);
-  if (!registered.current) {
-    registered.current = true;
-    const nodes = Array.isArray(children) ? children : [children];
-    nodes.forEach(add);
-  }
-  return null; // renders nothing inline
-}
-```
+ランタイムには context や子からレイアウトへの登録機構もありません。head の記述をレイアウトに明示的に渡せば、データの流れがレンダリング順序に依存しません。
 
 ```tsx
 // layouts/base.tsx
-import { useState } from "preact/hooks";
-import { HeadContext } from "../components/head-context";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
-export default function BaseLayout({ children }: { children: preact.ComponentChildren }) {
-  const [nodes] = useState<preact.VNode[]>([]);
-  const ctx = { nodes, add: (n: preact.VNode) => nodes.push(n) };
-
-  // Render children first so Head calls populate `nodes` before we emit <head>.
-  const body = <main>{children}</main>;
-
+export default function BaseLayout({ children, head }: { children: Child; head?: Child }) {
   return (
-    <HeadContext.Provider value={ctx}>
-      <html>
-        <head>
-          <meta charSet="utf-8" />
-          {nodes}
-        </head>
-        {body}
-      </html>
-    </HeadContext.Provider>
+    <html>
+      <head><meta charset="utf-8" />{head}</head>
+      <body><main>{children}</main></body>
+    </html>
   );
 }
 ```
 
 ```tsx
 // pages/blog/[slug].tsx
-import { Head } from "../../components/head";
+import BaseLayout from "../../layouts/base";
 
 export default function BlogPost({ post }) {
   return (
-    <>
-      <Head>
-        <title>{post.data.title}</title>
-        <meta name="description" content={post.data.description} />
-      </Head>
+    <BaseLayout head={<><title>{post.data.title}</title><meta name="description" content={post.data.description} /></>}>
       <article>{/* ... */}</article>
-    </>
+    </BaseLayout>
   );
 }
 ```
 
-<Warning title="SSR のレンダー順序">
+コレクションデータからメタデータを得るルートでは、ルート内で値を計算し、結果の記述を `head` コンテンツとして渡します。
 
-  このパターンは、Preact が同じパス内で兄弟要素より先に children をレンダリングすることに依存しています。zfb の静的ビルド SSR（トップダウンのレンダリング、親の `{nodes}` 出力より先に children をレンダリング）では機能します。ストリーミング SSR アダプターを追加する場合は、ボディのレンダリングが完了した後にヘッドがフラッシュされることを確認してください。
+### Astro コンポーネント用ブリッジエイリアスの除去
 
-</Warning>
+Astro プロジェクトでは、`.astro` コンポーネントを JSX の島に橋渡しするため、`@/components/svg` や `@/components/responsive-image` のようなエイリアスを登録することがあります。
 
-### Preact-compat エイリアス（`@/components/svg`、`@/components/responsive-image`）
-
-一部の Astro プロジェクトは、Astro のコンポーネントモデルを回避するために `@/components/svg` や `@/components/responsive-image` のようなエイリアスを登録します — 例えば `.astro` の SVG コンポーネントを JSX アイランドへ橋渡しするためです。
-
-zfb ではすべてのコンポーネントが最初から `.tsx` であり、これらのエイリアスが提供していたブリッジレイヤーは存在しません。移行時には、**これらのエイリアスを削除し、コンポーネントをファイルパスで直接インポートしてください**（あるいは `.tsx` ファイルを直接指すよりシンプルなエイリアスを使ってください）:
+zfb ではコンポーネントは `.tsx` です。橋渡しされていた各コンポーネントを書き換え、その `.tsx` 実装を import してください。中間のエイリアスは通常、削除または簡略化できます。
 
 ```ts
 // Before (Astro workaround — remove):
@@ -332,42 +255,29 @@ zfb ではすべてのコンポーネントが最初から `.tsx` であり、�
 addAlias("@/svg", "./components/svg.tsx");
 ```
 
-エイリアス先のファイルが Astro コンポーネント（`.astro`）だった場合は、先にそれを `.tsx` コンポーネントとして書き直す必要があります。
+エイリアス先が `.astro` ファイルなら、先に `.tsx` コンポーネントとして書き換えます。
 
 ### `data-island` マーカーによるカスタムハイドレーション
 
-Astro のアイランドは、レンダリングされた HTML の隣にある `<script type="application/json">` タグ内に、コンポーネントの props を JSON としてシリアライズします。一部のプロジェクトは、きめ細かな制御のためにこれをカスタムの `data-island` 属性で拡張します。
+Astro の島は、レンダリング済み HTML の隣にある `<script type="application/json">` に props を JSON として保存します。独自の `data-island` 属性を足すプロジェクトもあります。
 
-このパターンは zfb に**バイト単位でそのまま**移植できます — ハイドレーション戦略の全体を自分で所有します。マーカーをクエリして Preact の `hydrate()` を呼び出す、自前の `<script>` を用意してください:
+カスタムマーカーは別のウィジェットシステムに属せますが、zfb の島境界ではありません。zfb のクライアントランタイムが所有するコンポーネントには `<Island>` ヘルパーを使います。ラッパーの識別子、厳格な JSON props の受け渡し、スケジュール、クライアントエントリが用意されます。
 
 ```tsx
-"use client";
-
-// components/island-hydrator.tsx — add to your root layout as a "use client" island
-import { hydrate } from "preact";
-import { useEffect } from "preact/hooks";
+// pages/blog/[slug].tsx
+import { Island } from "@takazudo/zfb";
 import MyWidget from "./my-widget";
 
-const REGISTRY: Record<string, preact.ComponentType> = {
-  "my-widget": MyWidget,
-  // add more components here
-};
-
-export default function IslandHydrator() {
-  useEffect(() => {
-    document.querySelectorAll<HTMLElement>("[data-island]").forEach((el) => {
-      const name = el.dataset.island!;
-      const Component = REGISTRY[name];
-      if (!Component) return;
-      const props = JSON.parse(el.dataset.props ?? "{}");
-      hydrate(<Component {...props} />, el);
-    });
-  }, []);
-  return null;
+export default function BlogPost() {
+  return (
+    <article>
+      <Island when="visible"><MyWidget label="Click me" /></Island>
+    </article>
+  );
 }
 ```
 
-その上で、サーバーレンダリングされたマークアップ内で `<div data-island="my-widget" data-props='{"label":"Click me"}' />` を出力します。
+島の子は登録済みの同期コンポーネント 1 つに限られ、props は厳格な JSON データでなければなりません。不完全な `data-zfb-island` ラッパーを手書きしないでください。永続化ラッパーには [Island API](../api/island.mdx)に記載された完全な transport メタデータが必要です。
 
 ### カスタム remark / rehype プラグイン
 

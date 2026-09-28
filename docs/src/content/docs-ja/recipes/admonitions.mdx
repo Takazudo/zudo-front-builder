@@ -75,9 +75,11 @@ Hidden content that the reader reveals on demand.
 これらは始めるための最小限のスタブです。あなたのデザインシステムのトークン、アイコン、ARIA ロールで拡張してください。
 
 ```tsx title="components/admonitions.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 type AdmonitionProps = {
   title?: string;
-  children: React.ReactNode;
+  children: Child;
 };
 
 function admonition(kind: string) {
@@ -100,9 +102,11 @@ export const Caution = admonition("caution");
 ```
 
 ```tsx title="components/details.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 type DetailsProps = {
   title?: string;
-  children: React.ReactNode;
+  children: Child;
 };
 
 export function Details({ title, children }: DetailsProps) {

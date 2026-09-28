@@ -59,39 +59,44 @@ JS 配列式として渡されます。各コードブロックは `data-lang` �
 ```
 
 フレームワークは組み込みの `<CodeGroup>` コンポーネントを同梱していません — 自分の
-プロジェクトで用意し、zfb のコンポーネントマップに登録します。最小限の Preact の例を
+プロジェクトで用意し、zfb のコンポーネントマップに登録します。最小限の zudo-react の例を
 次に示します:
 
 ```tsx title="src/components/CodeGroup.tsx"
-import { useState } from "preact/hooks";
+"use client";
+
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
 interface Props {
   tabs: string[];
-  children: preact.ComponentChildren[];
+  children: readonly Child[];
 }
 
 export function CodeGroup({ tabs, children }: Props) {
-  const [active, setActive] = useState(0);
+  const active = signal(0);
   return (
     <div class="code-group">
       <div class="code-group-tabs" role="tablist">
-        {tabs.map((label, i) => (
-          <button
-            key={label}
-            role="tab"
-            aria-selected={i === active}
-            onClick={() => setActive(i)}
-          >
-            {label}
-          </button>
-        ))}
+        {tabs.map((label, i) => {
+          const selected = computed(() => i === active.value);
+          return (
+            <button
+              key={label}
+              role="tab"
+              aria-selected={selected}
+              on:click={() => { active.value = i; }}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
       <div class="code-group-panels">
-        {children.map((panel, i) => (
-          <div key={i} hidden={i !== active}>
-            {panel}
-          </div>
-        ))}
+        {children.map((panel, i) => {
+          const hidden = computed(() => i !== active.value);
+          return <div key={i} hidden={hidden}>{panel}</div>;
+        })}
       </div>
     </div>
   );

@@ -40,7 +40,7 @@ Astro から来た人には、コンセプトは次のように対応します�
 | `src/pages/` のファイルシステムルーティング | `pages/` ディレクトリ、同じ命名規約 |
 | フロントマターフェンスを持つ `.astro` コンポーネント | `getStaticProps` をエクスポートする TSX ページファイル |
 | 型付きスキーマを持つ Content Collections | `getCollection()` + `zfb.config.ts` で宣言するスキーマ |
-| レイアウト内の `<slot />` | React の `children` prop — 素の TSX 合成 |
+| レイアウト内の `<slot />` | `children` prop — 素の TSX 合成 |
 | `client:load` ディレクティブ | コンポーネントファイル先頭の `"use client"` ディレクティブ |
 | 静的アセット用の `public/` | `public/` — 同じセマンティクス |
 | `astro.config.mjs` | `zfb.config.ts`（TypeScript、直接ロード） |
