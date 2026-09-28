@@ -348,6 +348,8 @@ pub struct BundlerInput {
     /// Which JSX framework supplies the JSX runtime and render-to-string module.
     /// Drives [`make_adapter`] selection.
     pub framework: Framework,
+    /// Static scanner marker names available before owned page evaluation.
+    pub zudo_react_island_names: Option<Vec<String>>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string
     /// expressions must already be quoted JSON. This path is deliberately
@@ -778,6 +780,7 @@ impl BundlerInput {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework,
+            zudo_react_island_names: None,
             define_vars: Default::default(),
             public_env_vars: Default::default(),
             tsconfig_paths: Default::default(),
@@ -2804,6 +2807,23 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 /// A pre-bundle identity shared by owned SSR and browser island glue.
 /// Hash logical paths and bytes so temporary shadow paths never enter the token.
 pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
+    zudo_react_build_token_with_aliases(project_root, &[])
+}
+
+/// Include explicit plugin aliases alongside tsconfig paths. Both the server
+/// bundler and islands emitter pass their copy of the same plugin alias set.
+pub fn zudo_react_build_token_with_aliases(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+) -> Result<String> {
+    zudo_react_build_token_with_inputs(project_root, plugin_aliases, &[])
+}
+
+pub fn zudo_react_build_token_with_inputs(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+) -> Result<String> {
     let project_canonical = fs::canonicalize(project_root)?;
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut visited_packages = BTreeSet::new();
@@ -2815,9 +2835,49 @@ pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
         &mut visited_packages,
         &mut files,
     )?;
+    for (name, target) in plugin_aliases {
+        let target_path = Path::new(target);
+        let target_path = if target_path.is_absolute() {
+            target_path.to_path_buf()
+        } else {
+            project_root.join(target_path)
+        };
+        collect_zudo_react_external_target(
+            &target_path,
+            &PathBuf::from(format!("plugin-alias/{name}")),
+            &project_canonical,
+            &mut visited_packages,
+            &mut files,
+        )?;
+    }
+    for (name, targets) in zfb_plugin_resolver::read_tsconfig_paths_into_map(project_root) {
+        for (index, target) in targets.iter().enumerate() {
+            let prefix = target
+                .split('*')
+                .next()
+                .unwrap_or(target)
+                .trim_end_matches('/');
+            collect_zudo_react_external_target(
+                Path::new(prefix),
+                &PathBuf::from(format!("tsconfig-path/{name}/{index}")),
+                &project_canonical,
+                &mut visited_packages,
+                &mut files,
+            )?;
+        }
+    }
     files.sort_by(|left, right| left.0.cmp(&right.0));
     let mut digest = Sha256::new();
     digest.update(b"zudo-react/1\njson/1\n");
+    let mut virtual_modules = plugin_virtual_modules.to_vec();
+    virtual_modules.sort();
+    for (specifier, source) in virtual_modules {
+        digest.update(b"virtual-module\0");
+        digest.update(specifier.as_bytes());
+        digest.update([0]);
+        digest.update(source.as_bytes());
+        digest.update([0]);
+    }
     for (logical, physical) in files {
         digest.update(logical.to_string_lossy().replace('\\', "/").as_bytes());
         digest.update([0]);
@@ -2825,6 +2885,66 @@ pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
         digest.update([0]);
     }
     Ok(hex::encode(digest.finalize())[..16].to_string())
+}
+
+fn collect_zudo_react_external_target(
+    target: &Path,
+    logical: &Path,
+    project_canonical: &Path,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let target = if target.exists() {
+        target.to_path_buf()
+    } else {
+        let mut resolved = None;
+        for extension in ["ts", "tsx", "js", "jsx", "mjs"] {
+            let candidate = target.with_extension(extension);
+            if candidate.is_file() {
+                resolved = Some(candidate);
+                break;
+            }
+        }
+        let Some(resolved) = resolved else {
+            return Ok(());
+        };
+        resolved
+    };
+    let canonical = fs::canonicalize(&target)?;
+    if canonical.starts_with(project_canonical) {
+        return Ok(());
+    }
+    if canonical.is_file() {
+        if let Some(package_root) = canonical
+            .parent()
+            .into_iter()
+            .flat_map(Path::ancestors)
+            .find(|ancestor| ancestor.join("package.json").is_file())
+        {
+            if visited_packages.insert(package_root.to_path_buf()) {
+                collect_zudo_react_token_tree(
+                    package_root,
+                    logical,
+                    project_canonical,
+                    true,
+                    visited_packages,
+                    files,
+                )?;
+            }
+        } else if zudo_react_token_source(&canonical) {
+            files.push((logical.join(canonical.file_name().unwrap()), canonical));
+        }
+    } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
+        collect_zudo_react_token_tree(
+            &canonical,
+            logical,
+            project_canonical,
+            true,
+            visited_packages,
+            files,
+        )?;
+    }
+    Ok(())
 }
 
 fn zudo_react_token_source(path: &Path) -> bool {
@@ -2869,6 +2989,7 @@ fn collect_zudo_react_token_tree(
             }
             let name = entry.file_name().to_str();
             !matches!(name, Some("node_modules" | ".git" | ".zfb" | "target"))
+                && !name.is_some_and(|name| name.starts_with(".zfb-"))
                 && (linked_package || name != Some("dist"))
         })
     {
@@ -5018,12 +5139,21 @@ pub fn bundle_with_session(
     )
     .context("bundler: failed writing entry.mjs")?;
     if input.framework == Framework::ZudoReact {
-        let build = zudo_react_build_token(&input.project_root)?;
+        let build = zudo_react_build_token_with_inputs(
+            &input.project_root,
+            &input.plugin_alias_entries,
+            &input.plugin_virtual_modules,
+        )?;
+        let names = input
+            .zudo_react_island_names
+            .as_ref()
+            .ok_or_else(|| anyhow!("owned runtime requires scanner island identity metadata"))?;
         fs::write(
             shadow.join("zudo-react-build.mjs"),
             format!(
-                "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {};\n",
-                json_str(&build)
+                "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {}; globalThis.__zfb.zudoReactIslands = {};\n",
+                json_str(&build),
+                serde_json::to_string(names)?
             ),
         )?;
         let entry_path = shadow.join("entry.mjs");
@@ -12966,6 +13096,9 @@ mod framework_esbuild_flags_tests {
         fs::create_dir(project.path().join("dist")).unwrap();
         fs::write(project.path().join("dist/index.html"), "ignored").unwrap();
         assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::create_dir(project.path().join(".zfb-build")).unwrap();
+        fs::write(project.path().join(".zfb-build/bundle.mjs"), "generated").unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
         fs::write(
             project.path().join("pages/index.tsx"),
             "export default function Changed() {}",
@@ -13037,6 +13170,89 @@ mod framework_esbuild_flags_tests {
         fs::create_dir(project.path().join("dist")).unwrap();
         fs::write(project.path().join("dist/index.html"), "generated output").unwrap();
         assert_eq!(changed, zudo_react_build_token(project.path()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_external_plugin_and_tsconfig_sources() {
+        let project = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        let tsconfig_target = tempfile::tempdir().unwrap();
+        fs::write(
+            plugin.path().join("package.json"),
+            r#"{"name":"plugin-widget"}"#,
+        )
+        .unwrap();
+        fs::write(plugin.path().join("widget.ts"), "export const plugin = 1").unwrap();
+        fs::write(
+            plugin.path().join("dependency.ts"),
+            "export const dependency = 1",
+        )
+        .unwrap();
+        fs::write(
+            tsconfig_target.path().join("widget.ts"),
+            "export const path = 1",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("pages.tsx"),
+            "import 'plugin:widget'; import '@external/widget'",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("tsconfig.json"),
+            serde_json::json!({
+                "compilerOptions": { "baseUrl": ".", "paths": { "@external/*": [format!("{}/*", tsconfig_target.path().display())] } }
+            }).to_string(),
+        ).unwrap();
+        let aliases = vec![(
+            "plugin:widget".to_string(),
+            plugin
+                .path()
+                .join("widget.ts")
+                .to_string_lossy()
+                .into_owned(),
+        )];
+        let first = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(plugin.path().join("widget.ts"), "export const plugin = 2").unwrap();
+        let second = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(first, second);
+        fs::write(
+            plugin.path().join("dependency.ts"),
+            "export const dependency = 2",
+        )
+        .unwrap();
+        let with_dependency_edit =
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(second, with_dependency_edit);
+        fs::write(
+            tsconfig_target.path().join("widget.ts"),
+            "export const path = 2",
+        )
+        .unwrap();
+        assert_ne!(
+            with_dependency_edit,
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
+        );
+        let virtual_before = zudo_react_build_token_with_inputs(
+            project.path(),
+            &aliases,
+            &[(
+                "virtual:widget".to_string(),
+                "export const value = 1".to_string(),
+            )],
+        )
+        .unwrap();
+        let virtual_after = zudo_react_build_token_with_inputs(
+            project.path(),
+            &aliases,
+            &[(
+                "virtual:widget".to_string(),
+                "export const value = 2".to_string(),
+            )],
+        )
+        .unwrap();
+        assert_ne!(virtual_before, virtual_after);
     }
 
     #[test]
@@ -15984,6 +16200,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
+            zudo_react_island_names: None,
             define_vars: BTreeMap::new(),
             public_env_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
@@ -21981,6 +22198,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
+            zudo_react_island_names: None,
             define_vars: BTreeMap::from([
                 (
                     "process.env.PUBLIC_COLLISION".to_string(),

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zfb_build::bundler::{BundleMode, BundlerInput};
+use zfb_islands::{scan_islands_with_meta_and_first_party_root, FsResolver};
 
 use crate::config::Config;
 
@@ -545,6 +546,50 @@ pub(crate) fn assemble_bundler_input(
     // setup_registries so both paths produce identical alias resolution.
     bundler_input.plugin_alias_entries = plugin_alias_entries;
     bundler_input.plugin_virtual_modules = plugin_virtual_modules;
+    if config.framework == crate::config::Framework::ZudoReact {
+        let mut entries = Vec::new();
+        let pages = project_root.join("pages");
+        if pages.is_dir() {
+            for entry in walkdir::WalkDir::new(&pages) {
+                let entry = entry?;
+                if entry.file_type().is_file()
+                    && entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&ext))
+                    && !zfb_types::is_page_sidecar_file(entry.path())
+                {
+                    entries.push(entry.path().to_path_buf());
+                }
+            }
+        }
+        entries.extend(
+            bundler_input
+                .injected_route_entrypoints
+                .iter()
+                .filter(|path| path.is_file())
+                .cloned(),
+        );
+        entries.sort();
+        entries.dedup();
+        let resolver = FsResolver::new()
+            .with_project_root(project_root)
+            .with_injected_route_roots(&bundler_input.injected_route_entrypoints)
+            .with_virtual_modules(project_root, &bundler_input.plugin_virtual_modules);
+        let first_party_root = zfb_types::first_party_root_for(project_root);
+        let (islands, _) = scan_islands_with_meta_and_first_party_root(
+            &entries,
+            &resolver,
+            Some(&first_party_root),
+        )
+        .context("owned island scanner preflight failed")?;
+        let names: std::collections::BTreeSet<_> = islands
+            .iter()
+            .map(|island| island.marker_name.clone())
+            .collect();
+        bundler_input.zudo_react_island_names = Some(names.into_iter().collect());
+    }
 
     // Sub #212 follow-up — pre-extract the embedded esbuild binary and pin
     // its path on the input so consumer projects without the

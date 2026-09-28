@@ -12,8 +12,13 @@ vi.mock(
 );
 
 it("Island mints its wrapper through the owned factory", async () => {
-  (globalThis as typeof globalThis & { __zfb?: { zudoReactBuild: string } }).__zfb = {
+  (
+    globalThis as typeof globalThis & {
+      __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+    }
+  ).__zfb = {
     zudoReactBuild: "b1",
+    zudoReactIslands: ["Card"],
   };
   const { Island } = await import("../island.js");
   function Card() {
@@ -22,6 +27,44 @@ it("Island mints its wrapper through the owned factory", async () => {
   const wrapper = Island({ children: jsx(Card, {}) });
   expect(isDescription(wrapper)).toBe(true);
   expect(renderToString(wrapper as never)).toContain('data-zfb-island="Card"');
+});
+
+it("rejects a conflicting displayName against scanner identity", async () => {
+  const { Island } = await import("../island.js");
+  function Card() {
+    return jsx("span", {});
+  }
+  (Card as typeof Card & { displayName?: string }).displayName = "Wrong";
+  (
+    globalThis as typeof globalThis & {
+      __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+    }
+  ).__zfb = {
+    zudoReactBuild: "b1",
+    zudoReactIslands: ["Card", "Wrong"],
+  };
+  expect(() => Island({ children: jsx(Card, {}) })).toThrow(
+    "Card conflicts with displayName Wrong",
+  );
+});
+
+it("requires scanner metadata before constructing an owned island", async () => {
+  const { Island } = await import("../island.js");
+  function Card() {
+    return jsx("span", {});
+  }
+  (globalThis as typeof globalThis & { __zfb?: { zudoReactBuild: string } }).__zfb = {
+    zudoReactBuild: "b1",
+  };
+  expect(() => Island({ children: jsx(Card, {}) })).toThrow("no scanner identity metadata");
+  (
+    globalThis as typeof globalThis & {
+      __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+    }
+  ).__zfb = {
+    zudoReactBuild: "b1",
+    zudoReactIslands: ["Card"],
+  };
 });
 
 it("rejects unsupported props with the component and path", async () => {

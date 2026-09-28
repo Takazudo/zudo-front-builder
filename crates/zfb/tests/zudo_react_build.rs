@@ -146,7 +146,31 @@ fn owned_island_build_emits_matching_wrappers_and_bundle() {
     );
     assert!(html.contains("<!--zr:1:"), "{html}");
     assert!(html.contains("<p>Waiting</p>"), "{html}");
-    let bundle = fs::read_to_string(temp.path().join("dist/assets/islands.js")).unwrap();
+    let assets = temp.path().join("dist/assets");
+    let island_assets: Vec<_> = fs::read_dir(&assets)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("islands-")
+                        && !name.starts_with("islands-chunk-")
+                        && name.ends_with(".js")
+                })
+        })
+        .collect();
+    assert_eq!(
+        island_assets.len(),
+        1,
+        "expected one hashed island entry: {island_assets:?}"
+    );
+    let filename = island_assets[0].file_name().unwrap().to_str().unwrap();
+    assert!(
+        html.contains(&format!("/assets/{filename}")),
+        "HTML must load emitted bundle: {html}"
+    );
+    let bundle = fs::read_to_string(&island_assets[0]).unwrap();
     assert!(
         bundle.contains(build),
         "browser bundle identity differs from SSR"
@@ -158,5 +182,36 @@ fn owned_island_build_emits_matching_wrappers_and_bundle() {
     assert!(
         !bundle.contains("from \"preact\""),
         "Preact import in owned bundle"
+    );
+}
+
+#[test]
+fn owned_island_build_rejects_conflicting_display_name() {
+    let esbuild = locate_esbuild().expect("owned island build requires esbuild");
+    let temp = tempfile::tempdir().unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/island");
+    copy_dir(&fixture, temp.path());
+    let component = temp.path().join("components/counter.tsx");
+    let source = fs::read_to_string(&component).unwrap();
+    fs::write(&component, format!("{source}\n(Counter as typeof Counter & {{ displayName?: string }}).displayName = \"Wrong\";\n")).unwrap();
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build");
+    assert!(
+        !output.status.success(),
+        "conflicting displayName should fail the build"
+    );
+    let diagnostic = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        diagnostic.contains("ZR_ISLAND_IDENTITY") && diagnostic.contains("Wrong"),
+        "{diagnostic}"
     );
 }

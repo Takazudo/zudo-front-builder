@@ -25,10 +25,15 @@ export function ownedIslandBoundary(
   media: string | undefined,
 ): Description {
   const description = singleChild(child);
-  const component =
-    (description.type as typeof description.type & { displayName?: string }).displayName ??
-    (description.type as Function).name;
-  if (!component) throw new TypeError("ZR_ISLAND_IDENTITY: anonymous component");
+  const functionName = (description.type as Function).name;
+  const displayName = (description.type as typeof description.type & { displayName?: string })
+    .displayName;
+  if (!functionName) throw new TypeError("ZR_ISLAND_IDENTITY: anonymous component");
+  if (displayName && displayName !== functionName)
+    throw new TypeError(
+      `ZR_ISLAND_IDENTITY: ${functionName} conflicts with displayName ${displayName}`,
+    );
+  const component = displayName ?? functionName;
   const metadata = (
     globalThis as typeof globalThis & {
       __zfb?: { zudoReactBuild?: string; zudoReactIslands?: readonly string[] };
@@ -36,7 +41,9 @@ export function ownedIslandBoundary(
   ).__zfb;
   const build = metadata?.zudoReactBuild;
   if (!build) throw new TypeError(`ZR_ISLAND_IDENTITY: ${component} has no build identity`);
-  if (metadata?.zudoReactIslands && !metadata.zudoReactIslands.includes(component))
+  if (!metadata?.zudoReactIslands)
+    throw new TypeError(`ZR_ISLAND_IDENTITY: ${component} has no scanner identity metadata`);
+  if (!metadata.zudoReactIslands.includes(component))
     throw new TypeError(`ZR_ISLAND_IDENTITY: ${component} is not registered by the scanner`);
   return islandRoot(description, {
     identity: { component, build },
