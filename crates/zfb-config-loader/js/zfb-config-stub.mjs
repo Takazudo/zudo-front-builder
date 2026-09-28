@@ -15,20 +15,39 @@
 // installed locally just to be parsed.
 //
 // SYNC REQUIREMENT: keep definePreset here behaviourally identical to
-// packages/zfb/src/config.ts. The key `source_package` (snake_case)
-// must match the Rust `PluginConfig` serde field added in T4.
+// packages/zfb/src/config.ts. The `source_package` plugin field matches the
+// Rust `PluginConfig`; `__zfb_source_package` on wind manifests is stripped by
+// the Rust config loader before strict public-schema deserialization.
 
 export function defineConfig(config) {
   return config;
 }
 
 export function definePreset(sourcePackage, config) {
-  if (!config.plugins) {
-    return config;
+  let sourceStampedConfig = config;
+  const wind = config.wind;
+  if (wind && wind !== false && wind.manifests) {
+    const manifests = Object.fromEntries(
+      Object.entries(wind.manifests).map(([producer, manifest]) => {
+        if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
+          // Default first so a composed inner preset's source marker wins.
+          return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
+        }
+        return [producer, manifest];
+      }),
+    );
+    sourceStampedConfig = {
+      ...config,
+      wind: { ...wind, manifests },
+    };
+  }
+
+  if (!sourceStampedConfig.plugins) {
+    return sourceStampedConfig;
   }
   return {
-    ...config,
-    plugins: config.plugins.map((plugin) => {
+    ...sourceStampedConfig,
+    plugins: sourceStampedConfig.plugins.map((plugin) => {
       if (plugin !== null && typeof plugin === "object" && !Array.isArray(plugin)) {
         // Default first, then spread so an existing `source_package` (from a
         // composed inner preset) wins over the outer package name.

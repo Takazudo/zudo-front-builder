@@ -29,3 +29,33 @@ export const bundleRejectsAssetEmittingLoaders = defineConfig({
     },
   },
 });
+
+export const windAcceptsFullConfiguration = defineConfig({
+  wind: {
+    spec: 1,
+    reset: "none",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--project-panel)" },
+      fontSizes: { small: { size: "0.875rem", lineHeight: "1.25rem" } },
+      easings: { gentle: "ease-in-out" },
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    safelist: { app: ["sm:hover:bg-panel", "rounded"] },
+    authoredClasses: { prose: true },
+    manifests: { widgets: { path: "@example/widgets/wind.json" } },
+  },
+});
+
+export const windCanBeDisabled = defineConfig({ wind: false });
+
+export const windRejectsUnsupportedSpec = defineConfig({
+  // @ts-expect-error zudo-wind currently supports only configuration version 1.
+  wind: { spec: 2 },
+});
+
+export const windRejectsTrueShorthand = defineConfig({
+  // @ts-expect-error wind is either false or a configuration object.
+  wind: true,
+});
