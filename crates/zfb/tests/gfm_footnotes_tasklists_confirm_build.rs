@@ -318,7 +318,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "First footnote<sup><a href=\"#user-content-fn-a\" \
-             id=\"user-content-fnref-a\" data-footnote-ref \
+             id=\"user-content-fnref-a\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "footnote `a`'s FIRST occurrence must be numbered 1: {footnotes_md}"
@@ -326,7 +326,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "a second<sup><a href=\"#user-content-fn-b\" \
-             id=\"user-content-fnref-b\" data-footnote-ref \
+             id=\"user-content-fnref-b\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">2</a></sup>"
         ),
         "footnote `b`, first referenced second, must be numbered 2 \
@@ -335,7 +335,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "the first<sup><a href=\"#user-content-fn-a\" \
-             id=\"user-content-fnref-a-1\" data-footnote-ref \
+             id=\"user-content-fnref-a-1\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "footnote `a`'s REPEATED occurrence must share number 1 but mint a \
@@ -357,14 +357,14 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     // pointing back at `a`'s definition list item.
     assert!(
         footnotes_md.contains(
-            "<a href=\"#user-content-fnref-a\" data-footnote-backref \
+            "<a href=\"#user-content-fnref-a\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1\">"
         ),
         "expected a backref for `a`'s first occurrence: {footnotes_md}"
     );
     assert!(
         footnotes_md.contains(
-            "<a href=\"#user-content-fnref-a-1\" data-footnote-backref \
+            "<a href=\"#user-content-fnref-a-1\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1-2\">"
         ),
         "expected a distinct backref for `a`'s repeated occurrence: {footnotes_md}"
@@ -397,12 +397,12 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     // Footnote reference nested inside <Note>'s children resolves to number
     // 1 and the SAME `user-content-fn-n` / `user-content-fnref-n` id
     // contract as the top-level path — and now the same MARKER SPELLING
-    // too: both emit sites write `data-footnote-ref=""`, which serializes
-    // as the bare attribute here.
+    // too: both emit sites write `data-footnote-ref=""`, which the owned
+    // serializer retains as an empty string attribute.
     assert!(
         nested.contains(
             "Ref inside note<sup><a href=\"#user-content-fn-n\" \
-             id=\"user-content-fnref-n\" data-footnote-ref \
+             id=\"user-content-fnref-n\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "expected the nested footnote reference marker: {nested}"
@@ -433,7 +433,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         nested.contains(
             "<li id=\"user-content-fn-n\"><p>Nested footnote body.</p>\
-             <a href=\"#user-content-fnref-n\" data-footnote-backref \
+             <a href=\"#user-content-fnref-n\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1\">"
         ),
         "expected the nested footnote's definition + backref: {nested}"
