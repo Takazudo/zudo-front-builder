@@ -1,4 +1,4 @@
-import { h, isDescription, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
+import { h, isDescription, signal, Show, For, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
 
 const name = {
   value: "ok",
@@ -23,6 +23,37 @@ const view = (
 );
 isDescription(view);
 h("div", null, "text");
+const visible = signal(true);
+const records = signal([{ id: "a" }]);
+Show({ when: visible, children: () => <strong>visible</strong>, fallback: () => "hidden" });
+For({
+  each: records,
+  by: (record) => record.id,
+  children: (item, index) => (
+    <span>
+      {item.value.id}
+      {index}
+    </span>
+  ),
+});
+const structuralJsx = (
+  <>
+    <Show when={visible}>{() => <strong>visible</strong>}</Show>
+    <For each={records} by={(record) => record.id}>
+      {(item, index) => (
+        <span>
+          {item.value.id}
+          {index}
+        </span>
+      )}
+    </For>
+  </>
+);
+void structuralJsx;
+// @ts-expect-error A structural factory requires a callable child.
+Show({ when: visible, children: <strong>invalid</strong> });
+// @ts-expect-error A list factory requires item and index signal parameters.
+For({ each: records, by: (record) => record.id, children: "invalid" });
 
 // @ts-expect-error Function children are reserved for structural components.
 const badChild = <div>{() => "text"}</div>;

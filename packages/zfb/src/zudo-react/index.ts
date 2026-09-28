@@ -7,6 +7,7 @@ export type { ReadonlySignal, Signal } from "./reactive-types.js";
 export { signal, computed } from "./reactive.js";
 export { batch, flush } from "./scheduler.js";
 export { getScope } from "./scope.js";
+export { Show, For } from "./structure.js";
 
 export type Cleanup = () => void;
 export interface Scope {
