@@ -77,7 +77,7 @@ zfb <level>: [plugin:<name>] <message>
 
 ### `.tsx` プラグイン entry における JSX
 
-プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig が存在しない場合は、esbuild のデフォルトである classic transform（`React.createElement`）が適用されます。異なる JSX ランタイムが必要な `.tsx` プラグイン entry は、JSX モードを宣言する自身の tsconfig を用意するか、互換性のある factory を明示的に import する必要があります。
+プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig が存在しない場合は、esbuild のデフォルトである classic JSX transform が適用されます。zfb が所有する JSX ランタイムを使う `.tsx` プラグイン entry は、自身の tsconfig に `"jsx": "react-jsx"` と `"jsxImportSource": "@takazudo/zfb/zudo-react"` を設定するか、互換性のある factory を明示的に import してください。
 
 ### バンドルエラー
 
@@ -91,7 +91,7 @@ zfb <level>: [plugin:<name>] <message>
 
 <Note title="既存プロジェクトでは gitignore に追記する">
 
-新規にスキャフォールドされたプロジェクトは、ステージされたプラグインバンドルを自動的に無視します。このグロブが導入される前からあるプロジェクトでは、`.gitignore` に `**/.zfb-plugin-bundle-*.mjs` を追加してください — プラグインのソースは任意の深さに置かれうるため、このグロブはルート起点ではありません（[Styling — Tailwind が見る場所](./styling.mdx#tailwind-v4-tailwind-が見る場所) で説明している Tailwind の entry ファイル用グロブと同じ考え方です）。
+新規にスキャフォールドされたプロジェクトは、ステージされたプラグインバンドルを自動的に無視します。このグロブが導入される前からあるプロジェクトでは、`.gitignore` に `**/.zfb-plugin-bundle-*.mjs` を追加してください。プラグインのソースは任意の深さに置かれうるため、このグロブはルート起点ではありません。wind のソースプランについては [スタイリング — ソースの検出](./styling.mdx#zudo-wind-ソースの検出)を参照してください。
 
 </Note>
 
