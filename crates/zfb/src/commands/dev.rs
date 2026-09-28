@@ -11712,14 +11712,23 @@ mod tests {
 
     #[tokio::test]
     async fn wind_failed_boot_manifest_keeps_watch_for_one_create_or_fix() {
-        for initially_missing in [true, false] {
+        for (initially_missing, exports_mapped) in [(true, false), (false, false), (true, true)] {
             let dir = tempfile::tempdir().unwrap();
             let project = dir.path().canonicalize().unwrap();
-            let manifest = project.join("node_modules/@fixture/widgets/wind.json");
+            let package = project.join("node_modules/@fixture/widgets");
+            let manifest = if exports_mapped {
+                package.join("dist/wind.json")
+            } else {
+                package.join("wind.json")
+            };
             std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
             std::fs::write(
-                manifest.parent().unwrap().join("package.json"),
-                "{\"name\":\"@fixture/widgets\",\"version\":\"1.0.0\"}",
+                package.join("package.json"),
+                if exports_mapped {
+                    "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":{\"import\":\"./dist/wind.json\",\"default\":\"./fallback/wind.json\"}}}"
+                } else {
+                    "{\"name\":\"@fixture/widgets\",\"version\":\"1.0.0\"}"
+                },
             )
             .unwrap();
             if !initially_missing {

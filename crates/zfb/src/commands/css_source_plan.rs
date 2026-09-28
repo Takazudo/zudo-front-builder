@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use zfb_css::{extract_candidates, PositiveRoot, SourceKind, SourcePlan};
 
 use super::build::root_package_css_excluded_dirs;
@@ -201,12 +202,11 @@ fn resolve_manifest_path(
     let url = match zfb_config_loader::resolve_node_bare_specifier(path, &base) {
         Ok(url) => url,
         Err(error) => {
-            // A package may declare a plain subpath whose file has not been
-            // created yet. Resolve its installed package directory without
-            // requiring that target file, so dev can watch its parent and
-            // recover from the first create. Keep exports authoritative:
-            // their mapping cannot be inferred from the lexical subpath.
-            if let Some(missing) = missing_unexported_package_subpath(&base, path) {
+            // A package may declare a subpath whose file has not been
+            // created yet. Resolve its installed package directory and
+            // exports mapping without requiring the target file, so dev can
+            // watch its parent and recover from the first create.
+            if let Some(missing) = missing_package_subpath(&base, path) {
                 return Ok(missing);
             }
             return Err(error).with_context(|| format!("manifest package path {path}"));
@@ -217,7 +217,154 @@ fn resolve_manifest_path(
         .map_err(|_| anyhow::anyhow!("manifest path {path} is not a file URL"))
 }
 
-fn missing_unexported_package_subpath(base: &Path, specifier: &str) -> Option<PathBuf> {
+/// Preserve object insertion order because Node picks the first matching
+/// export condition in package.json order, not alphabetic key order.
+enum OrderedExportValue {
+    Null,
+    String(String),
+    Array(Vec<Self>),
+    Object(Vec<(String, Self)>),
+    Other,
+}
+
+impl<'de> Deserialize<'de> for OrderedExportValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct OrderedVisitor;
+        impl<'de> Visitor<'de> for OrderedVisitor {
+            type Value = OrderedExportValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::Null)
+            }
+
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                _: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::Other)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::Other)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::Other)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::Other)
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::String(value.to_owned()))
+            }
+
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedExportValue::String(value))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = seq.next_element()? {
+                    values.push(value);
+                }
+                Ok(OrderedExportValue::Array(values))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(OrderedExportValue::Object(entries))
+            }
+        }
+        deserializer.deserialize_any(OrderedVisitor)
+    }
+}
+
+fn export_target(value: &OrderedExportValue, wildcard: Option<&str>) -> Option<PathBuf> {
+    match value {
+        OrderedExportValue::String(target) => {
+            let target = if let Some(wildcard) = wildcard {
+                target.replace('*', wildcard)
+            } else {
+                target.clone()
+            };
+            let path = Path::new(target.strip_prefix("./")?);
+            if path.components().all(|component| {
+                matches!(component, std::path::Component::Normal(name) if name != "node_modules")
+            }) {
+                Some(path.to_path_buf())
+            } else {
+                None
+            }
+        }
+        OrderedExportValue::Object(conditions) => conditions
+            .iter()
+            .filter(|(condition, _)| matches!(condition.as_str(), "import" | "node" | "default"))
+            .find_map(|(_, target)| export_target(target, wildcard)),
+        OrderedExportValue::Array(targets) => targets
+            .iter()
+            .find_map(|target| export_target(target, wildcard)),
+        OrderedExportValue::Null | OrderedExportValue::Other => None,
+    }
+}
+
+/// The file-free subset of oxc_resolver's package exports selection: exact
+/// keys first, then the most specific single-star pattern. `export_target`
+/// follows the resolver's import/node/default condition set in JSON order.
+fn exported_manifest_subpath(exports: &OrderedExportValue, subpath: &Path) -> Option<PathBuf> {
+    let key = format!("./{}", subpath.to_string_lossy().replace('\\', "/"));
+    let OrderedExportValue::Object(entries) = exports else {
+        return None;
+    };
+    if let Some((_, target)) = entries.iter().find(|(export, _)| export == &key) {
+        return export_target(target, None);
+    }
+    let mut best: Option<(&str, &OrderedExportValue, &str)> = None;
+    for (export, target) in entries {
+        let Some((prefix, suffix)) = export.split_once('*') else {
+            continue;
+        };
+        if !prefix.starts_with("./")
+            || suffix.contains('*')
+            || !key.starts_with(prefix)
+            || !key.ends_with(suffix)
+            || key.len() < export.len()
+        {
+            continue;
+        }
+        let wildcard = &key[prefix.len()..key.len() - suffix.len()];
+        if best.is_none_or(|(previous, _, _)| {
+            let previous_base = previous.find('*').unwrap_or(previous.len());
+            prefix.len() > previous_base
+                || (prefix.len() == previous_base && export.len() > previous.len())
+        }) {
+            best = Some((export, target, wildcard));
+        }
+    }
+    best.and_then(|(_, target, wildcard)| export_target(target, Some(wildcard)))
+}
+
+fn missing_package_subpath(base: &Path, specifier: &str) -> Option<PathBuf> {
     let mut parts = specifier.split('/');
     let first = parts.next()?;
     let package = if first.starts_with('@') {
@@ -239,13 +386,17 @@ fn missing_unexported_package_subpath(base: &Path, specifier: &str) -> Option<Pa
         let Ok(bytes) = fs::read(package_json) else {
             continue;
         };
-        let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        let Ok(metadata) = serde_json::from_slice::<OrderedExportValue>(&bytes) else {
             return None;
         };
-        if metadata.get("exports").is_some() {
+        let OrderedExportValue::Object(fields) = metadata else {
             return None;
-        }
-        return Some(absolute(&package_dir, &tail));
+        };
+        let target = match fields.iter().find(|(key, _)| key == "exports") {
+            Some((_, exports)) => exported_manifest_subpath(exports, &tail)?,
+            None => tail.clone(),
+        };
+        return Some(absolute(&package_dir, &target));
     }
     None
 }
@@ -542,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_bare_manifest_subpath_uses_installed_unexported_package_only() {
+    fn missing_bare_manifest_subpath_follows_package_exports_and_conditions() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         let package = project.join("node_modules/@fixture/widgets");
@@ -558,11 +709,32 @@ mod tests {
         );
         fs::write(
             package.join("package.json"),
-            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":\"./dist/wind.json\"}}",
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":{\"import\":\"./dist/wind.json\",\"default\":\"./fallback/wind.json\"}}}",
         )
         .unwrap();
-        assert!(
-            missing_unexported_package_subpath(&project, "@fixture/widgets/wind.json").is_none()
+        assert_eq!(
+            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
+            package.join("dist/wind.json")
+        );
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":{\"default\":\"./fallback/wind.json\",\"import\":\"./dist/wind.json\"}}}",
+        )
+        .unwrap();
+        assert_eq!(
+            missing_package_subpath(&project, "@fixture/widgets/wind.json").unwrap(),
+            package.join("fallback/wind.json"),
+            "first matching condition in declaration order wins"
+        );
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./*\":\"./fallback/*\",\"./wind.*\":{\"import\":\"./dist/wind.*\"}}}",
+        )
+        .unwrap();
+        assert_eq!(
+            missing_package_subpath(&project, "@fixture/widgets/wind.json").unwrap(),
+            package.join("dist/wind.json"),
+            "the most specific export pattern wins"
         );
     }
 
