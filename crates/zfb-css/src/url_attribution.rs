@@ -99,7 +99,7 @@
 //! unresolvable reference fails the whole call, so [`attribute_and_emit_package_urls`]
 //! never returns a partially-rewritten stylesheet.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
@@ -311,6 +311,53 @@ fn rewrite_and_emit_package_urls(
     css: &str,
     attributed: &[AttributedUrl],
 ) -> Result<(String, Vec<PackageUrlAsset>)> {
+    let mut resolver = PackageUrlResolver::default();
+    let rewritten = rewrite_with_origins(css, attributed, &mut resolver)?;
+    Ok((rewritten, resolver.companions))
+}
+
+/// Shared package-asset resolution for source-map and declaring-file paths.
+#[derive(Default)]
+pub(crate) struct PackageUrlResolver {
+    pub(crate) companions: Vec<PackageUrlAsset>,
+    pub(crate) asset_paths: BTreeSet<PathBuf>,
+    filename_by_canonical: HashMap<PathBuf, String>,
+}
+
+/// Rewrite URLs before handing a declaring stylesheet to the bundler. The
+/// input is already import-ordered, so scanner spans refer to these bytes.
+pub(crate) fn rewrite_package_urls_for_source(
+    css: &str,
+    source_canonical: &Path,
+    resolver: &mut PackageUrlResolver,
+) -> Result<String> {
+    if !has_node_modules_component(source_canonical) {
+        return Ok(css.to_string());
+    }
+    let occurrences: Vec<_> = scan_css_urls(css)
+        .into_iter()
+        .filter(|occurrence| is_relative_reference(&occurrence.decoded))
+        .collect();
+    if occurrences.is_empty() {
+        return Ok(css.to_string());
+    }
+    let origin = UrlOrigin::Package(package_identity(source_canonical)?);
+    let attributed: Vec<_> = occurrences
+        .into_iter()
+        .map(|occurrence| AttributedUrl {
+            occurrence,
+            line: 0,
+            origin: origin.clone(),
+        })
+        .collect();
+    rewrite_with_origins(css, &attributed, resolver)
+}
+
+fn rewrite_with_origins(
+    css: &str,
+    attributed: &[AttributedUrl],
+    resolver: &mut PackageUrlResolver,
+) -> Result<String> {
     /// One resolved package reference, ready to splice. `filename` and
     /// `suffix` are kept apart (rather than pre-joined) so the splice step
     /// can escape `suffix` for the occurrence's own quote style — the
@@ -325,10 +372,6 @@ fn rewrite_and_emit_package_urls(
         suffix: &'a str,
     }
 
-    let mut companions: Vec<PackageUrlAsset> = Vec::new();
-    // Canonical asset path -> already-resolved companion filename. Dedup
-    // rule (decision c): the same file referenced N times emits once.
-    let mut filename_by_canonical: HashMap<PathBuf, String> = HashMap::new();
     let mut resolved: Vec<Resolved> = Vec::new();
 
     for entry in attributed {
@@ -336,7 +379,39 @@ fn rewrite_and_emit_package_urls(
             continue;
         };
         let raw_reference = &css[entry.occurrence.value_span.clone()];
-        let (path_part, suffix) = split_query_fragment(&entry.occurrence.decoded);
+        let (_, suffix) = split_query_fragment(&entry.occurrence.decoded);
+        let filename = resolver.resolve(pkg, raw_reference, &entry.occurrence.decoded)?;
+        resolved.push(Resolved {
+            entry,
+            filename,
+            suffix,
+        });
+    }
+
+    let mut spliced = css.to_string();
+    for r in resolved.iter().rev() {
+        let quote = r.entry.occurrence.quote;
+        let escaped_suffix = escape_suffix_for_quote(r.suffix, quote);
+        let replacement = format!("./{}{escaped_suffix}", r.filename);
+        let value = match quote {
+            UrlQuote::None => replacement,
+            UrlQuote::Single => format!("'{replacement}'"),
+            UrlQuote::Double => format!("\"{replacement}\""),
+        };
+        spliced.replace_range(r.entry.occurrence.value_span.clone(), &value);
+    }
+
+    Ok(spliced)
+}
+
+impl PackageUrlResolver {
+    fn resolve(
+        &mut self,
+        pkg: &PackageOrigin,
+        raw_reference: &str,
+        decoded: &str,
+    ) -> Result<String> {
+        let (path_part, _) = split_query_fragment(decoded);
         let source_dir = pkg.source.parent().unwrap_or(Path::new("."));
         let target = source_dir.join(path_part);
 
@@ -369,14 +444,14 @@ fn rewrite_and_emit_package_urls(
             ));
         }
 
-        let filename = match filename_by_canonical.get(&asset_canonical) {
+        let filename = match self.filename_by_canonical.get(&asset_canonical) {
             Some(existing) => existing.clone(),
             None => {
                 let bytes = std::fs::read(&asset_canonical).map_err(|e| {
                     cannot_emit_error(pkg, raw_reference, &format!("unreadable: {e}"))
                 })?;
                 let filename = package_url_companion_filename(&asset_canonical, &bytes);
-                match companions.iter().find(|c| c.filename == filename) {
+                match self.companions.iter().find(|c| c.filename == filename) {
                     // Byte-identical companion already registered (possibly
                     // from a different canonical path, e.g. two packages
                     // shipping the same font) — reuse it, no duplicate.
@@ -397,37 +472,19 @@ fn rewrite_and_emit_package_urls(
                             asset = asset_canonical.display(),
                         ));
                     }
-                    None => companions.push(PackageUrlAsset {
+                    None => self.companions.push(PackageUrlAsset {
                         filename: filename.clone(),
                         bytes,
                     }),
                 }
-                filename_by_canonical.insert(asset_canonical.clone(), filename.clone());
+                self.filename_by_canonical
+                    .insert(asset_canonical.clone(), filename.clone());
                 filename
             }
         };
-
-        resolved.push(Resolved {
-            entry,
-            filename,
-            suffix,
-        });
+        self.asset_paths.insert(asset_canonical);
+        Ok(filename)
     }
-
-    let mut spliced = css.to_string();
-    for r in resolved.iter().rev() {
-        let quote = r.entry.occurrence.quote;
-        let escaped_suffix = escape_suffix_for_quote(r.suffix, quote);
-        let replacement = format!("./{}{escaped_suffix}", r.filename);
-        let value = match quote {
-            UrlQuote::None => replacement,
-            UrlQuote::Single => format!("'{replacement}'"),
-            UrlQuote::Double => format!("\"{replacement}\""),
-        };
-        spliced.replace_range(r.entry.occurrence.value_span.clone(), &value);
-    }
-
-    Ok((spliced, companions))
 }
 
 /// CSS-escape any byte in `suffix` (the `?`/`#` tail split off the

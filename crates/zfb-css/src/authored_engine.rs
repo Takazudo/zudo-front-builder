@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::engine::CssEngine;
-use crate::{CssEngineId, CssEngineOutput};
+use crate::{AuthoredCssBundle, CssEngineId, CssEngineOutput, CssInputDependency, PackageUrlAsset};
 
 /// A [`CssEngine`] that emits a pre-supplied authored CSS string and runs
 /// no subprocess. Used for the `tailwind.enabled = false` path so the
@@ -28,6 +28,8 @@ use crate::{CssEngineId, CssEngineOutput};
 #[derive(Debug, Clone, Default)]
 pub struct AuthoredCssEngine {
     css: String,
+    companions: Vec<PackageUrlAsset>,
+    input_dependencies: Vec<CssInputDependency>,
 }
 
 impl AuthoredCssEngine {
@@ -36,16 +38,29 @@ impl AuthoredCssEngine {
     /// project's authored global stylesheet, or the empty string when the
     /// project has none.
     pub fn new(css: impl Into<String>) -> Self {
-        Self { css: css.into() }
+        Self {
+            css: css.into(),
+            companions: Vec::new(),
+            input_dependencies: Vec::new(),
+        }
+    }
+
+    /// Construct an engine from the asset-aware authored bundle.
+    pub fn with_bundle(bundle: AuthoredCssBundle) -> Self {
+        Self {
+            css: bundle.css,
+            companions: bundle.companions,
+            input_dependencies: bundle.input_dependencies,
+        }
     }
 }
 
 impl CssEngine for AuthoredCssEngine {
     fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<CssEngineOutput> {
-        Ok(CssEngineOutput::new(
-            self.css.clone(),
-            CssEngineId::new("authored", None),
-        ))
+        let mut output = CssEngineOutput::new(self.css.clone(), CssEngineId::new("authored", None));
+        output.companions = self.companions.clone();
+        output.input_dependencies = self.input_dependencies.clone();
+        Ok(output)
     }
 }
 
