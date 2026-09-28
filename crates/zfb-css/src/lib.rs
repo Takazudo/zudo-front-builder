@@ -80,10 +80,12 @@ pub mod authored_engine;
 pub mod css_imports;
 pub mod emitter;
 pub mod engine;
+pub mod engine_output;
 pub mod modules;
 pub mod native_engine;
 pub mod pipeline;
 pub mod scanner;
+pub mod stub_engine;
 pub mod url_attribution;
 pub mod url_scanner;
 
@@ -95,12 +97,17 @@ pub use engine::{
     OxideWarmupPolicy, TailwindSubprocessConfig, TailwindSubprocessEngine, ENTRY_TMP_PREFIX,
     ENTRY_TMP_SUFFIX,
 };
+pub use engine_output::{
+    CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId, CssEngineOutput,
+    CssInputDependency, CssInputDependencyKind, CssProvenance,
+};
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use native_engine::NativeRustEngine;
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
 pub use scanner::{
     scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
 };
+pub use stub_engine::StubCssEngine;
 pub use url_attribution::{
     attribute_and_emit_package_urls, attribute_relative_urls, AttributedUrl, PackageOrigin,
     PackageUrlAsset, UrlOrigin,

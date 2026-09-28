@@ -7,16 +7,17 @@
 //! of the pipeline.
 //!
 //! That swap is exactly what [`CssEngine`] models: take a set of source
-//! files to scan for utility classes, return a string of generated CSS.
+//! files to scan for utility classes, return CSS and related assets as one result.
 //! Everything stage-2 and beyond (CSS Modules, hashing, asset emission)
 //! is engine-agnostic.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::{CssEngineId, CssEngineOutput};
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
@@ -45,47 +46,18 @@ fn parse_oxide_warmup_policy(value: Option<&OsStr>) -> OxideWarmupPolicy {
     }
 }
 
-/// Abstraction over "produce a single CSS string of utility classes for the
-/// given project sources".
+/// Produces one self-contained result for the given project sources.
 ///
-/// ## Why a trait?
+/// The result carries CSS text, companion assets, input dependencies,
+/// diagnostics, optional provenance, and the engine identity. CSS text must
+/// be ready for direct concatenation into the global stylesheet: no HTML,
+/// `<style>` tags, or embedded source maps. No per-call companion state lives
+/// on the engine.
 ///
-/// We currently shell out to the official `tailwindcss` v4 CLI binary
-/// ([`TailwindSubprocessEngine`]). When a Rust-native option becomes viable
-/// (see [`crate::native_engine::NativeRustEngine`]), we want to swap it in
-/// at one site — the [`crate::CssPipeline`] constructor — without rewriting
-/// CSS Modules, hashing, or asset emission.
-///
-/// ## Contract
-///
-/// - The engine MUST return CSS text suitable for direct concatenation into
-///   the global stylesheet. No HTML, no `<style>` tags, no source maps
-///   embedded in the string itself.
-/// - The engine MAY consult its own configuration (binary path, content
-///   globs, theme tokens, etc.). The `sources` parameter is a *hint* of
-///   files known to the caller; engines are free to widen the set if their
-///   own config requires it (Tailwind v4 has its own `@source` directive).
-/// - The engine MUST be deterministic for a given (sources, config) pair —
-///   the hashing stage assumes byte-stable output.
+/// `sources` is a hint: engines may widen the set from their own configuration.
+/// The CSS must be deterministic for a given source and configuration pair.
 pub trait CssEngine {
-    /// Produce utility-class CSS for the given source files.
-    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String>;
-
-    /// Companion assets emitted for package-attributed `url()` references
-    /// resolved during the most recent [`Self::produce_utility_css`] call
-    /// (issue #2316, decision c: hash-upstream, emit-as-CSS-companions).
-    ///
-    /// Default: none. Only an engine that resolves package-attributed
-    /// `url()`s against a real filesystem (currently
-    /// [`TailwindSubprocessEngine`], via the Tailwind compiler's own
-    /// sourcemap) overrides this. [`crate::CssPipeline::build_emitter`]
-    /// calls it once, immediately after `produce_utility_css`, and folds
-    /// the result into [`crate::emitter::CssEmitterOutput::companions`].
-    /// "Take" semantics (draining, not peeking) so a stale companion list
-    /// from an earlier call can never leak into a later one.
-    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
-        Vec::new()
-    }
+    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<CssEngineOutput>;
 }
 
 /// Configuration for [`TailwindSubprocessEngine`].
@@ -1120,7 +1092,7 @@ fn try_build_synthesised_entry_css(
 /// The default [`CssEngine`]: shells out to the `tailwindcss` v4 CLI binary.
 ///
 /// The binary is invoked with an output flag (`-o`) pointing at a temp file;
-/// the file is then read back and returned as a `String`. The temp file is
+/// the file is then read back and returned in a `CssEngineOutput`. The temp file is
 /// cleaned up when its [`tempfile::NamedTempFile`] handle drops (i.e. when
 /// the call returns).
 ///
@@ -1131,8 +1103,8 @@ fn try_build_synthesised_entry_css(
 /// use std::path::PathBuf;
 ///
 /// let engine = TailwindSubprocessEngine::new(TailwindSubprocessConfig::default());
-/// let css = engine.produce_utility_css(&[PathBuf::from("pages/index.tsx")]).unwrap();
-/// assert!(!css.is_empty());
+/// let output = engine.produce_utility_css(&[PathBuf::from("pages/index.tsx")]).unwrap();
+/// assert!(!output.css.is_empty());
 /// ```
 #[derive(Debug)]
 pub struct TailwindSubprocessEngine {
@@ -1141,12 +1113,6 @@ pub struct TailwindSubprocessEngine {
     /// [`Self::produce_utility_css`] (including when the mock path is
     /// taken). Tests assert on this without needing the binary.
     last_entry_css: std::sync::Mutex<Option<String>>,
-    /// Companion assets emitted for package-attributed `url()` references
-    /// resolved on the most recent real (non-mock) `produce_utility_css`
-    /// call. Drained by [`CssEngine::take_package_url_companions`]; the
-    /// mock path clears this rather than populating it, since it never
-    /// runs attribution (see the call site's doc comment).
-    package_url_companions: std::sync::Mutex<Vec<crate::url_attribution::PackageUrlAsset>>,
 }
 
 impl Clone for TailwindSubprocessEngine {
@@ -1155,12 +1121,6 @@ impl Clone for TailwindSubprocessEngine {
             config: self.config.clone(),
             last_entry_css: std::sync::Mutex::new(
                 self.last_entry_css.lock().ok().and_then(|g| g.clone()),
-            ),
-            package_url_companions: std::sync::Mutex::new(
-                self.package_url_companions
-                    .lock()
-                    .map(|g| g.clone())
-                    .unwrap_or_default(),
             ),
         }
     }
@@ -1172,7 +1132,6 @@ impl TailwindSubprocessEngine {
         Self {
             config,
             last_entry_css: std::sync::Mutex::new(None),
-            package_url_companions: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -1399,7 +1358,7 @@ pub fn is_tailwind_entry_tmp(path: &Path) -> bool {
 }
 
 impl CssEngine for TailwindSubprocessEngine {
-    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
+    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<CssEngineOutput> {
         // Build the synthesised entry CSS. Read user input_css if set —
         // failure to read is fatal because the user explicitly asked for
         // it.
@@ -1419,15 +1378,10 @@ impl CssEngine for TailwindSubprocessEngine {
         }
 
         if self.config.mock_subprocess {
-            // The mock path never runs the real subprocess, so it never
-            // parses a sourcemap or resolves package `url()`s. Clear any
-            // companions left over from a prior real call so
-            // `take_package_url_companions` cannot return a stale set
-            // paired with this mock output.
-            if let Ok(mut slot) = self.package_url_companions.lock() {
-                slot.clear();
-            }
-            return Ok(self.config.mock_output.clone());
+            return Ok(CssEngineOutput::new(
+                self.config.mock_output.clone(),
+                CssEngineId::new("tailwindcss", None),
+            ));
         }
 
         // #2311/#2315 attribution is unconditional beyond this point (see
@@ -1557,17 +1511,9 @@ impl CssEngine for TailwindSubprocessEngine {
             &raw,
             &self.config.working_dir,
         )?;
-        if let Ok(mut slot) = self.package_url_companions.lock() {
-            *slot = companions;
-        }
-        Ok(css)
-    }
-
-    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
-        self.package_url_companions
-            .lock()
-            .map(|mut g| std::mem::take(&mut *g))
-            .unwrap_or_default()
+        let mut output = CssEngineOutput::new(css, CssEngineId::new("tailwindcss", None));
+        output.companions = companions;
+        Ok(output)
     }
 }
 
@@ -1933,17 +1879,6 @@ pub fn default_source_directives(project_root: &Path) -> String {
         push_escaped_source(&mut out, &full.display().to_string());
     }
     out
-}
-
-/// Convenience: a small map describing the engine's identity, used when we
-/// want to record provenance in pipeline outputs (e.g. log lines).
-pub fn engine_provenance(name: &str, version: Option<&str>) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert("engine".to_string(), name.to_string());
-    if let Some(v) = version {
-        m.insert("version".to_string(), v.to_string());
-    }
-    m
 }
 
 // ---------------------------------------------------------------------------

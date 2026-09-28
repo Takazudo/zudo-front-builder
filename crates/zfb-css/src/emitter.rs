@@ -35,6 +35,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::url_attribution::PackageUrlAsset;
+use crate::{CssDiagnostic, CssEngineId, CssInputDependency};
 
 /// Raw bytes + stable URL produced by [`crate::CssPipeline::build_emitter`].
 ///
@@ -68,6 +69,12 @@ pub struct CssEmitterOutput {
     /// `EmittedAsset.companions` slot, which the production pipeline
     /// writes verbatim beside the hashed CSS entry.
     pub companions: Vec<PackageUrlAsset>,
+    /// Files read by the engine, classified for later watch registration.
+    pub input_dependencies: Vec<CssInputDependency>,
+    /// Engine warnings or errors for command-layer presentation.
+    pub diagnostics: Vec<CssDiagnostic>,
+    /// Identity of the engine that generated the CSS bytes.
+    pub engine: CssEngineId,
 }
 
 /// On-disk relative path under `dist_root` for the (pre-hash) CSS
@@ -147,6 +154,9 @@ mod tests {
                 bytes: b".x{}".to_vec(),
                 stable_url: zfb_types::STABLE_CSS_URL.to_string(),
                 companions: Vec::new(),
+                input_dependencies: Vec::new(),
+                diagnostics: Vec::new(),
+                engine: CssEngineId::new("test", None),
             })
         });
         let out = emitter.emit().unwrap();

@@ -453,7 +453,7 @@ mod tests {
     }
 
     fn mock_output(request: CompileRequest, output: &str) -> Result<CssEmitterOutput> {
-        let engine = TailwindSubprocessEngine::new(request.tailwind.with_mock_output(output));
+        let engine = zfb_css::StubCssEngine::new(output);
         run_css_emitter_without_modules(
             engine,
             &request.project_root,
