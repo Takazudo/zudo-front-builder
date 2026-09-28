@@ -286,7 +286,7 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
     // Select wind explicitly with a marker token for the served CSS.
     fs::write(
         project.join("zfb.config.json"),
-        "{\n  \"framework\": \"preact\",\n  \"wind\": { \"tokens\": { \"colors\": { \"marker\": \"#123456\" } } }\n}\n",
+        "{\n  \"framework\": \"zudo-react\",\n  \"wind\": { \"tokens\": { \"colors\": { \"marker\": \"#123456\" } } }\n}\n",
     )
     .expect("write zfb.config.json");
 

@@ -202,7 +202,7 @@ fn write_ssr_only_fixture(root: &Path, page_body: &str) {
     fs::create_dir_all(root.join("pages")).expect("create pages/");
     fs::write(
         root.join("zfb.config.json"),
-        "{\n  \"framework\": \"preact\"\n}\n",
+        "{\n  \"framework\": \"zudo-react\"\n}\n",
     )
     .expect("write zfb.config.json");
     fs::write(root.join("pages/index.tsx"), page_body).expect("write pages/index.tsx");

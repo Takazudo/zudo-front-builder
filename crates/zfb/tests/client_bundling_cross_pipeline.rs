@@ -1489,7 +1489,7 @@ fn write_sibling_macro_workspace(root: &Path) -> PathBuf {
     .expect("write project package.json");
     fs::write(
         project.join("zfb.config.json"),
-        r#"{ "framework": "preact", "wind": false }"#,
+        r#"{ "framework": "zudo-react", "wind": false }"#,
     )
     .expect("write zfb.config.json");
     fs::write(
