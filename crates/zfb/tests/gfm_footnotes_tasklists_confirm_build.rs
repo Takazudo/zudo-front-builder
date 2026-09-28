@@ -291,10 +291,10 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
         tasklist_md,
         "<main data-slug=\"tasklist-md\">\
          <ul>\
-         <li><p><input type=\"checkbox\" disabled/> Buy milk</p></li>\
-         <li><p><input type=\"checkbox\" disabled checked/> Walk the dog</p></li>\
-         <li><p><input type=\"checkbox\" disabled/> Nested parent</p>\
-         <ul><li><p><input type=\"checkbox\" disabled checked/> Nested child</p></li></ul>\
+         <li><p><input type=\"checkbox\" disabled> Buy milk</p></li>\
+         <li><p><input type=\"checkbox\" disabled checked> Walk the dog</p></li>\
+         <li><p><input type=\"checkbox\" disabled> Nested parent</p>\
+         <ul><li><p><input type=\"checkbox\" disabled checked> Nested child</p></li></ul>\
          </li>\
          <li><p>Plain non-task item</p></li>\
          </ul>\
@@ -386,11 +386,11 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     // checkbox and its label, and the checkbox opening the item's own
     // paragraph rather than sitting as a sibling above it.
     assert!(
-        nested.contains("<p><input type=\"checkbox\" disabled/> Nested task unchecked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled> Nested task unchecked</p>"),
         "expected the unchecked nested task-list item: {nested}"
     );
     assert!(
-        nested.contains("<p><input type=\"checkbox\" disabled checked/> Nested task checked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled checked> Nested task checked</p>"),
         "expected the checked nested task-list item: {nested}"
     );
 
