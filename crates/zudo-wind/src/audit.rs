@@ -1,0 +1,948 @@
+//! Deterministic diagnostics over extracted candidate occurrences.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Serialize;
+
+use crate::explain::{diagnostic_view, origin_view, DiagnosticView, OriginView};
+use crate::{
+    compile_validated, structural_split, Catalog, DiagnosticCode, ExtractionResult, NoteKind,
+    Origin, OriginCandidate, PositionKind, RuleMetadata, SortKey, SourcePositionKind, WindConfig,
+    SPEC_REVISION, SPEC_VERSION,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditOutcome {
+    Complete,
+    InvalidConfiguration,
+    GenerationDisabled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditReport {
+    pub outcome: AuditOutcome,
+    pub spec_version: u32,
+    pub spec_revision: u32,
+    pub diagnostics: Vec<DiagnosticView>,
+    pub unrecognized_classes: Vec<UnrecognizedClass>,
+    pub conflicts: Vec<AuditConflict>,
+    pub dead_classes: Vec<DeadClass>,
+    pub dynamic_constructions: Vec<DynamicConstruction>,
+    pub adjacent_interpolations: Vec<InterpolatedCandidate>,
+    pub extraction_notes: Vec<AuditNote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditSource {
+    /// Stable SourcePlan identity, usually a relative root label and path.
+    pub source_id: String,
+    pub extraction: ExtractionResult,
+}
+
+impl AuditSource {
+    pub fn new(source_id: impl Into<String>, extraction: ExtractionResult) -> Self {
+        Self {
+            source_id: source_id.into(),
+            extraction,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditInput {
+    pub sources: Vec<AuditSource>,
+    /// Set this to false for the explicit `wind: false` audit outcome.
+    pub generation_enabled: bool,
+}
+
+impl Default for AuditInput {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            generation_enabled: true,
+        }
+    }
+}
+
+impl AuditInput {
+    pub fn new(sources: Vec<AuditSource>) -> Self {
+        Self {
+            sources,
+            generation_enabled: true,
+        }
+    }
+
+    pub fn single(source_id: impl Into<String>, extraction: ExtractionResult) -> Self {
+        Self::new(vec![AuditSource::new(source_id, extraction)])
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnrecognizedClass {
+    pub candidate: String,
+    pub origin: OriginView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadClass {
+    pub candidate: String,
+    pub diagnostic: DiagnosticView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditConflict {
+    pub origin: OriginView,
+    pub first_candidate: String,
+    pub second_candidate: String,
+    pub first_group: String,
+    pub second_group: String,
+    pub overlapping_properties: Vec<String>,
+    /// Generated source order for the pair. This is not a computed-style claim;
+    /// selector specificity still participates in the browser cascade.
+    pub emitted_order: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicConstruction {
+    pub source_id: String,
+    pub byte_offset: usize,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterpolatedCandidate {
+    pub candidate: String,
+    pub origin: OriginView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditNote {
+    pub source_id: String,
+    pub byte_offset: usize,
+    pub kind: String,
+    pub text: String,
+}
+
+/// Audits extracted occurrences while retaining their stable source identity.
+/// The function is pure: it does not read source files or write output.
+pub fn audit(input: &AuditInput, config: &WindConfig) -> AuditReport {
+    let mut report = empty_report(
+        AuditOutcome::Complete,
+        if input.generation_enabled {
+            config.spec
+        } else {
+            SPEC_VERSION
+        },
+    );
+    if !input.generation_enabled {
+        report.outcome = AuditOutcome::GenerationDisabled;
+        return report;
+    }
+
+    let validated = match config.validate() {
+        Ok(validated) => validated,
+        Err(diagnostics) => {
+            report.outcome = AuditOutcome::InvalidConfiguration;
+            report.diagnostics = diagnostics.iter().map(diagnostic_view).collect();
+            return report;
+        }
+    };
+
+    let mut candidates = Vec::new();
+    for source in &input.sources {
+        append_notes(source, &mut report);
+        for candidate in &source.extraction.candidates {
+            for occurrence in &candidate.occurrences {
+                candidates.push(OriginCandidate {
+                    text: candidate.text.clone(),
+                    origin: source_origin(&source.source_id, occurrence),
+                });
+                if occurrence.adjacent_interpolation {
+                    report.adjacent_interpolations.push(InterpolatedCandidate {
+                        candidate: candidate.text.clone(),
+                        origin: origin_view(&source_origin(&source.source_id, occurrence)),
+                    });
+                }
+            }
+        }
+    }
+    sort_report_inputs(&mut report);
+
+    let result = compile_validated(&candidates, &validated);
+    report.diagnostics.extend(
+        result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(diagnostic.origin.as_deref(), Some(Origin::Source { .. }))
+            })
+            .map(diagnostic_view),
+    );
+    report.dead_classes = result
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let origin = diagnostic.origin.as_deref()?;
+            let Origin::Source {
+                position_kind: SourcePositionKind::Class,
+                ..
+            } = origin
+            else {
+                return None;
+            };
+            let candidate = diagnostic.candidate.as_deref()?;
+            let is_dead = diagnostic.code == DiagnosticCode::Zw006
+                || (diagnostic.code == DiagnosticCode::Zw002
+                    && recognized_utility_shape(candidate));
+            is_dead.then(|| DeadClass {
+                candidate: candidate.to_owned(),
+                diagnostic: diagnostic_view(diagnostic),
+            })
+        })
+        .collect();
+    report.unrecognized_classes = result
+        .ordinary_classes
+        .iter()
+        .filter_map(|ordinary| {
+            let Origin::Source {
+                position_kind: SourcePositionKind::Class,
+                ..
+            } = &ordinary.origin
+            else {
+                return None;
+            };
+            if ordinary.text == "group" || ordinary.text == "peer" {
+                return None;
+            }
+            Some(UnrecognizedClass {
+                candidate: ordinary.text.clone(),
+                origin: origin_view(&ordinary.origin),
+            })
+        })
+        .collect();
+    report.conflicts = find_conflicts(&result.rules);
+    report
+        .diagnostics
+        .extend(report.conflicts.iter().map(|conflict| DiagnosticView {
+            severity: "auditInfo".to_owned(),
+            code: "ZW013".to_owned(),
+            candidate: Some(conflict.first_candidate.clone()),
+            origin: Some(conflict.origin.clone()),
+            message: format!(
+                "{} and {} both write {}; emitted rule order is {} then {}",
+                conflict.first_candidate,
+                conflict.second_candidate,
+                conflict.overlapping_properties.join(", "),
+                conflict.emitted_order[0],
+                conflict.emitted_order[1]
+            ),
+            suggestion: None,
+            rejection_id: None,
+        }));
+    sort_report_results(&mut report);
+    report
+}
+
+pub fn render_audit(report: &AuditReport) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "outcome: {}\n",
+        audit_outcome_name(report.outcome)
+    ));
+    output.push_str(&format!(
+        "spec: {} revision {}\n",
+        report.spec_version, report.spec_revision
+    ));
+    render_section(
+        &mut output,
+        "unrecognized classes",
+        report.unrecognized_classes.iter().map(|entry| {
+            format!(
+                "{} at {}:{}",
+                entry.candidate,
+                entry.origin.source_id.as_deref().unwrap_or("?"),
+                entry.origin.byte_offset.unwrap_or_default()
+            )
+        }),
+    );
+    render_section(
+        &mut output,
+        "conflicts",
+        report.conflicts.iter().map(|conflict| {
+            format!(
+                "{} / {} overlap [{}] at {}:{}",
+                conflict.first_candidate,
+                conflict.second_candidate,
+                conflict.overlapping_properties.join(", "),
+                conflict.origin.source_id.as_deref().unwrap_or("?"),
+                conflict.origin.literal_byte_offset.unwrap_or_default()
+            )
+        }),
+    );
+    render_section(
+        &mut output,
+        "dead classes",
+        report.dead_classes.iter().map(|dead| {
+            let location = dead
+                .diagnostic
+                .origin
+                .as_ref()
+                .and_then(|origin| origin.source_id.as_deref().zip(origin.byte_offset))
+                .map(|(source, offset)| format!(" at {source}:{offset}"))
+                .unwrap_or_default();
+            format!("{} [{}]{}", dead.candidate, dead.diagnostic.code, location)
+        }),
+    );
+    render_section(
+        &mut output,
+        "dynamic constructions",
+        report.dynamic_constructions.iter().map(|dynamic| {
+            format!(
+                "{} at {}:{}",
+                dynamic.text, dynamic.source_id, dynamic.byte_offset
+            )
+        }),
+    );
+    render_section(
+        &mut output,
+        "tokens adjacent to interpolation",
+        report.adjacent_interpolations.iter().map(|item| {
+            format!(
+                "{} at {}:{}",
+                item.candidate,
+                item.origin.source_id.as_deref().unwrap_or("?"),
+                item.origin.byte_offset.unwrap_or_default()
+            )
+        }),
+    );
+    render_section(
+        &mut output,
+        "diagnostics",
+        report.diagnostics.iter().map(|diagnostic| {
+            let location = diagnostic
+                .origin
+                .as_ref()
+                .and_then(|origin| origin.source_id.as_deref().zip(origin.byte_offset))
+                .map(|(source, offset)| format!(" at {source}:{offset}"))
+                .unwrap_or_default();
+            format!(
+                "{} {}{}: {}",
+                diagnostic.code, diagnostic.severity, location, diagnostic.message
+            )
+        }),
+    );
+    render_section(
+        &mut output,
+        "extraction notes",
+        report.extraction_notes.iter().map(|note| {
+            format!(
+                "{} at {}:{}: {}",
+                note.kind, note.source_id, note.byte_offset, note.text
+            )
+        }),
+    );
+    output
+}
+
+pub fn audit_json(report: &AuditReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(report)
+}
+
+fn empty_report(outcome: AuditOutcome, spec_version: u32) -> AuditReport {
+    AuditReport {
+        outcome,
+        spec_version,
+        spec_revision: SPEC_REVISION,
+        diagnostics: Vec::new(),
+        unrecognized_classes: Vec::new(),
+        conflicts: Vec::new(),
+        dead_classes: Vec::new(),
+        dynamic_constructions: Vec::new(),
+        adjacent_interpolations: Vec::new(),
+        extraction_notes: Vec::new(),
+    }
+}
+
+fn append_notes(source: &AuditSource, report: &mut AuditReport) {
+    for note in &source.extraction.notes {
+        let note_kind = note_kind_name(&note.kind);
+        report.extraction_notes.push(AuditNote {
+            source_id: source.source_id.clone(),
+            byte_offset: note.byte_offset,
+            kind: note_kind.to_owned(),
+            text: note.text.clone(),
+        });
+        if note.kind == NoteKind::DynamicConstruction {
+            report.dynamic_constructions.push(DynamicConstruction {
+                source_id: source.source_id.clone(),
+                byte_offset: note.byte_offset,
+                text: note.text.clone(),
+            });
+        }
+        let diagnostic = match &note.kind {
+            NoteKind::DynamicConstruction => Some((
+                "auditInfo",
+                "ZW012",
+                None,
+                "dynamic class construction cannot be confirmed by static analysis",
+            )),
+            NoteKind::MalformedClassCandidate => Some((
+                "auditInfo",
+                "ZW001",
+                Some(note.text.clone()),
+                "malformed candidate was retained by extraction",
+            )),
+            NoteKind::InvalidUtf8 => Some((
+                "warning",
+                "ZW011",
+                None,
+                "source is not UTF-8 and was skipped by extraction",
+            )),
+            NoteKind::UnterminatedLiteral => None,
+        };
+        if let Some((severity, code, candidate, message)) = diagnostic {
+            report.diagnostics.push(DiagnosticView {
+                severity: severity.to_owned(),
+                code: code.to_owned(),
+                candidate,
+                origin: Some(note_origin_view(&source.source_id, note)),
+                message: message.to_owned(),
+                suggestion: None,
+                rejection_id: None,
+            });
+        }
+    }
+}
+
+fn note_origin_view(source_id: &str, note: &crate::ExtractionNote) -> OriginView {
+    OriginView {
+        kind: "source".to_owned(),
+        source_id: Some(source_id.to_owned()),
+        byte_offset: Some(note.byte_offset),
+        ..OriginView::default()
+    }
+}
+
+fn source_origin(source_id: &str, occurrence: &crate::Occurrence) -> Origin {
+    Origin::Source {
+        source_id: source_id.to_owned(),
+        byte_offset: occurrence.byte_offset,
+        byte_length: occurrence.byte_length,
+        line: occurrence.line,
+        byte_column: occurrence.byte_column,
+        literal_byte_offset: occurrence.literal_byte_offset,
+        literal_byte_length: occurrence.literal_byte_length,
+        position_kind: match occurrence.position_kind {
+            PositionKind::Class => SourcePositionKind::Class,
+            PositionKind::Literal => SourcePositionKind::Literal,
+        },
+    }
+}
+
+fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
+    let mut literals: BTreeMap<(String, usize, usize), Vec<RuleOccurrence<'_>>> = BTreeMap::new();
+    for rule in rules {
+        let Some(resolved) = &rule.resolved else {
+            continue;
+        };
+        let Some(sort_key) = &rule.sort_key else {
+            continue;
+        };
+        let properties = resolved
+            .declarations
+            .iter()
+            .flat_map(|declaration| effective_write_set(&declaration.property))
+            .collect::<BTreeSet<_>>();
+        for origin in &rule.origins {
+            let Origin::Source {
+                source_id,
+                literal_byte_offset,
+                literal_byte_length,
+                position_kind: SourcePositionKind::Class,
+                ..
+            } = origin
+            else {
+                continue;
+            };
+            literals
+                .entry((
+                    source_id.clone(),
+                    *literal_byte_offset,
+                    *literal_byte_length,
+                ))
+                .or_default()
+                .push(RuleOccurrence {
+                    rule,
+                    origin,
+                    properties: properties.clone(),
+                    sort_key,
+                });
+        }
+    }
+
+    let mut conflicts = Vec::new();
+    for occurrences in literals.values_mut() {
+        occurrences.sort_by(|left, right| {
+            left.sort_key
+                .cmp(right.sort_key)
+                .then(left.rule.candidate.cmp(&right.rule.candidate))
+                .then_with(|| origin_position(left.origin).cmp(&origin_position(right.origin)))
+        });
+        for left_index in 0..occurrences.len() {
+            for right_index in (left_index + 1)..occurrences.len() {
+                let left = &occurrences[left_index];
+                let right = &occurrences[right_index];
+                if left.rule.candidate == right.rule.candidate
+                    || left.rule.parsed.variants != right.rule.parsed.variants
+                {
+                    continue;
+                }
+                let overlapping_properties = left
+                    .properties
+                    .intersection(&right.properties)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if overlapping_properties.is_empty() {
+                    continue;
+                }
+                let (first, second, emitted_order) = if left.rule.candidate <= right.rule.candidate
+                {
+                    (
+                        left,
+                        right,
+                        vec![left.rule.candidate.clone(), right.rule.candidate.clone()],
+                    )
+                } else {
+                    (
+                        right,
+                        left,
+                        vec![left.rule.candidate.clone(), right.rule.candidate.clone()],
+                    )
+                };
+                let Some(first_resolved) = &first.rule.resolved else {
+                    continue;
+                };
+                let Some(second_resolved) = &second.rule.resolved else {
+                    continue;
+                };
+                conflicts.push(AuditConflict {
+                    origin: origin_view(first.origin),
+                    first_candidate: first.rule.candidate.clone(),
+                    second_candidate: second.rule.candidate.clone(),
+                    first_group: first_resolved.conflict_group.to_owned(),
+                    second_group: second_resolved.conflict_group.to_owned(),
+                    overlapping_properties,
+                    emitted_order,
+                });
+            }
+        }
+    }
+    conflicts
+}
+
+struct RuleOccurrence<'a> {
+    rule: &'a RuleMetadata,
+    origin: &'a Origin,
+    properties: BTreeSet<String>,
+    sort_key: &'a SortKey,
+}
+
+fn origin_position(origin: &Origin) -> (usize, usize) {
+    match origin {
+        Origin::Source {
+            byte_offset,
+            byte_length,
+            ..
+        } => (*byte_offset, *byte_length),
+        _ => (0, 0),
+    }
+}
+
+fn recognized_utility_shape(candidate: &str) -> bool {
+    let Ok(split) = structural_split(candidate) else {
+        return false;
+    };
+    let utility = split.slash.map_or(split.utility, |(before, _)| before);
+    let utility_name = utility.strip_prefix('-').unwrap_or(utility);
+    if ["ring", "animate", "scale", "transform"]
+        .iter()
+        .any(|root| utility_name == *root || utility_name.starts_with(&format!("{root}-")))
+    {
+        return true;
+    }
+    Catalog::v1().entries().iter().any(|entry| {
+        utility_name == entry.root || utility_name.starts_with(&format!("{}-", entry.root))
+    })
+}
+
+fn effective_write_set(property: &str) -> Vec<String> {
+    let longhands: &[&str] = match property {
+        "padding" => &[
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+        ],
+        "margin" => &["margin-top", "margin-right", "margin-bottom", "margin-left"],
+        "inset" => &["top", "right", "bottom", "left"],
+        "gap" => &["row-gap", "column-gap"],
+        "overflow" => &["overflow-x", "overflow-y"],
+        "overscroll-behavior" => &["overscroll-behavior-x", "overscroll-behavior-y"],
+        "border-width" => &[
+            "border-top-width",
+            "border-right-width",
+            "border-bottom-width",
+            "border-left-width",
+        ],
+        "border-style" => &[
+            "border-top-style",
+            "border-right-style",
+            "border-bottom-style",
+            "border-left-style",
+        ],
+        "border-color" => &[
+            "border-top-color",
+            "border-right-color",
+            "border-bottom-color",
+            "border-left-color",
+        ],
+        "border" => &[
+            "border-top-width",
+            "border-right-width",
+            "border-bottom-width",
+            "border-left-width",
+            "border-top-style",
+            "border-right-style",
+            "border-bottom-style",
+            "border-left-style",
+            "border-top-color",
+            "border-right-color",
+            "border-bottom-color",
+            "border-left-color",
+        ],
+        "border-radius" => &[
+            "border-top-left-radius",
+            "border-top-right-radius",
+            "border-bottom-right-radius",
+            "border-bottom-left-radius",
+        ],
+        "flex" => &["flex-grow", "flex-shrink", "flex-basis"],
+        "place-items" => &["align-items", "justify-items"],
+        _ => return vec![property.to_owned()],
+    };
+    longhands
+        .iter()
+        .map(|property| (*property).to_owned())
+        .collect()
+}
+
+fn sort_report_inputs(report: &mut AuditReport) {
+    report.dynamic_constructions.sort_by(|a, b| {
+        a.source_id
+            .cmp(&b.source_id)
+            .then(a.byte_offset.cmp(&b.byte_offset))
+            .then(a.text.cmp(&b.text))
+    });
+    report.adjacent_interpolations.sort_by(|a, b| {
+        a.origin
+            .source_id
+            .cmp(&b.origin.source_id)
+            .then(a.origin.byte_offset.cmp(&b.origin.byte_offset))
+            .then(a.candidate.cmp(&b.candidate))
+    });
+    report.extraction_notes.sort_by(|a, b| {
+        a.source_id
+            .cmp(&b.source_id)
+            .then(a.byte_offset.cmp(&b.byte_offset))
+            .then(a.kind.cmp(&b.kind))
+            .then(a.text.cmp(&b.text))
+    });
+}
+
+fn sort_report_results(report: &mut AuditReport) {
+    report.unrecognized_classes.sort_by(|a, b| {
+        a.origin
+            .source_id
+            .cmp(&b.origin.source_id)
+            .then(a.origin.byte_offset.cmp(&b.origin.byte_offset))
+            .then(a.candidate.cmp(&b.candidate))
+    });
+    report.dead_classes.sort_by(|a, b| {
+        let a_origin = a.diagnostic.origin.as_ref();
+        let b_origin = b.diagnostic.origin.as_ref();
+        a_origin
+            .and_then(|origin| origin.source_id.as_ref())
+            .cmp(&b_origin.and_then(|origin| origin.source_id.as_ref()))
+            .then(
+                a_origin
+                    .and_then(|origin| origin.byte_offset)
+                    .cmp(&b_origin.and_then(|origin| origin.byte_offset)),
+            )
+            .then(a.diagnostic.code.cmp(&b.diagnostic.code))
+            .then(a.candidate.cmp(&b.candidate))
+    });
+    report.conflicts.sort_by(|a, b| {
+        a.origin
+            .source_id
+            .cmp(&b.origin.source_id)
+            .then(
+                a.origin
+                    .literal_byte_offset
+                    .cmp(&b.origin.literal_byte_offset),
+            )
+            .then(a.first_candidate.cmp(&b.first_candidate))
+            .then(a.second_candidate.cmp(&b.second_candidate))
+            .then(a.overlapping_properties.cmp(&b.overlapping_properties))
+    });
+    report.diagnostics.sort_by(|a, b| {
+        diagnostic_origin_order(a.origin.as_ref())
+            .cmp(&diagnostic_origin_order(b.origin.as_ref()))
+            .then(a.code.cmp(&b.code))
+            .then(a.candidate.cmp(&b.candidate))
+            .then(a.message.cmp(&b.message))
+    });
+    report.diagnostics.dedup_by(|left, right| {
+        left.code == right.code
+            && left.candidate == right.candidate
+            && diagnostic_origin_order(left.origin.as_ref())
+                == diagnostic_origin_order(right.origin.as_ref())
+    });
+    report.unrecognized_classes.dedup();
+    report.dead_classes.dedup();
+    report.conflicts.dedup();
+}
+
+fn diagnostic_origin_order(origin: Option<&OriginView>) -> (String, usize, String, String, usize) {
+    let Some(origin) = origin else {
+        return (String::new(), 0, "none".to_owned(), String::new(), 0);
+    };
+    match origin.kind.as_str() {
+        "source" => (
+            origin.source_id.clone().unwrap_or_default(),
+            origin.byte_offset.unwrap_or_default(),
+            origin.kind.clone(),
+            String::new(),
+            0,
+        ),
+        "safelist" => (
+            origin.owner.clone().unwrap_or_default(),
+            origin.index.unwrap_or_default(),
+            origin.kind.clone(),
+            String::new(),
+            0,
+        ),
+        "manifest" => (
+            origin.producer.clone().unwrap_or_default(),
+            origin.index.unwrap_or_default(),
+            origin.kind.clone(),
+            origin.path.clone().unwrap_or_default(),
+            0,
+        ),
+        "config" => (
+            origin.key_path.clone().unwrap_or_default(),
+            0,
+            origin.kind.clone(),
+            String::new(),
+            0,
+        ),
+        "roleClass" => (
+            origin.role_key.clone().unwrap_or_default(),
+            0,
+            origin.kind.clone(),
+            String::new(),
+            0,
+        ),
+        "stylesheet" => (
+            origin.path.clone().unwrap_or_default(),
+            origin.byte_offset.unwrap_or_default(),
+            origin.kind.clone(),
+            String::new(),
+            0,
+        ),
+        _ => (String::new(), 0, origin.kind.clone(), String::new(), 0),
+    }
+}
+
+fn render_section(output: &mut String, title: &str, items: impl Iterator<Item = String>) {
+    output.push_str(&format!("{title}:\n"));
+    let mut any = false;
+    for item in items {
+        any = true;
+        output.push_str(&format!("  - {item}\n"));
+    }
+    if !any {
+        output.push_str("  (none)\n");
+    }
+}
+
+fn note_kind_name(kind: &NoteKind) -> &'static str {
+    match kind {
+        NoteKind::DynamicConstruction => "dynamicConstruction",
+        NoteKind::MalformedClassCandidate => "malformedClassCandidate",
+        NoteKind::InvalidUtf8 => "invalidUtf8",
+        NoteKind::UnterminatedLiteral => "unterminatedLiteral",
+    }
+}
+
+fn audit_outcome_name(outcome: AuditOutcome) -> &'static str {
+    match outcome {
+        AuditOutcome::Complete => "complete",
+        AuditOutcome::InvalidConfiguration => "invalid configuration",
+        AuditOutcome::GenerationDisabled => "generation disabled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{extract_candidates, SourceKind, TokenConfig};
+
+    use super::*;
+
+    #[test]
+    fn audit_reports_unknown_allowlisted_marker_conflict_dead_dynamic_and_ignores_low_confidence() {
+        let classes = extract_candidates(
+            br#"<div class="made-up prose group p-4 px-2 p-missing"></div>"#,
+            SourceKind::Html,
+        );
+        let dynamic = extract_candidates(b"const name = `bg-${color}`;", SourceKind::Ts);
+        let low_confidence =
+            extract_candidates(br#"import value from "made-up-module";"#, SourceKind::Ts);
+        let input = AuditInput::new(vec![
+            AuditSource::new("src/page.html", classes),
+            AuditSource::new("src/page.ts", dynamic),
+            AuditSource::new("src/entry.ts", low_confidence),
+        ]);
+        let config = WindConfig {
+            tokens: TokenConfig {
+                spacing_unit: Some("0.25rem".to_owned()),
+                ..TokenConfig::default()
+            },
+            authored_classes: BTreeMap::from([("prose".to_owned(), true)]),
+            ..WindConfig::default()
+        };
+
+        let report = audit(&input, &config);
+        assert_eq!(report.outcome, AuditOutcome::Complete);
+        assert_eq!(
+            report
+                .unrecognized_classes
+                .iter()
+                .map(|class| class.candidate.as_str())
+                .collect::<Vec<_>>(),
+            ["made-up"]
+        );
+        assert!(report
+            .unrecognized_classes
+            .iter()
+            .all(|class| class.candidate != "prose" && class.candidate != "group"));
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(
+            report.conflicts[0].overlapping_properties,
+            ["padding-left", "padding-right"]
+        );
+        assert_eq!(report.dead_classes.len(), 1);
+        assert_eq!(report.dead_classes[0].candidate, "p-missing");
+        assert_eq!(report.dynamic_constructions.len(), 1);
+        assert_eq!(report.dynamic_constructions[0].text, "bg-");
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "ZW012" && diagnostic.severity == "auditInfo"
+        }));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "ZW013" && diagnostic.severity == "auditInfo"
+        }));
+        assert!(!report
+            .unrecognized_classes
+            .iter()
+            .any(|class| class.candidate == "made-up-module"));
+    }
+
+    #[test]
+    fn audit_order_is_independent_of_source_arrival_and_disabled_is_explicit() {
+        let first = AuditSource::new(
+            "a.tsx",
+            extract_candidates(br#"<div class="site-header"></div>"#, SourceKind::Tsx),
+        );
+        let second = AuditSource::new(
+            "b.html",
+            extract_candidates(br#"<p class="other"></p>"#, SourceKind::Html),
+        );
+        let one = audit(
+            &AuditInput::new(vec![first.clone(), second.clone()]),
+            &WindConfig::default(),
+        );
+        let two = audit(
+            &AuditInput::new(vec![second, first]),
+            &WindConfig::default(),
+        );
+        assert_eq!(one, two);
+        assert_eq!(render_audit(&one), render_audit(&two));
+        assert_eq!(audit_json(&one).unwrap(), audit_json(&two).unwrap());
+        let disabled = audit(
+            &AuditInput {
+                sources: Vec::new(),
+                generation_enabled: false,
+            },
+            &WindConfig::default(),
+        );
+        assert_eq!(disabled.outcome, AuditOutcome::GenerationDisabled);
+        assert!(disabled.unrecognized_classes.is_empty());
+    }
+
+    #[test]
+    fn audit_expands_shorthand_writes_across_groups_and_keeps_interpolation_notes() {
+        let classes = extract_candidates(br#"<div class="sr-only p-4"></div>"#, SourceKind::Html);
+        let interpolation = extract_candidates(
+            b"const name = `last:border-b-0${suffix}`; const other = `bg-${color}`;",
+            SourceKind::Ts,
+        );
+        let report = audit(
+            &AuditInput::new(vec![
+                AuditSource::new("src/page.html", classes),
+                AuditSource::new("src/page.ts", interpolation),
+            ]),
+            &WindConfig {
+                tokens: TokenConfig {
+                    spacing_unit: Some("0.25rem".to_owned()),
+                    ..TokenConfig::default()
+                },
+                ..WindConfig::default()
+            },
+        );
+        assert!(report.conflicts.iter().any(|conflict| {
+            conflict.first_group != conflict.second_group
+                && conflict
+                    .overlapping_properties
+                    .contains(&"padding-left".to_owned())
+        }));
+        assert!(report
+            .adjacent_interpolations
+            .iter()
+            .any(|item| item.candidate == "last:border-b-0"));
+        assert!(report
+            .dynamic_constructions
+            .iter()
+            .any(|item| item.text == "bg-"));
+    }
+
+    #[test]
+    fn an_unconfigured_breakpoint_on_a_known_utility_is_a_dead_class() {
+        let source = extract_candidates(br#"<div class="sm:block"></div>"#, SourceKind::Html);
+        let report = audit(
+            &AuditInput::single("src/page.html", source),
+            &WindConfig::default(),
+        );
+        assert_eq!(report.dead_classes.len(), 1);
+        assert_eq!(report.dead_classes[0].candidate, "sm:block");
+        assert_eq!(report.dead_classes[0].diagnostic.code, "ZW002");
+    }
+}

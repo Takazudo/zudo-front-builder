@@ -8,6 +8,8 @@ description = "Owned utility CSS language parser and engine"
 [dependencies]
 lightningcss = { workspace = true }
 ignore = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

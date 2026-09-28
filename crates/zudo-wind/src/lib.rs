@@ -1,5 +1,6 @@
 //! Core syntax and data model for the versioned zudo-wind language.
 
+mod audit;
 mod breakpoints;
 mod candidate;
 pub mod catalog;
@@ -9,6 +10,7 @@ mod decimal;
 mod diagnostic;
 mod emit;
 mod escape;
+mod explain;
 mod index;
 mod layers;
 mod order;
@@ -22,6 +24,11 @@ mod value_check;
 mod variant;
 mod walk;
 
+pub use audit::{
+    audit, audit_json, render_audit, AuditConflict, AuditInput, AuditNote, AuditOutcome,
+    AuditReport, AuditSource, DeadClass, DynamicConstruction, InterpolatedCandidate,
+    UnrecognizedClass,
+};
 pub use breakpoints::{BreakpointConfig, RankedBreakpoint, ValidatedBreakpoints};
 pub use candidate::{parse_candidate, Candidate, UtilityPart};
 pub use catalog::{
@@ -36,6 +43,11 @@ pub use config::{DarkModeConfig, ResetMode, ValidatedWindConfig, WindConfig};
 pub use decimal::{Decimal, DecimalDimension, DecimalError};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Origin, Severity, SourcePositionKind};
 pub use escape::escape_class_name;
+pub use explain::{
+    explain, explain_disabled, explain_with_generation, explanation_json, render_explanation,
+    DeclarationView, DiagnosticView, Explanation, ExplanationOutcome, OriginView, ParsedCandidate,
+    SortTuple, TokenResolution,
+};
 pub use index::CandidateIndex;
 pub use layers::LAYER_ORDER;
 pub use order::SortKey;

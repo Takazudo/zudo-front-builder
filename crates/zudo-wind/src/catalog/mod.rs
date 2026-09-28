@@ -1,6 +1,7 @@
 //! Versioned, deterministic utility vocabulary.
 
 mod arbitrary;
+pub mod export;
 mod families;
 mod resolve;
 

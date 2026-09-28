@@ -6328,5 +6328,7 @@ version = "0.0.0"
 dependencies = [
  "ignore",
  "lightningcss",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
