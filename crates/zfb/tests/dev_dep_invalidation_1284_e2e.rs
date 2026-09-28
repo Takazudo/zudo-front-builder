@@ -195,11 +195,10 @@ fn provision_framework_node_modules(root: &Path) {
         ws.join("packages/zfb-runtime"),
         nm.join("@takazudo").join("zfb-runtime"),
     );
-    for pkg in ["hono"] {
-        let src = pnpm_store_pkg(&ws, pkg)
-            .unwrap_or_else(|| panic!("pnpm store missing {pkg}; run `pnpm install`"));
-        link(src, nm.join(pkg));
-    }
+    let pkg = "hono";
+    let src = pnpm_store_pkg(&ws, pkg)
+        .unwrap_or_else(|| panic!("pnpm store missing {pkg}; run `pnpm install`"));
+    link(src, nm.join(pkg));
 }
 
 struct DevServerGuard {
