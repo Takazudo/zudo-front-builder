@@ -1,0 +1,29 @@
+{
+  "framework": "preact",
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "tokens": {
+      "colors": {
+        "shared": "#123456",
+        "first-only": "#234567",
+        "second-only": "#345678",
+        "safelist": "#456789",
+        "safe-source-only": "#56789a",
+        "manifest-v1": "#6789ab",
+        "manifest-v2": "#789abc",
+        "deleted": "#89abcd",
+        "renamed": "#9abcde",
+        "added": "#abcdef"
+      }
+    },
+    "safelist": {
+      "wind-ownership-fixture": ["bg-safelist"]
+    },
+    "manifests": {
+      "wind-ownership-fixture": {
+        "path": "@fixture/wind-ownership/wind.json"
+      }
+    }
+  }
+}
