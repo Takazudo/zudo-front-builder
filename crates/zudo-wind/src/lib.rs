@@ -2,6 +2,7 @@
 
 mod breakpoints;
 mod candidate;
+pub mod catalog;
 mod compile;
 mod config;
 mod decimal;
@@ -14,6 +15,10 @@ mod variant;
 
 pub use breakpoints::{BreakpointConfig, RankedBreakpoint, ValidatedBreakpoints};
 pub use candidate::{parse_candidate, Candidate, UtilityPart};
+pub use catalog::{
+    Catalog, CatalogEntry, CatalogError, Declaration, Example, Resolution, ResolvedRule,
+    SelectorShape, ValueGrammar, ValueKind,
+};
 pub use compile::{CompileInput, CompileResult, OriginCandidate};
 pub use config::{DarkModeConfig, ResetMode, ValidatedWindConfig, WindConfig};
 pub use decimal::{Decimal, DecimalDimension, DecimalError};
