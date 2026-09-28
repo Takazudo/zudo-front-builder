@@ -6,6 +6,7 @@ import type { ReadonlySignal } from "./reactive-types.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
 import { serializeProps } from "./props-transport.js";
 import { islandRootType, type IslandOptions, type RenderOptions } from "./server.js";
+import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 
 const words = (value: string) => new Set(value.split(" "));
 const voidTags = words("area base br col embed hr img input link meta param source track wbr");
@@ -438,6 +439,74 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     return island(value, context, namespace, parent);
   if (value.type === Fragment)
     return region(context, "f", () => children(value.props.children, context, namespace, parent));
+  if (value.type === Show) {
+    if (
+      parent in tableChildren ||
+      ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)
+    )
+      fail("ZR_PARSER_CONTEXT", context, parent);
+    const props = showProps(value);
+    if (
+      !reactive(props.when) ||
+      typeof props.children !== "function" ||
+      (props.fallback !== undefined && typeof props.fallback !== "function")
+    )
+      fail("ZR_CHILD", context, "Show requires signal and factories");
+    const selected = read(props.when);
+    if (typeof selected !== "boolean") fail("ZR_CHILD", context, "Show.when requires boolean");
+    return region(context, `s:${selected ? 1 : 0}`, () => {
+      const factory = selected ? props.children : props.fallback;
+      if (!factory) return "";
+      const scope = context.scope.child("Show");
+      const previous = context.scope;
+      context.scope = scope;
+      try {
+        return withScope(scope, () => render(factory(), context, namespace, parent));
+      } finally {
+        context.scope = previous;
+      }
+    });
+  }
+  if (value.type === For) {
+    if (
+      parent in tableChildren ||
+      ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)
+    )
+      fail("ZR_PARSER_CONTEXT", context, parent);
+    const props = forProps<unknown>(value);
+    if (
+      !reactive(props.each) ||
+      typeof props.by !== "function" ||
+      typeof props.children !== "function"
+    )
+      fail("ZR_CHILD", context, "For requires signal, key and factory");
+    const items = read(props.each);
+    if (!Array.isArray(items)) fail("ZR_CHILD", context, "For.each requires array");
+    const keys = keyed(items, props.by, context.path);
+    return region(context, "l", () =>
+      items
+        .map((item, index) => {
+          const scope = context.scope.child("For");
+          const previous = context.scope;
+          context.scope = scope;
+          try {
+            return region(context, `i:${keyPayload(keys[index]!)}`, () =>
+              withScope(scope, () =>
+                render(
+                  props.children(view(item).value, view(index).value),
+                  context,
+                  namespace,
+                  parent,
+                ),
+              ),
+            );
+          } finally {
+            context.scope = previous;
+          }
+        })
+        .join(""),
+    );
+  }
   if (typeof value.type === "string") return element(value, context, namespace, parent);
   const component = value.type;
   const scope = context.scope.child(component.name || "Anonymous");
