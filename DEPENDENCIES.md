@@ -2620,7 +2620,7 @@ manager compares it against the merged-base health run.
 
 The guarded package-route controls passed 6/6:
 `user_page_bare_import_is_staged_from_package_route_overlay`,
-`workspace_package_routes_and_virtual_host_hooks_share_staged_preact_identity`,
+`workspace_package_routes_and_virtual_host_signals_share_staged_identity`,
 `user_page_relative_import_resolves_with_package_route_present`,
 `nested_package_route_imports_correct_module`,
 `package_route_with_relative_import_bundles`, and
@@ -3046,8 +3046,8 @@ workspace package importers.
 | `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
 | `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
-| `packages/zfb/package.json` | Publishable SDK with five optional platform packages, React peer, and build/test type tooling. | Clean: optional carriers and peer/dev fixtures are part of the package contract. |
-| `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, zfb/React peers, and dev fixtures. | Clean: Hono is the runtime router; peer and dev declarations support the published API/tests. |
+| `packages/zfb/package.json` | Publishable SDK with five optional platform packages and build/test type tooling. | Clean: optional carriers and dev fixtures are part of the package contract; the owned runtime has no external framework peer. |
+| `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, the `@takazudo/zfb` peer, and dev fixtures. | Clean: Hono is the router dependency; the zfb peer keeps shared content-snapshot state single-instanced. |
 | `packages/zfb-adapter-cloudflare/package.json` | Publishable adapter with no runtime `dependencies`; Node types, TypeScript, and Vitest are dev-only. | Clean: shipped CLI uses Node built-ins and the project-local worker wrapper. |
 | `packages/zfb-darwin-arm64/package.json` | Publishable native carrier; no dependencies. | Clean: package ships the platform binary and metadata only. |
 | `packages/zfb-darwin-x64/package.json` | Publishable native carrier; no dependencies. | Clean: package ships the platform binary and metadata only. |

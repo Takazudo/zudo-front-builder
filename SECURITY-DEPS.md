@@ -41,11 +41,11 @@ license metadata. They do not declare `dependencies`.
 
 - `optionalDependencies` on the five first-party platform binary packages, so package managers
   install the matching native `zfb` executable when available;
-- an optional `react` peer, used only by consumers that opt into React-facing APIs;
-- `devDependencies` for local build/test/typecheck fixtures, including TypeScript, Vitest,
-  `happy-dom`, `preact`, `react`, and type packages.
+- `devDependencies` for local build/test/typecheck tooling, including `@types/node`,
+  TypeScript, Vitest, and `happy-dom`.
 
-Those fields are intentionally separate from third-party production `dependencies`.
+The SDK has no third-party production dependency or external framework peer. These
+fields are intentionally separate from third-party production `dependencies`.
 
 ### `@takazudo/zfb-runtime`
 

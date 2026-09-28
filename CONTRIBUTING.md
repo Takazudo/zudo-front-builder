@@ -18,7 +18,7 @@ pnpm install --frozen-lockfile
 cargo build --workspace
 ```
 
-This is executable as written and is the supported first build. It also runs `crates/zfb/build.rs`, which downloads, SHA-256-verifies, and stages the pinned host-platform `esbuild` and `tailwindcss` binaries. After this, incremental rebuilds and test runs are fast.
+This is executable as written and is the supported first build. It also runs `crates/zfb/build.rs`, which downloads, SHA-256-verifies, and stages the pinned host-platform esbuild binary. CSS utility generation is provided by zudo-wind in the Rust workspace. After this, incremental rebuilds and test runs are fast.
 
 If you want to compile test harnesses during the warm-up build, use Cargo's all-targets mode:
 
@@ -119,16 +119,17 @@ The Cloudflare Workers deploy workflows expect the following GitHub Actions secr
 
 ## External tool version pins
 
-zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Workers preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
+zfb shells out to esbuild for the islands bundler and uses wrangler/workerd for Cloudflare Workers preview. These external tools are **exact-pinned** so the same source tree produces reproducible output regardless of when or where it is built. CSS utility generation runs in-process through zudo-wind; it does not download or stage a separate CLI binary.
 
 The pin sources are:
 
 | Tool        | Version source                                                                                  | Checksum / lock source                                                                                                      | Package-side pin                                      |
 | ----------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | esbuild     | `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `EXPECTED_ESBUILD_SHA256` 5-platform `cfg` block in `crates/zfb-islands/src/esbuild.rs`; matching `ESBUILD_SHA256_*` constants in `crates/zfb/build.rs` | No root `package.json` pin; `build.rs` downloads the matching `@esbuild/<platform>` tarball |
-| tailwindcss | `TAILWIND_VERSION` in `crates/zfb/build.rs`; mirrored by `TAILWIND_VERSION` in `scripts/fetch-tailwind.mjs` | `TAILWIND_SHA256_*` constants in `crates/zfb/build.rs`                                                                       | No root `package.json` pin; `build.rs` downloads the standalone GitHub release asset |
 | wrangler    | `EXPECTED_WRANGLER_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                           | `pnpm-lock.yaml`                                                                                                            | Exact `wrangler` devDependency in root `package.json` |
 | workerd     | `EXPECTED_WORKERD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `pnpm-lock.yaml` transitive dependency from wrangler                                                                         | Transitive only                                       |
+
+Hono is a runtime package rather than a build tool: `packages/zfb-runtime/package.json` declares it, `pnpm-lock.yaml` resolves it, and `crates/zfb/build.rs` embeds its published tree for consumers without `node_modules`.
 
 ### Bumping wrangler / workerd
 
@@ -156,17 +157,6 @@ esbuild is shipped as a Go-built standalone CLI binary. The binary is **not** co
 7. Run `cargo test -p zfb-islands` — the unit tests use the mock-subprocess code path and do not require the real binary.
 
 The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
-
-### Bumping Tailwind
-
-Tailwind v4 is shipped as the upstream standalone CLI binary. The binary is **not** committed to this repo; `crates/zfb/build.rs` downloads the platform-specific GitHub release asset during Cargo builds, verifies it, and stages it as `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows). To bump:
-
-1. Pick the new Tailwind v4 version from <https://github.com/tailwindlabs/tailwindcss/releases>.
-2. Edit `TAILWIND_VERSION` in `crates/zfb/build.rs`.
-3. Edit the mirrored `TAILWIND_VERSION` in `scripts/fetch-tailwind.mjs` so the optional Tailwind-only prefetch helper stays aligned.
-4. Update the `TAILWIND_SHA256_LINUX_X64`, `TAILWIND_SHA256_LINUX_ARM64`, `TAILWIND_SHA256_MACOS_ARM64`, `TAILWIND_SHA256_MACOS_X64`, and `TAILWIND_SHA256_WIN_X64` constants in `crates/zfb/build.rs` from the release's `sha256sums.txt`.
-5. Update any Tailwind version tables in `crates/zfb-css/README.md`.
-6. Run `cargo build --workspace --all-targets` so the host-platform binary is downloaded, SHA-256-verified, and staged by `build.rs`.
 
 ## Supply chain
 

@@ -15,27 +15,18 @@ The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `M
 `lib.rs` re-exports the items callers need:
 
 - **Core** — `RenderError`, `Result`
-- **SWC pipeline** — `SwcPipeline`, `CompileOptions`, `CompiledModule`, `JsxRuntime`
+- **SWC pipeline** — `SwcPipeline`, `CompileOptions`, `CompiledModule`
 - **Loader** — `read_to_string`, `ResolverError`
 - **Render orchestrator** — `Renderer<H>`, `RenderRequest`
 - **Runtime host trait** — `RenderHost`, `ModuleHandle`
 - **Embedded V8 host** (`embed_v8` feature, default-on) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
 - **Config evaluator** (`embed_v8` feature) — `ThreadedConfigEvaluator`, `ConfigEvalError`
 
-Additional public modules: [`adapters`](src/adapters/) (Preact / React JSX runtime adapters), [`paths`](src/paths.rs) (`paths()` runtime resolver), [`paths_extract`](src/paths_extract.rs) (static literal extractor), [`sourcemap`](src/sourcemap.rs) (V8 frame → original TSX line re-projection).
+Additional public modules: [`paths`](src/paths.rs) (`paths()` runtime resolver), [`paths_extract`](src/paths_extract.rs) (static literal extractor), [`sourcemap`](src/sourcemap.rs) (V8 frame → original TSX line re-projection). SSR uses the owned `@takazudo/zfb/zudo-react` runtime.
 
-```rust,ignore
-use zfb_render::{
-    EmbeddedV8RenderHost, JsxRuntime, RenderRequest, Renderer,
-};
-
-// Host is created once per build; first-call cost is V8 snapshot warmup.
-let host = EmbeddedV8RenderHost::new()?;
-let mut renderer = Renderer::new(host, JsxRuntime::Preact);
-
-let req = RenderRequest::new("pages/index.tsx", tsx_source);
-let html: String = renderer.render(&req).await?;
-```
+The render host is created once per build, so the first call pays the V8
+snapshot warm-up cost. The zfb build pipeline supplies the owned runtime and
+routes page requests through its server renderer.
 
 ## Architecture
 
@@ -44,18 +35,18 @@ let html: String = renderer.render(&req).await?;
 `SwcPipeline::compile` takes a TSX source string and emits ES module JavaScript. The pass order is:
 
 1. `resolver` — scope analysis.
-2. `react` (automatic runtime) — JSX desugaring; `import_source` is `"preact"` or `"react"` depending on `JsxRuntime`.
+2. Automatic-runtime JSX transform — desugaring to the owned zudo-react entry points.
 3. `strip` — TypeScript type annotation removal.
 4. `hygiene` + `fixer` — hygiene and parenthesisation cleanup.
 
-`CompileOptions` carries `filename` (used in source maps and error messages), `jsx_runtime`, and `development` (off by default for SSR).
+`CompileOptions` carries `filename` (used in source maps and error messages) and `development` (off by default for SSR).
 
 ### Module loader (`loader`)
 
 `ModuleLoader` wraps `SwcPipeline` with a compile cache (keyed by specifier string), extension probing (`.tsx → .ts → .jsx → .js → index.<ext>`), and MDX routing:
 
 - Specifiers ending in `.mdx` or starting with `mdx://` are run through `zfb_content::mdx_jsx_emit::mdx_to_jsx_module_with_pipeline` first (mdast-phase + hast-phase plugins fire) and the resulting JSX is then fed to SWC.
-- Bare specifiers (`preact`, `react`, `zfb`) are treated as runtime-provided; the loader does not attempt to resolve them from disk.
+- The owned zudo-react entry points are supplied by the zfb runtime package; the loader does not resolve an external framework runtime from disk.
 
 `Renderer` exposes a family of constructors (`new`, `with_strip_md_ext`, `with_strip_md_ext_and_gfm`, …) that thread markdown configuration knobs through to the loader, keeping dev rendering and the bundler in agreement.
 
@@ -105,7 +96,7 @@ The original render path spawned an external Node.js process per page. The in-pr
 cargo test -p zfb-render
 ```
 
-- `src/swc_pipeline.rs` — unit tests for TS stripping, Preact JSX transform, React JSX transform.
+- `src/swc_pipeline.rs` — unit tests for TS stripping and the owned JSX transform.
 - `src/loader.rs` — unit tests for bare-specifier detection, MDX specifier detection, compile cache, `stripMdExt` href rewriting.
 - `tests/render_smoke.rs` — round-trip smoke test: compile a TSX page, render it, assert the HTML.
 - `tests/embedded_v8_smoke.rs` — V8 host lifecycle: module load, `call_default`, `get_export`, isolate drop on panic.

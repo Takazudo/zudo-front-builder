@@ -478,8 +478,8 @@ jobs:
           node-version: "22"
           cache: "pnpm"
 
-      # Install node_modules before cargo build so that build.rs (embed_framework_packages)
-      # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc.
+      # Install node_modules before cargo build so that build.rs can read
+      # Hono from node_modules/.pnpm/.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -490,7 +490,7 @@ jobs:
       # Install cross-rs for the linux-arm64 cross-compile target.
       # cross wraps `cargo build` inside a Docker container that provides the correct
       # aarch64-unknown-linux-gnu linker; the host workspace (including node_modules)
-      # is mounted as a volume so build.rs can embed framework packages.
+      # is mounted as a volume so build.rs can embed Hono.
       - name: Install cross (linux-arm64 only)
         if: ${{ matrix.settings.use_cross == true }}
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5

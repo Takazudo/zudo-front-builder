@@ -136,9 +136,8 @@ TypeScript wins over JSON when both files are present.
 | `host` | `host` | `None` | Dev/preview bind host; CLI flag takes precedence |
 | `port` | `port` | `None` | Dev/preview port; CLI flag takes precedence |
 | `allowed_hosts` | `allowedHosts` | `[]` | DNS-rebinding allowlist for non-loopback binds |
-| `framework` | `framework` | `Preact` | `Preact` or `React` |
 | `collections` | `collections` | `[]` | Content collection definitions |
-| `tailwind` | `tailwind` | enabled | `enabled: false` opts out of Tailwind |
+| `wind` | `wind` | enabled | zudo-wind utility CSS configuration; `false` disables utility generation |
 | `prefetch` | `prefetch` | `None` | `disabled: true` disables runtime prefetch wiring |
 | `minify_html` | `minifyHtml` | `false` | Can be overridden per build by CLI flags |
 | `bundle` | `bundle` | `None` | `exclude` globs for files kept out of the esbuild graph |
@@ -188,9 +187,9 @@ use zfb::{
     },
     commands,
     config::{
-        BundleConfig, CodeHighlightConfig, CollectionDef, Config, Framework,
+        BundleConfig, CodeHighlightConfig, CollectionDef, Config,
         JsonSchema, MarkdownConfig, OutputMode, PluginConfig, PrefetchConfig,
-        ResolveMarkdownLinksConfig, TailwindConfig,
+        ResolveMarkdownLinksConfig, WindConfig, WindSetting,
     },
     diagnostics,
     render_pipeline,
@@ -209,5 +208,6 @@ cargo test -p zfb
 ```
 
 Integration tests live in `crates/zfb/tests/` and cover build lifecycle,
-`check`, content snapshots, CSS module components, framework package
-resolution, dev-server behavior, and version stamping.
+`check`, content snapshots, CSS module components, embedded zudo-react and
+Hono package resolution, dev-server behavior, and version stamping. Removed
+engine-selection keys are rejected with migration errors.

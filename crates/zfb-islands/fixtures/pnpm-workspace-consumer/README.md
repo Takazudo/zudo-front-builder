@@ -43,6 +43,5 @@ island was dead.
 
 The codex-review follow-up on PR #125 narrowed the bare-specifier
 probe to **workspace** packages only (symlinks pointing outside
-`node_modules/`); regular installed dependencies like `preact` are now
-skipped silently to avoid descending into framework code on every
-build.
+`node_modules/`); ordinary installed dependencies are skipped silently
+so the scanner does not descend into dependency trees during every build.

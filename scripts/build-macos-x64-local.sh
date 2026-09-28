@@ -25,10 +25,10 @@
 # Prerequisites (matches release.yml's build job):
 #   - Rust toolchain (rustup); the script runs `rustup target add
 #     x86_64-apple-darwin` itself (idempotent — needed on Apple Silicon hosts).
-#   - node_modules present. build.rs (embed_framework_packages) reads
-#     node_modules/.pnpm/preact@*/... at compile time, so the script runs
-#     `pnpm install --frozen-lockfile` before cargo build — skipping it yields a
-#     binary missing embedded framework assets that only fails at the user's
+#   - node_modules present. build.rs reads the Hono package tree from
+#     node_modules/.pnpm at compile time, so the script runs `pnpm install
+#     --frozen-lockfile` before cargo build — skipping it yields a binary
+#     missing the embedded router package that only fails at the user's
 #     install time. (release.yml installs deps before cargo build for the same
 #     reason.)
 #
@@ -143,7 +143,7 @@ done
 echo "    Target ${target} is ready."
 
 # ── Install node deps before cargo build ──────────────────────────────────────
-# build.rs embeds framework packages from node_modules at compile time.
+# build.rs embeds the Hono router package from node_modules at compile time.
 
 echo "==> Installing node dependencies (pnpm install --frozen-lockfile)"
 # CI=true so pnpm runs non-interactively. pnpm 11 (#440) purges a node_modules

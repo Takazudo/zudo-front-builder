@@ -38,16 +38,14 @@ imagesize = "0.14"
 # intrinsic dimensions (width/height/viewBox) straight from its markup (#1083).
 roxmltree = "0.20"
 # Wraps a `serde_json` deserialize with the field path that failed (e.g.
-# `framework`), so `zfb.config.ts` schema errors name the offending key
+# `wind`), so `zfb.config.ts` schema errors name the offending key
 # instead of only echoing the raw JSON (issue #1359). Already a transitive
 # dep of `axum` at this same 0.1.x line, so pinning it here adds no new
 # version to the dependency graph.
 serde_path_to_error = "0.1"
-# Source Map v3 parser (getsentry). Canonical decoder for both esbuild's
-# `--sourcemap=linked` output (zfb-build renderer) and the Tailwind v4
-# `--map` inline sourcemap that drives `url()` attribution in zfb-css
-# (#2311/#2315). Do NOT hand-roll VLQ decoding anywhere — this crate is
-# the one parser.
+# Source Map v3 parser (getsentry). Canonical decoder for esbuild's
+# `--sourcemap=linked` output used to re-project renderer frames in zfb-build.
+# Do NOT hand-roll VLQ decoding anywhere — this crate is the one parser.
 sourcemap = "9"
 base64 = "0.22"
 # One resolved version for zfb-css and zudo-wind; deny.toml's advisory

@@ -2,6 +2,9 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, Tailwind CSS v4, and Preact islands.
 
+This host stays on zudo-doc's published 2.x stack until that downstream
+package ships a major release on the new engines.
+
 ## Tech Stack
 
 - **zfb** — static site engine (Rust binary + JS plugin host)
