@@ -6100,6 +6100,7 @@ dependencies = [
  "thiserror",
  "zfb-content",
  "zfb-types",
+ "zudo-wind",
 ]
 
 [[package]]

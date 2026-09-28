@@ -7,6 +7,9 @@ pub mod build;
 pub mod bundler_input;
 pub mod check;
 pub mod css;
+// The build/dev wind payload consumes this source planner in #3264.
+#[allow(dead_code)]
+pub(crate) mod css_source_plan;
 pub(crate) mod css_support;
 pub mod dev;
 pub(crate) mod dev_companion_ledger;
