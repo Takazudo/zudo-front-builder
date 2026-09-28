@@ -2,7 +2,7 @@
 
 ## Status and authority
 
-Contract version **1**, revision **1.0.0**, frozen by #3247 on 2026-09-28 for epic #3242. This is the implementation oracle, not a claim that a runtime or browser test already passes. Authority, in order: owner direction quoted in the epic; this owned contract; epic and sub-issue bodies; the original handoff; exploration maps. This is the order in `_temp-resource/3242-owned-engines/README.md`. A semantic change requires a recorded revision and updated affected issue locks before implementation. In the later documentation reconciliation (#3309), pages describe observed implementation honestly and record any divergence as a contract defect for the manager; documenting observed behavior does not silently amend this implementation oracle.
+Contract version **1**, revision **1.0.1**, frozen by #3247 on 2026-09-28 for epic #3242. This is the implementation oracle, not a claim that a runtime or browser test already passes. Authority, in order: owner direction quoted in the epic; this owned contract; epic and sub-issue bodies; the original handoff; exploration maps. This is the order in `_temp-resource/3242-owned-engines/README.md`. A semantic change requires a recorded revision and updated affected issue locks before implementation. In the later documentation reconciliation (#3309), pages describe observed implementation honestly and record any divergence as a contract defect for the manager; documenting observed behavior does not silently amend this implementation oracle.
 
 The runtime lives inside `@takazudo/zfb`, has no runtime dependency, and works with ordinary authored CSS. There are no hooks, context, portals, class components, streaming, general tree reconciliation, or React/Preact compatibility aliases. The frozen `docs/` host remains on its published 2.x stack. The first migrated consumer is `crates/zfb/templates/basic-blog/`.
 
@@ -38,7 +38,7 @@ Each row freezes one policy; the following sections give its exact details.
 | ZR12 | Markers and identity | Keep the wrapper, bind transport/protocol/build/component identity, and use local paired comment regions only inside islands. | L DD14; I scanner versus function-name mismatch |
 | ZR13 | Hydration and mismatch | Adopt in preflight/commit phases, fail closed per island, and enforce the named parser-context restrictions below. | H sections 7–8; G |
 | ZR14 | Minification tolerance | Compare parsed structure and normalized ordinary text; preserve exact preformatted text and opaque regions. | G comments retained, whitespace collapse, attribute unquoting |
-| ZR15 | Forms | Use explicit writable models with DOM winning at hydration; support five adapters, single-select only, with composition tracking. | L DD8/DD17; C 5 selects, 4 radio uses, one composition guard |
+| ZR15 | Forms | Use explicit writable-branded models, rejecting readonly/computed models at compile time and runtime, with DOM winning at hydration; support five adapters, single-select only, with composition tracking. | L DD8/DD17; C 5 selects, 4 radio uses, one composition guard |
 | ZR16 | Conditions and lists | Export `Show` and `For` with owned branch/item scopes, keyed moves, and transactional duplicate-key rejection. | L DD8; C 9 of 19 islands need structure; basic-blog theme toggle |
 | ZR17 | Island boundary | Require one component child, strict JSON props and scanner identity agreement; reject nesting; retain valid hand-authored wrappers. | I lossy serialization/multi-child ambiguity; L DD14 |
 | ZR18 | Lifecycle | Separate disposal from removal; recreate changed component/props in `render` mode and preserve unchanged persisted roots. | I remount after destructive unmount; router persistence |
@@ -50,7 +50,7 @@ Each row freezes one policy; the following sections give its exact details.
 
 | Entry point | Complete value exports | Type exports |
 | --- | --- | --- |
-| Core | `Fragment`, `h`, `isDescription`, `flattenChildren`, `signal`, `computed`, `batch`, `flush`, `getScope`, `Show`, `For` | `Key`, `Scalar`, `ReadonlySignal`, `Signal`, `Child`, `Component`, `ElementType`, `Description`, `Cleanup`, `Scope`, `Ref`, `Style`, `Listener`, `IslandIdentity`, `Diagnostic`, `Reporter`, `ShowProps`, `ForProps` |
+| Core | `Fragment`, `h`, `isDescription`, `flattenChildren`, `signal`, `computed`, `batch`, `flush`, `getScope`, `Show`, `For` | `Key`, `Scalar`, `ReadonlySignal`, `Signal` (required writable brand), `Child`, `Component`, `ElementType`, `Description`, `Cleanup`, `Scope`, `Ref`, `Style`, `Listener`, `IslandIdentity`, `Diagnostic`, `Reporter`, `ShowProps`, `ForProps` |
 | JSX runtime | `Fragment`, `jsx`, `jsxs` | `JSX` |
 | JSX development runtime | `Fragment`, `jsxDEV` | `JSX` |
 | Server | `renderToString`, `islandRoot`, `serializeProps` | `RenderOptions`, `IslandOptions` |
@@ -67,7 +67,10 @@ export interface ReadonlySignal<T> {
   readonly value: T;
   readonly $$zudoReactive: "zudo-react.reactive.v1";
 }
-export interface Signal<T> extends ReadonlySignal<T> { value: T }
+export interface Signal<T> extends ReadonlySignal<T> {
+  value: T;
+  readonly $$zudoWritable: "zudo-react.writable.v1";
+}
 export type Child = Scalar | Description | ReadonlySignal<Scalar> | readonly Child[];
 export type Component<P = Record<string, unknown>> = (props: P) => Child;
 export type ElementType = string | Component<any> | typeof Fragment;
@@ -123,6 +126,8 @@ export function getScope(): Scope;
 export function Show(props: ShowProps): Description;
 export function For<T>(props: ForProps<T>): Description;
 ```
+
+`Signal<T>` adds the required string-literal brand `$$zudoWritable: "zudo-react.writable.v1"`. Every `signal()` result carries this property as well as `$$zudoReactive`; `computed()` results do not carry `$$zudoWritable`. `ReadonlySignal<T>` exposes only the shared reactive brand and readonly value. Thus a writable signal remains assignable to a readonly signal, while a value typed as `ReadonlySignal<T>` (including a computed or a readonly view) is not assignable to `Signal<T>`. TypeScript's structural assignability does not distinguish a readonly property from a writable property, so `readonly value` alone cannot enforce the model boundary. The additional required brand supplies that distinction without a new export, setter API, or local-symbol identity. It is a structural API discriminator, not protection against deliberate type assertions or forged objects; callers obtain writable models through `signal()`.
 
 `Fragment` is implemented with a well-known symbol (`Symbol.for("@takazudo/zfb/zudo-react/fragment-v1")`) while its declaration uses `unique symbol` for type discrimination. Factories never run components. `Show` and `For` return inert built-in descriptions; their deferred factories run only under a renderer-owned scope. `Component<any>` in the element-type union is the deliberate erased call boundary, not permission to bypass intrinsic JSX typings.
 
@@ -382,7 +387,7 @@ Inside `pre`, and its descendants, compare decoded text exactly after HTML newli
 
 ## Forms
 
-Reserved props are `defaultValue`, `defaultChecked`, `modelValue`, `modelChecked` and never reach HTML under those names. Models require writable branded signals. Controls are uncontrolled unless a model is explicitly present. Static `value`/`checked` are allowed as initial defaults; reactive `value`/`checked` are rejected. Supplying both a model and its default/initial value is an error. Supplying both `value` and `defaultValue`, or both `checked` and `defaultChecked`, is also an error. The radio option's static `value` is the deliberate exception: it identifies that radio, so it is required with `modelValue`.
+Reserved props are `defaultValue`, `defaultChecked`, `modelValue`, `modelChecked` and never reach HTML under those names. Models require `Signal<T>` with both `$$zudoReactive` and the required `$$zudoWritable: "zudo-react.writable.v1"` brand. A `ReadonlySignal<T>` or `computed()` result is a type error for every model prop. Server and client validation reject model objects without the writable brand, including computed values and dynamic `h` inputs that bypass JSX typing, before any model write; the shared reactive brand alone does not establish writability. A readonly type annotation does not remove a real signal's runtime brand: the type check rejects that readonly view, while runtime validation sees the original writable object. Controls are uncontrolled unless a model is explicitly present. Static `value`/`checked` are allowed as initial defaults; reactive `value`/`checked` are rejected. Supplying both a model and its default/initial value is an error. Supplying both `value` and `defaultValue`, or both `checked` and `defaultChecked`, is also an error. The radio option's static `value` is the deliberate exception: it identifies that radio, so it is required with `modelValue`.
 
 | Control | Binding and type | SSR/default representation | Live event and conversion |
 | --- | --- | --- | --- |
@@ -391,6 +396,27 @@ Reserved props are `defaultValue`, `defaultChecked`, `modelValue`, `modelChecked
 | `input type="checkbox"` | `modelChecked: Signal<boolean>`; `defaultChecked: boolean` | Boolean `checked` attribute | `change`; read/write `.checked` |
 | single `select` | `modelValue: Signal<string>`; `defaultValue: string` | `selected` on exactly the matching static option | `change`; read/write `.value` after options exist |
 | `input type="radio"` group | Shared `modelValue: Signal<string \| null>`; each radio has static `value`, same nonempty `name`, same form/root | `checked` only on the matching option; null checks none | `change` on the newly checked radio; group read is selected string or null |
+
+These type examples are normative (the JSX examples use the owned `jsxImportSource`):
+
+```tsx
+const name = signal("Ada");
+const label = computed(() => name.value.toUpperCase());
+const view: ReadonlySignal<string> = name;
+const writable: Signal<string> = name;
+const readable: ReadonlySignal<string> = writable;
+<input modelValue={name} />;
+<textarea modelValue={writable} />;
+<p>{label}</p>;
+// @ts-expect-error computed values lack the required writable brand
+const invalid: Signal<string> = label;
+// @ts-expect-error a readonly view does not expose the writable brand
+<input modelValue={view} />;
+// @ts-expect-error computed values cannot be models
+<textarea modelValue={label} />;
+// @ts-expect-error boolean computed values cannot be checkbox models either
+<input type="checkbox" modelChecked={computed(() => true)} />;
+```
 
 All select/radio option values must be unique strings. A programmatic single-select model/default value without a matching option is `ZR_MODEL_VALUE`, with no partial update; hydration can accept browser `.value === ""` with `selectedIndex === -1` as the no-selection state and records `""` without forcing a selection. An empty-valued option remains distinguishable through `selectedIndex`. A radio model with a non-null value absent from the group is likewise rejected; no checked radio maps to null. Group membership is all radios sharing a model within one root, with identical native name/form association; the runtime rejects same-name radios owned by different models/roots. Uncontrolled options may have static `selected` only when no select-level value/default/model is supplied. Uncontrolled radios use native `checked`/`defaultChecked` individually. The model does not own disabled/required validity rules.
 
@@ -465,4 +491,6 @@ After #3288 there is no framework config key or selector, and a leftover key is 
 
 Revision 1.0.0 (2026-09-28): initial freeze. The explicit departures from provisional defaults are setup-only `getScope()` instead of a component's scope argument; `on:event` listener spelling instead of `onClick`; CSS-spelled object style keys; mandatory identity/name agreement; single-select only; uniform skip-SSR scheduling and remount handling; DOM-isolated `islandRoot` wrapper constructor plus explicit standalone island mode; structure-based ordinary-attribute tolerance under minification; removal of the router framework parameter; and the numeric flush/handle/definition-witness protocols specified above. DD8 also overrides the handoff's deferral of effects, rawHtml, select/radio and structural regions.
 
-The lock revision is **1.0.0**. The planner addendum expands the lock set to #3272–#3291, #3297, #3298, #3300, #3303–#3305 and #3309. Additional direct consumers #3292, #3293, #3299, #3302 and #3306 receive runtime locks alongside their wind locks (32 runtime locks in total). Every lock preserves the issue header through its `**Task ` line and all text outside the inserted section. The manager coordinates shared-body edits.
+Revision 1.0.1 (2026-09-28): correct the writable-model type boundary required by ZR15 and #3278 scope item 10. `readonly value` in revision 1.0.0 did not prevent structural assignment from `ReadonlySignal<T>` to `Signal<T>`. Require the writable-only `$$zudoWritable: "zudo-react.writable.v1"` property on `Signal<T>` and `signal()` values, absent from `computed()`, with positive writable-to-readonly and negative readonly/computed model checks. #3278 owns the corresponding correction to the declarations/JSX types from #3272 and signal instances from #3273, plus runtime rejection and type regressions for all five adapters. Documentation/migration consumers must retain `Signal<T>` for writable model parameters and use `signal()` for models. This corrects type acceptance to the existing writable-model policy; transport/marker protocol version 1 is unchanged.
+
+The lock revision is **1.0.1**. The planner addendum expands the lock set to #3272–#3291, #3297, #3298, #3300, #3303–#3305 and #3309. Additional direct consumers #3292, #3293, #3299, #3302 and #3306 receive runtime locks alongside their wind locks (32 runtime locks in total). Every lock preserves the issue header through its `**Task ` line and all text outside the inserted section. The manager coordinates shared-body edits.
