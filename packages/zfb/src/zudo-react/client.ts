@@ -1,2 +1,3 @@
-// #3276 owns hydration, mounting, and root disposal.
-export {};
+export { hydrate, mount } from "./hydrate.js";
+export { parseProps } from "./props-transport.js";
+export type { RootHandle, RootOptions } from "./root.js";
