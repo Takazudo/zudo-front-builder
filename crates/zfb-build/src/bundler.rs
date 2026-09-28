@@ -144,8 +144,9 @@ use crate::module_worker::{
     canonical_project_relative_target, collect_runtime_import_specifiers_from_file,
     discover_module_preprocessing_with_context, discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context, normalize_macos_var_alias,
-    remap_virtual_module_project_imports_to_shadow_with_materialized_files, respell_under_root,
-    rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
+    probe_graph_candidate, remap_virtual_module_project_imports_to_shadow_with_materialized_files,
+    respell_under_root, rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext,
+    ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
     expand_raw_imports_with_aliases, supported_raw_import_specifier_for_path,
@@ -2932,7 +2933,7 @@ fn collect_zudo_react_external_target(
                 )?;
             }
         } else if zudo_react_token_source(&canonical) {
-            files.push((logical.join(canonical.file_name().unwrap()), canonical));
+            collect_zudo_react_external_file_closure(&canonical, logical, files)?;
         }
     } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
         collect_zudo_react_token_tree(
@@ -2943,6 +2944,68 @@ fn collect_zudo_react_external_target(
             visited_packages,
             files,
         )?;
+    }
+    Ok(())
+}
+
+/// The AST import collector and esbuild-style candidate probe are shared with
+/// the module-worker graph. Follow relative imports rather than hashing an
+/// arbitrary parent directory when an external file has no package manifest.
+fn collect_zudo_react_external_file_closure(
+    entry: &Path,
+    logical_root: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let mut pending = vec![(
+        entry.to_path_buf(),
+        logical_root.join(entry.file_name().unwrap()),
+    )];
+    let mut visited = BTreeSet::new();
+    let mut total_bytes = 0_u64;
+    while let Some((physical, logical)) = pending.pop() {
+        let physical = fs::canonicalize(physical)?;
+        if !visited.insert(physical.clone()) {
+            continue;
+        }
+        if visited.len() > 4096 {
+            bail!(
+                "owned island build token external import closure exceeds 4096 files at {}",
+                entry.display()
+            );
+        }
+        total_bytes += fs::metadata(&physical)?.len();
+        if total_bytes > 64 * 1024 * 1024 {
+            bail!(
+                "owned island build token external import closure exceeds 64 MiB at {}",
+                entry.display()
+            );
+        }
+        files.push((logical.clone(), physical.clone()));
+        let extension = physical.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
+        ) {
+            continue;
+        }
+        let mut specifiers = collect_runtime_import_specifiers_from_file(&physical)?;
+        specifiers.sort();
+        for specifier in specifiers.into_iter().rev() {
+            let path = specifier.split(['?', '#']).next().unwrap_or(&specifier);
+            if !path.starts_with("./") && !path.starts_with("../") {
+                continue;
+            }
+            let candidate = normalize_path_lexical(&physical.parent().unwrap().join(path));
+            let target = probe_graph_candidate(&candidate, false).ok_or_else(|| anyhow!(
+                "owned island build token cannot resolve external relative import {specifier:?} from {}",
+                physical.display()
+            ))?;
+            let mut next_logical = normalize_path_lexical(&logical.parent().unwrap().join(path));
+            if let Some(extension) = target.extension() {
+                next_logical.set_extension(extension);
+            }
+            pending.push((target, next_logical));
+        }
     }
     Ok(())
 }
@@ -13253,6 +13316,76 @@ mod framework_esbuild_flags_tests {
         )
         .unwrap();
         assert_ne!(virtual_before, virtual_after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_package_less_external_relative_import_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::create_dir(external.path().join("src")).unwrap();
+        fs::write(
+            external.path().join("src/widget.ts"),
+            "import './helper.ts'; import '../parent-helper.ts'; export const widget = true",
+        )
+        .unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 1",
+        )
+        .unwrap();
+        fs::write(
+            external.path().join("parent-helper.ts"),
+            "export const parent = 1",
+        )
+        .unwrap();
+        let aliases = vec![(
+            "plugin:widget".to_string(),
+            external
+                .path()
+                .join("src/widget.ts")
+                .to_string_lossy()
+                .into_owned(),
+        )];
+        let first = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 2",
+        )
+        .unwrap();
+        let second = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(first, second, "./helper.ts must change the token");
+        fs::write(
+            external.path().join("parent-helper.ts"),
+            "export const parent = 2",
+        )
+        .unwrap();
+        let third = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(second, third, "../parent-helper.ts must change the token");
+        fs::write(
+            project.path().join("tsconfig.json"),
+            serde_json::json!({
+                "compilerOptions": { "baseUrl": ".", "paths": { "@external": [external.path().join("src/widget.ts").to_string_lossy()] } }
+            }).to_string(),
+        ).unwrap();
+        let tsconfig_before = zudo_react_build_token(project.path()).unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 3",
+        )
+        .unwrap();
+        let tsconfig_after = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(
+            tsconfig_before, tsconfig_after,
+            "exact tsconfig target must follow ./helper.ts"
+        );
+        let with_aliases = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::create_dir(project.path().join(".zfb-build")).unwrap();
+        fs::write(project.path().join(".zfb-build/bundle.mjs"), "generated").unwrap();
+        assert_eq!(
+            with_aliases,
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
+        );
     }
 
     #[test]
