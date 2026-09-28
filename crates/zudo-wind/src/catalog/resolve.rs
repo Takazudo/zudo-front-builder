@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use super::{arbitrary, Catalog, CatalogEntry, SelectorShape, ValueKind};
+use super::{
+    arbitrary, Catalog, CatalogEntry, EmissionValue, Registration, SelectorShape, ValueKind,
+};
 use crate::{
     Candidate, Decimal, DecimalDimension, Diagnostic, DiagnosticCode, Origin, Severity,
     SourcePositionKind, ValidatedTokens, ValueStatus, VariantKind,
@@ -22,6 +24,7 @@ pub struct ResolvedRule {
     pub conflict_group_rank: u16,
     pub order_rank: u16,
     pub value_status: ValueStatus,
+    pub registrations: Vec<Registration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +52,15 @@ impl Catalog {
             return Resolution::NotUtility;
         }
         let name = &candidate.utility.named;
+        if matches!(name.as_str(), "ring" | "animate" | "scale" | "transform") {
+            return invalid(
+                candidate,
+                origin,
+                DiagnosticCode::Zw004,
+                "recognized utility family is unsupported",
+                Some("R20"),
+            );
+        }
         let matching: Vec<_> = self
             .entries
             .iter()
@@ -127,7 +139,10 @@ impl Catalog {
                 Some("R12"),
             );
         }
-        if utility.slash_modifier.is_some() && !entry.grammar.allows_fraction_slash {
+        if utility.slash_modifier.is_some()
+            && !entry.grammar.allows_fraction_slash
+            && !entry.grammar.allows_color_opacity
+        {
             return invalid(
                 candidate,
                 origin,
@@ -136,8 +151,7 @@ impl Catalog {
                 Some("R14"),
             );
         }
-        let value = entry_value(entry, suffix, candidate, tokens);
-        let (mut value, status) = match value {
+        let (mut value, mut status) = match entry_value(entry, suffix, candidate, tokens) {
             Ok(value) => value,
             Err((code, message, rejection_id)) => {
                 return invalid(candidate, origin, code, &message, rejection_id)
@@ -155,14 +169,51 @@ impl Catalog {
             }
             value = negate(&value);
         }
-        let declarations = entry
-            .emitter
-            .iter()
-            .map(|property| Declaration {
-                property: (*property).to_owned(),
-                value: value.clone(),
-            })
-            .collect();
+        let mut declarations = Vec::new();
+        for template in &entry.declaration_templates {
+            let emitted = match template.value {
+                EmissionValue::Resolved => Some(value.clone()),
+                EmissionValue::Fixed(fixed) => Some(fixed.to_owned()),
+                EmissionValue::OptionalFontSizeLeading => {
+                    if entry
+                        .grammar
+                        .token_categories
+                        .contains(&crate::TokenCategory::FontSize)
+                    {
+                        tokens
+                            .config
+                            .font_sizes
+                            .get(suffix)
+                            .and_then(|token| token.line_height.as_ref())
+                            .map(|_| format!("var(--zw-font-size-{suffix}-leading)"))
+                    } else {
+                        None
+                    }
+                }
+                EmissionValue::TransitionDuration => (value != "none").then(|| "150ms".to_owned()),
+                EmissionValue::TransitionTimingFunction => {
+                    (value != "none").then(|| "ease".to_owned())
+                }
+            };
+            if let Some(value) = emitted {
+                declarations.push(Declaration {
+                    property: template.property.to_owned(),
+                    value,
+                });
+            }
+            if template.value == EmissionValue::OptionalFontSizeLeading
+                && tokens
+                    .config
+                    .font_sizes
+                    .get(suffix)
+                    .is_some_and(|token| token.line_height.is_some())
+            {
+                let key = format!("tokens.fontSizes.{suffix}.lineHeight");
+                if tokens.value_statuses.get(&key) == Some(&ValueStatus::CategoryUnverified) {
+                    status = ValueStatus::CategoryUnverified;
+                }
+            }
+        }
         Resolution::Rule(ResolvedRule {
             entry_id: entry.id.clone(),
             root: entry.root.clone(),
@@ -172,6 +223,7 @@ impl Catalog {
             conflict_group_rank: entry.conflict_group_rank,
             order_rank: entry.order_rank,
             value_status: status,
+            registrations: entry.registrations.clone(),
         })
     }
 }
@@ -184,6 +236,35 @@ fn entry_value(
     candidate: &Candidate,
     tokens: &ValidatedTokens,
 ) -> Result<(String, ValueStatus), ValueError> {
+    if candidate.utility.slash_modifier.is_some() && is_color_entry(entry) {
+        let modifier = candidate
+            .utility
+            .slash_modifier
+            .as_deref()
+            .expect("colour modifier was checked");
+        let alpha = modifier.parse::<u8>().map_err(|_| {
+            (
+                DiagnosticCode::Zw005,
+                "colour opacity must be an integer from 0 through 100".to_owned(),
+                Some("R14"),
+            )
+        })?;
+        if alpha > 100 {
+            return Err((
+                DiagnosticCode::Zw005,
+                "colour opacity must be an integer from 0 through 100".to_owned(),
+                Some("R14"),
+            ));
+        }
+        let mut base = candidate.clone();
+        base.utility.slash_modifier = None;
+        return entry_value(entry, suffix, &base, tokens).map(|(value, status)| {
+            (
+                format!("color-mix(in oklab, {value} {alpha}%, transparent)"),
+                status,
+            )
+        });
+    }
     if suffix.is_empty() && entry.grammar.accepted_kinds.contains(&ValueKind::Exact) {
         Ok((
             entry
@@ -192,6 +273,26 @@ fn entry_value(
                 .expect("exact entries have a fixed value"),
             ValueStatus::Verified,
         ))
+    } else if suffix.is_empty() && (entry.root == "rounded" || entry.root == "shadow") {
+        let (category, name, variable) = if entry.root == "rounded" {
+            (crate::TokenCategory::Radius, "default", "radius")
+        } else {
+            (crate::TokenCategory::Shadow, "default", "shadow")
+        };
+        if !tokens.contains(category, name) {
+            return Err((
+                DiagnosticCode::Zw006,
+                format!("{} requires the default token", entry.root),
+                Some("R17"),
+            ));
+        }
+        let key = format!("tokens.{}.default", category.config_name());
+        let status = tokens
+            .value_statuses
+            .get(&key)
+            .copied()
+            .unwrap_or(ValueStatus::Verified);
+        Ok((format!("var(--zw-{variable}-default)"), status))
     } else {
         resolve_value(entry, suffix, candidate, tokens)
     }
@@ -298,6 +399,9 @@ fn resolve_value(
             }
         }
     }
+    if let Some(resolved) = resolve_special_integer(entry, suffix) {
+        return resolved;
+    }
     if let Some(denominator) = modifier {
         if !grammar.accepted_kinds.contains(&ValueKind::Fraction) {
             return Err((
@@ -381,8 +485,37 @@ fn resolve_value(
             let property = grammar
                 .arbitrary_property
                 .expect("arbitrary entries have a property");
-            return arbitrary::validate(property, bracket)
-                .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")));
+            let (mut value, status) = if entry.root == "transition" {
+                validate_transition_property_list(bracket)
+            } else {
+                arbitrary::validate(property, bracket)
+            }
+            .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            if entry.root == "opacity" {
+                validate_opacity_arbitrary(&value, status)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
+            if entry.root == "aspect" {
+                validate_aspect_ratio(&value, status)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+                value = normalize_ratio(&value);
+            }
+            if entry.root == "rotate" && value == "none" {
+                return Err((
+                    DiagnosticCode::Zw005,
+                    "rotate arbitrary values must be angles".to_owned(),
+                    Some("R15"),
+                ));
+            }
+            if entry.root.starts_with("translate-") {
+                validate_single_component(&value)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
+            if entry.id.starts_with("v1.rounded") {
+                validate_single_radius(&value, status)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
+            return Ok((value, status));
         }
         return Err((
             DiagnosticCode::Zw005,
@@ -395,6 +528,293 @@ fn resolve_value(
         format!("unknown value or token {suffix}"),
         Some("R17"),
     ))
+}
+
+fn is_color_entry(entry: &CatalogEntry) -> bool {
+    entry
+        .grammar
+        .token_categories
+        .contains(&crate::TokenCategory::Color)
+}
+
+fn resolve_special_integer(
+    entry: &CatalogEntry,
+    suffix: &str,
+) -> Option<Result<(String, ValueStatus), ValueError>> {
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if entry.id.starts_with("v1.border.width")
+        || entry.id.starts_with("v1.divide.width")
+        || entry.id == "v1.outline.width"
+        || entry.id == "v1.outline.offset"
+    {
+        let canonical = match Decimal::parse(suffix) {
+            Ok(value) => value.to_string(),
+            Err(error) => {
+                return Some(Err((DiagnosticCode::Zw005, error.to_string(), Some("R15"))))
+            }
+        };
+        return Some(Ok((format!("{canonical}px"), ValueStatus::Verified)));
+    }
+    let canonical = match Decimal::parse(suffix) {
+        Ok(value) => value.to_string(),
+        Err(error) => return Some(Err((DiagnosticCode::Zw005, error.to_string(), Some("R15")))),
+    };
+    let integer = match canonical.parse::<u32>() {
+        Ok(integer) => integer,
+        Err(_) => {
+            return Some(Err((
+                DiagnosticCode::Zw005,
+                "integer is out of range".to_owned(),
+                Some(if entry.id == "v1.opacity" {
+                    "R14"
+                } else {
+                    "R15"
+                }),
+            )))
+        }
+    };
+    match entry.id.as_str() {
+        "v1.opacity" => {
+            if integer > 100 {
+                Some(Err((
+                    DiagnosticCode::Zw005,
+                    "opacity must be an integer from 0 through 100".to_owned(),
+                    Some("R14"),
+                )))
+            } else {
+                Some(Ok((integer_percent(integer), ValueStatus::Verified)))
+            }
+        }
+        "v1.duration" => {
+            if integer > 60_000 {
+                Some(Err((
+                    DiagnosticCode::Zw005,
+                    "duration must be an integer from 0 through 60000 milliseconds".to_owned(),
+                    Some("R15"),
+                )))
+            } else {
+                Some(Ok((format!("{integer}ms"), ValueStatus::Verified)))
+            }
+        }
+        "v1.rotate" => {
+            if integer > 360 {
+                Some(Err((
+                    DiagnosticCode::Zw005,
+                    "rotation must be an integer from 0 through 360 degrees".to_owned(),
+                    Some("R15"),
+                )))
+            } else {
+                Some(Ok((format!("{integer}deg"), ValueStatus::Verified)))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn integer_percent(value: u32) -> String {
+    match value {
+        0 => "0".to_owned(),
+        100 => "1".to_owned(),
+        1..=9 => format!("0.0{value}"),
+        value if value % 10 == 0 => format!("0.{}", value / 10),
+        _ => format!("0.{value}"),
+    }
+}
+
+fn validate_opacity_arbitrary(value: &str, status: ValueStatus) -> Result<(), String> {
+    if status == ValueStatus::CategoryUnverified {
+        if value.trim_start().starts_with("var(") && value.trim_end().ends_with(')') {
+            return Ok(());
+        }
+        return Err(
+            "opacity arbitrary values may use var() only as an unverified value".to_owned(),
+        );
+    }
+    let (number, maximum) = value
+        .strip_suffix('%')
+        .map_or((value, "1"), |number| (number, "100"));
+    if decimal_exceeds(number, maximum) || !valid_nonnegative_decimal(number) {
+        return Err(
+            "opacity arbitrary values must be a number from 0 to 1 or a percentage from 0% to 100%"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn valid_nonnegative_decimal(value: &str) -> bool {
+    let mantissa = if let Some((mantissa, exponent)) = value.split_once(['e', 'E']) {
+        if exponent.parse::<i32>().is_err() {
+            return false;
+        }
+        mantissa
+    } else {
+        value
+    };
+    if mantissa.is_empty() {
+        return false;
+    }
+    let mut parts = mantissa.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    if parts.next().is_some() || (whole.is_empty() && fraction.is_none()) {
+        return false;
+    }
+    whole.bytes().all(|byte| byte.is_ascii_digit())
+        && fraction.is_none_or(|fraction| fraction.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn decimal_exceeds(value: &str, maximum: &str) -> bool {
+    let (mantissa, exponent) = match value.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => match exponent.parse::<i32>() {
+            Ok(exponent) => (mantissa, exponent),
+            Err(_) => return true,
+        },
+        None => (value, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    let Some(first_nonzero) = digits.bytes().position(|byte| byte != b'0') else {
+        return false;
+    };
+    let significant = &digits[first_nonzero..];
+    let decimal_point = (whole.len() as i32)
+        .saturating_add(exponent)
+        .saturating_sub(first_nonzero as i32);
+    if decimal_point > maximum.len() as i32 {
+        return true;
+    }
+    if decimal_point <= 0 {
+        return false;
+    }
+    let point = decimal_point as usize;
+    let mut integer_part = significant.chars().take(point).collect::<String>();
+    if integer_part.len() < point {
+        integer_part.push_str(&"0".repeat(point - integer_part.len()));
+    }
+    let maximum_value = maximum.parse::<u32>().unwrap_or(u32::MAX).to_string();
+    if integer_part.len() > maximum_value.len() {
+        return true;
+    }
+    if integer_part.len() < maximum_value.len() {
+        return false;
+    }
+    if integer_part < maximum_value {
+        return false;
+    }
+    if integer_part > maximum_value {
+        return true;
+    }
+    significant.chars().skip(point).any(|digit| digit != '0')
+}
+
+fn validate_transition_property_list(input: &str) -> Result<(String, ValueStatus), String> {
+    let (value, status) = arbitrary::validate("transition-property", input)?;
+    for item in split_top_level_commas(&value) {
+        if item.trim().is_empty() {
+            return Err("transition property list contains an empty item".to_owned());
+        }
+        arbitrary::validate("transition-property", item.trim())?;
+    }
+    Ok((value, status))
+}
+
+fn split_top_level_commas(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_u32;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(current_quote) = quote {
+            if character == current_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&value[start..index]);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&value[start..]);
+    parts
+}
+
+fn normalize_ratio(value: &str) -> String {
+    value
+        .split_once('/')
+        .map(|(left, right)| format!("{} / {}", left.trim(), right.trim()))
+        .unwrap_or_else(|| value.to_owned())
+}
+
+fn validate_aspect_ratio(value: &str, status: ValueStatus) -> Result<(), String> {
+    if status == ValueStatus::CategoryUnverified {
+        return Ok(());
+    }
+    let Some((numerator, denominator)) = value.split_once('/') else {
+        return Err("aspect arbitrary values must be ratios".to_owned());
+    };
+    if denominator.contains('/') {
+        return Err("aspect ratio must contain one slash".to_owned());
+    }
+    for part in [numerator.trim(), denominator.trim()] {
+        let value = Decimal::parse(part)
+            .map_err(|_| "aspect ratio parts must be positive numbers".to_owned())?;
+        if value.is_negative() || value.is_zero() {
+            return Err("aspect ratio parts must be positive numbers".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_radius(value: &str, status: ValueStatus) -> Result<(), String> {
+    validate_single_component(value)?;
+    if status == ValueStatus::CategoryUnverified {
+        return Ok(());
+    }
+    let dimension = DecimalDimension::parse(value)
+        .map_err(|_| "radius values must be one nonnegative length-percentage".to_owned())?;
+    if dimension.magnitude.is_negative()
+        || (dimension.unit.is_empty() && !dimension.magnitude.is_zero())
+    {
+        return Err("radius values must be one nonnegative length-percentage".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_single_component(value: &str) -> Result<(), String> {
+    let mut depth = 0_u32;
+    let mut quote = None;
+    for character in value.chars() {
+        match character {
+            '\'' | '"' if quote == Some(character) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(character),
+            '(' if quote.is_none() => depth += 1,
+            ')' if quote.is_none() => depth = depth.saturating_sub(1),
+            character if quote.is_none() && depth == 0 && character.is_whitespace() => {
+                return Err("value must be a single length-percentage".to_owned())
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn positive_ratio_part(value: &str) -> Result<u32, ValueError> {

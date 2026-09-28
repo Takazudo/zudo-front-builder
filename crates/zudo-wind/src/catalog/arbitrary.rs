@@ -34,8 +34,13 @@ pub(super) fn validate(property: &str, input: &str) -> Result<(String, ValueStat
         "color" | "background-color" | "border-color" | "outline-color" | "accent-color" => "red",
         "font-family" => "sans-serif",
         "font-weight" => "400",
+        "opacity" => "0.5",
         "box-shadow" => "none",
+        "aspect-ratio" => "1 / 1",
+        "transition-property" => "all",
+        "transition-duration" => "150ms",
         "transition-timing-function" => "ease",
+        "rotate" => "0deg",
         _ => "1px",
     };
     let has_var = lower.contains("var(");

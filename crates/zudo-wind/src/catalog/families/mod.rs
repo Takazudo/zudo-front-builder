@@ -1,16 +1,26 @@
 mod alignment;
+mod border;
+mod color;
+mod effects;
 mod flex_grid;
 mod gap;
+mod interaction;
 mod layout;
+mod motion;
 mod overflow;
 mod sizing;
 mod spacing;
+mod statics;
+mod typography;
 mod z_index;
 
-use super::{CatalogEntry, Declaration, Example, SelectorShape, ValueGrammar, ValueKind};
+use super::{
+    CatalogEntry, Declaration, DeclarationTemplate, EmissionValue, Example, Registration,
+    SelectorShape, ValueGrammar, ValueKind,
+};
 use crate::TokenCategory;
 
-pub(super) fn batch_a() -> Vec<CatalogEntry> {
+pub(super) fn batch_v1() -> Vec<CatalogEntry> {
     let mut entries = Vec::new();
     layout::add(&mut entries);
     flex_grid::add(&mut entries);
@@ -20,6 +30,13 @@ pub(super) fn batch_a() -> Vec<CatalogEntry> {
     gap::add(&mut entries);
     overflow::add(&mut entries);
     z_index::add(&mut entries);
+    typography::add(&mut entries);
+    color::add(&mut entries);
+    border::add(&mut entries);
+    effects::add(&mut entries);
+    motion::add(&mut entries);
+    interaction::add(&mut entries);
+    statics::add(&mut entries);
     entries
 }
 
@@ -44,11 +61,20 @@ pub(super) fn entry(
         Some(suffix) => format!("{root}-{suffix}"),
         None => root.to_owned(),
     };
+    let declaration_templates = properties
+        .iter()
+        .map(|property| DeclarationTemplate {
+            property,
+            value: EmissionValue::Resolved,
+        })
+        .collect();
     CatalogEntry {
         id: format!("v1.{root}"),
         root: root.to_owned(),
         grammar: ValueGrammar::new(kinds, keywords, categories, arbitrary_property, fraction),
         emitter: properties.to_vec(),
+        declaration_templates,
+        registrations: Vec::new(),
         fixed_value: kinds
             .contains(&ValueKind::Exact)
             .then(|| example_value.to_owned()),
@@ -68,6 +94,40 @@ pub(super) fn entry(
                 .collect(),
         }],
         introduced_in: crate::SPEC_VERSION,
+    }
+}
+
+pub(super) fn set_id(entry: &mut CatalogEntry, id: &str) {
+    entry.id = id.to_owned();
+}
+
+pub(super) fn set_templates(
+    entry: &mut CatalogEntry,
+    templates: &[DeclarationTemplate],
+    example: &[(&str, &str)],
+) {
+    entry.emitter = templates.iter().map(|template| template.property).collect();
+    entry.declaration_templates = templates.to_vec();
+    entry.examples[0].declarations = example
+        .iter()
+        .map(|(property, value)| Declaration {
+            property: (*property).to_owned(),
+            value: (*value).to_owned(),
+        })
+        .collect();
+}
+
+pub(super) fn resolved(property: &'static str) -> DeclarationTemplate {
+    DeclarationTemplate {
+        property,
+        value: EmissionValue::Resolved,
+    }
+}
+
+pub(super) fn fixed(property: &'static str, value: &'static str) -> DeclarationTemplate {
+    DeclarationTemplate {
+        property,
+        value: EmissionValue::Fixed(value),
     }
 }
 
