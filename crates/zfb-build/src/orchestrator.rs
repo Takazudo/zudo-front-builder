@@ -775,6 +775,9 @@ fn watch_options_for(config: &OrchestratorConfig) -> WatchOptions {
     WatchOptions::default()
         .with_debounce(debounce)
         .with_backend(config.backend)
+        .with_exact_files(
+            ["zfb.config.json", "zfb.config.ts"].map(|name| config.project_root.join(name)),
+        )
 }
 
 /// The dev-loop orchestrator.
@@ -2323,6 +2326,19 @@ mod tests {
     // -----------------------------------------------------------------
     // Watch backend selection (issue #2174, constructor-selection site a)
     // -----------------------------------------------------------------
+
+    #[test]
+    fn watch_options_include_both_config_paths_even_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = OrchestratorConfig::new(temp.path(), vec![]);
+        assert_eq!(
+            watch_options_for(&config).exact_files,
+            vec![
+                temp.path().join("zfb.config.json"),
+                temp.path().join("zfb.config.ts"),
+            ]
+        );
+    }
 
     #[test]
     fn watch_options_for_defaults_to_native_backend() {

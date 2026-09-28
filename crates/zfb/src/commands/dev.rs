@@ -11981,10 +11981,13 @@ mod tests {
         // Use ONLY the existing config-file watch. No source or manifest watch
         // can rescue this event; the removed required file becomes intentional
         // owner removal when the new configuration reaches the CSS pass.
-        let (watcher, mut events) = zfb_watcher::Watcher::start_with_debounce(
+        let (watcher, mut events) = zfb_watcher::Watcher::start_with_options(
             &project,
-            ["zfb.config.json"],
-            std::time::Duration::from_millis(50),
+            ["zfb.config.json", "zfb.config.ts"],
+            std::iter::empty::<&Path>(),
+            zfb_watcher::WatchOptions::default().with_exact_files(
+                ["zfb.config.json", "zfb.config.ts"].map(|name| project.join(name)),
+            ),
         )
         .unwrap();
         let sentinel_config = config_path.clone();
@@ -12283,6 +12286,240 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    async fn start_wind_config_watch(
+        project: &Path,
+    ) -> (
+        zfb_watcher::Watcher,
+        tokio::sync::mpsc::Receiver<zfb_watcher::Change>,
+    ) {
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let (watcher, mut events) = zfb_watcher::Watcher::start_with_options(
+            project,
+            ["src", "zfb.config.json", "zfb.config.ts"],
+            std::iter::empty::<&Path>(),
+            zfb_watcher::WatchOptions::default().with_exact_files(
+                ["zfb.config.json", "zfb.config.ts"].map(|name| project.join(name)),
+            ),
+        )
+        .unwrap();
+        // Establish watcher liveness without creating either config. The .txt
+        // marker is outside the CSS source extensions and cannot rescue a
+        // config event: every subsequent wait requires the exact config path.
+        let marker_root = project.join("src");
+        let live = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(std::time::Duration::from_secs(10)),
+            move |i| {
+                std::fs::write(marker_root.join(format!("watch-ready-{i}.txt")), "ready").unwrap()
+            },
+            || loop {
+                match events.try_recv() {
+                    Ok(change)
+                        if change.path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with("watch-ready-")
+                        }) =>
+                    {
+                        return true
+                    }
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            },
+        )
+        .await;
+        assert!(live.live, "config lifecycle watcher must become live");
+        (watcher, events)
+    }
+
+    async fn wind_native_config_changes(
+        events: &mut tokio::sync::mpsc::Receiver<zfb_watcher::Change>,
+        path: &Path,
+    ) -> zfb_build::CssChangeSet {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.expect("watcher closed");
+                if event.path == path {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("single config mutation must reach parent watch");
+        let mut changes = zfb_build::CssChangeSet::default();
+        if event.kind == zfb_watcher::ChangeKind::Removed {
+            changes.record_removal(event.path);
+        } else {
+            changes.record_upsert(event.path);
+        }
+        changes
+    }
+
+    async fn assert_wind_payload_matches_clean(project: &Path, warm: &Option<AssetEmitterPayload>) {
+        let clean = crate::commands::build::build_default_css_payload_with_details(
+            project,
+            &project.join("dev-assets"),
+            &config::load_from_dir(project).await.unwrap(),
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap()
+        .payload;
+        assert_eq!(
+            warm.as_ref().map(|p| &p.bytes),
+            clean.as_ref().map(|p| &p.bytes)
+        );
+    }
+
+    #[tokio::test]
+    async fn wind_config_absent_boot_native_creation_matches_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let path = project.join("zfb.config.json");
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let mut session = None;
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let boot = refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        assert!(config.config.wind.is_none());
+        assert_wind_payload_matches_clean(&project, &boot).await;
+        let (watcher, mut events) = start_wind_config_watch(&project).await;
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"wind":{"safelist":{"app":["flex"]}}}"#).unwrap();
+        let changes = wind_native_config_changes(&mut events, &path).await;
+        let warm =
+            refresh_wind_test_payload(&project, &mut config, &mut session, &invalidation, &changes)
+                .await
+                .unwrap();
+        assert!(String::from_utf8_lossy(&warm.as_ref().unwrap().bytes).contains(".flex"));
+        assert_wind_payload_matches_clean(&project, &warm).await;
+        // Duplicate delivery cannot republish an unchanged CSS generation.
+        let url = Arc::new(std::sync::RwLock::new(None));
+        let publication = Arc::new(Mutex::new(CssPublicationState::default()));
+        assert!(publish_dev_css_generation(
+            &project.join("dev-assets"),
+            "/assets/",
+            &url,
+            &publication,
+            warm
+        )
+        .unwrap());
+        let repeated =
+            refresh_wind_test_payload(&project, &mut config, &mut session, &invalidation, &changes)
+                .await
+                .unwrap();
+        assert!(!publish_dev_css_generation(
+            &project.join("dev-assets"),
+            "/assets/",
+            &url,
+            &publication,
+            repeated
+        )
+        .unwrap());
+        watcher.shutdown().await;
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn wind_config_ts_creation_over_json_native_matches_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        std::fs::write(
+            project.join("zfb.config.json"),
+            r#"{"wind":{"safelist":{"app":["flex"]}}}"#,
+        )
+        .unwrap();
+        let path = project.join("zfb.config.ts");
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let mut session = None;
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        let (watcher, mut events) = start_wind_config_watch(&project).await;
+        assert!(!path.exists());
+        std::fs::write(
+            &path,
+            "export default { wind: { safelist: { app: ['grid'] } } };",
+        )
+        .unwrap();
+        let changes = wind_native_config_changes(&mut events, &path).await;
+        let warm =
+            refresh_wind_test_payload(&project, &mut config, &mut session, &invalidation, &changes)
+                .await
+                .unwrap();
+        let css = String::from_utf8_lossy(&warm.as_ref().unwrap().bytes);
+        assert!(css.contains(".grid"));
+        assert!(!css.contains(".flex"));
+        assert_wind_payload_matches_clean(&project, &warm).await;
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn wind_config_native_delete_recreate_matches_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let path = project.join("zfb.config.json");
+        std::fs::write(&path, r#"{"wind":{"safelist":{"app":["flex"]}}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let mut session = None;
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        let (watcher, mut events) = start_wind_config_watch(&project).await;
+        std::fs::remove_file(&path).unwrap();
+        let removed = wind_native_config_changes(&mut events, &path).await;
+        assert!(removed.removed.contains(&path));
+        let without_config =
+            refresh_wind_test_payload(&project, &mut config, &mut session, &invalidation, &removed)
+                .await
+                .unwrap();
+        assert!(
+            config.config.wind.is_none(),
+            "deletion must reload default engine settings"
+        );
+        assert!(without_config
+            .as_ref()
+            .is_none_or(|payload| !String::from_utf8_lossy(&payload.bytes).contains(".flex")));
+        assert_wind_payload_matches_clean(&project, &without_config).await;
+        std::fs::write(&path, r#"{"wind":{"safelist":{"app":["grid"]}}}"#).unwrap();
+        let recreated = wind_native_config_changes(&mut events, &path).await;
+        let warm = refresh_wind_test_payload(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            &recreated,
+        )
+        .await
+        .unwrap();
+        let css = String::from_utf8_lossy(&warm.as_ref().unwrap().bytes);
+        assert!(css.contains(".grid"));
+        assert!(!css.contains(".flex"));
+        assert_wind_payload_matches_clean(&project, &warm).await;
+        watcher.shutdown().await;
     }
 
     #[test]
