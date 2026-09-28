@@ -1,0 +1,363 @@
+import { Fragment, isDescription, type Child, type Description } from "./description.js";
+import { escapeAttribute, escapeText } from "./escape.js";
+import type { IslandIdentity } from "./index.js";
+import { readSnapshot } from "./reactive.js";
+import type { ReadonlySignal } from "./reactive-types.js";
+import { createScope, withScope, type RuntimeScope } from "./scope.js";
+import { serializeProps } from "./props-transport.js";
+import { islandRootType, type IslandOptions, type RenderOptions } from "./server.js";
+
+const words = (value: string) => new Set(value.split(" "));
+const voidTags = words("area base br col embed hr img input link meta param source track wbr");
+const booleanAttrs = words(
+  "hidden inert readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate allowfullscreen",
+);
+const commonAttrs = words(
+  "id class title lang dir slot role style hidden inert contenteditable draggable spellcheck tabindex accesskey translate onclick onload onerror",
+);
+const htmlAttrs = words(
+  "href target rel download src alt width height type name value placeholder for charset datetime readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate maxlength minlength min max step pattern autocomplete accept accept-charset http-equiv content media method action enctype rows cols colspan rowspan scope cite poster loading decoding sizes srcset crossorigin referrerpolicy sandbox allow allowfullscreen",
+);
+const svgAttrs = words(
+  "viewBox preserveAspectRatio gradientUnits gradientTransform markerWidth markerHeight refX refY xlink:href xml:lang stroke-width fill-rule clip-rule stroke-linecap stroke-linejoin stop-color stop-opacity fill stroke d x y x1 x2 y1 y2 cx cy r rx ry points transform opacity offset",
+);
+const svgTags = words(
+  "svg g path circle ellipse rect line polyline polygon text tspan defs symbol use clipPath mask linearGradient radialGradient stop title desc foreignObject",
+);
+const htmlTags = words(
+  "html head body title base link meta style script div span p a br hr main header footer nav section article aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd blockquote pre code strong em b i small mark time figure figcaption img picture source video audio track canvas form label input button textarea select option optgroup fieldset legend output progress meter datalist table caption thead tbody tfoot tr th td col colgroup details summary dialog template slot iframe noscript address abbr bdi bdo cite data del dfn ins kbd map area object param q rp rt ruby s samp sub sup u var wbr embed xmp noembed noframes plaintext",
+);
+const dialect = words(
+  "className htmlFor charSet dateTime tabIndex readOnly strokeWidth dangerouslySetInnerHTML",
+);
+const reserved = words("key ref children rawHtml");
+const forms = words("modelValue modelChecked defaultValue defaultChecked");
+const sensitive = words("noscript xmp iframe noembed noframes plaintext");
+const tableChildren: Record<string, Set<string>> = {
+  table: words("caption colgroup thead tbody tfoot"),
+  thead: words("tr"),
+  tbody: words("tr"),
+  tfoot: words("tr"),
+  tr: words("td th"),
+  colgroup: words("col"),
+};
+type Namespace = "html" | "svg";
+interface Context {
+  identity: IslandIdentity | undefined;
+  boundary: boolean;
+  next: number;
+  scope: RuntimeScope;
+  path: string;
+}
+function fail(code: string, context: Context, detail: string): never {
+  throw new TypeError(
+    `${code}: ${detail} at ${context.path} in ${context.identity?.component ?? "static render"}`,
+  );
+}
+function reactive(value: unknown): value is ReadonlySignal<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "$$zudoReactive" in value &&
+    value.$$zudoReactive === "zudo-react.reactive.v1"
+  );
+}
+function read(value: unknown): unknown {
+  return reactive(value) ? readSnapshot(value) : value;
+}
+function region(context: Context, kind: string, content: () => string): string {
+  if (!context.identity) return content();
+  const id = context.next++;
+  return `<!--zr:1:${id}:${kind}-->${content()}<!--/zr:1:${id}-->`;
+}
+function at<T>(context: Context, part: string, fn: () => T): T {
+  const old = context.path;
+  context.path += part;
+  try {
+    return fn();
+  } finally {
+    context.path = old;
+  }
+}
+function children(value: unknown, context: Context, namespace: Namespace, parent: string): string {
+  if (value == null || typeof value === "boolean") return "";
+  if (Array.isArray(value))
+    return value
+      .map((item, index) =>
+        at(context, `[${index}]`, () => render(item, context, namespace, parent)),
+      )
+      .join("");
+  return render(value, context, namespace, parent);
+}
+function renderText(value: unknown, context: Context): string {
+  if (value == null || typeof value === "boolean") return "";
+  if (typeof value === "string" || (typeof value === "number" && Number.isFinite(value)))
+    return escapeText(String(value));
+  fail("ZR_CHILD", context, `invalid scalar ${typeof value}`);
+}
+function style(value: unknown, context: Context): string {
+  if (typeof value === "string") return value;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    fail("ZR_STYLE", context, "style must be a string or flat object");
+  let result = "";
+  for (const [name, entry] of Object.entries(value)) {
+    if (!/^(--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)$/.test(name) || /[A-Z]/.test(name))
+      fail("ZR_STYLE", context, `invalid property ${name}`);
+    if (entry == null) continue;
+    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry)))
+      fail("ZR_STYLE", context, `invalid value for ${name}`);
+    result += `${name}:${entry};`;
+  }
+  return result;
+}
+function attributes(
+  tag: string,
+  props: Readonly<Record<string, unknown>>,
+  context: Context,
+  namespace: Namespace,
+  custom: boolean,
+): string {
+  let output = "";
+  for (const [name, original] of Object.entries(props)) {
+    if (reserved.has(name)) continue;
+    if (forms.has(name)) fail("ZR_FORM_PENDING", context, `${tag}.${name}`);
+    if (dialect.has(name) || /^on[A-Z]/.test(name))
+      fail("ZR_PROP_DIALECT", context, `${tag}.${name}`);
+    if (name.startsWith("on:")) {
+      if (!/^on:[A-Za-z][A-Za-z0-9_-]*(?::capture)?$/.test(name))
+        fail("ZR_LISTENER", context, `${tag}.${name}`);
+      if (typeof original !== "function") fail("ZR_LISTENER", context, `${tag}.${name}`);
+      const inline = `on${name.slice(3).replace(/:capture$/, "")}`;
+      if (inline in props) fail("ZR_LISTENER_CONFLICT", context, `${tag}.${inline}`);
+      continue;
+    }
+    if (!/^[A-Za-z_:][A-Za-z0-9_:.-]*$/.test(name)) fail("ZR_ATTRIBUTE", context, `${tag}.${name}`);
+    if (
+      !custom &&
+      !commonAttrs.has(name) &&
+      !(namespace === "svg" ? svgAttrs.has(name) : htmlAttrs.has(name)) &&
+      !/^data-[\w.-]+$/.test(name) &&
+      !/^aria-[\w.-]+$/.test(name) &&
+      !/^on[a-z]+$/.test(name)
+    )
+      fail("ZR_ATTRIBUTE", context, `${tag}.${name}`);
+    const value = read(original);
+    if (value == null) continue;
+    if (/^on[a-z]/.test(name) && typeof value === "function")
+      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
+    if (custom && typeof value !== "string")
+      fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
+    if (name === "style") output += ` style="${escapeAttribute(style(value, context))}"`;
+    else if (booleanAttrs.has(name)) {
+      if (typeof value !== "boolean")
+        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a boolean`);
+      if (value) output += ` ${name}`;
+    } else {
+      if (
+        typeof value !== "string" &&
+        typeof value !== "boolean" &&
+        !(typeof value === "number" && Number.isFinite(value))
+      )
+        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a scalar`);
+      if (typeof value === "boolean" && !name.startsWith("aria-") && !name.startsWith("data-"))
+        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
+      if (/^on[a-z]/.test(name) && typeof value !== "string")
+        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
+      output += ` ${name}="${escapeAttribute(String(value))}"`;
+    }
+  }
+  return output;
+}
+function restricted(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
+  if (value == null || typeof value === "boolean") return "";
+  if (Array.isArray(value))
+    return value
+      .map((item, index) =>
+        at(context, `[${index}]`, () => restricted(item, context, namespace, parent)),
+      )
+      .join("");
+  if (typeof value === "string" || typeof value === "number") {
+    if (parent in tableChildren && String(value).trim())
+      fail("ZR_PARSER_CONTEXT", context, `${parent} text`);
+    return renderText(value, context);
+  }
+  if (parent === "title" || parent === "option")
+    fail("ZR_PARSER_CONTEXT", context, `${parent} requires static text`);
+  if (!isDescription(value) || typeof value.type !== "string")
+    fail("ZR_PARSER_CONTEXT", context, `${parent} requires intrinsic children`);
+  return element(value, context, namespace, parent);
+}
+function element(
+  description: Description,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
+  const tag = description.type as string;
+  const custom = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(tag);
+  const elementNamespace = tag === "svg" || namespace === "svg" ? "svg" : "html";
+  const childNamespace = tag === "foreignObject" ? "html" : elementNamespace;
+  if (elementNamespace === "svg" ? !svgTags.has(tag) : !custom && !htmlTags.has(tag))
+    fail("ZR_TAG", context, tag);
+  if (context.identity && (tag === "template" || sensitive.has(tag)))
+    fail("ZR_PARSER_CONTEXT", context, tag);
+  if (parent in tableChildren && !tableChildren[parent]?.has(tag))
+    fail("ZR_PARSER_CONTEXT", context, `${parent} > ${tag}`);
+  if (
+    (parent === "select" && tag !== "option" && tag !== "optgroup") ||
+    (parent === "optgroup" && tag !== "option")
+  )
+    fail("ZR_PARSER_CONTEXT", context, `${parent} > ${tag}`);
+  const props = description.props;
+  if (context.boundary && ("data-zfb-island" in props || "data-zfb-island-skip-ssr" in props))
+    fail("ZR_NESTED_ISLAND", context, tag);
+  if (context.identity && tag === "select" && read(props.multiple) === true)
+    fail("ZR_MODEL_UNSUPPORTED", context, "select[multiple]");
+  const attrs = attributes(tag, props, context, elementNamespace, custom);
+  const raw = props.rawHtml;
+  const hasChildren = Object.hasOwn(props, "children");
+  if (raw !== undefined && hasChildren)
+    fail("ZR_RAW_HTML", context, `${tag} has children and rawHtml`);
+  if (voidTags.has(tag) && (hasChildren || raw !== undefined))
+    fail("ZR_VOID_CHILDREN", context, tag);
+  if (
+    raw !== undefined &&
+    (elementNamespace === "svg" ||
+      tag === "textarea" ||
+      tag === "title" ||
+      tag === "select" ||
+      tag === "option")
+  )
+    fail("ZR_RAW_HTML", context, tag);
+  if (tag === "textarea" && hasChildren) fail("ZR_FORM_PENDING", context, tag);
+  let content = "";
+  if (raw !== undefined) {
+    if ((tag === "script" || tag === "style") && reactive(raw))
+      fail("ZR_RAW_HTML", context, `${tag} requires static rawHtml`);
+    const payload = read(raw);
+    if (typeof payload !== "string") fail("ZR_RAW_HTML", context, `${tag} requires string rawHtml`);
+    if (/<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(payload))
+      fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
+    if (
+      (tag === "script" && /<\/script/i.test(payload)) ||
+      (tag === "style" && /<\/style/i.test(payload))
+    )
+      fail("ZR_RAW_HTML", context, `closing ${tag} in rawHtml`);
+    content = tag === "script" || tag === "style" ? payload : region(context, "h", () => payload);
+  } else if (tag === "script" || tag === "style") {
+    if (hasChildren) fail("ZR_RAW_HTML", context, `${tag} requires rawHtml`);
+  } else if (
+    tag === "title" ||
+    tag === "option" ||
+    tag === "optgroup" ||
+    tag === "select" ||
+    parent in tableChildren
+  ) {
+    content = restricted(props.children, context, childNamespace, tag);
+  } else content = children(props.children, context, childNamespace, tag);
+  return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
+}
+function render(value: unknown, context: Context, namespace: Namespace, parent: string): string {
+  if (value == null || typeof value === "boolean") return "";
+  if (Array.isArray(value))
+    return region(context, "f", () => children(value, context, namespace, parent));
+  if (reactive(value)) return region(context, "t", () => renderText(read(value), context));
+  if (typeof value === "string" || typeof value === "number") return renderText(value, context);
+  if (typeof value === "object" && value !== null && "then" in value)
+    fail("ZR_ASYNC_COMPONENT", context, "promise child");
+  if (!isDescription(value)) fail("ZR_CHILD", context, typeof value);
+  if ((value.type as symbol | typeof value.type) === islandRootType)
+    return island(value, context, namespace, parent);
+  if (value.type === Fragment)
+    return region(context, "f", () => children(value.props.children, context, namespace, parent));
+  if (typeof value.type === "string") return element(value, context, namespace, parent);
+  const component = value.type;
+  const scope = context.scope.child(component.name || "Anonymous");
+  const prior = context.scope;
+  context.scope = scope;
+  try {
+    return region(context, "c", () => {
+      const output = withScope(scope, () => component(value.props));
+      if (output && typeof output === "object" && "then" in output)
+        fail("ZR_ASYNC_COMPONENT", context, component.name);
+      return render(output, context, namespace, parent);
+    });
+  } finally {
+    context.scope = prior;
+  }
+}
+function empty(value: unknown): boolean {
+  return (
+    value == null || typeof value === "boolean" || (Array.isArray(value) && value.every(empty))
+  );
+}
+function island(
+  description: Description,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
+  if (context.boundary) fail("ZR_NESTED_ISLAND", context, "nested island");
+  if (namespace !== "html" || parent === "p" || parent in tableChildren || parent === "select")
+    fail("ZR_PARSER_CONTEXT", context, "island wrapper");
+  const child = description.props.child;
+  const options = description.props.options as IslandOptions;
+  if (!isDescription(child) || typeof child.type !== "function")
+    fail("ZR_ISLAND_CHILD", context, "one function component required");
+  if (!options?.identity?.component || !options.identity.build)
+    fail("ZR_ISLAND_IDENTITY", context, "component/build required");
+  const component =
+    (child.type as typeof child.type & { displayName?: string }).displayName ?? child.type.name;
+  if (component !== options.identity.component)
+    fail("ZR_ISLAND_IDENTITY", context, `expected ${options.identity.component}, got ${component}`);
+  if (Object.hasOwn(child.props, "children") && !empty(child.props.children))
+    fail("ZR_ISLAND_CHILD", context, "nonempty children");
+  const props = { ...child.props };
+  delete props.children;
+  const payload = serializeProps(props);
+  const when = options.when ?? "load";
+  if (
+    !["load", "idle", "visible", "media"].includes(when) ||
+    (when === "media" && !options.media?.trim()) ||
+    (when !== "media" && options.media !== undefined)
+  )
+    fail("ZR_ISLAND_WHEN", context, when);
+  const marker = options.skipSsr ? "data-zfb-island-skip-ssr" : "data-zfb-island";
+  const attrs = ` ${marker}="${escapeAttribute(options.identity.component)}" data-when="${when}"${when === "media" ? ` data-media="${escapeAttribute(options.media!)}"` : ""} data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${escapeAttribute(options.identity.build)}" data-props="${escapeAttribute(payload)}"`;
+  const local: Context = {
+    identity: options.skipSsr ? undefined : options.identity,
+    boundary: true,
+    next: 0,
+    scope: context.scope,
+    path: context.path,
+  };
+  const content = options.skipSsr
+    ? children(options.fallback, local, namespace, "div")
+    : render({ ...child, props }, local, "html", "div");
+  return `<div${attrs}>${content}</div>`;
+}
+export function renderHtml(node: Child, options: RenderOptions): string {
+  const root = createScope({ component: options.island?.component ?? "<root>" });
+  const context: Context = {
+    identity: options.island,
+    boundary: options.island !== undefined,
+    next: 0,
+    scope: root,
+    path: "root",
+  };
+  try {
+    return render(node, context, "html", "");
+  } finally {
+    root.dispose();
+  }
+}
