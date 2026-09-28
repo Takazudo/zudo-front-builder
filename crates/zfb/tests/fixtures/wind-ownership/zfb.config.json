@@ -1,5 +1,5 @@
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "wind": {
     "spec": 1,
     "reset": "none",

@@ -819,7 +819,7 @@ fn ssr_page(imports: &str, values: &[&str]) -> String {
         .collect();
     format!(
         "{imports}\nexport default function WorkspaceDepPage() {{\n  return (\n    \
-         <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        \
+         <html lang=\"en\">\n      <head>\n        <meta charset=\"utf-8\" />\n        \
          <title>ZFB3163_PAGE</title>\n      </head>\n      <body>\n        <main>\n\
          {paragraphs}        </main>\n      </body>\n    </html>\n  );\n}}\n"
     )

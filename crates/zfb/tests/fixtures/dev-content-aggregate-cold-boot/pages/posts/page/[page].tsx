@@ -33,7 +33,7 @@ export default function PaginatedPosts({ page }: { page: Page }) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>Paginated posts</title>
       </head>
       <body>

@@ -54,7 +54,7 @@ fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "base": "/site/",
   "minifyHtml": true,
   "plugins": [{ "name": "./postbuild-observer.mjs" }]
@@ -100,7 +100,7 @@ export default {
   return (
     <html lang="en">
       <head><title>HTML minify fixture</title></head>
-      <body dangerouslySetInnerHTML={{ __html: html }} />
+      <body rawHtml={html} />
     </html>
   );
 }

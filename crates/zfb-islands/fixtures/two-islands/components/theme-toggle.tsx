@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "preact/hooks";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
 
 export function ThemeToggle() {
-  const [dark, setDark] = useState(false);
+  const dark = signal(false);
+  const label = computed(() => (dark.value ? "light" : "dark"));
   return (
-    <button type="button" onClick={() => setDark(!dark)}>
-      {dark ? "light" : "dark"}
+    <button
+      type="button"
+      on:click={() => {
+        dark.value = !dark.value;
+      }}
+    >
+      {label}
     </button>
   );
 }

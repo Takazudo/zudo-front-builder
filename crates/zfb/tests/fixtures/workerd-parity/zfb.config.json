@@ -1,4 +1,4 @@
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "adapter": "@takazudo/zfb-adapter-cloudflare"
 }

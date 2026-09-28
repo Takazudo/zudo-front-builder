@@ -33,7 +33,7 @@ export default function TagPage({ tag, posts }: { tag: string; posts: Post[] }) 
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>{tag}</title>
       </head>
       <body>

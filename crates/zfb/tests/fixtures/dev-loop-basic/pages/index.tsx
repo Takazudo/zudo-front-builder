@@ -26,7 +26,7 @@ export default function HomePage({ posts }: Props) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>dev-loop-basic fixture</title>
       </head>
       <body>

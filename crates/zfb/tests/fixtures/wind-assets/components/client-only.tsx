@@ -1,15 +1,23 @@
 "use client";
 
-import { useState } from "preact/hooks";
+import { Show, signal } from "@takazudo/zfb/zudo-react";
 
 export default function ClientOnly() {
-  const [open, setOpen] = useState(false);
+  const open = signal(false);
   return (
     <section>
-      <button type="button" onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        on:click={() => {
+          open.value = !open.value;
+        }}
+      >
         Toggle client-only class
       </button>
-      {open && <div class="bg-client-only">The client-only branch is open.</div>}
+      {Show({
+        when: open,
+        children: () => <div class="bg-client-only">The client-only branch is open.</div>,
+      })}
     </section>
   );
 }

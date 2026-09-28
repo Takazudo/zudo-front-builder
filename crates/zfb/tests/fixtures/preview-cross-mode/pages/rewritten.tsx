@@ -5,7 +5,7 @@ export default function RewrittenPage() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>Rewritten</title>
       </head>
       <body>

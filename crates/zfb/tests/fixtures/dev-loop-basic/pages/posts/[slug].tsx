@@ -40,7 +40,7 @@ export default function PostPage({ post }: Props) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>{post.data.title}</title>
       </head>
       <body>

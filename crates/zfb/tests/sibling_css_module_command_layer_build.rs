@@ -107,7 +107,7 @@ fn write_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     fs::write(
         project.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "bundle": { "exclude": ["components/never-matches/**"] }
 }
 "#,
@@ -288,7 +288,7 @@ fn write_workspace_root_alias_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
     fs::write(
         project.join("zfb.config.json"),
         r#"{
-  "framework": "preact"
+  "framework": "zudo-react"
 }
 "#,
     )
@@ -405,7 +405,7 @@ fn write_broad_root_alias_only_fixture(ws_root: &Path) -> (PathBuf, tempfile::Te
     .unwrap();
     fs::write(
         project.join("zfb.config.json"),
-        r#"{ "framework": "preact" }"#,
+        r#"{ "framework": "zudo-react" }"#,
     )
     .unwrap();
     fs::write(
@@ -599,7 +599,7 @@ fn write_virtual_only_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     fs::write(
         project.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }]
 }
 "#,
@@ -789,7 +789,7 @@ fn write_direct_virtual_css_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempD
     fs::write(
         project.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }]
 }
 "#,
@@ -972,7 +972,7 @@ fn write_utility_only_sibling_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
     fs::write(
         project.join("zfb.config.json"),
         r##"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "wind": { "tokens": { "colors": { "marker": "#123456" } } }
 }
 "##,
