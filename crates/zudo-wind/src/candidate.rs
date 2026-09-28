@@ -392,9 +392,16 @@ mod tests {
     }
 
     #[test]
-    fn g09_named_and_g10_decimal_remain_unsplit() {
+    fn g09_named_body_remains_unsplit() {
         assert_eq!(accepted("gap-x-1.5").utility.named, "gap-x-1.5");
-        assert_eq!(accepted("py-0.5").utility.named, "py-0.5");
+    }
+
+    #[test]
+    fn g10_decimal_modifier() {
+        assert_eq!(
+            accepted("bg-panel/0.5").utility.slash_modifier.as_deref(),
+            Some("0.5")
+        );
     }
 
     #[test]
@@ -425,8 +432,12 @@ mod tests {
     }
 
     #[test]
-    fn g13_token_name_and_g17_positive_integer_are_resolver_inputs() {
+    fn g13_token_name_is_resolver_input() {
         assert_eq!(accepted("max-w-2xl").utility.named, "max-w-2xl");
+    }
+
+    #[test]
+    fn g17_positive_integer_is_preserved_for_resolver() {
         assert_eq!(
             accepted("aspect-[1200/630]")
                 .utility
@@ -475,45 +486,105 @@ mod tests {
     }
 
     #[test]
-    fn r01_to_r11_syntax_rejections() {
-        for (text, code, id) in [
-            ("hover::block", DiagnosticCode::Zw001, "R01"),
-            ("w-[calc(1px]", DiagnosticCode::Zw001, "R02"),
-            ("w-(10px)", DiagnosticCode::Zw001, "R03"),
-            ("lg:block", DiagnosticCode::Zw002, "R04"),
-            ("hover:focus:block", DiagnosticCode::Zw003, "R05"),
-            ("hover:sm:block", DiagnosticCode::Zw003, "R06"),
-            ("group/menu", DiagnosticCode::Zw004, "R07"),
-            ("group-hover/menu:block", DiagnosticCode::Zw004, "R07"),
-            ("aria-pressed:block", DiagnosticCode::Zw004, "R08"),
-            ("data-[state=open]:block", DiagnosticCode::Zw004, "R08"),
-            ("[&_a]:underline", DiagnosticCode::Zw004, "R09"),
-            ("[overflow-wrap:anywhere]", DiagnosticCode::Zw004, "R10"),
-            ("!block", DiagnosticCode::Zw004, "R11"),
-            ("block!", DiagnosticCode::Zw004, "R11"),
-        ] {
-            rejected(text, code, id);
-        }
+    fn r01_empty_segment() {
+        rejected("hover::block", DiagnosticCode::Zw001, "R01");
     }
 
     #[test]
-    fn r06_suggests_canonical_order() {
+    fn r02_unbalanced_delimiter() {
+        rejected("w-[calc(1px]", DiagnosticCode::Zw001, "R02");
+    }
+
+    #[test]
+    fn r03_forbidden_outer_punctuation() {
+        rejected("w-(10px)", DiagnosticCode::Zw001, "R03");
+    }
+
+    #[test]
+    fn r04_unknown_variant() {
+        rejected("lg:block", DiagnosticCode::Zw002, "R04");
+    }
+
+    #[test]
+    fn r05_duplicate_variant_class() {
+        rejected("hover:focus:block", DiagnosticCode::Zw003, "R05");
+    }
+
+    #[test]
+    fn r06_noncanonical_order_suggests_spelling() {
+        rejected("hover:sm:block", DiagnosticCode::Zw003, "R06");
         let error = parse_candidate("hover:sm:block", &vocabulary()).unwrap_err();
         assert_eq!(error.suggested_spelling.as_deref(), Some("sm:hover:block"));
     }
 
     #[test]
-    fn r20_r22_r23_rejections() {
-        rejected("ring-2", DiagnosticCode::Zw004, "R20");
-        rejected("animate-spin", DiagnosticCode::Zw004, "R20");
-        rejected("hover:group", DiagnosticCode::Zw004, "R22");
-        rejected("before:divide-y", DiagnosticCode::Zw005, "R23");
+    fn r07_named_relation_forms() {
+        rejected("group/menu", DiagnosticCode::Zw004, "R07");
+        rejected("group-hover/menu:block", DiagnosticCode::Zw004, "R07");
     }
 
     #[test]
-    fn slash_modifier_requires_decimal_syntax() {
+    fn r08_attribute_variants() {
+        rejected("aria-pressed:block", DiagnosticCode::Zw004, "R08");
+        rejected("data-[state=open]:block", DiagnosticCode::Zw004, "R08");
+    }
+
+    #[test]
+    fn r09_arbitrary_selector_variant() {
+        rejected("[&_a]:underline", DiagnosticCode::Zw004, "R09");
+    }
+
+    #[test]
+    fn r10_arbitrary_property() {
+        rejected("[overflow-wrap:anywhere]", DiagnosticCode::Zw004, "R10");
+    }
+
+    #[test]
+    fn r11_important_forms() {
+        rejected("!block", DiagnosticCode::Zw004, "R11");
+        rejected("block!", DiagnosticCode::Zw004, "R11");
+    }
+
+    #[test]
+    fn r12_negative_permission_is_resolver_owned() {
+        let part = accepted("-p-2").utility;
+        assert!(part.negative);
+        assert_eq!(part.named, "p-2");
+    }
+
+    #[test]
+    fn r13_fraction_semantics_are_resolver_owned() {
+        for text in ["w-1/0", "w-0.5/2"] {
+            assert_eq!(
+                accepted(text).utility.slash_modifier.as_deref(),
+                Some(if text == "w-1/0" { "0" } else { "2" })
+            );
+        }
+    }
+
+    #[test]
+    fn r14_modifier_syntax_and_family_semantics() {
         rejected("bg-panel/foo", DiagnosticCode::Zw005, "R14");
         rejected("bg-panel/1.2.3", DiagnosticCode::Zw005, "R14");
+        // Range and family checks belong to the utility resolver.
+        assert_eq!(
+            accepted("bg-panel/101").utility.slash_modifier.as_deref(),
+            Some("101")
+        );
+        assert_eq!(
+            accepted("p-2/50").utility.slash_modifier.as_deref(),
+            Some("50")
+        );
+    }
+
+    #[test]
+    fn r15_arbitrary_value_shape_and_property_validation_boundary() {
+        rejected("w-[]", DiagnosticCode::Zw005, "R15");
+        rejected("w-[1px;color:red]", DiagnosticCode::Zw005, "R15");
+        assert_eq!(
+            accepted("w-[red]").utility.arbitrary_value.as_deref(),
+            Some("red")
+        );
     }
 
     #[test]
@@ -524,19 +595,40 @@ mod tests {
     }
 
     #[test]
-    fn resolver_rejections_keep_their_structural_inputs() {
-        // R12–R19 and R21 need the catalog, tokens, CSS-property parser or origin.
-        for text in [
-            "-p-2",
-            "w-1/0",
-            "w-0.5/2",
-            "bg-panel/101",
-            "p-2/50",
-            "w-[red]",
-            "rounded",
-            "site-header",
-        ] {
-            accepted(text);
-        }
+    fn r17_missing_default_is_resolver_owned() {
+        assert_eq!(accepted("rounded").utility.named, "rounded");
+    }
+
+    #[test]
+    fn r18_invalid_configured_token_name_is_config_owned() {
+        // The parser sees only candidates, never `colors.center` or radii.DEFAULT.
+        assert_eq!(accepted("text-center").utility.named, "text-center");
+    }
+
+    #[test]
+    fn r19_invalid_config_shape_is_config_owned() {
+        // `spec: 2` and duplicate widths have no candidate representation.
+        assert_eq!(accepted("sm:block").variants.0[0].raw, "sm");
+    }
+
+    #[test]
+    fn r20_recognized_unsupported_families() {
+        rejected("ring-2", DiagnosticCode::Zw004, "R20");
+        rejected("animate-spin", DiagnosticCode::Zw004, "R20");
+    }
+
+    #[test]
+    fn r21_unknown_explicit_class_needs_origin_and_catalog() {
+        assert_eq!(accepted("site-header").utility.named, "site-header");
+    }
+
+    #[test]
+    fn r22_variant_on_marker() {
+        rejected("hover:group", DiagnosticCode::Zw004, "R22");
+    }
+
+    #[test]
+    fn r23_child_utility_with_pseudo_element() {
+        rejected("before:divide-y", DiagnosticCode::Zw005, "R23");
     }
 }
