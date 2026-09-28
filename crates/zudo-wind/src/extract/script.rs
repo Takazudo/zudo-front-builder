@@ -64,8 +64,8 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
                         i + 1,
                         class,
                         quote != b'`',
-                        false,
-                        left,
+                        source[i + 1..].trim_start().starts_with('+'),
+                        left || source[..open].trim_end().ends_with('+'),
                     );
                     i += 1;
                     break;
@@ -122,7 +122,18 @@ fn class_context(prefix: &str) -> bool {
         .rsplit(|c: char| !c.is_ascii_alphanumeric())
         .next()
         .unwrap_or("");
-    name == "class" || name == "className"
+    if name != "class" && name != "className" {
+        return false;
+    }
+    let preceding_word = before
+        .trim_end()
+        .strip_suffix(name)
+        .unwrap_or("")
+        .trim_end()
+        .rsplit(|c: char| !c.is_ascii_alphanumeric())
+        .next()
+        .unwrap_or("");
+    !matches!(preceding_word, "const" | "let" | "var")
 }
 
 fn regex_context(prefix: &str) -> bool {

@@ -1,4 +1,6 @@
-use zudo_wind::{extract_candidates, NoteKind, PositionKind, SourceKind};
+use zudo_wind::{
+    audit, extract_candidates, AuditInput, NoteKind, PositionKind, SourceKind, WindConfig,
+};
 
 fn names(bytes: &[u8], kind: SourceKind) -> Vec<String> {
     extract_candidates(bytes, kind)
@@ -115,6 +117,48 @@ fn interpolation_boundary_and_dynamic_fragment() {
             .count(),
         1
     );
+}
+
+#[test]
+fn classname_declarations_with_concatenation_are_dynamic() {
+    for declaration in ["const", "let", "var"] {
+        let source = format!(
+            "{declaration} className = \"bg-\" + \"assembled\";\n\
+             const classes = {{ tone: \"bg-sky-500\" }};\n\
+             const node = <div className=\"p-2\" />;"
+        );
+        let result = extract_candidates(source.as_bytes(), SourceKind::Tsx);
+        assert!(!result.candidates.iter().any(|c| c.text == "bg-assembled"));
+        assert!(!result.candidates.iter().any(|c| c.text == "bg-"));
+        assert!(!result.candidates.iter().any(|c| c.text == "assembled"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| { n.kind == NoteKind::DynamicConstruction && n.text == "bg-" }));
+        let literal = result
+            .candidates
+            .iter()
+            .find(|c| c.text == "bg-sky-500")
+            .unwrap();
+        assert!(literal
+            .occurrences
+            .iter()
+            .all(|o| o.position_kind == PositionKind::Literal));
+        let jsx = result.candidates.iter().find(|c| c.text == "p-2").unwrap();
+        assert!(jsx
+            .occurrences
+            .iter()
+            .any(|o| o.position_kind == PositionKind::Class));
+
+        let report = audit(
+            &AuditInput::single("declaration.tsx", result),
+            &WindConfig::default(),
+        );
+        assert!(report
+            .dynamic_constructions
+            .iter()
+            .any(|d| { d.source_id == "declaration.tsx" && d.text == "bg-" }));
+    }
 }
 
 #[test]
