@@ -1,311 +1,13 @@
-//! Integration-style tests for the public surface of `zfb-css`.
-//!
-//! These exercise the engine trait, the CSS Modules processor, and the
-//! top-level `CssPipeline`. Tests that need the real Tailwind v4 binary
-//! are gated by `#[ignore]` (`env-gate:`, see crates/CLAUDE.md's taxonomy) — the
-//! binary IS staged at `crates/zfb/binaries/tailwindcss-v4` in CI
-//! (`crates/zfb/build.rs` downloads it as a side effect of building the
-//! `zfb` crate), and health.yml runs this suite with `--include-ignored`
-//! on every PR (issue #1393; see crates/CLAUDE.md's manifest row). Run
-//! locally with `cargo test -- --include-ignored` once a build has staged
-//! the slot, or set `ZFB_TAILWIND_BIN` explicitly.
+//! Integration tests for the CSS pipeline.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use zfb_css::{
-    build_synthesised_entry_css, link_href, scan_css_module_imports, AuthoredCssEngine,
-    CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngine, CssEngineId,
-    CssEngineOutput, CssInputDependency, CssInputDependencyKind, CssModulesOutput,
-    CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine, OxideWarmupPolicy,
-    StubCssEngine, TailwindSubprocessConfig, TailwindSubprocessEngine,
+    link_href, scan_css_module_imports, AuthoredCssEngine, CssDiagnostic, CssDiagnosticOrigin,
+    CssDiagnosticSeverity, CssEngineId, CssEngineOutput, CssInputDependency,
+    CssInputDependencyKind, CssModulesOutput, CssModulesProcessor, CssPipeline, CssPipelineConfig,
+    StubCssEngine,
 };
-
-#[test]
-fn native_engine_returns_not_implemented_error() {
-    let engine = NativeRustEngine::new();
-    let err = engine
-        .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
-        .expect_err("NativeRustEngine must return an error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("not yet implemented"),
-        "expected 'not yet implemented' in error, got: {msg}"
-    );
-}
-
-#[test]
-fn subprocess_engine_mock_short_circuits_command() {
-    // Use the mock-output escape hatch so this test does not require the
-    // tailwindcss binary to be present.
-    let cfg =
-        TailwindSubprocessConfig::default().with_mock_output(".mock-utility { color: red; }\n");
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let css = engine
-        .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
-        .expect("mock engine should succeed");
-    assert_eq!(css.css, ".mock-utility { color: red; }\n");
-    assert!(css.companions.is_empty());
-}
-
-#[test]
-fn subprocess_engine_second_mock_call_has_no_stale_companions() {
-    let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default().with_mock_output(".mock{}"),
-    );
-    let first = engine.produce_utility_css(&[]).unwrap();
-    let second = engine.produce_utility_css(&[]).unwrap();
-    assert_eq!(first.css, second.css);
-    assert!(first.companions.is_empty());
-    assert!(second.companions.is_empty());
-}
-
-#[cfg(unix)]
-#[test]
-fn node_npm_cli_shape_runs_only_the_real_tailwind_invocation() {
-    use std::os::unix::fs::PermissionsExt;
-
-    // Windows is intentionally out of scope: this repository has no Windows
-    // Rust test leg, while pure shape tests above cover its .cmd/.ps1 forms.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fake_bin = dir.path().join("tailwindcss");
-    let log = dir.path().join("invocations.log");
-    std::fs::write(
-        &fake_bin,
-        br#"#!/bin/sh
-# cmd-shim-target=/workspace/node_modules/@tailwindcss/cli/dist/index.mjs
-basedir=$(dirname "$0")
-printf '%s\n' "$*" >> "$basedir/invocations.log"
-previous=
-output=
-for argument in "$@"; do
-  if [ "$previous" = "-o" ]; then output=$argument; fi
-  previous=$argument
-done
-: > "$output"
-"#,
-    )
-    .expect("write fake tailwind executable");
-    std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake tailwind executable");
-
-    let config = TailwindSubprocessConfig::default()
-        .with_binary_path(&fake_bin)
-        .with_working_dir(dir.path())
-        .with_oxide_warmup(OxideWarmupPolicy::Auto);
-    let engine = TailwindSubprocessEngine::new(config);
-
-    for expected_count in 1..=2 {
-        engine
-            .produce_utility_css(&[])
-            .expect("fake tailwind invocation should succeed");
-        let invocations = std::fs::read_to_string(&log).expect("read invocation log");
-        let lines: Vec<_> = invocations.lines().collect();
-        assert_eq!(lines.len(), expected_count);
-        assert!(lines
-            .iter()
-            .all(|line| line.contains("-i ") && line.contains("-o ")));
-        assert!(
-            lines
-                .iter()
-                .all(|line| !line.contains("warmup.css") && !line.contains("warmup.out.css")),
-            "Node/npm CLI shape must never receive a warm-up invocation: {lines:?}"
-        );
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn subprocess_engine_spawns_with_source_list_over_linux_max_arg_strlen() {
-    use std::os::unix::fs::PermissionsExt;
-
-    // The source paths are intentionally not materialised. They are only
-    // caller hints; Tailwind reads the explicit @source directives from the
-    // synthesised entry CSS instead. Keeping this inventory in memory makes
-    // the fixture exercise the subprocess transport itself without creating
-    // thousands of files.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fake_bin = dir.path().join("tailwindcss");
-    std::fs::write(
-        &fake_bin,
-        br##"#!/bin/sh
-# An old engine revision put the complete source inventory in this env var.
-# Reject it so the test fails on Unix hosts where execve accepts the value;
-# on 4 KiB-page Linux, the kernel rejects the spawn before this script starts.
-if [ "${ZFB_TAILWIND_SOURCES+x}" = x ]; then
-  echo "ZFB_TAILWIND_SOURCES must not be inherited" >&2
-  exit 91
-fi
-previous=
-output=
-for argument in "$@"; do
-  if [ "$previous" = "-o" ]; then output=$argument; fi
-  previous=$argument
-done
-if [ -z "$output" ]; then
-  echo "missing -o output path" >&2
-  exit 92
-fi
-printf '.source-list-regression { color: red; }\n' > "$output"
-"##,
-    )
-    .expect("write fake tailwind executable");
-    std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake tailwind executable");
-
-    let target_size = 256 * 1024;
-    let mut sources = Vec::new();
-    let mut joined_len = 0;
-    while joined_len < target_size {
-        let path = dir.path().join(format!(
-            "source-{index:06}-{}",
-            "x".repeat(112),
-            index = sources.len()
-        ));
-        joined_len += path.as_os_str().to_string_lossy().len();
-        if !sources.is_empty() {
-            joined_len += 1;
-        }
-        sources.push(path);
-    }
-    assert!(
-        (250 * 1024..=270 * 1024).contains(&joined_len),
-        "source inventory should be about 256 KiB, got {joined_len} bytes"
-    );
-    assert!(
-        sources.iter().all(|path| !path.exists()),
-        "the large source inventory must not materialise files"
-    );
-
-    let config = TailwindSubprocessConfig::default()
-        .with_binary_path(&fake_bin)
-        .with_working_dir(dir.path())
-        .with_oxide_warmup(OxideWarmupPolicy::Never);
-    let engine = TailwindSubprocessEngine::new(config);
-    let css = engine
-        .produce_utility_css(&sources)
-        .expect("large source inventory must not prevent child spawn");
-
-    assert!(
-        css.css.contains(".source-list-regression"),
-        "fake child output should be returned, got: {:?}",
-        css.css
-    );
-}
-
-#[test]
-#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-css --test \
-            integration -- --include-ignored (ZFB_TAILWIND_BIN or the staged \
-            crates/zfb/binaries/tailwindcss-v4 slot)"]
-fn subprocess_engine_against_real_binary() {
-    let engine = TailwindSubprocessEngine::with_default_config();
-    let css = engine
-        .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
-        .expect("real tailwindcss binary should produce CSS");
-    assert!(
-        !css.css.is_empty(),
-        "real engine should not return empty CSS"
-    );
-    // #2315: the engine now passes `--map` for url() attribution; the inline
-    // sourcemap comment must be stripped back out before the CSS is returned
-    // (the CssEngine contract: no source maps embedded in the string).
-    assert!(
-        !css.css.contains("sourceMappingURL"),
-        "the --map inline sourcemap comment must be stripped from the returned CSS"
-    );
-}
-
-#[test]
-fn subprocess_engine_reports_missing_binary_clearly() {
-    let cfg = TailwindSubprocessConfig::default()
-        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let err = engine
-        .produce_utility_css(&[])
-        .expect_err("missing binary must error");
-    let msg = format!("{err}");
-    assert!(msg.contains("not found"), "got: {msg}");
-}
-
-#[test]
-fn subprocess_engine_rejects_minify_flag_because_it_breaks_url_attribution() {
-    // codex review finding (P2, #2327): `--minify` invalidates the
-    // sourcemap-position assumptions package `url()` attribution depends on
-    // (Lightning CSS's rule merging), yet attribution runs unconditionally
-    // on every real (non-mock) call. Use a nonexistent binary path so a
-    // passing check (not this one) would fail for an unrelated reason
-    // ("not found") instead of silently succeeding — and to prove the
-    // extra_args check runs BEFORE the binary-exists check, not after.
-    let mut cfg = TailwindSubprocessConfig::default()
-        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
-    cfg.extra_args = vec![OsString::from("--minify")];
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let err = engine
-        .produce_utility_css(&[])
-        .expect_err("--minify with attribution enabled must error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("--minify") && msg.contains("attribution"),
-        "expected an error naming --minify and attribution, got: {msg}"
-    );
-    assert!(
-        !msg.contains("not found"),
-        "the minify rejection must fire before the binary-exists check, got: {msg}"
-    );
-}
-
-#[test]
-fn subprocess_engine_rejects_short_minify_flag() {
-    // `-m` is `--minify`'s short spelling, not a distinct flag — must be
-    // rejected identically.
-    let mut cfg = TailwindSubprocessConfig::default()
-        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
-    cfg.extra_args = vec![OsString::from("-m")];
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let err = engine
-        .produce_utility_css(&[])
-        .expect_err("-m with attribution enabled must error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("-m") && msg.contains("attribution"),
-        "expected an error naming -m and attribution, got: {msg}"
-    );
-}
-
-#[test]
-fn subprocess_engine_rejects_optimize_flag() {
-    let mut cfg = TailwindSubprocessConfig::default()
-        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
-    cfg.extra_args = vec![OsString::from("--optimize")];
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let err = engine
-        .produce_utility_css(&[])
-        .expect_err("--optimize with attribution enabled must error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("--optimize") && msg.contains("attribution"),
-        "expected an error naming --optimize and attribution, got: {msg}"
-    );
-}
-
-#[test]
-fn subprocess_engine_extra_args_with_unrelated_flags_still_reach_the_binary_check() {
-    // A non-minify extra arg must NOT be rejected — execution should
-    // continue past the new guard and fail for the ordinary "binary not
-    // found" reason instead, proving unrelated flags are unaffected.
-    let mut cfg = TailwindSubprocessConfig::default()
-        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
-    cfg.extra_args = vec![OsString::from("--verbose")];
-    let engine = TailwindSubprocessEngine::new(cfg);
-    let err = engine
-        .produce_utility_css(&[])
-        .expect_err("missing binary must still error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("not found"),
-        "unrelated extra_args must not be rejected by the minify guard, got: {msg}"
-    );
-}
 
 #[test]
 fn css_modules_processor_scopes_class_names() {
@@ -395,37 +97,10 @@ fn pipeline_hash_changes_when_engine_output_changes() {
 }
 
 // ----------------------------------------------------------------------
-// Acceptance fixture (Sub 9 of issue #53):
-//
-// CSS Modules + Tailwind utilities + cross-package framework globs.
-// We can't run the real Tailwind binary in CI yet (the slot is reserved
-// but not populated — Topic B / Sub 4). So this test:
-//
-// 1. Materialises a fake user project + a fake framework package on
-//    disk — they each contain TSX with both Tailwind utility classes
-//    and `import * from "*.module.css"` statements.
-// 2. Runs the pipeline with StubCssEngine. The stub returns
-//    a CSS string that includes class names from both packages — this
-//    simulates the real binary scanning both `@source` directives and
-//    keeping framework-only classes.
-// 3. In a separate Tailwind test, asserts the synthesised entry CSS fed to
-//    Tailwind contains `@source` directives for both packages, in the
-//    correct order, plus the user's `@theme {…}` block.
-// 4. Asserts CSS Modules auto-discovery picked up the modules from
-//    both the user TSX and the framework TSX, and that the output
-//    stylesheet contains the scoped class name (proves real CSS
-//    Modules processing happened end-to-end on both packages).
-// 5. Asserts the framework-only utility class is present in the
-//    combined CSS output (verifies the cross-package content-glob
-//    plumbing — when the real binary lands, this check reduces to
-//    "the binary kept the class" because we put the class in the
-//    `@source` set).
-// 6. Asserts the JSON class-name maps were emitted (the JS-side
-//    rewrite contract).
-// ----------------------------------------------------------------------
+// Cross-package CSS Modules and structured engine-output fixture.
 
 #[test]
-fn acceptance_css_modules_plus_tailwind_with_framework_package_globs() {
+fn acceptance_css_modules_with_framework_package_sources() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -452,11 +127,7 @@ export default function Page() {
     let user_global_css = user_proj.join("styles");
     std::fs::create_dir_all(&user_global_css).unwrap();
     let user_global_css_file = user_global_css.join("global.css");
-    std::fs::write(
-        &user_global_css_file,
-        "@theme {\n  --color-brand: #123456;\n}\n",
-    )
-    .unwrap();
+    std::fs::write(&user_global_css_file, ":root { --color-brand: #123456; }\n").unwrap();
 
     // ---- framework package (mimics Phase B's packages/zudo-doc-v2/) ----
     let fw_pkg = root.join("packages").join("zudo-doc-v2");
@@ -478,7 +149,7 @@ export function DocShell() {
     // The stub output simulates the real binary scanning
     // both @source globs and emitting utilities for both pages —
     // including the framework-only `prose-zfb-only` class.
-    let mock_tailwind =
+    let mock_utility_css =
         ".flex{display:flex}.items-center{align-items:center}.prose-zfb-only{max-width:65ch}\n";
 
     // Sources fed to the pipeline: the user's TSX *and* the framework
@@ -498,7 +169,7 @@ export function DocShell() {
     };
 
     // ---- Run ----
-    let pipeline = CssPipeline::new(StubCssEngine::new(mock_tailwind), cfg);
+    let pipeline = CssPipeline::new(StubCssEngine::new(mock_utility_css), cfg);
     let out = pipeline.build().expect("acceptance pipeline build");
 
     // (4) Auto-discovery picked up *both* modules. Per-source
@@ -576,150 +247,6 @@ export function DocShell() {
     assert!(out.asset_path.exists());
     let href = link_href("/", &out.asset_path);
     assert_eq!(href, format!("/assets/styles-{}.css", out.hash));
-}
-
-#[test]
-fn acceptance_tailwind_entry_with_framework_package_globs() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
-    let user_proj = root.join("project");
-    std::fs::create_dir_all(&user_proj).unwrap();
-    let user_global_css_file = user_proj.join("global.css");
-    std::fs::write(
-        &user_global_css_file,
-        "@theme {\n  --color-brand: #123456;\n}\n",
-    )
-    .unwrap();
-    let fw_pkg = root.join("packages").join("zudo-doc-v2");
-    let tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(&user_proj)
-        .with_input_css(&user_global_css_file)
-        .with_content_globs(vec!["pages/**/*.{tsx,jsx,ts,js}"])
-        .with_framework_package_globs(vec![format!("{}/**/*.{{tsx,jsx,ts,js}}", fw_pkg.display())])
-        .with_theme_block("@theme inline {\n  --font-display: 'Inter';\n}\n")
-        .with_mock_output("");
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
-    let sources = vec![
-        user_proj.join("pages/index.tsx"),
-        fw_pkg.join("components/doc-shell.tsx"),
-    ];
-    // The Tailwind-specific entry synthesis remains on its own engine.
-    engine
-        .produce_utility_css(&sources)
-        .expect("mock Tailwind output");
-    let entry = engine
-        .last_entry_css()
-        .expect("synthesised entry CSS must be recorded");
-
-    // (3) Synthesised entry CSS contains both user-project and
-    // framework-package @source directives, plus the user's @theme.
-    assert!(
-        entry.contains("@import \"tailwindcss\""),
-        "entry CSS must include the tailwind import; got:\n{entry}"
-    );
-    assert!(
-        entry.contains("@source \"pages/**/*.{tsx,jsx,ts,js}\""),
-        "entry CSS must include the user-project content glob; got:\n{entry}"
-    );
-    let fw_marker = format!("{}/**/", fw_pkg.display());
-    assert!(
-        entry.contains(&fw_marker),
-        "entry CSS must include the framework-package content glob ({fw_marker}); got:\n{entry}"
-    );
-    let user_at_pos = entry
-        .find("@source \"pages/**/*.{tsx,jsx,ts,js}\"")
-        .expect("user @source position");
-    let fw_at_pos = entry.find(&fw_marker).expect("fw @source position");
-    assert!(
-        user_at_pos < fw_at_pos,
-        "user-project @source must precede framework @source in cascade order"
-    );
-    assert!(
-        entry.contains("--color-brand"),
-        "entry CSS must include the user's @theme block contents; got:\n{entry}"
-    );
-    assert!(
-        entry.contains("--font-display"),
-        "entry CSS must include the inline theme_block contents; got:\n{entry}"
-    );
-}
-
-#[test]
-fn synthesised_entry_drops_duplicate_tailwind_import_from_user_css() {
-    let cfg = TailwindSubprocessConfig::default().with_content_globs(vec!["pages/**/*.tsx"]);
-    let user = "@import \"tailwindcss\";\n.foo { color: red; }\n";
-    let out = build_synthesised_entry_css(&cfg, Some(user));
-    let occurrences = out.matches("@import \"tailwindcss\"").count();
-    assert_eq!(
-        occurrences, 1,
-        "duplicate tailwind import must be elided; got:\n{out}"
-    );
-    assert!(out.contains(".foo"));
-    assert!(out.contains("@source \"pages/**/*.tsx\""));
-}
-
-// ----------------------------------------------------------------------
-// Split-import fixture (Sub 1 of issue #159 / sub-issue #191):
-//
-// When user CSS uses the split-import pattern
-// (`@import "tailwindcss/preflight"; @import "tailwindcss/utilities";`)
-// instead of the full bundle `@import "tailwindcss";`, the synthesised
-// entry CSS must NOT prepend the full bundle import. Without this guard
-// zfb would emit `@import "tailwindcss";` on top, which loads the full
-// default theme and leaks default palette tokens (--color-*, --spacing,
-// etc.) into the compiled @theme output even though the user deliberately
-// chose split imports to avoid them.
-// ----------------------------------------------------------------------
-
-#[test]
-fn synthesised_entry_omits_full_import_when_user_css_has_split_import() {
-    let cfg = TailwindSubprocessConfig::default().with_content_globs(vec!["pages/**/*.tsx"]);
-
-    // User CSS uses split imports — the deliberate way to opt out of the
-    // full default Tailwind theme.
-    let user = "@import \"tailwindcss/preflight\";\n@import \"tailwindcss/utilities\";\n.foo { color: red; }\n";
-    let out = build_synthesised_entry_css(&cfg, Some(user));
-
-    // The full-bundle import must NOT be prepended.
-    assert!(
-        !out.starts_with("@import \"tailwindcss\";"),
-        "full bundle import must not be prepended when user CSS has split imports; got:\n{out}"
-    );
-    // More specifically, it must not appear at all as a standalone line
-    // (the user's sub-path imports are still present and that's fine).
-    let has_full_bundle = out.lines().any(|l| {
-        let t = l.trim();
-        t == "@import \"tailwindcss\";" || t == "@import 'tailwindcss';"
-    });
-    assert!(
-        !has_full_bundle,
-        "full @import \"tailwindcss\"; must not appear when user CSS has split imports; got:\n{out}"
-    );
-
-    // The user's original content is preserved.
-    assert!(out.contains("@import \"tailwindcss/preflight\""));
-    assert!(out.contains("@import \"tailwindcss/utilities\""));
-    assert!(out.contains(".foo"));
-
-    // The @source directive for the content glob is still emitted.
-    assert!(out.contains("@source \"pages/**/*.tsx\""));
-}
-
-#[test]
-fn synthesised_entry_omits_full_import_for_single_quoted_split_import() {
-    let cfg = TailwindSubprocessConfig::default();
-    // Single-quoted variant of split import.
-    let user = "@import 'tailwindcss/preflight';\n@import 'tailwindcss/utilities';\n";
-    let out = build_synthesised_entry_css(&cfg, Some(user));
-
-    let has_full_bundle = out.lines().any(|l| {
-        let t = l.trim();
-        t == "@import \"tailwindcss\";" || t == "@import 'tailwindcss';"
-    });
-    assert!(
-        !has_full_bundle,
-        "full bundle import must not appear for single-quoted split imports; got:\n{out}"
-    );
 }
 
 #[test]
@@ -915,28 +442,6 @@ fn first_rule_offset(css: &str) -> usize {
 
 fn import_offset(css: &str) -> usize {
     css.find("@import").expect("an @import must be present")
-}
-
-#[test]
-fn acceptance_hoists_font_import_tailwind_engine_half() {
-    // Tailwind half: the (mock) engine emits the inlined-utilities-then-rules
-    // shape with a trailing external font @import, exactly like the real v4
-    // subprocess output that triggered #1280.
-    let mock = "@layer a, b;\n.x { color: red }\n.y { color: blue }\n\
-                @import url(\"https://fonts.googleapis.com/css2?family=Noto+Sans+JP\");\n";
-    let engine = StubCssEngine::new(mock);
-    let cfg = CssPipelineConfig {
-        sources: vec![PathBuf::from("pages/index.tsx")],
-        ..CssPipelineConfig::default()
-    };
-    let combined = CssPipeline::new(engine, cfg)
-        .build_emitter()
-        .expect("build_emitter");
-    let css = String::from_utf8(combined.bytes).expect("utf8");
-    assert!(
-        import_offset(&css) < first_rule_offset(&css),
-        "Tailwind-half: font @import must be hoisted above the first style rule:\n{css}"
-    );
 }
 
 #[test]

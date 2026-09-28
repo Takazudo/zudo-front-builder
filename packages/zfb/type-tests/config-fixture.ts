@@ -59,3 +59,8 @@ export const windRejectsTrueShorthand = defineConfig({
   // @ts-expect-error wind is either false or a configuration object.
   wind: true,
 });
+
+export const tailwindKeyIsRejected = defineConfig({
+  // @ts-expect-error Tailwind configuration was removed in zfb 3.
+  tailwind: { enabled: false },
+});

@@ -267,7 +267,6 @@ jobs:
               | test(=islands_shadow_preserve_symlinks_is_load_bearing)
               | test(=real_binary_build_and_dev_cover_client_bundling_contract)
               | test(=wrangler_dry_run_attaches_runtime_wasm_as_compiled_module)
-              | test(=subprocess_engine_against_real_binary)
               | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
               | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
               | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths)

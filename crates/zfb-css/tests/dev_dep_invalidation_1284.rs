@@ -24,9 +24,8 @@
 //! `@import` resolver). Both are un-ignored and green.
 
 use std::fs;
-use std::path::Path;
 
-use zfb_css::engine::{default_source_directives, DEFAULT_CONTENT_ROOTS};
+use zfb_css::engine::DEFAULT_CONTENT_ROOTS;
 use zfb_css::resolve_css_imports;
 
 /// SYMPTOM C (fixed) — `src/` is a scan root so a new utility class authored in
@@ -38,13 +37,6 @@ fn src_root_is_scanned_for_utility_classes() {
         DEFAULT_CONTENT_ROOTS.contains(&"src"),
         "fix adds src/ to the Tailwind scan roots"
     );
-    let dirs = default_source_directives(Path::new("/proj"));
-    assert!(
-        dirs.contains("/proj/src"),
-        "after the fix the emitted @source directives cover /proj/src"
-    );
-    // Sanity: the roots it already covered are still present.
-    assert!(dirs.contains("/proj/components"));
 }
 
 /// SYMPTOM B (engine half, fixed) — the `@import` resolver (D2) surfaces the
