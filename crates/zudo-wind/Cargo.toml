@@ -7,3 +7,7 @@ description = "Owned utility CSS language parser and engine"
 
 [dependencies]
 lightningcss = { workspace = true }
+ignore = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
