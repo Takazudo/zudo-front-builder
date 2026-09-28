@@ -29,6 +29,16 @@ describe("server renderer", () => {
     expect(renderToString(h(Fragment, null, page))).toBe(expected);
     expect(renderToString(page)).toBe(expected);
   });
+  it("renders SVG dimensions as strings or numbers and rejects booleans", () => {
+    expect(renderToString(h("svg", { width: "16", height: 24 }))).toBe(
+      '<svg width="16" height="24"></svg>',
+    );
+    expect(renderToString(h("svg", { width: signal(16), height: signal("24") }))).toBe(
+      '<svg width="16" height="24"></svg>',
+    );
+    expect(() => renderToString(h("svg", { width: true }))).toThrow("ZR_ATTRIBUTE");
+    expect(() => renderToString(h("svg", { height: false }))).toThrow("ZR_ATTRIBUTE");
+  });
   it("renders deterministic local island regions", () => {
     const node = islandRoot(h(Demo, null), { identity });
     const expected =
