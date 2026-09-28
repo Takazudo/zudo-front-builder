@@ -1130,6 +1130,10 @@ pub(crate) struct WindSessionIndex {
 }
 
 impl WindSessionIndex {
+    pub(crate) fn manifest_paths(&self) -> Vec<PathBuf> {
+        self.plan.manifests.values().cloned().collect()
+    }
+
     fn canonical_event_path(path: &Path) -> PathBuf {
         let mut cursor = path;
         let mut suffix = Vec::new();

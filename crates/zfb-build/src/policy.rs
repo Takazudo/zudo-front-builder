@@ -120,6 +120,9 @@ pub struct RawImportInvalidation {
     /// Authored stylesheet inputs of the latest successful CSS pass. Asset
     /// files referenced by url() are deliberately not watched.
     css_stylesheets: Arc<RwLock<BTreeSet<PathBuf>>>,
+    /// Explicitly declared wind manifests, including package files under
+    /// node_modules. This never admits ambient dependency scans.
+    css_manifests: Arc<RwLock<BTreeSet<PathBuf>>>,
 
     /// Logical project paths of the route entry files the dev SSR bundle read
     /// (issue #3202). The metafile walk drops each route's own entry from
@@ -170,12 +173,13 @@ enum FileSet {
     PluginWatchFiles,
     SsrModuleDeps,
     CssStylesheets,
+    CssManifests,
     PageEntries,
     ContentFiles,
 }
 
 impl FileSet {
-    const ALL: [FileSet; 9] = [
+    const ALL: [FileSet; 10] = [
         FileSet::Islands,
         FileSet::ClientScripts,
         FileSet::ClientScriptWorkers,
@@ -183,6 +187,7 @@ impl FileSet {
         FileSet::PluginWatchFiles,
         FileSet::SsrModuleDeps,
         FileSet::CssStylesheets,
+        FileSet::CssManifests,
         FileSet::PageEntries,
         FileSet::ContentFiles,
     ];
@@ -306,6 +311,7 @@ impl RawImportInvalidation {
             FileSet::PluginWatchFiles => &self.plugin_watch_files,
             FileSet::SsrModuleDeps => &self.ssr_module_deps,
             FileSet::CssStylesheets => &self.css_stylesheets,
+            FileSet::CssManifests => &self.css_manifests,
             FileSet::PageEntries => &self.page_entries,
             FileSet::ContentFiles => &self.content_files,
         }
@@ -645,6 +651,27 @@ impl RawImportInvalidation {
             .unwrap_or_default()
     }
 
+    /// Replace the authoritative manifest files from the latest successful
+    /// wind pass. File parents are watched directly, including node_modules.
+    pub fn replace_css_manifests_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::CssManifests, paths, Some(read_since));
+    }
+
+    pub fn css_manifest_paths(&self) -> BTreeSet<PathBuf> {
+        self.css_manifests
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn is_css_manifest(&self, path: &Path) -> bool {
+        Self::contains(&self.css_manifests, path)
+    }
+
     fn publish_ssr_module_deps(
         &self,
         paths: impl IntoIterator<Item = PathBuf>,
@@ -777,10 +804,19 @@ impl RawImportInvalidation {
                 if !in_scope(&path) {
                     continue;
                 }
-                let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
-                    continue;
+                let mtime = match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+                    Ok(mtime) => mtime,
+                    // A required manifest may be removed after the CSS read
+                    // but before its parent watch arms. Report that loss
+                    // once so the next CSS pass fails and a recreate can
+                    // recover through the still-registered parent watch.
+                    Err(_) if set == FileSet::CssManifests => SystemTime::UNIX_EPOCH,
+                    Err(_) => continue,
                 };
-                if mtime < read_since || self.is_zfb_written(&path) {
+                if (mtime < read_since && mtime != SystemTime::UNIX_EPOCH)
+                    || (set != FileSet::CssManifests && self.is_zfb_written(&path))
+                    || (set == FileSet::CssManifests && self.is_generated_manifest_path(&path))
+                {
                     continue;
                 }
                 let file = Self::reconcile_key(&path);
@@ -838,10 +874,27 @@ impl RawImportInvalidation {
         })
     }
 
+    /// The explicit manifest exception permits node_modules, but never a
+    /// generated output or temporary staging copy.
+    fn is_generated_manifest_path(&self, path: &Path) -> bool {
+        let roots = self
+            .zfb_written_roots
+            .read()
+            .map(|roots| roots.clone())
+            .unwrap_or_default();
+        Self::aliases(path.to_path_buf()).any(|alias| {
+            roots.iter().any(|root| alias.starts_with(root))
+                || alias.components().any(|component| {
+                    matches!(component, Component::Normal(name) if name.to_str().is_some_and(|name| STAGING_DIR_PREFIXES.iter().any(|prefix| name.starts_with(prefix))))
+                })
+        })
+    }
+
     /// One key per physical file, so a lexical and a canonical alias share
-    /// their accounted mtime.
+    /// their accounted mtime. Resolve through an existing parent when the
+    /// file was removed, or /var and /private/var would each report it.
     fn reconcile_key(path: &Path) -> PathBuf {
-        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+        Self::resolved_alias(path).unwrap_or_else(|| path.to_path_buf())
     }
 
     /// A third-party `node_modules` file, or a copy inside one of the
@@ -1298,6 +1351,7 @@ impl GranularityPolicy {
         paths.extend(self.raw_import_invalidation.plugin_watch_file_paths());
         paths.extend(self.raw_import_invalidation.ssr_module_dep_paths());
         paths.extend(self.raw_import_invalidation.css_stylesheet_paths());
+        paths.extend(self.raw_import_invalidation.css_manifest_paths());
         paths
     }
 
@@ -1306,6 +1360,11 @@ impl GranularityPolicy {
     /// the path classifies as.
     pub fn is_ssr_module_dependency(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_ssr_module_dependency(path)
+    }
+
+    /// Whether the exact event path belongs to a declared wind manifest.
+    pub fn is_css_manifest(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_css_manifest(path)
     }
 
     /// See [`RawImportInvalidation::modified_since_read`] (issues #3190 /
@@ -2143,6 +2202,65 @@ mod tests {
         assert!(policy.modified_since_read(|_| true).is_empty());
         invalidation.replace_css_stylesheets_read_since(Vec::new(), read_since);
         assert!(policy.dynamic_dependency_paths().is_empty());
+    }
+
+    #[test]
+    fn declared_package_manifest_is_watched_and_reconciled_without_ambient_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("node_modules/@fixture/widgets");
+        std::fs::create_dir_all(&package).unwrap();
+        let manifest = package.join("wind.json");
+        let ambient = package.join("other.json");
+        std::fs::write(&manifest, "v1").unwrap();
+        std::fs::write(&ambient, "other").unwrap();
+        let read_since = SystemTime::now();
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_css_manifests_read_since([manifest.clone()], read_since);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        assert!(policy.dynamic_dependency_paths().contains(&manifest));
+        assert!(policy.is_css_manifest(&manifest));
+        assert!(!policy.dynamic_dependency_paths().contains(&ambient));
+        assert!(!policy.is_css_manifest(&ambient));
+
+        std::fs::File::options()
+            .write(true)
+            .open(&manifest)
+            .unwrap()
+            .set_modified(read_since + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(policy.modified_since_read(|_| true), vec![manifest.clone()]);
+        assert!(policy.modified_since_read(|_| true).is_empty());
+
+        std::fs::remove_file(&manifest).unwrap();
+        assert_eq!(policy.modified_since_read(|_| true), vec![manifest.clone()]);
+        assert!(policy.modified_since_read(|_| true).is_empty());
+        invalidation.replace_css_manifests_read_since(Vec::new(), read_since);
+        assert!(!policy.dynamic_dependency_paths().contains(&manifest));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removed_manifest_aliases_reconcile_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let package = root.join("real");
+        std::fs::create_dir_all(&package).unwrap();
+        let link = root.join("alias");
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+        let manifest = link.join("wind.json");
+        std::fs::write(&manifest, "v1").unwrap();
+        let read_since = SystemTime::now();
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_css_manifests_read_since([manifest.clone()], read_since);
+        assert_eq!(invalidation.css_manifest_paths().len(), 2);
+        std::fs::remove_file(&manifest).unwrap();
+        assert_eq!(invalidation.modified_since_read(|_| true).len(), 1);
+        assert!(invalidation.modified_since_read(|_| true).is_empty());
     }
 
     fn never_global(_: &Path) -> bool {

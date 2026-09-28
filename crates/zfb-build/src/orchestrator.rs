@@ -1026,6 +1026,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // CSS source membership belongs to the consumer. Keep every
             // path, including those claimed by the external override below.
             plan.css_changes.record_upsert(path.clone());
+            // A declared package manifest is CSS input even when its .json
+            // path lies under node_modules and classifies as Data.
+            if self.config.policy.is_css_manifest(&path) {
+                plan.mark_css();
+            }
 
             // External-narrowing override (issue #1038): a configured hook
             // mapped this out-of-root path to a specific page set in the
@@ -1523,6 +1528,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // Keep removals separate from upserts: a path can occur in both
             // sets, and a removed directory can contain a recreated file.
             plan.css_changes.record_removal(path.clone());
+            if self.config.policy.is_css_manifest(path) {
+                plan.mark_css();
+            }
             let class = {
                 let graph = self.graph.lock().unwrap_or_else(|p| {
                     warn!(
@@ -2199,6 +2207,73 @@ mod tests {
             make_graph(),
             pipeline,
         )
+    }
+
+    #[test]
+    fn declared_package_manifest_event_requests_css_even_though_json_is_data() {
+        let manifest = PathBuf::from("/proj/node_modules/@fixture/widgets/wind.json");
+        let ambient = PathBuf::from("/proj/node_modules/@fixture/widgets/other.json");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation
+            .replace_css_manifests_read_since([manifest.clone()], std::time::SystemTime::now());
+        let policy = GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let config = OrchestratorConfig::new(
+            "/proj",
+            vec![PathBuf::from("pages"), PathBuf::from("content")],
+        )
+        .with_policy(policy);
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+        assert!(orch.plan_for_changes([manifest.clone()]).rerun_css);
+        assert!(!orch.plan_for_changes([ambient]).rerun_css);
+
+        let applies = orch.pipeline.applies.clone();
+        orch.tick_with_kinds(
+            vec![(manifest, ChangeKind::Removed)],
+            &noop_ctx(Path::new("/tmp")),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_css);
+    }
+
+    #[tokio::test]
+    async fn declared_package_manifest_watch_delivers_single_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let manifest = project.join("node_modules/@fixture/widgets/wind.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(&manifest, "v1").unwrap();
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation
+            .replace_css_manifests_read_since([manifest.clone()], std::time::SystemTime::now());
+        let policy = GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &project,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert_eq!(
+            register_dynamic_dependency_watches(&mut watcher, &policy, &[]),
+            vec![manifest.parent().unwrap().to_path_buf()]
+        );
+        settle_watch_with_sentinels(&mut rx, manifest.parent().unwrap(), "wind-manifest").await;
+        std::fs::write(&manifest, "v2").unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(change) = rx.recv().await {
+                if change.path == manifest {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .expect("declared package manifest edit must reach watcher");
+        watcher.shutdown().await;
+        assert!(matches!(
+            observed,
+            Some(ChangeKind::Created | ChangeKind::Modified)
+        ));
     }
 
     // -----------------------------------------------------------------

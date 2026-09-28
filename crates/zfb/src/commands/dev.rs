@@ -4706,6 +4706,12 @@ fn build_dev_css_and_publish_mirror_roots(
         resolve_css_import_watch_targets(project_root)
     };
     raw_import_invalidation.replace_css_stylesheets_read_since(stylesheet_paths, read_start);
+    let manifest_paths = wind_session_index
+        .as_ref()
+        .filter(|_| matches!(cfg.wind.as_ref(), Some(config::WindSetting::Enabled(_))))
+        .map(|index| index.manifest_paths())
+        .unwrap_or_default();
+    raw_import_invalidation.replace_css_manifests_read_since(manifest_paths, read_start);
     Ok(pass.payload)
 }
 
@@ -11641,6 +11647,64 @@ mod tests {
                 "the boot registry must hold an imported stylesheet on the {wind} arm"
             );
         }
+    }
+
+    #[test]
+    fn wind_declared_package_manifest_is_published_on_boot_and_replaced_on_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("node_modules/@fixture/widgets/wind.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let write_manifest = |candidate: &str| {
+            std::fs::write(
+                &manifest,
+                format!(
+                    "{{\"schemaVersion\":1,\"specVersion\":1,\"producer\":\"widgets\",\"candidates\":[\"{candidate}\"]}}"
+                ),
+            )
+            .unwrap();
+        };
+        write_manifest("flex");
+        let mut wind = config::WindConfig::default();
+        wind.manifests.insert(
+            "widgets".into(),
+            config::WindManifest {
+                path: "./node_modules/@fixture/widgets/wind.json".into(),
+                source_package: None,
+            },
+        );
+        let cfg = config::Config {
+            wind: Some(config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let build = |session: &mut Option<crate::commands::build::WindSessionIndex>,
+                     changes: Option<&zfb_build::CssChangeSet>| {
+            build_dev_css_and_publish_mirror_roots(
+                dir.path(),
+                &dir.path().join("dev-assets"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &invalidation,
+                session,
+                changes,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let first = build(&mut session, None);
+        assert!(invalidation.css_manifest_paths().contains(&manifest));
+        assert!(String::from_utf8_lossy(&first.bytes).contains(".flex"));
+
+        write_manifest("grid");
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_upsert(manifest.clone());
+        let second = build(&mut session, Some(&changes));
+        let second_css = String::from_utf8_lossy(&second.bytes);
+        assert!(second_css.contains(".grid"));
+        assert!(!second_css.contains(".flex"));
     }
 
     #[test]
