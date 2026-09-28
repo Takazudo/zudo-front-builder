@@ -1,0 +1,116 @@
+---
+title: 間隔
+description: レイアウトコンテナ内の項目間の行・列の間隔を設定します。
+sidebar_position: 31
+generated: true
+---
+
+レイアウトコンテナ内の項目間の行・列の間隔を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## gap
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.gap` |
+| クラスパターン | `gap-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `gap` (`11`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `column-gap`, `row-gap` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `column-gap` | `resolved` | `null` |
+| `row-gap` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `gap-0` | `column-gap: 0`; `row-gap: 0` |
+
+## gap-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.gap-x` |
+| クラスパターン | `gap-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `gap` (`11`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `column-gap` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `column-gap` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `gap-x-0` | `column-gap: 0` |
+
+## gap-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.gap-y` |
+| クラスパターン | `gap-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"column-gap","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `gap` (`11`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `row-gap` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `row-gap` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `gap-y-0` | `row-gap: 0` |

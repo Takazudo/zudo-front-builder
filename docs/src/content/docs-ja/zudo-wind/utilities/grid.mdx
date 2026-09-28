@@ -1,0 +1,284 @@
+---
+title: グリッド
+description: グリッドトラックを定義し、行・列の範囲と線に沿って項目を配置します。
+sidebar_position: 26
+generated: true
+---
+
+グリッドトラックを定義し、行・列の範囲と線に沿って項目を配置します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## col-end
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.col-end` |
+| クラスパターン | `col-end-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-column-end` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-column-end` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `col-end-auto` | `grid-column-end: auto` |
+
+## col-span
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.col-span` |
+| クラスパターン | `col-span-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-column` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"full"` | `"1 / -1"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-column` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `col-span-full` | `grid-column: 1 / -1` |
+
+## col-start
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.col-start` |
+| クラスパターン | `col-start-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-column-start` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-column-start` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `col-start-auto` | `grid-column-start: auto` |
+
+## grid-cols
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.grid-cols` |
+| クラスパターン | `grid-cols-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer","arbitrary"],"arbitraryProperty":"grid-template-columns","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-template-columns` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"subgrid"` | `"subgrid"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-template-columns` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `grid-cols-none` | `grid-template-columns: none` |
+
+## grid-rows
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.grid-rows` |
+| クラスパターン | `grid-rows-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer","arbitrary"],"arbitraryProperty":"grid-template-rows","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-template-rows` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"subgrid"` | `"subgrid"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-template-rows` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `grid-rows-none` | `grid-template-rows: none` |
+
+## row-end
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.row-end` |
+| クラスパターン | `row-end-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-row-end` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-row-end` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `row-end-auto` | `grid-row-end: auto` |
+
+## row-span
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.row-span` |
+| クラスパターン | `row-span-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-row` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"full"` | `"1 / -1"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-row` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `row-span-full` | `grid-row: 1 / -1` |
+
+## row-start
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.row-start` |
+| クラスパターン | `row-start-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `grid` (`6`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `grid-row-start` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `grid-row-start` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `row-start-auto` | `grid-row-start: auto` |

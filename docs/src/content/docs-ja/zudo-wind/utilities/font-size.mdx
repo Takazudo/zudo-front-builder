@@ -1,0 +1,43 @@
+---
+title: 文字サイズ
+description: 設定済みトークンまたは任意の CSS font-size 値から文字サイズを設定します。
+sidebar_position: 37
+generated: true
+---
+
+設定済みトークンまたは任意の CSS font-size 値から文字サイズを設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## text
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.text.size` |
+| クラスパターン | `text-<suffix>` |
+| 文法 | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"font-size","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | `fontSizes` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `font-size` (`17`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `font-size`, `line-height` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `font-size` | `resolved` | `null` |
+| `line-height` | `optionalFontSizeLeading` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `text-[1rem]` | `font-size: 1rem` |

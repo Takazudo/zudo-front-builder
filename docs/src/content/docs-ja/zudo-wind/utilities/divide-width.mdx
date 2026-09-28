@@ -1,0 +1,80 @@
+---
+title: 区切り線の幅
+description: 後続の表示対象の兄弟要素に、軸に沿った実線のボーダー幅を設定します。
+sidebar_position: 48
+generated: true
+---
+
+後続の表示対象の兄弟要素に、軸に沿った実線のボーダー幅を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## divide-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.divide.width.x` |
+| クラスパターン | `divide-x` or `divide-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-left-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `divide-width` (`28`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `laterVisibleSiblings` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-left-width`, `border-left-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-left-width` | `resolved` | `null` |
+| `border-left-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `divide-x` | `border-left-width: 1px`; `border-left-style: solid` |
+
+## divide-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.divide.width.y` |
+| クラスパターン | `divide-y` or `divide-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"border-top-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `divide-width` (`28`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `laterVisibleSiblings` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `border-top-width`, `border-top-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `border-top-width` | `resolved` | `null` |
+| `border-top-style` | `fixed` | `"solid"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `divide-y` | `border-top-width: 1px`; `border-top-style: solid` |

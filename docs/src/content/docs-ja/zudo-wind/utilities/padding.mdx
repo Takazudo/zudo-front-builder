@@ -1,0 +1,260 @@
+---
+title: 内側の余白
+description: 全辺、軸、個別の辺に物理的な内側の余白を設定します。
+sidebar_position: 29
+generated: true
+---
+
+全辺、軸、個別の辺に物理的な内側の余白を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## p
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.p` |
+| クラスパターン | `p-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-top`, `padding-right`, `padding-bottom`, `padding-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+| `padding-right` | `resolved` | `null` |
+| `padding-bottom` | `resolved` | `null` |
+| `padding-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `p-0` | `padding-top: 0`; `padding-right: 0`; `padding-bottom: 0`; `padding-left: 0` |
+
+## px
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.px` |
+| クラスパターン | `px-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-left`, `padding-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-left` | `resolved` | `null` |
+| `padding-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `px-0` | `padding-left: 0`; `padding-right: 0` |
+
+## py
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.py` |
+| クラスパターン | `py-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-top`, `padding-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+| `padding-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `py-0` | `padding-top: 0`; `padding-bottom: 0` |
+
+## pb
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.pb` |
+| クラスパターン | `pb-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `pb-0` | `padding-bottom: 0` |
+
+## pl
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.pl` |
+| クラスパターン | `pl-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `pl-0` | `padding-left: 0` |
+
+## pr
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.pr` |
+| クラスパターン | `pr-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `pr-0` | `padding-right: 0` |
+
+## pt
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.pt` |
+| クラスパターン | `pt-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `padding` (`9`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `padding-top` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `pt-0` | `padding-top: 0` |

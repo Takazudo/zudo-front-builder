@@ -1,0 +1,309 @@
+---
+title: サイズ
+description: 余白、サイズトークン、分数、キーワードを使い、幅と高さの制約を設定します。
+sidebar_position: 28
+generated: true
+---
+
+余白、サイズトークン、分数、キーワードを使い、幅と高さの制約を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## size
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.size` |
+| クラスパターン | `size-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `9` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `width`, `height` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `width` | `resolved` | `null` |
+| `height` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `size-full` | `width: 100%`; `height: 100%` |
+
+## h
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.h` |
+| クラスパターン | `h-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `10` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `height` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `height` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `h-full` | `height: 100%` |
+
+## max-h
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.max-h` |
+| クラスパターン | `max-h-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `10` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `max-height` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `max-height` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `max-h-full` | `max-height: 100%` |
+
+## max-w
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.max-w` |
+| クラスパターン | `max-w-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `10` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `max-width` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `max-width` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `max-w-full` | `max-width: 100%` |
+
+## min-h
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.min-h` |
+| クラスパターン | `min-h-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `9` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `min-height` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `min-height` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `min-h-full` | `min-height: 100%` |
+
+## min-w
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.min-w` |
+| クラスパターン | `min-w-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `9` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `min-width` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `min-width` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `min-w-full` | `min-width: 100%` |
+
+## w
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.w` |
+| クラスパターン | `w-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `10` |
+| トークンカテゴリ | `sizes`, `spacing` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `sizing` (`8`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `width` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `width` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `w-full` | `width: 100%` |

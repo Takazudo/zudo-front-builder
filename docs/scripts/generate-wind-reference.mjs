@@ -94,7 +94,7 @@ function frontmatter({ title, description, sidebarPosition }) {
   const yamlString = (value) => {
     const text = String(value);
     const safePlain =
-      /^[A-Za-z0-9][A-Za-z0-9 .,;!?()/-]*$/.test(text) &&
+      /^[\p{L}\p{N}][\p{L}\p{N} .,;!?()/、。・-]*$/u.test(text) &&
       !/^(?:true|false|null|yes|no|on|off|~|[0-9]+(?:\.[0-9]+)?)$/i.test(text);
     return safePlain ? text : JSON.stringify(text);
   };
