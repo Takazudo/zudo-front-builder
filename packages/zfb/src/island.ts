@@ -41,6 +41,7 @@
 // back to keep the bundle path small.
 
 import { jsx } from "@takazudo/zfb/jsx-factory";
+import { ownedIslandBoundary } from "@takazudo/zfb/island-boundary";
 
 import type { VNode } from "./jsx-types.js";
 import { DEFAULT_WHEN, resolveWhen, type When } from "./types.js";
@@ -151,6 +152,8 @@ export function Island(props: IslandProps): IslandElement {
   const resolvedWhen = resolveMediaProps(props);
   const when = resolvedWhen.when;
   const media = resolvedWhen.media;
+  const owned = ownedIslandBoundary(props.children, props.ssrFallback, when, media);
+  if (owned !== undefined) return owned as IslandElement;
   const componentName = captureComponentName(props.children);
   const isSkipSsr = props.ssrFallback !== undefined;
   // Always source props from `props.children` (the heavy component VNode),

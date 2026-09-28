@@ -275,7 +275,10 @@ interface IslandRootHandle {
 
 type IslandUnmount = (element: Element) => void;
 
+import { parseProps as parseOwnedProps } from "./zudo-react/props-transport.js";
+
 interface IslandModule {
+  identity?: { component: string; build: string };
   mount?: IslandMount;
   default?: IslandMount;
   unmount?: IslandUnmount;
@@ -605,7 +608,7 @@ function fireInlineMount(
     // For deferred strategies (media, visible, idle) this avoids JSON.parse
     // work at boot time for islands that may never hydrate.
     try {
-      const props = readProps(element);
+      const props = readProps(element, mod.identity);
       const result = fn(props, element, mode);
       if (result === null) return;
       const handle: IslandRootHandle =
@@ -674,8 +677,37 @@ function collectPersistIds(incomingBody?: ParentNode | null): Set<string> {
   return ids;
 }
 
-function readProps(element: Element): Record<string, unknown> {
+function readProps(
+  element: Element,
+  identity?: { component: string; build: string },
+): Record<string, unknown> {
   const raw = element.getAttribute("data-props");
+  if (identity) {
+    const hasHydrate = element.hasAttribute("data-zfb-island");
+    const hasSkipSsr = element.hasAttribute("data-zfb-island-skip-ssr");
+    const component =
+      element.getAttribute("data-zfb-island") ?? element.getAttribute("data-zfb-island-skip-ssr");
+    if (
+      hasHydrate === hasSkipSsr ||
+      component !== identity.component ||
+      element.getAttribute("data-zfb-transport") !== "json/1" ||
+      element.getAttribute("data-zfb-protocol") !== "zudo-react/1" ||
+      element.getAttribute("data-zfb-build") !== identity.build ||
+      raw === null
+    ) {
+      throw new TypeError(
+        `ZR_IDENTITY: island ${identity.component} has invalid transport identity`,
+      );
+    }
+    if (element.querySelector("[data-zfb-island],[data-zfb-island-skip-ssr]")) {
+      throw new TypeError(`ZR_NESTED_ISLAND: island ${identity.component} contains another island`);
+    }
+    try {
+      return parseOwnedProps(raw);
+    } catch (error) {
+      throw new TypeError(`ZR_PROPS: island ${identity.component}: ${String(error)}`);
+    }
+  }
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;

@@ -178,6 +178,8 @@ impl BundleMode {
 /// Bundle configuration handed to [`ClientBundler::bundle`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
+    /// Identity shared with the owned server entry before either bundle is emitted.
+    pub zudo_react_build: Option<String>,
     /// Production / development mode for compile-time environment defines.
     pub mode: BundleMode,
 
@@ -289,6 +291,7 @@ pub struct BundleConfig {
 impl Default for BundleConfig {
     fn default() -> Self {
         Self {
+            zudo_react_build: None,
             mode: BundleMode::Development,
             minify: false,
             sourcemap: true,
@@ -305,6 +308,10 @@ impl Default for BundleConfig {
 }
 
 impl BundleConfig {
+    pub fn with_zudo_react_build(mut self, build: Option<String>) -> Self {
+        self.zudo_react_build = build;
+        self
+    }
     /// Production preset: minify on, sourcemap off.
     pub fn production() -> Self {
         Self {

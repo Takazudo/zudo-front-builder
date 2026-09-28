@@ -10,7 +10,8 @@
     "skipLibCheck": true,
     "baseUrl": "../..",
     "paths": {
-      "@takazudo/zfb/jsx-factory": ["packages/zfb/src/zudo-react/jsx-runtime.ts"]
+      "@takazudo/zfb/jsx-factory": ["packages/zfb/src/zudo-react/jsx-runtime.ts"],
+      "@takazudo/zfb/island-boundary": ["packages/zfb/src/island-boundary-zudo-react.ts"]
     }
   },
   "include": ["type-tests-zudo-react/sdk-factory-seam.ts"]

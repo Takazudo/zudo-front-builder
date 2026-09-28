@@ -551,7 +551,14 @@ function island(
     fail("ZR_ISLAND_CHILD", context, "nonempty children");
   const props = { ...child.props };
   delete props.children;
-  const payload = serializeProps(props);
+  let payload: string;
+  try {
+    payload = serializeProps(props);
+  } catch (error) {
+    throw new TypeError(
+      `ZR_ISLAND_PROPS ${component}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const when = options.when ?? "load";
   if (
     !["load", "idle", "visible", "media"].includes(when) ||

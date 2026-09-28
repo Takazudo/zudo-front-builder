@@ -4670,6 +4670,20 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // no bundle is needed (client-router-only projects).
     let registered_marker_names: std::collections::BTreeSet<String> =
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
+    if framework == crate::config::Framework::ZudoReact {
+        for island in &islands_set {
+            if island.marker_name.is_empty()
+                || island.marker_name == "default"
+                || island.marker_name == "Anonymous"
+            {
+                anyhow::bail!(
+                    "owned island in {} has no stable scanner component identity ({:?})",
+                    island.source_path.display(),
+                    island.marker_name
+                );
+            }
+        }
+    }
 
     // #999: scanning `node_modules` for dist-shipped islands makes
     // duplicate marker names far more likely — e.g. a local
@@ -4694,6 +4708,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         // author CAN act on still warns.
         if zfb_islands::is_same_package_duplicate(collision) {
             continue;
+        }
+        if framework == crate::config::Framework::ZudoReact {
+            anyhow::bail!(
+                "ambiguous owned island marker {:?}: {} and {}",
+                collision.name,
+                collision.kept_path.display(),
+                collision.dropped_path.display()
+            );
         }
         output::warn(format!(
             "island marker name collision: \"{}\" is produced by two different source files — \
@@ -4903,6 +4925,11 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     }
     .with_outdir(outdir.to_path_buf())
     .with_jsx_import_source(islands_jsx_import_source)
+    .with_zudo_react_build(if framework == crate::config::Framework::ZudoReact {
+        Some(zfb_build::bundler::zudo_react_build_token(project_root)?)
+    } else {
+        None
+    })
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(bundle_loaders)
     .with_define(bundle_define)
@@ -7373,6 +7400,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the build succeeds; the warning is the signal.  Runs even when
     // `registered_marker_names` is empty (zero registered islands + a
     // rendered marker is exactly the scenario this check targets).
+    if config.framework == crate::config::Framework::ZudoReact {
+        for page in &post_processable_pages {
+            let html = std::fs::read_to_string(page)?;
+            for name in crate::commands::island_marker_check::collect_marker_names_in_page(&html) {
+                if !registered_marker_names.contains(&name) {
+                    anyhow::bail!(
+                        "owned island marker {name:?} in {} has no scanner registration",
+                        page.display()
+                    );
+                }
+            }
+        }
+    }
     crate::commands::island_marker_check::check_island_markers(
         &post_processable_pages,
         &registered_marker_names,

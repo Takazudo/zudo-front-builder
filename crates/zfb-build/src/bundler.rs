@@ -2801,6 +2801,64 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     bundle_with_session(input, None)
 }
 
+/// A pre-bundle identity shared by owned SSR and browser island glue.
+/// Hash logical paths and bytes so temporary shadow paths never enter the token.
+pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(project_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some("node_modules" | "dist" | ".git" | ".zfb" | "target")
+            )
+        })
+    {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some(
+                "ts" | "tsx"
+                    | "mts"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
+                    | "json"
+                    | "jsonc"
+                    | "yaml"
+                    | "yml"
+                    | "md"
+                    | "mdx"
+                    | "html"
+                    | "css"
+            )
+        ) {
+            continue;
+        }
+        files.push(path.to_path_buf());
+    }
+    files.sort();
+    let mut digest = Sha256::new();
+    digest.update(b"zudo-react/1\njson/1\n");
+    for path in files {
+        digest.update(
+            path.strip_prefix(project_root)?
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        digest.update([0]);
+        digest.update(fs::read(path)?);
+        digest.update([0]);
+    }
+    Ok(hex::encode(digest.finalize())[..16].to_string())
+}
+
 /// [`bundle`] with an optional persistent dev [`ShadowSession`]
 /// (issue #993). `None` is the production path; `Some` reuses the
 /// session's shadow tree across calls, skipping byte-identical rewrites
@@ -4864,6 +4922,22 @@ pub fn bundle_with_session(
         },
     )
     .context("bundler: failed writing entry.mjs")?;
+    if input.framework == Framework::ZudoReact {
+        let build = zudo_react_build_token(&input.project_root)?;
+        fs::write(
+            shadow.join("zudo-react-build.mjs"),
+            format!(
+                "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {};\n",
+                json_str(&build)
+            ),
+        )?;
+        let entry_path = shadow.join("entry.mjs");
+        let entry = fs::read_to_string(&entry_path)?;
+        fs::write(
+            entry_path,
+            format!("import \"./zudo-react-build.mjs\";\n{entry}"),
+        )?;
+    }
 
     // 5b. Prune stale shadow files (#993 — session mode only, no-op
     //     otherwise). MUST run before esbuild: a deleted/renamed/newly-
@@ -12771,15 +12845,39 @@ fn framework_esbuild_flags(framework: Framework) -> &'static [&'static str] {
             "--alias:react/jsx-runtime=preact/jsx-runtime",
             "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
         ],
-        Framework::ZudoReact => {
-            &["--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime"]
-        }
+        Framework::ZudoReact => &[
+            "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",
+            "--alias:@takazudo/zfb/island-boundary=@takazudo/zfb/island-boundary-zudo-react",
+            "--keep-names",
+        ],
     }
 }
 
 #[cfg(test)]
 mod framework_esbuild_flags_tests {
     use super::*;
+
+    #[test]
+    fn owned_build_token_tracks_source_changes_and_ignores_output() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("pages")).unwrap();
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "export default function Home() {}",
+        )
+        .unwrap();
+        let first = zudo_react_build_token(project.path()).unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::create_dir(project.path().join("dist")).unwrap();
+        fs::write(project.path().join("dist/index.html"), "ignored").unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "export default function Changed() {}",
+        )
+        .unwrap();
+        assert_ne!(first, zudo_react_build_token(project.path()).unwrap());
+    }
 
     #[test]
     fn framework_esbuild_flags_keep_preact_and_isolate_owned_factory() {
@@ -12792,7 +12890,11 @@ mod framework_esbuild_flags_tests {
         );
         assert_eq!(
             framework_esbuild_flags(Framework::ZudoReact),
-            ["--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",]
+            [
+                "--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime",
+                "--alias:@takazudo/zfb/island-boundary=@takazudo/zfb/island-boundary-zudo-react",
+                "--keep-names",
+            ]
         );
     }
 }

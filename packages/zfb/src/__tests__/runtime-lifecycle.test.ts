@@ -12,6 +12,20 @@ beforeEach(() => {
 });
 
 describe("island root lifecycle", () => {
+  it("fails one owned island closed on metadata or props mismatch and mounts its neighbour", () => {
+    document.body.innerHTML =
+      '<div data-zfb-island="Bad" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="old" data-props="{}"></div><div data-zfb-island="Good" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="new" data-props="{&quot;value&quot;:1}"></div>';
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const bad = vi.fn();
+    const good = vi.fn(() => ({ dispose: vi.fn() }));
+    mountIslands({
+      Bad: { identity: { component: "Bad", build: "new" }, mount: bad },
+      Good: { identity: { component: "Good", build: "new" }, mount: good },
+    });
+    expect(bad).not.toHaveBeenCalled();
+    expect(good).toHaveBeenCalledWith({ value: 1 }, expect.any(Element), "hydrate");
+    expect(error).toHaveBeenCalledTimes(1);
+  });
   it("isolates mount failures and retries only the failed island", () => {
     document.body.innerHTML = '<div data-zfb-island="Bad"></div><div data-zfb-island="Good"></div>';
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
