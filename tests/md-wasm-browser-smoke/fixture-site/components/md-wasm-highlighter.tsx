@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "preact/hooks";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+import type { ReadonlySignal } from "@takazudo/zfb/zudo-react";
 
 const loadMdWasm = () => import("@takazudo/zfb-md-wasm");
 
@@ -18,8 +19,9 @@ const INCOMPLETE_EXAMPLES = [
 
 type RenderedHighlights = Record<string, string>;
 
-function HighlightMarkup({ id, html }: { id: string; html: string | undefined }) {
-  return <div id={id} dangerouslySetInnerHTML={{ __html: html ?? "" }} />;
+function HighlightMarkup({ id, html }: { id: string; html: ReadonlySignal<string> }) {
+  // The highlighter produces trusted markup; rawHtml owns this reactive region.
+  return <div id={id} rawHtml={html} />;
 }
 
 /**
@@ -28,16 +30,16 @@ function HighlightMarkup({ id, html }: { id: string; html: string | undefined })
  * these handlers.
  */
 export function MdWasmHighlighter() {
-  const [status, setStatus] = useState("Waiting for a user action.");
-  const [highlights, setHighlights] = useState<RenderedHighlights>({});
-  const [incompleteHighlights, setIncompleteHighlights] = useState<RenderedHighlights>({});
-  const [fallbackDiagnostic, setFallbackDiagnostic] = useState("");
-  const [incompleteDiagnostics, setIncompleteDiagnostics] = useState("");
-  const [recoveryState, setRecoveryState] = useState("");
-  const [recoveryMarkup, setRecoveryMarkup] = useState("");
+  const status = signal("Waiting for a user action.");
+  const highlights = signal<RenderedHighlights>({});
+  const incompleteHighlights = signal<RenderedHighlights>({});
+  const fallbackDiagnostic = signal("");
+  const incompleteDiagnostics = signal("");
+  const recoveryState = signal("");
+  const recoveryMarkup = signal("");
 
   async function runHighlights(): Promise<void> {
-    setStatus("Loading the packed browser package…");
+    status.value = "Loading the packed browser package…";
 
     // This first-party module performs the public package-root lazy import.
     // zfb's islands bundler must emit the package's glue and wasm resources,
@@ -68,17 +70,18 @@ export function MdWasmHighlighter() {
       throw new Error("expected unknown-language fallback markup");
     }
 
-    setHighlights(rendered);
-    setIncompleteHighlights(incomplete);
-    setIncompleteDiagnostics(JSON.stringify(diagnostics));
-    setFallbackDiagnostic(
-      JSON.stringify({ html: fallback.html, diagnostics: fallback.diagnostics }),
-    );
-    setStatus("Highlights complete.");
+    highlights.value = rendered;
+    incompleteHighlights.value = incomplete;
+    incompleteDiagnostics.value = JSON.stringify(diagnostics);
+    fallbackDiagnostic.value = JSON.stringify({
+      html: fallback.html,
+      diagnostics: fallback.diagnostics,
+    });
+    status.value = "Highlights complete.";
   }
 
   async function forceTrapAndRecover(): Promise<void> {
-    setStatus("Forcing the test-only trap and waiting for recovery…");
+    status.value = "Forcing the test-only trap and waiting for recovery…";
     const wasm = await loadMdWasm();
     const before = wasm.__getTrapRecoveryStateForTests();
     let trapName = "";
@@ -96,33 +99,45 @@ export function MdWasmHighlighter() {
     }
 
     const after = wasm.__getTrapRecoveryStateForTests();
-    setRecoveryMarkup(recovered.html);
-    setRecoveryState(JSON.stringify({ before, after, trapName }));
-    setStatus("Trap recovery complete.");
+    recoveryMarkup.value = recovered.html;
+    recoveryState.value = JSON.stringify({ before, after, trapName });
+    status.value = "Trap recovery complete.";
   }
 
   return (
     <section aria-label="md-wasm semantic highlighter">
-      <button type="button" id="run-highlights" onClick={runHighlights}>
+      <button type="button" id="run-highlights" on:click={runHighlights}>
         Run semantic highlights
       </button>
-      <button type="button" id="force-trap" onClick={forceTrapAndRecover}>
+      <button type="button" id="force-trap" on:click={forceTrapAndRecover}>
         Force trap and recover
       </button>
       <p id="status">{status}</p>
 
       <section aria-label="Semantic highlight results">
         <h2>Semantic highlights</h2>
-        <HighlightMarkup id="highlight-html" html={highlights.html} />
-        <HighlightMarkup id="highlight-css" html={highlights.css} />
-        <HighlightMarkup id="highlight-javascript" html={highlights.javascript} />
+        <HighlightMarkup id="highlight-html" html={computed(() => highlights.value.html ?? "")} />
+        <HighlightMarkup id="highlight-css" html={computed(() => highlights.value.css ?? "")} />
+        <HighlightMarkup
+          id="highlight-javascript"
+          html={computed(() => highlights.value.javascript ?? "")}
+        />
       </section>
 
       <section aria-label="Incomplete editor input results">
         <h2>Incomplete editor input</h2>
-        <HighlightMarkup id="incomplete-html" html={incompleteHighlights.html} />
-        <HighlightMarkup id="incomplete-css" html={incompleteHighlights.css} />
-        <HighlightMarkup id="incomplete-javascript" html={incompleteHighlights.javascript} />
+        <HighlightMarkup
+          id="incomplete-html"
+          html={computed(() => incompleteHighlights.value.html ?? "")}
+        />
+        <HighlightMarkup
+          id="incomplete-css"
+          html={computed(() => incompleteHighlights.value.css ?? "")}
+        />
+        <HighlightMarkup
+          id="incomplete-javascript"
+          html={computed(() => incompleteHighlights.value.javascript ?? "")}
+        />
         <output id="incomplete-diagnostics">{incompleteDiagnostics}</output>
       </section>
 

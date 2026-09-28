@@ -1,5 +1,5 @@
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "outDir": "dist",
   "publicDir": "public",
   "collections": [

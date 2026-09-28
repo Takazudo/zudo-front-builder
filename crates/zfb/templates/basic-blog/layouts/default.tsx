@@ -1,4 +1,4 @@
-import type { ComponentChildren } from "preact";
+import type { Child } from "@takazudo/zfb/zudo-react";
 import { Island } from "@takazudo/zfb";
 
 import ThemeToggle from "~/components/theme-toggle";
@@ -26,7 +26,7 @@ const THEME_BOOTSTRAP_SCRIPT = `(() => {
 type Props = {
   title?: string;
   description?: string;
-  children: ComponentChildren;
+  children: Child;
 };
 
 const NAV = [
@@ -47,7 +47,7 @@ export default function DefaultLayout({
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         {/* Inline data-URI favicon: no public/ dir needed, and it stops the
             browser's implicit /favicon.ico request from 404-ing the console. */}
@@ -58,7 +58,7 @@ export default function DefaultLayout({
         <title>{title}</title>
         {description ? <meta name="description" content={description} /> : null}
         {/* Apply theme before paint to avoid FOUC. See script doc above. */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+        <script rawHtml={THEME_BOOTSTRAP_SCRIPT} />
       </head>
       <body class="bg-white text-neutral-700 antialiased dark:bg-neutral-950 dark:text-neutral-300">
         <div class="mx-auto flex min-h-screen max-w-2xl flex-col px-5 sm:px-6">

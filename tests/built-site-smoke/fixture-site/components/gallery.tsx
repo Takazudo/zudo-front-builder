@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "preact/hooks";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
 
 import { labels } from "./gallery-registry";
 
@@ -15,12 +15,19 @@ import { labels } from "./gallery-registry";
  *     (the bundle loaded, ran, and wired the handler).
  */
 export function Gallery() {
-  const [i, setI] = useState(0);
+  const i = signal(0);
+  const selected = computed(() => labels[i.value] ?? "none");
   return (
     <div>
       <p id="gallery-count">Gallery items: {labels.length}</p>
-      <button type="button" id="gallery-next" onClick={() => setI((i + 1) % labels.length)}>
-        Selected: {labels[i] ?? "none"}
+      <button
+        type="button"
+        id="gallery-next"
+        on:click={() => {
+          i.value = (i.value + 1) % labels.length;
+        }}
+      >
+        Selected: {selected}
       </button>
     </div>
   );

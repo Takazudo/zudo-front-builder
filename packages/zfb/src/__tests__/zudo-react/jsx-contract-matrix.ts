@@ -67,38 +67,36 @@ function MemberContent({ children }: { children: Child }) {
 
 const moduleLevelIcon = h("svg", { viewBox: "0 0 1 1" }, h("path", { d: "M0 0" }));
 
-const templateCharSetRows = [
+const templateCharsetRows = [
   "crates/zfb/templates/basic-blog/layouts/default.tsx",
   "crates/zfb/templates/node-free/pages/index.tsx",
   "crates/zfb/templates/node-free/pages/posts/[slug].tsx",
 ].map((producerPath) =>
-  rejected(
-    `template charSet: ${producerPath}`,
+  accepted(
+    `template charset: ${producerPath}`,
     producerPath,
-    "charSet",
-    '<meta charSet="utf-8" />',
-    "The dialect requires lowercase HTML `charset`.",
-    () => h("meta", { charSet: "utf-8" }),
-    "ZR_PROP_DIALECT",
-    "template",
+    "charset",
+    '<meta charset="utf-8" />',
+    "The migrated template uses lowercase HTML `charset`.",
+    () => h("meta", { charset: "utf-8" }),
+    '<meta charset="utf-8">',
   ),
 );
 
-const templateDateTimeRows = [
+const templateDatetimeRows = [
   "crates/zfb/templates/basic-blog/pages/blog/[slug].tsx",
   "crates/zfb/templates/basic-blog/pages/index.tsx",
   "crates/zfb/templates/node-free/pages/index.tsx",
   "crates/zfb/templates/node-free/pages/posts/[slug].tsx",
 ].map((producerPath) =>
-  rejected(
-    `template dateTime: ${producerPath}`,
+  accepted(
+    `template datetime: ${producerPath}`,
     producerPath,
-    "dateTime",
-    '<time dateTime="2026-09-28">today</time>',
-    "The dialect requires lowercase HTML `datetime`.",
-    () => h("time", { dateTime: "2026-09-28" }, "today"),
-    "ZR_PROP_DIALECT",
-    "template",
+    "datetime",
+    '<time datetime="2026-09-28">today</time>',
+    "The migrated template uses lowercase HTML `datetime`.",
+    () => h("time", { datetime: "2026-09-28" }, "today"),
+    '<time datetime="2026-09-28">today</time>',
   ),
 );
 
@@ -368,19 +366,9 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     () => h("h1", { class: "text-3xl" }, "Welcome"),
     '<h1 class="text-3xl">Welcome</h1>',
   ),
-  ...templateCharSetRows,
-  ...templateDateTimeRows,
+  ...templateCharsetRows,
+  ...templateDatetimeRows,
   ...templateKeyRows,
-  rejected(
-    "template inline script raw HTML prop",
-    "crates/zfb/templates/basic-blog/layouts/default.tsx",
-    "dangerouslySetInnerHTML",
-    "script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }}",
-    "The React prop spelling is rejected; raw-text script content is separately restricted by ZR06.",
-    () => h("script", { dangerouslySetInnerHTML: { __html: "window.theme='dark'" } }),
-    "ZR_PROP_DIALECT",
-    "template",
-  ),
   accepted(
     "template script using the contract rawHtml prop",
     "crates/zfb/templates/basic-blog/layouts/default.tsx",

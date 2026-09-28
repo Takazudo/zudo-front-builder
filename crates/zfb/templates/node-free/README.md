@@ -86,7 +86,7 @@ and use `defineConfig` from `"zfb/config"` if you prefer editor types:
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
+  framework: "zudo-react",
   collections: [{ name: "posts", path: "content/posts" }],
 });
 ```
