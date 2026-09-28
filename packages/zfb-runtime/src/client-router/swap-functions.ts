@@ -193,25 +193,36 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
     } else {
       newTarget.replaceWith(el);
     }
-    // Persist-props hybrid path (port-spec §12.3.1 hybrid case / §12.3.2): the
-    // persisted island survived the lift with its live component instance, but
-    // the incoming page carries different props. Refresh data-props on the
-    // surviving node and flag it with ISLAND_REMOUNT_ATTR. That flag is the
-    // cross-package "needs-remount" signal consumed by @takazudo/zfb's
-    // mountNewIslands (clearMountedForRemount): it can't be an in-memory queue
-    // because the islands runtime's mounted-map lives in a different package, so
-    // the flagged DOM node itself is the queue. mountNewIslands unmounts the
-    // stale instance and re-mounts against this node with the new data-props.
-    if (
-      newTarget.matches("[data-zfb-island]") &&
-      shouldCopyProps(el as HTMLElement) &&
-      !isSameProps(el, newTarget)
-    ) {
-      el.setAttribute(ISLAND_REMOUNT_ATTR, "");
-      // zfb island wrapper writes SSR props to data-props, not props (different attribute, not just renamed).
-      const np = newTarget.getAttribute("data-props");
-      if (np !== null) el.setAttribute("data-props", np);
-      else el.removeAttribute("data-props");
+    // Compare effective identity and props on the lifted wrapper. The surviving
+    // node carries incoming metadata before the runtime recreates its root.
+    const islandAttrs = [
+      "data-zfb-island",
+      "data-zfb-island-skip-ssr",
+      "data-zfb-transport",
+      "data-zfb-protocol",
+      "data-zfb-build",
+    ];
+    const isIsland = islandAttrs
+      .slice(0, 2)
+      .some((attr) => el.hasAttribute(attr) || newTarget.hasAttribute(attr));
+    if (isIsland) {
+      const identityChanged = islandAttrs.some(
+        (attr) => el.getAttribute(attr) !== newTarget.getAttribute(attr),
+      );
+      const copyProps = shouldCopyProps(el as HTMLElement);
+      if (identityChanged || (copyProps && !isSameProps(el, newTarget))) {
+        el.setAttribute(ISLAND_REMOUNT_ATTR, "");
+        for (const attr of islandAttrs) {
+          const value = newTarget.getAttribute(attr);
+          if (value === null) el.removeAttribute(attr);
+          else el.setAttribute(attr, value);
+        }
+        if (copyProps) {
+          const props = newTarget.getAttribute("data-props");
+          if (props === null) el.removeAttribute("data-props");
+          else el.setAttribute("data-props", props);
+        }
+      }
     }
   }
 

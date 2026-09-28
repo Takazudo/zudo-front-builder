@@ -1214,7 +1214,12 @@ describe("island mounted marker state contract (#2541)", () => {
       if (shouldThrow) throw new Error("inline mount failed");
     });
 
-    expect(() => mountIslands({ Throws: { mount } })).toThrow("inline mount failed");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => mountIslands({ Throws: { mount } })).not.toThrow();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('island "Throws" mount failed'),
+      expect.any(Error),
+    );
     expect(isMounted(el)).toBe(false);
 
     shouldThrow = false;
@@ -1247,7 +1252,12 @@ describe("island mounted marker state contract (#2541)", () => {
     mountIslands({ Counter: { mount: vi.fn(), unmount } });
     expect(isMounted(el)).toBe(true);
 
-    expect(() => unmountIslands(document.body)).toThrow("unmount failed");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => unmountIslands(document.body)).not.toThrow();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('island "Counter" disposal failed'),
+      expect.any(Error),
+    );
     expect(isMounted(el)).toBe(false);
   });
 

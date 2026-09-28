@@ -43,6 +43,45 @@ beforeEach(resetDocument);
 afterEach(drainHappyDom);
 
 describe("persist island lifecycle end-to-end (#1389)", () => {
+  it("recreates a skip-SSR root when build identity changes, even with retained props", () => {
+    document.body.innerHTML = `<div ${PERSIST}="modal" data-zfb-transition-persist-props="keep" data-zfb-island-skip-ssr="Modal" data-zfb-build="old" data-props="{}"></div>`;
+    const el = document.body.firstElementChild!;
+    const dispose = vi.fn();
+    const mount = vi.fn(() => ({ dispose }));
+    mountIslands({ Modal: { mount } });
+    const next = incomingBody(
+      `<div ${PERSIST}="modal" data-zfb-transition-persist-props="keep" data-zfb-island-skip-ssr="Modal" data-zfb-build="new" data-props='{"ignored":true}'></div>`,
+    );
+    unmountIslands(document.body, next);
+    swapBodyElement(next, document.body);
+    expect(el.getAttribute("data-zfb-build")).toBe("new");
+    expect(el.getAttribute("data-props")).toBe("{}");
+    mountNewIslands();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(mount).toHaveBeenCalledTimes(2);
+    expect(mount.mock.calls[1]?.[2]).toBe("render");
+  });
+
+  it("remounts a renamed persisted island with the new component in render mode", () => {
+    document.body.innerHTML = `<div ${PERSIST}="panel" data-zfb-island="Old" data-props="{}"></div>`;
+    const el = document.body.firstElementChild!;
+    const dispose = vi.fn();
+    const oldMount = vi.fn(() => ({ dispose }));
+    const newMount = vi.fn();
+    mountIslands({ Old: { mount: oldMount }, New: { mount: newMount } });
+    const next = incomingBody(
+      `<div ${PERSIST}="panel" data-zfb-island="New" data-props="{}"></div>`,
+    );
+    unmountIslands(document.body, next);
+    swapBodyElement(next, document.body);
+    expect(el.getAttribute("data-zfb-island")).toBe("New");
+    mountNewIslands();
+    expect(document.body.firstElementChild).toBe(el);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(newMount).toHaveBeenCalledTimes(1);
+    expect(newMount.mock.calls[0]?.[2]).toBe("render");
+  });
+
   it("a persisted chrome island survives the real swap with its instance and node identity intact", () => {
     document.body.innerHTML = `
       <div ${PERSIST}="sidebar" data-zfb-island="Sidebar" data-props='{"n":1}' data-when="load"></div>
@@ -142,6 +181,7 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     expect(unmount).toHaveBeenCalledTimes(1);
     expect(mount).toHaveBeenCalledTimes(2);
     expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
+    expect(mount.mock.calls[1]![2]).toBe("render");
     expect(markerAtUnmount).toEqual([true]);
     // clearMountedForRemount removed the marker before the forced callback;
     // fireInlineMount re-applied it after the replacement mount returned.
