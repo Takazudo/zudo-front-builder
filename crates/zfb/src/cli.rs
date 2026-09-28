@@ -106,7 +106,7 @@ pub struct WindAuditArgs {
 /// Arguments for `zfb css`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "The CSS command always runs Tailwind, even when zfb.config sets tailwind.enabled=false.\nAutomatic sources are limited to pages, components, layouts, content, and src under --project-root."
+    after_help = "The CSS command uses zudo-wind. A project with wind: false emits authored CSS and highlight styles only.\nAutomatic sources are limited to pages, components, layouts, content, and src under --project-root."
 )]
 pub struct CssArgs {
     /// CSS entrypoint. Relative paths are resolved from the current directory.
@@ -122,7 +122,7 @@ pub struct CssArgs {
     #[arg(long)]
     pub project_root: Option<PathBuf>,
 
-    /// Explicit Tailwind content glob, relative to the project root. Repeatable.
+    /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
     #[arg(long)]
     pub source: Vec<String>,
 
@@ -130,7 +130,7 @@ pub struct CssArgs {
     #[arg(long)]
     pub no_auto_source: bool,
 
-    /// Override zfb.config's codeHighlight.mode for framework CSS emission.
+    /// Override zfb.config's codeHighlight.mode for highlight CSS emission.
     #[arg(long, value_enum)]
     pub code_highlight_mode: Option<CssCodeHighlightMode>,
 
@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn css_help_documents_tailwind_and_source_scope() {
+    fn css_help_documents_wind_and_source_scope() {
         use clap::CommandFactory;
         let mut command = Cli::command();
         let css = command.find_subcommand_mut("css").expect("css exists");
@@ -1120,7 +1120,8 @@ mod tests {
             "--no-auto-source",
             "--code-highlight-mode",
             "--no-default-highlight-styles",
-            "tailwind.enabled=false",
+            "zudo-wind",
+            "wind: false",
             "pages, components, layouts, content, and src",
         ] {
             assert!(
