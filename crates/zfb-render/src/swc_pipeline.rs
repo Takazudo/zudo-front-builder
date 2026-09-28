@@ -2,8 +2,7 @@
 //!
 //! Responsibilities:
 //! - Parse TypeScript + JSX into an AST (`swc_ecma_parser` w/ `tsx: true`).
-//! - Apply the React JSX transform (`automatic` runtime; configurable
-//!   `import_source` so Sub 4 can flip between `"preact"` and `"react"`).
+//! - Apply the automatic JSX transform targeting `@takazudo/zfb/zudo-react`.
 //! - Strip TS type annotations.
 //! - Emit ES module JS that the JS runtime can load.
 //!
@@ -26,37 +25,11 @@ use swc_core::ecma::transforms::typescript::strip;
 
 use crate::error::{RenderError, Result};
 
-/// Which JSX runtime SWC's `transform-react` should target.
-///
-/// In `Automatic` mode, this drives the synthetic `import { jsx } from "<x>/jsx-runtime"`
-/// inserted by SWC. The actual implementation of those imports is provided by
-/// the framework adapter (Sub 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum JsxRuntime {
-    /// `import_source = "preact"` (the default for zfb).
-    #[default]
-    Preact,
-    /// `import_source = "react"`.
-    React,
-}
-
-impl JsxRuntime {
-    /// Stringly-typed `import_source` value handed to SWC.
-    pub fn import_source(self) -> &'static str {
-        match self {
-            JsxRuntime::Preact => "preact",
-            JsxRuntime::React => "react",
-        }
-    }
-}
-
 /// Compile-time options handed to the SWC pipeline.
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Display name / path used in source maps and error messages.
     pub filename: String,
-    /// Which JSX runtime to target.
-    pub jsx_runtime: JsxRuntime,
     /// Whether to dev-mode the JSX transform (preserves `__source` /
     /// `__self`). Off by default for SSR.
     pub development: bool,
@@ -66,7 +39,6 @@ impl Default for CompileOptions {
     fn default() -> Self {
         Self {
             filename: "<anonymous>.tsx".to_string(),
-            jsx_runtime: JsxRuntime::Preact,
             development: false,
         }
     }
@@ -76,12 +48,6 @@ impl CompileOptions {
     /// Set a filename for diagnostics / source maps.
     pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
         self.filename = filename.into();
-        self
-    }
-
-    /// Pick the JSX runtime (Sub 4 flips this from the framework adapter).
-    pub fn with_jsx_runtime(mut self, runtime: JsxRuntime) -> Self {
-        self.jsx_runtime = runtime;
         self
     }
 }
@@ -153,7 +119,7 @@ impl SwcPipeline {
                 Some(comments.clone()),
                 ReactOptions {
                     runtime: Some(Runtime::Automatic),
-                    import_source: Some(Atom::from(opts.jsx_runtime.import_source())),
+                    import_source: Some(Atom::from("@takazudo/zfb/zudo-react")),
                     development: Some(opts.development),
                     ..Default::default()
                 },
@@ -215,41 +181,33 @@ mod tests {
     }
 
     #[test]
-    fn transforms_jsx_with_preact_runtime() {
+    fn transforms_jsx_with_owned_runtime() {
         let src = "export default function Page(){ return <div>hello</div>; }\n";
         let out = SwcPipeline::new()
-            .compile(
-                src,
-                &CompileOptions::default()
-                    .with_filename("page.tsx")
-                    .with_jsx_runtime(JsxRuntime::Preact),
-            )
+            .compile(src, &CompileOptions::default().with_filename("page.tsx"))
             .expect("compile ok");
-        // Automatic runtime ⇒ synthetic import from `<source>/jsx-runtime`.
         assert!(
-            out.code.contains("preact/jsx-runtime"),
-            "expected preact/jsx-runtime import, got: {}",
+            out.code.contains("@takazudo/zfb/zudo-react/jsx-runtime"),
+            "expected owned JSX import, got: {}",
             out.code
         );
-        // No leftover JSX in output (must be desugared to function calls).
         assert!(!out.code.contains("<div>"));
     }
 
     #[test]
-    fn transforms_jsx_with_react_runtime() {
-        let src = "export default function P(){ return <span/>; }\n";
+    fn development_transform_uses_owned_dev_runtime() {
+        let src = "export default function Page(){ return <span/>; }\n";
         let out = SwcPipeline::new()
             .compile(
                 src,
-                &CompileOptions::default()
-                    .with_filename("p.tsx")
-                    .with_jsx_runtime(JsxRuntime::React),
+                &CompileOptions {
+                    development: true,
+                    ..CompileOptions::default()
+                },
             )
             .expect("compile ok");
-        assert!(
-            out.code.contains("react/jsx-runtime"),
-            "expected react/jsx-runtime import, got: {}",
-            out.code
-        );
+        assert!(out
+            .code
+            .contains("@takazudo/zfb/zudo-react/jsx-dev-runtime"));
     }
 }

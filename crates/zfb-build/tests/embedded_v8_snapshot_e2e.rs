@@ -34,9 +34,7 @@ use zfb_build::{
     bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, ContentCollectionSpec,
     RendererInput, RouteUniverseEntry,
 };
-use zfb_content::{
-    build_snapshot, build_snapshot_with_config, CollectionConfig, JsxDialect, PipelineSpec,
-};
+use zfb_content::{build_snapshot, build_snapshot_with_config, CollectionConfig, PipelineSpec};
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -63,7 +61,6 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
 
 fn owned_pipeline_spec() -> PipelineSpec {
     PipelineSpec {
-        jsx_dialect: JsxDialect::ZudoReact,
         ..PipelineSpec::default()
     }
 }

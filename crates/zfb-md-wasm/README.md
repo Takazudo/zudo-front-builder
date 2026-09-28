@@ -35,7 +35,7 @@ is not syntect-free.
 | ------------- | -------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.` | 1,516,383 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
 | `./highlight` | 817,951 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
-| `./render` | 1,091,678 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./render` | 1,091,678 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `HighlightRole` |
 | `./parse` | 283,991 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries have private, non-interchangeable resource pairs:
@@ -93,7 +93,6 @@ source that requires host evaluation plus a JSX runtime/components boundary.
 ```json
 {
   "filename": "posts/hello.mdx",
-  "jsxRuntime": "preact",
   "development": false,
   "pipeline": {
     "theme": null,
@@ -116,10 +115,9 @@ source that requires host evaluation plus a JSX runtime/components boundary.
 - `filename` must end in `.md`/`.mdx` (frontmatter dispatch + diagnostics
   display). Defaults: `<anonymous>.mdx` for `compile`, `<anonymous>.md` for
   `renderHtml`.
-- `jsxRuntime` (`"preact"` | `"react"`, default `"preact"`) and
-  `development` (default `false`) are consumed only by `compile`;
-  `renderHtml` accepts and ignores them so one options document can serve
-  both tiers.
+- `development` (default `false`) is consumed only by `compile`;
+  `renderHtml` accepts and ignores it so one options document can serve both tiers.
+  The removed `jsxRuntime` key is rejected by both entry points.
 - `pipeline` is `zfb_content::facade::PipelineOptions` verbatim (zfb#1574):
   `theme` is a **syntect** theme name, `features` is
   `MarkdownFeaturesConfig` verbatim. Config arrives **already resolved** —
@@ -351,12 +349,10 @@ job in `.github/workflows/health.yml` (added in zfb#1579).
   `zfb_render::SwcPipeline` (JSX → JS) — the same "one place where JSX
   becomes JS" the zfb binary uses, which is the whole justification for
   this package vs `@mdx-js/mdx` in the browser.
-- The emitted module imports `Fragment` from `"react/jsx-runtime"`
-  regardless of `jsxRuntime` — that is the production emitter's own shape
-  (`mdx_jsx_emit.rs` writes it verbatim; zfb's bundler resolves it via
-  aliasing). Browser hosts consuming the emitted JS directly need an import
-  map / bundler alias for it under preact — an npm-wrapper (zfb#1577)
-  concern.
+- The emitted module imports both JSX factories and `Fragment` from the
+  `@takazudo/zfb/zudo-react/jsx-runtime` family (or `jsx-dev-runtime`
+  for development factories). Browser hosts consuming the emitted JS directly
+  must resolve those package subpaths.
 - The fs-bound feature plugins (`transclude`, `imageDimensions`,
   `linkValidation`) are registered but **inert**: the facade never arms
   build-context roots, matching the existing MDX loader path.

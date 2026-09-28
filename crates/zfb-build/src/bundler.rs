@@ -3384,7 +3384,6 @@ pub fn bundle_with_session(
     let effective_spec = {
         let mut spec = input.pipeline_spec.clone();
         spec.resolve_source_map = resolve_source_map;
-        spec.jsx_dialect = zfb_content::JsxDialect::ZudoReact;
         spec
     };
 

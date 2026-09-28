@@ -76,6 +76,12 @@ describe("renderHtml (md -> HTML, no SWC)", () => {
     expect(out.diagnostics).toHaveLength(0);
   });
 
+  it("rejects the removed jsxRuntime option", async () => {
+    const out = await renderHtml("# hi\n", { jsxRuntime: "react" } as never);
+    expect(out.html).toBeNull();
+    expect(out.diagnostics[0]?.source).toBe("options");
+  });
+
   it("infers CommonMark for .md and keeps MDX parsing for .mdx", async () => {
     const markdown = await renderHtml("Budget <8 ms\n", { filename: "preview.md" });
     expect(markdown).toMatchObject({
@@ -160,22 +166,21 @@ describe("compile (mdx -> ES-module JS via SWC)", () => {
     expect(out.diagnostics).toHaveLength(0);
   });
 
-  it("defaults to the preact jsx runtime, but Fragment still comes from react/jsx-runtime", async () => {
-    // This asymmetry is zfb's production emitter shape (parity-correct, not a
-    // bug): jsx factory is preact's, Fragment is react's. A browser consumer
-    // on preact MUST alias react/jsx-runtime -> preact/jsx-runtime. Locking it
-    // in here so a future emitter change is a conscious decision. See README
-    // "Evaluating compiled modules in a browser".
+  it("emits one owned JSX runtime family for factories and Fragment", async () => {
     const out = await compile("# hi\n", { filename: "p.mdx" });
     const code = out.code ?? "";
-    expect(code).toContain('from "preact/jsx-runtime"');
-    expect(code).toContain('import { Fragment as _Fragment } from "react/jsx-runtime"');
+    expect(code).toContain('from "@takazudo/zfb/zudo-react/jsx-runtime"');
+    expect(code).toContain(
+      'import { Fragment as _Fragment } from "@takazudo/zfb/zudo-react/jsx-runtime"',
+    );
+    expect(code).not.toContain('from "react/jsx-runtime"');
+    expect(code).not.toContain('from "preact/jsx-runtime"');
   });
 
-  it("honors jsxRuntime: react", async () => {
-    const out = await compile("# hi\n", { filename: "p.mdx", jsxRuntime: "react" });
-    expect(out.code ?? "").toContain('from "react/jsx-runtime"');
-    expect(out.diagnostics).toHaveLength(0);
+  it("rejects the removed jsxRuntime option", async () => {
+    const out = await compile("# hi\n", { filename: "p.mdx", jsxRuntime: "react" } as never);
+    expect(out.code).toBeNull();
+    expect(out.diagnostics[0]?.source).toBe("options");
   });
 });
 

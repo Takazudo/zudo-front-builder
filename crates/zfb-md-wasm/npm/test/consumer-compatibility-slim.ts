@@ -16,7 +16,6 @@ import {
   type CodeHighlightOptions,
   type MarkdownFeaturesConfig,
   type ParseDialect as RenderDialect,
-  type JsxRuntime,
   type HighlightRole,
 } from "../dist/render.js";
 import {
@@ -137,7 +136,6 @@ type RenderTypes = [
   CodeHighlightMode,
   CodeHighlightOptions,
   MarkdownFeaturesConfig,
-  JsxRuntime,
   HighlightRole,
 ];
 type ParseTypes = [

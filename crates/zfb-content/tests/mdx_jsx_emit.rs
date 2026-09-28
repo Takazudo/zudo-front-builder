@@ -46,8 +46,10 @@ fn module_skeleton_is_present() {
     // The default `_components` map and the spread of overrides.
     assert!(out.contains("const _components = {"));
     assert!(out.contains("...components,"));
-    // Always wraps the body in a React Fragment.
-    assert!(out.contains("import { Fragment as _Fragment } from \"react/jsx-runtime\""));
+    // Always wraps the body in the owned Fragment.
+    assert!(out.contains(
+        "import { Fragment as _Fragment } from \"@takazudo/zfb/zudo-react/jsx-runtime\""
+    ));
     assert!(out.contains("<_Fragment>"));
     assert!(out.contains("</_Fragment>"));
 }
@@ -188,7 +190,7 @@ fn html_literal_path_is_exercised_by_unit_tests() {
     // `{/* text */}` instead). So `MdastNode::Html` never appears
     // through the public `mdx_to_jsx_module(str)` entry point.
     //
-    // The dangerouslySetInnerHTML emission path is covered by the
+    // The rawHtml emission path is covered by the
     // in-crate unit test `html_node_emits_dangerously_set_inner_html`
     // in `src/mdx_jsx_emit.rs`, which feeds a synthetic `Html` node
     // straight into the emitter. This test documents the rationale
@@ -414,10 +416,9 @@ fn esm_default_import_is_stripped() {
 fn esm_named_import_is_stripped() {
     let out = emit("import { Island } from \"@takazudo/zfb\";\n\nhello\n");
     // The source import must not appear in the JSX body. Check for the
-    // module specifier (not just "import" which also appears in the React
-    // preamble `import { Fragment as _Fragment } from "react/jsx-runtime"`).
+    // exact authored specifier (the owned runtime import has a longer subpath).
     assert!(
-        !out.contains("@takazudo/zfb"),
+        !out.contains("from \"@takazudo/zfb\""),
         "module specifier leaked into JSX output:\n{out}"
     );
     // The "import " text (with trailing space as it appears in the source
@@ -442,7 +443,7 @@ fn esm_two_consecutive_imports_are_stripped() {
         "preset-generator module path leaked:\n{out}"
     );
     assert!(
-        !out.contains("@takazudo/zfb"),
+        !out.contains("from \"@takazudo/zfb\""),
         "@takazudo/zfb module specifier leaked:\n{out}"
     );
     // The import text must not appear as a JS string literal (which would
