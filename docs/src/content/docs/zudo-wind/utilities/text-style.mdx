@@ -1,0 +1,419 @@
+---
+title: Text style
+description: Set text decoration, letter case, font style, numeric shaping, and smoothing.
+sidebar_position: 41
+generated: true
+---
+
+Set text decoration, letter case, font style, numeric shaping, and smoothing.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## line-through
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.line-through` |
+| Class pattern | `line-through` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-line` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"line-through"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `line-through` | `text-decoration-line: line-through` |
+
+## no-underline
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.no-underline` |
+| Class pattern | `no-underline` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-line` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `no-underline` | `text-decoration-line: none` |
+
+## overline
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.overline` |
+| Class pattern | `overline` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-line` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"overline"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `overline` | `text-decoration-line: overline` |
+
+## underline
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.underline` |
+| Class pattern | `underline` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-line` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"underline"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `underline` | `text-decoration-line: underline` |
+
+## capitalize
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.capitalize` |
+| Class pattern | `capitalize` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-transform` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"capitalize"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `capitalize` | `text-transform: capitalize` |
+
+## lowercase
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.lowercase` |
+| Class pattern | `lowercase` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-transform` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"lowercase"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `lowercase` | `text-transform: lowercase` |
+
+## normal-case
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.normal-case` |
+| Class pattern | `normal-case` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-transform` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `normal-case` | `text-transform: none` |
+
+## uppercase
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.uppercase` |
+| Class pattern | `uppercase` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-transform` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"uppercase"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `uppercase` | `text-transform: uppercase` |
+
+## italic
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.italic` |
+| Class pattern | `italic` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `font-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"italic"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `font-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `italic` | `font-style: italic` |
+
+## not-italic
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.not-italic` |
+| Class pattern | `not-italic` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `font-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"normal"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `font-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `not-italic` | `font-style: normal` |
+
+## tabular-nums
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.tabular-nums` |
+| Class pattern | `tabular-nums` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `3` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `font-variant-numeric` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"tabular-nums"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `font-variant-numeric` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `tabular-nums` | `font-variant-numeric: tabular-nums` |
+
+## antialiased
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.antialiased` |
+| Class pattern | `antialiased` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-style` (`21`) |
+| Order rank | `4` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `-webkit-font-smoothing`, `-moz-osx-font-smoothing` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"antialiased"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `-webkit-font-smoothing` | `fixed` | `"antialiased"` |
+| `-moz-osx-font-smoothing` | `fixed` | `"grayscale"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `antialiased` | `-webkit-font-smoothing: antialiased`; `-moz-osx-font-smoothing: grayscale` |

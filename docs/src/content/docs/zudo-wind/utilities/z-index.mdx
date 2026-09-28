@@ -1,0 +1,44 @@
+---
+title: Z index
+description: Set stacking order with a bounded integer, an auto value, or a configured token.
+sidebar_position: 34
+generated: true
+---
+
+Set stacking order with a bounded integer, an auto value, or a configured token.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## z
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.z` |
+| Class pattern | `z-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","integer","arbitrary"],"arbitraryProperty":"z-index","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | `zIndices` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `z-index` (`14`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `z-index` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `z-index` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `z-0` | `z-index: 0` |

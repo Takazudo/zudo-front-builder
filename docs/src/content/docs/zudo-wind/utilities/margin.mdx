@@ -1,0 +1,267 @@
+---
+title: Margin
+description: Set physical outer spacing, including supported negative values and auto margins.
+sidebar_position: 30
+generated: true
+---
+
+Set physical outer spacing, including supported negative values and auto margins.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## m
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.m` |
+| Class pattern | `m-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-top`, `margin-right`, `margin-bottom`, `margin-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+| `margin-right` | `resolved` | `null` |
+| `margin-bottom` | `resolved` | `null` |
+| `margin-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `m-0` | `margin-top: 0`; `margin-right: 0`; `margin-bottom: 0`; `margin-left: 0` |
+
+## mx
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.mx` |
+| Class pattern | `mx-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-left`, `margin-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-left` | `resolved` | `null` |
+| `margin-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `mx-0` | `margin-left: 0`; `margin-right: 0` |
+
+## my
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.my` |
+| Class pattern | `my-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-top`, `margin-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+| `margin-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `my-0` | `margin-top: 0`; `margin-bottom: 0` |
+
+## mb
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.mb` |
+| Class pattern | `mb-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `mb-0` | `margin-bottom: 0` |
+
+## ml
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.ml` |
+| Class pattern | `ml-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `ml-0` | `margin-left: 0` |
+
+## mr
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.mr` |
+| Class pattern | `mr-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `mr-0` | `margin-right: 0` |
+
+## mt
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.mt` |
+| Class pattern | `mt-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `margin` (`10`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `margin-top` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `mt-0` | `margin-top: 0` |

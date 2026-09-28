@@ -1,0 +1,45 @@
+---
+title: Outline color
+description: Set outline color from configured values or a validated arbitrary color.
+sidebar_position: 51
+generated: true
+---
+
+Set outline color from configured values or a validated arbitrary color.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## outline
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.outline.color` |
+| Class pattern | `outline-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"outline-color","allowsFractionSlash":false,"allowsColorOpacity":true}` |
+| Accepted values | `2` |
+| Token categories | `colors` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `outline-color` (`31`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `outline-color` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"transparent"` | `"transparent"` |
+| `keyword` | `"current"` | `"currentColor"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `outline-color` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `outline-[red]/40` | `outline-color: color-mix(in oklab, red 40%, transparent)` |

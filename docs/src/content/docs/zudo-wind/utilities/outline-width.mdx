@@ -1,0 +1,75 @@
+---
+title: Outline width and offset
+description: Set outline width or offset with length values; negative values are allowed only for offset.
+sidebar_position: 50
+generated: true
+---
+
+Set outline width or offset with length values; negative values are allowed only for offset.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## outline
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.outline.width` |
+| Class pattern | `outline-<suffix>` |
+| Grammar | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"outline-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `outline-width` (`30`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `outline-width`, `outline-style` |
+
+### Accepted values
+
+The catalog has no separate accepted-value records for this entry.
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `outline-width` | `resolved` | `null` |
+| `outline-style` | `fixed` | `"solid"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `outline-2` | `outline-width: 2px`; `outline-style: solid` |
+
+## outline-offset
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.outline.offset` |
+| Class pattern | `outline-offset-<suffix>` |
+| Grammar | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"outline-offset","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Token categories | No token category |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `outline-width` (`30`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `outline-offset` |
+
+### Accepted values
+
+The catalog has no separate accepted-value records for this entry.
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `outline-offset` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `outline-offset-2` | `outline-offset: 2px` |

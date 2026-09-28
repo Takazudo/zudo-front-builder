@@ -1,0 +1,332 @@
+---
+title: Border radius
+description: Set all corners, edge corners, or a single corner with configured radius values.
+sidebar_position: 47
+generated: true
+---
+
+Set all corners, edge corners, or a single corner with configured radius values.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## rounded
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded` |
+| Class pattern | `rounded-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-left-radius`, `border-top-right-radius`, `border-bottom-right-radius`, `border-bottom-left-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-top-right-radius` | `resolved` | `null` |
+| `border-bottom-right-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-full` | `border-top-left-radius: 9999px`; `border-top-right-radius: 9999px`; `border-bottom-right-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-b
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-b` |
+| Class pattern | `rounded-b-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-bottom-right-radius`, `border-bottom-left-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-bottom-right-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-b-full` | `border-bottom-right-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-l
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-l` |
+| Class pattern | `rounded-l-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-left-radius`, `border-bottom-left-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-l-full` | `border-top-left-radius: 9999px`; `border-bottom-left-radius: 9999px` |
+
+## rounded-r
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-r` |
+| Class pattern | `rounded-r-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-right-radius`, `border-bottom-right-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-right-radius` | `resolved` | `null` |
+| `border-bottom-right-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-r-full` | `border-top-right-radius: 9999px`; `border-bottom-right-radius: 9999px` |
+
+## rounded-t
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-t` |
+| Class pattern | `rounded-t-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-left-radius`, `border-top-right-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+| `border-top-right-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-t-full` | `border-top-left-radius: 9999px`; `border-top-right-radius: 9999px` |
+
+## rounded-bl
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-bl` |
+| Class pattern | `rounded-bl-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-bottom-left-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-bottom-left-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-bl-full` | `border-bottom-left-radius: 9999px` |
+
+## rounded-br
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-br` |
+| Class pattern | `rounded-br-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-bottom-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-bottom-right-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-bottom-right-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-br-full` | `border-bottom-right-radius: 9999px` |
+
+## rounded-tl
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-tl` |
+| Class pattern | `rounded-tl-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-left-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-left-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-left-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-tl-full` | `border-top-left-radius: 9999px` |
+
+## rounded-tr
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.rounded-tr` |
+| Class pattern | `rounded-tr-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"border-top-right-radius","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `radii` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `radius` (`27`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `border-top-right-radius` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"0"` |
+| `keyword` | `"full"` | `"9999px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `border-top-right-radius` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-tr-full` | `border-top-right-radius: 9999px` |

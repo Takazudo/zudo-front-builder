@@ -1,0 +1,216 @@
+---
+title: Flex item
+description: Set flex growth, shrinkage, and the shorthand sizing behavior of an item.
+sidebar_position: 25
+generated: true
+---
+
+Set flex growth, shrinkage, and the shorthand sizing behavior of an item.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## flex-1
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.flex-1` |
+| Class pattern | `flex-1` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1 1 0%"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-1` | `flex: 1 1 0%` |
+
+## flex-auto
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.flex-auto` |
+| Class pattern | `flex-auto` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1 1 auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-auto` | `flex: 1 1 auto` |
+
+## flex-initial
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.flex-initial` |
+| Class pattern | `flex-initial` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"0 1 auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-initial` | `flex: 0 1 auto` |
+
+## flex-none
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.flex-none` |
+| Class pattern | `flex-none` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-none` | `flex: none` |
+
+## grow
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.grow` |
+| Class pattern | `grow` or `grow-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"flex-grow","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex-grow` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `null` | `"1"` |
+| `keyword` | `"0"` | `"0"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex-grow` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `grow` | `flex-grow: 1` |
+
+## shrink
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.shrink` |
+| Class pattern | `shrink` or `shrink-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"flex-shrink","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex-shrink` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `null` | `"1"` |
+| `keyword` | `"0"` | `"0"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex-shrink` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `shrink` | `flex-shrink: 1` |

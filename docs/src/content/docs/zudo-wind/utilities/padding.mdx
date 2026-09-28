@@ -1,0 +1,260 @@
+---
+title: Padding
+description: Set physical inner spacing on every side, an axis, or an individual edge.
+sidebar_position: 29
+generated: true
+---
+
+Set physical inner spacing on every side, an axis, or an individual edge.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## p
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.p` |
+| Class pattern | `p-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-top`, `padding-right`, `padding-bottom`, `padding-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+| `padding-right` | `resolved` | `null` |
+| `padding-bottom` | `resolved` | `null` |
+| `padding-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `p-0` | `padding-top: 0`; `padding-right: 0`; `padding-bottom: 0`; `padding-left: 0` |
+
+## px
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.px` |
+| Class pattern | `px-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-left`, `padding-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-left` | `resolved` | `null` |
+| `padding-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `px-0` | `padding-left: 0`; `padding-right: 0` |
+
+## py
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.py` |
+| Class pattern | `py-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-top`, `padding-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+| `padding-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `py-0` | `padding-top: 0`; `padding-bottom: 0` |
+
+## pb
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.pb` |
+| Class pattern | `pb-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `pb-0` | `padding-bottom: 0` |
+
+## pl
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.pl` |
+| Class pattern | `pl-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `pl-0` | `padding-left: 0` |
+
+## pr
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.pr` |
+| Class pattern | `pr-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `pr-0` | `padding-right: 0` |
+
+## pt
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.pt` |
+| Class pattern | `pt-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"padding-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `padding` (`9`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `padding-top` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `padding-top` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `pt-0` | `padding-top: 0` |

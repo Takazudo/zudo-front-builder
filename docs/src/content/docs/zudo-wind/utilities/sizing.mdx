@@ -1,0 +1,309 @@
+---
+title: Sizing
+description: Set width and height constraints using spacing, size tokens, fractions, and keywords.
+sidebar_position: 28
+generated: true
+---
+
+Set width and height constraints using spacing, size tokens, fractions, and keywords.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## size
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.size` |
+| Class pattern | `size-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `9` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `width`, `height` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `width` | `resolved` | `null` |
+| `height` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `size-full` | `width: 100%`; `height: 100%` |
+
+## h
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.h` |
+| Class pattern | `h-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `10` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `height` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `height` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `h-full` | `height: 100%` |
+
+## max-h
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.max-h` |
+| Class pattern | `max-h-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `10` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `max-height` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `max-height` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `max-h-full` | `max-height: 100%` |
+
+## max-w
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.max-w` |
+| Class pattern | `max-w-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `10` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `max-width` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `max-width` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `max-w-full` | `max-width: 100%` |
+
+## min-h
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.min-h` |
+| Class pattern | `min-h-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `9` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `min-height` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"screen"` | `"100vh"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `min-height` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `min-h-full` | `min-height: 100%` |
+
+## min-w
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.min-w` |
+| Class pattern | `min-w-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `9` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `min-width` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `min-width` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `min-w-full` | `min-width: 100%` |
+
+## w
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.w` |
+| Class pattern | `w-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"width","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `10` |
+| Token categories | `sizes`, `spacing` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `sizing` (`8`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `width` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"screen"` | `"100vw"` |
+| `keyword` | `"dvw"` | `"100dvw"` |
+| `keyword` | `"dvh"` | `"100dvh"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `width` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `w-full` | `width: 100%` |

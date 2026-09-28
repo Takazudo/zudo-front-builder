@@ -1,0 +1,260 @@
+---
+title: Scroll margin
+description: Set physical scroll margins with spacing values, including negative values.
+sidebar_position: 63
+generated: true
+---
+
+Set physical scroll margins with spacing values, including negative values.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## scroll-m
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-m` |
+| Class pattern | `scroll-m-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+| `scroll-margin-right` | `resolved` | `null` |
+| `scroll-margin-bottom` | `resolved` | `null` |
+| `scroll-margin-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-m-0` | `scroll-margin-top: 0`; `scroll-margin-right: 0`; `scroll-margin-bottom: 0`; `scroll-margin-left: 0` |
+
+## scroll-mx
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-mx` |
+| Class pattern | `scroll-mx-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-left`, `scroll-margin-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-left` | `resolved` | `null` |
+| `scroll-margin-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-mx-0` | `scroll-margin-left: 0`; `scroll-margin-right: 0` |
+
+## scroll-my
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-my` |
+| Class pattern | `scroll-my-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-top`, `scroll-margin-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+| `scroll-margin-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-my-0` | `scroll-margin-top: 0`; `scroll-margin-bottom: 0` |
+
+## scroll-mb
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-mb` |
+| Class pattern | `scroll-mb-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-bottom` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-bottom` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-mb-0` | `scroll-margin-bottom: 0` |
+
+## scroll-ml
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-ml` |
+| Class pattern | `scroll-ml-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-left` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-left` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-ml-0` | `scroll-margin-left: 0` |
+
+## scroll-mr
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-mr` |
+| Class pattern | `scroll-mr-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-right` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-right` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-mr-0` | `scroll-margin-right: 0` |
+
+## scroll-mt
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.scroll-mt` |
+| Class pattern | `scroll-mt-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"scroll-margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | `spacing` |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `scroll-margin` (`43`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `scroll-margin-top` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `scroll-margin-top` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-mt-0` | `scroll-margin-top: 0` |

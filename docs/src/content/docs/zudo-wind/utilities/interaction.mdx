@@ -1,0 +1,196 @@
+---
+title: Interaction
+description: Set cursor, pointer, selection, resizing, and accent-color behavior.
+sidebar_position: 60
+generated: true
+---
+
+Set cursor, pointer, selection, resizing, and accent-color behavior.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## accent
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.accent` |
+| Class pattern | `accent-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"accent-color","allowsFractionSlash":false,"allowsColorOpacity":true}` |
+| Accepted values | `2` |
+| Token categories | `colors` |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `accent-color` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"transparent"` | `"transparent"` |
+| `keyword` | `"current"` | `"currentColor"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `accent-color` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `accent-[red]/40` | `accent-color: color-mix(in oklab, red 40%, transparent)` |
+
+## cursor
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.cursor` |
+| Class pattern | `cursor-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `9` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `cursor` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"default"` | `"default"` |
+| `keyword` | `"pointer"` | `"pointer"` |
+| `keyword` | `"not-allowed"` | `"not-allowed"` |
+| `keyword` | `"text"` | `"text"` |
+| `keyword` | `"move"` | `"move"` |
+| `keyword` | `"grab"` | `"grab"` |
+| `keyword` | `"grabbing"` | `"grabbing"` |
+| `keyword` | `"wait"` | `"wait"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `cursor` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `cursor-pointer` | `cursor: pointer` |
+
+## pointer-events
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.pointer-events` |
+| Class pattern | `pointer-events-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `2` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `pointer-events` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"none"` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `pointer-events` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `pointer-events-none` | `pointer-events: none` |
+
+## resize
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.resize` |
+| Class pattern | `resize` or `resize-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `4` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `resize` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `null` | `"both"` |
+| `keyword` | `"x"` | `"horizontal"` |
+| `keyword` | `"y"` | `"vertical"` |
+| `keyword` | `"none"` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `resize` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `resize-x` | `resize: horizontal` |
+
+## select
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.select` |
+| Class pattern | `select-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `4` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `user-select` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"text"` | `"text"` |
+| `keyword` | `"all"` | `"all"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `user-select` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `select-none` | `user-select: none` |
