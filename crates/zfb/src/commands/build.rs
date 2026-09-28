@@ -930,15 +930,23 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
-        let css = build_default_css_payload(
+        let css_pass = build_default_css_payload_with_details(
             project_root,
             outdir,
             config,
             package_route_entrypoints,
             &self.islands_plugin_config.alias_entries,
             &self.islands_plugin_config.virtual_modules,
+            &|_roots| {},
         )
         .context("CSS emitter (DefaultRunner) failed")?;
+        for diagnostic in &css_pass.diagnostics {
+            if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+                output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+            }
+        }
+        let _css_input_dependencies = &css_pass.input_dependencies;
+        let css = css_pass.payload;
         let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
             project_root,
             user_pages_dir,
@@ -1001,6 +1009,7 @@ pub(crate) fn css_sibling_mirror_skip_dir_names() -> &'static [&'static str] {
 /// site (unit tests, `DefaultRunner::emit_prod_assets`) that has no use for
 /// the CSS source-plan seam (issue #1802) — byte-identical to the
 /// pre-#1802 behaviour, with a no-op observer.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
@@ -1061,7 +1070,411 @@ pub(crate) fn build_default_css_payload(
 /// does NOT publish is a `discover_css_plugin_virtual_files` failure, where
 /// publishing the narrower alias-only set would retire live roots under
 /// replace semantics; see the comment at that call site.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_default_css_payload_with_source_plan(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+) -> Result<Option<AssetEmitterPayload>> {
+    Ok(build_default_css_payload_with_details(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+    )?
+    .payload)
+}
+
+/// Payload plus the engine inputs needed by future dev invalidation.
+#[derive(Debug)]
+pub(crate) struct CssPayloadPass {
+    pub payload: Option<AssetEmitterPayload>,
+    pub input_dependencies: Vec<zfb_css::CssInputDependency>,
+    pub diagnostics: Vec<zfb_css::CssDiagnostic>,
+}
+
+pub(crate) fn build_default_css_payload_with_details(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+) -> Result<CssPayloadPass> {
+    let Some(wind) = &config.wind else {
+        return Ok(CssPayloadPass {
+            payload: build_legacy_css_payload_with_source_plan(
+                project_root,
+                outdir,
+                config,
+                package_route_entrypoints,
+                plugin_alias_entries,
+                plugin_virtual_modules,
+                on_source_plan,
+            )?,
+            input_dependencies: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+    };
+    let virtual_worker_context = module_worker_build_context(
+        true,
+        config.framework,
+        config.bundle.as_ref(),
+        plugin_alias_entries,
+        plugin_virtual_modules,
+    );
+    let discovered_graph_files =
+        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+    let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
+    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &zfb_types::first_party_root_for(project_root),
+        &discovered_graph_files,
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    )
+    .mirror_roots()
+    .map(Path::to_path_buf)
+    .collect();
+    on_source_plan(&sibling_mirror_roots);
+
+    let framework_css = resolve_framework_css(config);
+    let sources =
+        discover_css_source_files(project_root, plugin_alias_entries, &discovered_graph_files);
+    let authored = if let Some(path) = resolve_input_global_css(project_root) {
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
+        let mut stylesheets = vec![path.clone()];
+        stylesheets.extend(zfb_css::resolve_css_imports(&path, project_root));
+        const FORBIDDEN: &[&str] = &[
+            "import",
+            "tailwind",
+            "theme",
+            "source",
+            "custom-variant",
+            "apply",
+            "utility",
+            "variant",
+            "plugin",
+            "config",
+            "reference",
+            "--spacing",
+            "--alpha",
+            "--value",
+        ];
+        for stylesheet in stylesheets {
+            let css = if stylesheet == path {
+                raw.clone()
+            } else {
+                std::fs::read_to_string(&stylesheet)
+                    .with_context(|| format!("failed to read {}", stylesheet.display()))?
+            };
+            if let Some(directive) = zfb_css::scan_leftover_directives(&css, FORBIDDEN)
+                .into_iter()
+                .next()
+            {
+                anyhow::bail!("ZW009: forbidden Tailwind {} at {}:{}:{}; see /docs/zudo-wind/coming-from-tailwind/",
+                    directive.name, stylesheet.display(), directive.line, directive.column);
+            }
+        }
+        zfb_css::bundle_authored_css_with_assets(&path, project_root, &raw)?
+    } else {
+        zfb_css::AuthoredCssBundle {
+            css: String::new(),
+            companions: Vec::new(),
+            input_dependencies: Vec::new(),
+        }
+    };
+    let engine = match wind {
+        crate::config::WindSetting::Disabled => {
+            SelectedWindEngine::Authored(AuthoredCssEngine::with_bundle(authored))
+        }
+        crate::config::WindSetting::Enabled(settings) => {
+            let inputs = crate::commands::css_source_plan::gather_css_source_plan_inputs(
+                project_root,
+                outdir,
+                config,
+                package_route_entrypoints,
+                &sibling_mirror_roots,
+                plugin_virtual_modules,
+            )?;
+            let plan = crate::commands::css_source_plan::build_css_source_plan(&inputs);
+            let mut index = zfb_css::CandidateIndex::default();
+            let mut diagnostics = Vec::new();
+            let mut origins = Vec::new();
+            let files = zfb_css::expand_file_set(&plan);
+            for diagnostic in files.diagnostics {
+                let required_missing = diagnostic.message.starts_with("required source missing");
+                diagnostics.push(zfb_css::CssDiagnostic {
+                    severity: if required_missing {
+                        zfb_css::CssDiagnosticSeverity::Error
+                    } else {
+                        zfb_css::CssDiagnosticSeverity::Warning
+                    },
+                    code: if required_missing { "ZW010" } else { "ZW011" }.into(),
+                    message: format!("{}: {}", diagnostic.root_label, diagnostic.message),
+                    origin: Default::default(),
+                    candidate: None,
+                });
+            }
+            for file in files.files {
+                match index.index_file(&file) {
+                    Ok(extracted) => {
+                        if extracted
+                            .notes
+                            .iter()
+                            .any(|note| note.kind == zfb_css::NoteKind::InvalidUtf8)
+                        {
+                            diagnostics.push(zfb_css::CssDiagnostic {
+                                severity: zfb_css::CssDiagnosticSeverity::Warning,
+                                code: "ZW011".into(),
+                                message: format!(
+                                    "skipped non-UTF-8 source {}",
+                                    file.path.display()
+                                ),
+                                origin: zfb_css::CssDiagnosticOrigin {
+                                    path: Some(file.path.clone()),
+                                    ..Default::default()
+                                },
+                                candidate: None,
+                            });
+                        }
+                        for candidate in extracted.candidates {
+                            for occurrence in candidate.occurrences {
+                                origins.push(zfb_css::OriginCandidate {
+                                    text: candidate.text.clone(),
+                                    origin: zfb_css::Origin::Source {
+                                        source_id: file.id.render(),
+                                        byte_offset: occurrence.byte_offset,
+                                        byte_length: occurrence.byte_length,
+                                        line: occurrence.line,
+                                        byte_column: occurrence.byte_column,
+                                        literal_byte_offset: occurrence.literal_byte_offset,
+                                        literal_byte_length: occurrence.literal_byte_length,
+                                        position_kind: match occurrence.position_kind {
+                                            zfb_css::PositionKind::Class => {
+                                                zfb_css::SourcePositionKind::Class
+                                            }
+                                            zfb_css::PositionKind::Literal => {
+                                                zfb_css::SourcePositionKind::Literal
+                                            }
+                                        },
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => diagnostics.push(zfb_css::CssDiagnostic {
+                        severity: zfb_css::CssDiagnosticSeverity::Warning,
+                        code: "ZW011".into(),
+                        message: format!("skipped source {}: {error}", file.path.display()),
+                        origin: zfb_css::CssDiagnosticOrigin {
+                            path: Some(file.path),
+                            ..Default::default()
+                        },
+                        candidate: None,
+                    }),
+                }
+            }
+            for (producer, path) in &plan.manifests {
+                let bytes = std::fs::read(path)?;
+                let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let entries = manifest["candidates"]
+                    .as_array()
+                    .ok_or_else(|| anyhow!("manifest {producer} candidates missing"))?;
+                let candidates: Vec<String> = entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(str::to_owned))
+                    .collect();
+                for (position, text) in candidates.iter().enumerate() {
+                    origins.push(zfb_css::OriginCandidate {
+                        text: text.clone(),
+                        origin: zfb_css::Origin::Manifest {
+                            producer: producer.clone(),
+                            path: path.display().to_string(),
+                            index: position,
+                        },
+                    });
+                }
+                index.replace_manifest(producer.clone(), candidates);
+            }
+            for (source, candidates) in &plan.generated_sources {
+                if source == "code-highlight/role-classes" {
+                    for text in candidates {
+                        origins.push(zfb_css::OriginCandidate {
+                            text: text.clone(),
+                            origin: zfb_css::Origin::RoleClass {
+                                role_key: text.clone(),
+                            },
+                        });
+                    }
+                } else if let Some(specifier) = source.strip_prefix("plugin/") {
+                    if let Some((_, code)) = plugin_virtual_modules
+                        .iter()
+                        .find(|(name, _)| name == specifier)
+                    {
+                        for candidate in
+                            zfb_css::extract_candidates(code.as_bytes(), zfb_css::SourceKind::Tsx)
+                                .candidates
+                        {
+                            if !candidates.contains(&candidate.text) {
+                                continue;
+                            }
+                            for occurrence in candidate.occurrences {
+                                origins.push(zfb_css::OriginCandidate {
+                                    text: candidate.text.clone(),
+                                    origin: zfb_css::Origin::Source {
+                                        source_id: source.clone(),
+                                        byte_offset: occurrence.byte_offset,
+                                        byte_length: occurrence.byte_length,
+                                        line: occurrence.line,
+                                        byte_column: occurrence.byte_column,
+                                        literal_byte_offset: occurrence.literal_byte_offset,
+                                        literal_byte_length: occurrence.literal_byte_length,
+                                        position_kind: match occurrence.position_kind {
+                                            zfb_css::PositionKind::Class => {
+                                                zfb_css::SourcePositionKind::Class
+                                            }
+                                            zfb_css::PositionKind::Literal => {
+                                                zfb_css::SourcePositionKind::Literal
+                                            }
+                                        },
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                index.replace_manifest(source.clone(), candidates.iter().cloned());
+            }
+            for (owner, candidates) in &plan.safelist {
+                index.replace_safelist(owner.clone(), candidates.iter().cloned());
+            }
+            let config = map_wind_config(settings);
+            SelectedWindEngine::Wind(Box::new(
+                zfb_css::WindEngine::new(config, index.live_set(), authored)
+                    .with_diagnostics(diagnostics)
+                    .with_origins(origins),
+            ))
+        }
+    };
+    let emitted = crate::commands::css_support::run_css_emitter(
+        engine,
+        project_root,
+        outdir,
+        sources,
+        direct_css_modules,
+        framework_css,
+    )?;
+    let dependencies = emitted.input_dependencies;
+    let diagnostics = emitted.diagnostics;
+    let payload = if emitted.bytes.iter().all(u8::is_ascii_whitespace) {
+        None
+    } else {
+        Some(AssetEmitterPayload {
+            bytes: emitted.bytes,
+            relative_path: css_relative_path(),
+            stable_url: emitted.stable_url,
+            companions: emitted
+                .companions
+                .into_iter()
+                .map(|c| CompanionFile {
+                    filename: c.filename,
+                    bytes: c.bytes,
+                })
+                .collect(),
+        })
+    };
+    Ok(CssPayloadPass {
+        payload,
+        input_dependencies: dependencies,
+        diagnostics,
+    })
+}
+
+enum SelectedWindEngine {
+    Authored(AuthoredCssEngine),
+    Wind(Box<zfb_css::WindEngine>),
+}
+
+impl CssEngine for SelectedWindEngine {
+    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<zfb_css::CssEngineOutput> {
+        match self {
+            Self::Authored(engine) => engine.produce_utility_css(sources),
+            Self::Wind(engine) => engine.produce_utility_css(sources),
+        }
+    }
+}
+
+fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
+    let mut output = zfb_css::WindConfig {
+        spec: input.spec,
+        reset: match input.reset.as_str() {
+            "minimal-v1" => zfb_css::ResetMode::MinimalV1,
+            "owned-v1" => zfb_css::ResetMode::OwnedV1,
+            _ => zfb_css::ResetMode::None,
+        },
+        dark: match &input.dark {
+            crate::config::WindDarkSetting::Enabled(dark) => Some(zfb_css::DarkModeConfig {
+                attribute: dark.attribute.clone(),
+                value: dark.value.clone(),
+            }),
+            crate::config::WindDarkSetting::Disabled => None,
+        },
+        breakpoints: input
+            .breakpoints
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    zfb_css::BreakpointConfig {
+                        min_width_px: value.min_width_px as i64,
+                    },
+                )
+            })
+            .collect(),
+        safelist: input.safelist.clone(),
+        authored_classes: input.authored_classes.clone(),
+        ..Default::default()
+    };
+    output.tokens.spacing_unit = input.tokens.spacing_unit.clone();
+    output.tokens.colors = input.tokens.colors.clone();
+    output.tokens.spacing = input.tokens.spacing.clone();
+    output.tokens.sizes = input.tokens.sizes.clone();
+    output.tokens.font_sizes = input
+        .tokens
+        .font_sizes
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                zfb_css::FontSizeToken {
+                    size: value.size.clone(),
+                    line_height: value.line_height.clone(),
+                },
+            )
+        })
+        .collect();
+    output.tokens.font_families = input.tokens.font_families.clone();
+    output.tokens.font_weights = input.tokens.font_weights.clone();
+    output.tokens.line_heights = input.tokens.line_heights.clone();
+    output.tokens.letter_spacings = input.tokens.letter_spacings.clone();
+    output.tokens.radii = input.tokens.radii.clone();
+    output.tokens.shadows = input.tokens.shadows.clone();
+    output.tokens.z_indices = input.tokens.z_indices.clone();
+    output.tokens.easings = input.tokens.easings.clone();
+    output
+}
+
+fn build_legacy_css_payload_with_source_plan(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
@@ -18822,5 +19235,400 @@ mod tests {
             "mirror roots must still be published with tailwind.enabled = false, since \
              CSS Modules discovery still scans them: {roots:?}"
         );
+    }
+    #[test]
+    fn wind_object_emits_plan_candidates_and_authored_css() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = write_css_root_claim_workspace(temp.path(), "  - '.'\n  - 'styleguide'\n");
+        let output_dir = temp.path().join("custom-output");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::write(output_dir.join("stale.tsx"), "<div className=\"hidden\" />").unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "<div className=\"block\" />",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let pass = build_default_css_payload_with_details(
+            &project,
+            &output_dir,
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap();
+        let css = String::from_utf8(pass.payload.unwrap().bytes).unwrap();
+        assert!(css.contains(".block"), "{css}");
+        assert!(css.contains(".authored"), "{css}");
+        assert!(!css.contains(".hidden"), "{css}");
+        assert!(css.find("@layer zw-reset").unwrap() < css.find(".authored").unwrap());
+    }
+
+    #[test]
+    fn wind_false_emits_authored_only_and_empty_project_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Disabled),
+            ..Default::default()
+        };
+        assert!(
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .is_none()
+        );
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".authored"));
+        assert!(!css.contains("zw-reset"));
+    }
+
+    #[test]
+    fn wind_leftover_directive_entry_and_import_fail_with_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let entry = project.join("styles/global.css");
+        std::fs::write(&entry, "@import 'tailwindcss';").unwrap();
+        let error = build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ZW009") && error.contains("global.css"),
+            "{error}"
+        );
+        std::fs::write(&entry, "@import './other.css';").unwrap();
+        std::fs::write(project.join("styles/other.css"), "@apply block;").unwrap();
+        let error = build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("@apply") && error.contains("other.css"),
+            "{error}"
+        );
+    }
+    #[test]
+    fn wind_package_urls_emit_companions_on_both_new_arms() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        let package = project.join("node_modules/acme-font");
+        std::fs::create_dir_all(package.join("files")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"acme-font","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("style.css"),
+            ".font { src: url('./files/a.woff2'); }",
+        )
+        .unwrap();
+        std::fs::write(package.join("files/a.woff2"), b"font-bytes").unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import '../node_modules/acme-font/style.css';",
+        )
+        .unwrap();
+        for wind in [
+            crate::config::WindSetting::Disabled,
+            crate::config::WindSetting::Enabled(Box::default()),
+        ] {
+            let cfg = Config {
+                wind: Some(wind),
+                ..Default::default()
+            };
+            let pass = build_default_css_payload_with_details(
+                project,
+                &project.join("dist"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &|_| {},
+            )
+            .unwrap();
+            let payload = pass.payload.unwrap();
+            let css = String::from_utf8(payload.bytes).unwrap();
+            assert!(css.contains(".font"));
+            assert!(css.contains("./a-"), "{css}");
+            assert_eq!(payload.companions.len(), 1);
+            assert!(pass
+                .input_dependencies
+                .iter()
+                .any(|dep| dep.path.ends_with("style.css")));
+        }
+    }
+    #[test]
+    fn wind_publishes_mirror_roots_before_bundle_failure() {
+        use std::cell::RefCell;
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import './missing.css';",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let seen = RefCell::new(None);
+        let result = build_default_css_payload_with_source_plan(
+            project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| *seen.borrow_mut() = Some(roots.to_vec()),
+        );
+        assert!(result.is_err());
+        assert!(seen.borrow().is_some());
+    }
+
+    #[test]
+    fn wind_invalid_token_fails_with_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let mut wind = crate::config::WindConfig::default();
+        wind.tokens.colors.insert("bad".into(), "url(evil)".into());
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let error = build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("bad"), "{message}");
+    }
+    #[test]
+    fn wind_package_route_and_safelist_are_in_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let route = project.join("node_modules/example/dist/page.tsx");
+        std::fs::create_dir_all(route.parent().unwrap()).unwrap();
+        std::fs::write(&route, "<div className=\"flex\" />").unwrap();
+        let mut wind = crate::config::WindConfig::default();
+        wind.safelist.insert("test".into(), vec!["hidden".into()]);
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[route], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".flex"), "{css}");
+        assert!(css.contains(".hidden"), "{css}");
+    }
+    #[test]
+    fn wind_order_layers_import_highlight_reset_authored_utilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "<div className=\"block\" />",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import url('https://example.com/font.css'); .authored { color: red; }",
+        )
+        .unwrap();
+        let wind = crate::config::WindConfig {
+            reset: "minimal-v1".into(),
+            ..Default::default()
+        };
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            code_highlight: Some(code_highlight_with_role_classes(Default::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        let indexes = [
+            "@layer zw-reset, zw-tokens, zfb-hi",
+            "@import",
+            "@layer zfb-hi",
+            "@layer zw-reset {",
+            ".authored",
+            ".block",
+        ]
+        .map(|marker| {
+            css.find(marker)
+                .unwrap_or_else(|| panic!("missing {marker}: {css}"))
+        });
+        assert!(indexes.windows(2).all(|pair| pair[0] < pair[1]), "{css}");
+    }
+    #[test]
+    fn wind_global_and_css_module_share_stylesheet() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(project.join("pages/index.tsx"),
+            "import styles from '../styles/card.module.css'; export default () => <div className={styles.card} />;").unwrap();
+        std::fs::write(
+            project.join("styles/card.module.css"),
+            ".card { background: rgb(1, 2, 3); }",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".authored"), "{css}");
+        assert!(
+            css.contains("rgb(1, 2, 3)") || css.contains("#010203"),
+            "{css}"
+        );
+    }
+    #[test]
+    fn wind_role_classes_emit_valid_utility_and_leave_authored_class_ordinary() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let roles = [
+            ("keyword".to_string(), "block".to_string()),
+            ("plain".to_string(), "custom-authored".to_string()),
+        ]
+        .into();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            code_highlight: Some(code_highlight_with_role_classes(roles)),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".block"), "{css}");
+        assert!(!css.contains(".custom-authored"), "{css}");
+    }
+    #[test]
+    fn wind_pass_reports_stylesheet_dependency_and_skipped_source_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(project.join("pages/bad.tsx"), [0xff, 0xfe]).unwrap();
+        let entry = project.join("styles/global.css");
+        std::fs::write(&entry, ".authored { color: red; }").unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let pass = build_default_css_payload_with_details(
+            project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap();
+        assert!(pass.payload.is_some());
+        assert!(pass
+            .input_dependencies
+            .iter()
+            .any(|dep| dep.path.ends_with("global.css")
+                && dep.kind == zfb_css::CssInputDependencyKind::Stylesheet));
+        assert!(pass
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "ZW011"
+                && diag.severity == zfb_css::CssDiagnosticSeverity::Warning));
+    }
+    #[test]
+    fn wind_claimed_sibling_root_reaches_payload() {
+        let (_temp, project) = sibling_css_workspace_fixture();
+        let sibling = project
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("lib/shared/Button.tsx");
+        std::fs::write(
+            &sibling,
+            "export default function Button() { return <div className=\"flex\" />; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".flex"), "{css}");
+    }
+    #[test]
+    fn wind_virtual_module_candidate_reaches_payload() {
+        let (_temp, project) = direct_virtual_css_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let mut virtual_modules = virtual_direct_css_module(ws);
+        virtual_modules[0].1.push_str("const utility = 'grid';\n");
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload = build_default_css_payload(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &virtual_modules,
+        )
+        .unwrap()
+        .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".grid"), "{css}");
     }
 }

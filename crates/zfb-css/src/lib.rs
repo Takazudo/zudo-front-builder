@@ -81,6 +81,7 @@ pub mod css_imports;
 pub mod emitter;
 pub mod engine;
 pub mod engine_output;
+pub mod leftover_directives;
 pub mod modules;
 pub mod native_engine;
 pub mod pipeline;
@@ -88,6 +89,7 @@ pub mod scanner;
 pub mod stub_engine;
 pub mod url_attribution;
 pub mod url_scanner;
+pub mod wind_engine;
 
 pub use authored_engine::AuthoredCssEngine;
 pub use css_imports::{
@@ -101,8 +103,9 @@ pub use engine::{
 };
 pub use engine_output::{
     CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId, CssEngineOutput,
-    CssInputDependency, CssInputDependencyKind, CssProvenance,
+    CssInputDependency, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
 };
+pub use leftover_directives::{scan_leftover_directives, LeftoverDirective};
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use native_engine::NativeRustEngine;
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
@@ -115,10 +118,12 @@ pub use url_attribution::{
     PackageUrlAsset, UrlOrigin,
 };
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
+pub use wind_engine::WindEngine;
 pub use zudo_wind::{
-    expand_file_set, extract_candidates, CandidateIndex, ExpandedFile, ExtractedCandidate,
-    ExtractionNote, ExtractionResult, FileSet, NoteKind, Occurrence, PositionKind, PositiveRoot,
-    SourceId, SourceKind, SourcePlan, WalkDiagnostic,
+    expand_file_set, extract_candidates, BreakpointConfig, CandidateIndex, DarkModeConfig,
+    ExpandedFile, ExtractedCandidate, ExtractionNote, ExtractionResult, FileSet, FontSizeToken,
+    NoteKind, Occurrence, Origin, OriginCandidate, PositionKind, PositiveRoot, ResetMode, SourceId,
+    SourceKind, SourcePlan, SourcePositionKind, WalkDiagnostic, WindConfig,
 };
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's

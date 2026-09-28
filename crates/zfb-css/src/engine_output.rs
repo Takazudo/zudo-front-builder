@@ -63,9 +63,22 @@ pub struct CssDiagnosticOrigin {
     pub column: Option<usize>,
 }
 
-/// Reserved for engine-specific origin details in a later task.
+/// Identity of generated CSS rules; v1 has no generated source map.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CssProvenance;
+pub struct CssProvenance {
+    pub source_id: String,
+    pub kind: CssProvenanceKind,
+    pub spec_version: u32,
+    pub spec_revision: u32,
+    pub map: Option<String>,
+    /// Canonical authored stylesheet inputs when generated and authored CSS are combined.
+    pub authored_stylesheets: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CssProvenanceKind {
+    Generated,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CssEngineId {
