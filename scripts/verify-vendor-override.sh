@@ -12,9 +12,8 @@ set -euo pipefail
 #   1. `git archive HEAD` into a scratch dir contains NO gitignored binary
 #      slots (crates/zfb/binaries/esbuild/esbuild) — a genuinely clean tree.
 #   2. node_modules is provisioned by symlinking the source checkout's own
-#      node_modules/ (an unrelated prerequisite: build.rs also embeds
-#      framework packages from node_modules/.pnpm — see
-#      `embed_framework_packages` in crates/zfb/build.rs). This must NOT
+#      node_modules/ (an unrelated prerequisite: build.rs also reads Hono
+#      from node_modules/.pnpm/). This must NOT
 #      go through the override mechanism.
 #   3. With ZFB_ESBUILD_BIN pointed at the
 #      dev machine's already-staged binary (absolute paths), a
@@ -84,8 +83,7 @@ pass "git archive HEAD contains no staged esbuild binary slot"
 
 # ── Step 2: provision node_modules (unrelated prerequisite) ─────────────
 #
-# build.rs's embed_framework_packages() reads node_modules/.pnpm/ for
-# preact/preact-render-to-string/hono regardless of the override paths, so
+# build.rs reads Hono from node_modules/.pnpm/ regardless of the override path, so
 # the clean tree needs a node_modules/ — but it must come from a symlink to
 # the already-`pnpm install`-ed source checkout, never through
 # ZFB_ESBUILD_BIN (which only touches the esbuild binary slot).

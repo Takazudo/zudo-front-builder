@@ -25,7 +25,7 @@ pnpm install --frozen-lockfile
 cargo build --workspace
 ```
 
-That command is intentionally plain: it builds every workspace crate for your host target, and the `crates/zfb/build.rs` build script automatically downloads, SHA-256-verifies, and stages the pinned `esbuild` and `tailwindcss` binaries before the `zfb` crate compiles. If you also want to precompile test harnesses after the first dependency install, use:
+That command is intentionally plain: it builds every workspace crate for your host target, and the `crates/zfb/build.rs` build script downloads, SHA-256-verifies, and stages the pinned esbuild binary before the `zfb` crate compiles. It also embeds Hono from the workspace pnpm store. If you also want to precompile test harnesses after the first dependency install, use:
 
 ```sh
 cargo build --workspace --all-targets
@@ -40,27 +40,24 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for tips on speeding up local Rust comp
 pnpm install --frozen-lockfile
 
 # 2. Build the Rust workspace (first run: 15-30 min; subsequent runs: fast).
-#    This also provisions the pinned esbuild and tailwindcss binaries.
+#    This also provisions the pinned esbuild binary.
 cargo build --workspace
 ```
 
 ## Provisioned external binaries
 
-The islands bundler shells out to `esbuild`, and the CSS pipeline shells out to the Tailwind v4 standalone CLI. These binary files are **not** committed to git; they are materialized on demand.
+The islands bundler uses the standalone `esbuild` executable. The CSS pipeline compiles utility classes with zudo-wind in-process and does not need a separate CSS CLI binary.
 
-The default path is Cargo-driven. Any normal build that compiles `crates/zfb` runs [`crates/zfb/build.rs`](./crates/zfb/build.rs), which:
+The default esbuild path is Cargo-driven. Any normal build that compiles `crates/zfb` runs [`crates/zfb/build.rs`](./crates/zfb/build.rs), which:
 
 - downloads the pinned platform-specific `@esbuild/*` npm tarball, extracts the standalone `esbuild` binary, verifies it against the `ESBUILD_SHA256_*` constants, and stages it under `crates/zfb/binaries/esbuild/`;
-- downloads the pinned Tailwind v4 standalone binary from the upstream GitHub release, verifies it against the `TAILWIND_SHA256_*` constants, and stages it as `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows);
-- copies both verified binaries into the embedded vendor snapshot so installed `zfb` binaries can run without a workspace checkout.
+- copies the verified esbuild executable into the embedded vendor snapshot so installed `zfb` binaries can run without a workspace checkout.
 
-Supported build platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`, matched against Cargo's exact `TARGET` triple (not a substring match, so `x86_64-unknown-linux-musl` does not accidentally match the `-gnu` platform). For unsupported targets such as musl-libc Linux, set `ZFB_ESBUILD_BIN` and/or `ZFB_TAILWIND_BIN` to absolute paths for pre-verified binaries.
+Supported esbuild download platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`, matched against Cargo's exact `TARGET` triple (not a substring match, so `x86_64-unknown-linux-musl` does not accidentally match the `-gnu` platform). For unsupported targets such as musl-libc Linux, set `ZFB_ESBUILD_BIN` to an absolute path to a pre-verified binary.
 
-`pnpm fetch:tailwind` still exists as a Tailwind-only developer convenience, but it is not part of first-build setup. Plain `cargo build --workspace` provisions both binaries.
+### `ZFB_ESBUILD_BIN` override contract
 
-### `ZFB_ESBUILD_BIN` / `ZFB_TAILWIND_BIN` override contract
-
-Each binary resolves its source **independently** — you can override one and let the other download normally; there is no requirement to set both together. When an override env var is set to a non-empty value, `build.rs`:
+When `ZFB_ESBUILD_BIN` is set to a non-empty value, `build.rs`:
 
 - requires the value to be an **absolute path** (relative paths are rejected with a clear error);
 - requires the path to exist and be a regular file;
@@ -68,13 +65,11 @@ Each binary resolves its source **independently** — you can override one and l
 
 An empty-string value (e.g. an env var that is set but blank) is treated as unset, not as an override.
 
-Setting `ZFB_TAILWIND_BIN` does **not** by itself disable the one-off oxide warm-up. In automatic mode, `zfb` skips the warm-up only when it recognizes the selected executable as a Node/npm Tailwind CLI; the bundled standalone binary, other native executables, and executables it cannot classify still warm. `ZFB_TAILWIND_OXIDE_WARMUP` can override that decision: `1` / `true` / `on` forces the warm-up on, while `0` / `false` / `off` forces it off. Unset, empty, and unrecognized values retain automatic mode.
+Cargo re-runs the build script when `ZFB_ESBUILD_BIN` changes (`cargo:rerun-if-env-changed`), and — once an override path is validated — when that file's contents change (`cargo:rerun-if-changed=<path>`), so editing an override binary in place and rebuilding picks it up without a manual `touch`.
 
-Cargo re-runs the build script when either override env var changes (`cargo:rerun-if-env-changed`), and — once an override path is validated — when that file's contents change (`cargo:rerun-if-changed=<path>`), so editing an override binary in place and rebuilding picks it up without a manual `touch`.
+See [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
 
-See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the Tailwind runtime contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
-
-[`scripts/verify-vendor-override.sh`](./scripts/verify-vendor-override.sh) proves this contract end-to-end on a clean tree: it `git archive`s `HEAD` into a scratch directory (so no gitignored binary slot can be present), symlinks in `node_modules/` from the source checkout (an unrelated prerequisite — `build.rs` also embeds framework packages from `node_modules/.pnpm/`), then runs an offline, isolated-`$CARGO_TARGET_DIR` `cargo check -p zfb --no-default-features --offline` with both override env vars pointed at the source checkout's already-staged binaries. It asserts zero downloads occur, the staged `$OUT_DIR/vendor/bin/` bytes hash-equal the override sources, and a bogus override path fails with the direct path + var-naming error. Run it locally with `scripts/verify-vendor-override.sh` (defaults to `crates/zfb/binaries/esbuild/esbuild` and `crates/zfb/binaries/tailwindcss-v4` as override sources — populate them first with a plain `cargo build --workspace`, which also warms `$CARGO_HOME`'s registry cache so the script's isolated `--offline` check can resolve crates without network access; or point `ZFB_VERIFY_ESBUILD_SRC`/`ZFB_VERIFY_TAILWIND_SRC` at pre-staged binaries elsewhere). Unix hosts only (macOS/Linux). It is not wired into CI or `b4push` — it's a manual confirmation tool, several minutes per run (a cold, isolated `cargo check`).
+[`scripts/verify-vendor-override.sh`](./scripts/verify-vendor-override.sh) proves this contract end-to-end on a clean tree: it `git archive`s `HEAD` into a scratch directory (so no gitignored binary slot can be present), symlinks in `node_modules/` from the source checkout so the build script can read the embedded Hono package from `node_modules/.pnpm/`, then runs an offline, isolated-`$CARGO_TARGET_DIR` `cargo check -p zfb --no-default-features --offline` with `ZFB_ESBUILD_BIN` pointed at the source checkout's staged binary. It asserts zero downloads occur, the staged `$OUT_DIR/vendor/bin/` bytes hash-equal the override source, and a bogus override path fails with the direct path + var-naming error. Run it locally with `scripts/verify-vendor-override.sh` (defaults to `crates/zfb/binaries/esbuild/esbuild` as the override source — populate it first with a plain `cargo build --workspace`, which also warms `$CARGO_HOME`'s registry cache so the script's isolated `--offline` check can resolve crates without network access; or point `ZFB_VERIFY_ESBUILD_SRC` at a pre-staged binary elsewhere). Unix hosts only (macOS/Linux). It is not wired into CI or `b4push` — it's a manual confirmation tool, several minutes per run (a cold, isolated `cargo check`).
 
 ## Embedded npm packages
 
@@ -83,16 +78,16 @@ See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binar
 | Group | Packages | Source | Pin location |
 | --- | --- | --- | --- |
 | `@takazudo/*` (sub #198) | `@takazudo/zfb`, `@takazudo/zfb-runtime` | `packages/<name>/src/` (TypeScript source) | the workspace itself — versions follow `packages/<name>/package.json` |
-| Framework runtimes (sub #209) | `preact`, `preact-render-to-string`, `hono` | `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>/` (published trees) | `pnpm-lock.yaml`; mirrored as `*_VERSION` constants in `crates/zfb/build.rs` |
+| Router runtime | `hono` | `node_modules/.pnpm/hono@<ver>/node_modules/hono/` (published tree) | `pnpm-lock.yaml`; mirrored by `HONO_VERSION` in `crates/zfb/build.rs` |
 
-To bump a framework-runtime version:
+To bump Hono:
 
-1. Update the dependency in the relevant `package.json` (e.g. `packages/zfb-runtime/package.json` for `hono`, or in a standalone demo repo's `package.json` for `preact`/`preact-render-to-string`).
+1. Update the dependency in `packages/zfb-runtime/package.json`.
 2. Run `pnpm install` so `pnpm-lock.yaml` re-resolves.
-3. Update the corresponding `*_VERSION` constant in `crates/zfb/build.rs` to match the new lockfile entry.
+3. Update `HONO_VERSION` in `crates/zfb/build.rs` to match the new lockfile entry.
 4. Rebuild — the build script re-snapshots the new tree.
 
-`pnpm install --frozen-lockfile` is a hard prerequisite for `cargo build` because the build script reads `node_modules/.pnpm/`. The smoke test `embedded_node_modules_extracts_runtime_layout` (in `crates/zfb/src/render_pipeline.rs`) and the integration test `framework_packages_no_pnpm` (in `crates/zfb/tests/`) both fail with an actionable error if the embedded snapshot drifts away from the pinned versions.
+`pnpm install --frozen-lockfile` is a hard prerequisite for `cargo build` because the build script reads Hono from `node_modules/.pnpm/`. The smoke test `embedded_node_modules_extracts_runtime_layout` (in `crates/zfb/src/render_pipeline.rs`) and the integration test `framework_packages_no_pnpm` (in `crates/zfb/tests/`) verify the embedded owned runtime and Hono layout.
 
 ## Running tests
 
@@ -100,14 +95,11 @@ To bump a framework-runtime version:
 # Default — non-ignored workspace suite; Cargo provisions host binaries as needed
 cargo test --workspace
 
-# Heavyweight — runs the previously-`#[ignore]`-gated tests that exercise
-# the real Tailwind subprocess. Requires the binary to be available.
-ZFB_TAILWIND_BIN="$(pwd)/crates/zfb/binaries/tailwindcss-v4" \
-  cargo test -p zfb-css --tests -- --ignored
+# Heavyweight — runs the previously-`#[ignore]`-gated real zudo-wind tests.
+cargo test -p zudo-wind --tests -- --ignored
 ```
 
-The `ZFB_TAILWIND_BIN` export is needed because `cargo test -p <crate>` runs with the package directory as CWD, while the engine's default relative path is resolved from the workspace root.
-Because this recipe points the override at the staged standalone binary, automatic mode still performs the oxide warm-up and preserves the cross-process extraction protection introduced in #1237.
+The zudo-wind engine runs in-process and does not require a staged CLI binary.
 
 ## Format / lint
 
@@ -121,7 +113,6 @@ pnpm format               # apply
 ```sh
 pnpm docs:dev             # zfb dev server for the docs site
 pnpm docs:build           # static build into docs/dist/
-pnpm fetch:tailwind       # optional Tailwind-only prefetch; cargo build is authoritative
 ```
 
 ## Release builds and cross-compilation

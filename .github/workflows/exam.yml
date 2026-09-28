@@ -424,9 +424,8 @@ jobs:
             crates/zfb/binaries/esbuild/esbuild
           key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      # Install dependencies before cargo build so build.rs (embed_framework_packages)
-      # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc. — same
-      # ordering as release.yml's macOS build leg.
+      # Install dependencies before cargo build so the build script can read
+      # Hono from node_modules/.pnpm/ — same ordering as release.yml's macOS leg.
       - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to stage the

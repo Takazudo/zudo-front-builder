@@ -67,7 +67,7 @@
 #     `mirror_css_scan_mdx_e2e` (Mirror Root CSS Scan epic #1995; written
 #     RED in Wave 1 / #1996, assertion inverted in Wave 2 / #1997) spawns a
 #     real `zfb dev` session and proves a sibling-mirror-root `.mdx` edit both
-#     reaches the orchestrator AND reruns the Tailwind content scan, so the
+#     reaches the orchestrator AND reruns the zudo-wind candidate scan, so the
 #     new utility class lands in the served stylesheet restart-free (issue
 #     #1819). `cold_rewrite_prewarm_e2e` (issues #2001/#2004, Dev Self Heal
 #     epic #1999) spawns a real `zfb dev` session over a fresh Cold boot and

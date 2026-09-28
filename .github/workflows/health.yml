@@ -740,9 +740,8 @@ jobs:
             crates/zfb/binaries/esbuild/esbuild
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      # crates/zfb/build.rs vendors framework npm packages (preact, react,
-      # etc.) from node_modules/.pnpm at compile time. Without this, the
-      # build script panics with "framework package preact@X.Y.Z not found".
+      # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile
+      # time. Without this install, the build script cannot find the Hono tree.
       - run: pnpm install --frozen-lockfile
 
       - name: cargo build (zfb, --no-default-features)

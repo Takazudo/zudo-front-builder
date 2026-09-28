@@ -3,7 +3,7 @@ name = "zfb-css"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via lightningcss, hashed global asset emission"
+description = "zfb CSS pipeline: zudo-wind utility generation, CSS Modules via lightningcss, hashed global asset emission"
 
 [lib]
 

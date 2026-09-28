@@ -16,11 +16,11 @@ The orchestrator deliberately does **not** depend on those last three
 crates. They're injected as callback functions on a `BuildContext` so:
 
 - the orchestrator's surface stays free of heavyweight transitive
-  dependencies (the SWC pipeline in `zfb-render`, and the
-  esbuild npm subprocess wrappers in `zfb-css` /
+  dependencies (the SWC pipeline in `zfb-render`, the in-process
+  zudo-wind engine in `zfb-css`, and the esbuild subprocess wrapper in
   `zfb-islands`), and
 - tests can plug in fakes that count invocations without spawning
-  Tailwind / esbuild subprocesses.
+  the esbuild subprocess or compiling utility CSS.
 
 Wiring concrete renderers / engines / bundlers happens in the bin crate
 (Epic 7's `zfb dev` command).
