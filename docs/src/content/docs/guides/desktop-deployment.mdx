@@ -99,7 +99,7 @@ write MDX into its content tree.
 
 ## Mode C — Custom Rust crates that use zfb at build-time only
 
-**What it is.** zfb compiles the Preact shell to `dist/` once, at build time.
+**What it is.** zfb compiles the TSX shell with zudo-react to `dist/` once, at build time.
 After that, all runtime dynamism — resource discovery, markdown rendering, serving
 — is hand-rolled Rust code, typically an Axum server that reads files from disk
 and substitutes content into the pre-built shell. zfb is not present at runtime
@@ -110,7 +110,7 @@ something else that straightforward Rust libraries already handle well, and you
 would rather write focused Rust server code than carry the full zfb render
 pipeline into your binary. You want the smallest possible runtime footprint.
 
-**What's involved.** Build the Preact shell with `zfb build`. Then write a
+**What's involved.** Build the TSX shell with `zfb build`. Then write a
 purpose-built Rust server (or add Axum routes to an existing Tauri app) that
 reads markdown files at request time, renders them with a Rust markdown crate,
 and splices the result into the static shell via sentinel substitution or a

@@ -28,9 +28,11 @@ namespace to remember.
 
 Astro's headline feature is the `.astro` file — a server-only template
 language with optional islands of framework code. zfb collapses that into
-a single component model: every component is a `.tsx` file. The `framework`
-field in `zfb.config` selects either Preact or React, and the same JSX
-flavor is used for layouts, pages, and components.
+a single component model: every component is a `.tsx` file using the owned
+zudo-react runtime. The same JSX dialect is used for layouts, pages, and
+components; interactive state lives in signals rather than render-time hooks.
+See the [zudo-react overview](../zudo-react/overview.mdx) for its component
+model and limits.
 
 ```tsx
 export default function MarketingPage() {
@@ -90,14 +92,17 @@ directive instead — the same pattern Next.js App Router popularized:
 ```tsx
 "use client";
 
+import { signal } from "@takazudo/zfb/zudo-react";
+
 export default function Counter() {
-  const [n, setN] = useState(0);
-  return <button onClick={() => setN(n + 1)}>{n}</button>;
+  const n = signal(0);
+  return <button on:click={() => { n.value += 1; }}>{n}</button>;
 }
 ```
 
 Anything imported from a `"use client"` file becomes an island
-automatically. See [`island`](../api/island.mdx).
+automatically. The setup runs once; signal bindings update the island DOM.
+See [`Island`](../api/island.mdx).
 
 ## Slots and layouts
 
@@ -105,7 +110,7 @@ Astro's `<slot />` becomes plain JSX `children`:
 
 ```tsx
 export default function DocsLayout({ children }) {
-  return <div className="prose">{children}</div>;
+  return <div class="prose">{children}</div>;
 }
 ```
 
@@ -236,159 +241,76 @@ See [Syntax Highlighting](./syntax-highlighting.mdx).
 
 ## Patterns that move to user space
 
-zfb deliberately omits some Astro features. This is not oversight — these
-patterns have clean userland solutions in a pure-JSX/Preact model that do
-not need engine support. The sections below show the recommended recipe for
-each.
+Some Astro features have no one-to-one engine API in zfb. The examples below
+show how to express the closest user-owned pattern with zudo-react or with
+ordinary route and layout composition.
 
 ### `client:media` — conditional hydration by media query
 
-Astro's `client:media="(max-width: 768px)"` defers hydration until a media
-query matches. zfb's `"use client"` directive always hydrates on load.
-
-The Preact equivalent is an early return inside the component itself:
+Astro's `client:media="(max-width: 768px)"` defers island activation until a
+media query matches. zfb expresses the same scheduling at the island boundary
+with `when="media"` and a required query:
 
 ```tsx
-"use client";
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
 
-import { useEffect, useState } from "preact/hooks";
-
-interface Props {
-  children: preact.ComponentChildren;
-}
-
-/** Renders children only on viewports that match the query. */
-export default function MediaMount({ children }: Props) {
-  const [matches, setMatches] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    setMatches(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-
-  if (!matches) return null;
-  return <>{children}</>;
+export default function Header() {
+  return <Island when="media" media="(max-width: 768px)"><MobileMenu /></Island>;
 }
 ```
 
-Use this as a wrapper: `<MediaMount><MobileMenu /></MediaMount>`. The wrapped
-component only mounts when the query matches; it unmounts when the query stops
-matching.
+The island is activated when the query first matches; the media query schedules
+activation and does not repeatedly mount and unmount the component on later
+changes.
 
 ### Per-page `<head>` additions (Astro's `<Fragment slot="head">`)
 
 Astro lets pages inject arbitrary `<head>` elements via `<Fragment slot="head">`.
 zfb does not have a slot mechanism at the engine level.
 
-The userland pattern is a **Preact context-based helmet**. The layout renders
-the page body first (populating the collector), then emits the collected head
-nodes. This avoids a second render pass:
-
-```tsx
-// components/head-context.tsx
-import { createContext } from "preact";
-import { useContext, useRef } from "preact/hooks";
-
-interface HeadContextValue {
-  nodes: preact.VNode[];
-  add(node: preact.VNode): void;
-}
-
-export const HeadContext = createContext<HeadContextValue>({
-  nodes: [],
-  add() {},
-});
-
-export function useHead() {
-  return useContext(HeadContext);
-}
-```
-
-```tsx
-// components/head.tsx — drop inside a page to register head nodes
-import { useHead } from "./head-context";
-
-interface Props {
-  children: preact.VNode | preact.VNode[];
-}
-
-export function Head({ children }: Props) {
-  const { add } = useHead();
-  const registered = useRef(false);
-  if (!registered.current) {
-    registered.current = true;
-    const nodes = Array.isArray(children) ? children : [children];
-    nodes.forEach(add);
-  }
-  return null; // renders nothing inline
-}
-```
+The runtime has no context or child-to-layout registry. Pass head descriptions
+to the layout explicitly so the data flow does not depend on render order:
 
 ```tsx
 // layouts/base.tsx
-import { useState } from "preact/hooks";
-import { HeadContext } from "../components/head-context";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
-export default function BaseLayout({ children }: { children: preact.ComponentChildren }) {
-  const [nodes] = useState<preact.VNode[]>([]);
-  const ctx = { nodes, add: (n: preact.VNode) => nodes.push(n) };
-
-  // Render children first so Head calls populate `nodes` before we emit <head>.
-  const body = <main>{children}</main>;
-
+export default function BaseLayout({ children, head }: { children: Child; head?: Child }) {
   return (
-    <HeadContext.Provider value={ctx}>
-      <html>
-        <head>
-          <meta charSet="utf-8" />
-          {nodes}
-        </head>
-        {body}
-      </html>
-    </HeadContext.Provider>
+    <html>
+      <head><meta charset="utf-8" />{head}</head>
+      <body><main>{children}</main></body>
+    </html>
   );
 }
 ```
 
 ```tsx
 // pages/blog/[slug].tsx
-import { Head } from "../../components/head";
+import BaseLayout from "../../layouts/base";
 
 export default function BlogPost({ post }) {
   return (
-    <>
-      <Head>
-        <title>{post.data.title}</title>
-        <meta name="description" content={post.data.description} />
-      </Head>
+    <BaseLayout head={<><title>{post.data.title}</title><meta name="description" content={post.data.description} /></>}>
       <article>{/* ... */}</article>
-    </>
+    </BaseLayout>
   );
 }
 ```
 
-<Warning title="SSR render order">
+For routes that get their metadata from collection data, compute those values
+in the route and pass the resulting descriptions as `head` content.
 
-  This pattern relies on Preact rendering children before siblings in the same
-  pass. It works for zfb's static-build SSR (top-down rendering, children
-  before parent `{nodes}` emission). If you add a streaming SSR adapter,
-  verify that the head is flushed after body rendering completes.
-
-</Warning>
-
-### Preact-compat aliases (`@/components/svg`, `@/components/responsive-image`)
+### Removing Astro component-bridge aliases
 
 Some Astro projects register aliases like `@/components/svg` and
-`@/components/responsive-image` to work around Astro's component model —
-for example, bridging `.astro` SVG components into JSX islands.
+`@/components/responsive-image` to bridge `.astro` components into JSX
+islands.
 
-In zfb every component is `.tsx` from the start; the bridging layer those
-aliases provided does not exist. During migration, **remove these aliases and
-import the components directly** by their file path (or by a simpler alias
-pointing straight at the `.tsx` file):
+In zfb every component is `.tsx`; rewrite each bridged component and point
+imports at its `.tsx` implementation. The intermediate alias can usually be
+removed or simplified:
 
 ```ts
 // Before (Astro workaround — remove):
@@ -407,38 +329,31 @@ Astro islands serialize component props as JSON in `<script type="application/js
 tags next to the rendered HTML. Some projects extend this with custom
 `data-island` attributes for fine-grained control.
 
-This pattern ports **byte-for-byte** to zfb — you own the full hydration
-strategy. Ship your own `<script>` that queries the markers and calls
-Preact's `hydrate()`:
+Custom markers can belong to a separate widget system, but they are not zfb
+island boundaries. Use zfb's `<Island>` helper for components owned by its
+client runtime; it supplies the wrapper identity, strict JSON props transport,
+scheduling, and client entry.
 
 ```tsx
 "use client";
 
-// components/island-hydrator.tsx — add to your root layout as a "use client" island
-import { hydrate } from "preact";
-import { useEffect } from "preact/hooks";
+// pages/blog/[slug].tsx
+import { Island } from "@takazudo/zfb";
 import MyWidget from "./my-widget";
 
-const REGISTRY: Record<string, preact.ComponentType> = {
-  "my-widget": MyWidget,
-  // add more components here
-};
-
-export default function IslandHydrator() {
-  useEffect(() => {
-    document.querySelectorAll<HTMLElement>("[data-island]").forEach((el) => {
-      const name = el.dataset.island!;
-      const Component = REGISTRY[name];
-      if (!Component) return;
-      const props = JSON.parse(el.dataset.props ?? "{}");
-      hydrate(<Component {...props} />, el);
-    });
-  }, []);
-  return null;
+export default function BlogPost() {
+  return (
+    <article>
+      <Island when="visible"><MyWidget label="Click me" /></Island>
+    </article>
+  );
 }
 ```
 
-Then in server-rendered markup, emit `<div data-island="my-widget" data-props='{"label":"Click me"}' />`.
+The island child must be one registered synchronous component, and its props
+must be strict JSON data. Do not hand-author a partial `data-zfb-island`
+wrapper; persisted wrappers require the complete transport metadata documented
+in the [Island API](../api/island.mdx).
 
 ### Custom remark / rehype plugins
 

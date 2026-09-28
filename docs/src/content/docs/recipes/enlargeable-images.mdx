@@ -98,9 +98,7 @@ Add this once to your layout. It uses event delegation — one listener for the 
 
 ```tsx title="layouts/default.tsx (excerpt)"
 // Inside your <head> or at the end of <body>:
-<script
-  dangerouslySetInnerHTML={{
-    __html: `
+<script rawHtml={`
       document.addEventListener("click", (e) => {
         const btn = e.target.closest(".zd-enlarge-btn");
         if (!btn) return;
@@ -109,9 +107,7 @@ Add this once to your layout. It uses event delegation — one listener for the 
         const enlarged = fig.dataset.enlarged === "true";
         fig.dataset.enlarged = enlarged ? "false" : "true";
       });
-    `,
-  }}
-/>
+    `} />
 ```
 
 ### CSS (minimal)
@@ -197,7 +193,7 @@ A `components` map is applied at server render time. If you put `"use client"` d
 ```tsx title="components/image-lightbox.tsx"
 "use client";
 
-import { useState } from "preact/hooks";
+import { Show, signal } from "@takazudo/zfb/zudo-react";
 
 type Props = {
   src: string;
@@ -205,17 +201,17 @@ type Props = {
 };
 
 export default function ImageLightbox({ src, alt }: Props) {
-  const [open, setOpen] = useState(false);
+  const open = signal(false);
 
   return (
     <>
       <figure class="zd-enlargeable">
-        <img src={src} alt={alt} onClick={() => setOpen(true)} style="cursor:zoom-in" />
+        <img src={src} alt={alt} on:click={() => { open.value = true; }} style="cursor:zoom-in" />
         <button
           type="button"
           class="zd-enlarge-btn"
           aria-label="Enlarge image"
-          onClick={() => setOpen(true)}
+          on:click={() => { open.value = true; }}
         >
           {/* zoom-in icon — same SVG as Variant A */}
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -226,17 +222,19 @@ export default function ImageLightbox({ src, alt }: Props) {
           </svg>
         </button>
       </figure>
-      {open && (
-        <dialog
-          open
-          class="zd-lightbox"
-          onClick={() => setOpen(false)}
-          aria-modal="true"
-          aria-label={alt}
-        >
-          <img src={src} alt={alt} />
-        </dialog>
-      )}
+      <Show when={open}>
+        {() => (
+          <dialog
+            open
+            class="zd-lightbox"
+            on:click={() => { open.value = false; }}
+            aria-modal="true"
+            aria-label={alt}
+          >
+            <img src={src} alt={alt} />
+          </dialog>
+        )}
+      </Show>
     </>
   );
 }

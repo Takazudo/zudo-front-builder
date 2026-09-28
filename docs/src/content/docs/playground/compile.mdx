@@ -10,6 +10,9 @@ hide_toc: true
 The `compile` API is the compiler stage of zfb's browser pipeline. It transforms MDX into JSX,
 passes that JSX through SWC, and returns the ES-module source that zfb emits for a page.
 
+This live playground currently runs the published 2.x compiler until the docs site is re-pinned,
+so its output still shows the 2.x import specifiers.
+
 ## Why compile in the browser
 
 Browser compilation is useful for a CMS live preview: the editor can use the same Rust pipeline as
@@ -30,7 +33,8 @@ authored JSX. The result includes the parsed `frontmatter` separately from the m
 the diagnostics list reports expected compile and Markdown failures.
 
 To evaluate the source in an application, provide a host, a JSX runtime, and a components map. The
-[Browser Markdown Preview guide](../guides/browser-markdown-preview.mdx) explains that setup,
-including the import map needed to resolve `preact/jsx-runtime` or `react/jsx-runtime` (and the
-fragment runtime import). See the [zfb-md-wasm API reference](../api/md-wasm.mdx) for the complete
-option and result contract.
+[Browser Markdown Preview guide](../guides/browser-markdown-preview.mdx) explains that setup.
+Output from this playground imports `preact/jsx-runtime` or `react/jsx-runtime` because it uses
+the published 2.x compiler; the v3 emitter uses
+`@takazudo/zfb/zudo-react/jsx-runtime`. See the guide for the v3 specifier and the
+[zfb-md-wasm API reference](../api/md-wasm.mdx) for the current option and result contract.

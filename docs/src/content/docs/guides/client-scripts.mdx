@@ -69,8 +69,8 @@ production build pipeline rewrites this to the hashed URL
 
 1. **Bundle** — each `.client.*` file is passed to esbuild and bundled
    independently as an ESM module. The bundle includes only the entry and its
-   transitive imports. If the entry imports a framework (`preact`, `react`),
-   those are bundled in too.
+   transitive imports. If the entry imports a package, its dependencies are
+   included in that entry's bundle as well.
 2. **Hash** — the `ProductionAssetPipeline` reads the bundle bytes,
    content-hashes them, and writes `dist/assets/client/<name>-<hash>.js`.
 3. **Rewrite** — every occurrence of the stable URL
@@ -214,21 +214,25 @@ instead.
 
 ## Full example
 
-**`pages/search-widget.client.ts`** — the client entry:
+**`pages/search-widget.client.tsx`** — the client entry:
 
-```ts
-// pages/search-widget.client.ts
-import { h, render } from "preact";
-
-function SearchWidget() {
-  return <div class="search-widget">Search…</div>;
-}
+```tsx
+// pages/search-widget.client.tsx
+import { mount } from "@takazudo/zfb/zudo-react/client";
+import SearchWidget from "../components/search-widget";
 
 const root = document.getElementById("search-root");
-if (root) {
-  render(<SearchWidget />, root);
+if (root instanceof Element) {
+  mount(<SearchWidget />, root, {
+    identity: { component: "SearchWidget", build: "search-widget-entry-v1" },
+  });
 }
 ```
+
+This standalone client entry creates a fresh subtree inside its existing
+container. The explicit identity is local to this client-script mount; islands
+integrated with zfb receive their component and build identity from the
+generated manifest.
 
 **`pages/search.tsx`** — the SSR page that loads the widget:
 
