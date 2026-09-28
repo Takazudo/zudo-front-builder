@@ -13,7 +13,45 @@ fn root(base: &Path, label: &str, path: &str, required: bool) -> PositiveRoot {
         declaring_dir: base.into(),
         path: path.into(),
         required,
+        exclusions: Default::default(),
     }
+}
+
+#[test]
+fn root_exclusions_do_not_hide_separately_declared_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    put(base, "package/src/own.tsx", "");
+    put(base, "package/projects/nested/src/app.tsx", "");
+    put(base, "package/mirror/src/copy.tsx", "");
+    put(base, "package/ignored/global.tsx", "");
+
+    let mut package = root(base, "a-package", "package", true);
+    package
+        .exclusions
+        .extend(["package/projects/nested".into(), "package/mirror".into()]);
+    let mut plan = SourcePlan {
+        roots: vec![
+            package,
+            root(base, "b-project", "package/projects/nested", true),
+            root(base, "c-mirror", "package/mirror", true),
+        ],
+        ..Default::default()
+    };
+    plan.exclusions.insert(base.join("package/ignored"));
+
+    let first = expand_file_set(&plan);
+    assert_eq!(first, expand_file_set(&plan));
+    assert!(first.diagnostics.is_empty());
+    let ids: Vec<_> = first.files.iter().map(|file| file.id.render()).collect();
+    assert_eq!(
+        ids,
+        [
+            "a-package:src/own.tsx",
+            "b-project:src/app.tsx",
+            "c-mirror:src/copy.tsx",
+        ]
+    );
 }
 
 #[test]

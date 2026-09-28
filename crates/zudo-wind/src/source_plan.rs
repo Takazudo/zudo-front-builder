@@ -9,6 +9,8 @@ pub struct PositiveRoot {
     pub declaring_dir: PathBuf,
     pub path: PathBuf,
     pub required: bool,
+    /// Paths omitted only while walking this root, resolved against `declaring_dir`.
+    pub exclusions: BTreeSet<PathBuf>,
 }
 
 impl PositiveRoot {

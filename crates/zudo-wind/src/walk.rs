@@ -147,7 +147,15 @@ pub fn expand_file_set(plan: &SourcePlan) -> FileSet {
         .collect();
     roots.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
     for root in roots {
-        visit_root(root, plan, &mut out, &mut seen, &exclusions);
+        let root_exclusions = exclusions
+            .iter()
+            .cloned()
+            .chain(root.exclusions.iter().map(|path| {
+                let declared = root.declaring_dir.join(path);
+                fs::canonicalize(&declared).unwrap_or(declared)
+            }))
+            .collect();
+        visit_root(root, plan, &mut out, &mut seen, &root_exclusions);
     }
     out.files.sort_by(|a, b| a.id.cmp(&b.id));
     out.diagnostics.sort_by(|a, b| {
