@@ -803,6 +803,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         }
     }
@@ -1287,7 +1288,7 @@ mod tests {
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
             render_pages: Arc::new(|_, _| Ok(vec![])),
-            run_css: Some(Arc::new(move || {
+            run_css: Some(Arc::new(move |_request| {
                 calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
             })),
@@ -1345,6 +1346,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());

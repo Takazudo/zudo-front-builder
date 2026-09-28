@@ -88,9 +88,9 @@ use zfb_build::renderer::{
 use zfb_build::{
     atomic_write, validate_companion_file_set, validate_output_path, AssetEmitterPayload,
     BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
-    ContentCollectionMembership, ContentProvenance, CssRunner, DevAssetPipeline, DiscoveryOutcome,
-    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
-    RelDistPath, RenderedPage, RendererReloader, TrackedContentRead,
+    ContentCollectionMembership, ContentProvenance, CssPassRequest, CssRunner, DevAssetPipeline,
+    DiscoveryOutcome, IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer,
+    RefreshOutcome, RelDistPath, RenderedPage, RendererReloader, TrackedContentRead,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -2555,7 +2555,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // pass uses above, so every CSS rebuild tick (not just boot) keeps
         // the dev-watch registration's source plan current.
         let raw_import_invalidation_for_css = raw_import_invalidation.clone();
-        Some(Arc::new(move || -> Result<bool> {
+        Some(Arc::new(move |request: &CssPassRequest| -> Result<bool> {
+            if !css_pass_request_should_build(request) {
+                return Ok(false);
+            }
             let plugin_virtual_modules_for_css =
                 plugin_virtual_module_store_for_css.snapshot_pairs();
             let payload = build_dev_css_and_publish_mirror_roots(
@@ -4625,6 +4628,10 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     zfb_css::resolve_css_imports(&entry, project_root)
+}
+
+fn css_pass_request_should_build(request: &CssPassRequest) -> bool {
+    request.rerun_requested
 }
 
 /// Shared tail for the boot CSS pass and the `run_css` watcher-tick closure
@@ -11336,6 +11343,28 @@ mod tests {
     };
     use std::path::PathBuf;
     use zfb_build::AssetPipeline;
+
+    #[test]
+    fn css_pass_request_runs_css_when_explicitly_requested() {
+        let request = CssPassRequest {
+            rerun_requested: true,
+            changes: Default::default(),
+        };
+
+        assert!(css_pass_request_should_build(&request));
+    }
+
+    #[test]
+    fn css_pass_request_skips_css_for_change_only_ticks() {
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_upsert(PathBuf::from("/proj/styles/site.css"));
+        let request = CssPassRequest {
+            rerun_requested: false,
+            changes,
+        };
+
+        assert!(!css_pass_request_should_build(&request));
+    }
 
     #[test]
     fn document_obligations_survive_unrelated_ticks_and_drain_by_exact_output() {

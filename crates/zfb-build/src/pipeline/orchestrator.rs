@@ -221,6 +221,7 @@ pub fn apply_prod_asset_pipeline(
         ssr_reload_needed: false,
         prune_paths: vec![],
         triggers: vec![],
+        css_changes: crate::CssChangeSet::default(),
         content_narrowing: None,
     };
 

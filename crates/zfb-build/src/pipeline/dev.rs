@@ -53,8 +53,8 @@ fn format_tick_client_scripts_published_line() -> &'static str {
 }
 
 use crate::pipeline::{
-    AssetPipeline, BuildContext, BuildOutcome, DynamicInjectedProbe, RefreshOutcome,
-    SsrPublishProbe, StaleProbe,
+    AssetPipeline, BuildContext, BuildOutcome, CssPassRequest, DynamicInjectedProbe,
+    RefreshOutcome, SsrPublishProbe, StaleProbe,
 };
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -1623,8 +1623,14 @@ impl AssetPipeline for DevAssetPipeline {
         // 2. CSS.
         if plan.rerun_css {
             outcome.css_rerun = true;
+        }
+        if plan.rerun_css || !plan.css_changes.is_empty() {
             if let Some(run) = &ctx.run_css {
-                outcome.css_changed = run()?;
+                let request = CssPassRequest {
+                    rerun_requested: plan.rerun_css,
+                    changes: plan.css_changes.clone(),
+                };
+                outcome.css_changed = run(&request)?;
             }
         }
 
@@ -1727,6 +1733,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
 
@@ -1768,6 +1775,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         }
     }
@@ -1882,7 +1890,7 @@ mod tests {
                     content_type: None,
                 }])
             }),
-            run_css: Some(Arc::new(move || {
+            run_css: Some(Arc::new(move |_request| {
                 css_events.lock().unwrap().push("css");
                 anyhow::bail!("css failed after document publication")
             })),
@@ -2668,6 +2676,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
 
@@ -2689,7 +2698,9 @@ mod tests {
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
             render_pages: Arc::new(|_, _| Ok(vec![])),
-            run_css: Some(Arc::new(move || {
+            run_css: Some(Arc::new(move |request| {
+                assert!(request.rerun_requested);
+                assert!(request.changes.is_empty());
                 css_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
             })),
@@ -2707,6 +2718,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
 
@@ -2714,6 +2726,65 @@ mod tests {
         assert!(outcome.css_rerun);
         assert!(outcome.css_changed);
         assert_eq!(css_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn css_change_set_invokes_callback_without_css_rerun() {
+        let pipeline = DevAssetPipeline::new();
+        let dir = tempdir().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_cb = Arc::clone(&requests);
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: Some(Arc::new(move |request| {
+                requests_cb.lock().unwrap().push(request.clone());
+                Ok(false)
+            })),
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        let mut plan = RebuildPlan::empty();
+        plan.css_changes
+            .record_upsert(PathBuf::from("/proj/styles/site.css"));
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![CssPassRequest {
+                rerun_requested: false,
+                changes: plan.css_changes.clone(),
+            }]
+        );
+        assert!(!outcome.css_rerun);
+        assert!(!outcome.css_changed);
+    }
+
+    #[test]
+    fn empty_css_request_does_not_invoke_callback() {
+        let pipeline = DevAssetPipeline::new();
+        let dir = tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_cb = Arc::clone(&calls);
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: Some(Arc::new(move |_| {
+                calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })),
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        let outcome = pipeline.apply(&RebuildPlan::empty(), &ctx).unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!outcome.css_rerun);
+        assert!(!outcome.css_changed);
     }
 
     #[test]
@@ -2745,6 +2816,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx_a).unwrap();
@@ -2812,6 +2884,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx).unwrap();
@@ -2870,6 +2943,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx1).unwrap();
@@ -2959,6 +3033,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
@@ -2975,7 +3050,7 @@ mod tests {
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
             render_pages: Arc::new(|_, _| Ok(vec![])),
-            run_css: Some(Arc::new(|| Ok(true))),
+            run_css: Some(Arc::new(|_| Ok(true))),
             run_islands: Some(Arc::new(|| {
                 Ok(Some(crate::pipeline::IslandsBundleInfo {
                     changed: true,
@@ -2995,6 +3070,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         };
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
@@ -3042,6 +3118,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            css_changes: crate::CssChangeSet::default(),
             content_narrowing: None,
         }
     }
@@ -3233,7 +3310,7 @@ mod tests {
                     Ok(vec![])
                 },
             ),
-            run_css: Some(Arc::new(move || {
+            run_css: Some(Arc::new(move |_request| {
                 css_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
             })),
@@ -3310,6 +3387,7 @@ mod tests {
                 ssr_reload_needed: false,
                 prune_paths: vec![],
                 triggers: vec![],
+                css_changes: crate::CssChangeSet::default(),
                 content_narrowing: None,
             }
         }

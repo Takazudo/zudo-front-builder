@@ -158,7 +158,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
             render_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(vec![])
         }),
-        run_css: Some(Arc::new(move || {
+        run_css: Some(Arc::new(move |_request| {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         })),
@@ -246,7 +246,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
                 })
                 .collect())
         }),
-        run_css: Some(Arc::new(move || {
+        run_css: Some(Arc::new(move |_request| {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(false)
         })),
@@ -1599,7 +1599,7 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
     let ctx = BuildContext {
         dist_root: project.join("dist"),
         render_pages: Arc::new(|_, _| Ok(vec![])),
-        run_css: Some(Arc::new(move || {
+        run_css: Some(Arc::new(move |_request| {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         })),
@@ -1731,7 +1731,7 @@ fn removed_stylesheet_only_tick_reruns_css() {
     let ctx = BuildContext {
         dist_root: project.join("dist"),
         render_pages: Arc::new(|_, _| Ok(vec![])),
-        run_css: Some(Arc::new(move || {
+        run_css: Some(Arc::new(move |_request| {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         })),
