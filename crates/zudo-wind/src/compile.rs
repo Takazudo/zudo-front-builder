@@ -1,4 +1,4 @@
-use crate::{Diagnostic, Origin};
+use crate::{Diagnostic, Origin, WindConfig};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OriginCandidate {
@@ -9,6 +9,7 @@ pub struct OriginCandidate {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileInput {
     pub candidates: Vec<OriginCandidate>,
+    pub config: WindConfig,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
