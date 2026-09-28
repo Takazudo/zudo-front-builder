@@ -38,7 +38,7 @@ const STRUCTURE: { path: string; what: ComponentChildren }[] = [
     path: "styles/",
     what: (
       <>
-        Tailwind entry, theme tokens, and the <code>.prose</code> markdown styles.
+        Authored CSS and the <code>.prose</code> markdown styles.
       </>
     ),
   },

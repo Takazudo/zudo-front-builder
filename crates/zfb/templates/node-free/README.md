@@ -15,6 +15,15 @@ zfb build
 
 No `pnpm install`, no `pnpm dev`, no `pnpm exec` needed.
 
+## Styling
+
+Add `styles/global.css` when you need authored CSS. zfb reads that stylesheet
+as the project's global entry. To use utilities, add a `wind` object to
+`zfb.config.json` with your own `tokens` and optional `reset`; the engine runs
+inside the binary, so there is no install step. `"wind": false` keeps authored
+CSS while disabling utility generation. With no stylesheet, tokens, or class
+candidates, the final default emits no wind stylesheet.
+
 ## Structure
 
 ```

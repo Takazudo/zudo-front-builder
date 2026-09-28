@@ -1,29 +1,8 @@
-@import "tailwindcss";
-
-/*
- * Bind Tailwind's `dark:` variant to the `data-theme` attribute that
- * `components/theme-toggle.tsx` (and the pre-paint script in
- * `layouts/default.tsx`) writes onto <html>. Without this, `dark:`
- * would key off the OS `prefers-color-scheme` and ignore the toggle.
- */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
-
-@theme {
-  --color-accent: oklch(0.53 0.21 258);
-
-  /*
-   * Code panels keep one palette in both themes: with no `codeHighlight`
-   * block in zfb.config.ts, syntect highlights inline using its default
-   * `base16-ocean.dark` theme, so the surrounding panel has to be dark
-   * for those token colors to stay legible. These two values are that
-   * theme's own background/foreground.
-   */
-  --color-code-bg: #2b303b;
-  --color-code-fg: #c0c5ce;
-}
-
 @layer base {
   :root {
+    --color-accent: oklch(0.53 0.21 258);
+    --color-code-bg: #2b303b;
+    --color-code-fg: #c0c5ce;
     color-scheme: light;
   }
 
@@ -38,7 +17,7 @@
 }
 
 /*
- * Scoped typography for rendered Markdown bodies. Page chrome uses Tailwind
+ * Scoped typography for rendered Markdown bodies. Page chrome uses zudo-wind
  * utilities directly in JSX; markdown produces plain tags that no utility can
  * reach, so they are styled once here and opted into with `class="prose"`.
  */
@@ -57,13 +36,13 @@
     font-weight: 600;
     line-height: 1.3;
     scroll-margin-block-start: 2rem;
-    color: var(--color-neutral-900);
+    color: var(--zw-color-neutral-900);
   }
 
   [data-theme="dark"] .prose h2,
   [data-theme="dark"] .prose h3,
   [data-theme="dark"] .prose h4 {
-    color: var(--color-neutral-50);
+    color: var(--zw-color-neutral-50);
   }
 
   .prose h2 {
@@ -87,7 +66,7 @@
    * `<a class="hash-link">` that needs generated content to be visible.
    */
   .prose .hash-link {
-    color: var(--color-neutral-400);
+    color: var(--zw-color-neutral-400);
     text-decoration: none;
     opacity: 0;
     transition: opacity 150ms;
@@ -136,24 +115,24 @@
   }
 
   .prose blockquote {
-    border-inline-start: 3px solid var(--color-neutral-300);
+    border-inline-start: 3px solid var(--zw-color-neutral-300);
     padding-inline-start: 1rem;
     font-style: italic;
-    color: var(--color-neutral-600);
+    color: var(--zw-color-neutral-600);
   }
 
   [data-theme="dark"] .prose blockquote {
-    border-color: var(--color-neutral-700);
-    color: var(--color-neutral-400);
+    border-color: var(--zw-color-neutral-700);
+    color: var(--zw-color-neutral-400);
   }
 
   .prose hr {
     border: 0;
-    border-block-start: 1px solid var(--color-neutral-200);
+    border-block-start: 1px solid var(--zw-color-neutral-200);
   }
 
   [data-theme="dark"] .prose hr {
-    border-color: var(--color-neutral-800);
+    border-color: var(--zw-color-neutral-800);
   }
 
   .prose img {
@@ -164,7 +143,7 @@
 
   /* GFM strikethrough (`~~text~~`). */
   .prose del {
-    color: var(--color-neutral-500);
+    color: var(--zw-color-neutral-500);
   }
 
   /* ── GFM tables ──────────────────────────────────────────────────── */
@@ -179,23 +158,23 @@
 
   .prose th,
   .prose td {
-    border: 1px solid var(--color-neutral-200);
+    border: 1px solid var(--zw-color-neutral-200);
     padding: 0.5rem 0.75rem;
     text-align: start;
   }
 
   .prose th {
-    background-color: var(--color-neutral-100);
+    background-color: var(--zw-color-neutral-100);
     font-weight: 600;
   }
 
   [data-theme="dark"] .prose th,
   [data-theme="dark"] .prose td {
-    border-color: var(--color-neutral-800);
+    border-color: var(--zw-color-neutral-800);
   }
 
   [data-theme="dark"] .prose th {
-    background-color: var(--color-neutral-900);
+    background-color: var(--zw-color-neutral-900);
   }
 
   /* ── GFM task lists ──────────────────────────────────────────────── */
@@ -226,14 +205,14 @@
   .prose .footnotes {
     margin-block-start: 3rem;
     padding-block-start: 1.5rem;
-    border-block-start: 1px solid var(--color-neutral-200);
+    border-block-start: 1px solid var(--zw-color-neutral-200);
     font-size: 0.875rem;
-    color: var(--color-neutral-600);
+    color: var(--zw-color-neutral-600);
   }
 
   [data-theme="dark"] .prose .footnotes {
-    border-color: var(--color-neutral-800);
-    color: var(--color-neutral-400);
+    border-color: var(--zw-color-neutral-800);
+    color: var(--zw-color-neutral-400);
   }
 
   /* The pipeline emits the backref `<a>` as a SIBLING of the block `<p>`,
@@ -263,16 +242,16 @@
   /* ── Code ────────────────────────────────────────────────────────── */
 
   .prose :not(pre) > code {
-    background-color: var(--color-neutral-100);
-    border: 1px solid var(--color-neutral-200);
+    background-color: var(--zw-color-neutral-100);
+    border: 1px solid var(--zw-color-neutral-200);
     border-radius: 0.25rem;
     padding: 0.1em 0.35em;
     font-size: 0.875em;
   }
 
   [data-theme="dark"] .prose :not(pre) > code {
-    background-color: var(--color-neutral-800);
-    border-color: var(--color-neutral-700);
+    background-color: var(--zw-color-neutral-800);
+    border-color: var(--zw-color-neutral-700);
   }
 
   .prose pre {
@@ -305,8 +284,8 @@
   }
 
   .prose .code-block-title {
-    background-color: var(--color-neutral-800);
-    color: var(--color-neutral-300);
+    background-color: var(--zw-color-neutral-800);
+    color: var(--zw-color-neutral-300);
     padding: 0.4rem 1rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.8125rem;
@@ -352,18 +331,18 @@
     font-size: 0.75rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--color-neutral-500);
+    color: var(--zw-color-neutral-500);
   }
 
   .prose h2#toc + ul {
     list-style: none;
-    border-inline-start: 2px solid var(--color-neutral-200);
+    border-inline-start: 2px solid var(--zw-color-neutral-200);
     padding-inline-start: 1rem;
     font-size: 0.9375rem;
   }
 
   [data-theme="dark"] .prose h2#toc + ul {
-    border-color: var(--color-neutral-800);
+    border-color: var(--zw-color-neutral-800);
   }
 
   .prose h2#toc + ul ul {
