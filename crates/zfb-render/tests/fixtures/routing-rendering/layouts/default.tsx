@@ -11,7 +11,7 @@ export type DefaultLayoutProps = {
 
 export default function DefaultLayout({ meta, children }: DefaultLayoutProps) {
   return (
-    <div className="layout layout-default">
+    <div class="layout layout-default">
       <Header title={meta?.title ?? "zfb"} />
       <main>{children}</main>
     </div>

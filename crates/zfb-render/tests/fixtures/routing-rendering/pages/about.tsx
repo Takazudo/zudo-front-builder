@@ -7,7 +7,7 @@ export const meta = {
 
 export default function About() {
   return (
-    <section className="page page-about">
+    <section class="page page-about">
       <h2>About zfb</h2>
       <p>This is the about page.</p>
     </section>

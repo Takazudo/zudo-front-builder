@@ -17,10 +17,10 @@ export function paths() {
 
 export default function BlogPost({ post }: { post: Post }) {
   return (
-    <section className="page page-blog-post">
+    <section class="page page-blog-post">
       <h2>{post.title}</h2>
       <p>{post.body}</p>
-      <p className="slug">slug: {post.slug}</p>
+      <p class="slug">slug: {post.slug}</p>
     </section>
   );
 }

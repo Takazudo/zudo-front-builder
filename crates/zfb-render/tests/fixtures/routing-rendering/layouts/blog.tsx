@@ -11,7 +11,7 @@ export type BlogLayoutProps = {
 
 export default function BlogLayout({ meta, children }: BlogLayoutProps) {
   return (
-    <div className="layout layout-blog">
+    <div class="layout layout-blog">
       <Header title={meta?.title ?? "Blog"} subtitle="Posts" />
       <article>{children}</article>
     </div>

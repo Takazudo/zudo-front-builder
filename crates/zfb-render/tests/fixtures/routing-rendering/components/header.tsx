@@ -10,9 +10,9 @@ export type HeaderProps = {
 
 export default function Header({ title, subtitle }: HeaderProps) {
   return (
-    <header className="site-header">
+    <header class="site-header">
       <h1>{title}</h1>
-      {subtitle ? <p className="subtitle">{subtitle}</p> : null}
+      {subtitle ? <p class="subtitle">{subtitle}</p> : null}
     </header>
   );
 }

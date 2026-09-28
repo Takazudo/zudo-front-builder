@@ -43,7 +43,7 @@ export default function Localized({
   greeting: string;
 }) {
   return (
-    <section className="page page-localized">
+    <section class="page page-localized">
       <h2>
         {lang} / {slug}
       </h2>

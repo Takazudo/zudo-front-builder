@@ -9,7 +9,7 @@ export const meta = {
 
 export default function BlogIndex() {
   return (
-    <section className="page page-blog-index">
+    <section class="page page-blog-index">
       <h2>All posts</h2>
       <ul>
         {posts.map((p) => (
