@@ -1,11 +1,570 @@
 ---
 title: Preact hooks からの移行
-description: Preact hooks から、zudo-react の setup scope、signal、コンポーネントモデルへ移行する方法を説明します。
+description: Preact hooks から zudo-react のセットアップスコープ、signal、コンポーネントモデルへ移行します。
 sidebar_position: 10
 ---
 
-<Note>
+## まず押さえること
 
-このページは執筆中です。 owned-engines-stub
+関数コンポーネントは、レンダリング中のインスタンスごとに一度実行されます。サーバーでは HTML を作るために実行し、島では有効化時にブラウザでセットアップを実行します。signal への代入は、その signal を受け取ったバインディングを更新します。コンポーネントは再実行しません。
 
-</Note>
+最初に区別するのはスナップショットと更新されるバインディングです。value を読むとセットアップ時点の通常の値が得られ、signal オブジェクトを渡すとレンダラーがバインディングを最新に保ちます。
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+
+  return (
+    <section>
+      <p>Snapshot from setup: {count.value}</p>
+      <p>Live binding: {count}</p>
+      <button on:click={() => { count.value += 1; }}>Add</button>
+    </section>
+  );
+}
+~~~
+
+最初の段落にはセットアップ中に読み取った数値が残ります。二番目は signal を受け取るため、signal とともに変わります。この規則は computed 値や子の props に渡した signal にも適用されます。[リアクティビティ](./reactivity.mdx)と[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+## Hook ごとの対応
+
+| Preact または React での方法 | zudo-react での方法 | 関連ページ |
+| --- | --- | --- |
+| useState | セットアップ中に signal を作り、バインディングに渡します。イベントハンドラーでは value に代入します。 | [リアクティビティ](./reactivity.mdx) |
+| useEffect | 空の依存配列に相当する処理には getScope().onActivate を使い、ブラウザでの起動と同期的なクリーンアップを登録します。依存する処理には getScope().effect を使い、signal の読み取りを追跡してコミット後に再実行します。 | [スコープとライフサイクル](./scopes-and-lifecycle.mdx)、[リアクティビティ](./reactivity.mdx) |
+| DOM 要素への useRef | current フィールドを持つ Ref オブジェクトを渡します。ランタイムは有効化コールバックより前に値を設定します。 | [コンポーネントと JSX](./components-and-jsx.mdx)、[スコープとライフサイクル](./scopes-and-lifecycle.mdx) |
+| useMemo | signal から派生する値には computed を使います。signal に依存しない値はセットアップ中に一度計算できます。 | [リアクティビティ](./reactivity.mdx) |
+| useCallback | クロージャーを安定させるための代替 API は不要です。セットアップがインスタンスごとに一度だけクロージャーを作ります。 | [コンポーネントと JSX](./components-and-jsx.mdx) |
+
+有効化コールバックはブラウザで一度行う起動処理用で、レンダリング時の effect ではありません。スコープの effect はコールバック内の読み取りを追跡し、再実行前に前回のクリーンアップを行います。初回実行は有効化と DOM コミットの後です。どちらもブラウザ専用です。ストレージ、media クエリーなどのブラウザ API が必要なら、サーバー出力とハイドレーションのセットアップが同じ決定的な値で始まるよう、セットアップではなく有効化コールバック内で読んでください。クリーンアップと有効化の順序はライフサイクルのガイドで説明します。
+
+## 移行パターン
+
+以下では古いコード例を示してから、zudo-react での書き方を示します。各ガイドへのリンクで動作と制約を詳しく確認できます。
+
+### 条件付きレンダリング
+
+従来の Preact での書き方:
+
+~~~tsx
+{visible && <Details />}
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { Show, signal } from "@takazudo/zfb/zudo-react";
+
+function Details() {
+  return <p>Extra details.</p>;
+}
+
+function Panel() {
+  const visible = signal(false);
+  return (
+    <section>
+      <button on:click={() => { visible.value = !visible.value; }}>Toggle</button>
+      <Show when={visible}>{() => <Details />}</Show>
+    </section>
+  );
+}
+~~~
+
+Show は選ばれた分岐を所有スコープを持つ子スコープに作ります。別の分岐へ切り替えるとその分岐を破棄して領域を削除し、戻すと新しいインスタンスを作ります。要素をマウントしたままにしたい場合は、代わりにリアクティブな hidden 値をバインドします。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### キー付きリスト
+
+従来の Preact での書き方:
+
+~~~tsx
+items.map((item) => <li key={item.id}>{item.label}</li>)
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function ItemList() {
+  const items = signal([
+    { id: "a", label: "First" },
+    { id: "b", label: "Second" }
+  ]);
+
+  return (
+    <ul>
+      <For each={items} by={(item) => item.id}>
+        {(item) => {
+          const label = computed(() => item.value.label);
+          return <li>{label}</li>;
+        }}
+      </For>
+    </ul>
+  );
+}
+~~~
+
+For はキー付き項目の移動や同じキーの別オブジェクトへの置き換えでも、DOM とスコープを保ちます。item 引数は読み取り専用の signal で、computed による label は変更されたオブジェクトのプロパティを更新されるスカラーバインディングにします。重複キーや未対応のキーでは元のリストが保たれます。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### 制御される入力
+
+従来の Preact での書き方:
+
+~~~tsx
+const [name, setName] = useState("Ada");
+<input value={name} onInput={(event) => setName(event.currentTarget.value)} />
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function NameField() {
+  const name = signal("Ada");
+  return <input modelValue={name} />;
+}
+~~~
+
+明示的なモデルは、対応するコントロールを書き込み可能な signal に接続します。モデルには signal を使ってください。computed と読み取り専用の signal は読み取り用のバインディングには使えますが、書き込み可能なモデルにはなりません。島のハイドレーション時にはブラウザの現在値が優先されます。[フォームガイド](./forms.mdx)に対応するコントロールと model prop を示します。
+
+### 派生する class 名
+
+従来の Preact での書き方:
+
+~~~tsx
+const className = useMemo(
+  () => active ? "tab tab-active" : "tab",
+  [active]
+);
+return <button className={className}>Settings</button>;
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function TabButton() {
+  const active = signal(false);
+  const className = computed(() => active.value ? "tab tab-active" : "tab");
+  return (
+    <button class={className} on:click={() => { active.value = !active.value; }}>
+      Settings
+    </button>
+  );
+}
+~~~
+
+computed は更新される読み取り専用の値で、class には HTML の表記を使います。computed はリアクティブな派生値に使い、レンダリング結果のキャッシュ目的には使いません。セットアップ自体は繰り返されません。[リアクティビティ](./reactivity.mdx)と[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### DOM ノードへの ref
+
+従来の Preact での書き方:
+
+~~~tsx
+const input = useRef<HTMLInputElement>(null);
+useEffect(() => { input.current?.focus(); }, []);
+return <input ref={input} />;
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import type { Ref } from "@takazudo/zfb/zudo-react";
+import { getScope } from "@takazudo/zfb/zudo-react";
+
+function SearchField() {
+  const input: Ref<HTMLInputElement> = { current: null };
+  getScope().onActivate(() => { input.current?.focus(); });
+  return <input ref={input} />;
+}
+~~~
+
+ref は通常のオブジェクトであり、コールバックファクトリではありません。ランタイムが有効化コールバック前にすべての ref を設定するため、その中でフォーカスできます。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### データを取得するイベントハンドラー
+
+従来の Preact での書き方:
+
+~~~tsx
+const load = useCallback(async () => {
+  const response = await fetch("/api/items");
+  setItems(await response.json());
+}, []);
+return <button onClick={load}>Load</button>;
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function LoadButton() {
+  const scope = getScope();
+  const body = signal("");
+  return (
+    <section>
+      <button
+        on:click={async () => {
+          try {
+            const response = await fetch("/api/items", { signal: scope.abortSignal });
+            const text = await response.text();
+            if (!scope.abortSignal.aborted) body.value = text;
+          } catch (error) {
+            if (!scope.abortSignal.aborted) {
+              body.value = error instanceof Error ? error.message : "Request failed";
+            }
+          }
+        }}
+      >
+        Load
+      </button>
+      <p>{body}</p>
+    </section>
+  );
+}
+~~~
+
+リスナーはネイティブイベントを使い、ブラウザのイベントと currentTarget を受け取ります。on:click は関数リスナーですが、onClick はこの書き方に含まれません。スコープの abort signal を使うと、進行中の処理を停止したり、破棄後の結果を無視したりできます。[コンポーネントと JSX](./components-and-jsx.mdx)と[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### クリーンアップを伴う購読
+
+従来の Preact での書き方:
+
+~~~tsx
+useEffect(() => {
+  const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const update = () => setReducedMotion(query.matches);
+  query.addEventListener("change", update);
+  return () => query.removeEventListener("change", update);
+}, []);
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function MotionPreference() {
+  const reduced = signal(false);
+  getScope().onActivate(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => { reduced.value = query.matches; };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
+  return <span>{reduced}</span>;
+}
+~~~
+
+購読はブラウザでだけ作られ、スコープの破棄時に同期的なクリーンアップが実行されます。一度きりの購読には onActivate を使い、signal の読み取りをきっかけにクリーンアップと再購読を行う場合は effect を使います。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### 状態に応じて再実行する effect
+
+従来の Preact での書き方:
+
+~~~tsx
+useEffect(() => {
+  document.documentElement.dataset.count = String(count);
+  return () => { delete document.documentElement.dataset.count; };
+}, [count]);
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function CountMarker() {
+  const count = signal(0);
+  getScope().effect(() => {
+    document.documentElement.dataset.count = String(count.value);
+    return () => { delete document.documentElement.dataset.count; };
+  });
+  return <button on:click={() => { count.value += 1; }}>{count}</button>;
+}
+~~~
+
+この effect はコールバック内で count.value を読むため count を追跡します。再実行前に前回のクリーンアップが行われ、effect の段階は DOM バインディングのコミットに続きます。effect は有効化コールバックの後に始まります。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)と[リアクティビティ](./reactivity.mdx)を参照してください。
+
+### 信頼できる raw HTML
+
+従来の Preact での書き方:
+
+~~~tsx
+return <section dangerouslySetInnerHTML={{ __html: trustedMarkup }} />;
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+function TrustedFragment({ markup }: { markup: string }) {
+  return <section rawHtml={markup} />;
+}
+~~~
+
+rawHtml は信頼できる内容を直接渡すための手段で、汎用のサニタイザーではありません。内容はハイドレーションから見て不透明で、children と併用できず、親要素に対して妥当である必要があります。アプリケーション側で信頼性とサニタイズの判断をせずに、ユーザーが制御するマークアップを渡さないでください。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+## カスタム hook は通常の関数になる
+
+ヘルパーには、現在のスコープと使用する signal を通常の引数として渡せます。コンポーネントのセットアップ中に呼んでください。呼び出し順のレジストリーや hook の順序に関する規則はありません。
+
+~~~tsx
+import type { ReadonlySignal, Scope } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+
+function connectionLabel(scope: Scope, online: ReadonlySignal<boolean>) {
+  const label = computed(() => online.value ? "Online" : "Offline");
+  scope.effect(() => {
+    document.documentElement.dataset.connection = online.value ? "online" : "offline";
+    return () => { delete document.documentElement.dataset.connection; };
+  });
+  return label;
+}
+
+function ConnectionStatus() {
+  const online = signal(false);
+  const label = connectionLabel(getScope(), online);
+  return <span>{label}</span>;
+}
+~~~
+
+getScope は同期的なセットアップ中に有効で、現在の所有者を返します。明示的に渡すとリソースの所有関係が分かりやすくなります。セットアップ中にヘルパーを直接呼んでも同じ所有者を共有し、独自のスコープは作りません。ヘルパーは computed 値、クロージャーなど通常の値を返せます。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)と[リアクティビティ](./reactivity.mdx)を参照してください。
+
+## 対応しない機能
+
+| Preact または React の機能 | 代わりに使う方法 |
+| --- | --- |
+| Context | 一つのランタイムツリー内で明示的に props を渡します。複数の子孫が同じ更新値を必要とする場合は signal も渡せます。リクエスト固有の状態はレンダリングツリー内に作ります。 |
+| Portals | 記述を通常の所有ツリー内に置きます。ダイアログのような UI にはネイティブの dialog 要素とブラウザの動作を使います。汎用の DOM 転送はありません。 |
+| forwardRef | 子が要素を公開する必要がある場合、Ref オブジェクトを通常の型付き prop として渡します。 |
+| Suspense と遅延コンポーネント | 入れ子の Promise はレンダリングを中断しません。イベントハンドラーやブラウザの有効化コールバックから動的 import を開始し、処理中とエラーの状態を明示的に追跡します。その状態を通常のバインディングや条件領域でレンダリングします。 |
+| クラスコンポーネント | 記述を作る同期的な関数コンポーネントを使います。そのセットアップが signal と登録した処理を所有します。 |
+| エラー境界 | 想定されるアプリケーションの失敗は明示的な状態で扱います。ランタイム診断は失敗した島を分離しますが、任意の子孫のレンダリングエラーを捕捉するコンポーネント境界は提供しません。 |
+| 合成イベント | on:event リスナー、ネイティブイベントオブジェクト、ネイティブの currentTarget を使います。 |
+
+これらは設計上の境界であり、hook の別名が欠けているわけではありません。ランタイムは React や Preact との互換性、互換ラッパー、両ランタイム間の所有関係の混在を保証しません。プロジェクト全体の更新手順は [v3 への移行](../guides/migrating-to-v3.mdx)を参照してください。
+
+## 一連の移行例
+
+scaffold のテーマ切り替えは、決定的な light 状態から始め、ブラウザの設定を読んで effect に変更を反映します。まず scaffold にある従来の Preact 実装を示します。
+
+~~~tsx
+"use client";
+
+import { useEffect, useState } from "preact/hooks";
+
+type Theme = "light" | "dark";
+
+const STORAGE_KEY = "basic-blog:theme";
+
+/**
+ * Theme toggle island.
+ *
+ * SSR contract: the very first render — both on the server and during the
+ * client hydration pass — MUST return identical HTML. Reading
+ * `localStorage` / `matchMedia` from a `useState` initialiser breaks that
+ * contract: the server has neither, so it defaults to `"light"`, but the
+ * client reads the user's saved preference and immediately renders the
+ * opposite label. That mismatch produces a hydration warning and a brief
+ * flash of the wrong toggle.
+ *
+ * Fix: render a deterministic default (`"light"`) on first paint, then
+ * sync to the persisted/system preference inside `useEffect`. To avoid a
+ * FOUC of the wrong colour scheme on the surrounding page, an inline
+ * pre-hydration script in `<head>` (see `layouts/default.tsx`) sets
+ * `document.documentElement.dataset.theme` synchronously, BEFORE the
+ * stylesheet is parsed, so the page paints in the correct theme on the
+ * very first frame regardless of which label this island renders.
+ */
+function readPersistedTheme(): Theme | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === "light" || saved === "dark") {
+      return saved;
+    }
+  } catch {
+    // Private browsing / disabled storage: fall through to system default.
+  }
+  return null;
+}
+
+function readSystemTheme(): Theme {
+  if (typeof window.matchMedia !== "function") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export default function ThemeToggle() {
+  // Deterministic SSR-safe default. Real preference is applied below.
+  const [theme, setTheme] = useState<Theme>("light");
+
+  // Sync once on mount: read persisted (or system) preference and apply it.
+  useEffect(() => {
+    const initial = readPersistedTheme() ?? readSystemTheme();
+    setTheme(initial);
+  }, []);
+
+  // Mirror the active theme to the document and persist on change.
+  useEffect(() => {
+    document.documentElement.dataset["theme"] = theme;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, theme);
+    } catch {
+      // Storage unavailable; persistence is best-effort.
+    }
+  }, [theme]);
+
+  const isDark = theme === "dark";
+  const next: Theme = isDark ? "light" : "dark";
+  return (
+    <button
+      type="button"
+      class="flex size-8 cursor-pointer items-center justify-center rounded-full border border-neutral-200 text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-800 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:text-neutral-100"
+      aria-pressed={isDark}
+      aria-label={`Switch to ${next} theme`}
+      onClick={() => setTheme(next)}
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        {isDark ? (
+          <>
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+          </>
+        ) : (
+          <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" />
+        )}
+      </svg>
+    </button>
+  );
+}
+~~~
+
+次の実装では、同じセットアップモデルによってサーバーとハイドレーションのセットアップを決定的に保ちます。ブラウザの値は有効化時に読み、文書とストレージへの effect は有効化後に始めます。変化するアイコンのサブツリーは Show が所有します。
+
+~~~tsx
+import { computed, getScope, Show, signal } from "@takazudo/zfb/zudo-react";
+
+type Theme = "light" | "dark";
+
+const STORAGE_KEY = "basic-blog:theme";
+
+function readPersistedTheme(): Theme | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === "light" || saved === "dark") {
+      return saved;
+    }
+  } catch {
+    // Storage can be unavailable; use the system preference.
+  }
+  return null;
+}
+
+function readSystemTheme(): Theme {
+  if (typeof window.matchMedia !== "function") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export default function ThemeToggle() {
+  const theme = signal<Theme>("light");
+  const scope = getScope();
+  const isDark = computed(() => theme.value === "dark");
+  const next = computed(() => isDark.value ? "light" : "dark");
+  const ariaLabel = computed(() =>
+    next.value === "light" ? "Switch to light theme" : "Switch to dark theme"
+  );
+
+  scope.onActivate(() => {
+    theme.value = readPersistedTheme() ?? readSystemTheme();
+  });
+
+  scope.effect(() => {
+    const activeTheme = theme.value;
+    document.documentElement.dataset.theme = activeTheme;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, activeTheme);
+    } catch {
+      // Storage can be unavailable; the document theme still updates.
+    }
+  });
+
+  return (
+    <button
+      type="button"
+      class="flex size-8 cursor-pointer items-center justify-center rounded-full border border-neutral-200 text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-800 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:text-neutral-100"
+      aria-pressed={isDark}
+      aria-label={ariaLabel}
+      on:click={() => { theme.value = next.value; }}
+    >
+      <Show
+        when={isDark}
+        fallback={() => (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" />
+          </svg>
+        )}
+      >
+        {() => (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+          </svg>
+        )}
+      </Show>
+    </button>
+  );
+}
+~~~
+
+signal が書き込み可能な状態を保持し、computed 値が押下状態、次のラベル、アクセシブルなラベルを導きます。アイコンは実際の条件領域なので、テーマを切り替えるとボタンを残したまま所有する分岐だけを置き換えます。スカラーのバインディングにツリーの差分更新を任せず、SVG の構造変化を明示できます。[リアクティビティ](./reactivity.mdx)、[スコープとライフサイクル](./scopes-and-lifecycle.mdx)、[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+## 島の props
+
+島の境界を越えられるのは JSON と互換性のある初期 props だけです。コールバック、DOM ノード、signal、computed 値、コンポーネントの記述は、同一性や動作を保ったまま転送されません。ブラウザはコンポーネントモジュールをインポートし、島のインスタンスのセットアップを実行して、転送されたデータから signal とクロージャーを作り直します。
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+type ProfileProps = { initialName: string };
+
+export function Profile({ initialName }: ProfileProps) {
+  const name = signal(initialName);
+  return <p>{name}</p>;
+}
+~~~
+
+サーバーからブラウザへ渡す props はデータにとどめ、更新される状態とイベントハンドラーはコンポーネント内で作ってください。境界と検査については[サーバーレンダリング](./server-rendering.mdx)と[ハイドレーション](./hydration.mdx)を参照してください。JSX、リアクティブな値、コンポーネントの動作については[概要](./overview.mdx)と[API リファレンス](./api-reference.mdx)に進んでください。

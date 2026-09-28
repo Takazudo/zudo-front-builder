@@ -1,11 +1,461 @@
 ---
 title: API リファレンス
-description: zudo-react の core、JSX、server、client entry point と、各 entry が公開する型を参照できます。
+description: 確定した zudo-react v1 のエクスポートを五つのパッケージエントリごとに示します。
 sidebar_position: 9
 ---
 
-<Note>
+## Core: @takazudo/zfb/zudo-react
 
-このページは執筆中です。 owned-engines-stub
+コアエントリは記述ヘルパー、リアクティビティ、スコープ、構造を扱う基本機能を提供します。このエントリから使えるのは、ここに示すエクスポートだけです。
 
-</Note>
+### Fragment
+
+~~~ts
+export const Fragment: unique symbol;
+~~~
+
+Fragment はホスト要素を増やさずに兄弟の記述をまとめます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### h
+
+~~~ts
+export function h(type: ElementType, props: Record<string, unknown> | null,
+  ...children: Child[]): Description;
+~~~
+
+h は JSX を使わずに検証済みの記述を作ります。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### isDescription
+
+~~~ts
+export function isDescription(value: unknown): value is Description;
+~~~
+
+isDescription はブランド付きの記述形式かを検査します。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### flattenChildren
+
+~~~ts
+export function flattenChildren(children: Child): readonly Exclude<Child, readonly Child[] | boolean | null | undefined>[];
+~~~
+
+flattenChildren はコンポーネントの実行やリアクティブな値の読み取りをせず、対応する子配列を正規化します。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### signal
+
+~~~ts
+export function signal<T>(initial: T): Signal<T>;
+~~~
+
+signal はリアクティブなブランドと必須の writable ブランドを持つ書き込み可能な値を作ります。[リアクティビティ](./reactivity.mdx)と[フォーム](./forms.mdx)を参照してください。
+
+### computed
+
+~~~ts
+export function computed<T>(read: () => T): ReadonlySignal<T>;
+~~~
+
+computed は遅延評価される読み取り専用の値を作り、フォームモデルには使えません。[リアクティビティ](./reactivity.mdx)を参照してください。
+
+### batch
+
+~~~ts
+export function batch<T>(fn: () => T): T;
+~~~
+
+batch はスケジューラーに対する同期的な書き込みをまとめます。[リアクティビティ](./reactivity.mdx)を参照してください。
+
+### flush
+
+~~~ts
+export function flush(): Promise<void>;
+~~~
+
+flush は現在の DOM と effect のキューが落ち着いた後に解決し、100 パスの上限があります。[リアクティビティ](./reactivity.mdx)を参照してください。
+
+### getScope
+
+~~~ts
+export function getScope(): Scope;
+~~~
+
+getScope は同期的なセットアップか構造ファクトリの実行中にだけ現在の所有者を返します。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### Show
+
+~~~ts
+export function Show(props: ShowProps): Description;
+~~~
+
+Show は所有スコープを持つ条件領域を作り、各分岐が生きている間にファクトリを実行します。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### For
+
+~~~ts
+export function For<T>(props: ForProps<T>): Description;
+~~~
+
+For は読み取り専用の item と index の signal を伴う、所有スコープ付きのキー付き項目領域を作ります。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### Key
+
+~~~ts
+export type Key = string | number;
+~~~
+
+キーには文字列か有限数を使い、負のゼロはゼロに正規化されます。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### Scalar
+
+~~~ts
+export type Scalar = string | number | boolean | null | undefined;
+~~~
+
+Scalar は記述とリアクティブなテキストで受け付けるプリミティブ値の集合です。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### ReadonlySignal
+
+~~~ts
+export interface ReadonlySignal<T> {
+  readonly value: T;
+  readonly $$zudoReactive: "zudo-react.reactive.v1";
+}
+~~~
+
+ReadonlySignal は読み取り可能なリアクティブな値を表し、writable モデルのブランドを意図的に持ちません。[リアクティビティ](./reactivity.mdx)を参照してください。
+
+### Signal
+
+~~~ts
+export interface Signal<T> extends ReadonlySignal<T> {
+  value: T;
+  readonly $$zudoWritable: "zudo-react.writable.v1";
+}
+~~~
+
+Signal はすべての model prop に必要な書き込み可能な signal 型です。[リアクティビティ](./reactivity.mdx)と[フォーム](./forms.mdx)を参照してください。
+
+### Child
+
+~~~ts
+export type Child = Scalar | Description | ReadonlySignal<Scalar> | readonly Child[];
+~~~
+
+Child はコンポーネントとレンダラーが受け付ける値の再帰的な集合です。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### Component
+
+~~~ts
+export type Component<P = Record<string, unknown>> = (props: P) => Child;
+~~~
+
+Component は props から対応する子の結果を返す同期関数です。[概要](./overview.mdx)を参照してください。
+
+### ElementType
+
+~~~ts
+export type ElementType = string | Component<any> | typeof Fragment;
+~~~
+
+ElementType には組み込み要素名、関数コンポーネント、Fragment が含まれます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### Description
+
+~~~ts
+export interface Description {
+  readonly $$zudo: "zudo-react.description.v1";
+  readonly type: ElementType;
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: Key | null;
+}
+~~~
+
+Description はレンダリング間で再利用やコピーができる、ブランド付きの不活性な値です。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### Cleanup
+
+~~~ts
+export type Cleanup = () => void;
+~~~
+
+Cleanup はスコープに登録される同期的なコールバックです。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### Scope
+
+~~~ts
+export interface Scope {
+  readonly abortSignal: AbortSignal;
+  onActivate(fn: () => void | Cleanup): void;
+  onCleanup(fn: Cleanup): void;
+  effect(fn: () => void | Cleanup): void;
+}
+~~~
+
+Scope は有効化、追跡される effect、クリーンアップ、abort signal を所有します。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### Ref
+
+~~~ts
+export interface Ref<T> { current: T | null }
+~~~
+
+Ref は有効化前に値が入る可変オブジェクトで、コールバック形式はありません。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### Style
+
+~~~ts
+export type Style = string | Readonly<Record<string, string | number | null | undefined>>;
+~~~
+
+Style は CSS 文字列か CSS 表記のキーを持つ平坦なオブジェクトを受け付けます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### Listener
+
+~~~ts
+export type Listener<E extends Event = Event> = (event: E) => void | Promise<void>;
+~~~
+
+Listener はネイティブイベントを受け取り、on:event の表記で登録します。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### IslandIdentity
+
+~~~ts
+export interface IslandIdentity {
+  readonly component: string;
+  readonly build: string;
+}
+~~~
+
+IslandIdentity は島をコンポーネント名と不透明なビルド識別子に結び付けます。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### Diagnostic
+
+~~~ts
+export interface Diagnostic {
+  readonly code: string;
+  readonly phase: "setup" | "preflight" | "commit" | "activation" | "update" | "cleanup";
+  readonly component: string;
+  readonly componentStack: readonly string[];
+  readonly path: string;
+  readonly expected: string;
+  readonly actual: string;
+  readonly protocol: string;
+  readonly build: string;
+}
+~~~
+
+Diagnostic は props 全体や入力値を含めず、段階、ルートのパス、期待値と実際の値の短い要約を記録します。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### Reporter
+
+~~~ts
+export type Reporter = (diagnostic: Diagnostic) => void;
+~~~
+
+Reporter は構造化されたランタイム診断を一件受け取ります。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### ShowProps
+
+~~~ts
+export interface ShowProps {
+  when: ReadonlySignal<boolean>;
+  children: () => Child;
+  fallback?: (() => Child) | undefined;
+}
+~~~
+
+ShowProps には読み取り専用の真偽値 signal と遅延実行される分岐ファクトリが必要です。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+### ForProps
+
+~~~ts
+export interface ForProps<T> {
+  each: ReadonlySignal<readonly T[]>;
+  by: (item: T) => Key;
+  children: (item: ReadonlySignal<T>, index: ReadonlySignal<number>) => Child;
+}
+~~~
+
+ForProps は読み取り専用の配列 signal、副作用のないキー選択関数、項目ファクトリを受け付けます。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+## JSX runtime: @takazudo/zfb/zudo-react/jsx-runtime
+
+本番用の自動 JSX 変換は、このサブパスから値と JSX 名前空間をインポートします。
+
+### Fragment
+
+~~~ts
+export { Fragment } from "./index.js";
+~~~
+
+JSX ランタイムはコアの Fragment マーカーを再エクスポートします。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### jsx
+
+~~~ts
+export function jsx(type: ElementType, props: Record<string, unknown> | null,
+  key?: Key | undefined): Description;
+~~~
+
+jsx は自動 JSX 変換用の不活性な要素記述を一つ作ります。[概要](./overview.mdx)を参照してください。
+
+### jsxs
+
+~~~ts
+export const jsxs: typeof jsx;
+~~~
+
+jsxs は複数の子に使うヘルパーで、記述のシグネチャーは jsx と同じです。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### JSX
+
+~~~ts
+export type { JSX } from "./jsx-types.js";
+~~~
+
+JSX 名前空間は Element、ElementType、IntrinsicElements、任意の key を持つ IntrinsicAttributes、children を持つ ElementChildrenAttribute をエクスポートします。HTML、SVG、カスタム要素の有限のマップを使い、あらゆる文字列を受けるインデックスはありません。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+## JSX development runtime: @takazudo/zfb/zudo-react/jsx-dev-runtime
+
+TypeScript の開発用変換は、このサブパスから診断用ヘルパーをインポートします。
+
+### Fragment
+
+~~~ts
+export { Fragment } from "./index.js";
+~~~
+
+開発用 JSX ランタイムは同じコアの Fragment マーカーを再エクスポートします。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### jsxDEV
+
+~~~ts
+export function jsxDEV(type: ElementType, props: Record<string, unknown> | null,
+  key: Key | undefined, isStaticChildren: boolean,
+  source: { fileName: string; lineNumber: number; columnNumber: number } | undefined,
+  self: unknown): Description;
+~~~
+
+jsxDEV は開発用変換のメタデータを受け取りながら、同じ不活性な記述を作ります。[概要](./overview.mdx)を参照してください。
+
+### JSX
+
+~~~ts
+export type { JSX } from "./jsx-types.js";
+~~~
+
+開発用エントリは、有限の組み込み要素マップを持つ同じ JSX 名前空間を再エクスポートします。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+## Server: @takazudo/zfb/zudo-react/server
+
+サーバーエントリはクライアントランタイムのコードをインポートせず、DOM にアクセスせずに文書をレンダリングできます。
+
+### RenderOptions
+
+~~~ts
+export interface RenderOptions {
+  island?: IslandIdentity | undefined;
+}
+~~~
+
+RenderOptions に identity を渡すと、独立した島内部のマーカーモードを選びます。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+
+### IslandOptions
+
+~~~ts
+export interface IslandOptions {
+  identity: IslandIdentity;
+  when?: "load" | "idle" | "visible" | "media" | undefined;
+  media?: string | undefined;
+  skipSsr?: boolean | undefined;
+  fallback?: Child;
+}
+~~~
+
+IslandOptions はラッパーの識別子、スケジュールモード、省略可能な media クエリー、skip-SSR の fallback を定義します。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+
+### renderToString
+
+~~~ts
+export function renderToString(node: Child, options?: RenderOptions): string;
+~~~
+
+renderToString は同期的な記述ツリー全体をエスケープしてシリアライズし、明示的な島ルートの外にはマーカーを付けません。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+
+### islandRoot
+
+~~~ts
+export function islandRoot(child: Description, options: IslandOptions): Description;
+~~~
+
+islandRoot は zfb 向けの明示的な島ラッパー記述を作ります。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+
+### serializeProps
+
+~~~ts
+export function serializeProps(props: Record<string, unknown>): string;
+~~~
+
+serializeProps は厳密な JSON データを検証し、ラッパー属性用の JSON テキストを返します。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+
+## Client: @takazudo/zfb/zudo-react/client
+
+クライアントエントリは DOM のハイドレーション、クライアントレンダリング、島の prop の解析を担当します。
+
+### RootOptions
+
+~~~ts
+export interface RootOptions {
+  identity: IslandIdentity;
+  signal?: AbortSignal | undefined;
+  report?: Reporter | undefined;
+}
+~~~
+
+RootOptions は識別子、省略可能なキャンセル用 signal、診断レポーターを渡します。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### RootHandle
+
+~~~ts
+export interface RootHandle {
+  readonly protocol: "zudo-react/1";
+  readonly identity: IslandIdentity;
+  readonly disposed: boolean;
+  dispose(): void;
+  unmount(): void;
+}
+~~~
+
+RootHandle はリソースの解放と所有する DOM の削除を分けます。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)を参照してください。
+
+### hydrate
+
+~~~ts
+export function hydrate(node: Child, container: Element, options: RootOptions): RootHandle | null;
+~~~
+
+hydrate は事前検証後に既存の子ノードを引き継ぎ、想定される失敗では null を返します。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### mount
+
+~~~ts
+export function mount(node: Child, container: Element, options: RootOptions): RootHandle | null;
+~~~
+
+mount は検証済みのラッパー内にクライアント DOM を作り、想定される失敗では null を返します。[ハイドレーション](./hydration.mdx)を参照してください。
+
+### parseProps
+
+~~~ts
+export function parseProps(json: string): Record<string, unknown>;
+~~~
+
+parseProps は厳密な島の props レコードを解析・検証し、不正な入力では名前付きの転送エラーを投げます。[ハイドレーション](./hydration.mdx)を参照してください。
+
+## See also
+
+- [概要](./overview.mdx)
+- [コンポーネントと JSX](./components-and-jsx.mdx)
+- [リアクティビティ](./reactivity.mdx)
+- [サーバーレンダリング](./server-rendering.mdx)
+- [ハイドレーション](./hydration.mdx)

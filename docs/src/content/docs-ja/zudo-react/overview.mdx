@@ -1,11 +1,72 @@
 ---
 title: 概要
-description: JSX の description からサーバーレンダリング、ブラウザーでの hydration まで、zudo-react の概要を紹介します。
+description: zfb の JSX ランタイム、パッケージのサブパス、コンポーネントを一度だけセットアップするモデルを紹介します。
 sidebar_position: 1
 ---
 
-<Note>
+## zudo-react が提供するもの
 
-このページは執筆中です。 owned-engines-stub
+zudo-react は **@takazudo/zfb** に同梱される JSX ランタイムです。コンポーネントのモデルは明示的でシンプルです。コンポーネント関数はレンダリングされるインスタンスごとに一度実行され、signal が変化する値を保持します。レンダラーはコンポーネントを再実行せずに、バインドされた DOM を更新します。
 
-</Note>
+このランタイムは React や Preact の互換レイヤーではありません。hooks、context、portal、クラスコンポーネント、汎用的なツリーの差分更新はありません。JSX は zudo-react に渡す記述を作りますが、ランタイムが React と同じように動作するわけではありません。
+
+## JSX を設定する
+
+zudo-react を含むバージョンの zfb パッケージをインストールし、自動 JSX 変換がそのランタイムエントリを使うよう設定します。
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+コンパイラーは本番用ヘルパーを **@takazudo/zfb/zudo-react/jsx-runtime** から解決します。開発用の変換には **@takazudo/zfb/zudo-react/jsx-dev-runtime** を使います。どちらもパッケージのサブパスであり、zudo-react は独立したパッケージではありません。
+
+ランタイムの値はコアエントリからインポートします。
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+~~~
+
+## コンポーネントは一度だけ実行される
+
+セットアップ中に signal を作り、その signal 自体を JSX に渡します。イベントで値を変更すると、次にスケジュールされた flush でテキストのバインディングが更新されます。
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+
+  return (
+    <button on:click={() => { count.value += 1; }}>
+      Clicked {count} times
+    </button>
+  );
+}
+~~~
+
+コンポーネント関数は、このインスタンスをレンダリングするときに一度呼ばれます。その後 count が変わるとテキストの領域が更新されますが、Counter は再実行されません。マウントされた各インスタンスには、それぞれのセットアップとスコープがあります。
+
+signal を渡すと更新されるバインディングができます。JSX を作るときに値を読むと、その時点のスナップショットになります。
+
+~~~tsx
+<p>{count}</p>
+<p>{count.value}</p>
+~~~
+
+この例では、最初の子はリアクティブです。二番目の子はセットアップ中に読み取った数値のままです。この規則は、コンポーネントの props を通して値を渡す場合にも適用されます。
+
+## 次に読むページ
+
+以降のページでは、JSX の記述、リアクティブな更新、スコープ、サーバーレンダリング、ハイドレーション、フォーム、構造を持つ領域を説明します。島のスケジュールと永続化に関する zfb 側の仕組みは、島のガイドを参照してください。
+
+## 関連ページ
+
+- [コンポーネントと JSX](./components-and-jsx.mdx)
+- [リアクティビティ](./reactivity.mdx)
+- [Preact hooks からの移行](./coming-from-preact-hooks.mdx)
+- [島](../concepts/islands.mdx)

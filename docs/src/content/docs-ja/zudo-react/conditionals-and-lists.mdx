@@ -1,11 +1,78 @@
 ---
 title: 条件分岐とリスト
-description: Show による条件分岐と For による key 付きリストを、専用 scope と範囲更新で構築する方法を説明します。
+description: Show で所有スコープを持つ条件分岐を作り、For でキー付きリストをトランザクションとして更新します。
 sidebar_position: 8
 ---
 
-<Note>
+## Show による条件分岐
 
-このページは執筆中です。 owned-engines-stub
+**Show** は読み取り専用の真偽値 signal から分岐を選びます。children と省略可能な fallback はファクトリで、選ばれた分岐は新しい子スコープの下で作られます。
 
-</Note>
+~~~tsx
+import { Show, signal } from "@takazudo/zfb/zudo-react";
+
+function Details() {
+  const expanded = signal(false);
+
+  return (
+    <section>
+      <button on:click={() => { expanded.value = !expanded.value; }}>
+        Toggle details
+      </button>
+      <Show
+        when={expanded}
+        fallback={() => <p>More details are available.</p>}
+      >
+        {() => <p>The expanded content is mounted here.</p>}
+      </Show>
+    </section>
+  );
+}
+~~~
+
+選ばれたファクトリは、その分岐が生きている間に一度実行されます。別の分岐に切り替えるとスコープを一度破棄して領域を削除し、戻すと新しい分岐インスタンスを作ります。false で fallback がなければ子スコープは作りません。リアクティブな hidden 属性は既存の DOM を隠すだけで、分岐やそのリソースは破棄しません。
+
+## For によるキー付き項目
+
+**For** は読み取り専用の配列 signal を読み、各通常の項目に by を呼んで文字列または有限数のキーを得ます。
+
+~~~tsx
+import { For, signal } from "@takazudo/zfb/zudo-react";
+
+function TodoList() {
+  const todos = signal([
+    { id: "a", title: "Read the guide" },
+    { id: "b", title: "Ship the feature" }
+  ]);
+
+  return (
+    <ul>
+      <For each={todos} by={(todo) => todo.id}>
+        {(todo, index) => (
+          <li>{index}: {todo.value.title}</li>
+        )}
+      </For>
+    </ul>
+  );
+}
+~~~
+
+item と index の引数は読み取り専用の signal です。JSX に渡すと更新されるバインディングになり、value を読むとスナップショットになります。維持されたキーでは、領域、子スコープ、ref、イベントハンドラー、コントロールの状態、item/index の signal オブジェクトが保たれます。同じキーの別オブジェクトに置き換えると読み取り専用のビューは更新されますが、ファクトリは再実行されません。
+
+キーは文字列か有限数です。負のゼロはゼロに正規化されますが、数値の 1 と文字列の "1" は別のキーです。For は DOM やスコープの状態を変える前に次のキー全体を検証します。重複キーは ZR_DUPLICATE_KEY、未対応のキーは ZR_KEY_TYPE を報告し、元のリストはそのままです。初期キーの重複はサーバーレンダリングを失敗させ、ハイドレーション中の不正なキーはその島を失敗させます。
+
+古い領域を置き換える前に、新しい項目を仮に構築します。セットアップに失敗したら仮のスコープを破棄し、元のリストを有効なまま残します。キーを削除するとそのスコープを一度だけ破棄し、後で同じキーを追加すると新しい項目を作ります。維持されたキーを移動する場合は既存の DOM を移動し、可能な限りフォーカスと選択範囲を保ちます。
+
+## パーサー上の位置と変換中の入力
+
+For と Show の領域は、コメントで区切った範囲が有効な位置に置く必要があります。table の構造上の階層や select の選択肢の内部では使えません。特殊な HTML の中に動的領域を置く前に、[パーサーの文脈に関する規則](./hydration.mdx)を確認してください。
+
+フォーカス中の項目がテキストを変換しているとき、その項目を切り離す並べ替えは変換終了または blur まで待ってから最新のリストを適用します。その項目を削除する操作は明示的な unmount であり、リソースを取り消します。
+
+## 関連ページ
+
+- [リアクティビティ](./reactivity.mdx)
+- [スコープとライフサイクル](./scopes-and-lifecycle.mdx)
+- [ハイドレーション](./hydration.mdx)
+- [フォーム](./forms.mdx)
+- [API リファレンス](./api-reference.mdx)
