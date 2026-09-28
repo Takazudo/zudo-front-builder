@@ -8459,9 +8459,6 @@ mod tests {
                 bundle_path: self.mock_bundle_path.clone(),
                 sourcemap_path: self.mock_bundle_path.with_extension("mjs.map"),
                 manifest: BundleManifest {
-                    framework: "preact".into(),
-                    jsx_import_source: "preact".into(),
-                    hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
                     bundle_basename: "bundle.mjs".into(),
                     routes: vec![RouteEntry {
                         route: "/".into(),
@@ -9667,9 +9664,6 @@ mod tests {
                     bundle_path: PathBuf::from("/dev/null"),
                     sourcemap_path: PathBuf::from("/dev/null"),
                     manifest: BundleManifest {
-                        framework: "preact".into(),
-                        jsx_import_source: "preact".into(),
-                        hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
                         bundle_basename: "bundle.mjs".into(),
                         routes: vec![],
                     },

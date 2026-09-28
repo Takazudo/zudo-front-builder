@@ -614,7 +614,7 @@ fn declared_first_party_package_identity_from_canonical(
 /// from the SAME metafile.
 ///
 /// The one call site this does NOT cover is the islands/client per-job path
-/// (`bundle_per_island`, `crates/zfb-islands/src/esbuild.rs`): it still runs
+/// (`crates/zfb-islands/src/esbuild.rs`): it still runs
 /// N+1 independent subprocess audits (one per island entry plus the runtime
 /// bundle), each building its own roster, because that call site reaches this
 /// module only through the public, single-purpose

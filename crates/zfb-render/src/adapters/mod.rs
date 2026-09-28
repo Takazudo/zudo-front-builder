@@ -5,47 +5,8 @@
 //! centralized through SWC's `transform-react` configuration — *not* per-file
 //! pragmas.
 //!
-//! An [`Adapter`] is responsible for four things and four things only:
-//!
-//! 1. Telling the SWC pipeline which JSX import source to inject
-//!    (see [`Adapter::jsx_import_source`]).
-//! 2. Telling the JS runtime which module exposes the synchronous
-//!    render-to-string entry point
-//!    (see [`Adapter::render_to_string_module`]).
-//! 3. Installing a tiny pre-render shim into `globalThis` so that
-//!    `render.rs` can call `__zfbRenderToString(vnode)` without caring
-//!    which framework is active
-//!    (see [`Adapter::pre_render_setup`]).
-//! 4. Exposing a tiny client-side **hydration shim** that the islands
-//!    bundler folds into the islands bundle's entry. The shim exports a
-//!    single `hydrateIsland(Component, props, element)` function so the
-//!    framework-agnostic hydration runtime (`zfb-islands` JS) can
-//!    hydrate any island without branching on the framework
-//!    (see [`Adapter::hydrate_shim_specifier`] and
-//!    [`Adapter::hydrate_shim_source`]).
-//!
-//! ## Hydration: per-adapter shim, not per-call JS expression
-//!
-//! We considered two designs:
-//!
-//! - **`hydrate_call()` returning a JS expression string** that the
-//!   runtime would template into a per-page generated module.
-//! - **A per-adapter shim module** that the islands bundler includes as
-//!   the islands-bundle entry; the hydration runtime imports a uniform
-//!   `hydrateIsland(Component, props, element)`.
-//!
-//! We pick the shim. It keeps the Rust ↔ JS boundary expressed purely
-//! as static strings (no JS-expression concatenation in Rust, no `eval`
-//! in the runtime), it keeps tree-shaking honest because the shim is a
-//! real module the bundler sees, and it leaves the hydration runtime
-//! independent of the framework's native client API.
-//!
-//! Anything beyond these four hooks — hook semantics, signal interop,
-//! event delegation strategy — is intentionally out of scope.
-
-use async_trait::async_trait;
-
-use crate::{RenderError, RenderHost};
+//! An [`Adapter`] supplies the JSX import source and the render-to-string
+//! module used by the production SSR bundle.
 
 pub mod preact;
 
@@ -63,17 +24,7 @@ pub enum Framework {
     Preact,
 }
 
-/// The portable adapter contract.
-///
-/// Methods are pure (`name`, `jsx_import_source`,
-/// `render_to_string_module`, `hydrate_shim_specifier`,
-/// `hydrate_shim_source`) or side-effecting only on the host
-/// (`pre_render_setup`). Adapters MUST NOT carry per-render state — a
-/// single adapter instance is reused across every page render.
-///
-/// `pre_render_setup` is `async` so it can drive the now-async
-/// [`RenderHost::execute_module`] without blocking.
-#[async_trait(?Send)]
+/// The portable, stateless framework adapter contract.
 pub trait Adapter {
     /// Human-readable adapter name. Stable, lowercase, no whitespace.
     /// Used in error messages and in build logs.
@@ -88,32 +39,6 @@ pub trait Adapter {
     /// synchronous render-to-string entry. The runtime resolver maps
     /// this specifier to an actual module load.
     fn render_to_string_module(&self) -> &'static str;
-
-    /// Run once, before the first page render, on the embedded JS
-    /// runtime. Installs `globalThis.__zfbRenderToString = ...` so the
-    /// orchestrator in `render.rs` can call into the framework
-    /// uniformly.
-    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
-
-    /// Synthetic module specifier the islands bundler uses to write the
-    /// hydration shim into the bundle. Conventionally lives under the
-    /// `zfb:internal/adapters/` namespace so it cannot collide with a
-    /// user-authored module. The bundler is free to substitute its own
-    /// path; this value exists primarily to give the bundler a stable
-    /// default and to give the shim source a recognisable display name.
-    fn hydrate_shim_specifier(&self) -> &'static str;
-
-    /// JS module source the islands bundler folds into the islands
-    /// bundle as the framework-specific hydration entry.
-    ///
-    /// Contract: the module MUST export a function named `hydrateIsland`
-    /// with signature
-    /// `hydrateIsland(Component, props, element)` and MUST hydrate
-    /// `Component` against `element` using `props`. The hydration
-    /// runtime in `zfb-islands` calls this function for every
-    /// `[data-zfb-island]` element in the DOM, so the function MUST be
-    /// safe to call repeatedly with different elements.
-    fn hydrate_shim_source(&self) -> &'static str;
 }
 
 /// Construct the boxed adapter for a given [`Framework`].
@@ -159,33 +84,6 @@ mod tests {
         assert_eq!(
             make_adapter(Framework::Preact).render_to_string_module(),
             "preact-render-to-string"
-        );
-    }
-
-    #[test]
-    fn hydrate_shim_sources_export_hydrate_island() {
-        // The hydration runtime imports `hydrateIsland`, so a typo here
-        // would silently break every page.
-        let adapter = make_adapter(Framework::Preact);
-        let src = adapter.hydrate_shim_source();
-        assert!(
-            src.contains("hydrateIsland"),
-            "{} shim does not export hydrateIsland: {src}",
-            adapter.name()
-        );
-    }
-
-    #[test]
-    fn hydrate_shim_specifiers_are_internal_namespace() {
-        // Specifiers must live under zfb:internal/ so they can never
-        // collide with a user-authored module path.
-        let adapter = make_adapter(Framework::Preact);
-        assert!(
-            adapter
-                .hydrate_shim_specifier()
-                .starts_with("zfb:internal/"),
-            "{} specifier escaped zfb:internal/",
-            adapter.name()
         );
     }
 }

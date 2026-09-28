@@ -23,7 +23,7 @@
 //! `#[async_trait]` is used for dyn-compatibility: Rust stable does not yet
 //! support `dyn Trait` with `async fn` methods without boxing. The macro
 //! desugars each method to a `Pin<Box<dyn Future>>` return so
-//! `&mut dyn RenderHost` continues to work for `Adapter::pre_render_setup`.
+//! `&mut dyn RenderHost` remains available for embedded hosts.
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;

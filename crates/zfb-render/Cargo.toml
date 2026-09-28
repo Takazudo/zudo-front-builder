@@ -35,6 +35,10 @@ embed_v8 = [
 syntect-onig = ["zfb-content/syntect-onig"]
 syntect-fancy = ["zfb-content/syntect-fancy"]
 
+# Kept for the md-wasm compile feature graph; see scripts/assert-zfb-md-wasm-graph.sh.
+[package.metadata.cargo-machete]
+ignored = ["zfb-content"]
+
 [dependencies]
 # Canonical shared types (Segment, etc.).
 zfb-types = { path = "../zfb-types" }

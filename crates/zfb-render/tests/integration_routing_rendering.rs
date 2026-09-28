@@ -5,7 +5,7 @@
 //! `render_route(RenderInput) -> RenderOutput` orchestrator on
 //! `zfb-render`. The actual API surface that landed is:
 //!
-//! - `zfb_render::Renderer<H: RenderHost>` — a single-page,
+//! - The old single-page renderer — a
 //!   single-source orchestrator that delegates JS execution to a
 //!   pluggable host (`render_smoke.rs` shows the in-process test host
 //!   pattern). It does not walk a project root, resolve layouts, or run

@@ -28,11 +28,9 @@
 //! ## Selector vs substring
 //!
 //! This pass uses `lol_html`'s CSS attribute selector (`[data-zfb-island]`,
-//! `[data-zfb-island-skip-ssr]`) rather than a substring scan.  This mirrors
-//! the approach taken in `crates/zfb-islands/src/hydration.rs:471-478` and
+//! `[data-zfb-island-skip-ssr]`) rather than a substring scan.  This
 //! avoids false-positive matches inside `<pre>` / `<code>` / Markdown-rendered
-//! code blocks that contain the literal attribute string.  See the hazard note
-//! at `crates/zfb-islands/src/hydration.rs:239-243`.
+//! code blocks that contain the literal attribute string.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

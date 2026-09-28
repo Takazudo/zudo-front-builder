@@ -70,7 +70,7 @@
       var url = payload && payload.bundleUrl;
       if (!url) return;
       // Bust any module cache by appending a timestamp; the host page's
-      // hydration runtime (zfb_islands::hydration_script_tag) re-runs
+      // islands runtime re-runs
       // on import so re-importing the bundle re-hydrates the component
       // without a full page reload.
       var ts = String(Date.now());

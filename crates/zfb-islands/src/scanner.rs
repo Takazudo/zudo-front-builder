@@ -474,7 +474,7 @@ pub trait Resolver {
 /// Whether a specifier is bare (no `./`, `../`, or `/` prefix).
 ///
 /// Bare specifiers are runtime-provided by the framework adapter (see
-/// `zfb_render::loader`) and do not point at files on disk; the scanner
+/// the former library loader) and do not point at files on disk; the scanner
 /// must skip them to avoid spurious resolver errors.
 pub fn is_bare_specifier(specifier: &str) -> bool {
     !(specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/'))

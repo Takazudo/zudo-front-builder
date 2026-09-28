@@ -10,9 +10,7 @@
 //!    dropped; functions, classes, call expressions (`memo`/`forwardRef`/
 //!    `lazy`/`styled`/…), tagged templates, and anything ambiguous are kept.
 //!
-//! 2. **Generated-source runtime guard** (`render_island_entry_source` /
-//!    `render_shared_bundle_entry_source`) — the per-island and shared
-//!    bundle entries reject non-component values with a loud `console.warn`
+//! 2. **Generated-source runtime guard** (`render_shared_bundle_entry_source`) — the shared bundle entry reject non-component values with a loud `console.warn`
 //!    instead of a truthy-only check that would hand a bogus type to
 //!    `h()` / `createElement()`.
 //!
@@ -22,8 +20,7 @@
 use std::path::PathBuf;
 
 use zfb_islands::{
-    render_island_entry_source, render_shared_bundle_entry_source, scan_islands, FrameworkKind,
-    InMemoryResolver, Island,
+    render_shared_bundle_entry_source, scan_islands, FrameworkKind, InMemoryResolver, Island,
 };
 
 fn root() -> PathBuf {
@@ -440,30 +437,5 @@ fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
             "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
         ),
         "expected module label passed as the 4th __zfb_register arg:\n{src}"
-    );
-}
-
-#[test]
-fn per_island_entry_guards_mount_with_component_shape_check() {
-    let island = Island::new("Counter", "/abs/components/Counter.tsx");
-
-    let src = render_island_entry_source(FrameworkKind::Preact, &island);
-    assert!(
-        src.contains("typeof Component === \"function\""),
-        "expected typeof-function guard:\n{src}"
-    );
-    assert!(
-        src.contains("$$typeof"),
-        "expected $$typeof object check:\n{src}"
-    );
-    assert!(
-        src.contains("if (!__zfb_ok) return;"),
-        "mount must bail out when the export is not a component:\n{src}"
-    );
-    assert!(
-        src.contains("console.warn(")
-            && src.contains("is not a component")
-            && src.contains("/abs/components/Counter.tsx"),
-        "expected a loud console.warn naming the module:\n{src}"
     );
 }
