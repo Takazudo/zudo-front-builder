@@ -1,11 +1,72 @@
 ---
 title: Overview
-description: Overview of the zudo-react runtime, from JSX descriptions through server rendering and browser hydration.
+description: Start with the zfb JSX runtime, its package subpath, and the setup-once component model.
 sidebar_position: 1
 ---
 
-<Note>
+## What zudo-react provides
 
-This page is being written. owned-engines-stub
+zudo-react is the JSX runtime shipped inside **@takazudo/zfb**. It gives components a small, explicit model: a component function runs once for each rendered instance, signals carry changing values, and the renderer updates bound DOM without calling the component again.
 
-</Note>
+The runtime is not a React or Preact compatibility layer. It has no hooks, context, portals, class components, or general tree reconciliation. JSX describes work for zudo-react; it does not make the runtime behave like React.
+
+## Configure JSX
+
+Install the zfb package version that includes zudo-react, then set the automatic JSX transform to use its runtime entry:
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+The compiler resolves the production helpers from **@takazudo/zfb/zudo-react/jsx-runtime**. Development transforms use **@takazudo/zfb/zudo-react/jsx-dev-runtime**. Both are package subpaths; zudo-react is not a separate package.
+
+Import runtime values from the core entry:
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+~~~
+
+## A component runs once
+
+Make a signal during setup and pass the signal itself to JSX. The event changes its value; the text binding updates on the next scheduled flush.
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+
+  return (
+    <button on:click={() => { count.value += 1; }}>
+      Clicked {count} times
+    </button>
+  );
+}
+~~~
+
+The component function is called once when this instance is rendered. A later count change updates the text slot and does not call Counter again. Each mounted instance gets its own setup and scope.
+
+Passing a signal creates a live binding. Reading its value while JSX is being created takes a snapshot:
+
+~~~tsx
+<p>{count}</p>
+<p>{count.value}</p>
+~~~
+
+In this example, the first child is reactive. The second child is the number read during setup and stays that number. This rule also applies when values are passed through component props.
+
+## Where to go next
+
+The remaining pages cover JSX descriptions, reactive updates, scopes, server rendering, hydration, forms, and structural regions. For the zfb side of island scheduling and persistence, see the island guides.
+
+## See also
+
+- [Components and JSX](./components-and-jsx.mdx)
+- [Reactivity](./reactivity.mdx)
+- [Coming from Preact hooks](./coming-from-preact-hooks.mdx)
+- [Islands](../concepts/islands.mdx)
