@@ -34,7 +34,9 @@ use zfb_build::{
     bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, ContentCollectionSpec,
     RendererInput, RouteUniverseEntry,
 };
-use zfb_content::{build_snapshot, CollectionConfig};
+use zfb_content::{
+    build_snapshot, build_snapshot_with_config, CollectionConfig, JsxDialect, PipelineSpec,
+};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -58,6 +60,13 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
     )
     .unwrap();
     blog
+}
+
+fn owned_pipeline_spec() -> PipelineSpec {
+    PipelineSpec {
+        jsx_dialect: JsxDialect::ZudoReact,
+        ..PipelineSpec::default()
+    }
 }
 
 /// Build a minimal `BundlerInput` that uses `mock_subprocess_output` so
@@ -86,8 +95,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -370,7 +379,7 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
-/// runtime deps (`preact`, `hono`, …) the bundle needs.
+/// runtime deps (`hono`) the bundle needs.
 ///
 /// First tries the worktree root (where `pnpm install` would normally
 /// drop it). If that path is missing — common in a fresh `/x-wt-teams`
@@ -403,7 +412,7 @@ fn locate_pnpm_node_modules() -> Option<PathBuf> {
 /// Build a custom `node_modules` directory for the test bundle.
 ///
 /// Mirrors `integration_e2e_routing_rendering::make_test_node_modules`:
-/// generic packages (`preact`, `preact-render-to-string`, `hono`) symlink
+/// generic packages (`hono`) symlink
 /// to the pnpm virtual store; `@takazudo/zfb-runtime` and `zfb` symlink
 /// to the worktree copies so the bundle picks up the source under test.
 fn make_test_node_modules() -> Option<tempfile::TempDir> {
@@ -413,7 +422,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     let tmp = tempfile::tempdir().expect("tempdir for test node_modules");
     let nm = tmp.path();
 
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -596,8 +605,10 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
     let blog_dir = project_root.join("content/blog");
 
     // --- Snapshot: build the real ContentSnapshot off disk ---
-    let snap = build_snapshot(&[CollectionConfig::new("blog", &blog_dir)])
-        .expect("build_snapshot from fixture");
+    let pipeline_spec = owned_pipeline_spec();
+    let snap =
+        build_snapshot_with_config(&[CollectionConfig::new("blog", &blog_dir)], &pipeline_spec)
+            .expect("build_snapshot from fixture");
     let snap_json = serde_json::to_string(&snap).expect("serialise snapshot");
 
     // Sanity: the snapshot must carry both entries with their titles in
@@ -637,8 +648,8 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         )],
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -657,7 +668,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         // true would cause the zfb/content module to be bundled twice (once per
         // symlink path), breaking the content snapshot bridge (tracked in #413).
         node_modules_preserve_symlinks: false,
-        pipeline_spec: zfb_content::PipelineSpec::default(),
+        pipeline_spec,
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,
@@ -674,6 +685,12 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
 
     let out = bundle(input).expect("bundle should succeed for fixture project");
     let bundle_source = fs::read_to_string(&out.bundle_path).expect("read produced bundle.mjs");
+
+    assert!(
+        bundle_source.contains("__zfb_content_modules"),
+        "owned bundle must install the compiled Content bridge; fallback pages: {:?}",
+        out.content_bridge_fallback_pages
+    );
 
     // Spot-check: the snapshot literal made it into the bundle. This
     // guarantees the bundler-level wiring is correct; the V8 host
@@ -823,8 +840,8 @@ async fn embedded_v8_md_page_renders_to_html() {
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -1009,8 +1026,6 @@ fn html_page_written_verbatim_via_render_all() {
 ///
 /// ```text
 /// <tmp>/
-///   preact/                                  -> pnpm store /preact
-///   preact-render-to-string/                 -> pnpm store /preact-render-to-string
 ///   hono/                                    -> pnpm store /hono
 ///   @takazudo/
 ///     zfb/                                   -> packages/zfb            (path A)
@@ -1039,7 +1054,7 @@ fn make_dual_zfb_node_modules() -> Option<tempfile::TempDir> {
     let nm = tmp.path();
 
     // Generic deps from the pnpm store.
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -1249,8 +1264,10 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
     // Build a real ContentSnapshot from the fixture so the bundle's
     // `__zfb_content_snapshot` literal carries the same data the
     // build pipeline would inject.
-    let snap = build_snapshot(&[CollectionConfig::new("blog", &blog_dir)])
-        .expect("build_snapshot from paths-dual fixture");
+    let pipeline_spec = owned_pipeline_spec();
+    let snap =
+        build_snapshot_with_config(&[CollectionConfig::new("blog", &blog_dir)], &pipeline_spec)
+            .expect("build_snapshot from paths-dual fixture");
     let snap_json = serde_json::to_string(&snap).expect("serialise snapshot");
     assert!(
         snap_json.contains("alpha"),
@@ -1282,8 +1299,8 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         )],
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -1301,7 +1318,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         // is set. We leave the value here for documentation parity with
         // the other tests.
         node_modules_preserve_symlinks: true,
-        pipeline_spec: zfb_content::PipelineSpec::default(),
+        pipeline_spec,
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,

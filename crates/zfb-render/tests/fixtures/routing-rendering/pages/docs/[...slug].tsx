@@ -22,7 +22,7 @@ export function paths() {
 
 export default function Doc({ slug, body }: { slug: string[]; body: string }) {
   return (
-    <section className="page page-docs">
+    <section class="page page-docs">
       <h2>{slug.join(" / ")}</h2>
       <p>{body}</p>
     </section>

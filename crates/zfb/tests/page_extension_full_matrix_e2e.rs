@@ -123,13 +123,13 @@ fn write_fixture(root: &Path) {
     )
     .unwrap();
 
-    // `pages/plain.ts` — plain `.ts`, no JSX syntax; uses preact's `h()`
+    // `pages/plain.ts` — plain `.ts`, no JSX syntax; uses the owned runtime's `h()`
     // directly (same convention as Wave 3's
     // `page_extension_route_table_build.rs`).
     fs::write(
         root.join("pages/plain.ts"),
         format!(
-            r#"import {{ h }} from "preact";
+            r#"import {{ h }} from "@takazudo/zfb/zudo-react";
 
 export default function Page() {{
   return h(
@@ -148,7 +148,7 @@ export default function Page() {{
     fs::write(
         root.join("pages/script.js"),
         format!(
-            r#"import {{ h }} from "preact";
+            r#"import {{ h }} from "@takazudo/zfb/zudo-react";
 
 export default function Page() {{
   return h(
@@ -170,7 +170,7 @@ export default function Page() {{
     fs::write(
         root.join("pages/component.jsx"),
         format!(
-            r#"import {{ h }} from "preact";
+            r#"import {{ h }} from "@takazudo/zfb/zudo-react";
 
 export default function Page() {{
   return h(
@@ -239,7 +239,7 @@ title: Static page
     fs::write(
         root.join("pages/[slug].ts"),
         format!(
-            r#"import {{ h }} from "preact";
+            r#"import {{ h }} from "@takazudo/zfb/zudo-react";
 
 export function paths() {{
   return [

@@ -16,15 +16,15 @@ describe("definePreset", () => {
   it("passes through non-plugin fields unchanged", () => {
     const result = definePreset("my-preset-pkg", {
       outDir: "build",
-      framework: "preact",
+      framework: "zudo-react",
       plugins: [{ name: "p" }],
     });
     expect(result.outDir).toBe("build");
-    expect(result.framework).toBe("preact");
+    expect(result.framework).toBe("zudo-react");
   });
 
   it("returns config unchanged when plugins is absent", () => {
-    const config = { outDir: "dist", framework: "preact" as const };
+    const config = { outDir: "dist", framework: "zudo-react" as const };
     const result = definePreset("my-preset-pkg", config);
     expect(result).toBe(config);
   });

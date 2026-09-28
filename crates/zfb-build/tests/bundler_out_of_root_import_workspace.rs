@@ -92,14 +92,14 @@ fn escaping_relative_import_from_workspace_sibling_gets_actionable_boundary_erro
 
     let mut input = BundlerInput::for_project(
         project.clone(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
     input.esbuild_binary = Some(esbuild);

@@ -43,17 +43,17 @@ fn scaffold_project(root: &Path, imports_wasm: bool) {
 fn make_input(root: &Path, esbuild: &Path, bundle_basename: Option<&str>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     // Keep the fixture hermetic: the synthetic SSR entry intentionally leaves
     // its runtime dependencies external, while the local `.wasm` import must
     // stay in esbuild's graph and use the copy loader.
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
     input.esbuild_binary = Some(esbuild.to_path_buf());

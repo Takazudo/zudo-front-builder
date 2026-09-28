@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderToString } from "../../zudo-react/server.js";
 import { jsxContractMatrix } from "./jsx-contract-matrix.js";
@@ -11,6 +11,16 @@ import { jsxContractMatrix } from "./jsx-contract-matrix.js";
 vi.mock("@takazudo/zfb/jsx-factory", async () => await import("../../zudo-react/jsx-runtime.js"));
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../");
+
+beforeEach(() => {
+  (globalThis as typeof globalThis & { __zfb?: unknown }).__zfb = {
+    zudoReactBuild: "fixture-build",
+    zudoReactIslands: ["Widget"],
+  };
+});
+afterEach(() => {
+  delete (globalThis as typeof globalThis & { __zfb?: unknown }).__zfb;
+});
 
 describe("zfb JSX producer contract matrix", () => {
   it("anchors every row to an existing source path and symbol", () => {

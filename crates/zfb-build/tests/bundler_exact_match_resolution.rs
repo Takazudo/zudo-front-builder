@@ -119,14 +119,13 @@ fn make_input(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths,
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join(outdir_name),
@@ -3206,8 +3205,7 @@ fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
     .unwrap();
     // A page with NO bare imports of its own: the only bare specifiers left in
     // the bundle graph are the generated entry.mjs / hydration-shim framework
-    // imports (`@takazudo/zfb-runtime/server`, `preact-render-to-string`,
-    // `preact` / `preact/jsx-runtime`).
+    // imports (`@takazudo/zfb-runtime/server` and the owned renderer/JSX entry).
     fs::write(
         root.join("pages/index.tsx"),
         "export default function Page() { return <div>hi</div>; }\n",
@@ -3229,32 +3227,20 @@ fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
         "export function createPageRouter() {\n  return { fetch() { return 'ZFB_RUNTIME_SERVER_STUB'; } };\n}\n",
     )
     .unwrap();
-    let render = root.join("node_modules/preact-render-to-string");
+    let render = root.join("node_modules/@takazudo/zfb");
     fs::create_dir_all(&render).unwrap();
     fs::write(
         render.join("package.json"),
-        r#"{"name":"preact-render-to-string","type":"module","exports":"./index.js"}"#,
+        r#"{"name":"@takazudo/zfb","type":"module","exports":{"./zudo-react/server":"./server.js","./zudo-react/jsx-runtime":"./jsx-runtime.js"}}"#,
     )
     .unwrap();
     fs::write(
-        render.join("index.js"),
-        "export function renderToString() { return 'PREACT_RTS_STUB'; }\n",
-    )
-    .unwrap();
-    let preact = root.join("node_modules/preact");
-    fs::create_dir_all(&preact).unwrap();
-    fs::write(
-        preact.join("package.json"),
-        r#"{"name":"preact","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}"#,
+        render.join("server.js"),
+        "export function renderToString() { return 'OWNED_RENDER_STUB'; }\n",
     )
     .unwrap();
     fs::write(
-        preact.join("index.js"),
-        "export function h() {} export function hydrate() {}\n",
-    )
-    .unwrap();
-    fs::write(
-        preact.join("jsx-runtime.js"),
+        render.join("jsx-runtime.js"),
         "export function jsx() {} export function jsxs() {} export const Fragment = {};\n",
     )
     .unwrap();

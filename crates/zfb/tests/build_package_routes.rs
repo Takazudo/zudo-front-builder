@@ -406,13 +406,13 @@ export default function Page() {
     );
 }
 
-/// Workspace-linked package routes must execute against the same staged Preact
-/// singleton as the generated renderer when `bundle.exclude` disables the live
+/// Workspace-linked package routes must execute against one staged owned
+/// signal definition as the generated renderer when `bundle.exclude` disables the live
 /// shadow `node_modules` link. The direct route covers issue #1650. The second
 /// route reaches the same hook component through a virtual module that
 /// absolutely re-exports an in-project host binding, covering issue #1652.
 #[test]
-fn workspace_package_routes_and_virtual_host_hooks_share_staged_preact_identity() {
+fn workspace_package_routes_and_virtual_host_signals_share_staged_identity() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[workspace_route_hooks] no esbuild; skipping.");
         return;
@@ -448,9 +448,10 @@ fn workspace_package_routes_and_virtual_host_hooks_share_staged_preact_identity(
     .unwrap();
     fs::write(
         package_root.join("src/sidebar-toggle.tsx"),
-        r#"import { useState } from "preact/hooks";
+        r#""use client";
+import { signal } from "@takazudo/zfb/zudo-react";
 export function SidebarToggle() {
-  const [label] = useState("WORKSPACE_ROUTE_HOOK_SINGLETON");
+  const label = signal("WORKSPACE_ROUTE_SIGNAL_SINGLETON");
   return <p>{label}</p>;
 }
 "#,
@@ -460,8 +461,9 @@ export function SidebarToggle() {
     fs::write(
         &entrypoint,
         r#"import { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
+import { Island } from "@takazudo/zfb";
 export default function Page() {
-  return <html lang="en"><body><SidebarToggle /></body></html>;
+  return <html lang="en"><body><Island><SidebarToggle /></Island></body></html>;
 }
 "#,
     )
@@ -470,9 +472,10 @@ export default function Page() {
     fs::write(
         &virtual_entrypoint,
         r#"import { bindings } from "virtual:host-bindings";
+import { Island } from "@takazudo/zfb";
 export default function Page() {
   const SidebarToggle = bindings.SidebarToggle;
-  return <html lang="en"><body><SidebarToggle /></body></html>;
+  return <html lang="en"><body><Island><SidebarToggle /></Island></body></html>;
 }
 "#,
     )
@@ -525,7 +528,7 @@ export default {{
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }],
   "bundle": { "exclude": ["e2e/fixtures/**", "_temp-resource/**"] }
 }
@@ -538,13 +541,13 @@ export default {{
     };
     let body = fs::read_to_string(dist.join("package-hooks/index.html")).unwrap();
     assert!(
-        body.contains("WORKSPACE_ROUTE_HOOK_SINGLETON"),
-        "the linked package route hook must render through the shared staged Preact identity; got: {body}"
+        body.contains("WORKSPACE_ROUTE_SIGNAL_SINGLETON"),
+        "the linked package route signal must render through the shared staged owned identity; got: {body}"
     );
     let body = fs::read_to_string(dist.join("virtual-host-hooks/index.html")).unwrap();
     assert!(
-        body.contains("WORKSPACE_ROUTE_HOOK_SINGLETON"),
-        "the virtual absolute host binding must render through the shared staged Preact identity; got: {body}"
+        body.contains("WORKSPACE_ROUTE_SIGNAL_SINGLETON"),
+        "the virtual absolute host binding must render through the shared staged owned identity; got: {body}"
     );
 }
 
@@ -1707,7 +1710,7 @@ fn compiled_js_package_routes_export_clause_enumerate_literal_and_runtime_paths(
     fs::create_dir_all(root.join("pkg")).unwrap();
     fs::write(
         root.join("pkg/compiled-literal.js"),
-        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 function paths() {
   return [
     { params: { slug: "alpha" }, props: { title: "alpha" } },
@@ -1728,7 +1731,7 @@ export { CompiledLiteralPage as default, paths };
     .unwrap();
     fs::write(
         root.join("pkg/compiled-runtime.js"),
-        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 async function paths() {
   const { getCollection } = await import("@takazudo/zfb/content");
   const docs = await getCollection("docs");
@@ -2202,12 +2205,11 @@ fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
     );
 }
 
-/// A nested pnpm host stages a linked workspace UI package while external
-/// story/component roots resolve through the workspace install root. Every
-/// path reaches the same physical Preact package, so hook and context values
-/// must survive the actual `zfb build` render without fallback notes (#3104).
+/// A nested pnpm host stages linked workspace and external source roots through
+/// one physical owned runtime. Signals rendered from each route retain their values.
+
 #[test]
-fn nested_workspace_external_story_and_package_route_share_preact_identity() {
+fn nested_workspace_external_story_and_package_route_share_signal_identity() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[ssr_identity_3104] no esbuild; skipping.");
         return;
@@ -2228,8 +2230,8 @@ fn nested_workspace_external_story_and_package_route_share_preact_identity() {
 
     // Model pnpm's physical store and its public install spelling. The
     // renderer and every external source see this very same physical tree.
-    let installed = ws.join("node_modules/preact");
-    let physical = ws.join("node_modules/.pnpm/preact@10.29.1/node_modules/preact");
+    let installed = ws.join("node_modules/@takazudo/zfb");
+    let physical = ws.join("node_modules/.pnpm/@takazudo+zfb@fixture/node_modules/@takazudo/zfb");
     fs::create_dir_all(physical.parent().unwrap()).unwrap();
     fs::rename(&installed, &physical).unwrap();
     std::os::unix::fs::symlink(&physical, &installed).unwrap();
@@ -2237,53 +2239,70 @@ fn nested_workspace_external_story_and_package_route_share_preact_identity() {
 
     let site = ws.join("apps/site");
     fs::create_dir_all(site.join("pages")).unwrap();
-    fs::write(site.join("package.json"), r#"{"name":"@fixture/site","type":"module","dependencies":{"@fixture/ui":"workspace:*","preact":"10.29.1"}}"#).unwrap();
+    fs::write(site.join("package.json"), r#"{"name":"@fixture/site","type":"module","dependencies":{"@fixture/ui":"workspace:*","@takazudo/zfb":"*"}}"#).unwrap();
 
     let ui = ws.join("packages/ui");
     fs::create_dir_all(ui.join("src")).unwrap();
-    fs::write(ui.join("package.json"), r#"{"name":"@fixture/ui","type":"module","exports":{".":"./src/index.tsx"},"dependencies":{"preact":"10.29.1"}}"#).unwrap();
-    fs::write(ui.join("src/index.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
-export function Ui({ Context }) { const [v] = useState('UI_STATE'); const ref = useRef('UI_REF'); const ctx = useContext(Context); return <p>{v}:{ref.current}:{ctx}</p>; }
-"#).unwrap();
+    fs::write(ui.join("package.json"), r#"{"name":"@fixture/ui","type":"module","exports":{".":"./src/index.tsx"},"dependencies":{"@takazudo/zfb":"*"}}"#).unwrap();
+    fs::write(
+        ui.join("src/index.tsx"),
+        r#"import { signal } from '@takazudo/zfb/zudo-react';
+export function Ui() { const value = signal('UI_SIGNAL'); return <p>{value}</p>; }
+"#,
+    )
+    .unwrap();
     fs::create_dir_all(ws.join("node_modules/@fixture")).unwrap();
     std::os::unix::fs::symlink(&ui, ws.join("node_modules/@fixture/ui")).unwrap();
     link_package_local_node_modules(&ws.join("node_modules"), &site.join("node_modules"));
     link_package_local_node_modules(&ws.join("node_modules"), &ui.join("node_modules"));
-    fs::write(site.join("pages/index.tsx"), r#"import { Ui } from '@fixture/ui';
-import { Shared } from '@external/context';
-export default function Page() { return <html><body><Shared.Provider value="HOME_PROVIDER"><Ui Context={Shared} /></Shared.Provider></body></html>; }
-"#).unwrap();
+    fs::write(
+        site.join("pages/index.tsx"),
+        r#"import { Ui } from '@fixture/ui';
+export default function Page() { return <html><body><Ui /></body></html>; }
+"#,
+    )
+    .unwrap();
 
     fs::create_dir_all(ws.join("components")).unwrap();
-    fs::write(ws.join("components/context.ts"), "import { createContext } from 'preact'; export const Shared = createContext('FALLBACK_CONTEXT');\n").unwrap();
-    fs::write(ws.join("components/hooked.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
+    fs::write(
+        ws.join("components/context.ts"),
+        "export const Shared = 'EXTERNAL_BINDING';\n",
+    )
+    .unwrap();
+    fs::write(ws.join("components/hooked.tsx"), r#"import { signal } from '@takazudo/zfb/zudo-react';
 import { Shared } from './context';
-export function Hooked() { const [v] = useState('EXTERNAL_STATE'); const ref = useRef('EXTERNAL_REF'); const ctx = useContext(Shared); return <p>{v}:{ref.current}:{ctx}</p>; }
+export function Hooked() { const value = signal('EXTERNAL_SIGNAL'); return <p>{value}:{Shared}</p>; }
 "#).unwrap();
     fs::create_dir_all(ws.join("stories")).unwrap();
     fs::write(ws.join("stories/demo.tsx"), "import { Hooked } from '@external/hooked'; export function Story() { return <Hooked />; }\n").unwrap();
 
     let preset = ws.join("packages/preset");
     fs::create_dir_all(preset.join("src")).unwrap();
-    fs::write(preset.join("package.json"), r#"{"name":"@fixture/preset","type":"module","exports":{"./catalog":"./src/catalog.tsx"},"dependencies":{"@fixture/ui":"workspace:*","preact":"10.29.1"}}"#).unwrap();
+    fs::write(preset.join("package.json"), r#"{"name":"@fixture/preset","type":"module","exports":{"./catalog":"./src/catalog.tsx"},"dependencies":{"@fixture/ui":"workspace:*","@takazudo/zfb":"*"}}"#).unwrap();
     link_package_local_node_modules(&ws.join("node_modules"), &preset.join("node_modules"));
     for local in [&site, &ui, &preset] {
         assert_eq!(
-            local.join("node_modules/preact").canonicalize().unwrap(),
+            local
+                .join("node_modules/@takazudo/zfb")
+                .canonicalize()
+                .unwrap(),
             physical_canonical,
-            "every fixture importer must resolve the same physical Preact"
+            "every fixture importer must resolve the same physical owned runtime"
         );
     }
-    fs::write(preset.join("src/catalog.tsx"), r#"import { useState, useRef, useContext } from 'preact/hooks';
-import { Shared } from '@external/context';
+    fs::write(
+        preset.join("src/catalog.tsx"),
+        r#"import { signal } from '@takazudo/zfb/zudo-react';
 import { Story } from '@stories/demo';
 import { Ui } from '@fixture/ui';
-function RouteHook() { const [v] = useState('ROUTE_STATE'); const ref = useRef('ROUTE_REF'); const ctx = useContext(Shared); return <p>{v}:{ref.current}:{ctx}</p>; }
-export default function Page() { return <html><body><Shared.Provider value="PROVIDER_VALUE"><RouteHook /><Story /><Ui Context={Shared} /></Shared.Provider></body></html>; }
-"#).unwrap();
+function RouteSignal() { const value = signal('ROUTE_SIGNAL'); return <p>{value}</p>; }
+export default function Page() { return <html><body><RouteSignal /><Story /><Ui /></body></html>; }
+"#,
+    )
+    .unwrap();
     let entry = serde_json::to_string(&preset.join("src/catalog.tsx").to_string_lossy()).unwrap();
     fs::write(preset.join("preset.mjs"), format!("export default {{ name: 'identity-preset', setup({{ injectRoute }}) {{ injectRoute('/catalog', {entry}); }} }};\n")).unwrap();
-    fs::write(site.join("zfb.config.json"), r#"{"framework":"preact","plugins":[{"name":"../../packages/preset/preset.mjs"}],"bundle":{"exclude":[],"mainFields":["main","module"]}}"#).unwrap();
+    fs::write(site.join("zfb.config.json"), r#"{"framework":"zudo-react","plugins":[{"name":"../../packages/preset/preset.mjs"}],"bundle":{"exclude":[],"mainFields":["main","module"]}}"#).unwrap();
     let context = serde_json::to_string(&ws.join("components/*").to_string_lossy()).unwrap();
     let stories = serde_json::to_string(&ws.join("stories/*").to_string_lossy()).unwrap();
     let preset_src = serde_json::to_string(&preset.join("src/*").to_string_lossy()).unwrap();
@@ -2298,9 +2317,9 @@ export default function Page() { return <html><body><Shared.Provider value="PROV
     assert!(output.status.success(), "real build failed:\n{log}");
     let html = fs::read_to_string(site.join("dist/catalog/index.html")).unwrap();
     for value in [
-        "ROUTE_STATE:ROUTE_REF:PROVIDER_VALUE",
-        "EXTERNAL_STATE:EXTERNAL_REF:PROVIDER_VALUE",
-        "UI_STATE:UI_REF:PROVIDER_VALUE",
+        "ROUTE_SIGNAL",
+        "EXTERNAL_SIGNAL:EXTERNAL_BINDING",
+        "UI_SIGNAL",
     ] {
         assert!(
             html.contains(value),
@@ -2315,4 +2334,55 @@ export default function Page() { return <html><body><Shared.Provider value="PROV
         !log.contains("fallback note"),
         "build emitted fallback note: {log}"
     );
+}
+
+/// The string-literal reactive-core definition witness is retained once for
+/// aliases to one source tree and twice for a deliberately copied runtime.
+/// Structural signal brands alone cannot make this distinction (contract ZR1).
+#[test]
+fn owned_signal_definition_identity_detects_a_duplicated_runtime_copy() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[owned_signal_identity] no esbuild; skipping.");
+        return;
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/zfb/src/zudo-react")
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let alias = temp.path().join("linked-runtime");
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    let duplicate = temp.path().join("copied-runtime");
+    copy_dir(&source, &duplicate);
+
+    let definition_sites = |second: &Path, label: &str| {
+        let entry = temp.path().join(format!("{label}.ts"));
+        let out = temp.path().join(format!("{label}.js"));
+        let first = serde_json::to_string(&source.join("index.ts").to_string_lossy()).unwrap();
+        let second = serde_json::to_string(&second.join("index.ts").to_string_lossy()).unwrap();
+        fs::write(
+            &entry,
+            format!("import {{ signal as first }} from {first};\nimport {{ signal as second }} from {second};\nexport const values = [first('a'), second('b')];\n"),
+        )
+        .unwrap();
+        let output = Command::new(&esbuild)
+            .arg(&entry)
+            .arg("--bundle")
+            .arg("--platform=browser")
+            .arg("--format=esm")
+            .arg(format!("--outfile={}", out.display()))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "esbuild failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read_to_string(out)
+            .unwrap()
+            .matches("\"@takazudo/zfb/zudo-react/runtime-definition-v1\": true")
+            .count()
+    };
+    assert_eq!(definition_sites(&alias, "linked"), 1);
+    assert_eq!(definition_sites(&duplicate, "duplicated"), 2);
 }

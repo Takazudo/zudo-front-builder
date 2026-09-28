@@ -1508,7 +1508,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_SIBLING_MACRO_PAGE</title>
       </head>
       <body>
@@ -1613,60 +1613,20 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The first `node_modules/.pnpm/<prefix>*/node_modules/<package_name>` entry
-/// — used to reach the REAL, already-installed `preact` /
-/// `preact-render-to-string` this monorepo's own `pnpm install` staged,
-/// rather than pinning an exact version string that will drift out from
-/// under this test the next time either dependency is bumped.
-fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) -> PathBuf {
-    let mut candidates: Vec<PathBuf> = fs::read_dir(pnpm_dir)
-        .expect("read node_modules/.pnpm")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(prefix))
-        })
-        .collect();
-    candidates.sort();
-    let chosen = candidates.into_iter().next().unwrap_or_else(|| {
-        panic!(
-            "no node_modules/.pnpm entry starting with {prefix:?} under {}",
-            pnpm_dir.display()
-        )
-    });
-    chosen.join("node_modules").join(package_name)
-}
-
 /// A root-claimed-workspace project has its OWN `node_modules` (for the
 /// workspace-sibling symlinks the two fixtures below set up), which disarms
 /// `commands::bundler_input`'s embedded-vendor fallback (it only activates
 /// when `detect_project_node_modules` finds nothing) — so the real SSR
-/// runtime deps (`preact`, `preact-render-to-string`, the
-/// `@takazudo/zfb-runtime` workspace package) must be linked in by hand
+/// runtime deps (the owned `@takazudo/zfb` and
+/// `@takazudo/zfb-runtime` workspace packages) must be linked in by hand
 /// instead of relying on the embedded snapshot the other fixtures in this
 /// file get for free.
 fn link_real_ssr_runtime_deps(root: &Path) {
     let repo = repo_root();
-    let pnpm_dir = repo.join("node_modules/.pnpm");
-    let preact_src = find_pnpm_store_package(&pnpm_dir, "preact@", "preact");
-    let render_src = find_pnpm_store_package(
-        &pnpm_dir,
-        "preact-render-to-string@",
-        "preact-render-to-string",
-    );
     let zfb_runtime_src = repo.join("packages/zfb-runtime");
     let zfb_src = repo.join("packages/zfb");
 
     fs::create_dir_all(root.join("node_modules/@takazudo")).expect("create node_modules/@takazudo");
-    std::os::unix::fs::symlink(&preact_src, root.join("node_modules/preact"))
-        .expect("link real preact into project node_modules");
-    std::os::unix::fs::symlink(
-        &render_src,
-        root.join("node_modules/preact-render-to-string"),
-    )
-    .expect("link real preact-render-to-string into project node_modules");
     std::os::unix::fs::symlink(
         &zfb_runtime_src,
         root.join("node_modules/@takazudo/zfb-runtime"),
@@ -1691,7 +1651,7 @@ fn write_root_claimed_workspace_shell(root: &Path) {
     .expect("write host package.json");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "wind": false }"#,
+        r#"{ "framework": "zudo-react", "wind": false }"#,
     )
     .expect("write zfb.config.json");
     fs::create_dir_all(root.join("pages")).expect("create pages dir");
@@ -1745,7 +1705,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_LEGIT_PAGE</title>
       </head>
       <body>
@@ -1803,7 +1763,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_ESCAPE_SSR_PAGE</title>
       </head>
       <body>
@@ -1850,7 +1810,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_ROOT_CLAIMED_ESCAPE_ISLANDS_PAGE</title>
       </head>
       <body>

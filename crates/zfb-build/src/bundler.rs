@@ -14606,7 +14606,11 @@ mod tests {
     #[cfg(unix)]
     fn scan_cache_input(site: &Path) -> BundlerInput {
         BundlerInput {
-            external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+            zudo_react_island_names: Some(vec![]),
+            external: vec![
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb-runtime".into(),
+            ],
             mock_subprocess_output: Some("export default {};\n".to_string()),
             node_modules_dir: Some(site.join("node_modules")),
             tsconfig_paths: BTreeMap::from([(
@@ -14618,7 +14622,7 @@ mod tests {
             )]),
             ..BundlerInput::for_project(
                 site.to_path_buf(),
-                Framework::Preact,
+                Framework::ZudoReact,
                 BundleMode::Production,
                 site.join("dist"),
                 None,
@@ -16559,8 +16563,8 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::Preact,
-            zudo_react_island_names: None,
+            framework: Framework::ZudoReact,
+            zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::new(),
             public_env_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
@@ -16700,7 +16704,7 @@ mod tests {
             shadow,
             &routes,
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16721,7 +16725,7 @@ mod tests {
              @takazudo/zfb-runtime/server (issue #1298); got:\n{body}"
         );
         assert!(
-            body.contains("\"preact-render-to-string\""),
+            body.contains("\"@takazudo/zfb/zudo-react/server\""),
             "entry.mjs must import renderToString from the framework module; got:\n{body}"
         );
 
@@ -16792,7 +16796,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -16870,7 +16874,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16907,7 +16911,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: Some("https://example.com"),
@@ -16956,7 +16960,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16988,7 +16992,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17037,7 +17041,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17069,7 +17073,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17118,7 +17122,7 @@ mod tests {
         fs::create_dir_all(&off).unwrap();
         fs::create_dir_all(&on).unwrap();
         let inputs = |emit_render_artifacts: bool| EntryModuleInputs {
-            render_to_string_module: "preact-render-to-string",
+            render_to_string_module: "@takazudo/zfb/zudo-react/server",
             content_snapshot_json: None,
             content_imports: &[],
             site: Some("https://example.com"),
@@ -17167,7 +17171,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17215,7 +17219,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17246,7 +17250,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17360,7 +17364,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17416,7 +17420,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[], // zero content imports
                 site: None,
@@ -17452,7 +17456,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17495,7 +17499,7 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -17759,7 +17763,7 @@ mod tests {
             &shadow_root,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
+                render_to_string_module: "@takazudo/zfb/zudo-react/server",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -20162,15 +20166,16 @@ mod tests {
 
         let input = BundlerInput {
             esbuild_binary: Some(bin),
+            zudo_react_island_names: Some(vec![]),
             external: vec![
-                "preact".into(),
-                "preact-render-to-string".into(),
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb/zudo-react/server".into(),
                 "@takazudo/zfb-runtime".into(),
                 "@takazudo/zfb-runtime/*".into(),
             ],
             ..BundlerInput::for_project(
                 root.to_path_buf(),
-                Framework::Preact,
+                Framework::ZudoReact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -21700,7 +21705,7 @@ mod tests {
         // discovered route, and the bundle filename stays `bundle.mjs`.
         let input = BundlerInput::for_project(
             PathBuf::from("/tmp/dummy"),
-            Framework::Preact,
+            Framework::ZudoReact,
             BundleMode::Production,
             PathBuf::from("/tmp/dummy/dist"),
             None,
@@ -21809,15 +21814,16 @@ mod tests {
     /// materialise → prune pipeline whose shadow layout these tests inspect.
     fn mock_ssr_input(project_root: &Path) -> BundlerInput {
         BundlerInput {
+            zudo_react_island_names: Some(vec![]),
             mock_subprocess_output: Some("export default {};\n".to_string()),
             external: vec![
-                "preact".into(),
-                "preact-render-to-string".into(),
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb/zudo-react/server".into(),
                 "@takazudo/zfb-runtime".into(),
             ],
             ..BundlerInput::for_project(
                 project_root.to_path_buf(),
-                Framework::Preact,
+                Framework::ZudoReact,
                 BundleMode::Production,
                 project_root.join("dist"),
                 None,
@@ -21939,10 +21945,24 @@ mod tests {
                 "layouts/default.tsx",
                 "pages/index.tsx",
                 "tsconfig.json",
+                "zudo-react-build.mjs",
             ],
-            "the flat SSR shadow must contain exactly the entry, tsconfig and project sources"
+            "the flat SSR shadow must contain the entry, owned identity metadata, tsconfig and project sources"
         );
         for file in &flat_files {
+            if file == "zudo-react-build.mjs" {
+                // The workspace manifest is a token input, so the two build
+                // identities may differ even though their project files match.
+                for path in [
+                    flat_session.shadow_root().join(file),
+                    ws_session.shadow_root().join(prefix).join(file),
+                ] {
+                    let source = fs::read_to_string(path).unwrap();
+                    assert!(source.contains("zudoReactBuild"), "{source}");
+                    assert!(source.contains("zudoReactIslands"), "{source}");
+                }
+                continue;
+            }
             assert_eq!(
                 fs::read(flat_session.shadow_root().join(file)).unwrap(),
                 fs::read(ws_session.shadow_root().join(prefix).join(file)).unwrap(),
@@ -22518,7 +22538,7 @@ mod tests {
         );
 
         // Locate workspace node_modules so esbuild can resolve
-        // @takazudo/zfb-runtime + preact-render-to-string. Pre-#197 this test
+        // @takazudo/zfb-runtime and the owned renderer. Pre-#197 this test
         // was silently skipped because no esbuild was downloaded; now that
         // build.rs always populates the binary slot, the test runs and needs
         // real dependency resolution. In pnpm hoisted layouts these packages
@@ -22557,8 +22577,8 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::Preact,
-            zudo_react_island_names: None,
+            framework: Framework::ZudoReact,
+            zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::from([
                 (
                     "process.env.PUBLIC_COLLISION".to_string(),
@@ -22571,7 +22591,7 @@ mod tests {
             ]),
             public_env_vars: defs,
             tsconfig_paths: BTreeMap::new(),
-            external: vec!["preact".into()],
+            external: vec!["@takazudo/zfb/zudo-react".into()],
             main_fields: Vec::new(),
             extra_loader_args: Vec::new(),
             outdir: root.join("dist"),
@@ -22692,13 +22712,14 @@ mod tests {
 
         let input = BundlerInput {
             esbuild_binary: Some(bin),
-            external: vec!["preact".into()],
+            zudo_react_island_names: Some(vec![]),
+            external: vec!["@takazudo/zfb/zudo-react".into()],
             node_modules_dir: nm_dir,
             // The override file is discovered at the project root.
             mdx_components_file: Some(root.join("mdx-components.tsx")),
             ..BundlerInput::for_project(
                 root.clone(),
-                Framework::Preact,
+                Framework::ZudoReact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -23394,7 +23415,7 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let input = BundlerInput::for_project(
             root.clone(),
-            zfb_render::adapters::Framework::Preact,
+            zfb_render::adapters::Framework::ZudoReact,
             BundleMode::Production,
             root.join("dist"),
             None,

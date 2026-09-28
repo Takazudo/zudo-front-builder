@@ -373,18 +373,6 @@ fn materialise_fixture(variant: &Variant) -> (tempfile::TempDir, PathBuf) {
         );
     }
     symlink(
-        &find_pnpm_store_package(&repo_pnpm_dir, "preact@", "preact"),
-        &site_node_modules.join("preact"),
-    );
-    symlink(
-        &find_pnpm_store_package(
-            &repo_pnpm_dir,
-            "preact-render-to-string@",
-            "preact-render-to-string",
-        ),
-        &site_node_modules.join("preact-render-to-string"),
-    );
-    symlink(
         &workspace_root.join("packages/shared-utils"),
         &site_node_modules.join("shared-utils"),
     );

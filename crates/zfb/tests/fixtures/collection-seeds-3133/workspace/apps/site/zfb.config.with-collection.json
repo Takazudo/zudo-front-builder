@@ -1,5 +1,5 @@
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "collections": [
     {
       "name": "componentDocs",

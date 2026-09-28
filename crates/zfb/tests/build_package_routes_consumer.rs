@@ -448,7 +448,7 @@ fn compiled_node_modules_virtual_paths_certify_zudo_doc_can_drop_staging() {
     let entrypoint = routes_dir.join("docs-slug.js");
     fs::write(
         &entrypoint,
-        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 import { virtualSlugs } from "virtual:zudo-doc-route-slugs";
 function paths() {
   return virtualSlugs.map((slug) => ({ params: { slug }, props: { slug } }));
@@ -856,7 +856,7 @@ export default function GeneratedRoute() {{
     }
     fs::write(
         routes.join("_context.ts"),
-        r#"import { h } from "preact";
+        r#"import { h } from "@takazudo/zfb/zudo-react";
 import { sharedMarker } from "./shared";
 export default function GeneratedContext() {
   return h("html", null, h("body", null, "PROJECT_LOCAL_ROUTE_context_" + sharedMarker));

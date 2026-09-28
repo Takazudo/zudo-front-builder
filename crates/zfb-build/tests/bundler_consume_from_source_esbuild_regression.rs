@@ -167,14 +167,14 @@ fn write_consumer_entry(project: &Path) {
 fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

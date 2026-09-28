@@ -337,7 +337,7 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
       }
       return Island({ children: jsx(Widget, { count: 3 }) as never }) as unknown as Child;
     },
-    '<div data-zfb-island="Widget" data-when="load" data-props="{&quot;count&quot;:3}"><b>3</b></div>',
+    '<div data-zfb-island="Widget" data-when="load" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="fixture-build" data-props="{&quot;count&quot;:3}"><!--zr:1:0:c--><b>3</b><!--/zr:1:0--></div>',
   ),
   accepted(
     "ClientRouter keyed sibling array",

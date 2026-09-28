@@ -44,7 +44,7 @@ type PageProps = {
 
 export default function BlogPaginated({ current, total, items }: PageProps) {
   return (
-    <section className="page page-blog-paginated">
+    <section class="page page-blog-paginated">
       <h2>
         Page {current} of {total}
       </h2>

@@ -5,7 +5,7 @@ export default function RerootHostPage() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>ZFB_REROOT_HOST_PAGE</title>
         <script type="module" src={clientScript("reroot")} />
       </head>

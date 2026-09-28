@@ -7,7 +7,7 @@ export const meta = {
 
 export default function Index() {
   return (
-    <section className="page page-index">
+    <section class="page page-index">
       <p>Welcome to zfb.</p>
     </section>
   );

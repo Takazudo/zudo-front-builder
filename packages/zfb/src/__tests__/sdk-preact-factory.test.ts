@@ -4,6 +4,7 @@ import { jsx } from "preact/jsx-runtime";
 import { expect, it, vi } from "vitest";
 
 vi.mock("@takazudo/zfb/jsx-factory", async () => await import("preact/jsx-runtime"));
+vi.mock("@takazudo/zfb/island-boundary", async () => await import("../island-boundary.js"));
 
 it("Island and ClientRouter render through the default Preact factory", async () => {
   const { Island } = await import("../island.js");
