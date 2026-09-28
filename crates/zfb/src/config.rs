@@ -267,7 +267,11 @@ pub struct Config {
 
     /// zudo-wind v1 configuration. `None` preserves the temporary engine
     /// selection seam until the engine cutover task removes Tailwind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_wind",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub wind: Option<WindSetting>,
 
     /// Prefetch options. When `prefetch.disabled` is `true`, the bundler
@@ -887,6 +891,15 @@ pub struct TailwindConfig {
 pub enum WindSetting {
     Disabled,
     Enabled(WindConfig),
+}
+
+fn deserialize_present_wind<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<WindSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    WindSetting::deserialize(deserializer).map(Some)
 }
 
 impl Serialize for WindSetting {
@@ -2714,8 +2727,8 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
 
     let mut breakpoint_widths = Vec::with_capacity(wind.breakpoints.len());
     for (name, breakpoint) in &wind.breakpoints {
-        if !is_wind_name(name) {
-            bail!("wind.breakpoints.{name}: name must match the zudo-wind token-name rule");
+        if !is_wind_name(name) || name.starts_with("max-") {
+            bail!("wind.breakpoints.{name}: name must match the zudo-wind breakpoint-name rule");
         }
         let width = breakpoint.min_width_px;
         if !width.is_finite() || width <= 0.0 || width.fract() != 0.0 {
@@ -3414,8 +3427,8 @@ mod tests {
     #[test]
     fn wind_validation_rejects_unsupported_spec() {
         let config = config_with_wind(serde_json::json!({ "spec": 2 }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("unsupported spec must fail");
@@ -3425,8 +3438,8 @@ mod tests {
     #[test]
     fn wind_validation_rejects_unknown_reset() {
         let config = config_with_wind(serde_json::json!({ "reset": "default" }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("unknown reset must fail");
@@ -3438,8 +3451,8 @@ mod tests {
         let config = config_with_wind(serde_json::json!({
             "tokens": { "colors": { "Bad_Name": "red" } }
         }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("invalid token names must fail");
@@ -3451,8 +3464,8 @@ mod tests {
         let invalid_name = config_with_wind(serde_json::json!({
             "breakpoints": { "max-sm": { "minWidthPx": 640 } }
         }));
-        let error = validate_wind_config(match invalid_name.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match invalid_name.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("invalid breakpoint name must fail");
@@ -3479,8 +3492,8 @@ mod tests {
                 "tablet": { "minWidthPx": 640 }
             }
         }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("duplicate widths must fail");
@@ -3490,8 +3503,8 @@ mod tests {
     #[test]
     fn wind_validation_rejects_empty_safelist_entries() {
         let config = config_with_wind(serde_json::json!({ "safelist": { "app": [""] } }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("empty safelist entry must fail");
@@ -3519,8 +3532,8 @@ mod tests {
         let config = config_with_wind(serde_json::json!({
             "dark": { "attribute": "Data_theme", "value": "dark" }
         }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("invalid dark attribute must fail");
@@ -3530,8 +3543,8 @@ mod tests {
             let config = config_with_wind(serde_json::json!({
                 "dark": { "attribute": "data-theme", "value": value }
             }));
-            let error = validate_wind_config(match config.wind.unwrap() {
-                WindSetting::Enabled(wind) => &wind,
+            let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+                WindSetting::Enabled(wind) => wind,
                 WindSetting::Disabled => panic!("wind object expected"),
             })
             .expect_err("invalid dark value must fail");
@@ -3544,8 +3557,8 @@ mod tests {
         let invalid_owner = config_with_wind(serde_json::json!({
             "safelist": { "bad owner": ["block"] }
         }));
-        let error = validate_wind_config(match invalid_owner.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match invalid_owner.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("invalid owner id must fail");
@@ -3554,8 +3567,8 @@ mod tests {
         let invalid_class = config_with_wind(serde_json::json!({
             "authoredClasses": { "two words": true }
         }));
-        let error = validate_wind_config(match invalid_class.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match invalid_class.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("authored class must be a single token");
@@ -3567,8 +3580,8 @@ mod tests {
         let config = config_with_wind(serde_json::json!({
             "authoredClasses": { "prose": false }
         }));
-        let error = validate_wind_config(match config.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("authored class entries must be true");
@@ -3580,8 +3593,8 @@ mod tests {
         let invalid_producer = config_with_wind(serde_json::json!({
             "manifests": { "bad producer": { "path": "manifest.json" } }
         }));
-        let error = validate_wind_config(match invalid_producer.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match invalid_producer.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("invalid producer id must fail");
@@ -3590,8 +3603,8 @@ mod tests {
         let empty_path = config_with_wind(serde_json::json!({
             "manifests": { "widgets": { "path": "" } }
         }));
-        let error = validate_wind_config(match empty_path.wind.unwrap() {
-            WindSetting::Enabled(wind) => &wind,
+        let error = validate_wind_config(match empty_path.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
             WindSetting::Disabled => panic!("wind object expected"),
         })
         .expect_err("empty manifest path must fail");
