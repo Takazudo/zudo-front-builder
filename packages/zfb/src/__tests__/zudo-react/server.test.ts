@@ -67,11 +67,9 @@ describe("server renderer", () => {
     expect(activated).toBe(0);
     expect(subscriberCount(value)).toBe(0);
   });
-  it("rejects pending forms and invalid child values", () => {
-    expect(() => renderToString(h("input", { modelValue: signal("x") }))).toThrow(
-      "ZR_FORM_PENDING",
-    );
-    expect(() => renderToString(h("input", { defaultValue: "x" }))).toThrow("ZR_FORM_PENDING");
+  it("renders form models and rejects invalid child values", () => {
+    expect(renderToString(h("input", { modelValue: signal("x") }))).toBe('<input value="x">');
+    expect(renderToString(h("input", { defaultValue: "x" }))).toBe('<input value="x">');
     expect(() => renderToString(h("div", null, {} as never))).toThrow("ZR_CHILD");
   });
   it("renders raw HTML and styles while enforcing parser contexts", () => {

@@ -134,12 +134,33 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
 }
 
 type HtmlProps<T extends Element = HTMLElement> = HtmlAttributes<T> & DataAria & EventProps;
-type InputProps = HtmlProps<HTMLInputElement> & {
-  modelValue?: Signal<string | null> | undefined;
-  modelChecked?: Signal<boolean> | undefined;
+type InputBase = Omit<HtmlProps<HTMLInputElement>, "type"> & {
   defaultValue?: string | undefined;
   defaultChecked?: boolean | undefined;
 };
+type InputProps =
+  | (InputBase & {
+      type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
+      modelValue?: Signal<string> | undefined;
+      modelChecked?: never;
+    })
+  | (InputBase & {
+      type: "checkbox";
+      modelChecked?: Signal<boolean> | undefined;
+      modelValue?: never;
+    })
+  | (InputBase & {
+      type: "radio";
+      name: string;
+      value: string;
+      modelValue?: Signal<string | null> | undefined;
+      modelChecked?: never;
+    })
+  | (InputBase & {
+      type: string;
+      modelValue?: never;
+      modelChecked?: never;
+    });
 type TextareaProps = HtmlProps<HTMLTextAreaElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;

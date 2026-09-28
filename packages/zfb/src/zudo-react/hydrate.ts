@@ -1,3 +1,4 @@
+import { activateForms, prepareForms, reconcileForms, FormError, type FormPlan } from "./forms.js";
 import { Fragment, isDescription, type Child, type Description } from "./description.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
 import { isReactive, read, styleText, setAttribute, bind, listener } from "./dom-bindings.js";
@@ -73,6 +74,7 @@ interface BuildContext {
   scope: RuntimeScope;
   next: number;
   readonly operations: Operation[];
+  readonly forms: FormPlan[];
   readonly opaque: Set<Node>;
   readonly textSlots: Set<Node>;
 }
@@ -165,12 +167,30 @@ function element(
     fail("ZR_VOID_CHILDREN", "setup", "empty element", tag, path);
   if ("rawHtml" in props && "children" in props)
     fail("ZR_RAW_HTML", "setup", "rawHtml without children", tag, path);
-  if (tag === "textarea" && "children" in props)
-    fail("ZR_FORM_PENDING", "setup", "form adapter", "textarea children", path);
+  if (
+    tag === "textarea" &&
+    "children" in props &&
+    ("modelValue" in props || "defaultValue" in props)
+  )
+    fail(
+      "ZR_MODEL_CONFLICT",
+      "preflight",
+      "textarea model/default without children",
+      "children",
+      path,
+    );
+  context.forms.push({ element, props, path });
   for (const [name, original] of Object.entries(props)) {
     if (name === "children" || name === "key" || name === "rawHtml") continue;
-    if (formProps.has(name))
-      fail("ZR_FORM_PENDING", "preflight", "model adapter (#3278)", name, path);
+    if (formProps.has(name)) {
+      if (name === "defaultValue" && tag === "input") setAttribute(element, "value", original);
+      if (name === "defaultChecked" && tag === "input") setAttribute(element, "checked", original);
+      if (name === "modelValue" && tag === "input" && read(props.type) !== "radio")
+        setAttribute(element, "value", read(original));
+      if (name === "modelChecked" && tag === "input")
+        setAttribute(element, "checked", read(original));
+      continue;
+    }
     if (dialect.has(name) || /^on[A-Z]/.test(name))
       fail("ZR_PROP_DIALECT", "setup", "HTML-spelled prop", name, path);
     if (name === "ref") {
@@ -230,7 +250,7 @@ function element(
     }
     if (name === "value" || name === "checked") {
       if (isReactive(original))
-        fail("ZR_FORM_PENDING", "preflight", "modelValue/modelChecked", name, path);
+        fail("ZR_MODEL_UNSUPPORTED", "preflight", "modelValue/modelChecked", name, path);
     }
     if (
       !/^[A-Za-z_:][A-Za-z0-9_:.-]*$/.test(name) ||
@@ -330,6 +350,12 @@ function element(
         );
         cleanups.push(() => subscription.dispose());
       });
+  } else if (
+    tag === "textarea" &&
+    (props.modelValue !== undefined || props.defaultValue !== undefined)
+  ) {
+    const value = String(read(props.modelValue ?? props.defaultValue));
+    element.textContent = value;
   } else if (restricted.has(tag)) {
     if (tag === "title" || tag === "option") {
       const value = props.children;
@@ -338,6 +364,15 @@ function element(
       append(element, context.document.createTextNode(scalar(value, path)));
     } else children(props.children, element, context, childNamespace, tag, `${path}/${tag}`);
   } else children(props.children, element, context, childNamespace, tag, `${path}/${tag}`);
+  if (tag === "select" && (props.modelValue !== undefined || props.defaultValue !== undefined)) {
+    const value = String(read(props.modelValue ?? props.defaultValue));
+    const select = element as HTMLSelectElement;
+    if (![...select.options].some((option) => option.value === value))
+      fail("ZR_MODEL_VALUE", "preflight", "matching select option", value, path);
+    for (const option of select.options) option.selected = option.value === value;
+  }
+  if (tag === "input" && read(props.type) === "radio" && props.modelValue !== undefined)
+    setAttribute(element, "checked", read(props.modelValue) === read(props.value));
   parent.appendChild(element);
 }
 function render(
@@ -648,6 +683,7 @@ function execute(
       scope,
       next: 0,
       operations: [],
+      forms: [],
       opaque: new Set(),
       textSlots: new Set(),
     };
@@ -665,6 +701,7 @@ function execute(
         visit(expected);
       }
     }
+    const formBindings = prepareForms(context.forms, map, mode, container);
     if (options.signal?.aborted || !container.isConnected)
       fail(
         "ZR_CANCELLED",
@@ -673,9 +710,11 @@ function execute(
         "aborted or disconnected",
         rootPath(container),
       );
+    reconcileForms(formBindings, mode);
     if (mode === "mount") container.replaceChildren(fragment);
     committed = true;
     for (const operation of context.operations) operation(map, cleanups);
+    activateForms(formBindings, scope, cleanups, options, container);
     const owned = mode === "hydrate" ? [...container.childNodes] : built;
     const handle = createRoot(container, options, scope, cleanups, owned);
     try {
@@ -707,13 +746,15 @@ function execute(
     const failure =
       error instanceof Failure
         ? error
-        : new Failure(
-            "ZR_HYDRATION_MISMATCH",
-            committed ? "commit" : "setup",
-            "successful root",
-            String(error),
-            rootPath(container),
-          );
+        : error instanceof FormError
+          ? new Failure(error.code, "preflight", "valid form model", error.detail, error.path)
+          : new Failure(
+              "ZR_HYDRATION_MISMATCH",
+              committed ? "commit" : "setup",
+              "successful root",
+              String(error),
+              rootPath(container),
+            );
     report(
       options,
       diagnostic(
