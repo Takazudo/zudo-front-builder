@@ -94,16 +94,15 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         // Mark every bare specifier the synthetic entry.mjs imports as
         // external so this test doesn't need a node_modules tree.
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),

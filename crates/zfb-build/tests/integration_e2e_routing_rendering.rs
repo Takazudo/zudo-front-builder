@@ -29,7 +29,7 @@
 //! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
 //!   `crates/zfb/binaries/esbuild/esbuild`, or the pnpm store).
 //! - The pnpm store is missing the runtime deps the bundle needs
-//!   (`preact`, `preact-render-to-string`, `hono`) — run `pnpm install`
+//!   (`hono`) — run `pnpm install`
 //!   at the repo root.
 //!
 //! ## Snapshot bootstrap
@@ -240,7 +240,7 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
 // ---------------------------------------------------------------------------
 
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
-/// runtime deps (`preact`, `hono`, …) the bundle needs.
+/// runtime deps (`hono`) the bundle needs.
 ///
 /// First tries the worktree root (where `pnpm install` drops it). If that
 /// path is missing — common in a fresh `/x-wt-teams` worktree that has not
@@ -287,7 +287,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     let nm = tmp.path();
 
     // Packages we need from the pnpm virtual store.
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -343,7 +343,7 @@ fn build_bundle(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework,
-        zudo_react_island_names: None,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: Default::default(),
         tsconfig_paths: BTreeMap::new(),
@@ -423,7 +423,7 @@ fn e2e_routing_rendering_with_embedded_host() {
     let dist_preact = tempfile::tempdir().expect("tempdir");
     let bundle_preact = build_bundle(
         &fixture,
-        Framework::Preact,
+        Framework::ZudoReact,
         &esbuild,
         dist_preact.path(),
         node_modules.path(),

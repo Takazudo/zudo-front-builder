@@ -148,8 +148,8 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: paths,
@@ -163,8 +163,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         // esbuild `--external:@takazudo/zfb-runtime` does NOT cover the
         // `/server` subpath, so it is listed explicitly.
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime/server".into(),
         ],
         outdir: root.join("dist"),
@@ -340,14 +339,13 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),

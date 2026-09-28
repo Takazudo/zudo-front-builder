@@ -68,14 +68,14 @@ fn branch4_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild.to_path_buf());

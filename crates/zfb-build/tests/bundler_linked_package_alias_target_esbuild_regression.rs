@@ -168,13 +168,14 @@ fn input(fixture: &Fixture, esbuild: PathBuf, mode: BundleMode) -> BundlerInput 
     let site = &fixture.site;
     let mut input = BundlerInput::for_project(
         site.clone(),
-        Framework::Preact,
+        Framework::ZudoReact,
         mode,
         site.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

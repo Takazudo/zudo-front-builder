@@ -86,8 +86,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -370,7 +370,7 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
-/// runtime deps (`preact`, `hono`, …) the bundle needs.
+/// runtime deps (`hono`) the bundle needs.
 ///
 /// First tries the worktree root (where `pnpm install` would normally
 /// drop it). If that path is missing — common in a fresh `/x-wt-teams`
@@ -403,7 +403,7 @@ fn locate_pnpm_node_modules() -> Option<PathBuf> {
 /// Build a custom `node_modules` directory for the test bundle.
 ///
 /// Mirrors `integration_e2e_routing_rendering::make_test_node_modules`:
-/// generic packages (`preact`, `preact-render-to-string`, `hono`) symlink
+/// generic packages (`hono`) symlink
 /// to the pnpm virtual store; `@takazudo/zfb-runtime` and `zfb` symlink
 /// to the worktree copies so the bundle picks up the source under test.
 fn make_test_node_modules() -> Option<tempfile::TempDir> {
@@ -413,7 +413,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     let tmp = tempfile::tempdir().expect("tempdir for test node_modules");
     let nm = tmp.path();
 
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -637,8 +637,8 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         )],
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -823,8 +823,8 @@ async fn embedded_v8_md_page_renders_to_html() {
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -1039,7 +1039,7 @@ fn make_dual_zfb_node_modules() -> Option<tempfile::TempDir> {
     let nm = tmp.path();
 
     // Generic deps from the pnpm store.
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -1282,8 +1282,8 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         )],
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),

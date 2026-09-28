@@ -79,14 +79,14 @@ fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
 fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

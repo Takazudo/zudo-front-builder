@@ -428,14 +428,13 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        framework: Framework::ZudoReact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),
@@ -817,14 +816,14 @@ fn zzmod_all_five_migration_fixes_compose() {
     let paths = tsconfig_paths_absolute(&root, &[("@lib/*", "src/lib/*")]);
     let mut input = BundlerInput::for_project(
         root.clone(),
-        Framework::Preact,
+        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);
