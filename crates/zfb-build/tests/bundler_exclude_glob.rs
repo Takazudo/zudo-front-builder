@@ -17,8 +17,9 @@
 //! ```
 //!
 //! (Empirically confirmed against esbuild 0.27.7 while authoring this test;
-//! `--main-fields` is only set for `Framework::React`, so a Preact/neutral
-//! bundle has an empty main-fields list and cannot resolve such a package.)
+//! `--main-fields` is emitted only when the caller explicitly sets the knob,
+//! so the default Preact bundle has an empty main-fields list and cannot
+//! resolve such a package.)
 //!
 //! `bundle.exclude` is the control that keeps the migration build green: it
 //! drops the offending file from BOTH the shadow tree and the glob expansion.

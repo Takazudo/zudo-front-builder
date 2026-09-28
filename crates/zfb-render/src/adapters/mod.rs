@@ -1,9 +1,9 @@
 //! Framework adapters.
 //!
-//! zfb supports two JSX frameworks: Preact (default) and React. The
-//! choice is made once at config-load time via the `framework` field in
-//! `zfb.config.ts` and is centralized through SWC's `transform-react`
-//! configuration — *not* per-file pragmas.
+//! zfb supports the Preact JSX framework. The choice is made once at
+//! config-load time via the `framework` field in `zfb.config.ts` and is
+//! centralized through SWC's `transform-react` configuration — *not* per-file
+//! pragmas.
 //!
 //! An [`Adapter`] is responsible for four things and four things only:
 //!
@@ -38,8 +38,7 @@
 //! as static strings (no JS-expression concatenation in Rust, no `eval`
 //! in the runtime), it keeps tree-shaking honest because the shim is a
 //! real module the bundler sees, and it leaves the hydration runtime
-//! adapter-agnostic — the same JS file ships whether the project picked
-//! Preact or React.
+//! independent of the framework's native client API.
 //!
 //! Anything beyond these four hooks — hook semantics, signal interop,
 //! event delegation strategy — is intentionally out of scope.
@@ -49,24 +48,19 @@ use async_trait::async_trait;
 use crate::{RenderError, RenderHost};
 
 pub mod preact;
-pub mod react;
 
 pub use preact::PreactAdapter;
-pub use react::ReactAdapter;
 
-/// Which framework to render with. Selected once at config-load time.
+/// Which framework to render with. Preact is selected at config-load time.
 ///
-/// Serde accepts the canonical lowercase form (`"preact"` / `"react"`)
-/// and the matching aliases so `zfb.config.ts` can spell the value
-/// either way without surprise.
+/// Serde accepts the lowercase form so `zfb.config.ts` can spell the value
+/// without surprise.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Framework {
     #[default]
     #[serde(alias = "preact")]
     Preact,
-    #[serde(alias = "react")]
-    React,
 }
 
 /// The portable adapter contract.
@@ -129,7 +123,6 @@ pub trait Adapter {
 pub fn make_adapter(framework: Framework) -> Box<dyn Adapter> {
     match framework {
         Framework::Preact => Box::new(PreactAdapter),
-        Framework::React => Box::new(ReactAdapter),
     }
 }
 
@@ -146,70 +139,53 @@ mod tests {
     fn framework_deserializes_lowercase() {
         let f: Framework = serde_json::from_str("\"preact\"").unwrap();
         assert_eq!(f, Framework::Preact);
-        let f: Framework = serde_json::from_str("\"react\"").unwrap();
-        assert_eq!(f, Framework::React);
     }
 
     #[test]
     fn make_adapter_returns_correct_name() {
         assert_eq!(make_adapter(Framework::Preact).name(), "preact");
-        assert_eq!(make_adapter(Framework::React).name(), "react");
     }
 
     #[test]
-    fn jsx_import_sources_match_framework() {
+    fn jsx_import_source_matches_framework() {
         assert_eq!(
             make_adapter(Framework::Preact).jsx_import_source(),
             "preact"
         );
-        assert_eq!(make_adapter(Framework::React).jsx_import_source(), "react");
     }
 
     #[test]
-    fn render_to_string_modules_match_framework() {
+    fn render_to_string_module_matches_framework() {
         assert_eq!(
             make_adapter(Framework::Preact).render_to_string_module(),
             "preact-render-to-string"
-        );
-        assert_eq!(
-            make_adapter(Framework::React).render_to_string_module(),
-            "react-dom/server"
         );
     }
 
     #[test]
     fn hydrate_shim_sources_export_hydrate_island() {
-        // Both adapters must expose a `hydrateIsland` export. The
-        // hydration runtime imports this name, not the framework's
-        // native API, so a typo here would silently break every page.
-        for adapter in [
-            make_adapter(Framework::Preact),
-            make_adapter(Framework::React),
-        ] {
-            let src = adapter.hydrate_shim_source();
-            assert!(
-                src.contains("hydrateIsland"),
-                "{} shim does not export hydrateIsland: {src}",
-                adapter.name()
-            );
-        }
+        // The hydration runtime imports `hydrateIsland`, so a typo here
+        // would silently break every page.
+        let adapter = make_adapter(Framework::Preact);
+        let src = adapter.hydrate_shim_source();
+        assert!(
+            src.contains("hydrateIsland"),
+            "{} shim does not export hydrateIsland: {src}",
+            adapter.name()
+        );
     }
 
     #[test]
     fn hydrate_shim_specifiers_are_internal_namespace() {
         // Specifiers must live under zfb:internal/ so they can never
         // collide with a user-authored module path.
-        for adapter in [
-            make_adapter(Framework::Preact),
-            make_adapter(Framework::React),
-        ] {
-            assert!(
-                adapter
-                    .hydrate_shim_specifier()
-                    .starts_with("zfb:internal/"),
-                "{} specifier escaped zfb:internal/",
-                adapter.name()
-            );
-        }
+        let adapter = make_adapter(Framework::Preact);
+        assert!(
+            adapter
+                .hydrate_shim_specifier()
+                .starts_with("zfb:internal/"),
+            "{} specifier escaped zfb:internal/",
+            adapter.name()
+        );
     }
 }

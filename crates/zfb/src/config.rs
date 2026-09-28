@@ -7,9 +7,9 @@
 //!
 //! The JS runtime used to *parse* this config is fixed by the zfb binary
 //! itself — the config CANNOT choose its own runtime. The config CAN choose
-//! `framework: "preact" | "react"` (applied after the config is loaded by the
-//! framework adapter), `outDir`, `publicDir`, content + Tailwind options, and
-//! plugins. There is exactly one runtime; it is not user-overridable in v1.
+//! `framework: "preact"` (applied after config is loaded by the framework
+//! adapter), `outDir`, `publicDir`, content + Tailwind options, and plugins.
+//! There is exactly one runtime; it is not user-overridable in v1.
 //!
 //! See issue #9 (Wave 2 / Sub 3).
 //!
@@ -253,7 +253,7 @@ pub struct Config {
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
 
-    /// JSX framework runtime. Default: `Preact`.
+    /// Supported JSX framework runtime. Default: `Preact`.
     #[serde(default)]
     pub framework: Framework,
 
@@ -794,13 +794,12 @@ pub enum OutputMode {
     Auto,
 }
 
-/// JSX runtime selection. `Preact` is the v1 default.
+/// The supported JSX runtime.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Framework {
     #[default]
     Preact,
-    React,
 }
 
 /// One content collection (e.g. blog posts under `content/blog/`).
@@ -924,9 +923,9 @@ pub struct BundleConfig {
     /// (no `exports` map) fails with `The "main" field here was ignored. Main
     /// fields must be configured explicitly when using the "neutral"
     /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
-    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). Applies to every
-    /// framework; absent/empty -> byte-identical to a build without the knob
-    /// (the React-only `main,module` shim still applies).
+    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). A configured list
+    /// applies to every build mode; absent/empty means no `--main-fields`
+    /// argument is emitted.
     ///
     /// Mirrors `BundleConfig.mainFields` in `packages/zfb/src/config.ts`.
     #[serde(default)]
@@ -3541,7 +3540,7 @@ mod tests {
             "publicDir": "static",
             "host": "0.0.0.0",
             "port": 4000,
-            "framework": "react",
+            "framework": "preact",
             "collections": [
                 { "name": "blog", "path": "content/blog" },
                 { "name": "docs", "path": "content/docs" }
@@ -3559,7 +3558,7 @@ mod tests {
         assert_eq!(cfg.public_dir, PathBuf::from("static"));
         assert_eq!(cfg.host.as_deref(), Some("0.0.0.0"));
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::React);
+        assert_eq!(cfg.framework, Framework::Preact);
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "blog");
         assert_eq!(cfg.collections[1].path, PathBuf::from("content/docs"));
@@ -4221,7 +4220,7 @@ mod tests {
         .unwrap();
         let opts = LoadOptions {
             test_default_export_json: Some(
-                r#"{"port": 4000, "framework": "react", "collections": [{"name":"blog","path":"content/blog"}]}"#
+                r#"{"port": 4000, "framework": "preact", "collections": [{"name":"blog","path":"content/blog"}]}"#
                     .to_string(),
             ),
             ..LoadOptions::default()
@@ -4230,7 +4229,7 @@ mod tests {
             .await
             .expect("ts loader (mocked) should succeed");
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::React);
+        assert_eq!(cfg.framework, Framework::Preact);
         assert_eq!(cfg.collections.len(), 1);
         assert_eq!(cfg.collections[0].name, "blog");
     }
@@ -5601,8 +5600,8 @@ mod tests {
             "error should name the bad field via its serde path: {msg}"
         );
         assert!(
-            msg.contains("preact") && msg.contains("react"),
-            "error should list the expected union values: {msg}"
+            msg.contains("`preact`") && !msg.contains("`react`"),
+            "error should list only the supported framework value: {msg}"
         );
     }
 

@@ -392,7 +392,7 @@ pub struct BundlerInput {
     /// virtual / out-of-tree) are written unchanged.
     pub tsconfig_paths: BTreeMap<String, Vec<String>>,
     /// Bare specifiers to leave unresolved in the bundle. Use for
-    /// `preact`, `react`, `react-dom/server`, etc. — packages the
+    /// `preact`, `preact-render-to-string`, etc. — packages the
     /// runtime SSR adapter (T2) provides at embedded V8 host load time. An
     /// empty vec means "bundle everything from node_modules".
     pub external: Vec<String>,
@@ -404,10 +404,8 @@ pub struct BundlerInput {
     /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
     /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`).
     ///
-    /// Empty (the default) -> no `--main-fields` is emitted EXCEPT the existing
-    /// React-only `main,module` shim, so a non-React bundle stays
-    /// byte-identical to a build without this knob. When non-empty it applies
-    /// to every framework and takes precedence over the React shim.
+    /// Empty (the default) means no `--main-fields` argument is emitted. When
+    /// non-empty, this list is passed to esbuild.
     pub main_fields: Vec<String>,
     /// Additional validated esbuild `--loader:<ext>=<loader>` arguments.
     /// Appended after [`ESBUILD_LOADER_ARGS`] in deterministic config order.
@@ -938,10 +936,9 @@ impl NodeModulesStagingStats {
 /// having to import the bundle itself.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BundleManifest {
-    /// Framework name (`"preact"` / `"react"`) the bundle was built for.
-    /// Mirrors [`zfb_render::adapters::Adapter::name`] and is the same
-    /// string the runtime adapter (T2) keys on to load the right
-    /// render-to-string module.
+    /// Framework name the bundle was built for. Mirrors
+    /// [`zfb_render::adapters::Adapter::name`] and is the same string the
+    /// runtime adapter (T2) keys on to load its render-to-string module.
     pub framework: String,
     /// JSX import source the bundler injected. Mirrors
     /// [`zfb_render::adapters::Adapter::jsx_import_source`].
@@ -12162,8 +12159,7 @@ struct EntryModuleInputs<'a> {
 /// runtime SSR adapter (T2) consume.
 ///
 /// `render_to_string_module` is the framework's `renderToString`
-/// specifier (e.g. `"preact-render-to-string"` for Preact,
-/// `"react-dom/server"` for React) — drawn from
+/// specifier (currently `"preact-render-to-string"`) — drawn from
 /// [`zfb_render::adapters::Adapter::render_to_string_module`]. The
 /// wrapper imports `renderToString` by name from this specifier and
 /// hands it to `createPageRouter` as the framework adapter, so the
@@ -12791,8 +12787,6 @@ fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
 fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
     if !input.main_fields.is_empty() {
         input.main_fields.iter().map(String::as_str).collect()
-    } else if matches!(input.framework, Framework::React) {
-        vec!["main", "module"]
     } else {
         Vec::new()
     }
@@ -12878,49 +12872,18 @@ fn run_esbuild(
         cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
     }
 
-    // React-only: route conditional-exports resolution through the
-    // `worker` condition so `react-dom/server` resolves to its
-    // `server.browser.js` build instead of the `default` →
-    // `server.node.js` build. The node build does
-    // `require("stream")` / `require("util")`, which esbuild cannot
-    // satisfy under `--platform=neutral` (this bundle runs as a
-    // workerd-style ES module in the embedded V8 host, where node
-    // builtins do not exist) — without this it fails with
-    // `Could not resolve "stream"`. react-dom's exports map keys the
-    // browser-safe SSR entry under the `worker`/`browser`/`deno`
-    // conditions; `worker` is the surgical choice because react-dom
-    // honors it for the server-render entry while Preact's packages do
-    // not use it, so the Preact bundle's resolution is unaffected.
-    // Gated on `Framework::React` so the Preact path adds no new arg and
-    // cannot regress. esbuild's exports-map resolution takes precedence
-    // over `--main-fields`, so no main-fields change is needed for the
-    // exports-based react-dom package.
-    if matches!(input.framework, Framework::React) {
-        cmd.arg("--conditions=worker");
-    }
-
     // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`
     // esbuild's main-fields list is EMPTY by default, so a package resolved
     // purely via `package.json` `main`/`module` (no `exports` map) fails with
     // `Could not resolve "<pkg>" ... The "main" field here was ignored. Main
     // fields must be configured explicitly when using the "neutral" platform.`
     //
-    // Resolution order:
-    // 1. An explicit `bundle.mainFields` (input.main_fields) wins for EVERY
-    //    framework -- the #676 host knob (e.g. a Preact project hitting
-    //    `msw` -> `path-to-regexp@6` sets `["main", "module"]`).
-    // 2. Otherwise React keeps its historical `main,module` default (the
-    //    `@headlessui/react` -> `@floating-ui/react` -> `tabbable` chain the T6
-    //    configurator depends on; `tabbable` ships `main`/`module`, no
-    //    `exports`). `--conditions=worker` cannot help -- it only steers
-    //    `exports`-map resolution.
-    // 3. Otherwise (non-React, no knob) NO `--main-fields` is emitted, keeping
-    //    the Preact bundle's arg set byte-identical (zero regression).
+    // An explicit `bundle.mainFields` (input.main_fields) lets a project
+    // resolve packages that publish only `main` / `module` fields. Without
+    // the setting, no `--main-fields` argument is emitted.
     //
-    // Safe in all cases: `--main-fields` only affects packages WITHOUT an
-    // `exports` map (`exports` always takes precedence), so it can only turn a
-    // currently *failing* main-only resolution into a success, never alter a
-    // working one. `main,module` matches esbuild's node-platform default order.
+    // `--main-fields` only affects packages WITHOUT an `exports` map
+    // (`exports` always takes precedence).
     let effective_main_fields = effective_ssr_main_fields(input);
     if !effective_main_fields.is_empty() {
         cmd.arg(format!("--main-fields={}", effective_main_fields.join(",")));
@@ -13181,17 +13144,12 @@ fn run_esbuild(
     // Mode defines are always emitted and deliberately independent of minify.
     // process.env.NODE_ENV is mode-driven and framework-agnostic.
     //
-    // React's CJS entry (`react`, `react-dom/server`) reads
-    // `process.env.NODE_ENV` at module-init time to pick its
-    // production-vs-development code path. In the SSR/main bundle this
-    // runs inside V8 with no Node `process` global, so without inlining
-    // the value the bundle throws `ReferenceError: process is not defined`
-    // before any React component can render. The islands *client* bundle
-    // already defines this unconditionally (see
-    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); mirror it here so
-    // both pipelines agree. Preact does not need it but the define is
-    // harmless for Preact (esbuild just folds the unused branch away), so
-    // it is not framework-gated — matching the client bundle's behaviour.
+    // Dependencies can read `process.env.NODE_ENV` at module-init time. In
+    // the SSR/main bundle this runs inside V8 with no Node `process` global,
+    // so inline the mode value before any component can render. The islands
+    // client bundle also defines it unconditionally (see
+    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); keep both pipelines
+    // aligned without framework gating.
     for arg in bundle_mode_define_args(input.mode) {
         cmd.arg(arg);
     }

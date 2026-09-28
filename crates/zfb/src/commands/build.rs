@@ -2056,7 +2056,6 @@ pub(crate) fn module_worker_build_context(
 ) -> zfb_build::ModuleWorkerBuildContext {
     let jsx_import_source = match framework {
         crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -4332,7 +4331,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // collision passes below keep seeing the real project paths.
     let islands_jsx_import_source = match framework {
         crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -4667,8 +4665,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // islands BundleConfig (gap: previously hardcoded to Preact via the
     // `BundleConfig::production()` default). This drives BOTH esbuild's
     // `--jsx-import-source` AND — because `produce_bundle_js` derives the
-    // mount-glue framework back from this same field — the React vs
-    // Preact hydration glue emitted into the shared bundle.
+    // mount-glue framework back from this same field — the Preact hydration
+    // glue emitted into the shared bundle.
     // Issue #1501: turn the scanner's direct + nested worker edges into one
     // deterministic entry per logical source. Worker code is read from the
     // preprocessing shadow (where `?raw` and nested worker URLs have already
@@ -5766,7 +5764,6 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 
     let client_scripts_jsx_import_source = match framework {
         crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
@@ -5891,7 +5888,7 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     // JSX is harmless for plain .ts files; reuse the islands JSX import
-    // source so Preact/React aliases apply consistently to any .tsx
+    // source so the Preact JSX alias applies consistently to any .tsx
     // client scripts.
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
@@ -6422,7 +6419,6 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
 
     let jsx_import_source = match framework {
         crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
     }
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);

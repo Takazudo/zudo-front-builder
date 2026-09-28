@@ -4,17 +4,14 @@
  * `buildContentComponent` must emit the pinned `<template
  * data-zfb-render-region>` pair around every bridge-resolved content
  * region when the build-only `globalThis.__zfb.renderArtifacts` switch is
- * on, and must be byte-neutral when it is off — under BOTH JSX runtimes
- * the bridge supports. The wrapper builds its Fragment from
- * `react/jsx-runtime`, which the engine alias-rewrites to
- * `preact/jsx-runtime` in Preact mode, so "it works in React" is not
- * evidence that it works in Preact (or the reverse).
+ * on, and must be byte-neutral when it is off. The wrapper builds its
+ * Fragment from `react/jsx-runtime`, which the engine alias-rewrites to
+ * `preact/jsx-runtime` for the supported Preact runtime.
  *
- * The cases therefore live here once and are driven twice — see
- * `content-render-markers-react.test.ts` (real `react-dom/server`) and
- * `content-render-markers-preact.test.ts` (real `preact-render-to-string`,
- * with the same `react/jsx-runtime` → `preact/jsx-runtime` swap the
- * bundler performs). Assertions are on ACTUAL rendered bytes, never on
+ * The cases therefore live here once and are driven by
+ * `content-render-markers-preact.test.ts` (`preact-render-to-string`, with
+ * the same `react/jsx-runtime` → `preact/jsx-runtime` swap the bundler
+ * performs). Assertions are on ACTUAL rendered bytes, never on
  * JSX structure: a stray whitespace or text node between the sentinels and
  * the region would be invisible to a structural check and fatal to the
  * build's exact-byte extraction pass.

@@ -9,9 +9,9 @@
  * graph of this file, and the oracle is the real
  * `preact-render-to-string`, the SSR entry point the Preact adapter pins.
  *
- * Without this file, "the markers render correctly" would be a claim
- * about React only; a Fragment imported from the wrong runtime renders as
- * an unknown component (or throws) rather than disappearing.
+ * The explicit identity check below ensures the mock remains in place:
+ * a React element has a renderable shape too, so output assertions alone
+ * would not prove that the Preact module replacement happened.
  */
 
 import { render } from "preact-render-to-string";
@@ -23,11 +23,8 @@ import { describeRenderRegionMarkers } from "./render-region-marker-cases.js";
 
 vi.mock("react/jsx-runtime", async () => await import("preact/jsx-runtime"));
 
-// Discriminator. A React element is structurally `{ type, props, … }` too,
-// so `preact-render-to-string` would happily render one — meaning a `vi.mock`
-// that silently stopped applying would leave every assertion below passing
-// while testing React a second time. Pin the swap itself instead of trusting
-// it: the `Fragment` `content.ts` closes over must BE Preact's.
+// Pin the replacement itself instead of trusting rendered output: the
+// `Fragment` `content.ts` closes over must BE Preact's.
 it("really runs against the Preact JSX runtime", async () => {
   const { Fragment } = await import("react/jsx-runtime");
   expect(Fragment).toBe(PreactFragment);

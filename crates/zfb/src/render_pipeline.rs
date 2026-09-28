@@ -1524,7 +1524,6 @@ pub(crate) fn check_runtime_installed_with_overrides(
 pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapters::Framework {
     match f {
         crate::config::Framework::Preact => zfb_render::adapters::Framework::Preact,
-        crate::config::Framework::React => zfb_render::adapters::Framework::React,
     }
 }
 
