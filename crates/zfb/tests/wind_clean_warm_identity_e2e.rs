@@ -222,9 +222,8 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
     let observed = Arc::new(AtomicBool::new(false));
     let observed_by_reader = Arc::clone(&observed);
     let reader = tokio::spawn(async move {
-        match next_sse_event_name(sse, WATCHER_DEADLINE).await {
-            Ok(Some(_)) => observed_by_reader.store(true, Ordering::SeqCst),
-            Ok(None) | Err(_) => {}
+        if let Ok(Some(_)) = next_sse_event_name(sse, WATCHER_DEADLINE).await {
+            observed_by_reader.store(true, Ordering::SeqCst);
         }
     });
     let marker_root = session.root.join(HANDSHAKE_DIR);
