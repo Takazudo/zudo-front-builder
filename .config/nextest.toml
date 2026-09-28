@@ -144,7 +144,7 @@
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
 # .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. The
-# mechanical guard classifies every integration-test source: 44 heavy binaries,
+# mechanical guard classifies every integration-test source: 45 heavy binaries,
 # five documented exclusions (`check_command`,
 # `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`,
 # `embedded_node_modules_cache`, and `version_report`), plus `version_stamp`,
@@ -159,7 +159,7 @@ max-threads = 1
 [test-groups.e2e-heavy-unlocked]
 max-threads = 1
 
-# The overrides that assign all 44 heavy binaries to the two lanes AND grant
+# The overrides that assign all 45 heavy binaries to the two lanes AND grant
 # them a long per-test timeout live in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
