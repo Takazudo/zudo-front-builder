@@ -3002,6 +3002,17 @@ fn collect_zudo_react_external_file_closure(
         ) {
             continue;
         }
+        // Declaration imports describe the type graph, not code loaded by
+        // either bundle. The runtime resolver does not need to resolve them.
+        if physical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+            })
+        {
+            continue;
+        }
         let mut specifiers = match collect_runtime_import_specifiers_from_file(&physical) {
             Ok(specifiers) => specifiers,
             Err(_error) if !strict => continue,
@@ -13420,6 +13431,45 @@ mod framework_esbuild_flags_tests {
             with_aliases,
             zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
         );
+    }
+
+    #[test]
+    fn owned_build_token_external_declarations_do_not_resolve_type_imports() {
+        let external = tempfile::tempdir().unwrap();
+        let declaration = external.path().join("index.d.ts");
+        let runtime = external.path().join("index.ts");
+        let dependency = external.path().join("dependency.ts");
+        fs::write(
+            &declaration,
+            "import type { Validator } from './missing-validator';\n",
+        )
+        .unwrap();
+        fs::write(&runtime, "import './dependency';\n").unwrap();
+        fs::write(&dependency, "export const value = 1;\n").unwrap();
+
+        let collect = || {
+            let mut files = Vec::new();
+            collect_zudo_react_external_file_closure(
+                vec![
+                    (declaration.clone(), PathBuf::from("package/index.d.ts")),
+                    (runtime.clone(), PathBuf::from("package/index.ts")),
+                ],
+                None,
+                &mut files,
+            )
+            .unwrap();
+            files
+        };
+        let files = collect();
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&declaration).unwrap()));
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&runtime).unwrap()));
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&dependency).unwrap()));
     }
 
     #[cfg(unix)]
