@@ -1,11 +1,85 @@
 ---
 title: Configuration
-description: Configure zudo-wind tokens, breakpoints, resets, dark mode, safelists, authored classes, and manifests.
+description: Configure zudo-wind generation, tokens, breakpoints, source candidates, dark mode, and resets.
 sidebar_position: 2
 ---
 
-<Note>
+## The wind key
 
-This page is being written. owned-engines-stub
+The root configuration accepts `wind` in both `zfb.config.ts` and `zfb.config.json`. After the cutover, an absent key has the same behavior as an empty object: generation is enabled with reset `none`, empty token maps, and sources supplied by zfb's source planner.
 
-</Note>
+    export default defineConfig({
+      wind: {
+        spec: 1,
+        reset: "none",
+        tokens: {
+          spacingUnit: "0.25rem",
+          colors: { panel: "var(--app-panel)" }
+        },
+        breakpoints: {
+          sm: { minWidthPx: 640 }
+        },
+        dark: { attribute: "data-theme", value: "dark" },
+        safelist: {
+          app: ["sm:hover:bg-panel"]
+        },
+        authoredClasses: {
+          prose: true
+        },
+        manifests: {
+          widgets: { path: "@example/widgets/wind.json" }
+        }
+      }
+    });
+
+The same object is valid as the value of the `wind` property in JSON:
+
+    {
+      "wind": {
+        "spec": 1,
+        "reset": "none",
+        "tokens": {
+          "spacingUnit": "0.25rem",
+          "colors": {
+            "panel": "var(--app-panel)"
+          }
+        },
+        "breakpoints": {
+          "sm": {
+            "minWidthPx": 640
+          }
+        }
+      }
+    }
+
+`wind: false` turns off wind generation, token validation, manifest loading, and candidate scanning in build, dev, and the standalone CSS command. Authored global CSS, CSS Modules, and highlight processing still run. Checks for leftover directives in stylesheets still run even when wind is false. A non-none reset can emit CSS without utility candidates; an empty enabled configuration with no resolved rules emits no wind stylesheet.
+
+## Fields
+
+| Field | Meaning |
+| --- | --- |
+| `spec` | Optional language version. The only accepted value is `1`; the default is `1`. |
+| `reset` | One of `none`, `minimal-v1`, or `owned-v1`. The default is `none`. |
+| `tokens` | Project supplied values. All maps default to empty; see [Tokens](./tokens.mdx) for names, value validation, and emitted variables. |
+| `breakpoints` | Names mapped to objects containing a positive integer `minWidthPx`. Equal widths are a configuration error. |
+| `dark` | Either `false` (the default) or an object with required `attribute` and `value` strings. |
+| `safelist` | Owner IDs mapped to arrays of complete candidates. Each owner supplies its full set. |
+| `authoredClasses` | Complete class tokens mapped to `true`; exact matches stay authored and are suppressed from utility validation and generation. |
+| `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
+
+The dark attribute must be a lowercase HTML attribute identifier. Its value must be nonempty and contain no control characters. Owner and producer IDs use nonempty ASCII letters, digits, dots, underscores, slashes, or hyphens, and start with a letter or digit. Authored class keys must be complete, nonempty tokens without whitespace or control characters.
+
+## Strict validation and merging
+
+Every nested config object has a closed set of field names. Unknown fields, nulls, wrong value types, unsupported versions or reset names, duplicate breakpoint widths, and invalid token data fail validation. A partial object is allowed because omitted optional objects receive their documented empty defaults.
+
+When preset and user configuration are merged, objects merge recursively with user values taking precedence. Distinct safelist owners and manifest producers remain distinct. For the same safelist owner, the user's array replaces the preset array; arrays are not concatenated. Authored class maps merge by key with user values taking precedence. There is no per-entry deletion marker in v1, and setting `wind` to false disables the whole system.
+
+A leftover top-level `tailwind` key is a hard error with a named migration message. Follow [the v3 migration guide](../guides/migrating-to-v3.mdx) to update it.
+
+## See also
+
+- [Overview](./overview.mdx)
+- [Tokens](./tokens.mdx)
+- [Sources and candidates](./sources-and-candidates.mdx)
+- [Coming from Tailwind](./coming-from-tailwind.mdx)
