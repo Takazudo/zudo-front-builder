@@ -17,3 +17,6 @@ export const contentCall: typeof getCollection = getCollection;
 
 // @ts-expect-error the owned island scheduler has no arbitrary activation mode
 Island({ when: "eventual", children: child });
+
+// @ts-expect-error a symbol is neither an owned Child nor an Island child
+Island({ children: Symbol("invalid-child") });
