@@ -177,18 +177,18 @@ fn write_fixture(root: &Path) {
 
     fs::write(
         root.join("components/note.tsx"),
-        r#"import type { ComponentChildren } from "preact";
+        r#"import type { Child } from "@takazudo/zfb/zudo-react";
 
 type Props = {
   title?: string;
-  children: ComponentChildren;
+  children: Child;
 };
 
 export default function Note({ title, children }: Props) {
   return (
     <aside class="admonition" data-component="note">
       {title ? <strong>{title}</strong> : null}
-      <div class="admonition__body">{children}</div>
+      <div class="admonition-body">{children}</div>
     </aside>
   );
 }

@@ -87,20 +87,28 @@ export default {
     .unwrap();
 
     fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("components/Counter.tsx"),
+        "'use client';\nexport function Counter() { return <span>Counter</span>; }\n",
+    )
+    .unwrap();
     fs::write(
         root.join("pages/index.tsx"),
-        r#"export default function Page() {
+        r#"import { Island } from "@takazudo/zfb";
+import { Counter } from "../components/Counter";
+export default function Page() {
   const html = `
   <section class="hero">
     <!-- keep comment -->
     <p>  Hello    world  </p>
-    <a href="/about" data-zfb-island="Counter">About</a>
+    <a href="/about" data-test-marker="kept">About</a>
   </section>
 `;
   return (
     <html lang="en">
       <head><title>HTML minify fixture</title></head>
-      <body rawHtml={html} />
+      <body><div rawHtml={html} /><Island><Counter /></Island></body>
     </html>
   );
 }
