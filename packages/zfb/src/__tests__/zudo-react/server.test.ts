@@ -39,6 +39,30 @@ describe("server renderer", () => {
     expect(() => renderToString(h("svg", { width: true }))).toThrow("ZR_ATTRIBUTE");
     expect(() => renderToString(h("svg", { height: false }))).toThrow("ZR_ATTRIBUTE");
   });
+  it("allows ordinary content in table cells while keeping table structure intrinsic", () => {
+    function CellContent() {
+      return h("strong", null, "showcase");
+    }
+    const table = h(
+      "table",
+      null,
+      h("caption", null, h(CellContent, null)),
+      h(
+        "tbody",
+        null,
+        h("tr", null, h("th", null, h(CellContent, null)), h("td", null, h(CellContent, null))),
+      ),
+    );
+    expect(renderToString(table)).toBe(
+      "<table><caption><strong>showcase</strong></caption><tbody><tr><th><strong>showcase</strong></th><td><strong>showcase</strong></td></tr></tbody></table>",
+    );
+    expect(() => renderToString(h("table", null, h("tr", null, h("td", null, "bad"))))).toThrow(
+      "ZR_PARSER_CONTEXT",
+    );
+    expect(() =>
+      renderToString(h("table", null, h("tbody", null, h("tr", null, h("div", null))))),
+    ).toThrow("ZR_PARSER_CONTEXT");
+  });
   it("renders deterministic local island regions", () => {
     const node = islandRoot(h(Demo, null), { identity });
     const expected =

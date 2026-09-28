@@ -401,7 +401,7 @@ function element(
     tag === "option" ||
     tag === "optgroup" ||
     tag === "select" ||
-    parent in tableChildren
+    tag in tableChildren
   ) {
     if (tag === "select" && (hasValue || source.defaultValue !== undefined)) {
       const value = read(source.modelValue ?? source.defaultValue);
