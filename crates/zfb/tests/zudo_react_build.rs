@@ -55,3 +55,47 @@ fn ssr_basic_builds_through_owned_runtime() {
         "ordinary page must not carry hydration marker: {html}"
     );
 }
+
+#[test]
+fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
+    let esbuild = locate_esbuild().expect("real MD/MDX build requires esbuild");
+    let temp = tempfile::tempdir().unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/md-mdx");
+    copy_dir(&fixture, temp.path());
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build");
+    assert!(
+        output.status.success(),
+        "zfb build failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let markdown =
+        fs::read_to_string(temp.path().join("dist/about/index.html")).expect("read Markdown page");
+    assert!(markdown.contains("Markdown page heading"), "{markdown}");
+    assert!(markdown.contains("<meta charset=\"utf-8\""), "{markdown}");
+    assert!(
+        markdown.contains("<span style=\"color:"),
+        "highlight markup missing or escaped: {markdown}"
+    );
+    assert!(
+        !markdown.contains("data-zfb-content-fallback"),
+        "{markdown}"
+    );
+
+    let mdx = fs::read_to_string(temp.path().join("dist/posts/entry/index.html"))
+        .expect("read MDX collection page");
+    assert!(mdx.contains("Collection heading"), "{mdx}");
+    assert!(mdx.contains("class=\"authored-jsx\""), "{mdx}");
+    assert!(mdx.contains("highlighted"), "{mdx}");
+    assert!(
+        mdx.contains("<span style=\"color:"),
+        "highlight markup missing or escaped: {mdx}"
+    );
+    assert!(!mdx.contains("data-zfb-content-fallback"), "{mdx}");
+}

@@ -1,0 +1,10 @@
+{
+  "framework": "zudo-react",
+  "wind": false,
+  "collections": [
+    {
+      "name": "posts",
+      "path": "content/posts"
+    }
+  ]
+}

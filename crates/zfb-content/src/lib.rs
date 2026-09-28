@@ -31,6 +31,7 @@ pub use content_bridge::{
     SnapshotOptions,
 };
 
+pub use pipeline::JsxDialect;
 pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
 
 // Render-artifact metadata channel (issue #2423, epic #2421): region
