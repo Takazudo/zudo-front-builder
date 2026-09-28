@@ -66,7 +66,7 @@ fn flat_regular_npm_package_use_client_module_is_registered() {
     write(
         &pkg.join("dist/widget.js"),
         r#""use client";
-        import { signal } from "preact/signals";
+        import { signal } from "@takazudo/zfb/zudo-react";
         export function Widget() { return null; }
         Widget.displayName = "Widget";
         "#,
@@ -213,7 +213,7 @@ fn barrel_without_use_client_is_traversed_to_relative_use_client_module() {
     write(
         &pkg.join("dist/toc/toc.js"),
         r#""use client";
-        import { useState } from "preact/hooks";
+        import { useState } from "@takazudo/zfb/zudo-react";
         export function Toc() { return null; }
         Toc.displayName = "Toc";
         "#,
@@ -263,8 +263,8 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
     write(
         &pkg.join("dist/theme-toggle/index.js"),
         r#""use client";
-        import { jsx } from "preact/jsx-runtime";
-        import { useState } from "preact/hooks";
+        import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
+        import { useState } from "@takazudo/zfb/zudo-react";
         import { applyColorScheme } from "./color-scheme-sync.js";
         function ThemeToggle() { return null; }
         ThemeToggle.displayName = "ThemeToggle";

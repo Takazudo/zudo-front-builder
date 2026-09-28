@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, Island, Manifest,
     ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
 };
 
@@ -239,7 +239,9 @@ fn subprocess_bundler_against_real_binary() {
     let entry = tmp.path().join("entry.js");
     std::fs::write(&entry, "export const Counter = () => null;\n").expect("write entry");
 
-    let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(tmp.path())
+        .with_jsx_import_source(FrameworkKind::ZudoReact.jsx_import_source());
     let out = bundler
         .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
@@ -363,12 +365,22 @@ fn stage_minimal_node_modules(root: &Path) {
     std::fs::create_dir_all(&zfb_runtime).unwrap();
     std::fs::write(
         zfb_runtime.join("package.json"),
-        r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+        r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
     )
     .unwrap();
     std::fs::write(
         zfb_runtime.join("runtime.js"),
         "export function mountIslands() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        zfb_runtime.join("zudo-react.js"),
+        "export function h() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        zfb_runtime.join("zudo-react-client.js"),
+        "export function hydrate() {} export function mount() {}\n",
     )
     .unwrap();
 

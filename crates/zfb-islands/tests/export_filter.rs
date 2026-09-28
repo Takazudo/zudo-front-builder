@@ -411,7 +411,7 @@ fn ts_cast_const_exports_are_retained_as_ambiguous() {
 fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
 
-    let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+    let src = render_shared_bundle_entry_source(FrameworkKind::ZudoReact, &islands, false);
     // The old truthy-only guard must be gone.
     assert!(
         !src.contains("if (!C) return;"),
@@ -419,17 +419,17 @@ fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     );
     // Component-shape guard present.
     assert!(
-        src.contains("typeof C === \"function\""),
+        src.contains("typeof C !== \"function\""),
         "expected typeof-function check:\n{src}"
     );
     assert!(
-        src.contains("C.$$typeof"),
-        "expected $$typeof object check for memo/forwardRef:\n{src}"
+        src.contains("name !== markerName"),
+        "expected static identity check against the scanner marker:\n{src}"
     );
     // Loud, non-silent rejection naming the export + module.
     assert!(
-        src.contains("console.warn(") && src.contains("is not a component"),
-        "expected a loud console.warn on rejection:\n{src}"
+        src.contains("console.error(") && src.contains("must be a function"),
+        "expected a loud console.error on rejection:\n{src}"
     );
     // The module label is threaded through as the 4th register arg.
     assert!(
