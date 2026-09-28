@@ -579,9 +579,9 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-tailwind-only.xml
           fi
 
-      # Run the five ignored command-layer preprocessing-shadow esbuild regressions
-      # with the pinned helper binaries. Exact test predicates keep their CI scope
-      # attributable; the broad nextest run below intentionally excludes ignored tests.
+      # Run five ignored command-layer env gates: four esbuild preprocessing-shadow/
+      # workspace-resolution regressions plus one real Tailwind production-CSS check.
+      # Exact predicates keep these CI scopes attributable; broad nextest excludes ignores.
       - name: Run ignored env gates (esbuild + tailwind, workspace resolution)
         shell: bash
         env:
