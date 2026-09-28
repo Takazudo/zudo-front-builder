@@ -400,10 +400,14 @@ fn build_phase_start(enabled: bool) -> Option<Instant> {
 fn emit_build_phase_timing(phase: &str, started: Option<Instant>) {
     if let Some(started) = started {
         eprintln!(
-            "[zfb-build-timing] phase={phase} elapsed_ms={}",
-            started.elapsed().as_millis()
+            "{}",
+            format_build_phase_timing_line(phase, started.elapsed().as_millis())
         );
     }
+}
+
+fn format_build_phase_timing_line(phase: &str, elapsed_ms: u128) -> String {
+    format!("[zfb-build-timing] phase={phase} elapsed_ms={elapsed_ms}")
 }
 
 /// V8-off stub for `zfb build` (issue #371, sub-task 4.1a).
@@ -930,6 +934,7 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
+        let css_started = build_phase_start(build_timing_enabled());
         let css_pass = build_default_css_payload_with_details(
             project_root,
             outdir,
@@ -940,6 +945,7 @@ impl BuildRunner for DefaultRunner {
             &|_roots| {},
         )
         .context("CSS emitter (DefaultRunner) failed")?;
+        emit_build_phase_timing("css", css_started);
         for diagnostic in &css_pass.diagnostics {
             if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
                 output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
@@ -1098,6 +1104,267 @@ pub(crate) struct CssPayloadPass {
     pub payload: Option<AssetEmitterPayload>,
     pub input_dependencies: Vec<zfb_css::CssInputDependency>,
     pub diagnostics: Vec<zfb_css::CssDiagnostic>,
+    pub timings: CssPhaseTimings,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CssPhaseTimings {
+    pub source_plan_ms: u128,
+    pub index_update_ms: u128,
+    pub index_upserted: usize,
+    pub index_removed: usize,
+    pub authored_bundle_ms: u128,
+    pub emit_ms: u128,
+}
+
+/// File-backed portion of the wind candidate index, retained for one dev
+/// session. Manifest, generated-source and safelist owners are replaced from
+/// the current plan when each pass constructs the engine.
+#[derive(Debug)]
+pub(crate) struct WindSessionIndex {
+    plan: zfb_css::SourcePlan,
+    index: zfb_css::CandidateIndex,
+    files: std::collections::BTreeMap<zfb_css::SourceId, PathBuf>,
+    origins: std::collections::BTreeMap<zfb_css::SourceId, Vec<zfb_css::OriginCandidate>>,
+    diagnostics: Vec<zfb_css::CssDiagnostic>,
+}
+
+impl WindSessionIndex {
+    fn canonical_event_path(path: &Path) -> PathBuf {
+        let mut cursor = path;
+        let mut suffix = Vec::new();
+        loop {
+            if let Ok(mut real) = cursor.canonicalize() {
+                for part in suffix.iter().rev() {
+                    real.push(part);
+                }
+                return real;
+            }
+            let Some(name) = cursor.file_name() else {
+                return path.to_path_buf();
+            };
+            suffix.push(name.to_os_string());
+            let Some(parent) = cursor.parent() else {
+                return path.to_path_buf();
+            };
+            cursor = parent;
+        }
+    }
+
+    pub(crate) fn fresh(plan: zfb_css::SourcePlan) -> Self {
+        let mut state = Self {
+            plan,
+            index: zfb_css::CandidateIndex::default(),
+            files: Default::default(),
+            origins: Default::default(),
+            diagnostics: Vec::new(),
+        };
+        let expanded = zfb_css::expand_file_set(&state.plan);
+        state.record_walk_diagnostics(expanded.diagnostics);
+        for file in expanded.files {
+            state.index_file(file);
+        }
+        state
+    }
+
+    fn record_walk_diagnostics(&mut self, diagnostics: Vec<zfb_css::WalkDiagnostic>) {
+        for diagnostic in diagnostics {
+            let required = diagnostic.message.starts_with("required source missing");
+            let diagnostic = zfb_css::CssDiagnostic {
+                severity: if required {
+                    zfb_css::CssDiagnosticSeverity::Error
+                } else {
+                    zfb_css::CssDiagnosticSeverity::Warning
+                },
+                code: if required { "ZW010" } else { "ZW011" }.into(),
+                message: format!("{}: {}", diagnostic.root_label, diagnostic.message),
+                origin: Default::default(),
+                candidate: None,
+            };
+            if !self.diagnostics.contains(&diagnostic) {
+                self.diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    fn remove_path(&mut self, path: &Path, real: &Path) -> usize {
+        self.diagnostics.retain(|diagnostic| {
+            diagnostic
+                .origin
+                .path
+                .as_ref()
+                .is_none_or(|source| !source.starts_with(real))
+        });
+        let source_prefixes: Vec<_> = self
+            .plan
+            .roots
+            .iter()
+            .chain(self.plan.package_sources.values())
+            .filter_map(|root| {
+                let declared = root.resolved_path();
+                if declared.starts_with(path) {
+                    zfb_css::SourceId::new(&root.label, Path::new("")).ok()
+                } else {
+                    path.strip_prefix(&declared)
+                        .ok()
+                        .and_then(|relative| zfb_css::SourceId::new(&root.label, relative).ok())
+                }
+            })
+            .collect();
+        let ids: Vec<_> = self
+            .files
+            .iter()
+            .filter(|(id, file)| {
+                file.starts_with(real) || source_prefixes.iter().any(|prefix| id.is_under(prefix))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let removed = ids.len();
+        for id in ids {
+            self.index.remove(&id);
+            self.files.remove(&id);
+            self.origins.remove(&id);
+        }
+        removed
+    }
+
+    fn index_file(&mut self, file: zfb_css::ExpandedFile) {
+        let id = file.id.clone();
+        match self.index.index_file(&file) {
+            Ok(extracted) => {
+                if extracted
+                    .notes
+                    .iter()
+                    .any(|note| note.kind == zfb_css::NoteKind::InvalidUtf8)
+                {
+                    self.diagnostics.push(zfb_css::CssDiagnostic {
+                        severity: zfb_css::CssDiagnosticSeverity::Warning,
+                        code: "ZW011".into(),
+                        message: format!("skipped non-UTF-8 source {}", file.path.display()),
+                        origin: zfb_css::CssDiagnosticOrigin {
+                            path: Some(file.path.clone()),
+                            ..Default::default()
+                        },
+                        candidate: None,
+                    });
+                }
+                let origins = extracted
+                    .candidates
+                    .into_iter()
+                    .flat_map(|candidate| {
+                        let source_id = id.render();
+                        candidate.occurrences.into_iter().map(move |occurrence| {
+                            zfb_css::OriginCandidate {
+                                text: candidate.text.clone(),
+                                origin: zfb_css::Origin::Source {
+                                    source_id: source_id.clone(),
+                                    byte_offset: occurrence.byte_offset,
+                                    byte_length: occurrence.byte_length,
+                                    line: occurrence.line,
+                                    byte_column: occurrence.byte_column,
+                                    literal_byte_offset: occurrence.literal_byte_offset,
+                                    literal_byte_length: occurrence.literal_byte_length,
+                                    position_kind: match occurrence.position_kind {
+                                        zfb_css::PositionKind::Class => {
+                                            zfb_css::SourcePositionKind::Class
+                                        }
+                                        zfb_css::PositionKind::Literal => {
+                                            zfb_css::SourcePositionKind::Literal
+                                        }
+                                    },
+                                },
+                            }
+                        })
+                    })
+                    .collect();
+                self.origins.insert(file.id.clone(), origins);
+                self.files.insert(file.id, file.path);
+            }
+            Err(error) => self.diagnostics.push(zfb_css::CssDiagnostic {
+                severity: zfb_css::CssDiagnosticSeverity::Warning,
+                code: "ZW011".into(),
+                message: format!("skipped source {}: {error}", file.path.display()),
+                origin: zfb_css::CssDiagnosticOrigin {
+                    path: Some(file.path),
+                    ..Default::default()
+                },
+                candidate: None,
+            }),
+        }
+    }
+
+    pub(crate) fn apply(&mut self, changes: &zfb_build::CssChangeSet) -> (usize, usize) {
+        let mut removed = 0;
+        let mut upserted = 0;
+        for path in &changes.removed {
+            let real = Self::canonical_event_path(path);
+            removed += self.remove_path(path, &real);
+        }
+        for path in &changes.upserted {
+            let real = Self::canonical_event_path(path);
+            // Existence, not the watcher's Created/Modified spelling, decides
+            // the update. Removing first also handles directory replacements.
+            removed += self.remove_path(path, &real);
+            if path.exists() {
+                let touched_labels: Vec<_> = self
+                    .plan
+                    .roots
+                    .iter()
+                    .chain(self.plan.package_sources.values())
+                    .filter(|root| {
+                        root.resolved_path().starts_with(path)
+                            || Self::canonical_event_path(&root.resolved_path()).starts_with(&real)
+                    })
+                    .map(|root| root.label.clone())
+                    .collect();
+                self.diagnostics.retain(|diagnostic| {
+                    diagnostic.origin.path.is_some()
+                        || !touched_labels
+                            .iter()
+                            .any(|label| diagnostic.message.starts_with(&format!("{label}: ")))
+                });
+                let expanded = zfb_css::expand_changed_path(&self.plan, path);
+                self.record_walk_diagnostics(expanded.diagnostics);
+                for file in expanded.files {
+                    self.index_file(file);
+                    upserted += 1;
+                }
+            }
+        }
+        (upserted, removed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_set(&self) -> std::collections::BTreeSet<String> {
+        self.index.live_set()
+    }
+}
+
+// Keep the existing CSS source-plan call shape; the final two arguments are
+// dev-only state and watcher hints.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_dev_css_payload_with_index(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+    session: &mut Option<WindSessionIndex>,
+    changes: Option<&zfb_build::CssChangeSet>,
+) -> Result<CssPayloadPass> {
+    build_css_payload_with_index(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+        Some(session),
+        changes,
+    )
 }
 
 pub(crate) fn build_default_css_payload_with_details(
@@ -1109,19 +1376,49 @@ pub(crate) fn build_default_css_payload_with_details(
     plugin_virtual_modules: &[(String, String)],
     on_source_plan: CssSourcePlanObserver<'_>,
 ) -> Result<CssPayloadPass> {
+    build_css_payload_with_index(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_css_payload_with_index(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+    session: Option<&mut Option<WindSessionIndex>>,
+    changes: Option<&zfb_build::CssChangeSet>,
+) -> Result<CssPayloadPass> {
+    let mut timings = CssPhaseTimings::default();
     let Some(wind) = &config.wind else {
+        let legacy_started = Instant::now();
+        let payload = build_legacy_css_payload_with_source_plan(
+            project_root,
+            outdir,
+            config,
+            package_route_entrypoints,
+            plugin_alias_entries,
+            plugin_virtual_modules,
+            on_source_plan,
+        )?;
+        timings.emit_ms = legacy_started.elapsed().as_millis();
         return Ok(CssPayloadPass {
-            payload: build_legacy_css_payload_with_source_plan(
-                project_root,
-                outdir,
-                config,
-                package_route_entrypoints,
-                plugin_alias_entries,
-                plugin_virtual_modules,
-                on_source_plan,
-            )?,
+            payload,
             input_dependencies: Vec::new(),
             diagnostics: Vec::new(),
+            timings,
         });
     };
     let virtual_worker_context = module_worker_build_context(
@@ -1149,6 +1446,7 @@ pub(crate) fn build_default_css_payload_with_details(
     let framework_css = resolve_framework_css(config);
     let sources =
         discover_css_source_files(project_root, plugin_alias_entries, &discovered_graph_files);
+    let authored_started = Instant::now();
     let authored = if let Some(path) = resolve_input_global_css(project_root) {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
@@ -1193,11 +1491,13 @@ pub(crate) fn build_default_css_payload_with_details(
             input_dependencies: Vec::new(),
         }
     };
+    timings.authored_bundle_ms = authored_started.elapsed().as_millis();
     let engine = match wind {
         crate::config::WindSetting::Disabled => {
             SelectedWindEngine::Authored(AuthoredCssEngine::with_bundle(authored))
         }
         crate::config::WindSetting::Enabled(settings) => {
+            let source_started = Instant::now();
             let inputs = crate::commands::css_source_plan::gather_css_source_plan_inputs(
                 project_root,
                 outdir,
@@ -1207,83 +1507,28 @@ pub(crate) fn build_default_css_payload_with_details(
                 plugin_virtual_modules,
             )?;
             let plan = crate::commands::css_source_plan::build_css_source_plan(&inputs);
-            let mut index = zfb_css::CandidateIndex::default();
-            let mut diagnostics = Vec::new();
-            let mut origins = Vec::new();
-            let files = zfb_css::expand_file_set(&plan);
-            for diagnostic in files.diagnostics {
-                let required_missing = diagnostic.message.starts_with("required source missing");
-                diagnostics.push(zfb_css::CssDiagnostic {
-                    severity: if required_missing {
-                        zfb_css::CssDiagnosticSeverity::Error
-                    } else {
-                        zfb_css::CssDiagnosticSeverity::Warning
-                    },
-                    code: if required_missing { "ZW010" } else { "ZW011" }.into(),
-                    message: format!("{}: {}", diagnostic.root_label, diagnostic.message),
-                    origin: Default::default(),
-                    candidate: None,
-                });
-            }
-            for file in files.files {
-                match index.index_file(&file) {
-                    Ok(extracted) => {
-                        if extracted
-                            .notes
-                            .iter()
-                            .any(|note| note.kind == zfb_css::NoteKind::InvalidUtf8)
-                        {
-                            diagnostics.push(zfb_css::CssDiagnostic {
-                                severity: zfb_css::CssDiagnosticSeverity::Warning,
-                                code: "ZW011".into(),
-                                message: format!(
-                                    "skipped non-UTF-8 source {}",
-                                    file.path.display()
-                                ),
-                                origin: zfb_css::CssDiagnosticOrigin {
-                                    path: Some(file.path.clone()),
-                                    ..Default::default()
-                                },
-                                candidate: None,
-                            });
-                        }
-                        for candidate in extracted.candidates {
-                            for occurrence in candidate.occurrences {
-                                origins.push(zfb_css::OriginCandidate {
-                                    text: candidate.text.clone(),
-                                    origin: zfb_css::Origin::Source {
-                                        source_id: file.id.render(),
-                                        byte_offset: occurrence.byte_offset,
-                                        byte_length: occurrence.byte_length,
-                                        line: occurrence.line,
-                                        byte_column: occurrence.byte_column,
-                                        literal_byte_offset: occurrence.literal_byte_offset,
-                                        literal_byte_length: occurrence.literal_byte_length,
-                                        position_kind: match occurrence.position_kind {
-                                            zfb_css::PositionKind::Class => {
-                                                zfb_css::SourcePositionKind::Class
-                                            }
-                                            zfb_css::PositionKind::Literal => {
-                                                zfb_css::SourcePositionKind::Literal
-                                            }
-                                        },
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    Err(error) => diagnostics.push(zfb_css::CssDiagnostic {
-                        severity: zfb_css::CssDiagnosticSeverity::Warning,
-                        code: "ZW011".into(),
-                        message: format!("skipped source {}: {error}", file.path.display()),
-                        origin: zfb_css::CssDiagnosticOrigin {
-                            path: Some(file.path),
-                            ..Default::default()
-                        },
-                        candidate: None,
-                    }),
+            timings.source_plan_ms = source_started.elapsed().as_millis();
+            let index_started = Instant::now();
+            let owned_state;
+            let state = if let Some(session) = session {
+                if session.as_ref().is_none_or(|current| current.plan != plan) {
+                    *session = Some(WindSessionIndex::fresh(plan.clone()));
+                    timings.index_upserted = session.as_ref().expect("fresh index").files.len();
+                } else if let Some(changes) = changes {
+                    (timings.index_upserted, timings.index_removed) = session
+                        .as_mut()
+                        .expect("session initialized")
+                        .apply(changes);
                 }
-            }
+                session.as_ref().expect("session initialized")
+            } else {
+                owned_state = WindSessionIndex::fresh(plan.clone());
+                &owned_state
+            };
+            timings.index_update_ms = index_started.elapsed().as_millis();
+            let mut index = state.index.clone();
+            let diagnostics = state.diagnostics.clone();
+            let mut origins: Vec<_> = state.origins.values().flatten().cloned().collect();
             for (producer, path) in &plan.manifests {
                 let bytes = std::fs::read(path)?;
                 let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -1366,6 +1611,7 @@ pub(crate) fn build_default_css_payload_with_details(
             ))
         }
     };
+    let emit_started = Instant::now();
     let emitted = crate::commands::css_support::run_css_emitter(
         engine,
         project_root,
@@ -1374,6 +1620,7 @@ pub(crate) fn build_default_css_payload_with_details(
         direct_css_modules,
         framework_css,
     )?;
+    timings.emit_ms = emit_started.elapsed().as_millis();
     let dependencies = emitted.input_dependencies;
     let diagnostics = emitted.diagnostics;
     let payload = if emitted.bytes.iter().all(u8::is_ascii_whitespace) {
@@ -1397,6 +1644,7 @@ pub(crate) fn build_default_css_payload_with_details(
         payload,
         input_dependencies: dependencies,
         diagnostics,
+        timings,
     })
 }
 
@@ -8538,6 +8786,14 @@ fn copy_redirects_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn css_build_timing_line_format_is_stable() {
+        assert_eq!(
+            format_build_phase_timing_line("css", 17),
+            "[zfb-build-timing] phase=css elapsed_ms=17"
+        );
+    }
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;

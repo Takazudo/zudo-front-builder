@@ -117,6 +117,10 @@ pub struct RawImportInvalidation {
     /// never publishes or reads it.
     ssr_module_deps: Arc<RwLock<BTreeSet<PathBuf>>>,
 
+    /// Authored stylesheet inputs of the latest successful CSS pass. Asset
+    /// files referenced by url() are deliberately not watched.
+    css_stylesheets: Arc<RwLock<BTreeSet<PathBuf>>>,
+
     /// Logical project paths of the route entry files the dev SSR bundle read
     /// (issue #3202). The metafile walk drops each route's own entry from
     /// [`Self::ssr_module_deps`] (the graph adds a page self-edge instead), so
@@ -165,18 +169,20 @@ enum FileSet {
     ClientScriptSiblings,
     PluginWatchFiles,
     SsrModuleDeps,
+    CssStylesheets,
     PageEntries,
     ContentFiles,
 }
 
 impl FileSet {
-    const ALL: [FileSet; 8] = [
+    const ALL: [FileSet; 9] = [
         FileSet::Islands,
         FileSet::ClientScripts,
         FileSet::ClientScriptWorkers,
         FileSet::ClientScriptSiblings,
         FileSet::PluginWatchFiles,
         FileSet::SsrModuleDeps,
+        FileSet::CssStylesheets,
         FileSet::PageEntries,
         FileSet::ContentFiles,
     ];
@@ -299,6 +305,7 @@ impl RawImportInvalidation {
             FileSet::ClientScriptSiblings => &self.client_script_siblings,
             FileSet::PluginWatchFiles => &self.plugin_watch_files,
             FileSet::SsrModuleDeps => &self.ssr_module_deps,
+            FileSet::CssStylesheets => &self.css_stylesheets,
             FileSet::PageEntries => &self.page_entries,
             FileSet::ContentFiles => &self.content_files,
         }
@@ -621,6 +628,23 @@ impl RawImportInvalidation {
         self.publish_ssr_module_deps(paths, Some(read_since));
     }
 
+    /// Replace the latest successful CSS pass's stylesheet dependencies and
+    /// stamp the moment before that pass began reading them.
+    pub fn replace_css_stylesheets_read_since(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        read_since: SystemTime,
+    ) {
+        self.publish(FileSet::CssStylesheets, paths, Some(read_since));
+    }
+
+    pub fn css_stylesheet_paths(&self) -> BTreeSet<PathBuf> {
+        self.css_stylesheets
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
     fn publish_ssr_module_deps(
         &self,
         paths: impl IntoIterator<Item = PathBuf>,
@@ -717,8 +741,8 @@ impl RawImportInvalidation {
     }
 
     /// Members of every read-stamped file-shaped set (islands, client-script
-    /// raw/worker/sibling, plugin watch files, SSR module dependencies, page
-    /// entries, content-collection files)
+    /// raw/worker/sibling, plugin watch files, SSR module dependencies, CSS
+    /// stylesheets, page entries, content-collection files)
     /// accepted by `in_scope` whose file was modified at or after the read
     /// start its own publisher recorded (issues #3190 / #3201), one path per
     /// file. An edit made after that read but before the watcher covered the
@@ -1264,7 +1288,8 @@ impl GranularityPolicy {
     /// sets above, so `register_dynamic_dependency_watches`
     /// (`crate::orchestrator`) offers them to `watch_additional_files` with
     /// no watcher-crate changes needed. The dev SSR module-dependency set
-    /// (issue #3162) is folded in on the same terms.
+    /// (issue #3162) and the latest CSS stylesheet set are folded in on the
+    /// same terms.
     pub fn dynamic_dependency_paths(&self) -> BTreeSet<PathBuf> {
         let mut paths = self.raw_import_invalidation.islands_paths();
         paths.extend(self.raw_import_invalidation.client_script_paths());
@@ -1272,6 +1297,7 @@ impl GranularityPolicy {
         paths.extend(self.raw_import_invalidation.client_script_sibling_paths());
         paths.extend(self.raw_import_invalidation.plugin_watch_file_paths());
         paths.extend(self.raw_import_invalidation.ssr_module_dep_paths());
+        paths.extend(self.raw_import_invalidation.css_stylesheet_paths());
         paths
     }
 
@@ -2083,6 +2109,40 @@ mod tests {
             !second.contains(&client_sibling),
             "a replaced client sibling graph must not retain stale watch aliases"
         );
+    }
+
+    #[test]
+    fn css_stylesheets_are_watched_and_reconciled_from_their_read_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stylesheet = tmp.path().join("tokens.css");
+        let asset = tmp.path().join("font.woff2");
+        std::fs::write(&stylesheet, "a {}").unwrap();
+        std::fs::write(&asset, "font").unwrap();
+        let stylesheet = stylesheet.canonicalize().unwrap();
+        let read_since = SystemTime::now();
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_css_stylesheets_read_since([stylesheet.clone()], read_since);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        assert!(
+            invalidation.css_stylesheet_paths().contains(&stylesheet),
+            "the guarded set must be populated"
+        );
+        assert!(policy.dynamic_dependency_paths().contains(&stylesheet));
+        assert!(!policy.dynamic_dependency_paths().contains(&asset));
+        std::fs::File::options()
+            .write(true)
+            .open(&stylesheet)
+            .unwrap()
+            .set_modified(read_since + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            policy.modified_since_read(|_| true),
+            vec![stylesheet.clone()]
+        );
+        assert!(policy.modified_since_read(|_| true).is_empty());
+        invalidation.replace_css_stylesheets_read_since(Vec::new(), read_since);
+        assert!(policy.dynamic_dependency_paths().is_empty());
     }
 
     fn never_global(_: &Path) -> bool {
