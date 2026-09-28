@@ -1023,6 +1023,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         while let Some(path) = changes_iter.next() {
             let path: PathBuf = path.clone();
             plan.record_trigger(path.clone());
+            // CSS source membership belongs to the consumer. Keep every
+            // path, including those claimed by the external override below.
+            plan.css_changes.record_upsert(path.clone());
 
             // External-narrowing override (issue #1038): a configured hook
             // mapped this out-of-root path to a specific page set in the
@@ -1118,9 +1121,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // would duplicate it — leave it to the take.
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
+                    full.css_changes = std::mem::take(&mut plan.css_changes);
                     let _ = path;
                     for remaining in changes_iter {
                         full.triggers.push(remaining.clone());
+                        full.css_changes.record_upsert(remaining.clone());
                     }
                     return full;
                 }
@@ -1515,6 +1520,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // handled precisely. Without this, a deletion-only tick leaves CSS /
         // islands / SSR stale until the next non-removed edit.
         for path in &removed {
+            // Keep removals separate from upserts: a path can occur in both
+            // sets, and a removed directory can contain a recreated file.
+            plan.css_changes.record_removal(path.clone());
             let class = {
                 let graph = self.graph.lock().unwrap_or_else(|p| {
                     warn!(
@@ -2663,6 +2671,248 @@ mod tests {
             run_client_scripts: None,
             reload_renderer: None,
         }
+    }
+
+    /// Record the applied plan, checking the pre-existing scheduling decisions
+    /// before each CSS change-set regression assertion below.
+    fn css_change_tick(
+        changes: &[(&str, ChangeKind)],
+        known: &[&str],
+        pages: &[&str],
+        rerun_css: bool,
+    ) -> RebuildPlan {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let (orch, registry) = make_orch_with_known_content(pipeline, known);
+        for path in known {
+            assert!(registry.contains(std::path::Path::new(path)));
+        }
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                changes
+                    .iter()
+                    .map(|(path, kind)| (PathBuf::from(path), *kind))
+                    .collect(),
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap()
+            .is_some());
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1, "the CSS hints must reach an applied plan");
+        let plan = plans[0].clone();
+        assert_eq!(plan.rerun_css, rerun_css);
+        assert_eq!(
+            plan.pages,
+            PageSelection::Specific(pages.iter().map(|path| pid(path)).collect())
+        );
+        plan
+    }
+
+    fn assert_css_change_paths(plan: &RebuildPlan, upserted: &[&str], removed: &[&str]) {
+        assert_eq!(
+            plan.css_changes,
+            crate::plan::CssChangeSet {
+                upserted: upserted.iter().map(PathBuf::from).collect(),
+                removed: removed.iter().map(PathBuf::from).collect(),
+            },
+            "applied CSS change set must preserve every delivered path and kind"
+        );
+    }
+
+    const CSS_CHANGE_ALL_PAGES: &[&str] = &[
+        "/proj/pages/a.tsx",
+        "/proj/pages/b.tsx",
+        "/proj/pages/c.tsx",
+    ];
+
+    #[test]
+    fn css_changes_in_root_page_edit() {
+        let path = "/proj/pages/a.tsx";
+        let plan = css_change_tick(&[(path, ChangeKind::Modified)], &[], &[path], false);
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_in_root_mdx_edit() {
+        let path = "/proj/content/post.mdx";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Modified)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_in_root_deletion() {
+        let path = "/proj/components/Widget.tsx";
+        let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], &[], false);
+        assert_css_change_paths(&plan, &[], &[path]);
+    }
+
+    #[test]
+    fn css_changes_rename_pair() {
+        let old = "/proj/content/post.md";
+        let new = "/proj/content/renamed.mdx";
+        let plan = css_change_tick(
+            &[(old, ChangeKind::Removed), (new, ChangeKind::Modified)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert_css_change_paths(&plan, &[new], &[old]);
+    }
+
+    #[test]
+    fn css_changes_created_known_content_is_upserted_once() {
+        let path = "/proj/content/known.mdx";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Created), (path, ChangeKind::Modified)],
+            &[path],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert!(plan.content_narrowing.as_ref().unwrap().fan_out_safe);
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_created_directory_is_upserted() {
+        let path = "/proj/content/new-dir";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Created)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_removed_and_created_keep_both_sets() {
+        let directory = "/proj/content/nested";
+        let child = "/proj/content/nested/post.mdx";
+        let both = "/proj/content/recreated.mdx";
+        let plan = css_change_tick(
+            &[
+                (child, ChangeKind::Created),
+                (directory, ChangeKind::Removed),
+                (both, ChangeKind::Removed),
+                (both, ChangeKind::Created),
+            ],
+            &[child, both],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert!(!plan.content_narrowing.as_ref().unwrap().fan_out_safe);
+        assert_css_change_paths(&plan, &[child, both], &[directory, both]);
+    }
+
+    #[test]
+    fn css_changes_external_override_keeps_upsert() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let hook: ExternalInvalidationHook = Arc::new(|_| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(pipeline, hook);
+        let path = "/srv/shared/post.mdx";
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(PathBuf::from(path), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(!plans[0].rerun_css);
+        assert_eq!(
+            plans[0].pages,
+            PageSelection::Specific([pid("/proj/pages/a.tsx")].into())
+        );
+        assert_css_change_paths(&plans[0], &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_global_preserves_prior_current_remaining_and_removed_paths() {
+        let before = "/proj/content/post.mdx";
+        let global = "/proj/zfb.config.ts";
+        let after = "/proj/public/logo.png";
+        let removed = "/proj/components/Widget.tsx";
+        let plan = css_change_tick(
+            &[
+                (before, ChangeKind::Modified),
+                (global, ChangeKind::Modified),
+                (after, ChangeKind::Modified),
+                (removed, ChangeKind::Removed),
+            ],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            true,
+        );
+        assert_css_change_paths(&plan, &[before, global, after], &[removed]);
+    }
+
+    #[test]
+    fn css_changes_record_all_classes_without_changing_noop_skips() {
+        let paths = [
+            ("/proj/pages/a.tsx", PathClass::Page),
+            ("/proj/components/Header.tsx", PathClass::Module),
+            ("/proj/content/post.mdx", PathClass::Content),
+            ("/proj/data/value.json", PathClass::Data),
+            ("/proj/styles/main.css", PathClass::Style),
+            ("/proj/public/logo.png", PathClass::Asset),
+            ("/proj/unknown", PathClass::Unclassified),
+            ("/srv/shared/unknown", PathClass::External),
+            ("/proj/zfb.config.ts", PathClass::Global),
+        ];
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+        for (path, class) in paths {
+            assert_eq!(
+                classify_change_with_content_roots(
+                    std::path::Path::new(path),
+                    std::path::Path::new("/proj"),
+                    &[],
+                    |path| orch.graph().lock().unwrap().is_global(path),
+                ),
+                class
+            );
+            let plan = orch.plan_for_changes([path]);
+            assert_css_change_paths(&plan, &[path], &[]);
+            if matches!(class, PathClass::Asset | PathClass::Unclassified) {
+                assert!(plan.is_noop());
+                for kind in [ChangeKind::Modified, ChangeKind::Removed] {
+                    assert!(orch
+                        .tick_with_kinds(
+                            vec![(PathBuf::from(path), kind)],
+                            &noop_ctx(dist.path()),
+                            None,
+                        )
+                        .unwrap()
+                        .is_none());
+                }
+            }
+        }
+        assert!(applies.lock().unwrap().is_empty());
+        let all_paths: Vec<_> = paths.iter().map(|(path, _)| *path).collect();
+        let changes: Vec<_> = paths
+            .iter()
+            .map(|(path, _)| (*path, ChangeKind::Removed))
+            .collect();
+        // The global deletion makes this tick apply, exposing even the
+        // otherwise-noop removed classes to the recording pipeline.
+        let plan = css_change_tick(
+            &changes,
+            &[],
+            &["/proj/pages/b.tsx", "/proj/pages/c.tsx"],
+            true,
+        );
+        assert_css_change_paths(&plan, &[], &all_paths);
     }
 
     /// A tick made exclusively of Modified content files produces the
