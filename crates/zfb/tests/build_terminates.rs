@@ -98,7 +98,7 @@ fn scaffold_fixture(root: &std::path::Path) -> tempfile::TempDir {
     // Config: adapter + preact framework.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "adapter": "zfb-adapter-stub" }
+        r#"{ "framework": "zudo-react", "adapter": "zfb-adapter-stub" }
 "#,
     )
     .unwrap();

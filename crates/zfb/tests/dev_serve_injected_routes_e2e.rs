@@ -937,7 +937,7 @@ async fn dev_e2e_package_route_only_utility_class_reaches_dev_css() {
         .expect("canonicalize fixture root");
     copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
     write_package_css_preset(&root);
-    fs::write(root.join("zfb.config.json"), r##"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }], "wind": { "tokens": { "colors": { "marker": "#123456" } } } }"##).expect("select wind for package CSS fixture");
+    fs::write(root.join("zfb.config.json"), r##"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }], "wind": { "tokens": { "colors": { "marker": "#123456" } } } }"##).expect("select wind for package CSS fixture");
 
     let stdout_path = root.join(".zfb-dev-stdout-3024.log");
     let stderr_path = root.join(".zfb-dev-stderr-3024.log");
@@ -1781,7 +1781,7 @@ fn setup_hmr_fixture(root: &Path) -> PathBuf {
     // 1. Patch the config to declare the collection.
     let config_json = r#"
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }],
   "collections": [
     { "name": "articles", "path": "content/articles" }

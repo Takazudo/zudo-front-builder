@@ -125,7 +125,7 @@ fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
+  "framework": "zudo-react",
   "markdown": { "gfm": true },
   "collections": [{ "name": "notes", "path": "content/notes" }]
 }

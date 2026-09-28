@@ -287,7 +287,7 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
 
 fn home_page_source(revision: u32) -> String {
     format!(
-        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        <title>cold-rewrite-prewarm fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
+        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charset=\"utf-8\" />\n        <title>cold-rewrite-prewarm fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
     )
 }
 

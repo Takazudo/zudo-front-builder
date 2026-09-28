@@ -67,7 +67,7 @@ fn read_log(path: &Path) -> String {
 fn write_project(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact" }
+        r#"{ "framework": "zudo-react" }
 "#,
     )
     .unwrap();

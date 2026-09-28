@@ -1,1 +1,1 @@
-{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }

@@ -1,4 +1,4 @@
 {
-  "framework": "preact",
+  "framework": "zudo-react",
   "adapter": "fake-adapter"
 }

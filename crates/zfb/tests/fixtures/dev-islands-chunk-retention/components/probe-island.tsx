@@ -5,7 +5,7 @@ export function ProbeIsland() {
     <button
       id="probe-island"
       type="button"
-      onClick={async (event) => {
+      on:click={async (event) => {
         const button = event.currentTarget;
         const { lazyPart } = await import("./lazy-part");
         button.textContent = lazyPart;

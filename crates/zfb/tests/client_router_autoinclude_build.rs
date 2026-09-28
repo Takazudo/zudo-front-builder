@@ -94,7 +94,7 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 fn scaffold_client_router_fixture(root: &Path) -> tempfile::TempDir {
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact" }
+        r#"{ "framework": "zudo-react" }
 "#,
     )
     .unwrap();

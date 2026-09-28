@@ -63,7 +63,7 @@ fn write_minimal_fixture_with_config(root: &Path, config: &str) {
 fn write_minimal_fixture(root: &Path) {
     write_minimal_fixture_with_config(
         root,
-        r#"{ "framework": "preact" }
+        r#"{ "framework": "zudo-react" }
 "#,
     );
 }
@@ -124,7 +124,7 @@ fn config_outdir_is_used_when_cli_flag_is_absent() {
     let root = tmp.path();
     write_minimal_fixture_with_config(
         root,
-        r#"{ "framework": "preact", "outDir": "configured-out" }
+        r#"{ "framework": "zudo-react", "outDir": "configured-out" }
 "#,
     );
 
@@ -159,7 +159,7 @@ fn cli_outdir_overrides_config_outdir() {
     let root = tmp.path();
     write_minimal_fixture_with_config(
         root,
-        r#"{ "framework": "preact", "outDir": "configured-out" }
+        r#"{ "framework": "zudo-react", "outDir": "configured-out" }
 "#,
     );
 
@@ -412,7 +412,7 @@ export default {
     // Config referencing the local plugin by relative path.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./prebuild-marker-plugin.mjs" }] }
+        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./prebuild-marker-plugin.mjs" }] }
 "#,
     )
     .unwrap();

@@ -144,7 +144,7 @@ fn write_fixture(root: &Path, emit_render_artifacts: bool, minify_html: bool) {
         root.join("zfb.config.json"),
         format!(
             r#"{{
-  "framework": "preact",
+  "framework": "zudo-react",
   "minifyHtml": {minify_html},
   "emitRenderArtifacts": {emit_render_artifacts},
   "collections": [{{ "name": "docs", "path": "content/docs" }}],

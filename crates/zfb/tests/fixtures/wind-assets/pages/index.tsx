@@ -9,7 +9,7 @@ export default function Home() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>Wind real-build assets fixture</title>
       </head>
       <body>
