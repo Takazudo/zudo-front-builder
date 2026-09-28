@@ -5,18 +5,19 @@ sidebar_position: 1
 ---
 
 zfb ships as a self-contained Rust binary. **Node.js is not required to
-install or run it** — esbuild and Tailwind are embedded into the `zfb`
-executable's vendor snapshot and extracted at runtime before they are invoked
-as subprocesses. They are not shipped as separate release-tarball binaries
-next to `zfb`. You only need Node as an opt-in escape hatch for specific
-features (see [When Node is still needed](#when-node-is-still-needed) below).
+install or run it.** esbuild is embedded in the `zfb` executable's vendor
+snapshot, extracted at runtime, and invoked as a subprocess; zudo-wind is
+compiled into the zfb binary and runs without a separate CSS-engine process. Neither is
+shipped as a separate release-tarball binary next to `zfb`. You only need Node
+as an opt-in escape hatch for specific features (see
+[When Node is still needed](#when-node-is-still-needed) below).
 
 The Node-free path supports the full feature set for content sites: Markdown,
-MDX, HTML pages, **and islands** — esbuild and Tailwind run as standalone
-native binaries extracted by `zfb`, so client-side hydration and CSS processing
-work with zero Node involvement. For what the embedded Tailwind means for a
-project that *does* use npm, see
-[Tailwind is embedded, not installed](../concepts/styling.mdx#tailwind-v4-tailwind-is-embedded-not-installed).
+MDX, HTML pages, **and islands** — esbuild runs as a standalone native binary
+extracted by `zfb`, while zudo-wind is part of the binary itself. Client-side
+hydration and CSS processing therefore work with zero Node involvement. See
+[Styling](../concepts/styling.mdx#zudo-wind-built-into-zfb) for the CSS engine
+and authored-stylesheet contract.
 
 ## Supported platforms
 
@@ -149,7 +150,6 @@ Use `zfb.config.json` for a plain JSON alternative.
 ```jsonc
 // zfb.config.json — also Node-free compatible
 {
-  "framework": "preact",
   "outDir": "dist",
   "collections": [
     {
@@ -173,7 +173,7 @@ The following features require Node in `PATH`:
 | `zfb check` without `--skip-tsc` | TypeScript type-checking delegates to `tsc`, which is a Node package. Pass `--skip-tsc` to run the non-TS checks only. |
 | Cloudflare adapter (`@takazudo/zfb-adapter-cloudflare`) | The adapter depends on Wrangler, which is a Node CLI. SSR deployments to Cloudflare Workers always need Node in the deploy environment. |
 
-Everything else — building, dev server, islands, Tailwind, MDX, content
+Everything else — building, dev server, islands, zudo-wind, MDX, content
 collections, and `zfb.config.ts` evaluation — runs Node-free.
 
 ## Upgrading zfb

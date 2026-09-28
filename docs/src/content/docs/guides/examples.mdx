@@ -36,6 +36,12 @@ routes — the pattern covered in
 `password-gate`, installs no adapter and puts a Worker of its own in front of a
 static build.
 
+<Note title="These demos target zfb 2.x">
+
+These external demos target zfb 2.x with Tailwind and Preact. See the [v3 migration guide](./migrating-to-v3.mdx) before adapting them to v3.
+
+</Note>
+
 | Example | Rendering | Bindings and secrets | Styling | Links |
 | --- | --- | --- | --- | --- |
 | [AI Summarizer](../recipes/ai-summarizer.mdx) | SSG plus one `prerender = false` API route (adapter) | Workers AI `AI`, declared only in the named `ai` environment | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-ai-summarizer) · [demo](https://zfb-example-ai-summarizer.takazudomodular.com/) |

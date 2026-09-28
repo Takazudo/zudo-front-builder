@@ -349,19 +349,28 @@ properties only where you want to diverge from the defaults.
 
 </Tip>
 
-### Mapping roles onto Tailwind utilities
+### Mapping roles onto zudo-wind utilities
 
-Instead of the default `hi-*` classes you can map any role onto your own utility
-classes with `roleClasses` — most usefully Tailwind:
+Instead of the default `hi-*` classes you can map any role onto zudo-wind
+utility classes with `roleClasses`. The project must configure the tokens used
+by those utilities; zudo-wind supplies no default palette.
 
 ```ts
 // zfb.config.ts
 export default {
+  wind: {
+    tokens: {
+      colors: {
+        violet: "#6d28d9",
+        emerald: "#047857",
+      },
+    },
+  },
   codeHighlight: {
     mode: "class",
     roleClasses: {
-      keyword: "text-violet-600 dark:text-violet-400",
-      string: "text-emerald-600 dark:text-emerald-400",
+      keyword: "text-violet",
+      string: "text-emerald",
     },
   },
 };
@@ -372,18 +381,17 @@ space-separated classes, and must not contain the bare token `line` (it collides
 with the code-enrichment line-wrapper class). Roles you do not map keep their
 default `{classPrefix}{suffix}` class.
 
-The mapped utilities are **auto-safelisted**. Highlighted markup is produced by
-the Rust pipeline and only lands in rendered `dist/*.html`, which Tailwind never
-scans — so without help the utilities would be tree-shaken away (green build,
-unstyled tokens). zfb emits each `roleClasses` value as a Tailwind
-`@source inline("…")` entry, so the classes are always generated.
+Each role value is considered as a candidate. A valid configured utility emits;
+an invalid or unknown value remains an ordinary class without a build
+diagnostic. The example configures both color tokens so its two role utilities
+resolve.
 
 <Warning>
 
-**Authored-CSS path (`tailwind: { enabled: false }`).** Setting `roleClasses`
-with Tailwind disabled is allowed but emits a build warning: no Tailwind safelist
-can be generated on that path, so the utilities you map to must already exist in
-your own hand-authored CSS.
+**Authored-CSS path (`wind: false`).** Wind does not generate utility rules on
+this path. You can still set `roleClasses`, but add matching rules to your own
+CSS if you want those classes styled. This does not produce a build warning;
+audit can report an ignored role value.
 
 </Warning>
 
@@ -413,8 +421,8 @@ any embed that travels without your site's CSS. There the baked-in
   per construct.
 - **The "no frontend library" claim is about the static-HTML render path.**
   Class mode ships zero highlighting JavaScript for statically rendered HTML. The
-  MDX React-component render path still delegates `pre`/`code` to your
-  `_components` at runtime as before — class mode does not change that path.
+  MDX component render path still delegates `pre`/`code` to your `_components`
+  map at runtime as before — class mode does not change that path.
 
 ## Supplementary pattern 1 — additional client-side highlighting
 
@@ -425,13 +433,16 @@ client-side highlighter on top of the server-rendered output as a
 ```tsx
 "use client";
 
-import { useEffect, useRef } from "preact/hooks";
+import { getScope } from "@takazudo/zfb/zudo-react";
 import Prism from "prismjs";
 import "prismjs/components/prism-typescript";
 
 export default function PrismRoot({ children }) {
-  const ref = useRef(null);
-  useEffect(() => { Prism.highlightAllUnder(ref.current); }, []);
+  const scope = getScope();
+  const ref: { current: HTMLDivElement | null } = { current: null };
+  scope.effect(() => {
+    if (ref.current) Prism.highlightAllUnder(ref.current);
+  });
   return <div ref={ref}>{children}</div>;
 }
 ```
