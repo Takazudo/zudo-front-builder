@@ -1,5 +1,4 @@
 {
-  "framework": "zudo-react",
   "plugins": [{ "name": "./preset.mjs" }],
   "collections": [
     {

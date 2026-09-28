@@ -81,18 +81,6 @@
     "./zudo-react/client": {
       "types": "./src/zudo-react/client.ts",
       "default": "./src/zudo-react/client.ts"
-    },
-    "./jsx-factory": {
-      "types": "./src/jsx-factory.ts",
-      "default": "./src/jsx-factory.ts"
-    },
-    "./island-boundary": {
-      "types": "./src/island-boundary.ts",
-      "default": "./src/island-boundary.ts"
-    },
-    "./island-boundary-zudo-react": {
-      "types": "./src/island-boundary-zudo-react.ts",
-      "default": "./src/island-boundary-zudo-react.ts"
     }
   },
   "bin": {
@@ -169,18 +157,6 @@
       "./zudo-react/client": {
         "types": "./dist/zudo-react/client.d.ts",
         "default": "./dist/zudo-react/client.js"
-      },
-      "./jsx-factory": {
-        "types": "./dist/jsx-factory.d.ts",
-        "default": "./dist/jsx-factory.js"
-      },
-      "./island-boundary": {
-        "types": "./dist/island-boundary.d.ts",
-        "default": "./dist/island-boundary.js"
-      },
-      "./island-boundary-zudo-react": {
-        "types": "./dist/island-boundary-zudo-react.d.ts",
-        "default": "./dist/island-boundary-zudo-react.js"
       }
     }
   },

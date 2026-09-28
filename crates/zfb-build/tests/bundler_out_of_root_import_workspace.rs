@@ -28,7 +28,6 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 #[test]
@@ -92,7 +91,6 @@ fn escaping_relative_import_from_workspace_sibling_gets_actionable_boundary_erro
 
     let mut input = BundlerInput::for_project(
         project.clone(),
-        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,

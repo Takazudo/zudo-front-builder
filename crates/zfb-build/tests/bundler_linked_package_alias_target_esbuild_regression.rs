@@ -31,7 +31,6 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 const HOOKS_MJS: &str = "export const HOOKS_MARKER = \"REAL_INSTALLED_HOOKS_3185\";\n\
@@ -166,13 +165,7 @@ fn walkdir_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 
 fn input(fixture: &Fixture, esbuild: PathBuf, mode: BundleMode) -> BundlerInput {
     let site = &fixture.site;
-    let mut input = BundlerInput::for_project(
-        site.clone(),
-        Framework::ZudoReact,
-        mode,
-        site.join("dist"),
-        None,
-    );
+    let mut input = BundlerInput::for_project(site.clone(), mode, site.join("dist"), None);
     input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
         "@takazudo/zfb/zudo-react".into(),

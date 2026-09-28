@@ -39,7 +39,7 @@
 //!
 //! Scaffolded inline (no on-disk fixture directory):
 //!
-//! - `zfb.config.json` — `adapter: "zfb-adapter-stub"`, `framework: "preact"`.
+//! - `zfb.config.json` — `adapter: "zfb-adapter-stub"`.
 //! - `pages/index.tsx` — `export const prerender = false` (SSR route), renders
 //!   a minimal HTML page.  This is enough to trigger both the V8-on path
 //!   (build.rs decides V8-on when the prerender-false set is non-empty) and the
@@ -98,7 +98,7 @@ fn scaffold_fixture(root: &std::path::Path) -> tempfile::TempDir {
     // Config: adapter + preact framework.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "adapter": "zfb-adapter-stub" }
+        r#"{ "adapter": "zfb-adapter-stub" }
 "#,
     )
     .unwrap();

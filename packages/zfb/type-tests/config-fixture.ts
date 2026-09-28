@@ -1,7 +1,7 @@
 /**
  * Config type fixture.
  *
- * Compiled by `tsc -p tsconfig.preact-fixture.json` through the package's
+ * Compiled by `tsc -p tsconfig.config-fixture.json` through the package's
  * type-test include. Keep this file compile-only; it proves config
  * helper types reject invalid shapes without adding runtime test code.
  */
@@ -21,7 +21,8 @@ export const bundleInlineLoadersAndRawDefines = defineConfig({
   },
 });
 
-export const ownedFramework = defineConfig({ framework: "zudo-react" });
+// @ts-expect-error the framework selector was removed; zfb uses zudo-react.
+export const removedFramework = defineConfig({ framework: "zudo-react" });
 
 export const bundleRejectsAssetEmittingLoaders = defineConfig({
   bundle: {

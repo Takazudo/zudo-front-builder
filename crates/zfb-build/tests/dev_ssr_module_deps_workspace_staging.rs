@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use zfb_build::{
     bundle_with_session, BundleMode, BundlerInput, RawImportInvalidation, ShadowSession,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
@@ -78,7 +77,6 @@ fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
 fn dev_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::ZudoReact,
         BundleMode::Development,
         project.join("dist"),
         None,

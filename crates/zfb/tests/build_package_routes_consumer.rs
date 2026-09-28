@@ -361,7 +361,7 @@ fn write_control_project(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         // No plugins key — overlay machinery never activates.
-        r#"{ "framework": "zudo-react" }
+        r#"{ }
 "#,
     )
     .unwrap();
@@ -513,7 +513,7 @@ export { DocsPage as default, paths };
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -601,7 +601,7 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         .unwrap();
         fs::write(
             host.join("zfb.config.json"),
-            r#"{ "framework": "zudo-react", "bundle": { "mainFields": ["main", "module"], "exclude": [] }, "plugins": [{ "name": "./preset.mjs" }] }"#,
+            r#"{ "bundle": { "mainFields": ["main", "module"], "exclude": [] }, "plugins": [{ "name": "./preset.mjs" }] }"#,
         )
         .unwrap();
 
@@ -905,7 +905,7 @@ export default function GeneratedNestedRoute() {
     .expect("write generated-routes preset");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .expect("write generated-routes config");
@@ -1010,7 +1010,7 @@ export default function HiddenPage() {
     .expect("write hidden-page preset");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .expect("write hidden-page config");

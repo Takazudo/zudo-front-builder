@@ -46,7 +46,6 @@ use std::fs;
 use std::path::Path;
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
@@ -82,7 +81,6 @@ fn base_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,

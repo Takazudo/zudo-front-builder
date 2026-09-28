@@ -24,7 +24,6 @@ use zfb_build::{
     rewrite_module_worker_urls_with_context, BundleMode, BundlerInput, ModuleWorkerBuildContext,
     ShadowSession,
 };
-use zfb_render::adapters::Framework;
 
 fn write(path: &Path, source: &str) {
     if let Some(parent) = path.parent() {
@@ -397,7 +396,6 @@ fn make_bundle_input(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::ZudoReact,
         zudo_react_island_names: Some(vec![]),
         define_vars: BTreeMap::new(),
         public_env_vars: HashMap::new(),

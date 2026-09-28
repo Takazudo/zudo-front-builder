@@ -50,7 +50,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Standard content-root dirs `bundle()` expects under a project.
@@ -79,7 +78,6 @@ fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
 fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::ZudoReact,
         BundleMode::Production,
         project.join("dist"),
         None,

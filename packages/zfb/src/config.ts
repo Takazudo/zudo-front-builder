@@ -14,8 +14,6 @@
 // The shape mirrors the Rust `Config` struct one-for-one. Keep them in
 // sync; the `defineConfig` identity helper is the single anchor point.
 
-export type Framework = "preact" | "zudo-react";
-
 export type CollectionDef = {
   /** Identifier used at the call site (e.g. `"blog"`). */
   name: string;
@@ -169,7 +167,7 @@ export type BundleConfig = {
    * Bare specifiers to mark external in the `--platform=neutral` page/SSR
    * pass, so esbuild leaves them unbundled instead of resolving them (the
    * other #676 escape hatch — externalize a CJS-only dep rather than
-   * resolving it). Appended to the framework-provided externals. Unset/empty
+   * resolving it). Appended to the bundler's required imports. Unset/empty
    * → no extra externals.
    *
    * Mirrors `BundleConfig::external` in `crates/zfb/src/config.rs`.
@@ -255,8 +253,6 @@ export type ZfbConfig = {
    * Mirrors `Config::allowed_hosts` in `crates/zfb/src/config.rs`.
    */
   allowedHosts?: string[];
-  /** JSX framework runtime. Default: `preact`. */
-  framework?: Framework;
   /** Content collections. Mirrors the JSON form one-for-one. */
   collections?: CollectionDef[];
   /** zudo-wind v1 configuration; absent enables the default empty configuration. */

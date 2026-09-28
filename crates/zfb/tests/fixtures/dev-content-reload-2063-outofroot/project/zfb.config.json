@@ -1,5 +1,4 @@
 {
-  "framework": "zudo-react",
   "collections": [
     {
       "name": "posts",

@@ -9,7 +9,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, BundlerOutput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 const WASM_BYTES: &[u8] = b"\0asm\x01\0\0\0";
@@ -43,7 +42,6 @@ fn scaffold_project(root: &Path, imports_wasm: bool) {
 fn make_input(root: &Path, esbuild: &Path, bundle_basename: Option<&str>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::ZudoReact,
         BundleMode::Production,
         root.join("dist"),
         None,

@@ -1487,11 +1487,8 @@ fn write_sibling_macro_workspace(root: &Path) -> PathBuf {
         r#"{ "private": true, "name": "@sibling-macro/app" }"#,
     )
     .expect("write project package.json");
-    fs::write(
-        project.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "wind": false }"#,
-    )
-    .expect("write zfb.config.json");
+    fs::write(project.join("zfb.config.json"), r#"{ "wind": false }"#)
+        .expect("write zfb.config.json");
     fs::write(
         project.join("tsconfig.json"),
         r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@shared/*": ["../../lib/shared/*"] } } }"#,
@@ -1649,11 +1646,7 @@ fn write_root_claimed_workspace_shell(root: &Path) {
         r#"{ "name": "host", "private": true }"#,
     )
     .expect("write host package.json");
-    fs::write(
-        root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react", "wind": false }"#,
-    )
-    .expect("write zfb.config.json");
+    fs::write(root.join("zfb.config.json"), r#"{ "wind": false }"#).expect("write zfb.config.json");
     fs::create_dir_all(root.join("pages")).expect("create pages dir");
     fs::create_dir_all(root.join("components")).expect("create components dir");
     scaffold_project_content_dirs(root);

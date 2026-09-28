@@ -123,7 +123,6 @@ fn write_multi_page_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "emitRenderArtifacts": true,
   "collections": [{ "name": "docs", "path": "content/docs" }]
 }

@@ -18,7 +18,6 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, NodeModulesStagingStats};
-use zfb_render::adapters::Framework;
 
 const IMPORTERS: [&str; 3] = ["dep-a", "dep-b", "dep-c"];
 
@@ -104,7 +103,6 @@ fn staging_stats(root: &Path, bundle_exclude: Vec<String>) -> NodeModulesStaging
         zudo_react_island_names: Some(vec![]),
         ..BundlerInput::for_project(
             root.to_path_buf(),
-            Framework::ZudoReact,
             BundleMode::Production,
             root.join("dist"),
             None,

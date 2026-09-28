@@ -145,7 +145,6 @@ fn write_fixture(root: &Path) -> std::path::PathBuf {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "plugins": [{ "name": "./plugin/diag-plugin.ts" }]
 }
 "#,

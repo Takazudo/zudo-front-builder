@@ -12,7 +12,7 @@ import { describeRenderRegionMarkers } from "./render-region-marker-cases.js";
 // A React Fragment is renderable by several SSR libraries too, so bytes
 // alone cannot establish that content.ts closed over the owned Fragment.
 it("really runs against the owned zudo-react JSX runtime", async () => {
-  const { Fragment } = await import("@takazudo/zfb/jsx-factory");
+  const { Fragment } = await import("../zudo-react/jsx-runtime.js");
   expect(Fragment).toBe(OwnedFragment);
 });
 

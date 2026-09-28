@@ -12,7 +12,7 @@
     "sourceMap": true,
     "inlineSources": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "react",
+    "jsxImportSource": "@takazudo/zfb/zudo-react",
     "types": ["node"],
     "rootDir": "./src",
     "outDir": "./dist"

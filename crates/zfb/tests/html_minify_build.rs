@@ -54,7 +54,6 @@ fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "zudo-react",
   "base": "/site/",
   "minifyHtml": true,
   "plugins": [{ "name": "./postbuild-observer.mjs" }]

@@ -1,15 +1,9 @@
 // @vitest-environment node
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { Window } from "happy-dom";
 import { jsx } from "../zudo-react/jsx-runtime.js";
 import { isDescription } from "../zudo-react/index.js";
 import { renderToString } from "../zudo-react/server.js";
-
-vi.mock("@takazudo/zfb/jsx-factory", async () => await import("../zudo-react/jsx-runtime.js"));
-vi.mock(
-  "@takazudo/zfb/island-boundary",
-  async () => await import("../island-boundary-zudo-react.js"),
-);
 
 it("Island mints its wrapper through the owned factory", async () => {
   (

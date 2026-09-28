@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import {
   __hasPendingCancelForTests,
   ISLAND_MOUNTED_ATTR,
-  mountIslands,
-  mountNewIslands,
+  mountIslands as mountOwnedIslands,
   scheduleHydrate,
   unmountIslands,
 } from "../runtime.js";
+import {
+  mountTestIslands as mountIslands,
+  mountNewTestIslands as mountNewIslands,
+} from "./owned-manifest-fixture.js";
 
 type IntersectionCallback = (
   entries: Array<{ isIntersecting: boolean; target: Element }>,
@@ -491,37 +494,42 @@ describe("scheduleHydrate", () => {
       expect(mount).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to {} props when data-props is missing or invalid", () => {
+    it("uses empty props for an omitted bag and rejects malformed transport", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-when="load"></div>
         <div data-zfb-island-skip-ssr="Modal" data-props="not json"></div>
       `;
       const mount = vi.fn();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
       mountIslands({
         Counter: { mount },
         Modal: { mount },
       });
 
-      expect(mount).toHaveBeenCalledTimes(2);
+      expect(mount).toHaveBeenCalledTimes(1);
       expect(mount.mock.calls[0]![0]).toEqual({});
-      expect(mount.mock.calls[1]![0]).toEqual({});
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('island "Modal" mount failed'),
+        expect.any(Error),
+      );
     });
 
-    it("falls back to {} props when data-props is a JSON array (not a record)", () => {
-      // `typeof [] === "object"` so the old guard let arrays through.
-      // Arrays are not a valid props bag — we must reject them and
-      // hand the component an empty record instead.
+    it("rejects a JSON array props bag before mounting", () => {
       const arrayProps = JSON.stringify([1, 2, 3]);
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='${arrayProps}' data-when="load"></div>
       `;
       const mount = vi.fn();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
       mountIslands({ Counter: { mount } });
 
-      expect(mount).toHaveBeenCalledTimes(1);
-      expect(mount.mock.calls[0]![0]).toEqual({});
+      expect(mount).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('island "Counter" mount failed'),
+        expect.any(Error),
+      );
     });
 
     it("warns and skips elements whose component is missing from the manifest", () => {
@@ -545,16 +553,6 @@ describe("scheduleHydrate", () => {
           process.env["NODE_ENV"] = original;
         }
       }
-    });
-
-    it("uses the module's default export when mount is not present", () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const def = vi.fn();
-
-      mountIslands({ Counter: { default: def } });
-      expect(def).toHaveBeenCalledTimes(1);
     });
 
     // ---------------------------------------------------------------------
@@ -589,17 +587,6 @@ describe("scheduleHydrate", () => {
       expect(mount.mock.calls[0]![2]).toBe("render");
     });
 
-    it("falls back to default export on inline-module entry when mount is absent", () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const def = vi.fn();
-
-      mountIslands({ Counter: { default: def } });
-
-      expect(def).toHaveBeenCalledTimes(1);
-    });
-
     it("does not double-mount inline-module entries on repeat calls", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
@@ -623,7 +610,7 @@ describe("scheduleHydrate", () => {
       const mount = vi.fn();
       const unmount = vi.fn();
 
-      mountIslands({ Counter: { mount, unmount } });
+      mountIslands({ Counter: { mount, dispose: unmount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
 
@@ -658,7 +645,7 @@ describe("scheduleHydrate", () => {
       const unmount = vi.fn();
 
       // Inline IslandModule shape (shared-bundle path) with unmount.
-      mountIslands({ Counter: { mount, unmount } });
+      mountIslands({ Counter: { mount, dispose: unmount } });
 
       // Inline mount is synchronous.
       expect(mount).toHaveBeenCalledTimes(1);
@@ -698,8 +685,8 @@ describe("scheduleHydrate", () => {
         const sidebarUnmount = vi.fn();
         const tocUnmount = vi.fn();
         mountIslands({
-          Sidebar: { mount: vi.fn(), unmount: sidebarUnmount },
-          Toc: { mount: vi.fn(), unmount: tocUnmount },
+          Sidebar: { mount: vi.fn(), dispose: sidebarUnmount },
+          Toc: { mount: vi.fn(), dispose: tocUnmount },
         });
 
         unmountIslands(
@@ -724,8 +711,8 @@ describe("scheduleHydrate", () => {
         const sidebarMount = vi.fn();
         const tocMount = vi.fn();
         mountIslands({
-          Sidebar: { mount: sidebarMount, unmount: vi.fn() },
-          Toc: { mount: tocMount, unmount: vi.fn() },
+          Sidebar: { mount: sidebarMount, dispose: vi.fn() },
+          Toc: { mount: tocMount, dispose: vi.fn() },
         });
         expect(sidebarMount).toHaveBeenCalledTimes(1);
         expect(tocMount).toHaveBeenCalledTimes(1);
@@ -751,7 +738,7 @@ describe("scheduleHydrate", () => {
           <div ${PERSIST}="gone" data-zfb-island="Orphan" data-props='{}' data-when="load"></div>
         `;
         const unmount = vi.fn();
-        mountIslands({ Orphan: { mount: vi.fn(), unmount } });
+        mountIslands({ Orphan: { mount: vi.fn(), dispose: unmount } });
 
         // Incoming body has no matching persist id → swapBodyElement would discard
         // it → it must be unmounted here.
@@ -765,7 +752,7 @@ describe("scheduleHydrate", () => {
           <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{}' data-when="load"></div>
         `;
         const unmount = vi.fn();
-        mountIslands({ Sidebar: { mount: vi.fn(), unmount } });
+        mountIslands({ Sidebar: { mount: vi.fn(), dispose: unmount } });
 
         // Single-arg call (no swap in flight) preserves nothing — identical to
         // the original walk.
@@ -781,7 +768,7 @@ describe("scheduleHydrate", () => {
         const el = document.querySelector(`[${PERSIST}="panel"]`)!;
         const mount = vi.fn();
         const unmount = vi.fn();
-        mountIslands({ Panel: { mount, unmount } });
+        mountIslands({ Panel: { mount, dispose: unmount } });
         expect(mount).toHaveBeenCalledTimes(1);
         expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
 
@@ -812,7 +799,7 @@ describe("scheduleHydrate", () => {
           const mount = vi.fn();
           const unmount = vi.fn();
 
-          mountIslands({ Panel: { mount, unmount } });
+          mountIslands({ Panel: { mount, dispose: unmount } });
           expect(mount).not.toHaveBeenCalled();
 
           vi.advanceTimersByTime(0);
@@ -841,7 +828,7 @@ describe("scheduleHydrate", () => {
         `;
         const mount = vi.fn();
         const unmount = vi.fn();
-        mountIslands({ Sidebar: { mount, unmount } });
+        mountIslands({ Sidebar: { mount, dispose: unmount } });
         expect(mount).toHaveBeenCalledTimes(1);
 
         // No remount flag (props were identical) → mountNewIslands must not disturb it.
@@ -1171,7 +1158,7 @@ describe("island mounted marker state contract (#2541)", () => {
 
   it("writes the marker for an inline SSR-skip island after mount returns", () => {
     document.body.innerHTML = `
-      <div data-zfb-island-skip-ssr="Modal" data-when="visible"></div>
+      <div data-zfb-island-skip-ssr="Modal" data-when="load"></div>
     `;
     const el = island('[data-zfb-island-skip-ssr="Modal"]');
     const mount = vi.fn(() => {
@@ -1196,10 +1183,12 @@ describe("island mounted marker state contract (#2541)", () => {
   });
 
   it("leaves the marker absent when an inline module has no mount export", () => {
-    document.body.innerHTML = `<div data-zfb-island="NoMount" data-when="load"></div>`;
+    document.body.innerHTML = `<div data-zfb-island="NoMount" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="test" data-props="{}" data-when="load"></div>`;
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    mountIslands({ NoMount: {} });
+    mountOwnedIslands({
+      NoMount: { identity: { component: "NoMount", build: "test" }, mount: undefined as never },
+    });
 
     expect(isMounted(island())).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
@@ -1234,7 +1223,7 @@ describe("island mounted marker state contract (#2541)", () => {
     const el = island();
     const unmount = vi.fn();
 
-    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    mountIslands({ Counter: { mount: vi.fn(), dispose: unmount } });
     expect(isMounted(el)).toBe(true);
 
     unmountIslands(document.body);
@@ -1249,7 +1238,7 @@ describe("island mounted marker state contract (#2541)", () => {
     const unmount = vi.fn(() => {
       throw new Error("unmount failed");
     });
-    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    mountIslands({ Counter: { mount: vi.fn(), dispose: unmount } });
     expect(isMounted(el)).toBe(true);
 
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1276,7 +1265,7 @@ describe("island mounted marker state contract (#2541)", () => {
       expect(isMounted(el)).toBe(false);
     });
 
-    freshRuntime.mountIslands({ Probe: { mount: freshMount } });
+    mountIslands({ Probe: { mount: freshMount } }, freshRuntime.mountIslands);
 
     expect(freshMount).toHaveBeenCalledTimes(1);
     expect(isMounted(el)).toBe(true);

@@ -481,7 +481,7 @@ fn build_output_with_base_static_parity() {
     copy_dir(&fixture_dir(), root).expect("copy fixture");
 
     // Inject base: "/mysite/" via config override.
-    let config_with_base = r#"{ "framework": "zudo-react", "base": "/mysite/" }"#;
+    let config_with_base = r#"{ "base": "/mysite/" }"#;
     if !run_build(root, &esbuild, Some(config_with_base)) {
         return;
     }
@@ -641,7 +641,7 @@ async fn dev_serves_with_base_prefix_static_parity() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir for base-prefix dev");
-    let config_with_base = r#"{ "framework": "zudo-react", "base": "/mysite/" }"#;
+    let config_with_base = r#"{ "base": "/mysite/" }"#;
     let mut session = spawn_dev(&tmp, &esbuild, Some(config_with_base));
 
     let Some(port) = boot_and_get_port(&mut session).await else {

@@ -41,7 +41,6 @@ use std::process::Command;
 
 use zfb::render_pipeline::embedded_node_modules;
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 #[path = "../src/embedded_node_modules_cache.rs"]
@@ -69,8 +68,7 @@ fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
       import * as dev from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
       import * as server from "@takazudo/zfb/zudo-react/server";
       import * as client from "@takazudo/zfb/zudo-react/client";
-      import * as factory from "@takazudo/zfb/jsx-factory";
-      export const resolved = [core, jsx, dev, server, client, factory];
+      export const resolved = [core, jsx, dev, server, client];
       export const transformed = <div>owned JSX</div>;
     "#;
     fs::write(project.path().join("entry.tsx"), source).unwrap();
@@ -87,7 +85,6 @@ fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
             .arg("--format=esm")
             .arg("--jsx=automatic")
             .arg("--jsx-import-source=@takazudo/zfb/zudo-react")
-            .arg("--alias:@takazudo/zfb/jsx-factory=@takazudo/zfb/zudo-react/jsx-runtime")
             .arg("--outfile=out.js")
             .output()
             .expect("run esbuild");
@@ -203,8 +200,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
-        zudo_react_island_names: None,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),

@@ -208,7 +208,7 @@ fn write_corp_shape_fixture(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
     // satisfies `zfb`'s "is this a project" sniff.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "zudo-react" }
+        r#"{ }
 "#,
     )
     .unwrap();

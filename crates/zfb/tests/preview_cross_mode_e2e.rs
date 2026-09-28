@@ -184,7 +184,6 @@ fn configure_fixture_case(root: &Path, case: CrossModeCase) {
             fs::write(
                 root.join("zfb.config.json"),
                 r#"{
-  "framework": "zudo-react",
   "base": "/pj/site/",
   "plugins": [{ "name": "./preset.mjs" }]
 }

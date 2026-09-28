@@ -14,7 +14,6 @@
 //!   `zfb_build::renderer::EmbeddedV8Host` names it unconditionally.
 //! - [`error`] — crate-wide `RenderError`.
 
-pub mod adapters;
 pub mod dispatch_mode;
 pub mod error;
 pub mod paths;

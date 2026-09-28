@@ -10,6 +10,7 @@ pub mod client_scripts;
 pub mod first_party;
 pub mod helpers;
 pub mod module_workers;
+pub mod owned_runtime;
 pub mod page_extensions;
 pub mod page_privacy;
 pub mod render_region;

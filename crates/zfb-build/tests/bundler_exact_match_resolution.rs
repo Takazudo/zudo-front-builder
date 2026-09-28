@@ -27,7 +27,6 @@ use std::path::PathBuf;
 use zfb_build::{
     bundle, bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Lay down a minimal user-project tree: one TSX page that imports a
@@ -119,7 +118,6 @@ fn make_input(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::ZudoReact,
         zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
