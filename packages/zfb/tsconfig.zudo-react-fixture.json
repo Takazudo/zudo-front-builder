@@ -11,5 +11,5 @@
     "jsx": "react-jsx",
     "jsxImportSource": "@takazudo/zfb/zudo-react"
   },
-  "include": ["type-tests-zudo-react/**/*.tsx"]
+  "include": ["type-tests-zudo-react/**/*.tsx", "type-tests/config-fixture.ts"]
 }

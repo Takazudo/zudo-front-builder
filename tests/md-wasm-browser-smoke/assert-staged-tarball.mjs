@@ -70,8 +70,6 @@ if (realpathSync(fixturePackage) !== realpathSync(installedPackage)) {
 for (const relativePath of [
   "@takazudo/zfb/package.json",
   "@takazudo/zfb-runtime/package.json",
-  "preact/package.json",
-  "preact-render-to-string/package.json",
   "hono/package.json",
 ]) {
   const frameworkPackage = resolve(testRoot, "fixture-site", "node_modules", relativePath);
