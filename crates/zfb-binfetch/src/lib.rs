@@ -120,7 +120,7 @@ pub fn fetch_to_file(url: &str, dest: &Path, opts: &FetchOpts) -> Result<(), Str
     };
     Err(format!(
         "{reason}. \
-         Tip: set ZFB_ESBUILD_BIN or ZFB_TAILWIND_BIN to an existing binary \
+         Tip: set ZFB_ESBUILD_BIN to an existing binary \
          path to skip the download entirely."
     ))
 }

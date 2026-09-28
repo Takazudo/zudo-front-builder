@@ -15,7 +15,6 @@
     "prepare": "[ -d .git ] && (lefthook install --reset-hooks-path || true) && bash scripts/install-git-hooks.sh || true",
     "init-worktree": "bash scripts/install-git-hooks.sh",
     "//// === BINARIES ===": "",
-    "fetch:tailwind": "node scripts/fetch-tailwind.mjs",
     "sync:platform-versions": "node scripts/sync-platform-versions.mjs",
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",

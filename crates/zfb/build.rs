@@ -1,27 +1,20 @@
 //! Cargo build script for the `zfb` binary crate.
 //!
-//! This script downloads and stages the pinned esbuild and tailwindcss v4
-//! standalone binaries into `crates/zfb/binaries/` so that `cargo install zfb`
-//! works on a machine with no pnpm or Node.js.
+//! This script downloads and stages pinned esbuild so `cargo install zfb` works
+//! without pnpm or Node.js.
 //!
 //! ## Design notes
 //!
 //! * **Idempotent.** If a binary already exists at its slot path and its
 //!   SHA-256 matches the pinned constant, the download is skipped. Re-runs
 //!   (incremental cargo builds) are a fast no-op.
-//! * **Escape hatches.** If `ZFB_ESBUILD_BIN` or `ZFB_TAILWIND_BIN` is set to
-//!   a non-empty absolute path, that binary is staged directly into the
-//!   vendor snapshot in place of a download — each binary resolves its
-//!   source **independently**, so one can be overridden while the other
-//!   still downloads. Overrides skip SHA-256 pinning entirely (documented
-//!   trust boundary — see `BUILDING.md`). The pure decision of which source
-//!   each binary uses lives in `zfb_toolchain_pins::resolve_binary_source`
-//!   (unit-tested there); this file only does the I/O and validation.
+//! * **Escape hatch.** `ZFB_ESBUILD_BIN` stages an absolute, pre-verified binary
+//!   directly into the vendor snapshot without SHA-256 pinning.
 //! * **Hard SHA mismatch.** A checksum mismatch on a downloaded binary is a
 //!   build failure — we never silently accept a binary whose hash differs from
 //!   the pinned constant.
 //! * **Network unavailable.** A network error produces a clear, actionable
-//!   error message pointing the user at the escape-hatch env vars.
+//!   error message pointing the user at `ZFB_ESBUILD_BIN`.
 //! * **Extensible.** `main()` calls `download_binaries()` so sub-#198 (runtime
 //!   embedding) can add its own top-level function without restructuring this
 //!   file.
@@ -31,14 +24,8 @@
 //! esbuild version : single source of truth is `crates/zfb-toolchain-pins/src/lib.rs`
 //!                   (`EXPECTED_ESBUILD_VERSION`). Consumed here via the
 //!                   `zfb-toolchain-pins` build-dependency — no local copy.
-//! tailwindcss ver : single source of truth is `crates/zfb-toolchain-pins/src/lib.rs`
-//!                   (`EXPECTED_TAILWIND_VERSION`). Consumed here via the
-//!                   `zfb-toolchain-pins` build-dependency; the fetch script
-//!                   and CSS README remain parity-checked mirrors.
-//!
-//! When bumping either pin, update `crates/zfb-toolchain-pins/src/lib.rs` and
-//! the corresponding SHA-256 table below in the same commit. Tailwind's fetch
-//! script and CSS README mirror are guarded by the zfb parity test.
+//! When bumping the pin, update `crates/zfb-toolchain-pins/src/lib.rs` and
+//! the SHA-256 table below in the same commit.
 
 use std::fs;
 use std::io::{self, Read};
@@ -48,18 +35,13 @@ use std::path::{Path, PathBuf};
 // Version pins
 // ---------------------------------------------------------------------------
 
-/// Pinned esbuild and tailwindcss versions imported from `zfb-toolchain-pins`,
+/// Pinned esbuild version imported from `zfb-toolchain-pins`,
 /// the single source of truth for all external tool version pins. To bump,
 /// update `crates/zfb-toolchain-pins/src/lib.rs` and the SHA-256 table below.
 use zfb_toolchain_pins::{
     exe_suffix_for_target, resolve_binary_source, BinarySource, VendorPlatform,
-    EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION,
+    EXPECTED_ESBUILD_VERSION,
 };
-
-/// Pinned tailwindcss v4 version imported from `zfb-toolchain-pins`, the
-/// single source of truth. The parity test checks the script and README
-/// mirrors.
-const TAILWIND_VERSION: &str = EXPECTED_TAILWIND_VERSION;
 
 // ---------------------------------------------------------------------------
 // Framework package version pins (sub #209 — embed framework runtimes)
@@ -114,26 +96,6 @@ const ESBUILD_SHA256_WIN_X64: &str =
     "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0";
 
 // ---------------------------------------------------------------------------
-// SHA-256 constants — pinned tailwindcss release (from GitHub release
-// sha256sums.txt)
-//
-// Source:
-//   https://github.com/tailwindlabs/tailwindcss/releases/download/v<version>/sha256sums.txt
-//
-// Verified on 2026-05-05.
-// ---------------------------------------------------------------------------
-const TAILWIND_SHA256_LINUX_X64: &str =
-    "8f65e2d21c675f1e8d265219979d17d10634c1f553a2f583265b7edb28726432";
-const TAILWIND_SHA256_LINUX_ARM64: &str =
-    "376fd4da2c29eb81ae0638cd2f84a4304af92532f2f1576555f41bdb44c185da";
-const TAILWIND_SHA256_MACOS_ARM64: &str =
-    "d9e759fd6612dd442a9caa49d366b24e5097ea9802d35829da3f6db6ee5c2043";
-const TAILWIND_SHA256_MACOS_X64: &str =
-    "18cd6bb94d0f26ff8a0fa8a966beb9ea36bea2c7c444397f7619a2b880260e65";
-const TAILWIND_SHA256_WIN_X64: &str =
-    "3ee303c62115af89d1036da8a945cd51bdca653f39634e437358c17a3d3fbbc7";
-
-// ---------------------------------------------------------------------------
 // Platform detection
 // ---------------------------------------------------------------------------
 //
@@ -151,10 +113,8 @@ fn unsupported_target_message(target: &str) -> String {
         "unsupported target triple `{target}`. \
          Supported targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, \
          aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-msvc. \
-         Set ZFB_ESBUILD_BIN and/or ZFB_TAILWIND_BIN to absolute paths of \
-         pre-verified binaries to proceed on an unsupported platform — each \
-         binary resolves its source independently, so only the binaries \
-         lacking a supported platform need an override."
+         Set ZFB_ESBUILD_BIN to an absolute path of a pre-verified esbuild \
+         binary to proceed on an unsupported platform."
     )
 }
 
@@ -167,24 +127,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
-}
-
-/// Compute the SHA-256 of the file at `path` by reading it in 64 KiB chunks,
-/// avoiding a full in-memory buffer for large files (e.g. the ~75 MB tailwind
-/// binary).
-fn sha256_hex_file(path: &Path) -> io::Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut file = fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(hex::encode(h.finalize()))
 }
 
 /// Return `true` if `path` exists and its SHA-256 matches `expected_hex`.
@@ -321,8 +263,7 @@ fn download_esbuild(platform: VendorPlatform, slot_path: &Path) -> Result<(), St
 
     // Stream the .tgz to a sibling temp file, then read into memory for
     // extraction.  The tgz is small (~a few MB) so in-memory extraction is
-    // acceptable; the heavy ~75 MB tailwind binary uses a streaming hash
-    // instead (see `download_tailwindcss`).
+    // acceptable.
     let tgz_tmp = slot_parent.join("esbuild-download.tgz.tmp");
     zfb_binfetch::fetch_to_file(&url, &tgz_tmp, &zfb_binfetch::FetchOpts::default())
         .map_err(|e| format!("download failed for esbuild from `{url}`: {e}"))?;
@@ -362,114 +303,8 @@ fn download_esbuild(platform: VendorPlatform, slot_path: &Path) -> Result<(), St
 }
 
 // ---------------------------------------------------------------------------
-// tailwindcss download
-// ---------------------------------------------------------------------------
-
-/// Platform-specific asset name for the tailwindcss GitHub release.
-fn tailwindcss_asset_name(platform: VendorPlatform) -> (&'static str, &'static str) {
-    // Returns (asset_filename, expected_sha256).
-    // Asset names match the tailwindlabs release convention.
-    match platform {
-        VendorPlatform::LinuxX64Gnu => ("tailwindcss-linux-x64", TAILWIND_SHA256_LINUX_X64),
-        VendorPlatform::LinuxArm64Gnu => ("tailwindcss-linux-arm64", TAILWIND_SHA256_LINUX_ARM64),
-        VendorPlatform::MacosArm64 => ("tailwindcss-macos-arm64", TAILWIND_SHA256_MACOS_ARM64),
-        VendorPlatform::MacosX64 => ("tailwindcss-macos-x64", TAILWIND_SHA256_MACOS_X64),
-        VendorPlatform::Win32X64Msvc => ("tailwindcss-windows-x64.exe", TAILWIND_SHA256_WIN_X64),
-    }
-}
-
-/// Download and stage the tailwindcss v4 binary.
-///
-/// Caller (`resolve_vendor_source` in `download_binaries`) has already
-/// established that no override is set and the slot doesn't already hold
-/// the correct binary — this function unconditionally downloads.
-fn download_tailwindcss(platform: VendorPlatform, slot_path: &Path) -> Result<(), String> {
-    let (asset_name, expected_sha) = tailwindcss_asset_name(platform);
-
-    let release_base = format!(
-        "https://github.com/tailwindlabs/tailwindcss/releases/download/v{TAILWIND_VERSION}"
-    );
-    let url = format!("{release_base}/{asset_name}");
-    println!("cargo:warning=Downloading tailwindcss {TAILWIND_VERSION} from {url} ...");
-
-    // Ensure the `binaries/` parent directory exists before writing the temp
-    // file.  `fetch_to_file` requires the dest's parent to exist.
-    if let Some(parent) = slot_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create binaries dir {}: {e}", parent.display()))?;
-    }
-
-    // Stream directly to a .tmp sibling — avoids buffering the full ~75 MB
-    // tailwind binary in memory.  The hash is computed by reading the on-disk
-    // temp file in chunks (see `sha256_hex_file`).
-    let tmp = slot_path.with_extension("tmp");
-    zfb_binfetch::fetch_to_file(&url, &tmp, &zfb_binfetch::FetchOpts::default())
-        .map_err(|e| format!("download failed for tailwindcss from `{url}`: {e}"))?;
-
-    let actual_sha = match sha256_hex_file(&tmp) {
-        Ok(sha) => sha,
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            return Err(format!(
-                "failed to hash tailwindcss temp file {}: {e}",
-                tmp.display()
-            ));
-        }
-    };
-
-    if !actual_sha.eq_ignore_ascii_case(expected_sha) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!(
-            "SHA-256 mismatch for tailwindcss binary from `{url}`:\n\
-             expected: {expected_sha}\n\
-             got:      {actual_sha}\n\
-             The release may have been re-cut or the download was corrupted. \
-             Refusing to install. Set ZFB_TAILWIND_BIN to a pre-verified binary \
-             to bypass the build-script download.",
-        ));
-    }
-
-    stage_binary_from_file(&tmp, slot_path).map_err(|e| {
-        // Best-effort cleanup: if chmod or rename fails, remove the stale temp
-        // file so a subsequent build can retry the fetch cleanly.
-        let _ = fs::remove_file(&tmp);
-        format!(
-            "failed to stage tailwindcss binary at {}: {e}",
-            slot_path.display()
-        )
-    })?;
-
-    println!(
-        "cargo:warning=✓ tailwindcss {TAILWIND_VERSION} installed at {} (sha256 {actual_sha})",
-        slot_path.display()
-    );
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Binary staging helper
 // ---------------------------------------------------------------------------
-
-/// Promote a fully-downloaded temp file to its final slot path atomically.
-///
-/// Ensures `dest`'s parent directory exists, sets the executable bit (`0o755`)
-/// on Unix, then renames `tmp` into `dest`. The caller must have already
-/// verified the SHA-256 checksum. Used by `download_tailwindcss` to avoid
-/// loading the full binary into memory a second time after streaming to disk.
-fn stage_binary_from_file(tmp: &Path, dest: &Path) -> io::Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))?;
-    }
-
-    fs::rename(tmp, dest)?;
-    Ok(())
-}
 
 /// Write `bytes` to `dest` atomically (via a `.tmp` sibling) and make the
 /// file executable on Unix.
@@ -541,7 +376,7 @@ fn find_workspace_root() -> PathBuf {
 
 /// Append `suffix` (e.g. `".exe"`, or `""`) to `base`'s filename as a real
 /// extension, replacing whatever extension (if any) `base` already has.
-/// Kept as a small helper so the two slot-path constructions in
+/// Kept as a small helper so the slot-path construction in
 /// `download_binaries` stay one-liners.
 fn with_exe_suffix(base: PathBuf, suffix: &str) -> PathBuf {
     if suffix.is_empty() {
@@ -552,7 +387,7 @@ fn with_exe_suffix(base: PathBuf, suffix: &str) -> PathBuf {
     p
 }
 
-/// Validate a `ZFB_ESBUILD_BIN` / `ZFB_TAILWIND_BIN` override path and
+/// Validate a `ZFB_ESBUILD_BIN` override path and
 /// return it ready to stage.
 ///
 /// Per the documented override contract (`BUILDING.md`), the path must be
@@ -596,8 +431,7 @@ fn validate_override_path(env_var: &str, raw: &std::ffi::OsStr) -> Result<PathBu
 /// the on-disk slot state into a `BinarySource` decision via
 /// `zfb_toolchain_pins::resolve_binary_source`. The slot's SHA-256 is only
 /// checked when it could actually matter (no override present, and the
-/// platform is supported) — avoids hashing the ~75 MB tailwind slot file
-/// for no reason when it's about to be overridden anyway.
+/// platform is supported).
 fn resolve_vendor_source(
     env_var: &str,
     vendor_platform: Option<VendorPlatform>,
@@ -622,19 +456,8 @@ fn resolve_vendor_source(
     )
 }
 
-/// Download and stage the esbuild and tailwindcss binaries.
-///
-/// Each binary resolves its source independently: an override wins
-/// unconditionally (staged as-is, no SHA-256 check); otherwise the
-/// existing download-and-slot flow runs, which itself requires a
-/// supported `TARGET`. `detect_platform`-equivalent errors are only raised
-/// when a binary actually needs the download flow and the platform isn't
-/// supported — an override-only build on an unsupported platform (e.g.
-/// musl) never hits that error.
-///
-/// This is a separate function (not inlined into `main`) so that sub-#198
-/// (runtime embedding) can add its own top-level function without having to
-/// restructure this file.
+/// Download and stage esbuild. An override wins without SHA-256 validation;
+/// otherwise the pinned slot is used or populated for supported targets.
 fn download_binaries() -> Result<(), String> {
     let workspace_root = find_workspace_root();
     let binaries_dir = workspace_root.join("crates").join("zfb").join("binaries");
@@ -642,25 +465,19 @@ fn download_binaries() -> Result<(), String> {
     let target = std::env::var("TARGET").unwrap_or_default();
     let vendor_platform = VendorPlatform::from_target_triple(&target);
     let exe_suffix = exe_suffix_for_target(&target);
+    println!("cargo:rustc-env=ZFB_BUILD_TARGET={target}");
 
     let esbuild_slot = with_exe_suffix(binaries_dir.join("esbuild").join("esbuild"), exe_suffix);
-    let tailwind_slot = with_exe_suffix(binaries_dir.join("tailwindcss-v4"), exe_suffix);
 
     // Cargo resolves a relative `rerun-if-changed` path against the package
     // root (`crates/zfb/`) and treats a missing file as permanently stale, so
     // every trigger here must be an absolute path to a file that exists.
     println!("cargo:rerun-if-env-changed=ZFB_ESBUILD_BIN");
-    println!("cargo:rerun-if-env-changed=ZFB_TAILWIND_BIN");
 
     let esbuild_source =
         resolve_vendor_source("ZFB_ESBUILD_BIN", vendor_platform, &esbuild_slot, |p| {
             esbuild_platform_meta(p).expected_sha256
         });
-    let tailwind_source =
-        resolve_vendor_source("ZFB_TAILWIND_BIN", vendor_platform, &tailwind_slot, |p| {
-            tailwindcss_asset_name(p).1
-        });
-
     // Watch each binary slot only when its resolved source is NOT an
     // override — an override path already emits its own absolute
     // rerun-if-changed trigger in `validate_override_path`, and the slot
@@ -669,13 +486,8 @@ fn download_binaries() -> Result<(), String> {
     if !matches!(esbuild_source, BinarySource::Override(_)) {
         println!("cargo:rerun-if-changed={}", esbuild_slot.display());
     }
-    if !matches!(tailwind_source, BinarySource::Override(_)) {
-        println!("cargo:rerun-if-changed={}", tailwind_slot.display());
-    }
 
-    if matches!(esbuild_source, BinarySource::Unsupported)
-        || matches!(tailwind_source, BinarySource::Unsupported)
-    {
+    if matches!(esbuild_source, BinarySource::Unsupported) {
         return Err(unsupported_target_message(&target));
     }
 
@@ -697,50 +509,19 @@ fn download_binaries() -> Result<(), String> {
         BinarySource::Unsupported => unreachable!("handled above"),
     };
 
-    let tailwind_final = match tailwind_source {
-        BinarySource::Override(raw) => validate_override_path("ZFB_TAILWIND_BIN", &raw)?,
-        BinarySource::Slot => {
-            println!(
-                "cargo:warning=tailwindcss binary already present at {} with correct SHA-256 — skipping download.",
-                tailwind_slot.display()
-            );
-            tailwind_slot.clone()
-        }
-        BinarySource::NeedsDownload => {
-            let platform =
-                vendor_platform.expect("NeedsDownload implies platform_supported was true");
-            download_tailwindcss(platform, &tailwind_slot)?;
-            tailwind_slot.clone()
-        }
-        BinarySource::Unsupported => unreachable!("handled above"),
-    };
-
-    // Sub #212 — also stage the binaries into `$OUT_DIR/vendor/bin/` so the
-    // existing `include_dir!("$ZFB_VENDOR_DIR")` snapshot embeds them next to
+    // Sub #212 — also stage the binary into `$OUT_DIR/vendor/bin/` so the
+    // existing `include_dir!("$ZFB_VENDOR_DIR")` snapshot embeds it next to
     // `@takazudo/*` and the framework packages. Consumers without a
-    // workspace-relative `crates/zfb/binaries/` dir can then extract them at
+    // workspace-relative `crates/zfb/binaries/` dir can then extract it at
     // runtime via `embedded_binary()` in `crates/zfb/src/render_pipeline.rs`.
-    stage_binaries_into_vendor(&esbuild_final, &tailwind_final, exe_suffix)?;
+    stage_binaries_into_vendor(&esbuild_final, exe_suffix)?;
 
     Ok(())
 }
 
-/// Copy the resolved esbuild and tailwindcss binaries (each either a slot
-/// path or a validated override path) into `$OUT_DIR/vendor/bin/` so they
-/// ride along inside `EMBEDDED_VENDOR` (the `include_dir!` snapshot in
-/// `crates/zfb/src/render_pipeline.rs`). The `embedded_binary()` helper
-/// then extracts whichever name a caller asks for at runtime.
-///
-/// `exe_suffix` (`".exe"` or `""`) names the canonical embedded filename —
-/// derived from Cargo's resolved `TARGET`, not the host's `cfg!(target_os)`,
-/// so a cross-compiling host never mis-names the target-platform entry.
-/// The executable bit is set on Unix so the extracted file is invocable
-/// without an extra chmod.
-fn stage_binaries_into_vendor(
-    esbuild_src: &Path,
-    tailwind_src: &Path,
-    exe_suffix: &str,
-) -> Result<(), String> {
+/// Copy the resolved esbuild binary into `$OUT_DIR/vendor/bin/`.
+/// The filename suffix comes from Cargo's target triple.
+fn stage_binaries_into_vendor(esbuild_src: &Path, exe_suffix: &str) -> Result<(), String> {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let bin_dir = out_dir.join("vendor").join("bin");
     fs::create_dir_all(&bin_dir)
@@ -748,23 +529,6 @@ fn stage_binaries_into_vendor(
 
     let esbuild_dst = bin_dir.join(format!("esbuild{exe_suffix}"));
     copy_executable(esbuild_src, &esbuild_dst)?;
-
-    let tailwind_dst = bin_dir.join(format!("tailwindcss-v4{exe_suffix}"));
-    copy_executable(tailwind_src, &tailwind_dst)?;
-
-    // #3159 — stamp the embedded Tailwind binary's SHA-256 at build time so
-    // `zfb-css` can skip re-hashing the ~76 MB binary on every process start
-    // (see `TailwindSubprocessConfig::with_embedded_binary_and_digest`).
-    // Hashing the STAGED copy (not `tailwind_src`) covers slot, download,
-    // and `ZFB_TAILWIND_BIN` override (#1772) builds uniformly — whatever
-    // bytes end up embedded via `include_dir!` are exactly what gets hashed.
-    let tailwind_digest = sha256_hex_file(&tailwind_dst).map_err(|e| {
-        format!(
-            "failed to hash staged tailwind binary {}: {e}",
-            tailwind_dst.display()
-        )
-    })?;
-    println!("cargo:rustc-env=ZFB_EMBEDDED_TAILWIND_SHA256={tailwind_digest}");
 
     Ok(())
 }
@@ -798,6 +562,13 @@ fn main() {
     // output across local experiments or repeated CI builds.
     println!("cargo:rerun-if-env-changed=ZFB_RELEASE_VERSION");
 
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+    let vendor_dir = out_dir.join("vendor");
+    if vendor_dir.exists() {
+        fs::remove_dir_all(&vendor_dir).expect("failed to purge OUT_DIR/vendor");
+    }
+    fs::create_dir_all(&vendor_dir).expect("failed to create OUT_DIR/vendor");
+
     // Sub 198 — embed @takazudo/zfb + zfb-runtime TypeScript source so the
     // installed binary works on a consumer with no node_modules.
     embed_runtime();
@@ -807,7 +578,7 @@ fn main() {
     // still bundle a page that imports them.
     embed_framework_packages();
 
-    // Sub 197 — download pinned esbuild + tailwindcss standalone binaries.
+    // Sub 197 — download pinned esbuild standalone binary.
     if let Err(e) = download_binaries() {
         // Emit as a compile_error! so the build output is clearly visible.
         println!("cargo:error={e}");

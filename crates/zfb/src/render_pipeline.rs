@@ -128,11 +128,9 @@ static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
     let node_modules = dir.path().join("node_modules");
-    // Skip the top-level `bin/` entry — those are helper binaries (esbuild,
-    // tailwindcss-v4) staged by `stage_binaries_into_vendor` for
-    // `embedded_binary()` to extract on demand. They have no business inside
-    // a node_modules tree, and not extracting them avoids ~100 MB of wasted
-    // copies on every esbuild bundler invocation.
+    // Skip the top-level `bin/` entry: esbuild is staged there for
+    // `embedded_binary()` to extract on demand. It does not belong in
+    // node_modules, and skipping it avoids a copy on every bundle.
     extract_dir_with_prefix_filtered(&EMBEDDED_VENDOR, &node_modules, Path::new(""), &|p| {
         p.iter().next().map(|s| s == "bin").unwrap_or(false)
     })
@@ -151,12 +149,12 @@ pub(crate) fn embedded_node_modules_for_project(
     )
 }
 
-/// Extract a single embedded helper binary (esbuild, tailwindcss-v4, …) from
+/// Extract an embedded helper binary (esbuild) from
 /// the `bin/` subtree of [`EMBEDDED_VENDOR`] into a fresh tempdir so the TS
-/// config loader and the CSS engine can shell out to it without a
+/// config loader can shell out to it without a
 /// workspace-relative `crates/zfb/binaries/` slot.
 ///
-/// `name` is the binary's stem (e.g. `"esbuild"`, `"tailwindcss-v4"`). On
+/// `name` is the binary's stem (e.g. `"esbuild"`). On
 /// Windows this function additionally probes for `<name>.exe` so a caller
 /// passing `"esbuild"` resolves the Windows variant transparently.
 ///
@@ -186,7 +184,7 @@ pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
         anyhow::anyhow!(
             "embedded binary `{name}` not found under bin/ inside the embedded vendor snapshot. \
              Make sure `crates/zfb/build.rs::stage_binaries_into_vendor` ran during the last \
-             build (it copies crates/zfb/binaries/{{esbuild,tailwindcss-v4}} into \
+             build (it copies crates/zfb/binaries/esbuild/esbuild into \
              $OUT_DIR/vendor/bin/ so include_dir! picks them up)."
         )
     })?;
@@ -2172,6 +2170,39 @@ mod tests {
         assert!(msg.contains("pnpm install"), "{msg}");
         assert!(msg.contains("cargo install"), "{msg}");
         assert!(msg.contains("embedded vendor snapshot"), "{msg}");
+    }
+
+    /// Assert the complete embedded root, including the target-specific binary.
+    #[test]
+    fn embedded_vendor_top_level_entries_match_expected_set() {
+        let mut actual: Vec<_> = EMBEDDED_VENDOR
+            .entries()
+            .iter()
+            .map(|entry| entry.path().to_str().expect("vendor entry is UTF-8"))
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(
+            actual,
+            [
+                "@takazudo",
+                "bin",
+                "hono",
+                "preact",
+                "preact-render-to-string"
+            ]
+        );
+
+        let bin = EMBEDDED_VENDOR
+            .get_dir("bin")
+            .expect("embedded bin directory");
+        let mut binaries: Vec<_> = bin
+            .entries()
+            .iter()
+            .map(|entry| entry.path().file_name().unwrap().to_str().unwrap())
+            .collect();
+        binaries.sort_unstable();
+        let exe_suffix = zfb_toolchain_pins::exe_suffix_for_target(env!("ZFB_BUILD_TARGET"));
+        assert_eq!(binaries, [format!("esbuild{exe_suffix}")]);
     }
 
     /// Smoke-test that [`embedded_node_modules`] extracts a proper

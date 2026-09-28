@@ -15,19 +15,11 @@ This crate invokes the **Tailwind CSS v4 standalone CLI** as a subprocess.
 
 | Field                 | Value                                                         |
 | --------------------- | ------------------------------------------------------------- |
-| Pinned version        | **`4.2.0`**                                                   |
 | Major line            | Tailwind CSS v4.x                                             |
 | Distribution          | Standalone CLI binary (no Node.js required at runtime)        |
 | Workspace fallback    | `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows)   |
 | Embedded runtime name | `bin/tailwindcss-v4` inside the `include_dir!` vendor snapshot |
 | Upstream              | <https://github.com/tailwindlabs/tailwindcss/releases>        |
-
-> The pin **must be reviewed and refreshed before each `zfb` release**. Bump
-> `4.2.0` to whatever the latest stable Tailwind v4.x is at release-cut time.
-> Update `TAILWIND_VERSION` and the Tailwind SHA-256 constants in
-> `crates/zfb/build.rs`, plus `TAILWIND_VERSION` in
-> `scripts/fetch-tailwind.mjs`, in the same commit. Both version constants
-> must stay in lockstep with the version line above.
 
 ## Getting the binary
 
@@ -46,10 +38,6 @@ verifies its SHA-256, and stages it at `crates/zfb/binaries/tailwindcss-v4`
 compiled `zfb` executable. Re-runs are a fast no-op when the on-disk binary
 already matches the pinned checksum.
 
-The script `scripts/fetch-tailwind.mjs` (invoked via `pnpm fetch:tailwind`)
-performs the same download for developer convenience — useful when you
-want the binary available before running a full `cargo build`.
-
 Supported platforms: `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`,
 `win32-x64`. On musl-libc Linux distros (Alpine and friends), use the override
 below to point at a manually-fetched musl asset.
@@ -65,8 +53,7 @@ export ZFB_TAILWIND_BIN=/usr/local/bin/tailwindcss
 cargo test -p zfb-css -- --ignored
 ```
 
-When `ZFB_TAILWIND_BIN` is set, `pnpm fetch:tailwind` is a no-op (it trusts
-the override). The engine's path resolution is implemented at
+The engine's path resolution is implemented at
 [`crates/zfb-css/src/engine.rs`](src/engine.rs).
 
 ### Oxide warm-up policy
@@ -130,8 +117,7 @@ See `crates/zfb/binaries/README.md` for the staging-path details.
 The binary file itself is **not** committed to git — `.gitignore` excludes it.
 `crates/zfb/build.rs` downloads and SHA-verifies it at `cargo build` /
 `cargo install` time, embeds it via `$OUT_DIR/vendor/bin/`, and leaves the
-workspace copy as the direct-development fallback. `pnpm fetch:tailwind`
-provides the same workspace copy for local development without a full build.
+workspace copy as the direct-development fallback.
 
 ---
 

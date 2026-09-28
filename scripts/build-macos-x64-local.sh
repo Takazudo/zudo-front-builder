@@ -156,7 +156,7 @@ CI=true pnpm install --frozen-lockfile
 
 # Binary slot save/restore (issue #2189, fixing the pollution source behind
 # #2178). The cross-build below overwrites the shared, arch-unqualified
-# crates/zfb/binaries/{esbuild/esbuild,tailwindcss-v4} slots with
+# crates/zfb/binaries/esbuild/esbuild slot with
 # darwin-x64 binaries (build.rs correctly detects the staged arm64 slots
 # fail the x64 SHA-256 pins). Left alone, that leaves the main repo's slots
 # wrong-arch for the host until something re-runs the build script
