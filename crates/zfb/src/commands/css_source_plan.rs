@@ -198,11 +198,78 @@ fn resolve_manifest_path(
     if path.starts_with("./") || path.starts_with("../") || Path::new(path).is_absolute() {
         return Ok(absolute(&base, Path::new(path)));
     }
-    let url = zfb_config_loader::resolve_node_bare_specifier(path, &base)
-        .with_context(|| format!("manifest package path {path}"))?;
+    let url = match zfb_config_loader::resolve_node_bare_specifier(path, &base) {
+        Ok(url) => url,
+        Err(error) => {
+            // A package may declare a plain subpath whose file has not been
+            // created yet. Resolve its installed package directory without
+            // requiring that target file, so dev can watch its parent and
+            // recover from the first create. Keep exports authoritative:
+            // their mapping cannot be inferred from the lexical subpath.
+            if let Some(missing) = missing_unexported_package_subpath(&base, path) {
+                return Ok(missing);
+            }
+            return Err(error).with_context(|| format!("manifest package path {path}"));
+        }
+    };
     url::Url::parse(&url)?
         .to_file_path()
         .map_err(|_| anyhow::anyhow!("manifest path {path} is not a file URL"))
+}
+
+fn missing_unexported_package_subpath(base: &Path, specifier: &str) -> Option<PathBuf> {
+    let mut parts = specifier.split('/');
+    let first = parts.next()?;
+    let package = if first.starts_with('@') {
+        format!("{first}/{}", parts.next()?)
+    } else {
+        first.to_owned()
+    };
+    let tail: PathBuf = parts.collect();
+    if tail.as_os_str().is_empty()
+        || !tail
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    for ancestor in base.ancestors() {
+        let package_dir = ancestor.join("node_modules").join(&package);
+        let package_json = package_dir.join("package.json");
+        let Ok(bytes) = fs::read(package_json) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return None;
+        };
+        if metadata.get("exports").is_some() {
+            return None;
+        }
+        return Some(absolute(&package_dir, &tail));
+    }
+    None
+}
+
+/// Resolve declared manifest identities without reading or validating their
+/// contents. Dev must arm watches even when a required file is absent or
+/// malformed, so one subsequent create/fix can recover the CSS pass.
+pub(crate) fn resolve_declared_manifest_paths(
+    project_root: &Path,
+    config: &Config,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let mut manifests = BTreeMap::new();
+    if let Some(WindSetting::Enabled(wind)) = &config.wind {
+        for (producer, declaration) in &wind.manifests {
+            let path = resolve_manifest_path(
+                project_root,
+                &declaration.path,
+                declaration.source_package.as_deref(),
+            )
+            .with_context(|| format!("manifest {producer} at {}", declaration.path))?;
+            manifests.insert(producer.clone(), path);
+        }
+    }
+    Ok(manifests)
 }
 
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
@@ -218,7 +285,7 @@ pub(crate) fn gather_css_source_plan_inputs(
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(&project_root);
-    let mut manifests = BTreeMap::new();
+    let manifests = resolve_declared_manifest_paths(&project_root, config)?;
     let mut safelist = BTreeMap::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         safelist = wind
@@ -226,15 +293,8 @@ pub(crate) fn gather_css_source_plan_inputs(
             .iter()
             .map(|(owner, values)| (owner.clone(), values.iter().cloned().collect()))
             .collect();
-        for (producer, declaration) in &wind.manifests {
-            let path = resolve_manifest_path(
-                &project_root,
-                &declaration.path,
-                declaration.source_package.as_deref(),
-            )
-            .with_context(|| format!("manifest {producer} at {}", declaration.path))?;
-            read_candidate_manifest(&path, producer)?;
-            manifests.insert(producer.clone(), path);
+        for (producer, path) in &manifests {
+            read_candidate_manifest(path, producer)?;
         }
     }
     let role_classes = super::css_support::role_classes_inline_sources(config)
@@ -479,6 +539,31 @@ mod tests {
         let plan = build_css_source_plan(&gathered);
         assert!(plan.exclusions.contains(&inputs.project_root.join("dist")));
         assert!(plan.exclusions.contains(&inputs.pass_output_dir));
+    }
+
+    #[test]
+    fn missing_bare_manifest_subpath_uses_installed_unexported_package_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let package = project.join("node_modules/@fixture/widgets");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"version\":\"1.0.0\"}",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_manifest_path(&project, "@fixture/widgets/wind.json", None).unwrap(),
+            package.join("wind.json")
+        );
+        fs::write(
+            package.join("package.json"),
+            "{\"name\":\"@fixture/widgets\",\"exports\":{\"./wind.json\":\"./dist/wind.json\"}}",
+        )
+        .unwrap();
+        assert!(
+            missing_unexported_package_subpath(&project, "@fixture/widgets/wind.json").is_none()
+        );
     }
 
     #[test]
