@@ -17,9 +17,12 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
-    ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island,
+    IslandsBundleBuildIdentityError, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
+    StageAuditPolicy, WorkspacePackageImportEdge,
 };
+
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
 fn island(name: &str, path: &str) -> Island {
     Island::new(name, PathBuf::from(path))
@@ -42,6 +45,83 @@ fn native_bundler_returns_not_implemented_error() {
 }
 
 #[test]
+fn public_owned_bundle_requires_real_identity_before_emitting_assets() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outdir = tmp.path().join("dist");
+    let island = island("Counter", "components/counter.tsx");
+    // A missing executable makes an accidental subprocess attempt fail with
+    // the wrong error; identity validation must happen first.
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_binary_path("/nonexistent/zfb-esbuild-identity-regression"),
+    );
+    let missing = BundleConfig::default().with_outdir(&outdir);
+    let err = bundler
+        .bundle(std::slice::from_ref(&island), &missing)
+        .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<IslandsBundleBuildIdentityError>(),
+        Some(&IslandsBundleBuildIdentityError::Missing)
+    );
+    assert!(!outdir.exists(), "missing token must not emit assets");
+
+    for invalid in [
+        "",
+        "test-build",
+        "0123456789abcde",
+        "0123456789abcdef0",
+        "0123456789abcdeF",
+    ] {
+        let config = BundleConfig::default()
+            .with_zudo_react_build(Some(invalid.to_string()))
+            .with_outdir(&outdir);
+        let err = bundler
+            .bundle(std::slice::from_ref(&island), &config)
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<IslandsBundleBuildIdentityError>(),
+            Some(&IslandsBundleBuildIdentityError::Invalid),
+            "invalid token {invalid:?}"
+        );
+        assert!(!outdir.exists(), "invalid token must not emit assets");
+    }
+
+    // Mock mode with empty output echoes the generated entry source. The
+    // public path must carry the supplied token into both identity sites.
+    let bundler =
+        EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+    let valid = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(&outdir);
+    let output = bundler
+        .bundle(&[island], &valid)
+        .expect("valid owned bundle");
+    let glue = String::from_utf8(output.bytes).expect("JS source");
+    assert_eq!(
+        glue.matches(&format!("build: \"{TEST_BUILD_TOKEN}\""))
+            .count(),
+        2
+    );
+    assert!(!glue.contains("test-build"));
+    assert!(
+        !outdir.exists(),
+        "bundler returns bytes without emitting assets"
+    );
+}
+
+#[test]
+fn client_router_only_bundle_allows_missing_owned_identity() {
+    let bundler =
+        EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+    let config = BundleConfig::default().with_client_router(true);
+    let output = bundler.bundle(&[], &config).expect("router-only bundle");
+    let source = String::from_utf8(output.bytes).expect("JS source");
+    assert!(source.contains("@takazudo/zfb-runtime/client-router"));
+    assert!(!source.contains("mountIslands"));
+    assert!(!source.contains("test-build"));
+}
+
+#[test]
 fn subprocess_bundler_mock_short_circuits_command() {
     // Use the mock-output escape hatch so this test does not require the
     // esbuild binary to be present.
@@ -49,7 +129,9 @@ fn subprocess_bundler_mock_short_circuits_command() {
     let cfg =
         EsbuildSubprocessConfig::default().with_mock_output("export const Counter = () => null;\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out: BundleOutput = bundler
         .bundle(&[island("Counter", "components/counter.tsx")], &bundle_cfg)
         .expect("mock bundler should succeed");
@@ -91,7 +173,9 @@ fn bundle_filename_is_stable_regardless_of_payload() {
     let make = |payload: &str, root: &Path| {
         let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
         let bundler = EsbuildSubprocessBundler::new(cfg);
-        let bundle_cfg = BundleConfig::default().with_outdir(root);
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(root);
         bundler
             .bundle(&[island("X", "components/x.tsx")], &bundle_cfg)
             .expect("bundle")
@@ -115,7 +199,9 @@ fn bundle_output_layout_is_stable_assets_islands_js() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
@@ -157,7 +243,9 @@ fn module_ids_list_preserves_island_order() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(
             &[
@@ -179,6 +267,7 @@ fn asset_url_uses_configured_base_url() {
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path())
         .with_base_url("https://cdn.example.com");
     let out = bundler
@@ -203,7 +292,9 @@ fn bundle_output_bytes_carries_js_in_memory() {
     let payload = "// bundled islands JS\nexport const x = 1;\n";
     let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
@@ -239,7 +330,9 @@ fn subprocess_bundler_against_real_binary() {
     let entry = tmp.path().join("entry.js");
     std::fs::write(&entry, "export const Counter = () => null;\n").expect("write entry");
 
-    let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
@@ -324,6 +417,7 @@ export default function NoEffectFn() { return null; }
     .expect("write no-effect");
 
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path())
         // Disable minification so we can grep the output by source-name
         // identifiers rather than mangled symbols.
@@ -467,7 +561,9 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
             .with_working_dir(&app_dir)
             .with_stage_audit(policy),
     );
-    let bundle_cfg = BundleConfig::production().with_outdir(app_dir.join("dist"));
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(app_dir.join("dist"));
 
     let err = bundler
         .bundle(&[Island::new("Counter", component)], &bundle_cfg)
@@ -564,6 +660,7 @@ fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir
     // `islands_shadow_preserve_symlinks_is_load_bearing` below for the
     // same load-bearing contract in the glob-shadow tests).
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(app_dir.join("dist"))
         .with_preserve_symlinks(true);
 
@@ -616,6 +713,7 @@ fn splitting_emits_chunk_for_dynamic_import() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -681,6 +779,7 @@ fn splitting_emits_chunk_for_dynamic_import() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp2.path()),
     );
     let cfg2 = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp2.path().join("dist"))
         .with_minify(false);
     let out2 = bundler2
@@ -719,6 +818,7 @@ fn no_dynamic_import_yields_single_file() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -781,6 +881,7 @@ export default function ResourceIsland() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
     let out = bundler
@@ -1098,6 +1199,7 @@ fn islands_shadow_raw_import_bundles_text() {
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
     let config = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"))
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -1181,6 +1283,7 @@ fn islands_shadow_alias_raw_import_bundles_text() {
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
     let config = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"))
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -1341,6 +1444,7 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
         EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
     );
     let config = BundleConfig::dev()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(&dev_assets_root)
         .with_sourcemap(false)
         .with_module_workers(vec![worker_entry]);
@@ -1451,6 +1555,7 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
         );
         let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_define(define)
@@ -1541,6 +1646,7 @@ fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
         );
         let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_module_workers(vec![worker_entry]);
@@ -1620,6 +1726,7 @@ fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
                 .with_virtual_modules(virtuals),
         );
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_module_workers(vec![
@@ -1695,6 +1802,7 @@ fn island_css_import_bundles_without_error() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -1757,6 +1865,7 @@ fn island_module_css_import_bundles_without_error() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -2189,6 +2298,7 @@ fn islands_shadow_expands_glob_and_executes() {
         EsbuildSubprocessConfig::default().with_working_dir(proj_root.to_path_buf()),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -2258,6 +2368,7 @@ fn islands_shadow_preserve_symlinks_is_load_bearing() {
         EsbuildSubprocessConfig::default().with_working_dir(proj.path().to_path_buf()),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_minify(false)
         .with_preserve_symlinks(false);
@@ -2323,7 +2434,9 @@ fn working_dir_is_clean_after_multi_entry_bundle() {
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
-    let bundle_cfg = BundleConfig::production().with_outdir(out_dir.path());
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(out_dir.path());
     let islands = [
         Island::new("Alpha", alpha.clone()),
         Island::new("Beta", beta.clone()),
@@ -2490,6 +2603,7 @@ fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker(
             )]),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_module_workers(vec![worker_entry]);
     let islands = [Island::new("Alpha", island_path.clone())];
