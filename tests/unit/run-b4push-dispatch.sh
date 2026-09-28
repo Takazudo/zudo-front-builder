@@ -51,15 +51,13 @@ setup_fixture() {
   cp "$SOURCE_SCRIPT" "$FIXTURE_ROOT/scripts/run-b4push.sh"
   : > "$FIXTURE_ROOT/install.sh"
   : > "$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild"
-  : > "$FIXTURE_ROOT/crates/zfb/binaries/tailwindcss-v4"
-  chmod +x "$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild" \
-    "$FIXTURE_ROOT/crates/zfb/binaries/tailwindcss-v4"
+  chmod +x "$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild"
 
   cat > "$FIXTURE_BIN/cargo" <<'MOCK_CARGO'
 #!/bin/sh
 printf 'CALL: cargo %s\n' "$*" >> "$MOCK_CARGO_LOG"
-printf 'ENV: ZFB_ESBUILD_BIN=%s ZFB_TAILWIND_BIN=%s\n' \
-  "${ZFB_ESBUILD_BIN:-}" "${ZFB_TAILWIND_BIN:-}" >> "$MOCK_CARGO_ENV_LOG"
+printf 'ENV: ZFB_ESBUILD_BIN=%s\n' \
+  "${ZFB_ESBUILD_BIN:-}" >> "$MOCK_CARGO_ENV_LOG"
 if [ -n "${MOCK_CARGO_FAIL_MATCH:-}" ]; then
   case " $* " in
     *"$MOCK_CARGO_FAIL_MATCH"*) exit "${MOCK_CARGO_FAIL_STATUS:-1}" ;;
@@ -162,9 +160,8 @@ assert_status "explicit override b4push succeeds" 0 "$RUN_STATUS"
 assert_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo nextest run --workspace' "nextest workspace args preserved"
 assert_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo test --workspace --doc' "nextest doctest args preserved"
 assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild cargo test -p zfb-islands --tests -- --ignored" "esbuild lane args and env preserved"
-assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_TAILWIND_BIN=$FIXTURE_ROOT/crates/zfb/binaries/tailwindcss-v4 cargo test -p zfb-css --test integration -- --ignored" "tailwind lane args and env preserved"
-assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild ZFB_TAILWIND_BIN=$FIXTURE_ROOT/crates/zfb/binaries/tailwindcss-v4 cargo test -p zfb --lib commands::build:: -- --ignored" "dual-binary lane args and env preserved"
-assert_contains "$CASE_DIR/cargo-env.log" "ENV: ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild ZFB_TAILWIND_BIN=$FIXTURE_ROOT/crates/zfb/binaries/tailwindcss-v4" "binary environment reaches cargo"
+assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild cargo test -p zfb --lib commands::build:: -- --ignored" "command-layer esbuild lane args and env preserved"
+assert_contains "$CASE_DIR/cargo-env.log" "ENV: ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild" "esbuild environment reaches cargo"
 assert_not_contains "$CASE_DIR/claude-guard.log" 'CALL:' "explicit guard takes precedence over Claude"
 assert_not_contains "$CASE_DIR/codex-guard.log" 'CALL:' "explicit guard takes precedence over Codex"
 assert_not_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo clippy' "lint stays outside the queue"

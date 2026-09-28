@@ -1,7 +1,5 @@
 {
   "framework": "preact",
-  "tailwind": {
-    "enabled": false
-  },
+  "wind": false,
   "plugins": [{ "name": "./preset.mjs" }]
 }

@@ -943,16 +943,9 @@ fn sibling_module_css_imported_directly_by_virtual_module_is_discovered_and_emit
     }
 }
 
-/// A pnpm workspace whose `sub-packages/uhost` member reaches a sibling
-/// component (`<ws_root>/lib/ushared/Badge.tsx`) through a wildcard
-/// tsconfig alias, exactly like `write_fixture` above — but the sibling's
-/// only reference to a Tailwind utility class is an arbitrary-value class
-/// (`bg-[#1a2b3c]`) that appears NOWHERE under `project_root` itself.
-/// Issue #1776: proving this utility's compiled CSS actually ships requires
-/// the sibling's `SiblingMirrorPlan` mirror root to be fed into Tailwind's
-/// own `@source` content-glob scan (`assemble_css_content_globs` in
-/// `crates/zfb/src/commands/build.rs`), not just the CSS Modules discovery
-/// walk `write_fixture`'s test already covers.
+/// A pnpm workspace whose host reaches a sibling `Badge.tsx` through a
+/// tsconfig alias. The sibling-only `bg-[#1a2b3c]` class must enter the
+/// explicit wind source plan through the claimed mirror root.
 fn write_utility_only_sibling_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     fs::write(
         ws_root.join("pnpm-workspace.yaml"),
@@ -967,29 +960,22 @@ fn write_utility_only_sibling_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
     let project = ws_root.join("sub-packages/uhost");
     fs::create_dir_all(project.join("pages")).unwrap();
 
-    // A real project's `.gitignore` excludes zfb's own build artifacts
-    // (`.zfb-build/`, `dist/`). Tailwind v4's default automatic content
-    // detection (active here since the synthesised entry never adds
-    // `source(none)`) respects `.gitignore` — WITHOUT this file it would
-    // find the sibling-only `bg-[#1a2b3c]` utility through the compiled
-    // `.zfb-build/bundle.mjs` (esbuild inlines the JSX class string
-    // literally), masking whether the `@source` mirror-root wiring under
-    // test actually did anything. This file removes that confound so the
-    // assertion below is a real proof, not a false positive.
+    // Keep generated files out of the fixture's project tree. Wind's
+    // source plan also excludes these directories explicitly.
     fs::write(
         project.join(".gitignore"),
         ".zfb-build/\ndist/\nnode_modules/\n",
     )
     .unwrap();
 
-    // No `tailwind` key -> CSS (and hence the Tailwind utility scan) is
-    // enabled by default.
+    // Select wind explicitly and declare a marker token for the CSS assertions.
     fs::write(
         project.join("zfb.config.json"),
-        r#"{
-  "framework": "preact"
+        r##"{
+  "framework": "preact",
+  "wind": { "tokens": { "colors": { "marker": "#123456" } } }
 }
-"#,
+"##,
     )
     .unwrap();
 
@@ -1024,8 +1010,7 @@ export default function HomePage() {
     fs::create_dir_all(&sibling).unwrap();
     // The `bg-[#1a2b3c]` arbitrary-value utility is used ONLY here — no
     // file under `project_root` references it, so it can only reach the
-    // emitted stylesheet if Tailwind's `@source` scan walks this sibling
-    // mirror root.
+    // emitted stylesheet if the wind source plan includes this sibling.
     fs::write(
         sibling.join("Badge.tsx"),
         r#"export default function Badge() {
@@ -1038,18 +1023,12 @@ export default function HomePage() {
     (project, nm_handle)
 }
 
-/// Issue #1776: a Tailwind utility class used ONLY inside a sibling file
-/// reached through a claimed tsconfig alias (no direct project-root
-/// reference at all) is scanned and emitted in the real `zfb build`
-/// stylesheet — proving `SiblingMirrorPlan` mirror roots feed
-/// `TailwindSubprocessConfig::content_globs` / the engine's `@source`
-/// directives, not just the CSS Modules source walk.
+/// Issue #1776: a sibling-only utility class is emitted by a real `zfb
+/// build`, proving the tsconfig-claimed mirror root reaches the wind source
+/// plan as well as CSS Modules discovery.
 #[test]
-#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --test \
-            sibling_css_module_command_layer_build -- --ignored \
-            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
-            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH)"]
-fn sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted() {
+#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+fn sibling_only_utility_class_reaches_wind_source_scan_and_is_emitted() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
@@ -1093,37 +1072,22 @@ fn sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted() {
         });
     let css_body = fs::read_to_string(styles_css).unwrap();
     assert!(
+        css_body.contains("--zw-color-marker"),
+        "wind marker missing: {css_body}"
+    );
+    assert!(
         css_body.contains("1a2b3c"),
         "expected the sibling-only `bg-[#1a2b3c]` utility's compiled bytes in \
          {}; a missing hex value means the sibling mirror root never reached \
-         Tailwind's `@source` content-glob scan.\n--- css ---\n{}",
+         the wind source plan.\n--- css ---\n{}",
         styles_css.display(),
         truncate(&css_body, 1200),
     );
 }
 
-/// Issue #1803 (epic #1799 gap b): extends `write_utility_only_sibling_fixture`
-/// with an UNGITIGNORED `dist/`-style generated directory inside the SAME
-/// sibling mirror root (`lib/ushared/dist/`), carrying its own
-/// arbitrary-value utility class (`bg-[#9f8e7d]`) that appears NOWHERE else
-/// in the fixture. Real generated-output directories are typically
-/// build-tool-emitted, not authored source — `discover_css_source_files`
-/// already skips `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (including
-/// `dist`) when it wholesale-walks a mirror root for CSS Modules discovery,
-/// but (pre-#1803) Tailwind's own `@source` content-glob scan had no
-/// equivalent exclusion and would see the mirror root wholesale, leaking
-/// this class into the emitted stylesheet.
-///
-/// The sibling itself carries no `.gitignore` — only the PROJECT's
-/// `.gitignore` (written by `write_utility_only_sibling_fixture`, covering
-/// `.zfb-build/`/`dist/`/`node_modules/` INSIDE THE PROJECT) exists, and
-/// that file governs the project dir, not the workspace-sibling mirror
-/// root under `ws_root/lib/`. So Tailwind's `.gitignore`-respecting
-/// automatic content detection does not save this test from the leak on
-/// its own — verified empirically (a throwaway `tailwindcss` run against
-/// an ungitignored sibling `dist/` leaks its class; the same run with a
-/// `.gitignore` covering that `dist/` does not) — the exclusion must come
-/// from `negative_source_globs`.
+/// Add a generated `dist/` subtree inside the same sibling mirror root.
+/// Its class is absent from authored source and must be excluded by the
+/// source plan, while the legitimate sibling class remains included.
 fn write_utility_only_sibling_fixture_with_generated_dir_leak(
     ws_root: &Path,
 ) -> (PathBuf, tempfile::TempDir) {
@@ -1133,7 +1097,7 @@ fn write_utility_only_sibling_fixture_with_generated_dir_leak(
     fs::create_dir_all(&generated_dir).unwrap();
     // A class string that appears NOWHERE else in the fixture — its
     // presence in the emitted stylesheet would mean the generated `dist/`
-    // subtree leaked into Tailwind's content scan.
+    // subtree leaked into the wind source plan.
     fs::write(
         generated_dir.join("Generated.tsx"),
         r#"export default function Generated() {
@@ -1146,30 +1110,12 @@ fn write_utility_only_sibling_fixture_with_generated_dir_leak(
     (project, nm_handle)
 }
 
-/// Issue #1803 (epic #1799 gap b): a generated-looking `dist/` subtree
-/// INSIDE a sibling mirror root must NOT leak its class strings into
-/// Tailwind's content scan, while the sibling's legitimate utility class
-/// (outside that subtree, already proven reachable by
-/// `sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted`
-/// above) MUST still reach the emitted stylesheet — proving selective
-/// exclusion rather than a change that broke sibling scanning wholesale
-/// (which would also make the leak class absent, but for the wrong
-/// reason).
-///
-/// ## Regression criterion
-///
-/// Verified to FAIL (the leak class `9f8e7d` present in the emitted
-/// stylesheet) with the `negative_source_globs` wiring in
-/// `assemble_css_content_globs` / `build_default_css_payload`
-/// (`crates/zfb/src/commands/build.rs`) reverted, and PASS with it in
-/// place — the #1776 cherry-pick-out precedent; see the PR/issue
-/// description for both run transcripts.
+/// Issue #1803: the generated sibling `dist/` class must be absent while
+/// the authored sibling class remains present. The paired assertions prevent
+/// a false pass caused by excluding the entire mirror root.
 #[test]
-#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --test \
-            sibling_css_module_command_layer_build -- --ignored \
-            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
-            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH)"]
-fn sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan() {
+#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+fn sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
@@ -1213,12 +1159,16 @@ fn sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan() {
             panic!("expected dist/assets/styles-<hash>.css to be emitted; got: {css_paths:#?}")
         });
     let css_body = fs::read_to_string(styles_css).unwrap();
+    assert!(
+        css_body.contains("--zw-color-marker"),
+        "wind marker missing: {css_body}"
+    );
 
     assert!(
         !css_body.contains("9f8e7d"),
         "expected the sibling generated-dir (`lib/ushared/dist/`) utility class \
          to be EXCLUDED from {}; its presence means the mirror root's `dist/` \
-         subtree leaked into Tailwind's `@source` content-glob scan.\n--- css ---\n{}",
+         subtree leaked into the wind source plan.\n--- css ---\n{}",
         styles_css.display(),
         truncate(&css_body, 1200),
     );

@@ -49,13 +49,8 @@
 //!
 //! ## Skip behaviour
 //!
-//! Guards against a missing embedded V8 / esbuild / tailwindcss-v4 slot
-//! (e.g. a build without the `embed_v8` feature, or a stripped CI image)
-//! via the same known-skip indicators used across the sibling build-command
-//! tests (`content_snapshot_no_deferred.rs`, `build_package_routes.rs`,
-//! `dev_dep_invalidation_1284_e2e.rs`): `"embed_v8"`, `"no esbuild"`,
-//! `"no tailwind"`, or the tailwindcss-v4 binary-not-found message emitted
-//! by `zfb-css/src/engine.rs` (`"tailwindcss"` + `"not found"`).
+//! Guards against missing embedded V8 or esbuild using the same known-skip
+//! indicators as sibling build-command tests: `"embed_v8"` and `"no esbuild"`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -135,13 +130,10 @@ fn template_dir() -> PathBuf {
 }
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary), matching the skip pattern used
+/// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).
@@ -291,7 +283,7 @@ fn end_to_end_basic_blog_build() {
         if is_known_skip(&combined) {
             eprintln!(
                 "[end_to_end_basic_blog_build] zfb build exited non-zero with \
-                 a known-skip indicator (V8/esbuild/tailwind unavailable); \
+                 a known-skip indicator (V8/esbuild unavailable); \
                  skipping test.\nstdout: {stdout}\nstderr: {stderr}"
             );
             return;

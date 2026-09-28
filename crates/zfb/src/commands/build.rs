@@ -11729,7 +11729,7 @@ mod tests {
         );
     }
 
-    /// Regression (issue #824): `tailwind.enabled = false` disables only
+    /// Regression (issue #824): `wind: false` disables only
     /// the Tailwind layers, NOT the authored-CSS pipeline. With an
     /// authored global stylesheet and a CSS Module present, the emitter
     /// must still ship a stylesheet containing both — and crucially WITHOUT
@@ -11763,7 +11763,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11780,7 +11780,7 @@ mod tests {
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
             css.contains(".authored-global"),
-            "authored global CSS must survive tailwind.enabled=false; got:\n{css}",
+            "authored global CSS must survive wind=false; got:\n{css}",
         );
         assert!(
             css.contains("display: grid") || css.contains("display:grid"),
@@ -11840,7 +11840,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11873,7 +11873,7 @@ mod tests {
         );
     }
 
-    /// `tailwind.enabled = false` AND no authored CSS AND no CSS Modules
+    /// `wind: false` AND no authored CSS AND no CSS Modules
     /// => no stylesheet to ship, so the emitter slot stays `None` (avoids
     /// a `<link>` to an empty stylesheet).
     #[test]
@@ -11888,7 +11888,7 @@ mod tests {
         )
         .unwrap();
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11902,7 +11902,7 @@ mod tests {
         .expect("should not error");
         assert!(
             payload.is_none(),
-            "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
+            "expected None when wind is disabled and no authored CSS/modules; got {payload:?}",
         );
     }
 
@@ -11980,7 +11980,7 @@ mod tests {
         let project_root = tmp.path();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
             ..Config::default()
         };
@@ -12018,7 +12018,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             code_highlight: Some(code_highlight_config(
                 CodeHighlightMode::Class,
                 false,
@@ -12060,7 +12060,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             // code_highlight: None => mode defaults to Inline.
             ..Config::default()
         };
@@ -12180,7 +12180,7 @@ mod tests {
         let ws = project.parent().unwrap().parent().unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload =
@@ -12391,7 +12391,7 @@ mod tests {
         let plugin_virtual_modules = virtual_panel_module(ws);
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -12539,7 +12539,7 @@ mod tests {
         let plugin_virtual_modules = virtual_direct_css_module(ws);
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -17974,42 +17974,29 @@ mod tests {
     // module's other non-`#[ignore]`d tests do — see the doc comments on
     // the three tests above ("esbuild is never invoked").
 
-    /// End-to-end check that `DefaultRunner::emit_prod_assets`
-    /// invokes the real Tailwind v4 CLI and returns non-empty CSS
-    /// bytes for a fixture project with a single page. Mirrors the
-    /// `#[ignore]` gate already used by
-    /// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`
-    /// — both depend on the Tailwind binary slot at
-    /// `crates/zfb/binaries/tailwindcss-v4`, which `crates/zfb/build.rs`
-    /// DOES stage in CI as a side effect of building the `zfb` crate, but
-    /// no CI step runs with `--ignored`/`--include-ignored` yet. Run
-    /// locally with `--include-ignored` once a build has staged the slot.
+    /// End-to-end check that `DefaultRunner::emit_prod_assets` invokes
+    /// the in-process wind engine and returns non-empty CSS for a page
+    /// using an explicitly configured color token.
     // Requires `DefaultRunner` which carries `PluginRegistryHooks` and
     // constructs `Backend::EmbeddedV8` — only available when the
     // `embed_v8` feature is on (issue #371, sub-task 4.1a).
     #[cfg(feature = "embed_v8")]
     #[test]
-    #[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --lib \
-                commands::build:: -- --include-ignored (ZFB_TAILWIND_BIN or the \
-                staged crates/zfb/binaries/tailwindcss-v4 slot)"]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
-        // Serialise against the `..._even_on_tailwind_failure` test above,
-        // which `set_var`s `ZFB_TAILWIND_BIN` process-wide. Both run in this
-        // binary under the `--include-ignored` command in this test's own
-        // `#[ignore]` reason (issue #1799 review finding).
-        let _env_lock = TAILWIND_BIN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("pages")).unwrap();
         std::fs::write(
             project_root.join("pages/index.tsx"),
-            "export default function Index() { return <div className=\"text-red-500\">hi</div>; }\n",
+            "export default function Index() { return <div className=\"bg-brand\">hi</div>; }\n",
         )
         .unwrap();
-        let cfg = Config::default(); // tailwind defaults to enabled
+        let mut wind = crate::config::WindConfig::default();
+        wind.tokens.colors.insert("brand".into(), "#123456".into());
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Config::default()
+        };
         let outdir = project_root.join("dist");
         let runner = DefaultRunner {
             timing_enabled: false,
@@ -18028,12 +18015,13 @@ mod tests {
             .expect("emit_prod_assets must succeed");
         let css = inputs
             .css
-            .expect("css slot must be Some when tailwind is enabled and a page exists");
+            .expect("css slot must be Some when wind is enabled and a page exists");
         assert!(
             !css.bytes.is_empty(),
-            "CSS bytes must be non-empty when Tailwind ran against a TSX source"
+            "CSS bytes must be non-empty when wind ran against a TSX source"
         );
         assert_eq!(css.stable_url, "/assets/styles.css");
+        assert!(String::from_utf8_lossy(&css.bytes).contains("--zw-color-brand"));
         // The pipeline writes its hashed asset elsewhere, but the
         // bytes-only `build_emitter` path must NOT have written the
         // stable filename to disk on its own — that's the prod
@@ -19447,7 +19435,7 @@ mod tests {
         );
     }
 
-    /// Review finding (issue #1802): `tailwind.enabled = false` opts out of
+    /// Review finding (issue #1802): `wind: false` opts out of
     /// the Tailwind `@source` scan, NOT out of CSS Modules discovery — see
     /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`,
     /// which proves `build_authored_only_css_payload` still ships a claimed
@@ -19456,14 +19444,14 @@ mod tests {
     /// disabled, which would have left that same sibling directory
     /// unwatched in dev — a claimed sibling's CSS Module edit would go
     /// stale until restart even though Tailwind was never involved. The
-    /// observer must fire with the SAME non-empty set regardless of
-    /// `tailwind.enabled`.
+    /// observer must fire with the SAME non-empty set on the
+    /// `wind: false` path.
     #[test]
     fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled() {
         let (_tmp, project) = sibling_css_workspace_fixture();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
@@ -19488,7 +19476,7 @@ mod tests {
             .expect("the observer must fire on the tailwind-disabled path too");
         assert!(
             !roots.is_empty(),
-            "mirror roots must still be published with tailwind.enabled = false, since \
+            "mirror roots must still be published with wind=false, since \
              CSS Modules discovery still scans them: {roots:?}"
         );
     }

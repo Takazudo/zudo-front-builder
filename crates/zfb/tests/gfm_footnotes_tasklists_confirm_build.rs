@@ -100,9 +100,9 @@
 //!
 //! Level 4 (real `zfb build` process e2e). No external binary is required —
 //! the fixture has no Tailwind config and no "use client" islands, so the
-//! build never invokes esbuild or tailwindcss-v4 (confirmed empirically: a
-//! local run with neither `ZFB_ESBUILD_BIN` nor `ZFB_TAILWIND_BIN` set
-//! succeeds and logs "no islands found; skipping islands bundle"). Not
+//! build never invokes esbuild (confirmed empirically: a local run with
+//! no `ZFB_ESBUILD_BIN` set succeeds and logs "no islands found; skipping
+//! islands bundle"). Not
 //! `#[ignore]`d, matching `end_to_end_basic_blog_build.rs`'s own
 //! no-external-binary tier. Added to `.config/nextest.toml`'s `e2e-heavy`
 //! test-group as a build-only member (spawns a real `zfb build` process;
@@ -115,13 +115,10 @@ use std::process::Command;
 use zfb_test_utils::zfb_binary;
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary), matching the skip pattern used
+/// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn write_fixture(root: &Path) {

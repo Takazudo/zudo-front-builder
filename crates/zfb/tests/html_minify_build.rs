@@ -20,10 +20,7 @@ fn node_available() -> bool {
 }
 
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn run_zfb_build(root: &Path, esbuild: &Path, extra_args: &[&str]) -> std::process::Output {

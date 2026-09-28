@@ -33,9 +33,7 @@ set -uo pipefail
 #  16. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
 #  17. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
 #  18. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
-#  19. cargo test -p zfb-css --test integration -- --ignored (tailwindcss env-gate)     — opt-in (B4PUSH_FULL=1)
-#  20. cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored (tailwindcss env-gate) — opt-in (B4PUSH_FULL=1)
-#  21. cargo test -p zfb --lib commands::build:: -- --ignored (command-layer env-gates) — opt-in (B4PUSH_FULL=1)
+#  19. cargo test -p zfb --lib commands::build:: -- --ignored (esbuild env-gates) — opt-in (B4PUSH_FULL=1)
 #
 # Steps 12 and 14 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
 # it is installed, matching CI's runner; they fall back to plain `cargo test`
@@ -51,32 +49,24 @@ set -uo pipefail
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
 # imply "health.yml will pass."
 #
-# Steps 17-21 maintain parity with health.yml's dedicated env-gated lanes. The
+# Steps 17-19 maintain parity with health.yml's dedicated esbuild env-gated lanes. The
 # zfb-islands esbuild-gated lane (added by #1337) had no B4PUSH_FULL
 # counterpart, so a green B4PUSH_FULL=1 run did not imply that lane would pass
 # in CI — the exact
 # gap #1332 closed for the md-extras/no-v8 lanes, reopened when #1337 added the
 # islands step to health.yml without updating b4push. Step 17 restores it;
 # step 18 mirrors #1504's real-zfb cross-pipeline acceptance lane.
-# Steps 19-21 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
-# into health.yml for the first time; step 21 also co-runs the two esbuild
-# command-layer env-gates, so it pins both binary slots. All 5 steps are
-# guarded on their staged binary existing (a tree built with
-# B4PUSH_SKIP_CLIPPY=1, or one that has never run
-# `cargo build --workspace --all-targets`, may not have triggered
-# crates/zfb/build.rs's binary download yet) and set their env var to an
-# ABSOLUTE path, same reasoning as health.yml's ZFB_ESBUILD_BIN/ZFB_TAILWIND_BIN
-# wiring: `cargo test` runs each test binary with its CWD set to the owning
-# package directory, not the workspace root, so the crates' relative default
-# binary_path never resolves.
+# Step 19 runs the remaining command-layer esbuild env-gates under the
+# staged esbuild slot. It sets an absolute path because cargo test starts
+# the test binary with the owning package directory as its working directory.
 #
 # Env overrides:
 #   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 10); use on a cold tree to stay bounded
 #   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 9)
-#   B4PUSH_FULL=1          — additionally run steps 11-21 (syntect packdump
+#   B4PUSH_FULL=1          — additionally run steps 11-19 (syntect packdump
 #                            freshness gate, full workspace test,
 #                            zfb-md-extras test-utils lane, no-V8 cargo check,
-#                            esbuild + tailwindcss env-gate suites)
+#                            esbuild env-gate suites)
 #   HEAVY_GUARD=/path      — override the machine-wide heavy-guard executable
 
 START_TIME=$(date +%s)
@@ -473,53 +463,17 @@ else
   skip "zfb client-bundling cross-pipeline acceptance test (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
 fi
 
-# ── tailwindcss-v4 env-gate suites (opt-in) ─────────────
-# The 3 tests health.yml (issue #1393) now runs in CI — see that workflow's
-# comment for why these were silently skipped for so long despite the binary
-# already being staged. Same staged-binary guard and ABSOLUTE-path env var as
-# the esbuild step above.
-TAILWIND_SLOT="${ROOT_DIR}/crates/zfb/binaries/tailwindcss-v4"
-
-step "zfb-css tailwindcss-v4 env-gate test (cargo test -p zfb-css --test integration -- --ignored)"
-if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$TAILWIND_SLOT" ]; then
-    if heavy_env "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb-css --test integration -- --ignored; then
-      pass "zfb-css tailwindcss-v4 env-gate test"
-    else
-      heavy_failure "zfb-css tailwindcss-v4 env-gate test" "$?"
-    fi
-  else
-    skip "zfb-css tailwindcss-v4 env-gate test ($TAILWIND_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
-  fi
-else
-  skip "zfb-css tailwindcss-v4 env-gate test (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
-fi
-
-step "zfb-build tailwindcss-v4 env-gate test (cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored)"
-if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$TAILWIND_SLOT" ]; then
-    if heavy_env "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored; then
-      pass "zfb-build tailwindcss-v4 env-gate test"
-    else
-      heavy_failure "zfb-build tailwindcss-v4 env-gate test" "$?"
-    fi
-  else
-    skip "zfb-build tailwindcss-v4 env-gate test ($TAILWIND_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
-  fi
-else
-  skip "zfb-build tailwindcss-v4 env-gate test (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
-fi
-
+# ── zfb command-layer esbuild env-gates (opt-in) ──────
 step "zfb command-layer env-gates (cargo test -p zfb --lib commands::build:: -- --ignored)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$ESBUILD_SLOT" ] && [ -x "$TAILWIND_SLOT" ]; then
-    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" "ZFB_TAILWIND_BIN=$TAILWIND_SLOT" -- cargo test -p zfb --lib commands::build:: -- --ignored; then
+  if [ -x "$ESBUILD_SLOT" ]; then
+    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb --lib commands::build:: -- --ignored; then
       pass "zfb command-layer env-gates"
     else
       heavy_failure "zfb command-layer env-gates" "$?"
     fi
   else
-    skip "zfb command-layer env-gates (esbuild and/or tailwind slot not staged — run \`cargo build --workspace --all-targets\` first)"
+    skip "zfb command-layer env-gates (esbuild slot not staged — run \`cargo build --workspace --all-targets\` first)"
   fi
 else
   skip "zfb command-layer env-gates (set B4PUSH_FULL=1 to run; CI runs them on every PR)"

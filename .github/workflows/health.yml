@@ -519,11 +519,9 @@ jobs:
       # and its negative control proves the widened staging did not loosen
       # the audit (an undeclared bare-package-name escape stays rejected).
       # Folded into a shared workspace resolution (issue #2690): the exact
-      # binary predicates preserve all eight former esbuild-only package scopes
-      # while the three env-specific invocations eliminate exactly four extra
-      # `-p` feature resolutions (zfb-islands, zfb, zfb-build, and zfb-css) —
-      # not twelve. Keep this lane esbuild-only so no test observes a newly
-      # staged Tailwind binary.
+      # binary predicates preserve the esbuild-only package scopes. The four
+      # command-layer tests formerly in the mixed lane now run here with only
+      # ZFB_ESBUILD_BIN set.
       - name: Run ignored env gates (esbuild-only, workspace resolution)
         shell: bash
         env:
@@ -539,6 +537,12 @@ jobs:
               | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_armed_regression))
               | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_disarm_pin))
               | (package(zfb-build) & binary(=bundler_root_workspace_loose_file_alias_esbuild_regression))
+              | (package(zfb) & (
+                  test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded)
+                    | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
+                    | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
+                    | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected)
+                ))
           ' 2>&1 | tee target/nextest-logs/env-esbuild-only.log
 
       - name: Stash esbuild-only env-gate JUnit
@@ -548,20 +552,9 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
           fi
 
-      # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
-      # command-layer preprocessing-shadow esbuild regressions: the binaries are
-      # staged by the assert step above but, like the zfb-islands suite before
-      # #1337 fixed it, was never actually executed by any T1 step —
-      # `cargo nextest run --workspace` below does not pass `--ignored`, so a
-      # green run proves nothing about these. Same ABSOLUTE-path requirement
-      # as ZFB_ESBUILD_BIN above: nextest, like `cargo test`, runs each test
-      # binary with its CWD set to the owning package directory, not the
-      # workspace root.
-      # Three environment-specific workspace invocations keep failures
-      # attributable; the zfb command lane runs its real-engine env-gates with
-      # both binary paths pinned, mirroring the `#[ignore]` manifest table in
-      # crates/CLAUDE.md. The two predicates below preserve the original
-      # Tailwind-only environment exactly.
+      # The CSS engine's own subprocess test remains in the Tailwind lane until
+      # the engine is deleted by #3270. All zfb and zfb-build ports run in
+      # normal discovery or in the esbuild-only lane above.
       - name: Run ignored env gates (tailwind-only, workspace resolution)
         shell: bash
         env:
@@ -569,7 +562,6 @@ jobs:
         run: |
           cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
             (package(zfb-css) & binary(=integration))
-              | (package(zfb-build) & binary(=prod_asset_graph_e2e))
           ' 2>&1 | tee target/nextest-logs/env-tailwind-only.log
 
       - name: Stash tailwind-only env-gate JUnit
@@ -577,32 +569,6 @@ jobs:
         run: |
           if [ -f target/nextest/ci/junit.xml ]; then
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-tailwind-only.xml
-          fi
-
-      # Run five ignored command-layer env gates: four esbuild preprocessing-shadow/
-      # workspace-resolution regressions plus one real Tailwind production-CSS check.
-      # Exact predicates keep these CI scopes attributable; broad nextest excludes ignores.
-      - name: Run ignored env gates (esbuild + tailwind, workspace resolution)
-        shell: bash
-        env:
-          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: |
-          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
-            package(zfb) & (
-              test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded)
-                | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
-                | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
-                | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
-                | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected)
-            )
-          ' 2>&1 | tee target/nextest-logs/env-esbuild-tailwind.log
-
-      - name: Stash esbuild + tailwind env-gate JUnit
-        if: always()
-        run: |
-          if [ -f target/nextest/ci/junit.xml ]; then
-            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-tailwind.xml
           fi
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
@@ -692,14 +658,13 @@ jobs:
           path: |
             target/nextest/ci/junit-env-esbuild-only.xml
             target/nextest/ci/junit-env-tailwind-only.xml
-            target/nextest/ci/junit-env-esbuild-tailwind.xml
             target/nextest/ci/junit-workspace.xml
             target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
 
       # Failure-only diagnostics (issue #1341): the raw nextest stdout (teed
-      # by the five nextest run steps above) — per-test TRY/PASS/FAIL lines and
+      # by the four nextest run steps above) — per-test TRY/PASS/FAIL lines and
       # panic messages that the JUnit report's structured fields don't fully
       # carry. Only uploaded `if: failure()` — a healthy run has nothing
       # worth attaching beyond the JUnit trend data already uploaded above.
@@ -711,7 +676,6 @@ jobs:
           path: |
             target/nextest-logs/env-esbuild-only.log
             target/nextest-logs/env-tailwind-only.log
-            target/nextest-logs/env-esbuild-tailwind.log
             target/nextest-logs/workspace.log
             target/nextest-logs/md-extras.log
           if-no-files-found: warn
@@ -737,7 +701,6 @@ jobs:
           scripts/report-flaky-tests.sh
           target/nextest/ci/junit-env-esbuild-only.xml
           target/nextest/ci/junit-env-tailwind-only.xml
-          target/nextest/ci/junit-env-esbuild-tailwind.xml
           target/nextest/ci/junit-workspace.xml
           target/nextest/ci/junit.xml
 
