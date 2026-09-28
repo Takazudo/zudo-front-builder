@@ -39,6 +39,7 @@ export { untracked };
 
 class Writable<T> implements Signal<T>, Source {
   readonly $$zudoReactive = "zudo-react.reactive.v1" as const;
+  readonly $$zudoWritable = "zudo-react.writable.v1" as const;
   readonly subscribers = new Set<Observer>();
   constructor(private current: T) {
     if (!core["@takazudo/zfb/zudo-react/runtime-definition-v1"])

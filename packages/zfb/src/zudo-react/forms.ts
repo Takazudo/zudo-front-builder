@@ -43,7 +43,9 @@ function writable(value: unknown, path: string): Model {
     !value ||
     typeof value !== "object" ||
     !("$$zudoReactive" in value) ||
-    value.$$zudoReactive !== "zudo-react.reactive.v1"
+    value.$$zudoReactive !== "zudo-react.reactive.v1" ||
+    !("$$zudoWritable" in value) ||
+    value.$$zudoWritable !== "zudo-react.writable.v1"
   )
     error("ZR_MODEL_READONLY", path, "model requires a writable signal");
   let proto = value;

@@ -193,6 +193,28 @@ describe("form hydration", () => {
     expect(hydrate(h(Demo, {}), root, options())).toBeNull();
     expect(diagnostics[0]!).toMatchObject({ code: "ZR_MODEL_CONFLICT" });
   });
+  it("rejects a brandless model during preflight without a write", () => {
+    const real = signal("a");
+    let model: unknown = real;
+    function Demo() {
+      return h("input", { modelValue: model });
+    }
+    const root = host(h(Demo, {}));
+    let current = "a";
+    const fake = {
+      $$zudoReactive: "zudo-react.reactive.v1",
+      get value() {
+        return current;
+      },
+      set value(next: string) {
+        current = next;
+      },
+    };
+    model = fake;
+    expect(hydrate(h(Demo, {}), root, options())).toBeNull();
+    expect(diagnostics.at(-1)!.code).toBe("ZR_MODEL_READONLY");
+    expect(current).toBe("a");
+  });
   it("mount initializes from a model", () => {
     const model = signal("b");
     function Demo() {

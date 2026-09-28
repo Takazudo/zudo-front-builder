@@ -145,3 +145,33 @@ describe("radio form association", () => {
     expect(renderToString(page)).toContain('<input type="radio" name="choice" value="b" checked>');
   });
 });
+
+describe("writable model brand", () => {
+  it.each([
+    h("input", { modelValue: computed(() => "x") }),
+    h("textarea", { modelValue: computed(() => "x") }),
+    h("input", { type: "checkbox", modelChecked: computed(() => true) }),
+    h("select", {
+      modelValue: computed(() => "x"),
+      children: h("option", { value: "x", children: "X" }),
+    }),
+    h("input", {
+      type: "radio",
+      name: "r",
+      value: "x",
+      modelValue: computed<string | null>(() => "x"),
+    }),
+  ])("rejects computed models in every adapter", (node) => {
+    expect(() => renderToString(node)).toThrow("ZR_MODEL_READONLY");
+  });
+  it("rejects a reactive object with a setter but no writable brand", () => {
+    const fake = {
+      $$zudoReactive: "zudo-react.reactive.v1",
+      get value() {
+        return "x";
+      },
+      set value(_next: string) {},
+    };
+    expect(() => renderToString(h("input", { modelValue: fake }))).toThrow("ZR_MODEL_READONLY");
+  });
+});

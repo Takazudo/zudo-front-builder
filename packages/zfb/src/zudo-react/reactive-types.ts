@@ -5,4 +5,5 @@ export interface ReadonlySignal<T> {
 
 export interface Signal<T> extends ReadonlySignal<T> {
   value: T;
+  readonly $$zudoWritable: "zudo-react.writable.v1";
 }

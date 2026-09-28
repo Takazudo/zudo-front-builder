@@ -264,7 +264,13 @@ function element(
       }
       prototype = Object.getPrototypeOf(prototype);
     }
-    if (!reactive(model) || !writable) fail("ZR_MODEL_READONLY", context, tag);
+    if (
+      !reactive(model) ||
+      !writable ||
+      !("$$zudoWritable" in model) ||
+      model.$$zudoWritable !== "zudo-react.writable.v1"
+    )
+      fail("ZR_MODEL_READONLY", context, tag);
   }
   if ((hasValue || hasChecked) && source.contenteditable !== undefined)
     fail("ZR_MODEL_UNSUPPORTED", context, `${tag}[contenteditable]`);
