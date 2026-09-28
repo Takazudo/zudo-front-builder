@@ -1,11 +1,63 @@
 ---
 title: Utility grammar
-description: Check the accepted zudo-wind v1 utility syntax, values, variants, and rejection categories.
+description: Learn the accepted candidate syntax, value forms, and deliberate limits of the v1 utility language.
 sidebar_position: 5
 ---
 
-<Note>
+## Candidate shape
 
-This page is being written. owned-engines-stub
+A candidate is a complete utility, optionally preceded by variants separated with colons. The general shape is `variant:variant:utility`. The tokenizer balances brackets, parentheses, and quotes before splitting: colons and slashes inside those structures do not start a variant or modifier. Literal whitespace, NUL, other control characters, and forbidden outer punctuation are not allowed.
 
-</Note>
+| Production | Accepted example | Rejected example and result |
+| --- | --- | --- |
+| G01 candidate | `sm:dark:hover:bg-panel` with `sm`, dark mode, and `colors.panel` configured | `hover::block` — empty segment, ZW001 |
+| G02 variant | `focus-visible:block` | `md:block` when `md` is not configured, ZW002 |
+| G03 breakpoint | `max-sm:hidden` when `sm` is configured | `max-md:hidden` when `md` is absent, ZW002 |
+| G04 dark | `dark:block` when dark mode is configured | `dark:block` when dark mode is disabled, ZW002 |
+| G05 state | `first:pt-0` | `hover:focus:hover:block` — duplicate state, ZW003 |
+| G06 relation | `group-open:rotate-90` | `group/menu:block` — named group form, ZW004 |
+| G07 pseudo-element | `placeholder:underline` | `before:before:block` — duplicate pseudo-element, ZW003 |
+| G08 utility | `-mt-2` with a spacing unit | `-p-2` — this family does not allow negatives, ZW005 |
+| G09 named suffix | `gap-x-1.5` with a spacing unit | `w-(10px)` — forbidden outer punctuation, ZW001 |
+| G10 decimal | `p-1.5` with a spacing unit | `opacity-1.2.3` — malformed numeric value, ZW005 |
+| G11 fraction | `w-1/2` | `w-1/0` — fraction denominator must be positive, ZW005 |
+| G12 balanced value | `grid-cols-[auto_1fr]` | `w-[calc(1px]` — unbalanced delimiters, ZW001 |
+| G13 token name | `text-2xl` when that font-size token exists | `radii.DEFAULT` in configuration — uppercase token key, ZW007 |
+| G14 marker | `group` as a standalone marker | `hover:group` — a marker cannot have a variant, ZW004 |
+| G15 escape | `bg-[var(--brand\_color)]` | `w-[1px]\` — trailing escape, ZW001 |
+| G16 catalog root | `scroll-mt-8` with a spacing unit | `ring-2` — recognized unsupported family, ZW004 |
+| G17 positive integer | `duration-630` | `w-0/2` — zero is not a positive fraction term, ZW005 |
+| G18 configured name | `sm:block` when `sm` is configured | `md:block` when `md` is absent, ZW002 |
+
+A candidate can contain nested balanced delimiters, commas, colons, slashes, quoted strings, CSS escapes, and underscores inside a bracket value. An underscore becomes a space; the escape `\_` becomes a literal underscore. Escapes elsewhere stay CSS escapes. A trailing escape is malformed. Class selector escaping always uses the original candidate bytes, including for a leading digit.
+
+## Values and modifiers
+
+Numeric forms use ASCII digits. A positive fraction consists of positive integers. Only eligible sizing and translate utilities accept fractions; color `/N` is an opacity modifier for integer `N` from 0 through 100. It emits `color-mix(in oklab, VALUE N%, transparent)`; `/0` and `/100` keep the same function form. A bracketed color can use the same modifier. A sizing slash is never interpreted as opacity.
+
+Negative prefixes are permitted only where the catalog allows them: inset and margin except `auto`, child spacing, z-index except `auto`, tracking, the outline width's offset, translate, rotate, and scroll margin. Other families reject them, including padding. For literal dimensions or numbers, the compiler applies one leading minus and normalizes negative zero to zero; for nonliteral values it emits `calc(V * -1)`. Unsupported negatives such as `-p-2` are invalid.
+
+Only sizing and translate roots accept positive integer fractions. Each numerator and denominator is at most 1,000,000. Sizing fractions emit `calc(100% * N / D)`; a size fraction sets both width and height. The opacity modifier is only for colors: `bg-panel/40` mixes the configured color at 40 percent in oklab against transparent. It is not accepted on padding or sizing values.
+
+The `fontSizes` map stores objects with a required `size` and optional `lineHeight`. When a leading is supplied, it is emitted as a paired variable; a font-size key ending in `-leading` is reserved and invalid. `ease-in-out` is a named easing lookup for `easings.in-out`; there is no built-in easing token.
+
+Bracket values are nonempty, balanced CSS component values with no literal whitespace. The CSS property parser validates them for the utility family. Use underscores for spaces. A backslash before underscore keeps a literal underscore. Values cannot inject declarations, selectors, or comments; `url()` is forbidden, including escaped or case-varied spellings. Ambiguous values such as `text-[var(--x)]` need a named token to say whether the value is a color or size.
+
+A leading or trailing `!` important spelling is rejected with ZW004. Arbitrary properties such as `[overflow-wrap:anywhere]` are also rejected with ZW004; put such declarations in authored CSS. Attribute variants such as `aria-pressed:block` and `data-[state=open]:block`, and arbitrary-selector variants such as `[&_a]:underline`, are rejected with ZW004 as well; use authored selectors for those relationships.
+
+## Closed utility catalog
+
+V1 accepts the catalog as a finite set. Its families cover display, position, inset, flex containers and items, grid, alignment, sizing, padding, margin, gap, child spacing, overflow, z-index, font family, font weight, font size, line height, tracking, text layout and style, text and background color, border width/color/style, radius, divide width/color, outline width/color/style, shadow, opacity, transition, duration, easing, translate, rotate, interaction, list, aspect, scroll margin, and miscellaneous layout helpers.
+
+Several familiar prefixes remain deliberately unsupported. Ring, animation, scale, transform, and arbitrary-property utilities must be authored as CSS. The `ring-*` and `animate-*` roots are recognized so an invalid attempt receives an unsupported-language diagnostic. zudo-wind does not synthesize animation keyframes.
+
+`space-x/y` set margin-left or margin-top on each later visible direct child; `divide-x/y` set a solid left or top border on those children. The selector is `C > :not([hidden]) ~ :not([hidden])`, where `C` is the complete utility subject selector. Both siblings are filtered by the `hidden` attribute. An element with `display: none` but without that attribute is not inspected. There are no reverse flags, and visual order is not inferred. A pseudo-element variant cannot be combined with these child utilities; for example, `before:divide-y` is rejected as R23/ZW005 because its child selector would target the wrong subject.
+
+The transition root also has fixed behavior: every value except `transition-none` sets a 150ms duration and `ease` timing function. The later-sorting duration and easing groups can override those defaults in the same variant bucket. Translate utilities compose through the individual `translate` property and registered `--zw-translate-x` / `--zw-translate-y` custom properties; the registrations use `<length-percentage>` syntax, do not inherit, and start at `0px`. Each axis utility sets its matching variable and the combined translate value. Rotate uses the independent `rotate` property. Ring, animation, scale, and transform-string utilities stay outside the catalog.
+
+## See also
+
+- [Variants](./variants.mdx)
+- [Tokens](./tokens.mdx)
+- [Utility reference](./utilities/index.mdx)
+- [Cascade and reset](./cascade-and-reset.mdx)

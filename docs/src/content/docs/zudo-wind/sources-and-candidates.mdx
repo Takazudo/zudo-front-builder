@@ -1,11 +1,60 @@
 ---
 title: Sources and candidates
-description: Learn which project files zudo-wind scans and how explicit sources and manifests contribute candidates.
+description: See how the source plan finds complete candidates and how explicit inputs are validated.
 sidebar_position: 4
 ---
 
-<Note>
+## The source plan
 
-This page is being written. owned-engines-stub
+The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
 
-</Note>
+Build and dev scan these case-sensitive extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`. The standalone `zfb css --source` path can also process `.html` and `.mjs`; these two extensions are not automatically scanned in build or dev. There is no public extension override.
+
+## What the extractor reads
+
+The extractor looks for complete candidate strings in JSX and HTML `class` or `className` attributes, literal maps, script string and template literals, and raw HTML or JSX attributes in Markdown and MDX. It also scans nested literals inside interpolations and literal strings passed to class-list APIs. It decodes source-language escapes and HTML entities while retaining source positions for diagnostics.
+
+Comments, Markdown prose, inline code, and fenced code are ignored. A script string containing HTML is inspected for embedded class attributes. Reading a string does not execute the application.
+
+Candidates must be complete tokens. A finite map provides known alternatives:
+
+    const stateClasses = ["text-muted", "text-accent"];
+    const className = stateClasses[active ? 1 : 0];
+
+Both `text-muted` and `text-accent` are present as complete literals and can be extracted independently; whether they resolve as utilities still depends on configuration. Concatenating a prefix such as `bg-` with a runtime value does not form a candidate. A partial fragment such as `bg-` or `-500` is never expanded, so a dynamically constructed class is never covered. Use a literal map or an explicit candidate source for a finite set of possibilities.
+
+At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
+
+## Adding explicit candidates
+
+A `safelist` entry is an owner ID mapped to an array of full candidates. There is no regular-expression, brace-expansion, or interpolation syntax. Each listed entry must be a utility candidate or a supported marker, unless the exact full string appears in `authoredClasses`.
+
+A package can publish a versioned JSON manifest. The consumer declares its path under a producer ID in `wind.manifests`; the manifest's `producer` must match that ID. Its shape is:
+
+    {
+      "schemaVersion": 1,
+      "specVersion": 1,
+      "producer": "widgets",
+      "candidates": ["group", "p-0", "hover:bg-panel"]
+    }
+
+The schema version is separate from the language version. A manifest contains candidates only: it cannot define tokens, run code, or be found through ambient dependency discovery. The consumer must configure any tokens used by manifest candidates. Manifest paths resolve from their declaring config or package. Missing files, invalid JSON or schema, and unsupported source extensions are errors. Unknown or invalid explicit entries retain their candidate diagnostics and manifest index. Duplicate strings are deduplicated. If two declared origins claim the same producer, the conflict is an error rather than a traversal-order choice; replacing or removing a producer retracts its previous candidates.
+
+## Authored classes
+
+Use `authoredClasses` to reserve exact full class tokens for rules you write in CSS. Each key maps to `true`. A match suppresses utility validation, emission, and candidate diagnostics at every origin. This lets a class remain in markup for an authored selector without being interpreted as a utility.
+
+The allowlist is exact: it does not accept prefixes, patterns, or partial names. It cannot suppress invalid configuration or a leftover directive in a stylesheet.
+
+## Exclusions and updates
+
+Previous output is never scanned. Exclusions include `node_modules` unless the package root was explicitly declared, `dist`, `build`, `target`, `.git`, `.cache`, `.zfb-build`, `.zfb`, and configured output or cache directories. The consuming project's current output and cache paths remain excluded even if someone declares them as roots. A declared package root may traverse that package's `node_modules` and published `dist` directory. Gitignore rules apply under each declared root. Directory symlinks are not followed.
+
+The source index tracks which owners supplied each candidate. Additions, removals, renames, manifest changes, and source-plan changes replace the relevant owner's set, so removing a file or declaration removes its candidates. No removed candidate is kept as a safety net. A missing conventional root is skipped; a required root, missing manifest, or explicit CLI glob with no matches is an error.
+
+## See also
+
+- [Configuration](./configuration.mdx)
+- [Utility grammar](./utility-grammar.mdx)
+- [Diagnostics and tools](./diagnostics-and-tools.mdx)
+- [Utility reference](./utilities/index.mdx)
