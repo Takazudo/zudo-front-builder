@@ -8,6 +8,10 @@
 # IMPORTANT: nextest does NOT run doctests. health.yml keeps a SEPARATE
 # `cargo test --workspace --doc` step; this config governs everything EXCEPT
 # doctests. Do not assume a green nextest run covers doctest examples.
+# 2026-09-28 (#3266): all ten css-only tests now run in normal discovery;
+# the build-parity test also runs normally and self-skips locally only when
+# esbuild is unavailable. Keep css_command in e2e-heavy-unlocked because parity
+# launches a real zfb build.
 
 # ── Two-lane admission control for heavy V8/esbuild e2e tests ────────────
 # These 43 integration-test binaries (all in package `zfb`) each spawn a real

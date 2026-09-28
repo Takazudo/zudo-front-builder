@@ -579,19 +579,9 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-tailwind-only.xml
           fi
 
-      # Standalone CSS command integration coverage (issue #2600): these are
-      # Level-3 emitted-byte/process checks against the staged real Tailwind
-      # binary. The parity test also spawns a real `zfb build`, so pin esbuild
-      # here as well; this named scope keeps failures attributable instead of
-      # hiding them in the broad nextest run (which intentionally excludes
-      # ignored tests).
-      # Quoted: a bare `commands::build:: -- --ignored` plain scalar trips
-      # YAML's colon-space mapping-indicator rule (the trailing `:: ` reads
-      # as a key/value separator to a strict parser). The exact predicates
-      # below now live inside a block scalar and preserve that command's scope.
-      # Exact test predicates replace the former commands::build:: prefix while
-      # the exact css_command binary predicate preserves all eleven ignored
-      # integration tests. Both original scopes supplied both engine paths.
+      # Run the five ignored command-layer preprocessing-shadow esbuild regressions
+      # with the pinned helper binaries. Exact test predicates keep their CI scope
+      # attributable; the broad nextest run below intentionally excludes ignored tests.
       - name: Run ignored env gates (esbuild + tailwind, workspace resolution)
         shell: bash
         env:
@@ -605,7 +595,6 @@ jobs:
                 | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
                 | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
                 | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected)
-                | binary(=css_command)
             )
           ' 2>&1 | tee target/nextest-logs/env-esbuild-tailwind.log
 
