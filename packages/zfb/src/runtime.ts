@@ -265,7 +265,13 @@ type IslandMount = (
   props: Record<string, unknown>,
   element: Element,
   mode: "hydrate" | "render",
-) => void;
+) => void | IslandRootHandle | null;
+
+interface IslandRootHandle {
+  dispose(): void;
+  unmount?(): void;
+  readonly disposed?: boolean;
+}
 
 type IslandUnmount = (element: Element) => void;
 
@@ -298,34 +304,80 @@ const PERSIST_ATTR = "data-zfb-transition-persist";
 const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
 
 /**
- * Public DOM signal written after an island's mount function returns.
+ * Public observation marker; the symbol handle is the live-root guard.
  *
- * State table (the marker is observational only and is never a mount guard):
- *
- * - initial: absent; `mountIslands` / `mountNewIslands` strip a marker that is
- *   stale relative to this module instance's `mounted` map before scheduling.
- * - deferred idle / visible / media: absent while the scheduler is waiting.
- * - mounted: `fireInlineMount` writes it after the mount function returns.
- * - missing manifest entry: absent; `scheduleMount` returns without writing.
- * - no `mount` export: absent; the inline path returns without writing.
- * - synchronous mount throw: absent; the `mounted` entry is not written, so a
- *   later walk can retry the element.
- * - unmounted (discarded): `unmountIslands` clears the marker and `mounted`
- *   entry in `finally`, even when the unmount thunk throws.
- * - unmounted (persisted-lifted): retained together with the `mounted` entry;
- *   `unmountIslands` skips elements whose persist id exists in the incoming body.
- * - props-changed remount: `clearMountedForRemount` clears the marker and map
- *   entry in `finally`, then the forced mount writes it again after mount returns.
- * - dev hot-swap over a marked DOM: a fresh module's `mountIslands` strips the
- *   stale marker before scheduling, then writes it after its own mount returns.
+ * State table:
+ * - initial/deferred/missing entry/failed mount: marker and handle absent;
+ * - successful mount: both present;
+ * - discarded root: disposal leaves DOM for the body swap, then clears both;
+ * - unchanged persisted root: both survive with the same DOM node;
+ * - changed persisted root: dispose, clear, then mount in render mode;
+ * - bundle re-import: dispose the old symbol handle before render mode replaces it.
  */
 export const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
+const ROOT_KEY = Symbol.for("@takazudo/zfb/zudo-react/root-v1");
+const COMPOSITION_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
+const TRACKER_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-tracker-v1");
 
-// WeakMap<Element, unmount thunk> — replaces the old WeakSet.
-// Value is a per-element function that calls the bundle's unmount(element)
-// (or a noop if the bundle does not expose one). Used by unmountIslands()
-// to fire framework lifecycle cleanups before a body swap.
-const mounted = new WeakMap<Element, () => void>();
+// A fresh bundle instance replaces roots installed by a previous instance.
+// Ordinary repeat scans in the same instance keep their live handles.
+const owned = new WeakSet<Element>();
+function rootHandle(element: Element): IslandRootHandle | undefined {
+  return (element as unknown as Record<symbol, IslandRootHandle | undefined>)[ROOT_KEY];
+}
+function setRootHandle(element: Element, handle: IslandRootHandle | undefined): void {
+  const target = element as unknown as Record<symbol, IslandRootHandle | undefined>;
+  if (handle) target[ROOT_KEY] = handle;
+  else delete target[ROOT_KEY];
+}
+function reportIslandError(element: Element, phase: string, error: unknown): void {
+  const name =
+    element.getAttribute("data-zfb-island") ??
+    element.getAttribute("data-zfb-island-skip-ssr") ??
+    "unknown";
+  try {
+    console.error(`[zfb] island "${name}" ${phase} failed`, error);
+  } catch {
+    // A broken reporter must not stop other roots.
+  }
+}
+function disposeIsland(element: Element, phase: string): void {
+  const handle = rootHandle(element);
+  try {
+    handle?.dispose();
+  } catch (error) {
+    reportIslandError(element, phase, error);
+  } finally {
+    if (rootHandle(element) === handle) setRootHandle(element, undefined);
+    element.removeAttribute(ISLAND_MOUNTED_ATTR);
+  }
+}
+function installCompositionTracker(doc: Document): void {
+  const target = doc as unknown as Record<symbol, (() => void) | undefined>;
+  if (target[TRACKER_KEY]) return;
+  const set = (event: Event, value: "active" | "idle") => {
+    if (event.target instanceof Element) {
+      (event.target as unknown as Record<symbol, string>)[COMPOSITION_KEY] = value;
+    }
+  };
+  const start = (event: Event) => set(event, "active");
+  const end = (event: Event) => set(event, "idle");
+  const input = (event: Event) => {
+    if ((event as InputEvent).isComposing) set(event, "active");
+  };
+  doc.addEventListener("compositionstart", start, true);
+  doc.addEventListener("compositionend", end, true);
+  doc.addEventListener("input", input, true);
+  doc.addEventListener("blur", end, true);
+  target[TRACKER_KEY] = () => {
+    doc.removeEventListener("compositionstart", start, true);
+    doc.removeEventListener("compositionend", end, true);
+    doc.removeEventListener("input", input, true);
+    doc.removeEventListener("blur", end, true);
+    delete target[TRACKER_KEY];
+  };
+}
+
 // Elements for which the nested-island self-wrap warning has already been
 // emitted. Guards against repeated warn spam across re-walks (e.g. SPA swaps).
 const warnedNested = new WeakSet<Element>();
@@ -349,7 +401,7 @@ const pendingCancels = new Map<Element, () => void>();
  *
  * No-op when `document` is undefined (SSR, edge runtime). Safe to call
  * multiple times: each element is mounted at most once thanks to the
- * `mounted` WeakSet guard.
+ * symbol-handle guard.
  *
  * The manifest is captured at module level so `mountNewIslands()` can re-use
  * it after an SPA body swap without needing the caller to re-supply it.
@@ -359,10 +411,11 @@ export function mountIslands(manifest: IslandManifest): void {
 
   // Capture the manifest for post-swap re-walks via mountNewIslands().
   capturedManifest = manifest;
+  installCompositionTracker(document);
 
   const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
   for (const el of Array.from(ssrIslands)) {
-    stripStaleMountedMarker(el);
+    const replacing = prepareMount(el);
     // Skip the empty-skeleton case left behind when the server-side
     // rewriter has not run yet (data-zfb-island="" with no component
     // name). The hydration emit step is expected to fill this in
@@ -371,16 +424,16 @@ export function mountIslands(manifest: IslandManifest): void {
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "hydrate");
+    scheduleMount(manifest, el, name, replacing ? "render" : "hydrate", { force: replacing });
   }
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
   for (const el of Array.from(skipSsrIslands)) {
-    stripStaleMountedMarker(el);
+    const replacing = prepareMount(el);
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "render");
+    scheduleMount(manifest, el, name, "render", { force: replacing });
   }
 }
 
@@ -403,73 +456,43 @@ export function mountNewIslands(): void {
 
   const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
   for (const el of Array.from(ssrIslands)) {
-    stripStaleMountedMarker(el);
+    const replacing = prepareMount(el);
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
-    // A persisted island whose props changed across the body swap is flagged
-    // for remount by swap-functions.swapBodyElement. Clear its surviving mounted
-    // entry BEFORE scheduleMount's already-mounted guard so it re-mounts fresh
-    // with the refreshed data-props. No-op for every other element.
-    const forceRemount = clearMountedForRemount(el);
+    // The router marks changed persisted identity/props on the surviving node.
+    const forceRemount = clearMountedForRemount(el) || replacing;
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "hydrate", { force: forceRemount });
+    scheduleMount(manifest, el, name, forceRemount ? "render" : "hydrate", { force: forceRemount });
   }
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
   for (const el of Array.from(skipSsrIslands)) {
-    stripStaleMountedMarker(el);
+    const replacing = prepareMount(el);
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "render");
+    const forceRemount = clearMountedForRemount(el) || replacing;
+    scheduleMount(manifest, el, name, "render", { force: forceRemount });
   }
 }
 
-/**
- * Consume the cross-package "needs-remount" signal for the persist-props hybrid
- * path (port-spec §12.3.1 hybrid case / §12.3.2). When a persisted island's
- * props differ from the incoming markup, `swapBodyElement` refreshes the
- * surviving element's `data-props` and marks it with `ISLAND_REMOUNT_ATTR`.
- * That attribute is the ONLY channel that crosses the zfb-runtime → zfb package
- * boundary — the `mounted` map is module-private to this file, so a shared
- * in-memory "needs-remount" queue between the two packages is impossible; the
- * live DOM node carrying the flag IS the queue.
- *
- * On a flagged mounted element: fire the old instance's unmount thunk (so its
- * useEffect/framework cleanups run against the still-connected node), drop the
- * `mounted` entry so `scheduleMount`'s guard no longer short-circuits, strip the
- * flag, and ask the caller to force the replacement mount through immediately
- * instead of re-entering any deferred scheduler. This keeps a deferred persisted
- * island from blanking while it waits for idle/visible/media to fire again.
- *
- * A no-op for elements without the flag (the common case: fresh markers and
- * props-unchanged persisted islands).
- *
- * Scope: only the `[data-zfb-island]` (hydrated) loop calls this, mirroring the
- * writer side — swapBodyElement sets the flag only for `newTarget.matches(
- * "[data-zfb-island]")`, never for skip-ssr islands.
- */
+/** Consume a persisted root's remount flag and dispose its previous resources. */
 function clearMountedForRemount(el: Element): boolean {
   if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return false;
-
-  const thunk = mounted.get(el);
-  if (thunk) {
-    try {
-      thunk();
-    } finally {
-      mounted.delete(el);
-      el.removeAttribute(ISLAND_MOUNTED_ATTR);
-      el.removeAttribute(ISLAND_REMOUNT_ATTR);
-    }
-    return true;
-  }
-  el.removeAttribute(ISLAND_MOUNTED_ATTR);
   el.removeAttribute(ISLAND_REMOUNT_ATTR);
-  return false;
+  if (rootHandle(el)) disposeIsland(el, "remount disposal");
+  else el.removeAttribute(ISLAND_MOUNTED_ATTR);
+  return true;
 }
 
-function stripStaleMountedMarker(el: Element): void {
-  if (!mounted.has(el)) el.removeAttribute(ISLAND_MOUNTED_ATTR);
+function prepareMount(el: Element): boolean {
+  let replacing = false;
+  if (rootHandle(el) && !owned.has(el)) {
+    disposeIsland(el, "dev replacement disposal");
+    replacing = true;
+  }
+  if (!rootHandle(el)) el.removeAttribute(ISLAND_MOUNTED_ATTR);
+  return replacing;
 }
 
 /**
@@ -528,7 +551,7 @@ function scheduleMount(
   mode: "hydrate" | "render",
   options: { force?: boolean } = {},
 ): void {
-  if (mounted.has(element)) return;
+  if (rootHandle(element)) return;
 
   const entry = manifest[componentName];
   if (entry == null) {
@@ -571,7 +594,7 @@ function fireInlineMount(
     // Re-check the guard in case `fire` is invoked from a deferred
     // scheduler (rIC/rAF/visibility) after a sibling caller already
     // mounted this element.
-    if (mounted.has(element)) return;
+    if (rootHandle(element)) return;
     // When the deferred fire actually runs, the cancel handle is no longer
     // needed — remove it so pendingCancels doesn't hold stale entries.
     pendingCancels.delete(element);
@@ -581,23 +604,24 @@ function fireInlineMount(
     // Lazy props parse: read and parse data-props only at mount time.
     // For deferred strategies (media, visible, idle) this avoids JSON.parse
     // work at boot time for islands that may never hydrate.
-    const props = readProps(element);
-    const unmountThunk = mod.unmount
-      ? () => mod.unmount!(element)
-      : () => {
-          // noop — inline module does not expose unmount
-        };
-    fn(props, element, mode);
-    mounted.set(element, unmountThunk);
-    element.setAttribute(ISLAND_MOUNTED_ATTR, "");
+    try {
+      const props = readProps(element);
+      const result = fn(props, element, mode);
+      if (result === null) return;
+      const handle: IslandRootHandle =
+        result && typeof result.dispose === "function"
+          ? result
+          : { dispose: () => mod.unmount?.(element) };
+      setRootHandle(element, handle);
+      owned.add(element);
+      element.setAttribute(ISLAND_MOUNTED_ATTR, "");
+    } catch (error) {
+      element.removeAttribute(ISLAND_MOUNTED_ATTR);
+      reportIslandError(element, "mount", error);
+    }
   };
 
-  if (mode === "render") {
-    fire();
-    return;
-  }
-
-  if (options.force) {
+  if (options.force || (mode === "render" && !element.hasAttribute("data-zfb-transport"))) {
     fire();
     return;
   }
@@ -616,55 +640,21 @@ function fireInlineMount(
 }
 
 /**
- * Unmount the mounted islands within `root` (default: `document.body`) that will
- * NOT survive the body swap.
- *
- * Walks `root` for `[data-zfb-island]` and `[data-zfb-island-skip-ssr]` elements,
- * looks up each element's unmount thunk in the `mounted` WeakMap, calls it (which
- * triggers `render(null, element)` for Preact or `root.unmount()` for React), and
- * removes the entry from the map so `mountNewIslands()` can re-mount later.
- *
- * Call this before `swapBodyElement(...)` so the OLD body's islands receive proper
- * framework lifecycle cleanup (useEffect teardowns, etc.) before being discarded.
- *
- * When `incomingBody` is supplied (the client-router passes the parsed incoming
- * document body), any island whose `data-zfb-transition-persist` id matches a
- * marker in that body is DELIBERATELY SKIPPED: swapBodyElement will physically
- * lift the node into the new body, so its component instance and internal state
- * must survive — unmounting it here would empty the container before the lift and
- * defeat the persist contract (issue #1389). Omit `incomingBody` (or pass null)
- * to unmount everything, the pre-#1389 behavior.
- *
- * No-op for elements not in the `mounted` map (e.g. never-mounted or already cleaned up).
+ * Dispose roots that the incoming body will discard. Persisted roots keep their
+ * handles and DOM until the post-swap scan determines whether to recreate them.
  */
 export function unmountIslands(
   root: ParentNode = document.body,
   incomingBody?: ParentNode | null,
 ): void {
   const selector = "[data-zfb-island],[data-zfb-island-skip-ssr]";
-  // Persist ids that `swapBodyElement` will physically LIFT from the old body
-  // into the incoming body — an old marker survives iff the incoming body has a
-  // marker with the same `data-zfb-transition-persist` id. Those DOM nodes are
-  // moved, not discarded, so their component instance and internal state MUST
-  // survive the swap: skip their framework unmount here or the persist contract
-  // preserves nothing (port-spec §12.3.1 case (a) / issue #1389). A persisted
-  // island whose props changed is skipped here too — its refreshed remount runs
-  // later in mountNewIslands via the `data-zfb-island-remount` flag (see
-  // `clearMountedForRemount`) swapBodyElement sets. With no incoming body (a
-  // call outside a swap) nothing is preserved, so the walk is byte-identical to
-  // the pre-#1389 behavior.
+  // Persisted nodes are lifted by the router and retain their live resources.
   const preservedPersistIds = collectPersistIds(incomingBody);
   const elements = root.querySelectorAll<HTMLElement>(selector);
   for (const el of Array.from(elements)) {
     const persistId = el.getAttribute(PERSIST_ATTR);
     if (persistId !== null && preservedPersistIds.has(persistId)) continue;
-    const thunk = mounted.get(el);
-    try {
-      thunk?.();
-    } finally {
-      mounted.delete(el);
-      el.removeAttribute(ISLAND_MOUNTED_ATTR);
-    }
+    disposeIsland(el, "disposal");
   }
 }
 
