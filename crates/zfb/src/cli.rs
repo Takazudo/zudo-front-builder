@@ -59,11 +59,48 @@ pub enum Command {
     Build(BuildArgs),
     /// Compile a CSS entrypoint without building or rendering the site.
     Css(CssArgs),
+    /// Inspect and audit zudo-wind candidates.
+    Wind(WindArgs),
     /// Preview a previously built project.
     Preview(PreviewArgs),
     /// Typecheck the project and validate content collections against
     /// their schemas. Equivalent in spirit to Astro's `astro check`.
     Check(CheckArgs),
+}
+
+/// Arguments for the nested `zfb wind` command family.
+#[derive(Debug, Args)]
+pub struct WindArgs {
+    #[command(subcommand)]
+    pub command: WindCommand,
+}
+
+/// Nested zudo-wind commands.
+#[derive(Debug, Subcommand)]
+pub enum WindCommand {
+    /// Explain how one candidate is interpreted.
+    Explain(WindExplainArgs),
+    /// Audit candidate sources and utility conflicts.
+    Audit(WindAuditArgs),
+}
+
+/// Arguments for `zfb wind explain`.
+#[derive(Debug, Args)]
+pub struct WindExplainArgs {
+    /// Candidate class to explain.
+    pub candidate: String,
+
+    /// Project root used for config loading. Defaults to the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+}
+
+/// Arguments for `zfb wind audit`.
+#[derive(Debug, Args)]
+pub struct WindAuditArgs {
+    /// Project root used for config loading. Defaults to the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
 }
 
 /// Arguments for `zfb css`.
@@ -1091,5 +1128,65 @@ mod tests {
                 "missing {expected:?} from:\n{help}"
             );
         }
+    }
+
+    #[test]
+    fn wind_explain_and_audit_parse() {
+        match Cli::try_parse_from([
+            "zfb",
+            "wind",
+            "explain",
+            "sm:hover:bg-panel",
+            "--project-root",
+            "project",
+        ])
+        .expect("wind explain parses")
+        .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Explain(explain) => {
+                    assert_eq!(explain.candidate, "sm:hover:bg-panel");
+                    assert_eq!(explain.project_root, Some(PathBuf::from("project")));
+                }
+                other => panic!("expected wind explain, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+
+        match Cli::try_parse_from(["zfb", "wind", "audit", "--project-root", "project"])
+            .expect("wind audit parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Audit(audit) => {
+                    assert_eq!(audit.project_root, Some(PathBuf::from("project")));
+                }
+                other => panic!("expected wind audit, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wind_explain_requires_candidate() {
+        let error = Cli::try_parse_from(["zfb", "wind", "explain"])
+            .expect_err("wind explain requires a candidate");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn wind_help_lists_nested_commands() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let wind = command
+            .find_subcommand_mut("wind")
+            .expect("wind subcommand exists");
+        let help = wind.render_long_help().to_string();
+        assert!(help.contains("explain"), "wind help omits explain:\n{help}");
+        assert!(help.contains("audit"), "wind help omits audit:\n{help}");
     }
 }
