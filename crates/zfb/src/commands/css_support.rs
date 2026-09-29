@@ -106,6 +106,7 @@ pub(crate) fn build_standalone_wind_source_plan(
         &[],
         &[],
         &[],
+        &zfb_types::ScratchLayout::default_for(project_root).written_roots(),
     )?;
     let build_plan = crate::commands::css_source_plan::build_css_source_plan(&gathered);
     let mut plan = SourcePlan {

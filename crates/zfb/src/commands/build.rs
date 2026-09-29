@@ -1451,6 +1451,7 @@ fn build_css_payload_with_index(
                 package_route_entrypoints,
                 &sibling_mirror_roots,
                 plugin_virtual_modules,
+                &zfb_types::ScratchLayout::default_for(project_root).written_roots(),
             )?;
             let plan = crate::commands::css_source_plan::build_css_source_plan(&inputs);
             timings.source_plan_ms = source_started.elapsed().as_millis();
@@ -3022,29 +3023,13 @@ fn rebase_config_path_to_shadow(
     shadow_root: &Path,
     path: &Path,
 ) -> Option<PathBuf> {
-    fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
-        let mut existing = normalize_shadow_path(path);
-        let mut suffix = Vec::new();
-        while !existing.exists() {
-            suffix.push(existing.file_name()?.to_os_string());
-            if !existing.pop() {
-                return None;
-            }
-        }
-        let mut canonical = existing.canonicalize().ok()?;
-        for component in suffix.into_iter().rev() {
-            canonical.push(component);
-        }
-        Some(normalize_shadow_path(&canonical))
-    }
-
     let lexical_root = normalize_shadow_path(project_root);
     let canonical_root = project_root
         .canonicalize()
         .map(|path| normalize_shadow_path(&path))
         .unwrap_or_else(|_| lexical_root.clone());
     let normalized = normalize_shadow_path(path);
-    let canonical_candidate = canonicalize_existing_prefix(&normalized);
+    let canonical_candidate = zfb_types::helpers::canonicalize_existing_prefix(&normalized);
     let relative = if let Ok(relative) = normalized.strip_prefix(&lexical_root) {
         // Preserve an authored in-project symlink spelling when its physical
         // target also stays inside the project. A symlink escape is genuinely
@@ -7058,6 +7043,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         _esbuild_handle: _embedded_esbuild_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
+        &zfb_types::ScratchLayout::default_for(project_root).bundle_outdir(),
         config,
         BundleMode::Production,
         crate::commands::bundler_input::CssModuleFailMode::HardFail,
@@ -7392,7 +7378,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // changes the shipped page" contract for SSR responses.
         runtime_bundler_input.emit_render_artifacts = false;
         runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
-        runtime_bundler_input.bundle_basename = Some("bundle-runtime.mjs".to_string());
+        runtime_bundler_input.bundle_basename =
+            Some(zfb_types::scratch_layout::RUNTIME_BUNDLE_BASENAME.to_string());
         let runtime_bundler_out = runner
             .bundle(runtime_bundler_input)
             .context("runtime-only bundler step (for deploy adapter) failed")?;

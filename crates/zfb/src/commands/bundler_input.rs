@@ -203,9 +203,10 @@ pub(crate) struct AssembledBundlerInput {
 /// already process-lifetime there). Ignored when an explicit
 /// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
 /// existing precedence is preserved.
-#[allow(clippy::too_many_arguments)] // 11 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root, #3021 added injected_route_entrypoints; a struct would obscure the caller-keeps-alive contract documented above
+#[allow(clippy::too_many_arguments)] // 12 params: #3341 added bundle_outdir, #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root, #3021 added injected_route_entrypoints; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
+    bundle_outdir: &Path,
     config: &Config,
     bundle_mode: BundleMode,
     css_fail_mode: CssModuleFailMode,
@@ -258,7 +259,7 @@ pub(crate) fn assemble_bundler_input(
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
         bundle_mode,
-        project_root.join(".zfb-build"),
+        bundle_outdir.to_path_buf(),
         content_snapshot_json,
     );
 

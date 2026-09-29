@@ -28,6 +28,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub role_classes: BTreeSet<String>,
     pub manifests: BTreeMap<String, PathBuf>,
     pub safelist: BTreeMap<String, BTreeSet<String>>,
+    pub zfb_written_roots: Vec<PathBuf>,
 }
 
 fn absolute(base: &Path, path: &Path) -> PathBuf {
@@ -78,12 +79,10 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
     let project = absolute(&inputs.first_party_root, &inputs.project_root);
     let first_party = absolute(&project, &inputs.first_party_root);
     let mut plan = SourcePlan::default();
-    for path in [
-        &inputs.configured_output_dir,
-        &inputs.pass_output_dir,
-        &project.join(".zfb-build"),
-        &project.join(".zfb"),
-    ] {
+    for path in [&inputs.configured_output_dir, &inputs.pass_output_dir]
+        .into_iter()
+        .chain(&inputs.zfb_written_roots)
+    {
         plan.exclusions.insert(absolute(&project, path));
     }
 
@@ -448,6 +447,7 @@ pub(crate) fn gather_css_source_plan_inputs(
     package_route_entrypoints: &[PathBuf],
     sibling_mirror_roots: &[PathBuf],
     plugin_virtual_modules: &[(String, String)],
+    zfb_written_roots: &[PathBuf],
 ) -> Result<CssSourcePlanInputs> {
     let project_root = zfb_types::normalize_path_lexical(project_root);
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
@@ -490,6 +490,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         role_classes,
         manifests,
         safelist,
+        zfb_written_roots: zfb_written_roots.to_vec(),
     })
 }
 
@@ -508,6 +509,7 @@ mod tests {
             configured_output_dir: project.join("src/custom-output"),
             pass_output_dir: project.join("src/assets-current"),
             default_content_roots: vec![project.join("src")],
+            zfb_written_roots: zfb_types::ScratchLayout::default_for(&project).written_roots(),
             ..Default::default()
         };
         (temp, inputs)
@@ -697,6 +699,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
         )
         .unwrap();
         assert!(gathered.root_package_claimed);
@@ -807,6 +810,7 @@ mod tests {
             &inputs.project_root,
             &inputs.pass_output_dir,
             &config,
+            &[],
             &[],
             &[],
             &[],
