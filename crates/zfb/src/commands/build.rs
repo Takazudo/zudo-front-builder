@@ -180,6 +180,14 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
     let outdir = resolve_outdir(&project_root, &selected_outdir);
 
+    // Held until `run` returns; the layout is threaded into paths by #3343.
+    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &config,
+        &outdir,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
+
     // Sub 3 / #108 — plugin lifecycle. Spawn the host before any heavy
     // work so `preBuild` can prepare files the bundler will see (e.g.
     // claude-resources index emission). If no plugins are declared, we

@@ -503,6 +503,27 @@ pub(crate) fn resolve_roots(project_root: &Path, cfg: &config::Config) -> Resolv
     }
 }
 
+/// Every authored watch root as an absolute path: in-root relative roots
+/// joined to the project root, out-of-root collection roots, and
+/// `extraWatchPaths` (canonicalized; missing entries skipped silently).
+/// Consumed by scratch-dir validation (R5) so all four commands apply the
+/// same overlap rule.
+pub(crate) fn authored_watch_roots(project_root: &Path, cfg: &config::Config) -> Vec<PathBuf> {
+    let roots = resolve_roots(project_root, cfg);
+    let mut out: Vec<PathBuf> = roots
+        .relative_watch_roots()
+        .iter()
+        .map(|r| project_root.join(r))
+        .collect();
+    out.extend(roots.out_of_root_watch_roots().iter().cloned());
+    out.extend(cfg.extra_watch_paths.iter().filter_map(|p| {
+        crate::commands::resolve::resolve_under_root(project_root, p)
+            .canonicalize()
+            .ok()
+    }));
+    out
+}
+
 /// Compute which derived watch roots + `extraWatchPaths` targets are
 /// absent from disk at boot (issue #1391).
 ///
@@ -1286,6 +1307,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // and assets use the isolated scratch roots established below.
     let dist_root = resolve_under_root(&project_root, &cfg.out_dir);
     let public_root = resolve_under_root(&project_root, &cfg.public_dir);
+
+    // Held until `run` returns; the layout is threaded into paths by #3343.
+    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &cfg,
+        &dist_root,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
 
     if !dist_root.exists() {
         std::fs::create_dir_all(&dist_root)

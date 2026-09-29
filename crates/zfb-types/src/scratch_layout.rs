@@ -37,6 +37,16 @@ impl ScratchLayout {
         }
     }
 
+    /// Layout rooted at an explicit per-invocation scratch dir. The caller
+    /// passes the canonical root.
+    pub fn for_scratch_dir(project_root: &Path, scratch_root: PathBuf) -> Self {
+        Self {
+            project_root: project_root.to_path_buf(),
+            root: scratch_root,
+            session: true,
+        }
+    }
+
     pub fn project_root(&self) -> &Path {
         &self.project_root
     }
@@ -116,6 +126,15 @@ mod tests {
             l.written_roots(),
             vec![p.join(".zfb"), p.join(".zfb-build")]
         );
+    }
+
+    #[test]
+    fn for_scratch_dir_builds_a_session_layout() {
+        let p = Path::new("/tmp/proj");
+        let l = ScratchLayout::for_scratch_dir(p, PathBuf::from("/tmp/scratch"));
+        assert!(l.is_session());
+        assert_eq!(l.root(), Path::new("/tmp/scratch"));
+        assert_eq!(l.graph_bin(), PathBuf::from("/tmp/scratch/graph.bin"));
     }
 
     #[test]
