@@ -247,6 +247,15 @@ function scalar(value: unknown, path: string): string {
     return String(value);
   fail("ZR_CHILD", "setup", "scalar", typeof value, path);
 }
+function validateRawHtml(value: unknown, tag: string, path: string): asserts value is string {
+  if (
+    typeof value !== "string" ||
+    /<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(value) ||
+    (tag === "script" && /<\/script/i.test(value)) ||
+    (tag === "style" && /<\/style/i.test(value))
+  )
+    fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path);
+}
 function children(
   value: unknown,
   parent: Node,
@@ -451,22 +460,20 @@ function element(
     if ((tag === "script" || tag === "style") && isReactive(raw))
       fail("ZR_RAW_HTML", "setup", "static rawHtml", tag, path);
     const initial = read(raw);
-    if (
-      typeof initial !== "string" ||
-      /<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(initial) ||
-      (tag === "script" && /<\/script/i.test(initial)) ||
-      (tag === "style" && /<\/style/i.test(initial))
-    )
-      fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof initial, path);
+    validateRawHtml(initial, tag, path);
+    let region: [Comment, Comment] | undefined;
     if (tag === "script" || tag === "style") element.innerHTML = initial;
     else
-      marker(context, element, "h", () => {
+      region = marker(context, element, "h", () => {
         element.insertAdjacentHTML("beforeend", initial);
       });
     const bindingScope = context.scope;
-    if (isReactive(raw))
+    if (isReactive(raw) && region) {
+      const [open, close] = region;
       context.operations.push((map, cleanups) => {
         const node = map.get(element) as Element;
+        const start = map.get(open)!;
+        const end = map.get(close)!;
         let previous = initial;
         const subscription = bind(
           raw as ReadonlySignal<string>,
@@ -475,29 +482,21 @@ function element(
           context.container,
           path,
           (value) => {
+            validateRawHtml(value, tag, path);
             if (value === previous) return;
-            previous = value;
-            const open = [...node.childNodes].find(
-              (child) => child.nodeType === Node.COMMENT_NODE && child.textContent?.endsWith(":h"),
-            );
-            if (!open) return;
-            let next = open.nextSibling;
-            while (
-              next &&
-              !(next.nodeType === Node.COMMENT_NODE && next.textContent?.startsWith("/zr:1:"))
-            ) {
-              const current = next;
-              next = next.nextSibling;
-              current.parentNode?.removeChild(current);
-            }
             const template = context.document.createElement("template");
             template.innerHTML = value;
-            node.insertBefore(template.content, next);
+            if (start.parentNode !== node || end.parentNode !== node)
+              throw new Error("ZR_REGION_RANGE");
+            for (const child of range(start, end).slice(1, -1)) node.removeChild(child);
+            node.insertBefore(template.content, end);
+            previous = value;
           },
           initial,
         );
         cleanups.push(() => subscription.dispose());
       });
+    }
   } else if (
     tag === "textarea" &&
     (props.modelValue !== undefined || props.defaultValue !== undefined)

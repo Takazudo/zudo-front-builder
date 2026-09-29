@@ -212,3 +212,154 @@ describe("hydrate", () => {
     expect(diagnostics.at(-1)?.code).toBe("ZR_CANCELLED");
   });
 });
+
+describe.each(["hydrate", "mount"] as const)("%s reactive rawHtml", (mode) => {
+  const attach = mode === "hydrate" ? hydrate : mount;
+  function expectChildren(parent: Element, nodes: Node[]): void {
+    expect(parent.childNodes).toHaveLength(nodes.length);
+    nodes.forEach((node, index) => expect(parent.childNodes[index]).toBe(node));
+  }
+  it.each([
+    ["null", null],
+    ["number", 42],
+    ["boolean", false],
+    ["object", { toString: () => "<b>coerced</b>" }],
+    ["opening marker", "<!--zr:1:9:h--><b>reserved</b><!--/zr:1:9-->"],
+    ["closing marker", "<!--/zr:1:1--><b>reserved</b>"],
+    ["island wrapper", '<div data-zfb-island="Nested">reserved</div>'],
+    ["skip-SSR wrapper", '<div data-zfb-island-skip-ssr="Nested">reserved</div>'],
+  ])("rejects a later %s without changing DOM and recovers", async (_, invalid) => {
+    const initial = "<em>safe</em>";
+    const raw = signal<unknown>(initial);
+    const text = signal("before");
+    function Demo() {
+      return h("section", null, h("div", { rawHtml: raw }), h("span", null, text));
+    }
+    container = server(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, options());
+    expect(handle).not.toBeNull();
+    const region = container.querySelector("section > div")!;
+    const original = [...region.childNodes];
+    const before = region.innerHTML;
+
+    raw.value = invalid;
+    text.value = "after";
+    await flush();
+    expect(region.innerHTML).toBe(before);
+    expectChildren(region, original);
+    expect(container.querySelector("span")?.textContent).toBe("after");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      code: "ZR_SUBSCRIBER_ERROR",
+      phase: "update",
+      actual: `Error: ZR_RAW_HTML: valid rawHtml; got ${typeof invalid}`,
+    });
+    expect(subscriberCount(raw)).toBe(1);
+
+    // Restoring the last accepted value must preserve its existing opaque nodes.
+    raw.value = initial;
+    await flush();
+    expectChildren(region, original);
+    raw.value = "<strong>recovered</strong>";
+    await flush();
+    expect(region.querySelector("strong")?.textContent).toBe("recovered");
+    expect(region.querySelector("em")).toBeNull();
+    expect(region.firstChild).toBe(original[0]);
+    expect(region.lastChild).toBe(original.at(-1));
+    expect(region.childNodes).toHaveLength(3);
+    expect(diagnostics).toHaveLength(1);
+    handle!.dispose();
+    expect(subscriberCount(raw)).toBe(0);
+  });
+
+  it("preserves opaque content for equal values and retains markers through empty updates", async () => {
+    const raw = signal("<em>initial</em>");
+    function Demo() {
+      return h("div", { rawHtml: raw });
+    }
+    container = server(h(Demo, {}));
+    container.querySelector("em")!.textContent = "opaque server content";
+    const handle = attach(h(Demo, {}), container, options());
+    expect(handle).not.toBeNull();
+    const region = container.querySelector("div")!;
+    const original = [...region.childNodes];
+    expect(region.querySelector("em")?.textContent).toBe(
+      mode === "hydrate" ? "opaque server content" : "initial",
+    );
+    raw.value = "<em>initial</em>";
+    await flush();
+    expectChildren(region, original);
+
+    raw.value = "";
+    await flush();
+    expectChildren(region, [original[0]!, original.at(-1)!]);
+    raw.value = "text<!--ordinary comment--><b>next</b>";
+    await flush();
+    expect(region.firstChild).toBe(original[0]);
+    expect(region.lastChild).toBe(original.at(-1));
+    expect(region.textContent).toBe("textnext");
+    expect(region.childNodes).toHaveLength(5);
+    expect(diagnostics).toEqual([]);
+    handle!.dispose();
+  });
+
+  it("uses the adopted marker identities instead of searching comment text", async () => {
+    const raw = signal("<em>initial</em>");
+    function Demo() {
+      return h("div", { rawHtml: raw });
+    }
+    container = server(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, options());
+    expect(handle).not.toBeNull();
+    const region = container.querySelector("div")!;
+    const open = region.firstChild!;
+    const close = region.lastChild!;
+    const before = document.createComment("external:h");
+    const after = document.createTextNode("outside");
+    const impostor = document.createComment(close.textContent!);
+    region.insertBefore(before, open);
+    region.insertBefore(impostor, close);
+    region.appendChild(after);
+
+    raw.value = "<b>next</b>";
+    await flush();
+    expectChildren(region, [before, open, region.querySelector("b")!, close, after]);
+    expect(impostor.parentNode).toBeNull();
+    expect(diagnostics).toEqual([]);
+    handle!.dispose();
+  });
+
+  it.each(["detached", "reordered"] as const)(
+    "rejects a %s closing marker before removing any content",
+    async (position) => {
+      const raw = signal("<em>initial</em>");
+      function Demo() {
+        return h("div", { rawHtml: raw });
+      }
+      container = server(h(Demo, {}));
+      const handle = attach(h(Demo, {}), container, options());
+      expect(handle).not.toBeNull();
+      const region = container.querySelector("div")!;
+      const close = region.lastChild!;
+      if (position === "detached") region.removeChild(close);
+      else region.insertBefore(close, region.firstChild);
+      const remaining = [...region.childNodes];
+      raw.value = "<b>rejected</b>";
+      await flush();
+      expectChildren(region, remaining);
+      expect(diagnostics[0]).toMatchObject({
+        code: "ZR_SUBSCRIBER_ERROR",
+        phase: "update",
+        actual: "Error: ZR_REGION_RANGE",
+      });
+      region.appendChild(close);
+      raw.value = "<b>recovered</b>";
+      await flush();
+      expect(region.querySelector("b")?.textContent).toBe("recovered");
+      expect(region.firstChild).toBe(remaining[position === "detached" ? 0 : 1]);
+      expect(region.lastChild).toBe(close);
+      expect(diagnostics).toHaveLength(1);
+      handle!.dispose();
+    },
+  );
+});
