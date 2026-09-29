@@ -348,7 +348,7 @@ export type { JSX } from "./jsx-types.js";
 
 ## Server: @takazudo/zfb/zudo-react/server
 
-サーバーエントリはクライアントランタイムのコードをインポートせず、DOM にアクセスせずに文書をレンダリングできます。
+サーバーエントリはクライアントランタイムのコードをインポートせず、DOM にアクセスせずに文書をレンダリングできます。公開される値は `renderToString`、`islandRoot`、`serializeProps` です。
 
 ### RenderOptions
 
@@ -381,14 +381,6 @@ export function renderToString(node: Child, options?: RenderOptions): string;
 ~~~
 
 renderToString は同期的な記述ツリー全体をエスケープしてシリアライズし、明示的な島ルートの外にはマーカーを付けません。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
-
-### islandRootType
-
-~~~ts
-export const islandRootType: symbol;
-~~~
-
-サーバーエントリーは、`islandRoot` の記述をレンダラーが識別するためのマーカーも公開します。通常、アプリケーションコードは代わりに `islandRoot` を呼びます。
 
 ### islandRoot
 

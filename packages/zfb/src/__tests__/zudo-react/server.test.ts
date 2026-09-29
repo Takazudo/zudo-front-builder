@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Fragment, getScope, h, signal, flush } from "../../zudo-react/index.js";
 import { subscriberCount } from "../../zudo-react/reactive.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
+import * as server from "../../zudo-react/server.js";
 
 const identity = { component: "Demo", build: "b1" };
 function Demo() {
@@ -10,6 +11,10 @@ function Demo() {
 }
 
 describe("server renderer", () => {
+  it("exports exactly the locked server entry values", () => {
+    expect(Object.keys(server).sort()).toEqual(["islandRoot", "renderToString", "serializeProps"]);
+  });
+
   it("renders a whole document with exact bytes and no static markers", () => {
     const page = h(
       "html",

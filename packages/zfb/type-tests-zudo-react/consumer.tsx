@@ -8,6 +8,20 @@ import {
   type ReadonlySignal,
 } from "@takazudo/zfb/zudo-react";
 import { Island } from "@takazudo/zfb";
+import {
+  islandRoot,
+  renderToString,
+  serializeProps,
+  type IslandOptions,
+  type RenderOptions,
+} from "@takazudo/zfb/zudo-react/server";
+// @ts-expect-error The internal island marker is not part of the public server API.
+import { islandRootType } from "@takazudo/zfb/zudo-react/server";
+
+const serverRenderOptions: RenderOptions = {};
+const serverIslandOptions: IslandOptions = { identity: { component: "Example", build: "b1" } };
+void [islandRoot, renderToString, serializeProps, serverRenderOptions, serverIslandOptions];
+void islandRootType;
 
 const name = {
   value: "ok",

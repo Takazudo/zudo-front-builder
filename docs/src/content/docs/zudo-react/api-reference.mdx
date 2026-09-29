@@ -348,7 +348,7 @@ The development entry re-exports the same JSX namespace with its finite intrinsi
 
 ## Server: @takazudo/zfb/zudo-react/server
 
-The server entry can render documents without importing client runtime code or accessing the DOM.
+The server entry can render documents without importing client runtime code or accessing the DOM. Its public value exports are `renderToString`, `islandRoot`, and `serializeProps`.
 
 ### RenderOptions
 
@@ -381,14 +381,6 @@ export function renderToString(node: Child, options?: RenderOptions): string;
 ~~~
 
 renderToString serializes a complete synchronous description tree with escaping and no markers outside explicit island roots; see [Server rendering](./server-rendering.mdx).
-
-### islandRootType
-
-~~~ts
-export const islandRootType: symbol;
-~~~
-
-The server entry also exports the marker that identifies `islandRoot` descriptions to the renderer. Application code normally calls `islandRoot` instead.
 
 ### islandRoot
 
