@@ -8308,6 +8308,18 @@ mod tests {
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
 
+    /// Serialized `.class` selector for a CSS Modules class-map value, matching
+    /// lightningcss's printer for the default `[hash]_[local]` pattern: a scoped
+    /// name like `-8CUya_btn` is emitted as `.-\38 CUya_btn` (#3311). lightningcss
+    /// serializes pattern segments separately, so arbitrary custom patterns are not
+    /// guaranteed byte-identical to this whole-name serialization.
+    fn css_class_selector(name: &str) -> String {
+        let mut selector = String::from(".");
+        cssparser::serialize_identifier(name, &mut selector)
+            .expect("writing to a String cannot fail");
+        selector
+    }
+
     fn write_css_root_claim_workspace(root: &Path, packages: &str) -> PathBuf {
         std::fs::write(
             root.join("pnpm-workspace.yaml"),
@@ -11569,7 +11581,7 @@ mod tests {
             .expect("bundler map must contain the scoped `.root` class for the sibling module");
 
         assert!(
-            css.contains(&format!(".{scoped}")),
+            css.contains(&css_class_selector(&scoped)),
             "emitted CSS must contain the scoped sibling class `.{scoped}`; got:\n{css}",
         );
     }
@@ -11779,7 +11791,7 @@ mod tests {
             .expect("class map must contain the scoped `.root` class for the virtual-only sibling");
 
         assert!(
-            css.contains(&format!(".{scoped}")),
+            css.contains(&css_class_selector(&scoped)),
             "emitted CSS (wind disabled) must contain the scoped virtual-only sibling class \
              `.{scoped}`; got:\n{css}",
         );
@@ -11918,7 +11930,7 @@ mod tests {
             );
 
         assert!(
-            css.contains(&format!(".{scoped}")),
+            css.contains(&css_class_selector(&scoped)),
             "emitted CSS (wind disabled) must contain the scoped direct virtual CSS module \
              class `.{scoped}`; got:\n{css}",
         );

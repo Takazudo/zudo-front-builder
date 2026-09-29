@@ -43,6 +43,10 @@ roxmltree = "0.20"
 # dep of `axum` at this same 0.1.x line, so pinning it here adds no new
 # version to the dependency graph.
 serde_path_to_error = "0.1"
+# Dev-only CSS-identifier serializer for CSS Modules test oracles (#3311).
+# Pinned to the 0.33 line lightningcss uses so the oracle escapes exactly
+# like its printer and Cargo.lock gains no third cssparser version.
+cssparser = "0.33"
 # Source Map v3 parser (getsentry). Canonical decoder for esbuild's
 # `--sourcemap=linked` output used to re-project renderer frames in zfb-build.
 # Do NOT hand-roll VLQ decoding anywhere — this crate is the one parser.

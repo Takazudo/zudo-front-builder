@@ -9,6 +9,17 @@ use zfb_css::{
     StubCssEngine,
 };
 
+/// Serialized `.class` selector for a CSS Modules class-map value, matching
+/// lightningcss's printer for the default `[hash]_[local]` pattern: a scoped
+/// name like `-8CUya_btn` is emitted as `.-\38 CUya_btn` (#3311). lightningcss
+/// serializes pattern segments separately, so arbitrary custom patterns are not
+/// guaranteed byte-identical to this whole-name serialization.
+fn css_class_selector(name: &str) -> String {
+    let mut selector = String::from(".");
+    cssparser::serialize_identifier(name, &mut selector).expect("writing to a String cannot fail");
+    selector
+}
+
 #[test]
 fn css_modules_processor_scopes_class_names() {
     let proc = CssModulesProcessor::with_default_config();
@@ -31,8 +42,37 @@ fn css_modules_processor_scopes_class_names() {
     // The compiled CSS contains the scoped names.
     let scoped_btn = names.get("btn").expect("btn entry");
     assert!(
-        css.contains(scoped_btn),
+        css.contains(&css_class_selector(scoped_btn)),
         "compiled CSS must reference scoped name {scoped_btn}, got: {css}"
+    );
+}
+
+/// Regression for #3311: a scoped name starting with `-<digit>` is emitted as
+/// an escaped CSS identifier, so a raw substring oracle misses it. The fixed
+/// pattern forces the edge case instead of relying on filename hashing.
+#[test]
+fn css_modules_scoped_name_with_leading_dash_digit_is_escaped_in_css() {
+    let proc = CssModulesProcessor::new(zfb_css::modules::CssModulesConfig {
+        pattern: Some("-8CUya_[local]".to_string()),
+        ..zfb_css::modules::CssModulesConfig::default()
+    });
+    let (css, names) = proc
+        .process_source(Path::new("button.module.css"), ".btn { color: red; }\n")
+        .expect("CSS Modules processing must succeed");
+
+    let scoped_btn = names.get("btn").expect("btn entry");
+    assert_eq!(scoped_btn, "-8CUya_btn", "class map keeps the raw name");
+    assert!(
+        css.contains(r".-\38 CUya_btn"),
+        "CSS must contain the escaped selector, got: {css}"
+    );
+    assert!(
+        !css.contains(".-8CUya_btn"),
+        "the raw selector must not appear, got: {css}"
+    );
+    assert!(
+        css.contains(&css_class_selector(scoped_btn)),
+        "helper selector must match the emitted CSS, got: {css}"
     );
 }
 
@@ -190,7 +230,7 @@ export function DocShell() {
         .expect("user btn scoped name");
     assert_ne!(user_btn_scoped, "btn", "btn must be hashed");
     assert!(
-        out.css.contains(user_btn_scoped),
+        out.css.contains(&css_class_selector(user_btn_scoped)),
         "combined output must contain the scoped user btn"
     );
 
