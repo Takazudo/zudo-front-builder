@@ -336,7 +336,7 @@ Measure each release version separately; those runs do not establish that other 
 
 Before editing `packages/zfb/package.json` or pushing the version-bump commit:
 
-1. From the current `main`, make a disposable branch whose **only initial change** sets
+1. Record the current `main` SHA. From that commit, make a disposable branch whose **only initial change** sets
    `crates/zfb-md-wasm/npm/package.json`'s `version` to `<version>`. Push it and open a draft PR
    targeting `main`. Do not run `scripts/sync-platform-versions.mjs` on this branch: it would undo
    the isolated stamp. The `crates/zfb-md-wasm/**` path makes health.yml run `wasm-md (default)`.
@@ -358,8 +358,10 @@ Before editing `packages/zfb/package.json` or pushing the version-bump commit:
    `assert-packed.mjs`, `assert-zfb-md-wasm-release.mjs`, the tarball budget against its existing
    ceiling, and `assert-zfb-md-wasm-exports.sh` in that run. Gzip drift warnings within 64 bytes
    are acceptable; exact-size errors and ceiling breaches are not.
-4. Copy the CI-measured manifest and synchronized documentation changes into the `main`
-   working tree for the single version-bump commit below. Close the disposable PR **unmerged**
+4. Confirm `main` is still at the recorded SHA; if it advanced, repeat this probe on the new
+   source before using its measurements. Copy the CI-measured manifest and synchronized
+   documentation changes into the `main` working tree for the single version-bump commit below.
+   Close the disposable PR **unmerged**
    and delete its branch. Do not carry its isolated npm-only bump onto `main`; Steps 4b–4d make
    the real lockstep bump. The manifest refresh belongs in that same bump commit, not an
    earlier push.
