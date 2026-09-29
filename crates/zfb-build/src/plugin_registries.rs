@@ -751,11 +751,12 @@ impl SetupRegistries {
 pub async fn run_preview_setup(
     host: Option<&PluginHost>,
     project_root: &Path,
+    scratch_dir: &Path,
     config: &serde_json::Value,
 ) -> anyhow::Result<SetupRegistries> {
     match host {
         Some(host) => {
-            host.run_setup(project_root, SetupCommand::Preview, config)
+            host.run_setup(project_root, scratch_dir, SetupCommand::Preview, config)
                 .await
         }
         None => Ok(SetupRegistries::empty()),

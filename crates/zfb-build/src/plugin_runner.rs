@@ -218,6 +218,9 @@ impl PostBuildRouteManifest {
 pub struct BuildHookContext {
     pub project_root: PathBuf,
     pub out_dir: PathBuf,
+    /// Absolute plugin scratch directory (`ScratchLayout::plugin_scratch_dir`).
+    /// zfb never creates it.
+    pub scratch_dir: PathBuf,
     /// Full loaded config as JSON (the JS side already saw an earlier
     /// view, but we re-send it so plugins can cheaply read it without
     /// having to keep state across hook calls).
@@ -235,6 +238,9 @@ pub struct BuildHookContext {
 #[serde(rename_all = "camelCase")]
 pub struct DevRegisterContext {
     pub project_root: PathBuf,
+    /// Absolute plugin scratch directory (`ScratchLayout::plugin_scratch_dir`).
+    /// zfb never creates it.
+    pub scratch_dir: PathBuf,
     pub config: serde_json::Value,
 }
 
@@ -252,6 +258,9 @@ pub struct DevRegisterContext {
 #[serde(rename_all = "camelCase")]
 pub struct SetupHookContext {
     pub project_root: PathBuf,
+    /// Absolute plugin scratch directory (`ScratchLayout::plugin_scratch_dir`).
+    /// zfb never creates it.
+    pub scratch_dir: PathBuf,
     /// `"build"`, `"dev"`, or `"preview"` (#1542) — string form matches
     /// the `command` field the JS-side `SetupContext` exposes.
     pub command: String,
@@ -814,6 +823,7 @@ impl PluginHost {
     pub async fn run_setup(
         &self,
         project_root: &std::path::Path,
+        scratch_dir: &std::path::Path,
         command: SetupCommand,
         config: &serde_json::Value,
     ) -> Result<SetupRegistries> {
@@ -864,6 +874,7 @@ impl PluginHost {
 
         let ctx = SetupHookContext {
             project_root: project_root.to_path_buf(),
+            scratch_dir: scratch_dir.to_path_buf(),
             command: command.as_str().to_string(),
             config: config.clone(),
         };
@@ -1679,6 +1690,7 @@ mod tests {
 
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -1727,6 +1739,7 @@ mod tests {
         .expect("host spawns");
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -1793,6 +1806,7 @@ mod tests {
         .expect("host spawns");
         let bctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -1801,6 +1815,7 @@ mod tests {
         let regs = host
             .register_dev_middlewares(&DevRegisterContext {
                 project_root: tmp.path().to_path_buf(),
+                scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
                 config: serde_json::json!({}),
             })
             .await
@@ -1871,6 +1886,7 @@ mod tests {
         let regs = host
             .register_dev_middlewares(&DevRegisterContext {
                 project_root: tmp.path().to_path_buf(),
+                scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
                 config: serde_json::json!({}),
             })
             .await
@@ -1948,6 +1964,7 @@ mod tests {
         let regs = host
             .register_preview_middlewares(&DevRegisterContext {
                 project_root: tmp.path().to_path_buf(),
+                scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
                 config: serde_json::json!({}),
             })
             .await
@@ -2024,6 +2041,7 @@ mod tests {
 
         let ctx = DevRegisterContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             config: serde_json::json!({}),
         };
         let dev_regs = host
@@ -2130,6 +2148,7 @@ mod tests {
         let regs = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2223,6 +2242,7 @@ mod tests {
         let regs = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2279,6 +2299,7 @@ mod tests {
         let err = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2336,6 +2357,7 @@ mod tests {
         let err = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2512,6 +2534,7 @@ mod tests {
         let regs = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Build,
                 &serde_json::json!({}),
             )
@@ -2573,6 +2596,7 @@ mod tests {
         let dev_regs = dev_host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2596,6 +2620,7 @@ mod tests {
         let regs = build_host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Build,
                 &serde_json::json!({}),
             )
@@ -2657,6 +2682,7 @@ mod tests {
         let err = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
@@ -2705,6 +2731,7 @@ mod tests {
         let regs = host
             .run_setup(
                 tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
                 crate::plugin_registries::SetupCommand::Build,
                 &serde_json::json!({}),
             )
@@ -2762,6 +2789,7 @@ mod tests {
         .expect("host spawns");
         host.run_setup(
             tmp.path(),
+            &tmp.path().join(".zfb-build").join("plugins"),
             crate::plugin_registries::SetupCommand::Dev,
             &serde_json::json!({}),
         )
@@ -2819,6 +2847,7 @@ mod tests {
         crate::plugin_registries::run_preview_setup(
             Some(&host),
             tmp.path(),
+            &tmp.path().join(".zfb-build").join("plugins"),
             &serde_json::json!({}),
         )
         .await
@@ -2833,9 +2862,14 @@ mod tests {
         // "no host, no-op" handling for plugin-less projects — Level 1,
         // no node/subprocess required.
         let root = std::path::PathBuf::from("/proj");
-        let regs = crate::plugin_registries::run_preview_setup(None, &root, &serde_json::json!({}))
-            .await
-            .expect("no-host preview setup must succeed");
+        let regs = crate::plugin_registries::run_preview_setup(
+            None,
+            &root,
+            &root.join(".zfb-build").join("plugins"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("no-host preview setup must succeed");
         assert!(regs.aliases.is_empty());
         assert!(regs.virtual_modules.is_empty());
         assert!(regs.injected_routes.is_empty());
@@ -2888,6 +2922,7 @@ mod tests {
         crate::plugin_registries::run_preview_setup(
             Some(&host),
             tmp.path(),
+            &tmp.path().join(".zfb-build").join("plugins"),
             &serde_json::json!({}),
         )
         .await
@@ -2895,6 +2930,7 @@ mod tests {
         let regs = host
             .register_preview_middlewares(&DevRegisterContext {
                 project_root: tmp.path().to_path_buf(),
+                scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
                 config: serde_json::json!({}),
             })
             .await
@@ -2957,6 +2993,7 @@ mod tests {
 
         let pre_ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -2976,6 +3013,7 @@ mod tests {
         };
         let post_ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: Some(manifest),
@@ -3086,6 +3124,7 @@ mod tests {
         };
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: Some(manifest),
@@ -3196,6 +3235,7 @@ mod tests {
         };
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: Some(manifest),
@@ -3282,6 +3322,7 @@ mod tests {
         };
         let ctx = BuildHookContext {
             project_root: std::path::PathBuf::from("/tmp"),
+            scratch_dir: std::path::PathBuf::from("/tmp/.zfb-build/plugins"),
             out_dir: std::path::PathBuf::from("/tmp/dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -3322,6 +3363,7 @@ mod tests {
         };
         let ctx = BuildHookContext {
             project_root: std::path::PathBuf::from("/tmp"),
+            scratch_dir: std::path::PathBuf::from("/tmp/.zfb-build/plugins"),
             out_dir: std::path::PathBuf::from("/tmp/dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -3626,6 +3668,7 @@ mod tests {
         );
         host.run_setup(
             tmp.path(),
+            &tmp.path().join(".zfb-build").join("plugins"),
             crate::plugin_registries::SetupCommand::Build,
             &serde_json::json!({}),
         )
@@ -3934,6 +3977,7 @@ mod tests {
 
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4024,6 +4068,7 @@ mod tests {
 
         let ctx = BuildHookContext {
             project_root: tmp.path().to_path_buf(),
+            scratch_dir: tmp.path().join(".zfb-build").join("plugins"),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4320,6 +4365,7 @@ mod tests {
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4413,6 +4459,7 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4496,6 +4543,7 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4583,6 +4631,7 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4680,6 +4729,7 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -4762,6 +4812,7 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let ctx = BuildHookContext {
             project_root: root.to_path_buf(),
+            scratch_dir: root.join(".zfb-build").join("plugins"),
             out_dir: root.join("dist"),
             config: serde_json::json!({}),
             routes: None,
@@ -5040,5 +5091,112 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
             Err(error) => error,
         };
         assert!(error.to_string().contains("last init phase:"), "{error}");
+    }
+
+    /// #3346 — every plugin hook context carries the absolute
+    /// `scratchDir`, for both the default and an overridden layout, and
+    /// zfb never creates the directory itself.
+    #[tokio::test]
+    async fn every_hook_context_carries_scratch_dir_and_zfb_does_not_create_it() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        for layout_kind in ["default", "session"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("proj");
+            let layout = if layout_kind == "default" {
+                zfb_types::ScratchLayout::default_for(&project)
+            } else {
+                zfb_types::ScratchLayout::for_scratch_dir(&project, tmp.path().join("scratch"))
+            };
+            let scratch_dir = layout.plugin_scratch_dir();
+            assert!(scratch_dir.is_absolute());
+            let expected_tail = if layout_kind == "default" {
+                project.join(".zfb-build").join("plugins")
+            } else {
+                tmp.path().join("scratch").join("plugins")
+            };
+            assert_eq!(scratch_dir, expected_tail);
+
+            let plugin_path = tmp.path().join("scratch-echo.mjs");
+            let log_path = tmp.path().join("scratch-echo.log");
+            let plugin_src = format!(
+                r#"
+                import {{ appendFileSync }} from "node:fs";
+                const log = (hook, ctx) =>
+                  appendFileSync({log:?}, hook + "=" + ctx.scratchDir + "\n");
+                export default {{
+                  name: "scratch-echo",
+                  setup(ctx) {{ log("setup", ctx); }},
+                  preBuild(ctx) {{ log("preBuild", ctx); }},
+                  postBuild(ctx) {{ log("postBuild", ctx); }},
+                  devMiddleware(ctx) {{ log("devMiddleware", ctx); }},
+                  previewMiddleware(ctx) {{ log("previewMiddleware", ctx); }},
+                }};
+                "#,
+                log = log_path.to_string_lossy().to_string(),
+            );
+            tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+            let host = PluginHost::spawn(
+                vec![PluginSpec {
+                    name: "scratch-echo".into(),
+                    module: file_url_for_test(&plugin_path),
+                    options: serde_json::json!({}),
+                }],
+                None,
+            )
+            .await
+            .expect("host spawns");
+
+            host.run_setup(
+                &project,
+                &scratch_dir,
+                crate::plugin_registries::SetupCommand::Build,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("setup ok");
+            let build_ctx = BuildHookContext {
+                project_root: project.clone(),
+                scratch_dir: scratch_dir.clone(),
+                out_dir: project.join("dist"),
+                config: serde_json::json!({}),
+                routes: None,
+            };
+            host.run_pre_build(&build_ctx).await.expect("preBuild ok");
+            host.run_post_build(&build_ctx).await.expect("postBuild ok");
+            let register_ctx = DevRegisterContext {
+                project_root: project.clone(),
+                scratch_dir: scratch_dir.clone(),
+                config: serde_json::json!({}),
+            };
+            host.register_dev_middlewares(&register_ctx)
+                .await
+                .expect("dev register ok");
+            host.register_preview_middlewares(&register_ctx)
+                .await
+                .expect("preview register ok");
+            host.shutdown().await.expect("shutdown ok");
+
+            let log = tokio::fs::read_to_string(&log_path).await.unwrap();
+            let want = scratch_dir.to_string_lossy();
+            for hook in [
+                "setup",
+                "preBuild",
+                "postBuild",
+                "devMiddleware",
+                "previewMiddleware",
+            ] {
+                assert!(
+                    log.lines().any(|l| l == format!("{hook}={want}")),
+                    "[{layout_kind}] {hook} did not receive scratchDir {want}: {log}"
+                );
+            }
+            assert!(
+                !scratch_dir.exists(),
+                "[{layout_kind}] zfb must not create the plugin scratch dir"
+            );
+        }
     }
 }
