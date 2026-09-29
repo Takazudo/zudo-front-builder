@@ -56,6 +56,7 @@ Start the local development server with live reload.
 
 ```sh
 zfb dev [--port <port>] [--host [<host>]]
+        [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 ### Flags
@@ -64,6 +65,8 @@ zfb dev [--port <port>] [--host [<host>]]
 |---|---|---|---|
 | `--port` | u16 | `3000`* | Port to bind the dev server to. |
 | `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this dev server its own directory for zfb's generated artifacts. Under a scratch dir, dev ignores the prebuilt output directory. See [Scratch dirs](#scratch-dirs). |
+| `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this invocation, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 \* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
 
@@ -109,6 +112,7 @@ Build the project for production. Emits static HTML (and, when an adapter is con
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
           [--emit-render-artifacts | --no-emit-render-artifacts]
+          [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 ### Flags
@@ -122,6 +126,8 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-strict-broken` | boolean flag | config/default | Do not fail this build on broken links. Overrides `strictBrokenLinks: true` from config or presets. Disables the top-level strict overlay only — a `linkValidation` block that explicitly sets `failOnBroken: true` stays in effect. |
 | `--emit-render-artifacts` | boolean flag | config/default | Write a JSON render artifact under `__zfb/render/` for every markdown/MDX-backed HTML route whose page renders exactly one top-level content region. Overrides `emitRenderArtifacts: false` or an omitted config value. |
 | `--no-emit-render-artifacts` | boolean flag | config/default | Do not write render artifacts for this build. Overrides `emitRenderArtifacts: true` from config or presets. |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this build its own directory for zfb's generated artifacts. The output directory is still shared. See [Scratch dirs](#scratch-dirs). |
+| `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this build, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
 
@@ -146,6 +152,7 @@ zfb build --strict-broken
 zfb build --no-strict-broken
 zfb build --emit-render-artifacts
 zfb build --no-emit-render-artifacts
+zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
 
 ## `zfb css`
@@ -223,6 +230,7 @@ Serve a previously built site locally. Run `zfb build` first.
 
 ```sh
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
+            [--scratch-dir <path>]
 ```
 
 In static mode (no adapter, or `adapter: "none"`), `zfb preview` also runs the SAME two request-time layers `zfb dev` does, ahead of the plain static-file waterfall: a plugin's `previewMiddleware` registrations, then `public/_redirects` (see [Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules)). A plugin claiming a URL always wins over a `_redirects` rule for that same URL.
@@ -252,6 +260,7 @@ Under adapter mode, `wrangler dev` serves the whole site — zfb never boots its
 | `--port` | u16 | `4321`* | Port to bind the preview server to. |
 | `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
 | `--outdir` | path | config / `dist` | Directory to serve the built artifacts from. Overrides config `outDir`; when both are absent, uses `dist`. |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Validate and lock a scratch dir for this preview. zfb writes nothing of its own there; plugins get its `plugins/` child as `ctx.scratchDir`. `--define` is not accepted, because preview bundles nothing. See [Scratch dirs](#scratch-dirs). |
 
 \* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
 
@@ -270,7 +279,7 @@ zfb preview --host --outdir public
 Typecheck the project and validate content-collection frontmatter against their schemas.
 
 ```sh
-zfb check [--skip-tsc]
+zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 This command runs two checks:
@@ -285,6 +294,8 @@ Either failure mode exits with a non-zero code.
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation still runs. Useful when TypeScript is not installed or for schema-only CI lanes. |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Validate and lock a scratch dir. `check` writes nothing into it; the flag exists so one argument list or one exported `ZFB_SCRATCH_DIR` works for every command. See [Scratch dirs](#scratch-dirs). |
+| `--define` | `KEY=EXPR`, repeatable | none | Validated only. The value does not reach `tsc`. See [Per-invocation defines](#per-invocation-defines). |
 
 ### Example
 
@@ -299,6 +310,138 @@ zfb check --skip-tsc
 <Tip>
 
 `zfb check` is the recommended way to validate content collections in CI. Wire it after `zfb build` to catch frontmatter violations that the build silently ignores.
+
+</Tip>
+
+## Scratch dirs
+
+By default, every command writes its generated artifacts under `<root>/.zfb-build/`. Two commands running at the same time in one checkout therefore share those files. A `zfb build` can overwrite the bundle a running `zfb dev` is serving, and two dev servers overwrite each other's dev pages and persisted graph. `--scratch-dir <PATH>` gives one invocation its own directory for these artifacts, so concurrent commands stay apart. Give **each** concurrent command its own scratch dir.
+
+```sh
+# Two dev servers and a build in one checkout, each with its own scratch dir
+zfb dev --port 3000 --scratch-dir .zfb-build/dev-main
+zfb dev --port 3001 --scratch-dir .zfb-build/dev-preview
+zfb build --scratch-dir .zfb-build/build
+
+# The same through the environment
+ZFB_SCRATCH_DIR=.zfb-build/dev-preview zfb dev --port 3001
+```
+
+### Selecting a scratch dir
+
+- `--scratch-dir` is accepted by `zfb dev`, `zfb build`, `zfb check`, and `zfb preview`.
+- The flag wins over the `ZFB_SCRATCH_DIR` environment variable. An empty or whitespace-only `ZFB_SCRATCH_DIR` counts as unset.
+- A relative path resolves against the current working directory, which is the project root. zfb creates the directory if it is missing, but only after the path passes the rules below.
+- With neither the flag nor the variable, zfb uses the default `<root>/.zfb-build/` layout exactly as before. It takes no lock and creates nothing extra.
+
+### Where to put it
+
+The recommended location is `<root>/.zfb-build/<name>`. The scaffold templates already gitignore `.zfb-build/`, and every zfb source walker already skips it.
+
+Inside the project, a scratch dir must sit **strictly under** `.zfb-build/`. Any other in-project location is rejected. A location outside the project, such as `/tmp/zfb-dev-main`, is allowed as long as it passes the same rules.
+
+Each of these locations is a hard error. The message names the rule tag and the paths involved:
+
+| Tag | Rejected location |
+|---|---|
+| `R1` | The project root itself, or any ancestor of it. |
+| `R2` | An in-project path that is not strictly under `.zfb-build/`, including `.zfb-build` itself. Also any path below `.zfb-build/` with a component named `dev-pages`, `dev-assets`, `watcher-liveness-probe`, or `plugins`, because those are the default layout's own directories. |
+| `R3` | A path that overlaps the command's output directory (`--outdir`, else config `outDir`) in either direction: inside it, or containing it. |
+| `R4` | A path that overlaps `publicDir` in either direction. |
+| `R5` | A path that overlaps an authored watch root in either direction. Watch roots are the default roots (`pages`, `content`, `components`, `layouts`, `styles`, `data`, `src`, and the `zfb.config.*` files), content collection directories, and `extraWatchPaths`. |
+| `R6` | A path nested inside another scratch dir, which is any directory above it that holds a `.zfb-scratch.lock`. Also a path with a component that zfb's own temp cleanup deletes: one starting with `zfb-shadow-session-`, or one named `watcher-liveness-probe` or `zfb-dev-watcher-liveness-probe`. |
+
+zfb compares paths after resolving symlinks, so a symlinked alias does not get past a rule. The rules are checked once before the directory is created and again on the created directory. zfb does **not** detect the reverse of `R6`: claiming a directory that already contains another scratch dir. Keep scratch dirs as siblings, such as `.zfb-build/dev-main` next to `.zfb-build/build`, rather than nesting them.
+
+### Ownership and locking
+
+While a command runs, it holds an exclusive lock on `<scratch>/.zfb-scratch.lock`:
+
+- **A second command on the same dir fails fast.** It exits with an error saying that the scratch dir is in use by another zfb process. It never waits and never shares the directory.
+- **The lock file marks the directory as zfb's.** A later command may reuse a directory that has this file. An empty directory is also accepted. A non-empty directory without the lock file is refused, so a typo like `--scratch-dir ~/Documents` cannot write build artifacts into your own files.
+- **The lock needs a local filesystem.** If the filesystem does not support advisory locks, the command fails instead of running without exclusivity.
+
+<Warning title="zfb never deletes a scratch dir">
+
+zfb never removes a scratch dir and never reaps old ones. The lock file stays in place after the command exits. Delete scratch dirs you no longer need yourself, after every command using them has stopped.
+
+</Warning>
+
+### What lives inside
+
+| Entry | Written by |
+|---|---|
+| `.zfb-scratch.lock` | Every command that uses the scratch dir. |
+| `bundle.mjs` (and its source map and assets) | `zfb dev` and `zfb build`. |
+| `bundle-runtime.mjs` | `zfb build` with a deploy adapter configured (the bundle the adapter receives). |
+| `dev-pages/`, `dev-assets/` | `zfb dev`. |
+| `graph.bin` | `zfb dev` (the persisted dependency graph; the default layout keeps it at `.zfb/graph.bin` instead). |
+| `watcher-liveness-probe/` | `zfb dev`. |
+| `plugins/` | Plugins, through `ctx.scratchDir`. zfb does not create it. See [Plugins](../concepts/plugins.mdx#scratch-space-for-intermediates). |
+
+`zfb check` and `zfb preview` write nothing of their own into a scratch dir. They only validate and lock it. Plugins that run under `zfb preview` still receive `ctx.scratchDir` and may write there.
+
+### `zfb dev` ignores the prebuilt output directory
+
+Under a scratch dir, `zfb dev` never reads the output directory. A previous `zfb build` may have used different defines or a different state, so dev does not trust it:
+
+- no prebuilt HTML is served before a route's first render;
+- no `/assets/*` fallback to the output directory;
+- no boot-lazy seed, so `ZFB_DEV_BOOT_LAZY=1` falls back to the eager startup render.
+
+Dev logs one info line saying so:
+
+```text
+scratch dir in use (<scratch>): ignoring prebuilt <outDir> — no dist/ fallback for HTML or /assets
+```
+
+Without a scratch dir, dev behaves exactly as before.
+
+### What stays shared on purpose
+
+A scratch dir isolates zfb's own generated artifacts. These stay shared between concurrent commands by design:
+
+- **The output directory.** Two `zfb build` runs with the same output directory still overwrite each other. Pass a different `--outdir` to each one.
+- **Temp files that are already per-process.** esbuild entry, tsconfig, and virtual-module temp files in the project root, shadow sessions, and config-loader temp dirs each get a unique name per process, so they do not collide.
+- **A user tsconfig's `.tsbuildinfo`.** When your tsconfig turns on `incremental` or `composite`, `zfb check` runs `tsc` with your settings unchanged, so tsc writes that file where your tsconfig says.
+- **The `.zfb/` staging directory.** Project code imports from it, so it cannot move.
+- **Plugin-owned directories.** A plugin that writes to its own project-root directory (for example `.zudo-doc/`) is still shared between concurrent commands. Plugin isolation requires the plugin to adopt `ctx.scratchDir`. See [Plugins](../concepts/plugins.mdx#scratch-space-for-intermediates).
+
+## Per-invocation defines
+
+`--define KEY=EXPR` adds an esbuild define substitution for one invocation, on top of the config's [`bundle.define`](./define-config.mdx#bundle-settings-bundle-define). Use it to build or serve the same checkout with different values, for example a different origin per environment, without editing `zfb.config.ts`.
+
+```sh
+zfb build --define __ORIGIN__='"https://www.example.com"'
+zfb dev --scratch-dir .zfb-build/dev-preview \
+  --define __ORIGIN__='"https://preview.example.com"' \
+  --define __FEATURE_X__=true
+```
+
+- **Commands.** `--define` is repeatable and accepted by `zfb dev`, `zfb build`, and `zfb check`. `zfb preview` rejects it, because preview serves already-built output and bundles nothing.
+- **Values are raw esbuild expressions**, exactly like `bundle.define`. A string needs its own inner quotes: `--define __ORIGIN__='"https://a.example"'`. The shell's single quotes keep the inner double quotes intact. The flag splits on the first `=`, so the expression itself may contain `=`.
+- **Merge.** The CLI values are merged per key over `bundle.define`, and the CLI wins. When the same key is repeated, the last occurrence wins, so a script can append an override to a shared argument list. Plugins see the merged map in `ctx.config.bundle.define`.
+- **Errors.** A value with no `=`, an empty key, or an empty expression is a CLI usage error. So is a reserved key: `import.meta.env.PROD`, `import.meta.env.DEV`, or `process.env.NODE_ENV`. zfb does not check key syntax any further; esbuild reports an invalid key at bundle time, the same as for `bundle.define`.
+- **Security.** The warning on `bundle.define` applies here too: every value ends up in browser bundles, so never pass secrets.
+
+### `--define` with `zfb check`
+
+`zfb check` validates and merges `--define` values, and then does not use them. They never reach `tsc`, which has no concept of defines. Declare the global's type in a `.d.ts` file that your tsconfig includes:
+
+```ts
+// components/zfb-env.d.ts
+declare const __ORIGIN__: string;
+```
+
+Accepting the flag on `check` lets one argument list serve `dev`, `build`, and `check`, and a malformed value fails `check` instead of passing it and failing the build later.
+
+### Defines are part of the build identity
+
+The effective define map is part of the build identity that zfb stamps into server-rendered island markup and into the island bundles. SSR output and islands built with different defines never hydrate each other: an island whose identity does not match fails with a `ZR_IDENTITY` error instead of hydrating silently with the wrong values. The scratch dir location does not affect this identity; only the define values do.
+
+<Tip>
+
+When a dev server uses a different `--define` than your last `zfb build`, give it a `--scratch-dir` too. Under a scratch dir, dev ignores the prebuilt output directory, so it never serves pages built with the other define. The scratch dir also keeps its bundle apart from any concurrent build.
 
 </Tip>
 
@@ -317,6 +460,7 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_ESBUILD_BIN` | unset | Absolute path to an esbuild binary. Used by the bundler, islands compiler, tests, and TypeScript config loading (`zfb.config.ts`) when an embedded/staged esbuild binary is unavailable or should be overridden. |
 | `ZFB_DEBUG_SNAPSHOT` | unset | Set to `1` or `true` to log the content snapshot's entry count and serialized byte size to stderr during `zfb build`, for monitoring V8 memory pressure on large sites. See [Incremental Rebuild](../concepts/incremental-rebuild.mdx). |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler minimum-version gate. Intended for temporary release-engineering use. |
+| `ZFB_SCRATCH_DIR` | unset | Scratch dir for `zfb dev`, `zfb build`, `zfb check`, and `zfb preview` when `--scratch-dir` is not passed. An empty or whitespace-only value counts as unset. See [Scratch dirs](#scratch-dirs). |
 
 <Note>
 

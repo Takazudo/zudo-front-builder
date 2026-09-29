@@ -55,7 +55,7 @@ Both `preBuild`/`postBuild` receive `{ projectRoot, scratchDir, outDir, config, 
 
 `ZfbBuildHookContext`, `ZfbDevMiddlewareContext`, `ZfbPreviewMiddlewareContext`, `ZfbSetupContext`, `ZfbPluginLogger`, `ZfbRouteEntry`, `ZfbRouteManifest`, `ZfbVirtualModuleLoader`, and `ZfbVirtualModuleOptions` are all exported from `@takazudo/zfb/plugins` alongside `ZfbPlugin` and `definePlugin`.
 
-`scratchDir` is an always-present absolute path (`<projectRoot>/.zfb-build/plugins` by default, `<scratch root>/plugins` under `--scratch-dir` / `ZFB_SCRATCH_DIR`) for a plugin's opaque intermediates. It is not an importable route location, and route modules generated there are not staged into the bundle. zfb never creates it: call `mkdir(scratchDir, { recursive: true })` and use a `<scratchDir>/<plugin-name>/` subdirectory. Plugin isolation under `--scratch-dir` only holds if the plugin adopts this directory.
+`scratchDir` is an always-present absolute path for a plugin's opaque intermediates, on all four context types. It is `<projectRoot>/.zfb-build/plugins` by default and `<scratch dir>/plugins` under [`--scratch-dir` / `ZFB_SCRATCH_DIR`](./cli.mdx#scratch-dirs). It is not an importable route location, and route modules generated there are not staged into the bundle. zfb never creates it: call `mkdir(scratchDir, { recursive: true })` and use a `<scratchDir>/<plugin-name>/` subdirectory. Plugin isolation under `--scratch-dir` only holds if the plugin adopts this directory; a plugin that keeps writing to its own project-root directory (for example `.zudo-doc/`) is still shared between concurrent commands. See [Scratch space for intermediates](../concepts/plugins.mdx#scratch-space-for-intermediates) for an example.
 
 ## See also
 

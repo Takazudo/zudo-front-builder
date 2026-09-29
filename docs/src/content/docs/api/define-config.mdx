@@ -242,6 +242,11 @@ Without the inner JSON quotes, a value is parsed as a raw expression (and may
 be rejected) rather than as a string literal. Values are forwarded verbatim
 and are not filtered by the `PUBLIC_` environment-variable policy.
 
+`zfb dev`, `zfb build`, and `zfb check` also accept a per-invocation override,
+`--define KEY=EXPR`, which takes the same raw-expression syntax. It is merged
+per key over `bundle.define`, and the CLI value wins. See
+[Per-invocation defines](./cli.mdx#per-invocation-defines).
+
 <Warning title="Treat every bundle.define value as public code">
 
 `bundle.define` is trusted operator-authored build input, not a secret store or
