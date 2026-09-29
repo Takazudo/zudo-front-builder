@@ -424,7 +424,7 @@ describe("createPageRouter", () => {
 
   it("returns 500 with the real error message when renderToString throws during SSR", async () => {
     // Covers the second half of the guarded path: errors thrown inside
-    // opts.framework.renderToString (e.g. preact-render-to-string choking
+    // opts.framework.renderToString (e.g. an SSR renderer choking
     // on malformed markup like the ruby <rt>/<rb> shape from #600) must
     // also surface rather than being swallowed.
     const page: PageModule = {

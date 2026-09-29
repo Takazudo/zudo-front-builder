@@ -422,7 +422,7 @@ pub struct ScanMeta {
 pub trait Resolver {
     /// Resolve a relative `specifier` (`./foo`, `../bar/baz`) against the
     /// importer's directory. Return `None` for bare specifiers (e.g.
-    /// `preact`, `react`, `zfb`) or unresolvable paths — the scanner will
+    /// `vendor-lib`, `zfb`) or unresolvable paths — the scanner will
     /// then skip them.
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf>;
 
@@ -473,9 +473,9 @@ pub trait Resolver {
 
 /// Whether a specifier is bare (no `./`, `../`, or `/` prefix).
 ///
-/// Bare specifiers are runtime-provided by the framework adapter (see
-/// the former library loader) and do not point at files on disk; the scanner
-/// must skip them to avoid spurious resolver errors.
+/// Bare specifiers use package resolution rather than relative file paths.
+/// This predicate lets the scanner skip unresolved package imports unless its
+/// workspace-package probe can map them to project source.
 pub fn is_bare_specifier(specifier: &str) -> bool {
     !(specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/'))
 }
@@ -702,8 +702,8 @@ impl FsResolver {
     ///
     /// This heuristic is intentionally conservative: it only descends
     /// into bare specifiers when there's clear evidence of a workspace
-    /// package, so framework imports like `preact/hooks` (real
-    /// `node_modules/preact/dist/preact.js` after canonicalisation)
+    /// package, so third-party imports like `vendor-lib/hooks` (real
+    /// `node_modules/vendor-lib/dist/vendor-lib.js` after canonicalisation)
     /// stop at the resolver and never feed the scanner a transitive
     /// node_modules walk on every build. See codex-review on PR #125.
     fn is_workspace_package(pkg_dir: &Path) -> bool {
@@ -734,7 +734,7 @@ impl FsResolver {
     ///
     /// Used to scope the regular-npm-package descent (issue #999): a bare
     /// import made from inside a package's dist must NOT crawl into OTHER
-    /// packages (no framework dependency-graph walk), so only project-source
+    /// packages (no transitive package dependency-graph walk), so only project-source
     /// imports (importer outside `node_modules`) are allowed to enter a
     /// regular npm package. Mirrors the `node_modules`-segment heuristic
     /// [`Self::is_workspace_package`] already uses.
@@ -1461,9 +1461,9 @@ impl Resolver for FsResolver {
             //   barrels.
             //
             // Hard invariant: a bare import made from INSIDE `node_modules`
-            // — one package's dist reaching for `preact`,
+            // — one package's dist reaching for a dependency,
             // `@takazudo/zfb-runtime`, another `@scope/pkg`, … — is NEVER
-            // followed. The scan never walks the transitive framework
+            // followed. The scan never walks a package's transitive
             // dependency graph; once inside a regular package only its own
             // RELATIVE-import closure is traversed.
             //
@@ -2138,7 +2138,7 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         // (e.g. [`InMemoryResolver`], or [`FsResolver`] with the
         // workspace probe disabled) return `None` and the specifier is
         // silently skipped, matching the pre-#122 behaviour for
-        // genuinely runtime-only specifiers like `preact/hooks`.
+        // genuinely runtime-only specifiers like `vendor-lib/hooks`.
         let import_edges =
             collect_import_edges(&module).map_err(|message| ScanError::ImportQuery {
                 path: current.clone(),
@@ -4093,7 +4093,7 @@ mod tests {
             .with_file(
                 root().join("components/counter.tsx"),
                 r#""use client";
-                import { useState } from "preact/hooks";
+                import { useState } from "vendor-lib/hooks";
                 export function Counter() { return null; }
                 "#,
             );
@@ -4887,7 +4887,7 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import { useState } from "preact/hooks";
+                r#"import { useState } from "vendor-lib/hooks";
                 import { Counter } from "../components/counter";
                 export default function Home() {}
                 "#,
@@ -4899,7 +4899,7 @@ mod tests {
                 "#,
             );
 
-        // Must not fail trying to resolve "preact/hooks".
+        // Must not fail trying to resolve "vendor-lib/hooks".
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
         assert_eq!(islands.len(), 1);
     }
@@ -5240,8 +5240,8 @@ mod tests {
 
     #[test]
     fn is_bare_specifier_recognises_relative_and_absolute_paths() {
-        assert!(is_bare_specifier("preact"));
-        assert!(is_bare_specifier("preact/hooks"));
+        assert!(is_bare_specifier("vendor-lib"));
+        assert!(is_bare_specifier("vendor-lib/hooks"));
         assert!(is_bare_specifier("zfb"));
         assert!(!is_bare_specifier("./layout"));
         assert!(!is_bare_specifier("../components/counter"));
@@ -5431,7 +5431,7 @@ mod tests {
     }
 
     /// Bare specifier pointing at a package that does NOT exist on
-    /// disk (the framework-supplied case: `preact/hooks`, `zfb`, etc.)
+    /// disk (a bare package import such as `vendor-lib/hooks` or `zfb`)
     /// must return `None` from the resolver — `scan_islands` then
     /// silently skips it without erroring.
     #[test]
@@ -5442,7 +5442,7 @@ mod tests {
         fs::create_dir_all(&pages).unwrap();
         fs::write(
             pages.join("home.tsx"),
-            r#"import { useState } from "preact/hooks";
+            r#"import { useState } from "vendor-lib/hooks";
             export default function Home() {}
             "#,
         )
@@ -6078,32 +6078,32 @@ mod tests {
             )
         );
 
-        let plain = FsResolver::split_bare_specifier("preact");
-        assert_eq!(plain, ("preact".to_string(), String::new()));
+        let plain = FsResolver::split_bare_specifier("vendor-lib");
+        assert_eq!(plain, ("vendor-lib".to_string(), String::new()));
 
-        let plain_sub = FsResolver::split_bare_specifier("preact/hooks");
-        assert_eq!(plain_sub, ("preact".to_string(), "hooks".to_string()));
+        let plain_sub = FsResolver::split_bare_specifier("vendor-lib/hooks");
+        assert_eq!(plain_sub, ("vendor-lib".to_string(), "hooks".to_string()));
     }
 
     /// Headline regression test descended from codex-review on PR #125,
-    /// updated for issue #999. A project with a real `node_modules/preact`
+    /// updated for issue #999. A project with a real `node_modules/vendor-lib`
     /// (a regular installed dependency, NOT a workspace symlink) AND a
     /// workspace package linked under `node_modules/<pkg>` must:
     ///
     /// (a) discover the workspace package's `"use client"` islands via the
     ///     bare-specifier probe, and
-    /// (b) NOT crawl the framework's transitive *bare-dependency* graph —
-    ///     a `preact/hooks` module that pulls preact core via a bare
-    ///     `import "preact"` must stop at that bare import, so an island
-    ///     hiding in preact core never surfaces.
+    /// (b) NOT crawl a package's transitive *bare-dependency* graph —
+    ///     a `vendor-lib/hooks` module that pulls vendor-lib core via a bare
+    ///     `import "vendor-lib"` must stop at that bare import, so an island
+    ///     hiding in vendor-lib core never surfaces.
     ///
     /// #999 changed the rule: a bare import *from project source* now does
     /// enter a regular npm package (that is how npm-dist islands get
-    /// registered), so the directly-imported `preact/hooks` module IS
+    /// registered), so the directly-imported `vendor-lib/hooks` module IS
     /// scanned — but because it carries no directive it contributes no
-    /// island, and its own bare `import "preact"` (made from INSIDE
+    /// island, and its own bare `import "vendor-lib"` (made from INSIDE
     /// `node_modules`) is not followed. The net effect is unchanged from
-    /// the #125 guarantee: the framework's dependency graph is never walked.
+    /// the #125 guarantee: a package's dependency graph is never walked.
     #[cfg(unix)]
     #[test]
     fn fs_resolver_enters_pkg_from_project_source_but_never_crawls_bare_dep_graph() {
@@ -6111,37 +6111,37 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let pages = dir.path().join("pages");
 
-        // (1) Real `node_modules/preact/` directory — NOT a symlink.
+        // (1) Real `node_modules/vendor-lib/` directory — NOT a symlink.
         // Mimics a regular installed npm package.
-        let preact = dir.path().join("node_modules").join("preact");
-        let preact_dist = preact.join("dist");
-        fs::create_dir_all(&preact_dist).unwrap();
+        let vendor_lib = dir.path().join("node_modules").join("vendor-lib");
+        let vendor_lib_dist = vendor_lib.join("dist");
+        fs::create_dir_all(&vendor_lib_dist).unwrap();
         fs::write(
-            preact.join("package.json"),
-            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+            vendor_lib.join("package.json"),
+            r#"{ "name": "vendor-lib", "main": "dist/vendor-lib.js" }"#,
         )
         .unwrap();
-        // preact CORE carries a sneaky island. It is reachable ONLY via a
-        // bare `import "preact"` made from inside `preact/hooks` (below) —
+        // vendor-lib CORE carries a sneaky island. It is reachable ONLY via a
+        // bare `import "vendor-lib"` made from inside `vendor-lib/hooks` (below) —
         // a bare import from inside node_modules, which the scanner must
         // NOT follow. The test asserts this island never surfaces.
         fs::write(
-            preact_dist.join("preact.js"),
+            vendor_lib_dist.join("vendor-lib.js"),
             r#""use client";
-            export function PreactSneaksIn() {}
+            export function VendorSneaksIn() {}
             "#,
         )
         .unwrap();
-        // The directly-imported `preact/hooks` subpath: a realistic
-        // framework module with NO directive that pulls preact core via a
+        // The directly-imported `vendor-lib/hooks` subpath: a realistic
+        // package module with NO directive that pulls vendor-lib core via a
         // bare specifier. It IS scanned now (project source imports it),
-        // but contributes no island, and its bare `import "preact"` is the
+        // but contributes no island, and its bare `import "vendor-lib"` is the
         // edge that must not be crawled.
-        let preact_hooks = preact.join("hooks");
-        fs::create_dir_all(&preact_hooks).unwrap();
+        let vendor_lib_hooks = vendor_lib.join("hooks");
+        fs::create_dir_all(&vendor_lib_hooks).unwrap();
         fs::write(
-            preact_hooks.join("index.js"),
-            r#"import { options } from "preact";
+            vendor_lib_hooks.join("index.js"),
+            r#"import { options } from "vendor-lib";
             export function useState() {}
             "#,
         )
@@ -6167,12 +6167,12 @@ mod tests {
         .unwrap();
 
         // (3) Page imports both: a workspace island via its package
-        // name, AND framework hooks via `preact/hooks` (the case the
+        // name, AND a package subpath via `vendor-lib/hooks` (the case the
         // codex-review finding was about).
         fs::create_dir_all(&pages).unwrap();
         fs::write(
             pages.join("home.tsx"),
-            r#"import { useState } from "preact/hooks";
+            r#"import { useState } from "vendor-lib/hooks";
             import { WorkspaceCounter } from "ws-pkg";
             export default function Home() {}
             "#,
@@ -6181,14 +6181,14 @@ mod tests {
 
         let resolver = FsResolver::new();
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
-        // Only the workspace island surfaces. `preact/hooks` is scanned
-        // (no island) but its bare `import "preact"` is not followed, so
-        // `PreactSneaksIn` in preact core never appears.
+        // Only the workspace island surfaces. `vendor-lib/hooks` is scanned
+        // (no island) but its bare `import "vendor-lib"` is not followed, so
+        // `VendorSneaksIn` in vendor-lib core never appears.
         let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
         assert_eq!(
             names,
             vec!["WorkspaceCounter"],
-            "expected only the workspace island; preact core must not be crawled: {islands:?}",
+            "expected only the workspace island; vendor-lib core must not be crawled: {islands:?}",
         );
     }
 
@@ -6348,8 +6348,8 @@ mod tests {
     /// node_modules/@takazudo/zudo-doc/dist/routes/chrome.tsx  (package chrome)
     ///   → import { Island } from "@takazudo/zfb"              (BARE hop, different package)
     /// node_modules/@takazudo/zfb/dist/index.js                ("use client" island)
-    ///   → import { signal } from "preact"                     (BARE hop that MUST stop)
-    /// node_modules/preact/dist/preact.js                      (sneaky island; must NOT surface)
+    ///   → import { signal } from "vendor-lib"                     (BARE hop that MUST stop)
+    /// node_modules/vendor-lib/dist/vendor-lib.js                      (sneaky island; must NOT surface)
     /// ```
     ///
     /// Returns the absolute path to the injected route entrypoint.
@@ -6380,7 +6380,7 @@ mod tests {
 
         // The island's own package (`@takazudo/zfb`): a separate regular
         // npm package. Its `exports["."]` entry IS the `"use client"`
-        // module, and it pulls `preact` via a bare import that must NOT be
+        // module, and it pulls `vendor-lib` via a bare import that must NOT be
         // followed once the scan is inside it.
         let zfb = root.join("node_modules/@takazudo/zfb");
         fs::create_dir_all(zfb.join("dist")).unwrap();
@@ -6392,25 +6392,25 @@ mod tests {
         .unwrap();
         fs::write(
             zfb.join("dist/index.js"),
-            "\"use client\";\nimport { signal } from \"preact\";\nexport function Island() {}\n",
+            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Island() {}\n",
         )
         .unwrap();
 
-        // preact core, reachable ONLY via the bare import inside
+        // vendor-lib core, reachable ONLY via the bare import inside
         // `@takazudo/zfb/dist/index.js`. Its sneaky island must never
         // surface — that bare hop is from inside a genuine node_modules
         // package (NOT an injected-route subtree), so the hard invariant
         // stops it.
-        let preact = root.join("node_modules/preact");
-        fs::create_dir_all(preact.join("dist")).unwrap();
+        let vendor_lib = root.join("node_modules/vendor-lib");
+        fs::create_dir_all(vendor_lib.join("dist")).unwrap();
         fs::write(
-            preact.join("package.json"),
-            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+            vendor_lib.join("package.json"),
+            r#"{ "name": "vendor-lib", "main": "dist/vendor-lib.js" }"#,
         )
         .unwrap();
         fs::write(
-            preact.join("dist/preact.js"),
-            "\"use client\";\nexport function PreactSneaksIn() {}\n",
+            vendor_lib.join("dist/vendor-lib.js"),
+            "\"use client\";\nexport function VendorSneaksIn() {}\n",
         )
         .unwrap();
 
@@ -6421,7 +6421,7 @@ mod tests {
     /// is an injected entrypoint (honorary project source), the island
     /// reached two levels deep — `route → ./chrome → @takazudo/zfb` — IS
     /// registered, AND only that single bare hop is granted: `@takazudo/zfb`'s
-    /// own bare `import "preact"` still stops, so preact's sneaky island
+    /// own bare `import "vendor-lib"` still stops, so vendor-lib's sneaky island
     /// never surfaces. One assertion proves both the fix and the
     /// single-hop hard invariant.
     #[cfg(unix)]
@@ -6440,7 +6440,7 @@ mod tests {
             vec!["Island"],
             "the transitively-reached `@takazudo/zfb` island must register via the \
              injected-route honorary-source exemption, and ONLY that single hop — \
-             preact (one further bare hop, from inside node_modules) must not be \
+             vendor-lib (one further bare hop, from inside node_modules) must not be \
              crawled: {islands:?}",
         );
     }
@@ -6472,15 +6472,15 @@ mod tests {
     }
 
     /// Build an injected-route fixture in the **npm/yarn NESTED** layout:
-    /// the island package and preact live under the route package's OWN
+    /// the island package and vendor-lib live under the route package's OWN
     /// `node_modules`, so their dirs `starts_with` the route package root.
     ///
     /// ```text
     /// node_modules/@takazudo/zudo-doc/dist/routes/route.tsx    → ./chrome
     /// node_modules/@takazudo/zudo-doc/dist/routes/chrome.tsx   → @takazudo/zfb (bare)
     /// node_modules/@takazudo/zudo-doc/node_modules/@takazudo/zfb/dist/index.js
-    ///                                       ("use client" island; import "preact")
-    /// node_modules/@takazudo/zudo-doc/node_modules/preact/dist/preact.js
+    ///                                       ("use client" island; import "vendor-lib")
+    /// node_modules/@takazudo/zudo-doc/node_modules/vendor-lib/dist/vendor-lib.js
     ///                                       (sneaky island; must NOT surface)
     /// ```
     #[cfg(unix)]
@@ -6514,23 +6514,23 @@ mod tests {
         .unwrap();
         fs::write(
             zfb.join("dist/index.js"),
-            "\"use client\";\nimport { signal } from \"preact\";\nexport function Island() {}\n",
+            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Island() {}\n",
         )
         .unwrap();
 
-        // preact, also nested under the route package — resolvable from the
+        // vendor-lib, also nested under the route package — resolvable from the
         // island's dir, so the ONLY thing that can stop the second hop is the
         // closure boundary (not a missing file).
-        let preact = pkg.join("node_modules/preact");
-        fs::create_dir_all(preact.join("dist")).unwrap();
+        let vendor_lib = pkg.join("node_modules/vendor-lib");
+        fs::create_dir_all(vendor_lib.join("dist")).unwrap();
         fs::write(
-            preact.join("package.json"),
-            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+            vendor_lib.join("package.json"),
+            r#"{ "name": "vendor-lib", "main": "dist/vendor-lib.js" }"#,
         )
         .unwrap();
         fs::write(
-            preact.join("dist/preact.js"),
-            "\"use client\";\nexport function PreactSneaksIn() {}\n",
+            vendor_lib.join("dist/vendor-lib.js"),
+            "\"use client\";\nexport function VendorSneaksIn() {}\n",
         )
         .unwrap();
 
@@ -6542,11 +6542,11 @@ mod tests {
     /// `node_modules/<route-pkg>/node_modules/<island-pkg>`, so its importer
     /// dir `starts_with` the route package root. The honorary-source exemption
     /// must still grant exactly ONE hop: the chrome→island hop is allowed, but
-    /// the island's own `import "preact"` is a SECOND hop from a path that
+    /// the island's own `import "vendor-lib"` is a SECOND hop from a path that
     /// re-enters `node_modules` below the route root — it is NOT the route's
-    /// own source, so the invariant must re-engage and preact must not surface.
-    /// Without the closure's nested-`node_modules` exclusion, preact's sneaky
-    /// island would be crawled (`["Island", "PreactSneaksIn"]`).
+    /// own source, so the invariant must re-engage and vendor-lib must not surface.
+    /// Without the closure's nested-`node_modules` exclusion, vendor-lib's sneaky
+    /// island would be crawled (`["Island", "VendorSneaksIn"]`).
     #[cfg(unix)]
     #[test]
     fn injected_route_nested_node_modules_grants_only_one_hop() {
@@ -6560,7 +6560,7 @@ mod tests {
             names,
             vec!["Island"],
             "the chrome→island hop registers, but the island's nested-node_modules \
-             `import \"preact\"` is a second hop that must STILL stop — preact's \
+             `import \"vendor-lib\"` is a second hop that must STILL stop — vendor-lib's \
              sneaky island must not surface: {islands:?}",
         );
     }
@@ -6847,7 +6847,7 @@ mod tests {
             // Bare specifier that is NOT covered by `@/*` — falls
             // through to the bare-specifier branch, hits no
             // node_modules entry, returns None.
-            r#"import { Foo } from "preact";
+            r#"import { Foo } from "vendor-lib";
             export default function Home() {}
             "#,
         )
@@ -8097,7 +8097,7 @@ mod tests {
             )
             .with_file(
                 root().join("components/counter.tsx"),
-                r#"import { useState } from "preact/hooks";
+                r#"import { useState } from "vendor-lib/hooks";
                 "use client";
                 export function Counter() {}
                 "#,
@@ -8872,8 +8872,8 @@ mod tests {
         // An unregistered bare specifier resolves to `None` on both methods
         // — the historical InMemoryResolver "no node_modules probing"
         // behavior is unchanged for anything not explicitly configured.
-        assert_eq!(resolver.resolve(&root(), "preact"), None);
-        assert_eq!(resolver.workspace_package_root(&root(), "preact"), None);
+        assert_eq!(resolver.resolve(&root(), "vendor-lib"), None);
+        assert_eq!(resolver.workspace_package_root(&root(), "vendor-lib"), None);
     }
 
     #[test]

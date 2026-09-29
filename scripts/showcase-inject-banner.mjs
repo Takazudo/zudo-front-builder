@@ -56,8 +56,8 @@ export const BANNER_MARKER = "<!-- zfb-showcase-banner -->";
 /**
  * Build the fixed banner HTML block for a given commit SHA. Styled with
  * inline `style` attributes only (no `<style>` tag, no classes) so it
- * cannot collide with the scaffold's Tailwind output — Tailwind's preflight
- * and utility classes never win against an inline style attribute.
+ * cannot collide with the scaffold's generated utility rules, and inline
+ * style attributes take precedence over those rules.
  */
 export function buildBannerHtml(sha) {
   const shortSha = sha.slice(0, 7);

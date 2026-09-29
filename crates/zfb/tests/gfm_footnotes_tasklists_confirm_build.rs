@@ -99,7 +99,7 @@
 //! ## Tiering
 //!
 //! Level 4 (real `zfb build` process e2e). No external binary is required —
-//! the fixture has no Tailwind config and no "use client" islands, so the
+//! the fixture has no utility CSS config and no "use client" islands, so the
 //! build never invokes esbuild (confirmed empirically: a local run with
 //! no `ZFB_ESBUILD_BIN` set succeeds and logs "no islands found; skipping
 //! islands bundle"). Not

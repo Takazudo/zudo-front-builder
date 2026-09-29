@@ -8,8 +8,8 @@
  * Fragment from the SDK factory subpath selected by the bundler.
  *
  * The cases therefore live here once and are driven by
- * `content-render-markers-preact.test.ts` (`preact-render-to-string`, with
- * the Preact factory selected by the bundler). Assertions are on ACTUAL rendered bytes, never on
+ * `content-render-markers-zudo-react.test.ts` (the owned runtime selected by
+ * the bundler). Assertions are on ACTUAL rendered bytes, never on
  * JSX structure: a stray whitespace or text node between the sentinels and
  * the region would be invisible to a structural check and fatal to the
  * build's exact-byte extraction pass.

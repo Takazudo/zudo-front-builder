@@ -7,8 +7,8 @@
 //! owned by Sub 1 in [`crate::bundler`]; this module is the production
 //! implementation that wraps the esbuild subprocess.
 //!
-//! Mirror of `zfb_css::engine::TailwindSubprocessEngine`: a config struct
-//! that locates the binary (defaulting to `crates/zfb/binaries/esbuild`),
+//! This adapter uses a config struct that locates the binary (defaulting
+//! to `crates/zfb/binaries/esbuild`),
 //! an implementation that builds the command line, runs esbuild, reads the
 //! output back into memory, and returns it in [`crate::bundler::BundleOutput`]
 //! — the bundler does NOT write `islands.js` to disk. Downstream consumers
@@ -373,8 +373,8 @@ pub struct EsbuildSubprocessConfig {
     ///
     /// Default: `crates/zfb/binaries/esbuild/esbuild` (relative to the
     /// workspace root). Sub 2 reserves the parent `esbuild/` directory in
-    /// the release tarball layout (mirroring the Tailwind v4 slot pattern;
-    /// the directory shape gives release tooling room to drop sidecars
+    /// the release tarball layout; the directory shape gives release tooling
+    /// room to drop sidecars
     /// like a checksum manifest next to the binary). Override via
     /// [`Self::with_binary_path`] or via the `ZFB_ESBUILD_BIN` environment
     /// variable (checked at engine construction time, not at every
@@ -1180,19 +1180,17 @@ impl EsbuildSubprocessBundler {
         //
         // **Why we allocate inside `working_dir` rather than `$TMPDIR`**
         //
-        // The synthesised entry's bare imports (`@takazudo/zfb/runtime`,
-        // `preact`) need to resolve against the project's
-        // `node_modules/`. esbuild walks UP from the entry file's
-        // directory looking for `node_modules`, **not** from process
-        // cwd. If the entry lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`,
-        // esbuild walks `/tmp -> /` and never reaches the project, so
-        // both bare imports fail with `Could not resolve "preact"` /
-        // `Could not resolve "@takazudo/zfb/runtime"` (issue #147 /
-        // zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating inside
-        // `working_dir` (= the consumer project root, set by
-        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp
-        // file next to the project's `node_modules/` so esbuild's
-        // upward walk finds the runtime + preact on the first hop.
+        // The synthesized entry's imports (`@takazudo/zfb/runtime` and
+        // `@takazudo/zfb/zudo-react/client`) must resolve from the project's
+        // `node_modules/`. esbuild walks UP from the entry file's directory
+        // looking for `node_modules`, **not** from process cwd. If the entry
+        // lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`, esbuild walks `/tmp -> /`
+        // and never reaches the project, so those imports fail to resolve
+        // (issue #147 / zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating
+        // inside `working_dir` (= the consumer project root, set by
+        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp file
+        // next to the project's `node_modules/` so esbuild's upward walk
+        // finds both packages on the first hop.
         //
         // We fall back to the system tempdir (the original behaviour)
         // when `working_dir` does not exist on disk; that is the case
@@ -1729,17 +1727,15 @@ fn matches_in_project_temp_class(name: &str) -> bool {
 /// ([`IN_PROJECT_TEMP_CLASSES`]) — the synthesized esbuild entry, either
 /// synthetic tsconfig class, or the virtual-module materialization?
 ///
-/// The dev watcher's intake suppression consumes this (issue #3215), mirroring
-/// [`zfb_css::is_tailwind_entry_tmp`]'s role for Tailwind's own entry temp
-/// file (zfb#2345): every one of these classes is allocated inside
-/// `working_dir`, which is the watched project root (see
-/// [`allocate_locked_entry_tmp`]'s doc comment for why), so without
-/// suppression the `Created`/`Removed` events they generate re-trigger a
-/// second full watcher tick after every islands rebuild. Basename-only,
-/// matching the sweep's own prefix+suffix check exactly (`matches_in_project_temp_class`)
-/// rather than the tighter exact-random-length match `is_tailwind_entry_tmp`
-/// uses — these classes are already dot-prefixed and zfb-namespaced, so a
-/// user file colliding with one is not a realistic concern.
+/// The dev watcher's intake suppression consumes this (issue #3215): every
+/// recognized class is allocated inside `working_dir`, which is the watched
+/// project root (see [`allocate_locked_entry_tmp`]'s doc comment for why),
+/// so without suppression the `Created`/`Removed` events re-trigger a second
+/// full watcher tick after every islands rebuild. Basename-only matching uses
+/// the same prefix/suffix shape as the sweep's own predicate
+/// (`matches_in_project_temp_class`). These classes are dot-prefixed and
+/// zfb-namespaced, so a user file colliding with one is not a realistic
+/// concern.
 pub fn is_zfb_islands_temp_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -2892,12 +2888,10 @@ mod tests {
 
     #[test]
     fn is_zfb_islands_temp_file_drops_every_in_project_temp_class_but_keeps_real_sources() {
-        // Issue #3215: the dev watcher's intake filter dropped only
-        // Tailwind's own temp files, so the islands entry's `Created`/
-        // `Removed` events got through and re-triggered a second full tick
-        // after every island rebuild. This pins the predicate the fix wires
-        // into that filter — one representative filename per recognized
-        // class, plus a normal source file that must NOT match.
+        // Issue #3215: every islands temp class must be dropped by the
+        // dev watcher's intake filter so its `Created`/`Removed` events do
+        // not trigger a second full tick after a rebuild. Pin one filename
+        // per recognized class, plus a normal source file that must NOT match.
         for name in [
             ".zfb-esbuild-entry-APmUkl.tsx",
             ".zfb-islands-tsconfig-abc123.json",
@@ -3629,7 +3623,7 @@ mod tests {
     fn redact_temp_path_replaces_cwd_relative_form() {
         let cwd = Path::new("/Users/dev/my-project");
         let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
-        let stderr = "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
+        let stderr = "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
         let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
         assert!(
             friendly.contains("<synthesized entry>"),
@@ -3655,7 +3649,7 @@ mod tests {
         let cwd = Path::new("/Users/dev/my-project");
         let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
         let stderr =
-            "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    components/counter.tsx:2:9:\n";
+            "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    components/counter.tsx:2:9:\n";
         let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
         assert_eq!(friendly, stderr);
     }
@@ -3785,8 +3779,8 @@ mod tests {
     fn render_shared_bundle_entry_source_client_router_true_with_no_islands() {
         // Issue #289: a `<ClientRouter />`-only project (no `"use client"`
         // islands) still gets the side-effect import — and nothing else
-        // (no preact import, no mountIslands call) so the entry stays
-        // minimal.
+        // (the legacy Preact import stays absent, no mountIslands call) so
+        // the entry stays minimal.
         let src = render_shared_bundle_entry_source(&[], true);
         assert!(src.contains("import \"@takazudo/zfb-runtime/client-router\";"));
         assert!(!src.contains("mountIslands"));
@@ -5113,7 +5107,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_glue_is_deterministic_and_uses_runtime_client_without_preact() {
+    fn owned_glue_is_deterministic_and_uses_runtime_client() {
         let islands = [Island::with_marker_name(
             "Counter",
             "/fixture/counter.tsx",

@@ -242,7 +242,7 @@ fn stage_fixture(root: &Path, loopback_port: u16) {
 
 /// Wire the fixture's `node_modules` the same way
 /// `wasm_ssr_adapter_e2e.rs`'s `scaffold_fixture` does: the embedded
-/// framework tree (preact / preact-render-to-string) plus the actual
+/// runtime dependency tree plus the actual
 /// workspace Cloudflare adapter package linked in as a fixture-local
 /// dependency, so `zfb build`'s adapter dispatch (`pnpm exec
 /// zfb-adapter-cloudflare`) resolves the real, unpublished workspace

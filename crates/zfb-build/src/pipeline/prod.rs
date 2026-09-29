@@ -75,8 +75,8 @@ use crate::plan::{PageSelection, RebuildPlan};
 /// or a sitemap-derived RSS feed) into the production pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
-    /// The global stylesheet emitted by the CSS pipeline (Tailwind +
-    /// CSS Modules). Mirrors `zfb_css::CssPipelineOutput`.
+    /// The global stylesheet emitted by the CSS pipeline (zudo-wind
+    /// utilities plus CSS Modules). Mirrors `zfb_css::CssPipelineOutput`.
     Css,
     /// The islands client bundle emitted by the islands pipeline.
     /// Mirrors `zfb_islands::BundleOutput`.

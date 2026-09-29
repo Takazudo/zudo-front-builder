@@ -78,8 +78,8 @@ fn alias_does_not_match_prefix_with_slash() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -132,8 +132,8 @@ fn alias_matches_exact_specifier() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -180,8 +180,8 @@ fn virtual_module_does_not_match_prefix_with_slash() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -230,8 +230,8 @@ fn virtual_module_matches_exact_specifier() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()

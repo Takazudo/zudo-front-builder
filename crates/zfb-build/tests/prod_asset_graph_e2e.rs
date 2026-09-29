@@ -806,7 +806,7 @@ fn dev_mode_renderer_path_does_not_inject_head_assets() {
 /// `prod_asset_graph_with_real_wind_engine_against_fixture`,
 /// gated under `#[ignore]` until the binary slot is staged.
 #[test]
-fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
+fn worker_bundle_does_not_inline_legacy_css_marker_after_s5() {
     use zfb_build::bundler::ESBUILD_LOADER_ARGS;
 
     assert!(

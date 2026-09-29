@@ -477,7 +477,7 @@ describe("scheduleHydrate", () => {
       mountIslands({ Modal: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
-      // SSR-skip mounts via render, not hydrate, so React/Preact won't
+      // SSR-skip mounts via render, not hydrate, so the client runtime will not
       // emit hydration-mismatch warnings against an empty container.
       expect(mount.mock.calls[0]![2]).toBe("render");
     });

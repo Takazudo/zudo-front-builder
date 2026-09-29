@@ -41,9 +41,9 @@
 //!   orchestrator's surface lets `zfb-build` compile cheaply for tests
 //!   and for callers that only need orchestration types.
 //! - The CSS / islands crates ship trait-based plug points
-//!   (`CssEngine`, `ClientBundler`) plus subprocess wrappers around
-//!   third-party CLIs (Tailwind, esbuild). Pulling them in transitively
-//!   would force every consumer of `zfb-build` to pay that cost.
+//!   (`CssEngine`, `ClientBundler`) and the esbuild subprocess wrapper.
+//!   Pulling them in transitively would force every consumer of `zfb-build`
+//!   to pay that cost.
 //! - Tests need fakes that count invocations without spawning binaries.
 //!
 //! So the public API takes function-typed inputs. The bin crate

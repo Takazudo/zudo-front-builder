@@ -1,27 +1,19 @@
-//! Reproduction tests for bug #1284 (epic #1285), Wave-1 diagnosis #1286 —
-//! CSS engine level (Level 1, pure logic, no V8).
+//! Regression tests for CSS source discovery and imported-file invalidation
+//! (bug #1284, epic #1285), covering the CSS engine without V8.
 //!
-//! - **Symptom C** — a NEW Tailwind utility class authored inside a component
-//!   under `src/**` is never emitted into `/assets/styles.css`. Root cause
-//!   pinned here: `DEFAULT_CONTENT_ROOTS` (the `@source` scan roots Tailwind
-//!   walks for utility classes) is `["pages","components","layouts","content"]`
-//!   — it OMITS `src/`. So a class in `src/components/Foo.tsx` is outside every
-//!   scanned `@source` glob and never reaches the generated stylesheet. (The
-//!   second half of symptom C — the scan not re-running on a `.tsx` Module edit
-//!   — is pinned in the orchestrator test `component_edit_triggers_css_rescan`.)
+//! - **Symptom C** — a utility class in a component under `src/**` must reach
+//!   `/assets/styles.css`. `DEFAULT_CONTENT_ROOTS` lists the directories wind
+//!   scans for utility candidates; the regression verifies `src/` is included.
+//!   The rescan-on-edit half is covered by the orchestrator test
+//!   `component_edit_triggers_css_rescan`.
 //!
-//! - **Symptom B (engine half)** — `zfb-css` does NOT resolve local CSS
-//!   `@import` file dependencies. `build_synthesised_entry_css` only prepends
-//!   `@import "tailwindcss";` + `@source` directives and passes the user CSS
-//!   through verbatim; a user `@import './local.css'` / `@import
-//!   '@scope/design-system'` is left for the Tailwind CLI to resolve invisibly,
-//!   so zfb never learns the real (canonicalised) dependency path to watch.
+//! - **Symptom B** — `zfb-css` resolves local CSS `@import` dependencies so the
+//!   dev layer can watch their canonical paths. A legacy `@import
+//!   "tailwindcss"` remains a virtual entry and is intentionally ignored by
+//!   the resolver; authored local and workspace imports still resolve to files.
 //!
-//! #1288 has landed: the original `current_bug_*` tests (which locked TODAY's
-//! broken behaviour) were migrated to their fixed-behaviour siblings below —
-//! `src_root_is_scanned_for_utility_classes` and
-//! `local_css_imports_are_resolved_to_real_paths` (now exercising the real D2
-//! `@import` resolver). Both are un-ignored and green.
+//! #1288's fixed-behaviour tests below cover source discovery and recursive
+//! import resolution through the `node_modules` workspace symlink.
 
 use std::fs;
 
@@ -35,7 +27,7 @@ use zfb_css::resolve_css_imports;
 fn src_root_is_scanned_for_utility_classes() {
     assert!(
         DEFAULT_CONTENT_ROOTS.contains(&"src"),
-        "fix adds src/ to the Tailwind scan roots"
+        "fix adds src/ to the wind scan roots"
     );
 }
 
@@ -86,7 +78,7 @@ fn local_css_imports_are_resolved_to_real_paths() {
             resolved.contains(&ds_real),
             "workspace dep resolves through the node_modules symlink to its real path; got {resolved:?}"
         );
-        // tailwindcss is virtual — never resolved.
+        // The legacy Tailwind entry is virtual — never resolved.
         assert_eq!(
             resolved.len(),
             2,

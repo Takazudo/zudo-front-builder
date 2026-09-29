@@ -93,7 +93,7 @@ test("built site loads with zero page errors and its island hydrates", async ({ 
     await expect(counterButton).toHaveText("Count: 0");
 
     // The actual hydration proof: a click only updates the DOM if the client
-    // bundle loaded, ran, and attached a real Preact event listener.
+    // bundle loaded, ran, and attached a real zudo-react event listener.
     await counterButton.click();
     await expect(counterButton).toHaveText("Count: 1");
 

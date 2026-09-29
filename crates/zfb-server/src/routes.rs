@@ -483,7 +483,7 @@ pub struct AppState {
     /// has a `<link rel="stylesheet" href="<url>">` spliced into
     /// `<head>` via [`zfb_build::head_inject::inject_prod_head_assets`].
     /// `None` (outer) or `None` inside the lock both fall back to "no
-    /// injection" — projects with Tailwind disabled must not ship a
+    /// injection" — projects with no emitted CSS must not ship a
     /// link tag pointing at a non-existent file.
     ///
     /// Gated to Dev mode at the response-shaping site: Preview / Embed

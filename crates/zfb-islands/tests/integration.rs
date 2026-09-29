@@ -317,9 +317,10 @@ fn bundle_output_bytes_carries_js_in_memory() {
 fn subprocess_bundler_against_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
-    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
-    // `render` from `preact` (see `shared_bundle_keeps_islands_with_no_top_level_side_effect`
-    // below) — esbuild needs those specifiers resolvable via node_modules.
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and client helpers
+    // from `@takazudo/zfb/zudo-react/client` (see
+    // `shared_bundle_keeps_islands_with_no_top_level_side_effect` below) —
+    // esbuild needs those specifiers resolvable via node_modules.
     stage_minimal_node_modules(tmp.path());
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
@@ -382,9 +383,9 @@ fn subprocess_bundler_against_real_binary() {
 fn shared_bundle_keeps_islands_with_no_top_level_side_effect() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
-    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
-    // `render` from `preact` — esbuild needs those specifiers resolvable via
-    // node_modules.
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and client helpers
+    // from `@takazudo/zfb/zudo-react/client` — esbuild needs those specifiers
+    // resolvable via node_modules.
     stage_minimal_node_modules(tmp.path());
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
@@ -447,9 +448,10 @@ export default function NoEffectFn() { return null; }
 
 /// Stage a minimal `node_modules` under `root` that satisfies the bare
 /// imports the synthesized shared-bundle entry emits (`@takazudo/zfb/runtime`
-/// and `preact`), so the real-esbuild splitting tests below are hermetic
-/// (no dependency on the workspace's own install). Only the symbols the
-/// entry imports are stubbed.
+/// and `@takazudo/zfb/zudo-react` entry points), so the real-esbuild splitting
+/// tests below are hermetic (no dependency on the workspace's own install).
+/// The runtime entry points are stubbed, alongside a neutral third-party
+/// package fixture.
 fn stage_minimal_node_modules(root: &Path) {
     let nm = root.join("node_modules");
 
@@ -476,15 +478,15 @@ fn stage_minimal_node_modules(root: &Path) {
     )
     .unwrap();
 
-    let preact = nm.join("preact");
-    std::fs::create_dir_all(&preact).unwrap();
+    let vendor_lib = nm.join("vendor-lib");
+    std::fs::create_dir_all(&vendor_lib).unwrap();
     std::fs::write(
-        preact.join("package.json"),
-        r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+        vendor_lib.join("package.json"),
+        r#"{"name":"vendor-lib","version":"10.0.0","main":"index.js"}"#,
     )
     .unwrap();
     std::fs::write(
-        preact.join("index.js"),
+        vendor_lib.join("index.js"),
         "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
     )
     .unwrap();
@@ -522,8 +524,9 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
     let app_dir = root.path().join("app");
     std::fs::create_dir_all(&app_dir).unwrap();
     // The synthesized shared-bundle entry imports `mountIslands` from
-    // `@takazudo/zfb/runtime` and Preact's hydration glue — stage those
-    // the same way `subprocess_bundler_against_real_binary` does.
+    // `@takazudo/zfb/runtime` and client helpers from
+    // `@takazudo/zfb/zudo-react/client` — stage them the same way
+    // `subprocess_bundler_against_real_binary` does.
     stage_minimal_node_modules(&app_dir);
 
     // A genuine pnpm-workspace-style sibling package living OUTSIDE

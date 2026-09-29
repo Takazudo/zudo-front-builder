@@ -131,14 +131,14 @@ fn write_island(root: &Path) -> std::path::PathBuf {
     island_path
 }
 
-/// Externals scoped to `@takazudo/zfb` (and subpaths) + preact — NOT
+/// Externals scoped to `@takazudo/zfb` (and subpaths) + vendor-lib — NOT
 /// `@takazudo/zfb-runtime`, which must be bundled so esbuild walks into the
-/// stub barrel. Mirrors `preact_jsx_runtime_alias.rs::shared_externals` and
-/// the real islands `shared_externals()`.
+/// stub barrel. The external flags keep the third-party sample package separate
+/// while esbuild follows the owned zfb entry points.
 fn shared_externals() -> Vec<OsString> {
     [
-        "--external:preact",
-        "--external:preact/*",
+        "--external:vendor-lib",
+        "--external:vendor-lib/*",
         "--external:@takazudo/zfb",
         "--external:@takazudo/zfb/*",
     ]

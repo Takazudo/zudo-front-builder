@@ -1179,7 +1179,7 @@ const MDX_COMPONENTS_FILENAME: &str = "mdx-components.tsx";
 ///   **longest** file extension, so `.module.css` wins over `.css`
 ///   here — plain `.css` still routes to `=empty`. The scoped CSS
 ///   itself is shipped externally via `styles-<hash>.css` exactly
-///   like Tailwind output. When a `.module.css` file has no map entry
+///   like generated utility CSS. When a `.module.css` file has no map entry
 ///   (e.g. the CSS pipeline was not run or a deep import was missed),
 ///   `rewrite_css_modules_in_shadow` writes `export default {};` —
 ///   a graceful degradation: `styles.foo` evaluates to `undefined`
@@ -1749,7 +1749,7 @@ pub struct ShadowSession {
     /// Cross-call cache of the `node_modules` dependency-staging closure's
     /// per-package import scans (#3178), keyed by the CANONICAL package dir —
     /// the same key the closure walk's per-call dedup map uses. Without it
-    /// every tick re-parses every file of every staged package (hono, preact,
+    /// every tick re-parses every file of every staged package (hono and
     /// the embedded runtime) although the result is a pure function of the
     /// package's bytes.
     ///
@@ -8081,7 +8081,7 @@ fn materialise_symlinked_dir(
 /// Keep an ordinary installed package's physical identity when a workspace
 /// source is staged beside it. The sibling mirror resolves through the live
 /// workspace install root; copying the same pnpm package under the project
-/// mirror gives esbuild two module instances (and two Preact options objects).
+/// mirror gives esbuild two module instances of the owned runtime.
 /// With symlink preservation disabled, both spellings resolve to this one
 /// canonical source. Workspace packages remain real staged copies, and active
 /// exclusions retain the existing bounded-copy and audit path.
@@ -14132,7 +14132,7 @@ fn friendly_esbuild_error(
             continue;
         };
         if !(specifier.starts_with("./") || specifier.starts_with("../")) {
-            // Bare/package specifiers (`preact`, `@scope/pkg`) are never a
+            // Bare/package specifiers (`vendor-lib`, `@scope/pkg`) are never a
             // shadow-root escape — nothing to annotate.
             continue;
         }
@@ -14809,7 +14809,7 @@ mod tests {
         let mut staged = Vec::new();
         for version in ["1.0.0", "2.0.0"] {
             let source = project.path().join(format!(
-                "node_modules/.pnpm/preact@{version}/node_modules/preact"
+                "node_modules/.pnpm/vendor-lib@{version}/node_modules/vendor-lib"
             ));
             fs::create_dir_all(&source).unwrap();
             fs::write(
@@ -14817,8 +14817,10 @@ mod tests {
                 format!("{{\"version\":\"{version}\"}}"),
             )
             .unwrap();
-            let logical = root.join(format!("node_modules/{version}/node_modules/preact"));
-            let dest = stage.path().join(format!("{version}/node_modules/preact"));
+            let logical = root.join(format!("node_modules/{version}/node_modules/vendor-lib"));
+            let dest = stage
+                .path()
+                .join(format!("{version}/node_modules/vendor-lib"));
             assert!(link_ordinary_dependency_to_canonical_source(
                 &logical, &source, &dest, &root, &writer
             )
@@ -15390,17 +15392,20 @@ mod tests {
     #[test]
     fn package_is_external_matches_whole_package_only() {
         let external = vec![
-            "preact".to_string(),
+            "vendor-lib".to_string(),
             "@takazudo/zfb-runtime".to_string(),
             "@scope/*".to_string(),
         ];
-        assert!(package_is_external("preact", &external));
+        assert!(package_is_external("vendor-lib", &external));
         assert!(package_is_external("@takazudo/zfb-runtime", &external));
         // A namespace wildcard external matches every package in the namespace.
         assert!(package_is_external("@scope/anything", &external));
         assert!(!package_is_external("not-external", &external));
-        // `--external:preact` must NOT externalize the distinct `preact-*` package.
-        assert!(!package_is_external("preact-render-to-string", &external));
+        // `--external:vendor-lib` must NOT externalize the distinct `vendor-lib-*` package.
+        assert!(!package_is_external(
+            "vendor-lib-render-to-string",
+            &external
+        ));
     }
 
     fn shadow_env(
@@ -21982,7 +21987,7 @@ mod tests {
         // node_modules under the project → the isolation slot (unchanged tier).
         assert_eq!(
             shadow_path_for_project_path(
-                &project.join("node_modules/preact/index.js"),
+                &project.join("node_modules/vendor-lib/index.js"),
                 project,
                 first_party,
                 shadow,
@@ -21991,7 +21996,7 @@ mod tests {
             ),
             shadow
                 .join(".zfb-exact-isolation")
-                .join("node_modules/preact/index.js"),
+                .join("node_modules/vendor-lib/index.js"),
         );
         // A workspace sibling (under first_party_root, outside the project) →
         // its workspace-relative slot in the work mirror (the new tier).
@@ -24518,7 +24523,7 @@ mod tests {
     /// ancestor of `project_root`: such a root would make
     /// `is_under_css_mirror_root` true for every path in the project, and the
     /// gate would silently become the option (a) the epic REJECTED — every
-    /// ordinary markdown edit rerunning the Tailwind scan — with no test
+    /// ordinary markdown edit rerunning the zudo-wind candidate scan — with no test
     /// failing anywhere. (The gate carries its own defensive re-check, pinned
     /// by `orchestrator::tests::degenerate_project_containing_mirror_root_does_not_rerun_css`;
     /// this test is the primary guard, at the source that publishes roots.)
@@ -26676,23 +26681,24 @@ mod tests {
     fn exact_target_session_copy_then_link_keeps_the_installed_file() {
         let tmp = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(tmp.path()).unwrap();
-        let store = base.join("store/node_modules/.pnpm/preact@10.29.8/node_modules/preact");
+        let store =
+            base.join("store/node_modules/.pnpm/vendor-lib@10.29.8/node_modules/vendor-lib");
         let installed = store.join("hooks/dist/hooks.mjs");
         fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(store.join("package.json"), r#"{"name":"preact"}"#).unwrap();
+        fs::write(store.join("package.json"), r#"{"name":"vendor-lib"}"#).unwrap();
         fs::write(&installed, "INSTALLED_HOOKS").unwrap();
         let project = base.join("site");
         fs::create_dir_all(project.join("node_modules")).unwrap();
-        std::os::unix::fs::symlink(&store, project.join("node_modules/preact")).unwrap();
-        let physical = project.join("node_modules/preact/hooks/dist/hooks.mjs");
+        std::os::unix::fs::symlink(&store, project.join("node_modules/vendor-lib")).unwrap();
+        let physical = project.join("node_modules/vendor-lib/hooks/dist/hooks.mjs");
 
         let mut session = ShadowSession::new(&project).unwrap();
         let root = session.shadow_root().to_path_buf();
         // Nested below the root, like a workspace project mirror, so the
         // prune's top-level `node_modules` shortcut does not apply.
-        let shadow_pkg = root.join("site/node_modules/preact");
+        let shadow_pkg = root.join("site/node_modules/vendor-lib");
         let to = shadow_pkg.join("hooks/dist/hooks.mjs");
-        let rel = PathBuf::from("site/node_modules/preact/hooks/dist/hooks.mjs");
+        let rel = PathBuf::from("site/node_modules/vendor-lib/hooks/dist/hooks.mjs");
 
         // Tick N: staged as a copy.
         {
@@ -26713,8 +26719,8 @@ mod tests {
         for _ in 0..2 {
             let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
             assert!(link_ordinary_dependency_to_canonical_source(
-                &project.join("node_modules/preact"),
-                &project.join("node_modules/preact"),
+                &project.join("node_modules/vendor-lib"),
+                &project.join("node_modules/vendor-lib"),
                 &shadow_pkg,
                 &project,
                 &writer,

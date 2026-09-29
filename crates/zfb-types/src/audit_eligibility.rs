@@ -95,7 +95,7 @@
 //!    and contains **no `node_modules` segment** — this is what separates a
 //!    workspace link (`node_modules/@scope/ui -> ../packages/ui`) from an
 //!    ordinary registry dep, whose pnpm target keeps a `node_modules` segment
-//!    (`node_modules/.pnpm/react@19/node_modules/react`);
+//!    (`node_modules/.pnpm/vendor-lib@19/node_modules/vendor-lib`);
 //! 3. that target is **claimed as a package** by the governing
 //!    `pnpm-workspace.yaml`'s `packages:` globs
 //!    ([`crate::first_party::workspace_root_claims_path`]).
@@ -127,7 +127,7 @@
 //! predicate already reads `pnpm-workspace.yaml` for the symlink case. A
 //! `package.json` that is missing, unreadable, or carries no string `name`
 //! yields no evidence, same as a symlink that fails to canonicalise. An
-//! ordinary external registry dependency staged as a real copy (e.g. `react`)
+//! ordinary external registry dependency staged as a real copy (e.g. `vendor-lib`)
 //! is unaffected: its declared name simply matches nothing in the claimed
 //! roster, so it is never counted (see fixture 8 below, the negative
 //! control).
@@ -602,9 +602,9 @@ mod tests {
 
         // A real copy of an ORDINARY external dependency, unclaimed by the
         // workspace.
-        let react = node_modules.join("react");
-        std::fs::create_dir_all(&react).unwrap();
-        std::fs::write(react.join("package.json"), r#"{"name":"react"}"#).unwrap();
+        let vendor_lib = node_modules.join("vendor-lib");
+        std::fs::create_dir_all(&vendor_lib).unwrap();
+        std::fs::write(vendor_lib.join("package.json"), r#"{"name":"vendor-lib"}"#).unwrap();
 
         let eligibility = stage_escape_audit_eligibility(&root, &root, &node_modules);
         assert_eq!(eligibility, AuditEligibility::NoReachableFirstPartyPackage);
@@ -620,9 +620,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         let (_, node_modules) = workspace(&root, "packages: ['.', 'packages/*']\n");
-        let store = node_modules.join(".pnpm/react@19.0.0/node_modules/react");
+        let store = node_modules.join(".pnpm/vendor-lib@19.0.0/node_modules/vendor-lib");
         std::fs::create_dir_all(&store).unwrap();
-        link(&node_modules.join("react"), &store);
+        link(&node_modules.join("vendor-lib"), &store);
 
         assert_eq!(
             stage_escape_audit_eligibility(&root, &root, &node_modules),

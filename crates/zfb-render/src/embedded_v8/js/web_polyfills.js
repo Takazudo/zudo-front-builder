@@ -22,14 +22,13 @@
 //   SHA-1/256/384/512, `subtle.timingSafeEqual`, and the rest of
 //   SubtleCrypto present-and-failing-closed. See the `crypto` section
 //   below.
-// - `MessageChannel` / `MessagePort` — React 19's react-dom server
-//   bundle constructs a `MessageChannel` at module-load time
-//   (unguarded) for its Fizz `scheduleWork` scheduler. React 18 did
-//   not; this is the next.16 gap. Promise/microtask-backed.
-// - `setTimeout` / `clearTimeout` — React 19's `handleErrorInNextTick`
-//   re-throws SSR errors via `setTimeout`; without it the error is
-//   masked by `ReferenceError: setTimeout is not defined`.
-//   queueMicrotask-backed, no real delay (see the impl docblock).
+// - `MessageChannel` / `MessagePort` — some server bundles construct a
+//   channel at module load to schedule work. This host supplies a minimal
+//   Promise/microtask-backed implementation.
+// - `setTimeout` / `clearTimeout` — server code may defer error reporting
+//   through a timer. The fallback avoids masking the original error with a
+//   missing-global `ReferenceError`; it is microtask-backed, with no real
+//   delay (see the implementation docblock).
 // - `AbortController` / `AbortSignal` — added by issue #2016 for the
 //   request-time `fetch` branch; neither existed here before.
 //
@@ -394,7 +393,7 @@
   //
   // Pure-JS UTF-8 encode/decode. Suffices for the SSG path's HTML
   // serialisation; we do not implement decoding of non-UTF-8
-  // labels (Hono / Preact don't ask for that).
+  // labels (the embedded renderer does not ask for that).
   class TextEncoder {
     constructor() {
       this.encoding = "utf-8";
@@ -1624,22 +1623,17 @@
   // ---- setTimeout / clearTimeout --------------------------------
   //
   // The embedded V8 host has NO event loop timers (deno_core's
-  // timer ops are not wired in). React 19's react-dom server bundle
-  // references `setTimeout` in `handleErrorInNextTick` — the path that
-  // re-throws an SSR error on a fresh tick. Without `setTimeout`, a
-  // component that throws during render would surface
-  // `ReferenceError: setTimeout is not defined` and MASK the real
-  // error. We back it with `queueMicrotask` (a pure-V8/host builtin —
-  // confirmed present), which the host's microtask checkpoint drains
-  // synchronously after the current turn.
+  // timer ops are not wired in). Server code may use `setTimeout` when
+  // reporting an SSR error on a later turn. Without the global, that
+  // path could surface `ReferenceError: setTimeout is not defined` and
+  // mask the original error. We back it with `queueMicrotask` (a pure-V8/
+  // host builtin — confirmed present), which the host's microtask
+  // checkpoint drains synchronously after the current turn.
   //
-  // There are NO real delay semantics: the `delay` argument is
-  // ignored and the callback runs on the next microtask, not after
-  // `delay` ms. The SSG render path never depends on timer ordering
-  // (it completes synchronously); the only caller is React's
-  // error-retick. `clearTimeout` cannot cancel an already-scheduled
-  // microtask, so it is a documented no-op — nothing on the SSG path
-  // relies on cancellation.
+  // There are NO real delay semantics: the `delay` argument is ignored
+  // and the callback runs on the next microtask, not after `delay` ms.
+  // `clearTimeout` cannot cancel an already-scheduled microtask, so it is
+  // a documented no-op.
   let __zfbTimerId = 1;
   function setTimeout(callback, _delay, ...args) {
     const id = __zfbTimerId++;
@@ -1657,27 +1651,18 @@
 
   // ---- MessageChannel / MessagePort -----------------------------
   //
-  // React 19's `react-dom-server.browser.production.js` constructs a
-  // `MessageChannel` at MODULE-LOAD time (unguarded:
-  // `var channel = new MessageChannel()`), using `channel.port1.onmessage`
-  // + `channel.port2.postMessage(null)` to schedule async work (the
-  // Fizz streaming `scheduleWork` path). React 18 did not — this is
-  // the next.16 / React 19 gap. The host has no DOM MessageChannel, so
-  // the module-load `new MessageChannel()` throws
+  // Some server bundles construct a `MessageChannel` at MODULE-LOAD
+  // time and post messages to schedule asynchronous work. The embedded
+  // host has no DOM MessageChannel, so construction would otherwise throw
   // `ReferenceError: MessageChannel is not defined` before any render.
   //
-  // Minimal Promise/microtask-backed implementation: a `postMessage`
-  // on one port schedules the *paired* port's `onmessage` (and any
+  // Minimal Promise/microtask-backed implementation: a `postMessage` on
+  // one port schedules the *paired* port's `onmessage` (and any
   // `addEventListener("message")` listeners) on a microtask via
-  // `queueMicrotask`. `Promise` and `queueMicrotask` are host builtins
-  // and the host drives the microtask checkpoint, so this is enough to
-  // satisfy React's scheduler whether or not it actually flushes during
-  // a synchronous `renderToString`. The legacy `renderToString` path
-  // (the one the SSG renderer uses) renders in one sync pass and never
-  // posts on this channel — the channel only needs to be *constructible*
-  // at module load; it is never flushed during build-time SSR. The
-  // Promise-backed delivery below is there for completeness in case a
-  // streaming path ever exercises it.
+  // `queueMicrotask`. `Promise` and `queueMicrotask` are host builtins,
+  // and the host drives the microtask checkpoint. Synchronous server
+  // rendering need not post on this channel, but the API remains usable
+  // if a bundle exercises the asynchronous path.
   class MessagePort {
     constructor() {
       this.onmessage = null;
@@ -1711,9 +1696,9 @@
         this._listeners = this._listeners.filter((l) => l !== listener);
       }
     }
-    // `start()` / `close()` are part of the MessagePort interface but
-    // React never calls them (it assigns `onmessage` directly, which
-    // implicitly starts the port). No-ops keep the surface complete.
+    // `start()` / `close()` are part of the MessagePort interface. This
+    // minimal implementation has no separate start or close state, so
+    // these methods are no-ops.
     start() {}
     close() {}
   }
@@ -1745,8 +1730,8 @@
   globalThis.btoa = btoa;
   globalThis.structuredClone = structuredClone;
   globalThis.crypto = crypto;
-  // Timer + scheduling shims for the React 19 server bundle. Installed
-  // only if absent so a host that later wires real timer ops wins.
+  // Timer and scheduling shims for embedded server bundles. Install
+  // them only if absent so a host that later wires real timer ops wins.
   if (typeof globalThis.setTimeout !== "function") {
     globalThis.setTimeout = setTimeout;
     globalThis.clearTimeout = clearTimeout;

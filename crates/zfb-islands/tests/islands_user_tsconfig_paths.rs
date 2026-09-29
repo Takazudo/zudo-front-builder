@@ -79,11 +79,11 @@ fn write_user_tsconfig_fixture(root: &Path) {
 }
 
 /// The external flags every fixture shares — same set the neighbouring
-/// `exact_match_resolution.rs` uses so the preact runtime stays unbundled.
-fn preact_externals() -> Vec<std::ffi::OsString> {
+/// `exact_match_resolution.rs` uses so the vendor-lib runtime stays unbundled.
+fn vendor_lib_externals() -> Vec<std::ffi::OsString> {
     vec![
-        std::ffi::OsString::from("--external:preact"),
-        std::ffi::OsString::from("--external:preact/*"),
+        std::ffi::OsString::from("--external:vendor-lib"),
+        std::ffi::OsString::from("--external:vendor-lib/*"),
         std::ffi::OsString::from("--external:@takazudo/*"),
     ]
 }
@@ -116,7 +116,7 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
     .unwrap();
 
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)
@@ -172,7 +172,7 @@ fn client_script_resolves_user_tsconfig_path_with_plugin_present() {
     .unwrap();
 
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)
@@ -226,7 +226,7 @@ fn island_bundle_resolves_user_tsconfig_path_without_plugin() {
     // No `.with_virtual_modules` / `.with_alias_entries` — empty `paths_entries`,
     // so no `--tsconfig=` is emitted and esbuild discovers the real tsconfig.
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)

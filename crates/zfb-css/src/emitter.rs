@@ -41,18 +41,17 @@ use crate::{CssDiagnostic, CssEngineId, CssInputDependency};
 ///
 /// The `bytes` are the same combined CSS string `CssPipeline::build()`
 /// would write — the optional framework block (issue #1533,
-/// [`crate::pipeline::CssPipelineConfig::framework_css`]), then Tailwind
-/// utilities, then CSS Modules output, each joined by a single `\n`.
+/// [`crate::pipeline::CssPipelineConfig::framework_css`]), then wind
+/// utility CSS, then CSS Modules output, each joined by a single `\n`.
 /// `stable_url` always equals
 /// `zfb_types::STABLE_CSS_URL` (`/assets/styles.css`); the prod
 /// pipeline matches this string against rendered HTML and rewrites it
 /// to `/assets/styles-<hash>.css`.
 #[derive(Debug, Clone)]
 pub struct CssEmitterOutput {
-    /// Combined CSS asset bytes. Empty bytes are technically valid (a
-    /// project with no Tailwind utilities and no CSS Modules emits an
-    /// empty `\n`-joined string), but in practice the engine output
-    /// always carries at least Tailwind's preflight reset.
+    /// Combined CSS asset bytes. Empty bytes are technically valid when
+    /// wind utilities, framework CSS, and CSS Modules all emit nothing.
+    /// The default wind configuration includes its reset rules.
     pub bytes: Vec<u8>,
 
     /// The unhashed public URL the renderer embeds. Always the

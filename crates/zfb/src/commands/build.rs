@@ -744,11 +744,11 @@ trait BuildRunner {
     /// - [`DefaultRunner`] — runs `CssPipeline::build_emitter` and
     ///   `build_production_islands_asset` eagerly so head injection
     ///   knows which stable URLs are backed by bytes. Returns `None`
-    ///   for any slot the project does not exercise (e.g. Tailwind
+    ///   for any slot the project does not exercise (e.g. utility CSS
     ///   disabled, no `"use client"` components).
     /// - `FakeRunner` (test-only) — returns whatever bytes the test
     ///   set up so the rewrite path can be exercised without running
-    ///   Tailwind / esbuild subprocesses.
+    ///   wind compilation or spawning esbuild.
     ///
     /// Returns both the bytes-only emitter inputs (CSS / islands / client
     /// scripts) **and** the set of registered island marker names collected by
@@ -931,7 +931,7 @@ impl BuildRunner for DefaultRunner {
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
         // bytes. Either slot independently returns `None` when the
-        // project doesn't exercise it (Tailwind disabled, no
+        // project doesn't exercise it (wind disabled, no
         // `"use client"` components, etc.).
         let css_started = build_phase_start(build_timing_enabled());
         let css_pass = build_default_css_payload_with_details(
@@ -987,8 +987,8 @@ impl BuildRunner for DefaultRunner {
 
 /// Observer invoked with the CSS source-plan seam's computed sibling
 /// mirror roots (issue #1802, epic #1799 gap (a)) as soon as they are
-/// known — BEFORE the Tailwind subprocess runs and regardless of whether
-/// that subprocess later succeeds or fails. This is the seam the dev-watch
+/// known — BEFORE CSS compilation runs and regardless of whether
+/// compilation later succeeds or fails. This is the seam the dev-watch
 /// registration hooks into: a failed boot CSS build must still register
 /// sibling watches, or there is no filesystem event through which recovery
 /// could ever trigger. See
@@ -1738,10 +1738,9 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
 ///
 /// Deliberately has NO manifest-declared carve-out, unlike the bundler's
 /// sibling mirror and runtime alias claim (issue #3176): this list is the
-/// Tailwind `@source not` / CSS-Modules scan exclusion, not an esbuild
+/// wind candidate-discovery / CSS-Modules scan exclusion, not an esbuild
 /// resolution surface, so a sibling's declared `dist/` still stays out of the
-/// class scan — pinned by the `sibling_css_module_command_layer_build` test
-/// `sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan`.
+/// class scan — pinned by the ignored sibling CSS-module regression test.
 const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "dist",
@@ -1808,9 +1807,9 @@ fn is_root_package_css_path(
 /// `layouts/`, `content/`) and return every TSX/TS/JSX/JS/MDX/MD
 /// source file beneath them. Used as the `sources` field for the
 /// CSS pipeline so the CSS Modules import-scanner can resolve
-/// `import "...module.css"` statements; Tailwind's own utility-class
-/// scan is driven by the synthesised `@source` directives, not this
-/// list, so missing a file here does not silently strip utilities.
+/// `import "...module.css"` statements. Wind candidate extraction also
+/// uses this explicit source list, so a missing file can omit a utility
+/// candidate or imported CSS Module.
 ///
 /// Order is filesystem walk order — the CSS pipeline's discovery
 /// step de-dupes against an internal HashSet, so determinism is the
@@ -1849,7 +1848,7 @@ fn discover_css_source_files(
     discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
-    // page-extension-drift-guard: allow — the CSS/Tailwind source-scan
+    // page-extension-drift-guard: allow — the CSS/wind source discovery
     // extension set (any file that may contain class names, at any depth,
     // page or not), not the routable page allowlist.
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
@@ -3723,8 +3722,9 @@ fn materialise_islands_shadow_with_worker_context(
     materialise_shadow_typescript_configs(root, shadow_root, &shadow_configs)?;
 
     // Symlink node_modules as a whole so shadow files' bare imports
-    // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
-    // each shadow file to the nearest mirrored `node_modules`. In a widened
+    // (`@takazudo/zfb/zudo-react/jsx-runtime`, `@takazudo/zfb/runtime`, …)
+    // resolve — esbuild walks up from each shadow file to the nearest mirrored
+    // `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
     //
@@ -6058,7 +6058,7 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     // JSX is harmless for plain .ts files; reuse the islands JSX import
-    // source so the Preact JSX alias applies consistently to any .tsx
+    // source so the owned JSX import source applies consistently to any .tsx
     // client scripts.
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
@@ -8439,17 +8439,17 @@ mod tests {
     /// `production_islands_payload_keeps_resource_companions_verbatim` above.
     ///
     /// `prod_asset_graph_e2e.rs` (in `zfb-build`, which cannot depend on the
-    /// `zfb` bin crate) proves the real Tailwind binary produces companions
+    /// `zfb` bin crate) proves utility CSS emits package companions
     /// and that the real `apply_prod_asset_pipeline` ships them correctly —
     /// but it reimplements this exact conversion by hand rather than calling
-    /// `run_css_emitter` (a deliberate, documented choice in that file: no
-    /// real Tailwind subprocess is needed to prove wiring, and this crate is
-    /// the one place the real function lives). This test closes that gap
-    /// cheaply — no real Tailwind, no `#[ignore]` — by driving
+    /// `run_css_emitter` (a deliberate, documented choice in that file: the
+    /// test uses a stub engine to prove wiring, and this crate is the one
+    /// place the real function lives). This test closes that gap without an
+    /// external binary or `#[ignore]` by driving
     /// `run_css_emitter` itself through the [`zfb_css::StubCssEngine`]: if a
     /// future edit ever drops or mangles the `.companions` mapping at
     /// `run_css_emitter`'s call site, this test fails without needing the
-    /// tailwindcss-v4 binary staged.
+    /// external CSS compiler binary staged.
     #[test]
     fn run_css_emitter_threads_package_url_companions_into_asset_payload() {
         let project_root = tempdir().unwrap();
@@ -11002,8 +11002,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // zfb#1534 — `role_classes_inline_sources` (the `@source inline(...)`
-    // safelist feeding `build_default_css_payload`'s `tw_cfg`)
+    // zfb#1534 — `role_classes_inline_sources` (role-class candidates feeding
+    // wind candidate discovery)
     // -----------------------------------------------------------------------
 
     /// Build a `CodeHighlightConfig` in class mode with the given
@@ -11143,14 +11143,14 @@ mod tests {
     }
 
     /// Regression (issue #824): `wind: false` disables only
-    /// the Tailwind layers, NOT the authored-CSS pipeline. With an
+    /// the wind layers, NOT the authored-CSS pipeline. With an
     /// authored global stylesheet and a CSS Module present, the emitter
     /// must still ship a stylesheet containing both — and crucially WITHOUT
-    /// the Tailwind preflight (no `@import "tailwindcss"`, no subprocess).
+    /// the wind reset (no legacy `@import "tailwindcss"`, no subprocess).
     /// This path runs `AuthoredCssEngine`, so the test is hermetic (no
-    /// tailwind binary required).
+    /// external binary required).
     #[test]
-    fn css_payload_ships_authored_css_when_tailwind_disabled() {
+    fn css_payload_ships_authored_css_when_wind_disabled() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
 
@@ -11188,7 +11188,7 @@ mod tests {
             &[],
         )
         .expect("should not error")
-        .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
+        .expect("expected Some payload: authored CSS + module must ship with wind disabled");
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -11199,15 +11199,15 @@ mod tests {
             css.contains("display: grid") || css.contains("display:grid"),
             "CSS Module rule must be emitted; got:\n{css}",
         );
-        // The Tailwind layers must be skipped entirely — no preflight, no
+        // The wind layers must be skipped entirely — no preflight, no
         // synthesised import.
         assert!(
             !css.contains("@import \"tailwindcss\""),
-            "tailwind import must NOT be synthesised when disabled; got:\n{css}",
+            "legacy Tailwind import must not be synthesised with wind disabled; got:\n{css}",
         );
         assert!(
             !css.contains("tailwindcss v4"),
-            "tailwind preflight banner must NOT appear when disabled; got:\n{css}",
+            "legacy preflight banner must not appear with wind disabled; got:\n{css}",
         );
 
         // And the class-map producer must run in lockstep so the HTML
@@ -11217,7 +11217,7 @@ mod tests {
                 .expect("class maps");
         assert!(
             !maps.is_empty(),
-            "CSS Modules class maps must be non-empty when tailwind is disabled",
+            "CSS Modules class maps must be non-empty when wind is disabled",
         );
         let scoped = maps
             .values()
@@ -11229,11 +11229,11 @@ mod tests {
         );
     }
 
-    /// Locked authored-import contract (#2721): the real Tailwind-disabled
+    /// Locked authored-import contract (#2721): the real wind-disabled
     /// build seam bundles local imports and leaves external imports for the
     /// pipeline's final hoist.
     #[test]
-    fn css_payload_bundles_authored_imports_when_tailwind_disabled() {
+    fn css_payload_bundles_authored_imports_when_wind_disabled() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("styles")).unwrap();
@@ -11290,7 +11290,7 @@ mod tests {
     /// => no stylesheet to ship, so the emitter slot stays `None` (avoids
     /// a `<link>` to an empty stylesheet).
     #[test]
-    fn css_payload_none_when_tailwind_disabled_and_no_css() {
+    fn css_payload_none_when_wind_disabled_and_no_css() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         // A page with no module import and no global stylesheet.
@@ -11536,7 +11536,7 @@ mod tests {
         );
     }
 
-    /// Acceptance: with Tailwind disabled (hermetic — no tailwind binary
+    /// Acceptance: with wind disabled (hermetic — no external binary
     /// required), the emitted stylesheet contains the scoped sibling class
     /// AND its name matches the one `compute_css_module_class_maps`
     /// (the bundler's JSX-rewrite producer) computed — proving the CSS
@@ -11736,15 +11736,15 @@ mod tests {
         );
     }
 
-    /// Acceptance (issue #1775): the Tailwind-DISABLED path
+    /// Acceptance (issue #1775): the wind-DISABLED path
     /// (`build_authored_only_css_payload`) must also discover a
-    /// virtual-only sibling CSS Module — `enabled: false` opts out of
-    /// Tailwind, not out of CSS (issue #824), and that invariant must hold
+    /// virtual-only sibling CSS Module — `wind: false` opts out of
+    /// wind utilities, not out of CSS (issue #824), and that invariant must hold
     /// for claim source c too, not just the alias claim path
     /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`
     /// already covers.
     #[test]
-    fn css_payload_emits_virtual_only_sibling_module_css_with_tailwind_disabled() {
+    fn css_payload_emits_virtual_only_sibling_module_css_with_wind_disabled() {
         let (_tmp, project) = sibling_css_virtual_module_workspace_fixture();
         let ws = project.parent().unwrap().parent().unwrap();
         let plugin_virtual_modules = virtual_panel_module(ws);
@@ -11780,7 +11780,7 @@ mod tests {
 
         assert!(
             css.contains(&format!(".{scoped}")),
-            "emitted CSS (Tailwind disabled) must contain the scoped virtual-only sibling class \
+            "emitted CSS (wind disabled) must contain the scoped virtual-only sibling class \
              `.{scoped}`; got:\n{css}",
         );
     }
@@ -11873,15 +11873,15 @@ mod tests {
         );
     }
 
-    /// Regression (issue #1775 follow-up), Tailwind-DISABLED variant: the
+    /// Regression (issue #1775 follow-up), wind-DISABLED variant: the
     /// authored-only path (`build_authored_only_css_payload`) must also
     /// compile and emit a directly-imported virtual-only CSS Module —
-    /// `enabled: false` opts out of Tailwind, not out of CSS (issue #824). The
+    /// `enabled: false` opts out of wind, not out of CSS (issue #824). The
     /// emitted scoped class must match the one `compute_css_module_class_maps`
     /// produces, proving the emission and class-map paths agree on the direct
     /// virtual CSS import.
     #[test]
-    fn css_payload_emits_direct_virtual_css_module_with_tailwind_disabled() {
+    fn css_payload_emits_direct_virtual_css_module_with_wind_disabled() {
         let (_tmp, project) = direct_virtual_css_module_workspace_fixture();
         let ws = project.parent().unwrap().parent().unwrap();
         let plugin_virtual_modules = virtual_direct_css_module(ws);
@@ -11919,7 +11919,7 @@ mod tests {
 
         assert!(
             css.contains(&format!(".{scoped}")),
-            "emitted CSS (Tailwind disabled) must contain the scoped direct virtual CSS module \
+            "emitted CSS (wind disabled) must contain the scoped direct virtual CSS module \
              class `.{scoped}`; got:\n{css}",
         );
     }
@@ -18628,18 +18628,18 @@ mod tests {
     }
 
     /// Review finding (issue #1802): `wind: false` opts out of
-    /// the Tailwind `@source` scan, NOT out of CSS Modules discovery — see
+    /// utility candidate discovery, NOT out of CSS Modules discovery — see
     /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`,
     /// which proves `build_authored_only_css_payload` still ships a claimed
     /// sibling's `.module.css` bytes on this exact path. An earlier version
-    /// of this seam published an EMPTY mirror-root set whenever Tailwind was
+    /// of this seam published an EMPTY mirror-root set whenever wind was
     /// disabled, which would have left that same sibling directory
     /// unwatched in dev — a claimed sibling's CSS Module edit would go
-    /// stale until restart even though Tailwind was never involved. The
+    /// stale until restart even though wind was never involved. The
     /// observer must fire with the SAME non-empty set on the
     /// `wind: false` path.
     #[test]
-    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled() {
+    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_wind_disabled() {
         let (_tmp, project) = sibling_css_workspace_fixture();
 
         let cfg = Config {
@@ -18659,13 +18659,13 @@ mod tests {
                 *observed.borrow_mut() = Some(roots.to_vec());
             },
         )
-        .expect("authored-only path must not error (hermetic, no tailwind binary required)");
+        .expect("authored-only path must not error (hermetic, wind needs no external binary)");
         assert!(payload.is_some());
 
         let observed = observed.borrow();
         let roots = observed
             .as_ref()
-            .expect("the observer must fire on the tailwind-disabled path too");
+            .expect("the observer must fire when wind is disabled too");
         assert!(
             !roots.is_empty(),
             "mirror roots must still be published with wind=false, since \

@@ -5,7 +5,7 @@ import { Gallery } from "../components/gallery";
 
 /**
  * Minimal built-site-smoke fixture page (issue #1401). Deliberately tiny —
- * no layout, no content collections, no tailwind — so `zfb build` stays
+ * no layout, no content collections, no utility classes — so `zfb build` stays
  * fast. The only thing this page needs to prove is that a real interactive
  * island survives the full build -> static-serve -> real-Chromium path.
  *
