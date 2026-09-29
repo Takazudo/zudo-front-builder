@@ -30,7 +30,7 @@ export default function Counter() {
 
 この 1 つのディレクティブが opt-in のすべてです。これを持たないファイルは純粋なサーバーコンポーネントです。ビルド時に一度レンダリングされるだけで、ブラウザには決して届きません。
 
-同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。
+同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。以下はパターンを示す簡略版です。同梱のテンプレートはアイコンに `Show` を使い、ユーティリティクラスと SVG のマークアップも含みます。
 
 ```tsx
 "use client";

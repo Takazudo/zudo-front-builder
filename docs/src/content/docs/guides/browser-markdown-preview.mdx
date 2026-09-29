@@ -56,7 +56,7 @@ surface and the only entry that exports `compile`. Existing root imports and
 | --- | ---: | --- | --- | --- |
 | `@takazudo/zfb-md-wasm` | 1,516,161 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
 | `@takazudo/zfb-md-wasm/highlight` | 817,953 B | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; existing API/resources stay compatible |
-| `@takazudo/zfb-md-wasm/render` | 1,091,674 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` | Render Markdown to HTML without compiler bytes |
+| `@takazudo/zfb-md-wasm/render` | 1,091,674 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `HighlightRole` | Render Markdown to HTML without compiler bytes |
 | `@takazudo/zfb-md-wasm/parse` | 283,984 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` | Parse and optionally interpret an AST in controlled consumer code |
 
 Each focused entry owns a private resource pair:
@@ -162,16 +162,15 @@ the module's `components` prop — the same convention zfb uses for its own
 
 ### Supplying the JSX runtime
 
-The emitted module imports `jsx`, `jsxs`, and `Fragment` from one bare
+With the default `development: false`, the emitted module imports `jsx`, `jsxs`, and `Fragment` from one bare
 specifier: `@takazudo/zfb/zudo-react/jsx-runtime`. Resolve that subpath from a
 compatible `@takazudo/zfb` install with your bundler or an
 [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap).
-`zfb-md-wasm` returns module source; it does not bundle the runtime.
+With `development: true`, the module imports `jsxDEV` from `@takazudo/zfb/zudo-react/jsx-dev-runtime` and `Fragment` from `@takazudo/zfb/zudo-react/jsx-runtime`. Both subpaths must resolve. `zfb-md-wasm` returns module source; it does not bundle the runtime.
 
 The emitter uses zfb's owned JSX dialect and runtime. There is no runtime
 selection option or compatibility alias. The former `jsxRuntime` field is
-rejected as unknown by the v3 options contract; re-verify that exact rejection
-against the md-wasm cutover in #3290.
+rejected as unknown by the v3 options contract.
 
 ### `renderHtml()` — Markdown to HTML
 

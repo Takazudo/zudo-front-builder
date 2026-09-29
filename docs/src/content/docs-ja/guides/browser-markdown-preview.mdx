@@ -53,7 +53,7 @@ Node ≥ 20 でもこのパッケージをロードできます — パッケー
 | --- | ---: | --- | --- | --- |
 | `@takazudo/zfb-md-wasm` | 1,516,161 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | compile/render/parse/raw-mdast/highlight の現在の完全な型セット | MDX をコンパイル、または複数の API を使う場合 |
 | `@takazudo/zfb-md-wasm/highlight` | 817,953 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換 |
-| `@takazudo/zfb-md-wasm/render` | 1,091,674 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML にする場合 |
+| `@takazudo/zfb-md-wasm/render` | 1,091,674 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML にする場合 |
 | `@takazudo/zfb-md-wasm/parse` | 283,984 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
 
 focused エントリは、対応する private リソースペアだけを持ちます:
@@ -155,9 +155,9 @@ PascalCase のコンポーネント（上記ソースの `<Callout>`）は、モ
 
 ### JSX ランタイムを供給する
 
-出力されるモジュールは、単一の裸の指定子 `@takazudo/zfb/zudo-react/jsx-runtime` から `jsx`、`jsxs`、`Fragment` をインポートします。バンドラまたは [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap) で、対応する `@takazudo/zfb` インストールのサブパスに解決してください。`zfb-md-wasm` が返すのはモジュールのソースであり、ランタイムをバンドルしません。
+デフォルトの `development: false` では、出力されるモジュールは単一の裸の指定子 `@takazudo/zfb/zudo-react/jsx-runtime` から `jsx`、`jsxs`、`Fragment` をインポートします。バンドラまたは [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap) で、対応する `@takazudo/zfb` インストールのサブパスに解決してください。`development: true` では、モジュールは `@takazudo/zfb/zudo-react/jsx-dev-runtime` から `jsxDEV` を、`@takazudo/zfb/zudo-react/jsx-runtime` から `Fragment` をインポートします。両方のサブパスを解決できる必要があります。`zfb-md-wasm` が返すのはモジュールのソースであり、ランタイムをバンドルしません。
 
-エミッタは zfb 固有の JSX 方言とランタイムを使います。ランタイムを選ぶオプションや互換エイリアスはありません。旧 `jsxRuntime` フィールドは v3 のオプション契約で未知として拒否されます。この正確な拒否動作は #3290 の md-wasm 切り替え時に再確認してください。
+エミッタは zfb 固有の JSX 方言とランタイムを使います。ランタイムを選ぶオプションや互換エイリアスはありません。旧 `jsxRuntime` フィールドは v3 のオプション契約で未知として拒否されます。
 
 ### `renderHtml()` — Markdown から HTML へ
 
