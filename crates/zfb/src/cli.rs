@@ -219,6 +219,9 @@ pub struct DevArgs {
     #[command(flatten)]
     pub scratch: ScratchDirArg,
 
+    #[command(flatten)]
+    pub define: DefineArgs,
+
     /// Port to bind the dev server to. Falls back to `port` from
     /// `zfb.config.json`, then to `3000`.
     #[arg(long)]
@@ -245,11 +248,50 @@ pub struct ScratchDirArg {
     pub scratch_dir: Option<PathBuf>,
 }
 
+/// Per-invocation `--define KEY=EXPR` esbuild substitutions for `dev`,
+/// `build`, and `check` (not `preview`, which bundles nothing).
+#[derive(Debug, Default, Args)]
+pub struct DefineArgs {
+    /// Add an esbuild define substitution, overriding `bundle.define` in the
+    /// config per key. Repeatable; the last occurrence of a key wins.
+    #[arg(
+        long = "define",
+        value_name = "KEY=EXPR",
+        action = ArgAction::Append,
+        value_parser = parse_define_override
+    )]
+    pub define: Vec<(String, String)>,
+}
+
+/// Parse one `--define` value, splitting on the first `=`.
+pub fn parse_define_override(raw: &str) -> Result<(String, String), String> {
+    let (key, expr) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --define {raw:?}: expected KEY=EXPR"))?;
+    if key.is_empty() {
+        return Err(format!("invalid --define {raw:?}: key must not be empty"));
+    }
+    if expr.is_empty() {
+        return Err(format!(
+            "invalid --define {raw:?}: expression must not be empty"
+        ));
+    }
+    if crate::config::RESERVED_DEFINE_KEYS.contains(&key) {
+        return Err(format!(
+            "--define key {key:?} is reserved by zfb's bundle mode and cannot be overridden"
+        ));
+    }
+    Ok((key.to_string(), expr.to_string()))
+}
+
 /// Arguments for `zfb build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
     #[command(flatten)]
     pub scratch: ScratchDirArg,
+
+    #[command(flatten)]
+    pub define: DefineArgs,
 
     /// Output directory for the production build. Falls back to `outDir`
     /// from `zfb.config.*`, then to `dist`.
@@ -569,6 +611,9 @@ pub struct CheckArgs {
     #[command(flatten)]
     pub scratch: ScratchDirArg,
 
+    #[command(flatten)]
+    pub define: DefineArgs,
+
     /// Skip the `tsc --noEmit` subprocess. Schema validation still runs.
     /// Useful when the project has no TypeScript dependency installed
     /// yet but still wants schema enforcement in CI.
@@ -579,6 +624,50 @@ pub struct CheckArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn define_override_parses_on_first_equals() {
+        assert_eq!(parse_define_override("A=1"), Ok(("A".into(), "1".into())));
+        assert_eq!(
+            parse_define_override("A=a=b"),
+            Ok(("A".into(), "a=b".into()))
+        );
+    }
+
+    #[test]
+    fn define_override_rejects_malformed_and_reserved() {
+        assert!(parse_define_override("A").is_err());
+        assert!(parse_define_override("=1").is_err());
+        assert!(parse_define_override("A=").is_err());
+        for key in crate::config::RESERVED_DEFINE_KEYS {
+            let err = parse_define_override(&format!("{key}=1")).unwrap_err();
+            assert!(err.contains("reserved"), "{err}");
+        }
+    }
+
+    #[test]
+    fn define_flag_is_accepted_by_dev_build_check_but_not_preview() {
+        let ok =
+            |sub: &str| Cli::try_parse_from(["zfb", sub, "--define", "A=1", "--define", "B=2"]);
+        for sub in ["dev", "build", "check"] {
+            let cli = ok(sub).unwrap_or_else(|e| panic!("{sub}: {e}"));
+            let got = match cli.command {
+                Command::Dev(a) => a.define.define,
+                Command::Build(a) => a.define.define,
+                Command::Check(a) => a.define.define,
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(
+                got,
+                vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+            );
+        }
+        assert!(ok("preview").is_err());
+        assert!(Cli::try_parse_from(["zfb", "check", "--define", "A"]).is_err());
+        assert!(
+            Cli::try_parse_from(["zfb", "check", "--define", "process.env.NODE_ENV=1"]).is_err()
+        );
+    }
 
     fn dev_host(argv: &[&str]) -> Option<String> {
         match Cli::try_parse_from(argv).expect("parse").command {

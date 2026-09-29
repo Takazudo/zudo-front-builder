@@ -3293,6 +3293,21 @@ mod tests {
     }
 
     #[test]
+    fn changed_define_changes_worker_cache_envelope() {
+        let envelope = |define: &BTreeMap<String, String>| {
+            let mut out = Vec::new();
+            ModuleWorkerBuildContext::new(true, &BTreeMap::new(), define)
+                .append_cache_envelope(&mut out, Path::new("/project"));
+            out
+        };
+        let a = BTreeMap::from([("K".to_string(), "1".to_string())]);
+        let b = BTreeMap::from([("K".to_string(), "2".to_string())]);
+        assert_eq!(envelope(&a), envelope(&a));
+        assert_ne!(envelope(&a), envelope(&b));
+        assert_ne!(envelope(&a), envelope(&BTreeMap::new()));
+    }
+
+    #[test]
     fn browser_and_ssr_context_constructors_agree_for_same_config() {
         let loaders = BTreeMap::from([
             (".frag".to_string(), "text".to_string()),

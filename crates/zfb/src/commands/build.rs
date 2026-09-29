@@ -118,6 +118,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let mut config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    crate::config::apply_define_overrides(&mut config, &args.define.define);
     emit_build_phase_timing("config-load", phase_started);
     let minify_html = resolve_minify_html(args.minify_html(), &config);
 
@@ -4901,6 +4902,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             &plugin_config.alias_entries,
             &plugin_config.virtual_modules,
             outdir,
+            &bundle_define,
         )?,
     ))
     .with_client_router(scan_meta.uses_client_router)

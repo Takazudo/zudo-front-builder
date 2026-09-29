@@ -56,9 +56,11 @@ use crate::render_pipeline::{build_prerender_map, render_ssr_request_param_findi
 pub async fn run(args: &CheckArgs) -> Result<()> {
     let project_root = env::current_dir().context("failed to read current working directory")?;
 
-    let cfg = config::load_from_dir(&project_root)
+    let mut cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    // Validate-only: the define never reaches tsc or schema validation.
+    config::apply_define_overrides(&mut cfg, &args.define.define);
 
     // Held until `run` returns. `check` writes nothing, so there is no
     // layout to thread.
