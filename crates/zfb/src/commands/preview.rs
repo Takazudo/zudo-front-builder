@@ -128,9 +128,9 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         anyhow::bail!("{} does not exist — run zfb build first", outdir.display());
     }
 
-    // Held through both the static and wrangler modes; the layout is
-    // threaded into paths by #3343.
-    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+    // Held through both the static and wrangler modes. zfb itself writes
+    // nothing here; wrangler mode needs no layout.
+    let scratch = crate::commands::scratch_dir::resolve_from_env(
         &project_root,
         &cfg,
         &outdir,
@@ -144,7 +144,9 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .context("invalid adapter in zfb.config.json")?;
 
     match adapter {
-        AdapterChoice::None => run_static(&project_root, &cfg, &outdir, &host, port).await,
+        AdapterChoice::None => {
+            run_static(&project_root, &cfg, &outdir, scratch.layout(), &host, port).await
+        }
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
             // `wrangler dev` serves whatever the project's wrangler config
             // names (`main` + `[assets].directory`) — unlike the old
@@ -199,6 +201,8 @@ async fn run_static(
     project_root: &Path,
     cfg: &config::Config,
     dist_root: &Path,
+    // Reserved for the plugin setup's `scratchDir` (#3346).
+    _scratch: &zfb_types::ScratchLayout,
     host: &str,
     port: u16,
 ) -> Result<()> {

@@ -311,7 +311,7 @@ fn react_to_liveness_outcome(
 /// ([`spawn_watcher_liveness_probe`]); a nonzero value exists only for that
 /// test.
 async fn run_watcher_liveness_probe_inner(
-    project_root: PathBuf,
+    layout: zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
     sleep_before: std::time::Duration,
@@ -349,7 +349,7 @@ async fn run_watcher_liveness_probe_inner(
     // issue #1738).
     let handle = tokio::runtime::Handle::current();
     let _ = tokio::task::spawn_blocking(move || {
-        run_watcher_liveness_probe_blocking(&handle, project_root, effective_watch_targets, opts);
+        run_watcher_liveness_probe_blocking(&handle, &layout, effective_watch_targets, opts);
     })
     .await;
 }
@@ -367,14 +367,12 @@ async fn run_watcher_liveness_probe_inner(
 /// nested `block_on`.
 fn run_watcher_liveness_probe_blocking(
     handle: &tokio::runtime::Handle,
-    project_root: PathBuf,
+    layout: &zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
 ) {
-    let Some((parent_dir, _relocated)) = resolve_probe_parent_dir(
-        &zfb_types::ScratchLayout::default_for(&project_root),
-        &effective_watch_targets,
-    ) else {
+    let Some((parent_dir, _relocated)) = resolve_probe_parent_dir(layout, &effective_watch_targets)
+    else {
         tracing::debug!(
             "watcher liveness probe: no isolated scratch location available; skipping this run's self-check"
         );
@@ -459,12 +457,12 @@ fn run_watcher_liveness_probe_blocking(
 /// awaited before the ready banner) and the shutdown wiring that cancels +
 /// awaits the returned handle.
 pub(super) fn spawn_watcher_liveness_probe(
-    project_root: PathBuf,
+    layout: zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_watcher_liveness_probe_inner(
-        project_root,
+        layout,
         effective_watch_targets,
         opts,
         std::time::Duration::ZERO,
@@ -497,6 +495,21 @@ mod tests {
             parent.ends_with("watcher-liveness-probe"),
             "expected the documented scratch dir name: {parent:?}"
         );
+    }
+
+    #[test]
+    fn probe_parent_follows_a_session_scratch_root() {
+        let project = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let layout =
+            zfb_types::ScratchLayout::for_scratch_dir(project.path(), scratch.path().to_path_buf());
+
+        let (parent, relocated) =
+            resolve_probe_parent_dir(&layout, &[project.path().join("src")]).unwrap();
+
+        assert!(!relocated);
+        assert_eq!(parent, scratch.path().join("watcher-liveness-probe"));
+        assert!(!parent.starts_with(project.path()));
     }
 
     #[test]
@@ -745,10 +758,10 @@ mod tests {
         let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
         let events_for_probe = Arc::clone(&events);
-        let probe_project_root = project_root.clone();
+        let probe_layout = zfb_types::ScratchLayout::default_for(&project_root);
         let handle = tokio::spawn(async move {
             run_watcher_liveness_probe_inner(
-                probe_project_root,
+                probe_layout,
                 Vec::new(),
                 zfb_watcher::LivenessOpts::default(),
                 std::time::Duration::from_millis(200),
@@ -785,7 +798,7 @@ mod tests {
         let project_root = tmp.path().to_path_buf();
 
         let handle = spawn_watcher_liveness_probe(
-            project_root.clone(),
+            zfb_types::ScratchLayout::default_for(&project_root),
             Vec::new(),
             zfb_watcher::LivenessOpts::new(std::time::Duration::from_secs(10))
                 .with_marker_interval(std::time::Duration::from_millis(100))

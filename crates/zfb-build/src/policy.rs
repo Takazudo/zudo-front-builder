@@ -2123,6 +2123,28 @@ mod tests {
     }
 
     #[test]
+    fn is_zfb_written_covers_a_session_scratch_root() {
+        let invalidation = RawImportInvalidation::default();
+        let project = PathBuf::from("/proj/site");
+        let scratch = PathBuf::from("/tmp/zfb-scratch/session-a");
+        let layout = zfb_types::ScratchLayout::for_scratch_dir(&project, scratch.clone());
+        invalidation.set_zfb_written_roots(layout.written_roots());
+        for written in [
+            layout.dev_assets_root().join("assets/islands.js"),
+            layout.graph_bin(),
+            project.join(".zfb-build/dev-assets/assets/islands.js"),
+            project.join(".zfb/graph.bin"),
+        ] {
+            assert!(invalidation.is_zfb_written(&written), "{written:?}");
+        }
+        assert_eq!(
+            layout.dev_assets_root().join("assets/islands.js"),
+            scratch.join("dev-assets/assets/islands.js")
+        );
+        assert!(!invalidation.is_zfb_written(&project.join("src/lib/a.ts")));
+    }
+
+    #[test]
     fn dynamic_dependency_paths_union_browser_closures_without_cross_classifying() {
         let invalidation = RawImportInvalidation::default();
         let island_helper = PathBuf::from("/proj/lib/island-helper.ts");

@@ -612,6 +612,48 @@ mod tests {
     }
 
     #[test]
+    fn wind_source_plan_excludes_an_in_project_session_scratch_root() {
+        let (_temp, mut inputs) = fixture();
+        let project = inputs.project_root.clone();
+        let scratch = project.join(".zfb-build/session-a");
+        inputs.default_content_roots = vec![project.clone()];
+        inputs.zfb_written_roots =
+            zfb_types::ScratchLayout::for_scratch_dir(&project, scratch.clone()).written_roots();
+        write(&project, "src/page.tsx", "p-1");
+        write(&scratch, "bundle.tsx", "p-7");
+        let plan = build_css_source_plan(&inputs);
+        assert!(plan.exclusions.contains(&scratch));
+        let candidates = live(&plan);
+        assert!(candidates.contains("p-1"));
+        assert!(!candidates.contains("p-7"));
+    }
+
+    #[test]
+    fn wind_source_plan_excludes_an_out_of_project_session_root_in_a_claimed_workspace() {
+        let (temp, mut inputs) = fixture();
+        let root = temp.path();
+        let scratch = root.join("scratch-x");
+        write(root, "root.tsx", "p-2");
+        write(&scratch, "bundle.tsx", "p-8");
+        inputs.root_package_claimed = true;
+        inputs.root_package_excluded_dirs = vec![inputs.project_root.clone()];
+        inputs.zfb_written_roots =
+            zfb_types::ScratchLayout::for_scratch_dir(&inputs.project_root, scratch.clone())
+                .written_roots();
+        let plan = build_css_source_plan(&inputs);
+        let candidates = live(&plan);
+        assert!(candidates.contains("p-2"));
+        assert!(!candidates.contains("p-8"));
+
+        let mut without_scratch = plan;
+        without_scratch.exclusions.remove(&scratch);
+        assert!(
+            live(&without_scratch).contains("p-8"),
+            "the claimed root package walks the scratch root unless it is excluded"
+        );
+    }
+
+    #[test]
     fn wind_source_plan_plugin_role_classes_and_safelist() {
         let (_temp, mut inputs) = fixture();
         inputs
