@@ -344,7 +344,7 @@ Before editing `packages/zfb/package.json` or pushing the version-bump commit:
    metrics` step. Copy **all four CI-measured columns** (`finalWasm`, `gzip9`, `glue`,
    `glueGzip9`) for default/root, highlight, render, and parse from its four metric lines.
    Record every mismatch and gzip warning, including each delta. Check that all four gzip sizes
-   remain below their existing ceilings, and that `assert-zfb-md-wasm-exports.sh` passed. A
+   remain at or below their existing ceilings, and that `assert-zfb-md-wasm-exports.sh` passed. A
    `manifest-mismatch` failure can skip packing; it does not make the measured metric lines
    unusable. A missing metric, failed build or exports assert, or ceiling breach blocks the
    release until diagnosed. Never measure or refresh the manifest from a Mac build.
