@@ -548,7 +548,12 @@ mod tests {
         .await
         .expect("host spawns");
         let regs = host
-            .run_setup(tmp, SetupCommand::Dev, &serde_json::json!({}))
+            .run_setup(
+                tmp,
+                &tmp.join(".zfb-build").join("plugins"),
+                SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
             .await
             .expect("setup ok");
         (host, regs)

@@ -2824,16 +2824,21 @@ pub fn zudo_react_build_token_with_inputs(
         plugin_aliases,
         plugin_virtual_modules,
         &project_root.join("dist"),
+        &BTreeMap::new(),
     )
 }
 
 /// Exclude the selected output directory from the source digest, including
-/// custom outdir names used by dev sessions and production builds.
+/// custom outdir names used by dev sessions and production builds. A
+/// non-empty `define` map is hashed so SSR and islands tokens both track the
+/// effective `bundle.define` (`--define` included); an empty map leaves the
+/// token unchanged.
 pub fn zudo_react_build_token_with_inputs_and_output(
     project_root: &Path,
     plugin_aliases: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     output_dir: &Path,
+    define: &BTreeMap<String, String>,
 ) -> Result<String> {
     let project_canonical = fs::canonicalize(project_root)?;
     let output_dir = if output_dir.is_absolute() {
@@ -2897,6 +2902,15 @@ pub fn zudo_react_build_token_with_inputs_and_output(
         digest.update([0]);
         digest.update(source.as_bytes());
         digest.update([0]);
+    }
+    if !define.is_empty() {
+        digest.update(b"define\0");
+        for (key, expression) in define {
+            digest.update(key.as_bytes());
+            digest.update([0]);
+            digest.update(expression.as_bytes());
+            digest.update([0]);
+        }
     }
     for (logical, physical) in files {
         digest.update(logical.to_string_lossy().replace('\\', "/").as_bytes());
@@ -5281,6 +5295,7 @@ pub fn bundle_with_session(
         &input.plugin_alias_entries,
         &input.plugin_virtual_modules,
         &input.outdir,
+        &input.define_vars,
     )?;
     let names = input
         .zudo_react_island_names
@@ -13210,13 +13225,48 @@ mod framework_esbuild_flags_tests {
     }
 
     #[test]
+    fn owned_build_token_tracks_define_and_ignores_output_location() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("page.tsx"), "export const page = 1;").unwrap();
+        let token = |out: &Path, define: &BTreeMap<String, String>| {
+            zudo_react_build_token_with_inputs_and_output(project.path(), &[], &[], out, define)
+                .unwrap()
+        };
+        let inside = project.path().join(".zfb-build/a");
+        let empty = BTreeMap::new();
+        assert_eq!(
+            token(&inside, &empty),
+            zudo_react_build_token_with_inputs_and_output(
+                project.path(),
+                &[],
+                &[],
+                &project.path().join("dist"),
+                &empty
+            )
+            .unwrap()
+        );
+        let one = BTreeMap::from([("K".to_string(), "1".to_string())]);
+        let two = BTreeMap::from([("K".to_string(), "2".to_string())]);
+        assert_ne!(token(&inside, &one), token(&inside, &empty));
+        assert_ne!(token(&inside, &one), token(&inside, &two));
+        assert_eq!(token(&inside, &one), token(elsewhere.path(), &one));
+    }
+
+    #[test]
     fn owned_build_token_ignores_selected_custom_output_directory() {
         let project = tempfile::tempdir().unwrap();
         let output = project.path().join("dist-session");
         fs::write(project.path().join("page.tsx"), "export const page = 1;").unwrap();
         let token = || {
-            zudo_react_build_token_with_inputs_and_output(project.path(), &[], &[], &output)
-                .unwrap()
+            zudo_react_build_token_with_inputs_and_output(
+                project.path(),
+                &[],
+                &[],
+                &output,
+                &BTreeMap::new(),
+            )
+            .unwrap()
         };
         let first = token();
         fs::create_dir(&output).unwrap();
@@ -21637,6 +21687,22 @@ mod tests {
         // Manifest's bundle_basename is derived from the on-disk filename
         // — it must reflect the override too.
         assert_eq!(out.manifest.bundle_basename, "bundle-runtime.mjs");
+    }
+
+    /// The dev V8 host and rebundle skip key re-read `bundle_path`, so a
+    /// scratch-dir outdir outside the project is all they need.
+    #[test]
+    fn bundle_path_follows_an_out_of_project_outdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.outdir = scratch.path().join("session-a");
+
+        let out = bundle(input).expect("mock bundle into an out-of-project outdir");
+
+        assert_eq!(out.bundle_path, scratch.path().join("session-a/bundle.mjs"));
+        assert!(out.bundle_path.is_file());
+        assert!(!tmp.path().join(".zfb-build").exists());
     }
 
     #[test]

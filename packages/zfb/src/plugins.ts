@@ -89,6 +89,16 @@ export type ZfbRouteManifest = {
 export type ZfbBuildHookContext = {
   /** Project root — the directory containing `zfb.config.ts`. */
   projectRoot: string;
+  /**
+   * Absolute directory for the plugin's opaque intermediates
+   * (`<scratch root>/plugins`; `<projectRoot>/.zfb-build/plugins` by
+   * default). It is not an importable route location: generated route
+   * modules placed here are not staged into the bundle. zfb does not
+   * create it, so `mkdir(scratchDir, { recursive: true })` and use a
+   * `<scratchDir>/<plugin-name>/` subdirectory. Under `--scratch-dir`,
+   * plugin isolation only holds if the plugin adopts this directory.
+   */
+  scratchDir: string;
   /** Resolved absolute path of the build output directory. */
   outDir: string;
   /** The full loaded `ZfbConfig` (data-only view). */
@@ -150,6 +160,16 @@ export type ZfbDevMiddlewareHandler = (
  */
 export type ZfbDevMiddlewareContext = {
   projectRoot: string;
+  /**
+   * Absolute directory for the plugin's opaque intermediates
+   * (`<scratch root>/plugins`; `<projectRoot>/.zfb-build/plugins` by
+   * default). It is not an importable route location: generated route
+   * modules placed here are not staged into the bundle. zfb does not
+   * create it, so `mkdir(scratchDir, { recursive: true })` and use a
+   * `<scratchDir>/<plugin-name>/` subdirectory. Under `--scratch-dir`,
+   * plugin isolation only holds if the plugin adopts this directory.
+   */
+  scratchDir: string;
   config: import("./config.js").ZfbConfig;
   options: Record<string, unknown>;
   logger: ZfbPluginLogger;
@@ -186,6 +206,16 @@ export type ZfbPreviewMiddlewareHandler = (
  */
 export type ZfbPreviewMiddlewareContext = {
   projectRoot: string;
+  /**
+   * Absolute directory for the plugin's opaque intermediates
+   * (`<scratch root>/plugins`; `<projectRoot>/.zfb-build/plugins` by
+   * default). It is not an importable route location: generated route
+   * modules placed here are not staged into the bundle. zfb does not
+   * create it, so `mkdir(scratchDir, { recursive: true })` and use a
+   * `<scratchDir>/<plugin-name>/` subdirectory. Under `--scratch-dir`,
+   * plugin isolation only holds if the plugin adopts this directory.
+   */
+  scratchDir: string;
   config: import("./config.js").ZfbConfig;
   options: Record<string, unknown>;
   logger: ZfbPluginLogger;
@@ -297,6 +327,16 @@ export type ZfbSetupContext = {
   command: "build" | "dev" | "preview";
   /** Project root — the directory containing `zfb.config.ts`. */
   projectRoot: string;
+  /**
+   * Absolute directory for the plugin's opaque intermediates
+   * (`<scratch root>/plugins`; `<projectRoot>/.zfb-build/plugins` by
+   * default). It is not an importable route location: generated route
+   * modules placed here are not staged into the bundle. zfb does not
+   * create it, so `mkdir(scratchDir, { recursive: true })` and use a
+   * `<scratchDir>/<plugin-name>/` subdirectory. Under `--scratch-dir`,
+   * plugin isolation only holds if the plugin adopts this directory.
+   */
+  scratchDir: string;
   /** The full loaded `ZfbConfig` (data-only view). */
   config: import("./config.js").ZfbConfig;
   /** Plugin-specific options block, copied verbatim from `PluginConfig.options`. */

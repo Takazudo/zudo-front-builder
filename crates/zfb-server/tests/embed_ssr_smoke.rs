@@ -160,6 +160,7 @@ async fn boot_with_plugins_and_host_validation(
         canonical_html_root: None,
         canonical_dist_root: None,
         dev_assets_root: None,
+        dev_dist_seed: true,
         canonical_public_root: None,
     };
     let router = build_router(state);

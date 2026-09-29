@@ -800,6 +800,15 @@ pub struct ServeOpts {
     /// (preview / embed) keeps the single-root `dist_root` mount.
     pub dev_assets_root: Option<PathBuf>,
 
+    /// Whether `zfb dev` may read the prebuilt `dist_root` as a seed
+    /// (issue #3344): the Dev-gated `read_from_dist(dist_root, …)` HTML leg
+    /// of `serve_page` (also the stale-document fallback) and the
+    /// `<dist_root>/assets/` layer behind `dev_assets_root`. `zfb dev` sets
+    /// `false` under a scratch dir, because `dist/` carries whatever define
+    /// the last `zfb build` used. No effect outside [`ServerMode::Dev`];
+    /// every other caller passes `true`.
+    pub dev_dist_seed: bool,
+
     /// Page (HTML) on-disk root used as the page-cache fallback inside
     /// the page handler. Issue #534: this used to alias `dist_root` for
     /// every caller, but in `zfb dev` we must serve dev-rendered HTML
@@ -1067,6 +1076,7 @@ where
         // Issue #1189 — isolated dev-assets root (or `None` for preview /
         // embed). See `ServeOpts::dev_assets_root`.
         dev_assets_root: opts.dev_assets_root.clone(),
+        dev_dist_seed: opts.dev_dist_seed,
         // Issue #534 — see `ServeOpts::html_root` for the dev / preview
         // / embed contract.
         html_root: opts.html_root.clone(),

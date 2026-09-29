@@ -1,0 +1,9 @@
+{
+  "wind": false,
+  "collections": [
+    {
+      "name": "posts",
+      "path": "content/posts"
+    }
+  ]
+}

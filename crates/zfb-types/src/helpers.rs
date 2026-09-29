@@ -158,6 +158,50 @@ pub fn normalize_path_lexical(p: &Path) -> PathBuf {
     out
 }
 
+/// Like [`normalize_path_lexical`], except a `..` directly under a root is
+/// dropped instead of kept (`/..` → `/`), matching the shadow-staging rebase.
+pub fn normalize_path_clamped_at_root(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.file_name().is_some() {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
+/// Canonicalize the longest existing ancestor of `path` and re-append the
+/// missing trailing components. Returns `None` when no ancestor can be
+/// canonicalized. `..` / `.` are collapsed lexically before and after via
+/// [`normalize_path_clamped_at_root`].
+pub fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
+    let normalize = normalize_path_clamped_at_root;
+
+    let mut existing = normalize(path);
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        suffix.push(existing.file_name()?.to_os_string());
+        if !existing.pop() {
+            return None;
+        }
+    }
+    let mut canonical = existing.canonicalize().ok()?;
+    for component in suffix.into_iter().rev() {
+        canonical.push(component);
+    }
+    Some(normalize(&canonical))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -323,5 +367,25 @@ mod tests {
             normalize_path_lexical(&PathBuf::from("/proj/pages/blog/../shared.tsx")),
             PathBuf::from("/proj/pages/shared.tsx")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalize_existing_prefix_resolves_symlinked_ancestor_with_missing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let got = canonicalize_existing_prefix(&link.join("missing/deeper")).unwrap();
+        assert_eq!(got, real.canonicalize().unwrap().join("missing/deeper"));
+    }
+
+    #[test]
+    fn canonicalize_existing_prefix_collapses_dot_dot_in_missing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = canonicalize_existing_prefix(&dir.path().join("a/../b")).unwrap();
+        assert_eq!(got, dir.path().canonicalize().unwrap().join("b"));
     }
 }

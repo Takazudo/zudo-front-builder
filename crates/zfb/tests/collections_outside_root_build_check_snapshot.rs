@@ -39,7 +39,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use zfb::cli::CheckArgs;
+use zfb::cli::{CheckArgs, ScratchDirArg};
 use zfb::commands::check;
 use zfb::config;
 use zfb_build::{
@@ -92,7 +92,12 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
     // ---------------------------------------------------------------
     {
         let _cwd = CwdGuard::enter(&project_root);
-        let result = check::run(&CheckArgs { skip_tsc: true }).await;
+        let result = check::run(&CheckArgs {
+            skip_tsc: true,
+            scratch: ScratchDirArg::default(),
+            define: Default::default(),
+        })
+        .await;
         assert!(
             result.is_ok(),
             "zfb check must pass for an allowOutsideRoot collection: {:?}",

@@ -434,6 +434,11 @@ pub struct AppState {
     /// HASHED assets (the namespaces never collide). `None` (preview /
     /// embed / tests) keeps the historical single-root `dist_root` mount.
     pub dev_assets_root: Option<std::path::PathBuf>,
+    /// Whether Dev may read the prebuilt `dist_root` at all (issue #3344).
+    /// `false` (`zfb dev` under a scratch dir) skips the `read_from_dist`
+    /// seed leg in [`serve_page`] and drops the `<dist_root>/assets/` layer
+    /// behind `dev_assets_root`. No effect outside `ServerMode::Dev`.
+    pub dev_dist_seed: bool,
     /// On-disk page root used as the page-cache fallback in
     /// `serve_page`. `<html_root>/<path>/index.html` and
     /// `<html_root>/<path>` are probed when the in-memory cache misses
@@ -691,10 +696,14 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
     // `zfb build` wiping `dist/` can't 404 dev's stable `/assets/styles.css`.
     // Preview / embed / tests pass `dev_assets_root = None` → single-root
     // mount on `dist/assets/`, byte-identical to before.
+    //
+    // Issue #3344: a scratch-dir dev session (`dev_dist_seed == false`) drops
+    // the `dist/assets/` layer — its hashed files carry another build's define.
     let assets_service = match state.dev_assets_root.as_ref() {
-        Some(dev_assets_root) => {
+        Some(dev_assets_root) if state.dev_dist_seed => {
             ContainedAssetsService::layered(vec![dev_assets_root.join("assets"), dist_assets])
         }
+        Some(dev_assets_root) => ContainedAssetsService::new(dev_assets_root.join("assets")),
         None => ContainedAssetsService::new(dist_assets),
     };
 
@@ -1522,7 +1531,10 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
     // be a redundant second read of the same directory. It is read-only
     // (dev never writes into `dist_root`), so #534's "dev must not clobber
     // the production build output" invariant is preserved.
-    if matches!(state.mode, crate::ServerMode::Dev) {
+    //
+    // Issue #3344: skipped under a scratch dir (`dev_dist_seed == false`),
+    // where `dist/` carries another build's define.
+    if matches!(state.mode, crate::ServerMode::Dev) && state.dev_dist_seed {
         if let Some(bytes) = read_from_dist(
             &state.dist_root,
             &canonical,
@@ -2413,6 +2425,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         }
     }
@@ -2441,6 +2454,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         }
     }
@@ -2664,6 +2678,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         // Cache miss — the fallback must read from html_root.
@@ -2741,6 +2756,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = test_router(state);
@@ -2808,6 +2824,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = test_router(state);
@@ -2980,6 +2997,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = test_router(state);
@@ -3081,6 +3099,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: Some(dev_assets_dir.path().to_path_buf()),
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3141,6 +3160,179 @@ mod tests {
             "isolated dev stylesheet must survive a dist/ wipe (#1189)"
         );
         assert_eq!(body_string(resp).await, "body{color:blue}");
+    }
+
+    /// Issue #3344 — an `AppState` with the dist-seed roots under test and
+    /// every other field inert.
+    fn dist_seed_state(
+        mode: crate::ServerMode,
+        dist_root: &std::path::Path,
+        html_root: &std::path::Path,
+        dev_assets_root: Option<&std::path::Path>,
+        dev_dist_seed: bool,
+    ) -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        AppState {
+            mode,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_root.to_path_buf(),
+            html_root: html_root.to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public-3344"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
+            redirects: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            dev_assets_root: dev_assets_root.map(std::path::Path::to_path_buf),
+            dev_dist_seed,
+            canonical_public_root: None,
+        }
+    }
+
+    /// Issue #3344 — a prebuilt `dist/` the way a past `zfb build` leaves it:
+    /// one HTML route and one hashed stylesheet, both carrying that build's
+    /// define.
+    fn write_prebuilt_dist(dist: &std::path::Path) {
+        std::fs::create_dir_all(dist.join("blog")).unwrap();
+        std::fs::write(
+            dist.join("blog/index.html"),
+            "<html><body>prebuilt-dist-seed</body></html>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("assets/styles-abc123.css"), b"seed{}").unwrap();
+    }
+
+    async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
+        let resp = router
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        (status, body_string(resp).await)
+    }
+
+    /// Issue #3344 — under a scratch dir (`dev_dist_seed: false`) a prebuilt
+    /// `dist/<route>/index.html` is NOT served behind an `html_root` miss: the
+    /// request gets the controlled dev 404. This is also the stale-document
+    /// fallback, so a stale route cannot resurrect another build's define.
+    #[tokio::test]
+    async fn dev_without_dist_seed_does_not_serve_prebuilt_dist_html() {
+        use tempfile::TempDir;
+        let dist_dir = TempDir::new().unwrap();
+        let html_dir = TempDir::new().unwrap();
+        write_prebuilt_dist(dist_dir.path());
+
+        let router = build_router(dist_seed_state(
+            crate::ServerMode::Dev,
+            dist_dir.path(),
+            html_dir.path(),
+            None,
+            false,
+        ));
+        let (status, body) = get(&router, "/blog/").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("404 — page not in cache"), "{body}");
+        assert!(!body.contains("prebuilt-dist-seed"), "{body}");
+
+        // Same tree, seed enabled: today's behavior.
+        let router = build_router(dist_seed_state(
+            crate::ServerMode::Dev,
+            dist_dir.path(),
+            html_dir.path(),
+            None,
+            true,
+        ));
+        let (status, body) = get(&router, "/blog/").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("prebuilt-dist-seed"), "{body}");
+    }
+
+    /// Issue #3344 — under a scratch dir `/assets/*` mounts the dev-assets
+    /// root alone: a hashed `dist/assets/` file 404s while the dev-written
+    /// stylesheet is still served. With the seed enabled both are served.
+    #[tokio::test]
+    async fn dev_without_dist_seed_does_not_serve_dist_assets() {
+        use tempfile::TempDir;
+        let dist_dir = TempDir::new().unwrap();
+        let html_dir = TempDir::new().unwrap();
+        let dev_assets_dir = TempDir::new().unwrap();
+        write_prebuilt_dist(dist_dir.path());
+        std::fs::create_dir_all(dev_assets_dir.path().join("assets")).unwrap();
+        std::fs::write(
+            dev_assets_dir.path().join("assets/styles.css"),
+            b"body{color:blue}",
+        )
+        .unwrap();
+
+        let router = build_router(dist_seed_state(
+            crate::ServerMode::Dev,
+            dist_dir.path(),
+            html_dir.path(),
+            Some(dev_assets_dir.path()),
+            false,
+        ));
+        assert_eq!(
+            get(&router, "/assets/styles.css").await,
+            (StatusCode::OK, "body{color:blue}".to_string())
+        );
+        assert_eq!(
+            get(&router, "/assets/styles-abc123.css").await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        let router = build_router(dist_seed_state(
+            crate::ServerMode::Dev,
+            dist_dir.path(),
+            html_dir.path(),
+            Some(dev_assets_dir.path()),
+            true,
+        ));
+        assert_eq!(
+            get(&router, "/assets/styles.css").await,
+            (StatusCode::OK, "body{color:blue}".to_string())
+        );
+        assert_eq!(
+            get(&router, "/assets/styles-abc123.css").await,
+            (StatusCode::OK, "seed{}".to_string())
+        );
+    }
+
+    /// Issue #3344 — `dev_dist_seed` has no effect outside Dev: a Preview
+    /// server (`html_root == dist_root`, no dev-assets root) serves `dist/`
+    /// HTML and assets either way.
+    #[tokio::test]
+    async fn preview_ignores_dev_dist_seed() {
+        use tempfile::TempDir;
+        let dist_dir = TempDir::new().unwrap();
+        write_prebuilt_dist(dist_dir.path());
+
+        for dev_dist_seed in [true, false] {
+            let router = build_router(dist_seed_state(
+                crate::ServerMode::Preview,
+                dist_dir.path(),
+                dist_dir.path(),
+                None,
+                dev_dist_seed,
+            ));
+            let (status, body) = get(&router, "/blog/").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(body.contains("prebuilt-dist-seed"), "{body}");
+            assert_eq!(
+                get(&router, "/assets/styles-abc123.css").await,
+                (StatusCode::OK, "seed{}".to_string())
+            );
+        }
     }
 
     #[tokio::test]
@@ -3665,6 +3857,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
@@ -3734,6 +3927,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         state
@@ -3784,6 +3978,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         state
@@ -3897,6 +4092,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         }
     }
@@ -5268,6 +5464,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5330,6 +5527,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5394,6 +5592,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5452,6 +5651,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5505,6 +5705,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5562,6 +5763,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -5626,6 +5828,7 @@ mod tests {
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
+            dev_dist_seed: true,
             canonical_public_root: None,
         }
     }

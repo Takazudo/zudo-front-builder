@@ -295,6 +295,7 @@ impl Server {
             // Embed callers serve a single built `dist/assets/` — the
             // isolated dev-assets split only matters in `zfb dev` (#1189).
             dev_assets_root: None,
+            dev_dist_seed: true,
             // Embed callers do not have a separate dev HTML dir — the
             // page-cache disk fallback reads from the same `dist_root`
             // the build pipeline wrote into. The `html_root` /

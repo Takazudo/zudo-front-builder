@@ -25,7 +25,7 @@ use crate::output;
 /// should live for this dev session.
 ///
 /// Defaults to a project-local scratch dir alongside this file's other
-/// `.zfb-build/` scratch roots (`dev_html_root_for`, `dev_assets_root_for`)
+/// `.zfb-build/` scratch roots (`ScratchLayout::dev_pages_root`, `ScratchLayout::dev_assets_root`)
 /// — no `extraWatchPaths` config needed. But the probe's own marker writes
 /// must never be observable by the REAL orchestrator watcher: an overlap
 /// would classify a probe marker as a project change (`PathClass::External`
@@ -44,7 +44,7 @@ use crate::output;
 /// (see the last check below) — the caller must skip the probe entirely
 /// rather than guess.
 pub(super) fn resolve_probe_parent_dir(
-    project_root: &Path,
+    layout: &zfb_types::ScratchLayout,
     effective_watch_targets: &[PathBuf],
 ) -> Option<(PathBuf, bool)> {
     // Canonicalise once: a watch target can itself be a symlink whose REAL
@@ -65,19 +65,16 @@ pub(super) fn resolve_probe_parent_dir(
         .map(|t| canonicalize_or_lexical(t))
         .collect();
 
-    // The candidate side needs the same treatment: `project_root` (or the
+    // The candidate side needs the same treatment: the scratch root (or the
     // OS temp dir) can itself sit behind a symlinked ancestor — e.g. macOS
     // resolves `/tmp` to `/private/tmp` and `/var` to `/private/var`, which
     // is exactly where `std::env::temp_dir()` and many project checkouts
     // live. Comparing a canonical target against a non-canonical candidate
-    // (or vice versa) would silently miss a real overlap, so canonicalise
-    // the base each candidate is built from before joining the scratch
-    // subpath — the base always exists (it's `project_root` /
-    // `std::env::temp_dir()`), so this canonicalisation is expected to
-    // succeed; `canonicalize_or_lexical` falls back to a LEXICAL
-    // `..`-collapse (not the raw base) if it doesn't, keeping the overlap
-    // checks below robust for the same reason as the targets above.
-    let canonical_project_root = canonicalize_or_lexical(project_root);
+    // (or vice versa) would silently miss a real overlap, so each candidate
+    // is canonicalised through its longest existing ancestor (the probe dir
+    // itself may not exist yet); `canonicalize_or_lexical` falls back to a
+    // LEXICAL `..`-collapse (not the raw path) if that fails, keeping the
+    // overlap checks below robust for the same reason as the targets above.
     let temp_dir = std::env::temp_dir();
     let canonical_temp_dir = canonicalize_or_lexical(&temp_dir);
 
@@ -93,12 +90,10 @@ pub(super) fn resolve_probe_parent_dir(
             })
     };
 
-    let default_parent = project_root
-        .join(".zfb-build")
-        .join("watcher-liveness-probe");
-    let canonical_default_parent = canonical_project_root
-        .join(".zfb-build")
-        .join("watcher-liveness-probe");
+    let default_parent = layout.liveness_probe_dir();
+    let canonical_default_parent =
+        zfb_types::helpers::canonicalize_existing_prefix(&default_parent)
+            .unwrap_or_else(|| canonicalize_or_lexical(&default_parent));
     if !overlaps(&default_parent, &canonical_default_parent) {
         return Some((default_parent, false));
     }
@@ -314,7 +309,7 @@ fn react_to_liveness_outcome(
 /// ([`spawn_watcher_liveness_probe`]); a nonzero value exists only for that
 /// test.
 async fn run_watcher_liveness_probe_inner(
-    project_root: PathBuf,
+    layout: zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
     sleep_before: std::time::Duration,
@@ -352,7 +347,7 @@ async fn run_watcher_liveness_probe_inner(
     // issue #1738).
     let handle = tokio::runtime::Handle::current();
     let _ = tokio::task::spawn_blocking(move || {
-        run_watcher_liveness_probe_blocking(&handle, project_root, effective_watch_targets, opts);
+        run_watcher_liveness_probe_blocking(&handle, &layout, effective_watch_targets, opts);
     })
     .await;
 }
@@ -370,12 +365,11 @@ async fn run_watcher_liveness_probe_inner(
 /// nested `block_on`.
 fn run_watcher_liveness_probe_blocking(
     handle: &tokio::runtime::Handle,
-    project_root: PathBuf,
+    layout: &zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
 ) {
-    let Some((parent_dir, _relocated)) =
-        resolve_probe_parent_dir(&project_root, &effective_watch_targets)
+    let Some((parent_dir, _relocated)) = resolve_probe_parent_dir(layout, &effective_watch_targets)
     else {
         tracing::debug!(
             "watcher liveness probe: no isolated scratch location available; skipping this run's self-check"
@@ -461,12 +455,12 @@ fn run_watcher_liveness_probe_blocking(
 /// awaited before the ready banner) and the shutdown wiring that cancels +
 /// awaits the returned handle.
 pub(super) fn spawn_watcher_liveness_probe(
-    project_root: PathBuf,
+    layout: zfb_types::ScratchLayout,
     effective_watch_targets: Vec<PathBuf>,
     opts: zfb_watcher::LivenessOpts,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_watcher_liveness_probe_inner(
-        project_root,
+        layout,
         effective_watch_targets,
         opts,
         std::time::Duration::ZERO,
@@ -486,7 +480,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path().to_path_buf();
 
-        let (parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        let (parent, relocated) =
+            resolve_probe_parent_dir(&zfb_types::ScratchLayout::default_for(&project_root), &[])
+                .unwrap();
 
         assert!(!relocated, "no overlap should never relocate");
         assert!(
@@ -500,6 +496,21 @@ mod tests {
     }
 
     #[test]
+    fn probe_parent_follows_a_session_scratch_root() {
+        let project = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let layout =
+            zfb_types::ScratchLayout::for_scratch_dir(project.path(), scratch.path().to_path_buf());
+
+        let (parent, relocated) =
+            resolve_probe_parent_dir(&layout, &[project.path().join("src")]).unwrap();
+
+        assert!(!relocated);
+        assert_eq!(parent, scratch.path().join("watcher-liveness-probe"));
+        assert!(!parent.starts_with(project.path()));
+    }
+
+    #[test]
     fn probe_parent_relocates_when_it_overlaps_an_extra_watch_path() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path().to_path_buf();
@@ -509,8 +520,11 @@ mod tests {
         // orchestrator's watch set.
         let effective_targets = vec![project_root.clone()];
 
-        let (parent, relocated) =
-            resolve_probe_parent_dir(&project_root, &effective_targets).unwrap();
+        let (parent, relocated) = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &effective_targets,
+        )
+        .unwrap();
 
         assert!(relocated, "an overlapping extraWatchPaths must relocate");
         assert!(
@@ -533,8 +547,11 @@ mod tests {
         let project_root = tmp.path().to_path_buf();
         let effective_targets = vec![project_root.join(".zfb-build")];
 
-        let (_parent, relocated) =
-            resolve_probe_parent_dir(&project_root, &effective_targets).unwrap();
+        let (_parent, relocated) = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &effective_targets,
+        )
+        .unwrap();
 
         assert!(
             relocated,
@@ -557,7 +574,11 @@ mod tests {
         let alias = project_root.join("current");
         std::os::unix::fs::symlink(&project_root, &alias).unwrap();
 
-        let (_parent, relocated) = resolve_probe_parent_dir(&project_root, &[alias]).unwrap();
+        let (_parent, relocated) = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &[alias],
+        )
+        .unwrap();
 
         assert!(
             relocated,
@@ -575,7 +596,10 @@ mod tests {
         let project_root = tmp.path().to_path_buf();
         let effective_targets = vec![project_root.clone(), std::env::temp_dir()];
 
-        let result = resolve_probe_parent_dir(&project_root, &effective_targets);
+        let result = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &effective_targets,
+        );
 
         assert!(
             result.is_none(),
@@ -732,10 +756,10 @@ mod tests {
         let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
         let events_for_probe = Arc::clone(&events);
-        let probe_project_root = project_root.clone();
+        let probe_layout = zfb_types::ScratchLayout::default_for(&project_root);
         let handle = tokio::spawn(async move {
             run_watcher_liveness_probe_inner(
-                probe_project_root,
+                probe_layout,
                 Vec::new(),
                 zfb_watcher::LivenessOpts::default(),
                 std::time::Duration::from_millis(200),
@@ -772,7 +796,7 @@ mod tests {
         let project_root = tmp.path().to_path_buf();
 
         let handle = spawn_watcher_liveness_probe(
-            project_root.clone(),
+            zfb_types::ScratchLayout::default_for(&project_root),
             Vec::new(),
             zfb_watcher::LivenessOpts::new(std::time::Duration::from_secs(10))
                 .with_marker_interval(std::time::Duration::from_millis(100))
@@ -780,7 +804,9 @@ mod tests {
         );
         handle.await.unwrap();
 
-        let (parent_dir, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        let (parent_dir, relocated) =
+            resolve_probe_parent_dir(&zfb_types::ScratchLayout::default_for(&project_root), &[])
+                .unwrap();
         assert!(!relocated);
         assert!(
             parent_dir.exists(),

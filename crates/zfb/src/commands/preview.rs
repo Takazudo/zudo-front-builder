@@ -128,6 +128,15 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         anyhow::bail!("{} does not exist — run zfb build first", outdir.display());
     }
 
+    // Held through both the static and wrangler modes. zfb itself writes
+    // nothing here; wrangler mode needs no layout.
+    let scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &cfg,
+        &outdir,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
+
     // 3. Branch on adapter. `AdapterChoice::from_config` validates the
     //    package-name shape, so a typo in `zfb.config.json` surfaces
     //    here rather than as a confusing wrangler-spawn failure later.
@@ -135,7 +144,9 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .context("invalid adapter in zfb.config.json")?;
 
     match adapter {
-        AdapterChoice::None => run_static(&project_root, &cfg, &outdir, &host, port).await,
+        AdapterChoice::None => {
+            run_static(&project_root, &cfg, &outdir, scratch.layout(), &host, port).await
+        }
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
             // `wrangler dev` serves whatever the project's wrangler config
             // names (`main` + `[assets].directory`) — unlike the old
@@ -190,6 +201,7 @@ async fn run_static(
     project_root: &Path,
     cfg: &config::Config,
     dist_root: &Path,
+    scratch: &zfb_types::ScratchLayout,
     host: &str,
     port: u16,
 ) -> Result<()> {
@@ -216,13 +228,20 @@ async fn run_static(
     let plugin_host = crate::commands::plugins::maybe_spawn_host(cfg).await?;
     let cfg_json = serde_json::to_value(cfg)
         .context("plugin lifecycle: serialise config for preview setup ctx")?;
-    zfb_build::run_preview_setup(plugin_host.as_ref(), project_root, &cfg_json)
-        .await
-        .context("preview setup lifecycle hook")?;
+    let plugin_scratch_dir = scratch.plugin_scratch_dir();
+    zfb_build::run_preview_setup(
+        plugin_host.as_ref(),
+        project_root,
+        &plugin_scratch_dir,
+        &cfg_json,
+    )
+    .await
+    .context("preview setup lifecycle hook")?;
     let plugin_set = if let Some(h) = plugin_host.as_ref() {
         crate::commands::plugins::build_dev_middleware_set(
             h,
             project_root,
+            &plugin_scratch_dir,
             cfg,
             ServerMode::Preview,
         )

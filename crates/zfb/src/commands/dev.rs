@@ -503,6 +503,27 @@ pub(crate) fn resolve_roots(project_root: &Path, cfg: &config::Config) -> Resolv
     }
 }
 
+/// Every authored watch root as an absolute path: in-root relative roots
+/// joined to the project root, out-of-root collection roots, and
+/// `extraWatchPaths` — including entries missing on disk, which dev still
+/// watches once they appear. Consumed by scratch-dir validation (R5) so all
+/// four commands apply the same overlap rule; the validator canonicalizes.
+pub(crate) fn authored_watch_roots(project_root: &Path, cfg: &config::Config) -> Vec<PathBuf> {
+    let roots = resolve_roots(project_root, cfg);
+    let mut out: Vec<PathBuf> = roots
+        .relative_watch_roots()
+        .iter()
+        .map(|r| project_root.join(r))
+        .collect();
+    out.extend(roots.out_of_root_watch_roots().iter().cloned());
+    out.extend(
+        cfg.extra_watch_paths
+            .iter()
+            .map(|p| crate::commands::resolve::resolve_under_root(project_root, p)),
+    );
+    out
+}
+
 /// Compute which derived watch roots + `extraWatchPaths` targets are
 /// absent from disk at boot (issue #1391).
 ///
@@ -1278,14 +1299,35 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
 
-    let cfg = config::load_from_dir(&project_root)
+    let mut cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    config::apply_define_overrides(&mut cfg, &args.define.define);
 
     // Configured `outDir` is dev's read-only production seed; live dev HTML
     // and assets use the isolated scratch roots established below.
     let dist_root = resolve_under_root(&project_root, &cfg.out_dir);
     let public_root = resolve_under_root(&project_root, &cfg.public_dir);
+
+    // Held until `run` returns: an explicit scratch dir stays locked for the
+    // whole session.
+    let scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &cfg,
+        &dist_root,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
+    let scratch_layout = scratch.layout().clone();
+    // Issue #3344 — every dev read of the prebuilt `outDir` goes through this
+    // one value; a scratch-dir session never reads it.
+    let dist_seed = dist_seed_for(&scratch_layout, &dist_root);
+    if dist_seed.is_none() {
+        output::info(format!(
+            "scratch dir in use ({}): ignoring prebuilt {} — no dist/ fallback for HTML or /assets",
+            scratch_layout.root().display(),
+            dist_root.display(),
+        ));
+    }
 
     if !dist_root.exists() {
         std::fs::create_dir_all(&dist_root)
@@ -1319,29 +1361,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // `public_root` (#1390) so a live `public/` edit is never shadowed by
     // a stale build copy. The seed self-heals for HTML routes: once dev
     // renders a route into `dev_html_root`, the fresh bytes win.
-    let dev_html_root = dev_html_root_for(&project_root);
-    // Guard against a pathological `outDir` (`.zfb-build/dev-pages`,
-    // its parent, or anything that overlaps): when the dev HTML root
-    // collides with `dist_root` we are back to the #534 condition and
-    // dev's per-route writes corrupt `pnpm preview`'s output. Refuse
-    // to start with a clear error so the user can pick a non-colliding
-    // `outDir`.
-    if dev_html_root == dist_root
-        || dev_html_root.starts_with(&dist_root)
-        || dist_root.starts_with(&dev_html_root)
-    {
-        anyhow::bail!(
-            "zfb dev: configured `outDir` ({}) overlaps with the dev HTML \
-             scratch root ({}). Pick an `outDir` outside `.zfb-build/` \
-             (the default `dist/` is fine) — otherwise dev's per-route \
-             HTML writes would corrupt the production build output.",
-            dist_root.display(),
-            dev_html_root.display(),
-        );
-    }
+    let scratch_paths = DevScratchPaths::resolve(&scratch_layout, &dist_root)?;
     // Keep the guard alive until server/tasks have shut down. No startup,
     // including a failed bind, can delete another session's documents.
-    let dev_html_session = create_dev_html_session(&dev_html_root)?;
+    let dev_html_session = create_dev_html_session(&scratch_paths.dev_pages_parent)?;
     let dev_html_root = dev_html_session.path().to_path_buf();
 
     // Issue #1189 — dev's STABLE served assets (`styles.css`, `islands.js`,
@@ -1353,22 +1376,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // them to an isolated `.zfb-build/dev-assets/` dir instead (mirroring
     // the #534 dev-HTML isolation); the router serves `/assets/*` from there
     // first and falls back to `dist/assets/` for a boot-lazy prebuilt seed.
-    let dev_assets_root = dev_assets_root_for(&project_root);
-    // Symmetric guard to the dev-HTML one above: a pathological `outDir`
-    // that overlaps the dev-assets scratch root re-creates the clobber.
-    if dev_assets_root == dist_root
-        || dev_assets_root.starts_with(&dist_root)
-        || dist_root.starts_with(&dev_assets_root)
-    {
-        anyhow::bail!(
-            "zfb dev: configured `outDir` ({}) overlaps with the dev asset \
-             scratch root ({}). Pick an `outDir` outside `.zfb-build/` \
-             (the default `dist/` is fine) — otherwise a one-off `zfb build` \
-             would clobber the dev-served `/assets/styles.css`.",
-            dist_root.display(),
-            dev_assets_root.display(),
-        );
-    }
+    let dev_assets_root = scratch_paths.dev_assets_root.clone();
     if !dev_assets_root.exists() {
         std::fs::create_dir_all(&dev_assets_root).with_context(|| {
             format!(
@@ -1405,6 +1413,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let plugin_setup = crate::commands::plugins::run_plugin_setup(
         &plugin_host,
         &project_root,
+        &scratch_layout.plugin_scratch_dir(),
         &cfg,
         zfb_build::SetupCommand::Dev,
     )
@@ -1418,6 +1427,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: dist_root.clone(),
+            scratch_dir: scratch_layout.plugin_scratch_dir(),
             config: serde_json::to_value(&cfg)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
             // dev mode: routes always absent on preBuild (no manifest yet).
@@ -1434,6 +1444,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         crate::commands::plugins::build_dev_middleware_set(
             h,
             &project_root,
+            &scratch_layout.plugin_scratch_dir(),
             &cfg,
             zfb_server::ServerMode::Dev,
         )
@@ -1502,7 +1513,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let defer_dev_bundle = defer_dev_bundle_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
-        dist_is_servable_seed(&dist_root),
+        dist_seed.as_deref().is_some_and(dist_is_servable_seed),
         std::env::var("ZFB_DEV_DEFER_BUNDLE").ok().as_deref(),
     );
 
@@ -1533,6 +1544,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let dev_session = match boot_dev_renderer(
         &project_root,
         &cfg,
+        scratch_paths.bundle_outdir.clone(),
         // #1550 — the per-collection resolved roots the renderer's content
         // sites (frontmatter-hash seeding, tick narrowing, created-file
         // discovery) key on; canonical for out-of-root collections.
@@ -1626,7 +1638,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // collections (#1550) are NOT here — they ride the extras channel below
     // and are folded into the digest via `manifest_digest_roots`.
     let watch_roots: Vec<PathBuf> = root_inventory.relative_watch_roots().to_vec();
-    let graph_cache_path = project_root.join(".zfb").join("graph.bin");
+    let graph_cache_path = scratch_paths.graph_bin.clone();
 
     // The graph starts EMPTY. The deferred task (step 7) loads the
     // persisted graph (if the digest matches) and seeds it from
@@ -2180,11 +2192,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .map(|root| project_root.join(root))
         .chain(extra_watch_paths.iter().cloned())
         .collect();
-    // `project_root` itself is moved into `ServeOpts` further down (see
-    // `spawn_redirects_watch`'s neighbouring comment), well before the
-    // probe is spawned — snapshot the clone the probe needs now, while
-    // it's still cheap and available.
-    let probe_project_root = project_root.clone();
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
     // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
@@ -2214,14 +2221,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // watch-arm reconcile must never report their files as user edits.
     // `outDir` is left out when it would swallow the project (`outDir: "."`).
     raw_import_invalidation.set_zfb_written_roots(
-        [
-            project_root.join(".zfb"),
-            project_root.join(".zfb-build"),
-            dev_html_root.clone(),
-            dev_assets_root.clone(),
-        ]
-        .into_iter()
-        .chain((!project_root.starts_with(&dist_root)).then(|| dist_root.clone())),
+        scratch_layout
+            .written_roots()
+            .into_iter()
+            .chain([dev_html_root.clone(), dev_assets_root.clone()])
+            .chain((!project_root.starts_with(&dist_root)).then(|| dist_root.clone())),
     );
     // Issue #2168 — populate the plugin watch-file registry ONCE, here at
     // boot. Unlike the client-script / islands sets this same
@@ -2474,6 +2478,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
+    // The session's scratch roots join the CSS source plan's exclusions.
+    let css_zfb_written_roots = scratch_layout.written_roots();
     let boot_css_result = build_dev_css_and_publish_mirror_roots(
         &project_root,
         &dev_assets_root,
@@ -2482,6 +2488,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &islands_plugin_config.alias_entries,
         &islands_plugin_config.virtual_modules,
         &raw_import_invalidation,
+        &css_zfb_written_roots,
         &mut wind_session_index.lock().unwrap_or_else(|p| p.into_inner()),
         None,
     )
@@ -2530,6 +2537,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // pass uses above, so every CSS rebuild tick (not just boot) keeps
         // the dev-watch registration's source plan current.
         let raw_import_invalidation_for_css = raw_import_invalidation.clone();
+        let css_zfb_written_roots_for_css = css_zfb_written_roots.clone();
         let wind_session_index_for_css = Arc::clone(&wind_session_index);
         Some(Arc::new(move |request: &CssPassRequest| -> Result<bool> {
             if !css_pass_request_should_build(request) {
@@ -2554,6 +2562,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &plugin_alias_entries_for_css,
                 &plugin_virtual_modules_for_css,
                 &raw_import_invalidation_for_css,
+                &css_zfb_written_roots_for_css,
                 &mut wind_session,
                 Some(&request.changes),
             )?;
@@ -2931,6 +2940,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // needs `project_root` + the digest roots), loads + seeds the graph, and
     // runs the boot render against `dev_session`.
     let project_root_for_boot = project_root.clone();
+    let cli_define_for_boot = args.define.define.clone();
     // #1550 — the digest walks the in-root relative roots PLUS the canonical
     // out-of-root roots. Routing out-of-root content through the extras
     // channel removed it from `watch_roots`, so without folding it back in
@@ -2941,10 +2951,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_for_seed = Arc::clone(&graph_for_save);
     let graph_cache_path_for_boot = graph_cache_path.clone();
     let manifest_digest_slot_for_boot = Arc::clone(&manifest_digest_slot);
-    let dist_root_for_boot = dist_root.clone();
+    let dist_seed_for_boot = dist_seed.clone();
     // Issue #1189: the deferred boot's islands rebundle writes to the
-    // isolated dev-assets root (NOT `dist_root_for_boot`, which `run_boot_render`
-    // still needs as the real `dist/` for its servable-seed check).
+    // isolated dev-assets root (NOT `dist_seed_for_boot`, the real `dist/` —
+    // or `None` under a scratch dir — for `run_boot_render`'s servable-seed
+    // check).
     let dev_assets_root_for_boot = dev_assets_root.clone();
     // Issue #1170 — the deferred boot task also runs the eager islands
     // bundle (the last size-bound step that used to gate the bind). Clone
@@ -3082,6 +3093,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // prebuilt seed's hashed assets. `dist_root` above stays the real
         // `dist/` so the seed fallback and `dist_is_servable_seed` still work.
         dev_assets_root: Some(dev_assets_root.clone()),
+        // Issue #3344 — `false` under a scratch dir: no `dist/` HTML seed
+        // leg and no `dist/assets` layer behind `dev_assets_root`.
+        dev_dist_seed: dist_seed.is_some(),
         // Issue #534 — point the page-cache disk fallback at the dev
         // HTML dir, not the project's `outDir`. With `dist_root` here
         // (the historical wiring) the dev server's `read_from_dist`
@@ -3445,8 +3459,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
 
             // 2. Manifest digest — the size-bound walk moved past bind.
-            let manifest_digest =
-                compute_manifest_digest(&project_root_for_boot, &digest_watch_roots);
+            let manifest_digest = compute_manifest_digest(
+                &project_root_for_boot,
+                &digest_watch_roots,
+                &cli_define_for_boot,
+            );
 
             // 3+4. Load the persisted graph (digest-gated) and assemble the
             //      boot graph under a single lock acquisition.
@@ -3502,7 +3519,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 orchestrator,
                 ctx,
                 dev_session_for_boot.as_ref(),
-                &dist_root_for_boot,
+                dist_seed_for_boot.as_deref(),
             );
             if !document_routes_usable {
                 boot_render.boundary = BootDocumentBoundary::Failed;
@@ -3726,7 +3743,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // the default 10s deadline alone can false-positive at the maximum
     // configured poll interval.
     let liveness_probe_handle = spawn_watcher_liveness_probe(
-        probe_project_root,
+        scratch_layout.clone(),
         probe_effective_watch_targets,
         liveness_opts_for_backend(watch_backend_from_config(&cfg)),
     );
@@ -4286,7 +4303,7 @@ fn run_boot_render(
     orchestrator: &BuildOrchestrator<DevAssetPipeline>,
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
-    dist_root: &Path,
+    dist_seed: Option<&Path>,
 ) -> BootRenderResult {
     let mode = dev_session
         .map(|s| {
@@ -4313,7 +4330,7 @@ fn run_boot_render(
     // cheap placeholder: `should_hint_cold_mode` below is
     // `Auto && !dist_servable`, so it never reads this outside Auto.
     let dist_servable = match mode {
-        BootLazyMode::Auto => dist_is_servable_seed(dist_root),
+        BootLazyMode::Auto => dist_seed.is_some_and(dist_is_servable_seed),
         BootLazyMode::Cold | BootLazyMode::Off => false,
     };
     let boot_lazy = mode.is_active() && (mode == BootLazyMode::Cold || dist_servable);
@@ -4482,7 +4499,39 @@ pub async fn run(_args: &DevArgs) -> Result<()> {
 /// denied while walking sources). On `None` the caller should bypass
 /// the persistence layer entirely — never falsely reuse a stale
 /// graph.
-fn compute_manifest_digest(project_root: &Path, watch_roots: &[PathBuf]) -> Option<ManifestDigest> {
+/// Fold the `--define` override list into the persisted-graph digest.
+/// Config-authored defines are already covered by the `zfb.config.*` bytes;
+/// the CLI list lives outside them. An empty list leaves the digest
+/// byte-identical, and the scratch-dir location never enters the hash.
+fn fold_cli_define_into_digest(
+    digest: ManifestDigest,
+    cli_define: &[(String, String)],
+) -> ManifestDigest {
+    if cli_define.is_empty() {
+        return digest;
+    }
+    let effective: std::collections::BTreeMap<&str, &str> = cli_define
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(digest.as_hex().as_bytes());
+    hasher.update(b"cli-define\0");
+    for (k, v) in effective {
+        hasher.update(k.as_bytes());
+        hasher.update([0]);
+        hasher.update(v.as_bytes());
+        hasher.update([0]);
+    }
+    ManifestDigest::from_bytes(hasher.finalize().into())
+}
+
+fn compute_manifest_digest(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+    cli_define: &[(String, String)],
+) -> Option<ManifestDigest> {
     // Config files that, when changed, must invalidate the graph
     // even though they live next to (not under) the watched roots.
     // Both JSON and TS are listed; missing ones are silently
@@ -4492,7 +4541,7 @@ fn compute_manifest_digest(project_root: &Path, watch_roots: &[PathBuf]) -> Opti
         PathBuf::from("zfb.config.ts"),
     ];
     match ManifestDigest::compute(project_root, watch_roots, &cfg_files) {
-        Ok(d) => Some(d),
+        Ok(d) => Some(fold_cli_define_into_digest(d, cli_define)),
         Err(err) => {
             output::warn(format!(
                 "graph persistence: manifest digest failed (cache disabled): {err:#}"
@@ -4690,6 +4739,7 @@ fn build_dev_css_and_publish_mirror_roots(
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     raw_import_invalidation: &zfb_build::RawImportInvalidation,
+    zfb_written_roots: &[PathBuf],
     wind_session_index: &mut Option<crate::commands::build::WindSessionIndex>,
     changes: Option<&zfb_build::CssChangeSet>,
 ) -> Result<Option<AssetEmitterPayload>> {
@@ -4711,6 +4761,7 @@ fn build_dev_css_and_publish_mirror_roots(
         plugin_alias_entries,
         plugin_virtual_modules,
         &|roots| raw_import_invalidation.replace_css_mirror_roots(roots.to_vec()),
+        zfb_written_roots,
         wind_session_index,
         changes,
     )?;
@@ -5429,6 +5480,16 @@ fn resolve_defer_bundle(var: Option<&str>) -> bool {
     }
 }
 
+/// Issue #3344 — the prebuilt `outDir` dev may read as a seed, or `None`
+/// under a scratch dir: `dist/` carries whatever define the last `zfb build`
+/// used, so a session layout must never serve or probe it.
+pub(crate) fn dist_seed_for(
+    layout: &zfb_types::ScratchLayout,
+    dist_root: &Path,
+) -> Option<PathBuf> {
+    (!layout.is_session()).then(|| dist_root.to_path_buf())
+}
+
 /// Freshness gate for boot-lazy's Auto mode (issue #1057): is `dist_root` a
 /// prebuilt site we can safely serve immediately as the cold seed?
 ///
@@ -5981,6 +6042,8 @@ struct DevRouteTables {
 #[cfg(feature = "embed_v8")]
 struct DevRebuildInputs {
     cfg: config::Config,
+    /// SSR bundle output dir (`ScratchLayout::bundle_outdir`).
+    bundle_outdir: PathBuf,
     /// Boot-time BASELINE hooks — aliases (which never change after setup)
     /// plus each registered specifier's plugin-name/shape. Never read
     /// directly for a tick restart; see [`Self::live_v8_plugin_hooks`].
@@ -7711,6 +7774,7 @@ impl DevRenderSession {
             });
             assemble_and_bundle_dev(
                 project_root,
+                &inputs.bundle_outdir,
                 &inputs.cfg,
                 inputs.plugin_alias_entries.clone(),
                 inputs.plugin_virtual_modules(),
@@ -8710,9 +8774,10 @@ struct AssembledBundleResult {
 /// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
 /// calls are made (zero overhead on the hot path).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 10 params: #1518 added empty_user_pages_root, #3021 added injected_route_entrypoints; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
+#[allow(clippy::too_many_arguments)] // 11 params: #3341 added bundle_outdir, #1518 added empty_user_pages_root, #3021 added injected_route_entrypoints; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
 fn assemble_and_bundle_dev(
     project_root: &Path,
+    bundle_outdir: &Path,
     cfg: &config::Config,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
@@ -8794,6 +8859,7 @@ fn assemble_and_bundle_dev(
         _esbuild_handle: _embedded_esbuild_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
+        bundle_outdir,
         cfg,
         BundleMode::Development,
         crate::commands::bundler_input::CssModuleFailMode::WarnAndEmpty,
@@ -8849,6 +8915,10 @@ fn assemble_and_bundle_dev(
 }
 
 /// Compute the Phase-B skip key for a single dev refresh tick (issue #940).
+///
+/// Per process, and the hashed bundle bytes already contain any substituted
+/// `--define` / `bundle.define` value, so the define map needs no separate
+/// input here.
 ///
 /// The key is a SHA-256 digest of:
 ///
@@ -9510,10 +9580,12 @@ fn ensure_dev_routes_available(
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 9 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); #2168 added plugin_refresh (the shared refresh state stashed onto DevRebuildInputs); a struct would just shuffle the same threaded fields
+#[allow(clippy::too_many_arguments)] // 10 params: #3343 added bundle_outdir; #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); #2168 added plugin_refresh (the shared refresh state stashed onto DevRebuildInputs); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
+    // SSR bundle outdir from the session's `ScratchLayout`.
+    bundle_outdir: PathBuf,
     // #1550 — per-collection resolved absolute roots, index-aligned with
     // `cfg.collections` (canonical for out-of-root collections). Stored on
     // the session so the frontmatter-hash seed, tick-narrowing, and
@@ -9668,6 +9740,7 @@ fn boot_dev_renderer(
     // cheap relative to a bundle (a few small Vecs + the config).
     let rebuild_inputs = DevRebuildInputs {
         cfg: cfg.clone(),
+        bundle_outdir,
         v8_plugin_hooks: v8_plugin_hooks.clone(),
         plugin_alias_entries: plugin_alias_entries.clone(),
         // Issue #2168 — replaces the old `plugin_virtual_modules:
@@ -9806,6 +9879,7 @@ fn boot_dev_renderer(
         let read_since = zfb_build::ssr_read_start();
         let assembled = assemble_and_bundle_dev(
             project_root,
+            &rebuild_inputs.bundle_outdir,
             cfg,
             plugin_alias_entries,
             plugin_virtual_modules,
@@ -10445,23 +10519,67 @@ fn seed_frontmatter_hashes(
     hashes
 }
 
-/// Per-route HTML output directory for the dev pipeline (issue #534).
+/// Every scratch path a dev session writes, taken from one [`ScratchLayout`]
+/// so a `--scratch-dir` session never touches the default `.zfb-build/` or
+/// `.zfb/graph.bin`. The watcher-liveness probe takes the layout directly
+/// (`resolve_probe_parent_dir`).
 ///
-/// Dev's renderer writes one file per route on each tick (initial scan
-/// and every watcher rebuild). Until #534, these writes landed in the
-/// project's `outDir` (`dist/`), silently overwriting the production
-/// HTML produced by a prior `pnpm build` — stripping the prod-only
-/// `<link rel="stylesheet">` / islands `<script type="module">` head
-/// injections and breaking subsequent `pnpm preview`.
-///
-/// Dev now writes to a session directory under `<project_root>/.zfb-build/dev-pages/`. This sits
-/// under the existing `.zfb-build/` intermediate directory (already
-/// `.gitignore`d by the project templates) and is read back by
-/// `DevRenderSession::render_one_with` to populate the in-memory
-/// `PageCache`. End users of the dev server are unaffected — page
-/// lookups are URL-keyed and never touch this path.
-fn dev_html_root_for(project_root: &Path) -> PathBuf {
-    project_root.join(".zfb-build").join("dev-pages")
+/// [`ScratchLayout`]: zfb_types::ScratchLayout
+#[derive(Debug)]
+struct DevScratchPaths {
+    /// SSR bundle outdir (`bundle.mjs`), threaded into `DevRebuildInputs`.
+    bundle_outdir: PathBuf,
+    /// Parent of the per-process `session-*` dev HTML dir (#534).
+    dev_pages_parent: PathBuf,
+    /// Isolated dev-served assets root (#1189).
+    dev_assets_root: PathBuf,
+    graph_bin: PathBuf,
+}
+
+impl DevScratchPaths {
+    fn resolve(layout: &zfb_types::ScratchLayout, dist_root: &Path) -> Result<Self> {
+        let overlaps = |root: &Path| {
+            root == dist_root || root.starts_with(dist_root) || dist_root.starts_with(root)
+        };
+        let dev_pages_parent = layout.dev_pages_root();
+        // Guard against a pathological `outDir` (`.zfb-build/dev-pages`,
+        // its parent, or anything that overlaps): when the dev HTML root
+        // collides with `dist_root` we are back to the #534 condition and
+        // dev's per-route writes corrupt `pnpm preview`'s output. Refuse
+        // to start with a clear error so the user can pick a non-colliding
+        // `outDir`.
+        if overlaps(&dev_pages_parent) {
+            anyhow::bail!(
+                "zfb dev: configured `outDir` ({}) overlaps with the dev HTML \
+                 scratch root ({}). Pick an `outDir` outside `{}/` \
+                 (the default `dist/` is fine) — otherwise dev's per-route \
+                 HTML writes would corrupt the production build output.",
+                dist_root.display(),
+                dev_pages_parent.display(),
+                layout.root().display(),
+            );
+        }
+        let dev_assets_root = layout.dev_assets_root();
+        // Symmetric guard to the dev-HTML one above: a pathological `outDir`
+        // that overlaps the dev-assets scratch root re-creates the clobber.
+        if overlaps(&dev_assets_root) {
+            anyhow::bail!(
+                "zfb dev: configured `outDir` ({}) overlaps with the dev asset \
+                 scratch root ({}). Pick an `outDir` outside `{}/` \
+                 (the default `dist/` is fine) — otherwise a one-off `zfb build` \
+                 would clobber the dev-served `/assets/styles.css`.",
+                dist_root.display(),
+                dev_assets_root.display(),
+                layout.root().display(),
+            );
+        }
+        Ok(Self {
+            bundle_outdir: layout.bundle_outdir(),
+            dev_pages_parent,
+            dev_assets_root,
+            graph_bin: layout.graph_bin(),
+        })
+    }
 }
 
 /// Each dev process gets fresh output, leaving old/active sessions untouched.
@@ -10477,24 +10595,6 @@ fn create_dev_html_session(parent: &Path) -> Result<tempfile::TempDir> {
                 parent.display()
             )
         })
-}
-
-/// The isolated directory `zfb dev` writes its STABLE served assets into
-/// (issue #1189) — `styles.css`, `islands.js`, island chunks, and
-/// `client/*.js`. Its `assets/` subdir is mounted at `/assets/` FIRST,
-/// with the project's `dist/assets/` as a fallback (for a boot-lazy
-/// prebuilt seed's hashed assets).
-///
-/// Why a separate dir, mirroring [`dev_html_root_for`]: dev used to write
-/// these stable assets straight into the project's `outDir` (`dist/`),
-/// which `zfb build` shares. A one-off `zfb build` against the live `dist/`
-/// wipes it and emits HASHED-only assets, so the dev-served
-/// `/assets/styles.css` 404s and the site goes unstyled with no self-heal.
-/// Writing dev's assets under `.zfb-build/` (already `.gitignore`d) takes
-/// them out of the build's write set entirely — the same fix #534 applied
-/// to dev HTML, now for assets.
-fn dev_assets_root_for(project_root: &Path) -> PathBuf {
-    project_root.join(".zfb-build").join("dev-assets")
 }
 
 /// `true` when one of the edited entry's slug candidates appears among a
@@ -11425,6 +11525,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             renderer,
             project_root,
             rebuild_inputs: DevRebuildInputs {
+                bundle_outdir: PathBuf::new(),
                 cfg: config::Config::default(),
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
@@ -11612,6 +11713,7 @@ mod tests {
             &[],
             &[],
             &invalidation,
+            &zfb_types::ScratchLayout::default_for(&project).written_roots(),
             &mut session,
             None,
         )
@@ -11650,6 +11752,7 @@ mod tests {
                         &[],
                         &[],
                         &invalidation,
+                        &zfb_types::ScratchLayout::default_for(&project).written_roots(),
                         &mut session.lock().unwrap(),
                         Some(&request.changes),
                     )?;
@@ -11709,6 +11812,7 @@ mod tests {
                 &[],
                 &[],
                 &|_| {},
+                &zfb_types::ScratchLayout::default_for(&project).written_roots(),
             )
             .unwrap()
             .payload
@@ -11834,6 +11938,7 @@ mod tests {
                 &[],
                 &[],
                 &invalidation,
+                &zfb_types::ScratchLayout::default_for(dir.path()).written_roots(),
                 &mut session,
                 None,
             );
@@ -11884,6 +11989,7 @@ mod tests {
                 &[],
                 &[],
                 &invalidation,
+                &zfb_types::ScratchLayout::default_for(dir.path()).written_roots(),
                 session,
                 changes,
             )
@@ -11949,6 +12055,7 @@ mod tests {
                 &[],
                 &[],
                 &invalidation,
+                &zfb_types::ScratchLayout::default_for(&project).written_roots(),
                 &mut session,
                 None,
             );
@@ -12022,6 +12129,7 @@ mod tests {
                 &[],
                 &[],
                 &invalidation,
+                &zfb_types::ScratchLayout::default_for(&project).written_roots(),
                 &mut session,
                 Some(&changes),
             )
@@ -12047,6 +12155,7 @@ mod tests {
             &[],
             &[],
             invalidation,
+            &zfb_types::ScratchLayout::default_for(project).written_roots(),
             session,
             Some(changes),
         )
@@ -12194,6 +12303,7 @@ mod tests {
             &[],
             &[],
             &|_| {},
+            &zfb_types::ScratchLayout::default_for(&project).written_roots(),
         )
         .unwrap()
         .payload
@@ -12500,6 +12610,7 @@ mod tests {
             &[],
             &[],
             &|_| {},
+            &zfb_types::ScratchLayout::default_for(project).written_roots(),
         )
         .unwrap()
         .payload;
@@ -13682,7 +13793,9 @@ mod tests {
         let project_root = tmp.path().to_path_buf();
         let watch_roots = derive_watch_roots(&config::Config::default());
 
-        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&zfb_types::ScratchLayout::default_for(&project_root), &[])
+                .unwrap();
         assert!(!relocated, "no overlap must never relocate");
 
         let surface = real_watch_surface(&project_root, &watch_roots, &[]);
@@ -13706,8 +13819,11 @@ mod tests {
         let watch_roots = derive_watch_roots(&config::Config::default());
         let extra_watch_paths = vec![project_root.clone()];
 
-        let (probe_parent, relocated) =
-            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        let (probe_parent, relocated) = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &extra_watch_paths,
+        )
+        .unwrap();
         assert!(
             relocated,
             "an extraWatchPaths entry covering the project root must relocate"
@@ -13779,7 +13895,9 @@ mod tests {
             PanicsOnApplyPipeline,
         );
 
-        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&zfb_types::ScratchLayout::default_for(&project_root), &[])
+                .unwrap();
         assert!(!relocated);
         let session_dir = probe_parent.join(unique_probe_session_dir_name());
         let lock_path = session_dir.join(".owner.lock");
@@ -13851,8 +13969,11 @@ mod tests {
         let watch_roots = derive_watch_roots(&config::Config::default());
         let extra_watch_paths = vec![project_root.clone()];
 
-        let (probe_parent, relocated) =
-            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        let (probe_parent, relocated) = resolve_probe_parent_dir(
+            &zfb_types::ScratchLayout::default_for(&project_root),
+            &extra_watch_paths,
+        )
+        .unwrap();
         assert!(
             relocated,
             "an extraWatchPaths entry covering the project root must relocate"
@@ -14003,6 +14124,7 @@ mod tests {
             renderer: Arc::new(Mutex::new(None)),
             project_root,
             rebuild_inputs: DevRebuildInputs {
+                bundle_outdir: PathBuf::new(),
                 cfg,
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
@@ -15305,6 +15427,27 @@ mod tests {
     /// external-content edit must change the digest — otherwise a stale
     /// `.zfb/graph.bin` could be reused after an out-of-tree content change.
     #[test]
+    fn cli_define_folds_into_manifest_digest_deterministically() {
+        let base = ManifestDigest::from_bytes([3u8; 32]);
+        let one = vec![("K".to_string(), "1".to_string())];
+        let two = vec![("K".to_string(), "2".to_string())];
+        assert_eq!(fold_cli_define_into_digest(base.clone(), &[]), base);
+        let d1 = fold_cli_define_into_digest(base.clone(), &one);
+        assert_ne!(d1, base);
+        assert_eq!(d1, fold_cli_define_into_digest(base.clone(), &one));
+        assert_ne!(d1, fold_cli_define_into_digest(base.clone(), &two));
+        let ab = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ];
+        let ba = vec![ab[1].clone(), ab[0].clone()];
+        assert_eq!(
+            fold_cli_define_into_digest(base.clone(), &ab),
+            fold_cli_define_into_digest(base, &ba)
+        );
+    }
+
+    #[test]
     fn manifest_digest_changes_on_external_content_edit() {
         let base = tempfile::tempdir().unwrap();
         let base = base.path().canonicalize().unwrap();
@@ -15322,10 +15465,10 @@ mod tests {
             "digest roots must include the canonical out-of-root dir"
         );
 
-        let d1 = compute_manifest_digest(&project_root, &roots).expect("digest 1");
+        let d1 = compute_manifest_digest(&project_root, &roots, &[]).expect("digest 1");
         // Length-changing edit guarantees a different (mtime+len) fingerprint.
         std::fs::write(&post, "aa-changed").unwrap();
-        let d2 = compute_manifest_digest(&project_root, &roots).expect("digest 2");
+        let d2 = compute_manifest_digest(&project_root, &roots, &[]).expect("digest 2");
         assert_ne!(
             d1, d2,
             "editing an out-of-root collection file must flip the manifest digest"
@@ -15533,7 +15676,7 @@ mod tests {
     #[test]
     fn dev_html_sessions_isolate_old_and_active_output() {
         let root = tempfile::tempdir().unwrap();
-        let parent = dev_html_root_for(root.path());
+        let parent = zfb_types::ScratchLayout::default_for(root.path()).dev_pages_root();
         std::fs::create_dir_all(&parent).unwrap();
         std::fs::write(parent.join("index.html"), "old process").unwrap();
         let first = create_dev_html_session(&parent).unwrap();
@@ -15564,7 +15707,7 @@ mod tests {
     #[test]
     fn dev_html_root_lives_under_dot_zfb_build_not_outdir() {
         let project_root = PathBuf::from("/tmp/proj");
-        let dev_html_root = dev_html_root_for(&project_root);
+        let dev_html_root = zfb_types::ScratchLayout::default_for(&project_root).dev_pages_root();
 
         // The exact, documented contract:
         //   `<project_root>/.zfb-build/dev-pages`.
@@ -15594,7 +15737,8 @@ mod tests {
     #[test]
     fn dev_assets_root_lives_under_dot_zfb_build_not_outdir() {
         let project_root = PathBuf::from("/tmp/proj");
-        let dev_assets_root = dev_assets_root_for(&project_root);
+        let dev_assets_root =
+            zfb_types::ScratchLayout::default_for(&project_root).dev_assets_root();
 
         // The exact, documented contract: `<project_root>/.zfb-build/dev-assets`.
         assert_eq!(
@@ -15615,9 +15759,125 @@ mod tests {
         // ... nor with the dev-HTML root (they're siblings under .zfb-build/).
         assert_ne!(
             dev_assets_root,
-            dev_html_root_for(&project_root),
+            zfb_types::ScratchLayout::default_for(&project_root).dev_pages_root(),
             "dev assets and dev html roots must be distinct"
         );
+    }
+
+    #[test]
+    fn dev_scratch_paths_follow_a_session_layout() {
+        let project = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch_root = scratch.path().join("session-a");
+        let layout =
+            zfb_types::ScratchLayout::for_scratch_dir(project.path(), scratch_root.clone());
+
+        let paths = DevScratchPaths::resolve(&layout, &project.path().join("dist")).unwrap();
+
+        assert_eq!(paths.bundle_outdir, scratch_root);
+        assert_eq!(paths.dev_pages_parent, scratch_root.join("dev-pages"));
+        assert_eq!(paths.dev_assets_root, scratch_root.join("dev-assets"));
+        assert_eq!(paths.graph_bin, scratch_root.join("graph.bin"));
+        let (probe_parent, relocated) = resolve_probe_parent_dir(
+            &layout,
+            &[project.path().join("pages"), project.path().join("src")],
+        )
+        .unwrap();
+        assert!(!relocated);
+        assert_eq!(probe_parent, scratch_root.join("watcher-liveness-probe"));
+
+        let session = create_dev_html_session(&paths.dev_pages_parent).unwrap();
+        assert!(session.path().starts_with(&scratch_root));
+        assert!(!project.path().join(".zfb-build").exists());
+        assert!(!project.path().join(".zfb").exists());
+    }
+
+    #[test]
+    fn dev_scratch_paths_keep_the_default_layout() {
+        let project = PathBuf::from("/tmp/proj");
+        let paths = DevScratchPaths::resolve(
+            &zfb_types::ScratchLayout::default_for(&project),
+            &project.join("dist"),
+        )
+        .unwrap();
+        assert_eq!(paths.bundle_outdir, project.join(".zfb-build"));
+        assert_eq!(paths.dev_pages_parent, project.join(".zfb-build/dev-pages"));
+        assert_eq!(paths.dev_assets_root, project.join(".zfb-build/dev-assets"));
+        assert_eq!(paths.graph_bin, project.join(".zfb/graph.bin"));
+    }
+
+    #[test]
+    fn dev_scratch_paths_reject_an_out_dir_overlapping_the_scratch_root() {
+        let project = PathBuf::from("/tmp/proj");
+        let layout = zfb_types::ScratchLayout::default_for(&project);
+        let err = DevScratchPaths::resolve(&layout, &project.join(".zfb-build")).unwrap_err();
+        assert!(err.to_string().contains("dev HTML"), "{err}");
+        let err = DevScratchPaths::resolve(&layout, &project.join(".zfb-build/dev-assets/x"))
+            .unwrap_err();
+        assert!(err.to_string().contains("dev asset"), "{err}");
+    }
+
+    /// Issue #3344 — a prebuilt `dist/` with a servable `index.html`, the
+    /// shape a previous `zfb build` leaves behind.
+    fn write_servable_dist(project: &Path) -> PathBuf {
+        let dist = project.join("dist");
+        std::fs::create_dir_all(dist.join("posts/a")).unwrap();
+        std::fs::write(dist.join("posts/a/index.html"), b"<html></html>").unwrap();
+        dist
+    }
+
+    #[test]
+    fn dist_seed_for_disables_the_seed_under_a_scratch_dir() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        let session = zfb_types::ScratchLayout::for_scratch_dir(
+            project.path(),
+            project.path().join("scratch"),
+        );
+        assert_eq!(dist_seed_for(&session, &dist), None);
+    }
+
+    #[test]
+    fn dist_seed_for_keeps_the_seed_for_the_default_layout() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        let default = zfb_types::ScratchLayout::default_for(project.path());
+        assert_eq!(dist_seed_for(&default, &dist), Some(dist));
+    }
+
+    /// Issue #3344 — the `defer_dev_bundle_decision` row `run` feeds: a
+    /// servable `dist/` is on disk, but under a scratch dir the seed is
+    /// disabled, so Auto does not defer — nothing may be served from `dist/`
+    /// during the deferred-bundle window. The default layout still defers.
+    #[test]
+    fn auto_does_not_defer_on_a_servable_dist_when_the_seed_is_disabled() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        assert!(dist_is_servable_seed(&dist));
+        let servable_seed = |layout: &zfb_types::ScratchLayout| {
+            dist_seed_for(layout, &dist)
+                .as_deref()
+                .is_some_and(dist_is_servable_seed)
+        };
+
+        let session = zfb_types::ScratchLayout::for_scratch_dir(
+            project.path(),
+            project.path().join("scratch"),
+        );
+        assert!(!defer_dev_bundle_decision(
+            true,
+            Some("1"),
+            servable_seed(&session),
+            None
+        ));
+
+        let default = zfb_types::ScratchLayout::default_for(project.path());
+        assert!(defer_dev_bundle_decision(
+            true,
+            Some("1"),
+            servable_seed(&default),
+            None
+        ));
     }
 
     /// The render callback must:
@@ -16574,6 +16834,9 @@ mod tests {
                 // explicit opt-in value is still a defer.
                 assert!(defer_dev_bundle_decision(true, Some("1"), true, Some("1")));
                 // boot-lazy on but NO servable dist => eager (no safe seed).
+                // A scratch dir (#3344) disables the seed and lands here even
+                // with a servable `dist/` on disk — see
+                // `auto_does_not_defer_on_a_servable_dist_when_the_seed_is_disabled`.
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
                 // The unset default is seedless lazy; an explicit off remains eager.
                 assert!(defer_dev_bundle_decision(true, None, true, None));
@@ -20900,6 +21163,7 @@ mod tests {
             &[],
             &[],
             &raw_import_invalidation,
+            &zfb_types::ScratchLayout::default_for(&project).written_roots(),
             &mut None,
             None,
         );
@@ -20966,6 +21230,7 @@ mod tests {
             &[],
             &[],
             &raw_import_invalidation,
+            &zfb_types::ScratchLayout::default_for(&project).written_roots(),
             &mut None,
             None,
         );
@@ -21462,6 +21727,7 @@ mod tests {
         v8_plugin_hooks.add_virtual_module("virtual:data", "export default 1", "test-plugin");
 
         let inputs = DevRebuildInputs {
+            bundle_outdir: PathBuf::new(),
             cfg: config::Config::default(),
             v8_plugin_hooks,
             plugin_alias_entries: Vec::new(),

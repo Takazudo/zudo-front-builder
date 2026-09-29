@@ -128,6 +128,7 @@ pub(crate) struct PluginSetupResult {
 pub(crate) async fn run_plugin_setup(
     plugin_host: &Option<PluginHost>,
     project_root: &Path,
+    scratch_dir: &Path,
     config: &Config,
     // Per-command difference: SetupCommand::Build for zfb build,
     // SetupCommand::Dev for zfb dev. Explicit at every call site.
@@ -141,7 +142,7 @@ pub(crate) async fn run_plugin_setup(
     let setup_registries = if let Some(host) = plugin_host.as_ref() {
         let cfg_json = serde_json::to_value(config)
             .context("plugin lifecycle: serialise config for setup ctx")?;
-        host.run_setup(project_root, setup_command, &cfg_json)
+        host.run_setup(project_root, scratch_dir, setup_command, &cfg_json)
             .await
             .map_err(zfb_build::annotate_with_plugin_error)
             .context("setup lifecycle hook")?
@@ -284,11 +285,13 @@ impl DevMiddlewareDispatcher for HostDispatcher {
 pub async fn build_dev_middleware_set(
     host: &PluginHost,
     project_root: &std::path::Path,
+    scratch_dir: &std::path::Path,
     config: &Config,
     mode: ServerMode,
 ) -> Result<Option<DevMiddlewareSet>> {
     let ctx = DevRegisterContext {
         project_root: project_root.to_path_buf(),
+        scratch_dir: scratch_dir.to_path_buf(),
         config: serde_json::to_value(config)
             .context("plugin lifecycle: serialise config for devMiddleware ctx")?,
     };

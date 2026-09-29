@@ -23,6 +23,7 @@ findings are no longer load-bearing.
 | `3242-zudo-react-v1-contract.md` | `referenced-from` | zudo-react v1 runtime contract; referenced by epic #3242 and sub-issue #3247. |
 | `3242-v3-release-notes-material.md` | `referenced-from` | Breaking-change and migration material; referenced by epic #3242 and sub-issue #3305. |
 | `3242-owned-engines-completion-report.md` | `referenced-from` | Owned-engine completion record; referenced by epic #3242 and sub-issue #3306. |
+| `3318-scratch-dir-design.md` | `referenced-from` | Scratch-dir + per-invocation `--define` contract; locks epic #3339's sub-issues #3341-#3348. |
 
 ## Purgeable one-shots
 

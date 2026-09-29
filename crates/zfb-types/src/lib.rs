@@ -14,6 +14,7 @@ pub mod owned_runtime;
 pub mod page_extensions;
 pub mod page_privacy;
 pub mod render_region;
+pub mod scratch_layout;
 pub mod segment;
 
 pub use asset_urls::{
@@ -29,8 +30,8 @@ pub use client_scripts::{
 };
 pub use first_party::{claimed_workspace_member_names, first_party_root_for};
 pub use helpers::{
-    escape_html, has_node_modules_segment, json_string, normalize_path_lexical,
-    path_to_posix_string,
+    canonicalize_existing_prefix, escape_html, has_node_modules_segment, json_string,
+    normalize_path_lexical, path_to_posix_string,
 };
 pub use module_workers::{
     module_worker_content_hash, module_worker_filename, module_worker_filename_scoped,
@@ -44,4 +45,5 @@ pub use render_region::{
     MARKER_KIND_START, MARKER_TAIL, REGION_ID_ATTR, RENDER_REGION_ATTR,
     RENDER_REGION_MARKER_PARITY_FIXTURE,
 };
+pub use scratch_layout::ScratchLayout;
 pub use segment::Segment;

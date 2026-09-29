@@ -28,6 +28,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub role_classes: BTreeSet<String>,
     pub manifests: BTreeMap<String, PathBuf>,
     pub safelist: BTreeMap<String, BTreeSet<String>>,
+    pub zfb_written_roots: Vec<PathBuf>,
 }
 
 fn absolute(base: &Path, path: &Path) -> PathBuf {
@@ -78,12 +79,10 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
     let project = absolute(&inputs.first_party_root, &inputs.project_root);
     let first_party = absolute(&project, &inputs.first_party_root);
     let mut plan = SourcePlan::default();
-    for path in [
-        &inputs.configured_output_dir,
-        &inputs.pass_output_dir,
-        &project.join(".zfb-build"),
-        &project.join(".zfb"),
-    ] {
+    for path in [&inputs.configured_output_dir, &inputs.pass_output_dir]
+        .into_iter()
+        .chain(&inputs.zfb_written_roots)
+    {
         plan.exclusions.insert(absolute(&project, path));
     }
 
@@ -448,6 +447,7 @@ pub(crate) fn gather_css_source_plan_inputs(
     package_route_entrypoints: &[PathBuf],
     sibling_mirror_roots: &[PathBuf],
     plugin_virtual_modules: &[(String, String)],
+    zfb_written_roots: &[PathBuf],
 ) -> Result<CssSourcePlanInputs> {
     let project_root = zfb_types::normalize_path_lexical(project_root);
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
@@ -490,6 +490,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         role_classes,
         manifests,
         safelist,
+        zfb_written_roots: zfb_written_roots.to_vec(),
     })
 }
 
@@ -508,6 +509,7 @@ mod tests {
             configured_output_dir: project.join("src/custom-output"),
             pass_output_dir: project.join("src/assets-current"),
             default_content_roots: vec![project.join("src")],
+            zfb_written_roots: zfb_types::ScratchLayout::default_for(&project).written_roots(),
             ..Default::default()
         };
         (temp, inputs)
@@ -610,6 +612,48 @@ mod tests {
     }
 
     #[test]
+    fn wind_source_plan_excludes_an_in_project_session_scratch_root() {
+        let (_temp, mut inputs) = fixture();
+        let project = inputs.project_root.clone();
+        let scratch = project.join(".zfb-build/session-a");
+        inputs.default_content_roots = vec![project.clone()];
+        inputs.zfb_written_roots =
+            zfb_types::ScratchLayout::for_scratch_dir(&project, scratch.clone()).written_roots();
+        write(&project, "src/page.tsx", "p-1");
+        write(&scratch, "bundle.tsx", "p-7");
+        let plan = build_css_source_plan(&inputs);
+        assert!(plan.exclusions.contains(&scratch));
+        let candidates = live(&plan);
+        assert!(candidates.contains("p-1"));
+        assert!(!candidates.contains("p-7"));
+    }
+
+    #[test]
+    fn wind_source_plan_excludes_an_out_of_project_session_root_in_a_claimed_workspace() {
+        let (temp, mut inputs) = fixture();
+        let root = temp.path();
+        let scratch = root.join("scratch-x");
+        write(root, "root.tsx", "p-2");
+        write(&scratch, "bundle.tsx", "p-8");
+        inputs.root_package_claimed = true;
+        inputs.root_package_excluded_dirs = vec![inputs.project_root.clone()];
+        inputs.zfb_written_roots =
+            zfb_types::ScratchLayout::for_scratch_dir(&inputs.project_root, scratch.clone())
+                .written_roots();
+        let plan = build_css_source_plan(&inputs);
+        let candidates = live(&plan);
+        assert!(candidates.contains("p-2"));
+        assert!(!candidates.contains("p-8"));
+
+        let mut without_scratch = plan;
+        without_scratch.exclusions.remove(&scratch);
+        assert!(
+            live(&without_scratch).contains("p-8"),
+            "the claimed root package walks the scratch root unless it is excluded"
+        );
+    }
+
+    #[test]
     fn wind_source_plan_plugin_role_classes_and_safelist() {
         let (_temp, mut inputs) = fixture();
         inputs
@@ -694,6 +738,7 @@ mod tests {
             &inputs.project_root,
             &inputs.pass_output_dir,
             &config,
+            &[],
             &[],
             &[],
             &[],
@@ -807,6 +852,7 @@ mod tests {
             &inputs.project_root,
             &inputs.pass_output_dir,
             &config,
+            &[],
             &[],
             &[],
             &[],
