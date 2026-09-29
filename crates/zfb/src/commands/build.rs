@@ -8559,6 +8559,8 @@ mod tests {
         /// Write each bundle to `input.outdir/<bundle_basename>` (like the
         /// real bundler) instead of the fixed `mock_bundle_path`.
         bundle_to_input_outdir: std::cell::Cell<bool>,
+        /// The `zfb_written_roots` each `emit_prod_assets` call received.
+        emit_written_roots: RefCell<Vec<Vec<PathBuf>>>,
     }
 
     impl FakeRunner {
@@ -8575,6 +8577,7 @@ mod tests {
                 content_bridge_fallback_pages: RefCell::new(Vec::new()),
                 dropped_plain_css_inputs: RefCell::new(Vec::new()),
                 bundle_to_input_outdir: std::cell::Cell::new(false),
+                emit_written_roots: RefCell::new(Vec::new()),
             }
         }
 
@@ -8771,8 +8774,11 @@ mod tests {
             _package_route_entrypoints: &[PathBuf],
             _outdir: &Path,
             _config: &Config,
-            _zfb_written_roots: &[PathBuf],
+            zfb_written_roots: &[PathBuf],
         ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
+            self.emit_written_roots
+                .borrow_mut()
+                .push(zfb_written_roots.to_vec());
             // Clone the canned inputs so multiple tests can share the
             // same FakeRunner without consuming its state.
             let inputs = self.prod_asset_inputs.borrow();
@@ -10198,6 +10204,11 @@ mod tests {
         assert_eq!(
             adapter_calls[0].1.input_bundle,
             scratch_root.join("bundle-runtime.mjs")
+        );
+        assert_eq!(
+            *runner.emit_written_roots.borrow(),
+            vec![layout.written_roots()],
+            "the CSS source plan must exclude the session's written roots"
         );
     }
 
