@@ -1,5 +1,7 @@
 # Local (Mac) vs CI shipped-size measurements
 
+<!-- Disposable CI baseline trigger for issue 3352; this branch will not merge. -->
+
 `crates/zfb-md-wasm/shipped-sizes.json` holds **CI-measured values only**.
 This file records what the same build produces on a Mac, so that gap stops
 being re-discovered from scratch every time someone builds `zfb-md-wasm`
