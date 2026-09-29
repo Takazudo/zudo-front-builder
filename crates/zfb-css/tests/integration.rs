@@ -41,9 +41,10 @@ fn css_modules_processor_scopes_class_names() {
 
     // The compiled CSS contains the scoped names.
     let scoped_btn = names.get("btn").expect("btn entry");
+    let selector = css_class_selector(scoped_btn);
     assert!(
-        css.contains(&css_class_selector(scoped_btn)),
-        "compiled CSS must reference scoped name {scoped_btn}, got: {css}"
+        css.contains(&selector),
+        "compiled CSS must reference scoped selector {selector}, got: {css}"
     );
 }
 
@@ -229,9 +230,10 @@ export function DocShell() {
         .and_then(|m| m.get("btn"))
         .expect("user btn scoped name");
     assert_ne!(user_btn_scoped, "btn", "btn must be hashed");
+    let selector = css_class_selector(user_btn_scoped);
     assert!(
-        out.css.contains(&css_class_selector(user_btn_scoped)),
-        "combined output must contain the scoped user btn"
+        out.css.contains(&selector),
+        "combined output must contain the scoped user btn selector {selector}"
     );
 
     // per_source_modules: one entry per source TSX, pointing at its

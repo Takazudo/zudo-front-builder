@@ -11580,9 +11580,10 @@ mod tests {
             .cloned()
             .expect("bundler map must contain the scoped `.root` class for the sibling module");
 
+        let selector = css_class_selector(&scoped);
         assert!(
-            css.contains(&css_class_selector(&scoped)),
-            "emitted CSS must contain the scoped sibling class `.{scoped}`; got:\n{css}",
+            css.contains(&selector),
+            "emitted CSS must contain the scoped sibling class `{selector}`; got:\n{css}",
         );
     }
 
@@ -11790,10 +11791,11 @@ mod tests {
             .cloned()
             .expect("class map must contain the scoped `.root` class for the virtual-only sibling");
 
+        let selector = css_class_selector(&scoped);
         assert!(
-            css.contains(&css_class_selector(&scoped)),
+            css.contains(&selector),
             "emitted CSS (wind disabled) must contain the scoped virtual-only sibling class \
-             `.{scoped}`; got:\n{css}",
+             `{selector}`; got:\n{css}",
         );
     }
 
@@ -11929,10 +11931,11 @@ mod tests {
                 "class map must contain the scoped `.root` class for the direct virtual module",
             );
 
+        let selector = css_class_selector(&scoped);
         assert!(
-            css.contains(&css_class_selector(&scoped)),
+            css.contains(&selector),
             "emitted CSS (wind disabled) must contain the scoped direct virtual CSS module \
-             class `.{scoped}`; got:\n{css}",
+             class `{selector}`; got:\n{css}",
         );
     }
 
