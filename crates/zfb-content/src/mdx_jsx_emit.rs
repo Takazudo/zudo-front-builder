@@ -1194,7 +1194,7 @@ impl JsxEmitter {
                 let mut attrs = String::new();
                 if let Some(lang) = &c.lang {
                     attrs.push_str(&format!(
-                        " className=\"language-{}\" data-lang={}",
+                        " class=\"language-{}\" data-lang={}",
                         escape_attr_literal(lang),
                         jsx_string_attr(lang),
                     ));
@@ -1277,7 +1277,7 @@ impl JsxEmitter {
                 self.html_tags.insert("pre".to_string());
                 self.html_tags.insert("code".to_string());
                 format!(
-                    "<_components.pre><_components.code className=\"language-math math-display\">{}</_components.code></_components.pre>",
+                    "<_components.pre><_components.code class=\"language-math math-display\">{}</_components.code></_components.pre>",
                     js_string_literal_in_braces(&m.value),
                 )
             }
@@ -1288,7 +1288,7 @@ impl JsxEmitter {
             MdastNode::InlineMath(m) => {
                 self.html_tags.insert("code".to_string());
                 format!(
-                    "<_components.code className=\"language-math math-inline\">{}</_components.code>",
+                    "<_components.code class=\"language-math math-inline\">{}</_components.code>",
                     js_string_literal_in_braces(&m.value),
                 )
             }
@@ -5306,7 +5306,7 @@ mod tests {
             "missing math-inline class: {out}"
         );
         assert!(
-            out.contains("<_components.code className=\"language-math math-inline\">"),
+            out.contains("<_components.code class=\"language-math math-inline\">"),
             "inline math should route through _components.code with class: {out}"
         );
         // Same bare-backslash safety check as block math.
