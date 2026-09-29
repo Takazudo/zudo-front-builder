@@ -216,6 +216,9 @@ pub struct NewArgs {
                            at the cost of a slower first-accept. On by default
                            when boot-lazy is active.")]
 pub struct DevArgs {
+    #[command(flatten)]
+    pub scratch: ScratchDirArg,
+
     /// Port to bind the dev server to. Falls back to `port` from
     /// `zfb.config.json`, then to `3000`.
     #[arg(long)]
@@ -230,9 +233,24 @@ pub struct DevArgs {
     pub host: Option<String>,
 }
 
+/// `--scratch-dir` flag shared by `dev`, `build`, `check`, and `preview`.
+/// The `ZFB_SCRATCH_DIR` fallback is read in the resolver, not via a clap
+/// `env` attribute (clap is built with `derive` only).
+#[derive(Debug, Default, Args)]
+pub struct ScratchDirArg {
+    /// Use PATH for zfb's generated scratch artifacts instead of
+    /// `<root>/.zfb-build` so concurrent commands in one checkout don't
+    /// share state. Falls back to `ZFB_SCRATCH_DIR`.
+    #[arg(long = "scratch-dir", value_name = "PATH")]
+    pub scratch_dir: Option<PathBuf>,
+}
+
 /// Arguments for `zfb build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
+    #[command(flatten)]
+    pub scratch: ScratchDirArg,
+
     /// Output directory for the production build. Falls back to `outDir`
     /// from `zfb.config.*`, then to `dist`.
     #[arg(long)]
@@ -507,6 +525,9 @@ impl BuildEmitRenderArtifacts {
 /// layer "CLI > config > built-in default" cleanly.
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
+    #[command(flatten)]
+    pub scratch: ScratchDirArg,
+
     /// Port to bind the preview server to. Falls back to `port` from
     /// `zfb.config.json`, then to `4321`.
     #[arg(long)]
@@ -545,6 +566,9 @@ pub struct PreviewArgs {
 /// schema-only CI lanes).
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    #[command(flatten)]
+    pub scratch: ScratchDirArg,
+
     /// Skip the `tsc --noEmit` subprocess. Schema validation still runs.
     /// Useful when the project has no TypeScript dependency installed
     /// yet but still wants schema enforcement in CI.
@@ -1187,5 +1211,30 @@ mod tests {
         let help = wind.render_long_help().to_string();
         assert!(help.contains("explain"), "wind help omits explain:\n{help}");
         assert!(help.contains("audit"), "wind help omits audit:\n{help}");
+    }
+
+    #[test]
+    fn scratch_dir_flag_parses_on_dev_build_check_and_preview() {
+        let path = Some(PathBuf::from("/tmp/s"));
+        for sub in ["dev", "build", "check", "preview"] {
+            let cli = Cli::try_parse_from(["zfb", sub, "--scratch-dir", "/tmp/s"]).expect("parse");
+            let got = match cli.command {
+                Command::Dev(a) => a.scratch.scratch_dir,
+                Command::Build(a) => a.scratch.scratch_dir,
+                Command::Check(a) => a.scratch.scratch_dir,
+                Command::Preview(a) => a.scratch.scratch_dir,
+                other => panic!("unexpected subcommand {other:?}"),
+            };
+            assert_eq!(got, path, "{sub}");
+            let cli = Cli::try_parse_from(["zfb", sub]).expect("parse");
+            let none = match cli.command {
+                Command::Dev(a) => a.scratch.scratch_dir,
+                Command::Build(a) => a.scratch.scratch_dir,
+                Command::Check(a) => a.scratch.scratch_dir,
+                Command::Preview(a) => a.scratch.scratch_dir,
+                other => panic!("unexpected subcommand {other:?}"),
+            };
+            assert_eq!(none, None, "{sub}");
+        }
     }
 }

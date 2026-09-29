@@ -60,6 +60,14 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
         .await
         .context("failed to load project configuration")?;
 
+    // Held until `run` returns; the layout is threaded into paths by #3343.
+    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &cfg,
+        &cfg.out_dir,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
+
     let mut schema_issues: Vec<String> = Vec::new();
     for collection in &cfg.collections {
         match validate_collection(&project_root, collection) {

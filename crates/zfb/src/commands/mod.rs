@@ -23,5 +23,6 @@ pub mod plugins;
 pub mod preview;
 pub(crate) mod render_artifact;
 pub mod resolve;
+pub(crate) mod scratch_dir;
 pub(crate) mod watcher_liveness_probe;
 pub mod wind;

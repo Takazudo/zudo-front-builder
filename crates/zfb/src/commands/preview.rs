@@ -128,6 +128,15 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         anyhow::bail!("{} does not exist — run zfb build first", outdir.display());
     }
 
+    // Held through both the static and wrangler modes; the layout is
+    // threaded into paths by #3343.
+    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+        &project_root,
+        &cfg,
+        &outdir,
+        args.scratch.scratch_dir.as_deref(),
+    )?;
+
     // 3. Branch on adapter. `AdapterChoice::from_config` validates the
     //    package-name shape, so a typo in `zfb.config.json` surfaces
     //    here rather than as a confusing wrangler-spawn failure later.
