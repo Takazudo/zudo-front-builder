@@ -1,0 +1,18 @@
+---
+title: v3.0.0
+sidebar_position: 25
+---
+
+# v3.0.0
+
+Released: 2026-09-30
+
+## Breaking Changes
+
+- Replace the React and Preact framework adapter selector with owned zudo-react rendering and hydration (9ec87c0a). Islands now require valid source identity and JSON props; components use owned signals and native event bindings.
+- Remove the React peer dependency and framework selector export (9ec87c0a).
+
+## Features
+
+- Preserve matching island roots during navigation and recreate roots when a component or its props change (ce827b7d).
+- Mount skipped server-rendered islands according to `data-when`, replacing fallback only after a successful client mount (4555fa8d).

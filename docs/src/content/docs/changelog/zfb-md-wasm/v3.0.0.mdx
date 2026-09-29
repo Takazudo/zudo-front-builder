@@ -1,0 +1,12 @@
+---
+title: v3.0.0
+sidebar_position: 25
+---
+
+# v3.0.0
+
+Released: 2026-09-30
+
+## Breaking Changes
+
+- Remove the `jsxRuntime` option from `compile()` and `renderHtml()` and compile MDX for the owned JSX runtime (4e02f547). Consumers of compiled MDX must resolve `@takazudo/zfb/zudo-react/jsx-runtime`. All four `.wasm` SHA-256 digests change because each embeds `ZFB_RELEASE_VERSION`; consumers that pin digests must re-verify the released files even where measured byte sizes match prior measurements.

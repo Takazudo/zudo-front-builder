@@ -1,0 +1,27 @@
+---
+title: v3.0.0
+sidebar_position: 139
+---
+
+# v3.0.0
+
+Released: 2026-09-30
+
+## Breaking Changes
+
+- Replace the Tailwind CSS executable and `tailwind` configuration with the built-in zudo-wind compiler (fc6d9ed9). Remove Tailwind imports and directives, declare the tokens your utilities use, and choose a `wind` reset explicitly where browser defaults matter. The old Tailwind environment overrides are gone.
+- Remove React and Preact runtime selection in favor of the owned zudo-react engine (9ec87c0a). Delete the `framework` key, use `@takazudo/zfb/zudo-react` as the JSX import source, and migrate components, events, signals, and islands. The [v3 migration guide](../../guides/migrating-to-v3.mdx) covers the required changes.
+- Remove Preact from `@takazudo/zfb` packaging and the old JSX aliases (039b2e24). Consumers must use the owned runtime entry points.
+
+## Features
+
+- Add the owned zudo-react core, JSX, server, and client entry points to `@takazudo/zfb` (dfbfa1c6). They provide signals, scopes, forms, server rendering, and island hydration.
+- Add `zfb wind explain` and `zfb wind audit` for inspecting zudo-wind candidates and diagnostics (9f0045d7).
+- Add `--scratch-dir` isolation for dev, build, check, and preview, with path validation and ownership locking (3416bdbd).
+- Add per-invocation `--define KEY=EXPR` values to build identity (c98ec6cf).
+- Expose `scratchDir` in plugin hook contexts (1f171a0f).
+
+## Bug Fixes
+
+- Exclude prior owned output directories from build identity so later builds do not read their own generated files (c30d5bdf).
+- Normalize not-yet-created extra watch paths and cover symlink cases for scratch directories (2378be7f).
