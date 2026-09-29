@@ -94,7 +94,7 @@ fn fenced_code_preserves_lang_and_meta() {
     let out = emit("```rust title=\"main.rs\"\nfn main() {}\n```\n");
     assert!(out.contains("<_components.pre>"));
     assert!(out.contains("<_components.code"));
-    assert!(out.contains("className=\"language-rust\""));
+    assert!(out.contains("class=\"language-rust\""));
     assert!(out.contains("data-lang=\"rust\""));
     // `meta` is preserved — including embedded quote escapes.
     assert!(
@@ -103,6 +103,26 @@ fn fenced_code_preserves_lang_and_meta() {
     );
     // The body is in a JS string literal, so the source is escaped.
     assert!(out.contains("\"fn main() {}\""));
+}
+
+#[test]
+fn generated_code_and_math_classes_use_owned_jsx_props() {
+    let out = emit(
+        "```rust\nfn main() {}\n```\n\n$$\nx^2\n$$\n\nInline $y^2$.\n\n<div className=\"authored\" />\n",
+    );
+
+    for expected in [
+        "<_components.code class=\"language-rust\" data-lang=\"rust\">",
+        "<_components.code class=\"language-math math-display\">",
+        "<_components.code class=\"language-math math-inline\">",
+        "<_components.div className=\"authored\" />",
+    ] {
+        assert!(out.contains(expected), "missing {expected}:\n{out}");
+    }
+    assert!(
+        !out.contains("className=\"language-"),
+        "generated React-spelled class prop leaked into owned JSX:\n{out}"
+    );
 }
 
 #[test]
