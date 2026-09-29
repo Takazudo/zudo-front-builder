@@ -1317,6 +1317,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         args.scratch.scratch_dir.as_deref(),
     )?;
     let scratch_layout = scratch.layout().clone();
+    // Issue #3344 — every dev read of the prebuilt `outDir` goes through this
+    // one value; a scratch-dir session never reads it.
+    let dist_seed = dist_seed_for(&scratch_layout, &dist_root);
+    if dist_seed.is_none() {
+        output::info(format!(
+            "scratch dir in use ({}): ignoring prebuilt {} — no dist/ fallback for HTML or /assets",
+            scratch_layout.root().display(),
+            dist_root.display(),
+        ));
+    }
 
     if !dist_root.exists() {
         std::fs::create_dir_all(&dist_root)
@@ -1499,7 +1509,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let defer_dev_bundle = defer_dev_bundle_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
-        dist_is_servable_seed(&dist_root),
+        dist_seed.as_deref().is_some_and(dist_is_servable_seed),
         std::env::var("ZFB_DEV_DEFER_BUNDLE").ok().as_deref(),
     );
 
@@ -2936,10 +2946,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_for_seed = Arc::clone(&graph_for_save);
     let graph_cache_path_for_boot = graph_cache_path.clone();
     let manifest_digest_slot_for_boot = Arc::clone(&manifest_digest_slot);
-    let dist_root_for_boot = dist_root.clone();
+    let dist_seed_for_boot = dist_seed.clone();
     // Issue #1189: the deferred boot's islands rebundle writes to the
-    // isolated dev-assets root (NOT `dist_root_for_boot`, which `run_boot_render`
-    // still needs as the real `dist/` for its servable-seed check).
+    // isolated dev-assets root (NOT `dist_seed_for_boot`, the real `dist/` —
+    // or `None` under a scratch dir — for `run_boot_render`'s servable-seed
+    // check).
     let dev_assets_root_for_boot = dev_assets_root.clone();
     // Issue #1170 — the deferred boot task also runs the eager islands
     // bundle (the last size-bound step that used to gate the bind). Clone
@@ -3077,6 +3088,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // prebuilt seed's hashed assets. `dist_root` above stays the real
         // `dist/` so the seed fallback and `dist_is_servable_seed` still work.
         dev_assets_root: Some(dev_assets_root.clone()),
+        // Issue #3344 — `false` under a scratch dir: no `dist/` HTML seed
+        // leg and no `dist/assets` layer behind `dev_assets_root`.
+        dev_dist_seed: dist_seed.is_some(),
         // Issue #534 — point the page-cache disk fallback at the dev
         // HTML dir, not the project's `outDir`. With `dist_root` here
         // (the historical wiring) the dev server's `read_from_dist`
@@ -3497,7 +3511,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 orchestrator,
                 ctx,
                 dev_session_for_boot.as_ref(),
-                &dist_root_for_boot,
+                dist_seed_for_boot.as_deref(),
             );
             if !document_routes_usable {
                 boot_render.boundary = BootDocumentBoundary::Failed;
@@ -4281,7 +4295,7 @@ fn run_boot_render(
     orchestrator: &BuildOrchestrator<DevAssetPipeline>,
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
-    dist_root: &Path,
+    dist_seed: Option<&Path>,
 ) -> BootRenderResult {
     let mode = dev_session
         .map(|s| {
@@ -4308,7 +4322,7 @@ fn run_boot_render(
     // cheap placeholder: `should_hint_cold_mode` below is
     // `Auto && !dist_servable`, so it never reads this outside Auto.
     let dist_servable = match mode {
-        BootLazyMode::Auto => dist_is_servable_seed(dist_root),
+        BootLazyMode::Auto => dist_seed.is_some_and(dist_is_servable_seed),
         BootLazyMode::Cold | BootLazyMode::Off => false,
     };
     let boot_lazy = mode.is_active() && (mode == BootLazyMode::Cold || dist_servable);
@@ -5424,6 +5438,16 @@ fn resolve_defer_bundle(var: Option<&str>) -> bool {
         }
         None => true,
     }
+}
+
+/// Issue #3344 — the prebuilt `outDir` dev may read as a seed, or `None`
+/// under a scratch dir: `dist/` carries whatever define the last `zfb build`
+/// used, so a session layout must never serve or probe it.
+pub(crate) fn dist_seed_for(
+    layout: &zfb_types::ScratchLayout,
+    dist_root: &Path,
+) -> Option<PathBuf> {
+    (!layout.is_session()).then(|| dist_root.to_path_buf())
 }
 
 /// Freshness gate for boot-lazy's Auto mode (issue #1057): is `dist_root` a
@@ -15728,6 +15752,69 @@ mod tests {
         assert!(err.to_string().contains("dev asset"), "{err}");
     }
 
+    /// Issue #3344 — a prebuilt `dist/` with a servable `index.html`, the
+    /// shape a previous `zfb build` leaves behind.
+    fn write_servable_dist(project: &Path) -> PathBuf {
+        let dist = project.join("dist");
+        std::fs::create_dir_all(dist.join("posts/a")).unwrap();
+        std::fs::write(dist.join("posts/a/index.html"), b"<html></html>").unwrap();
+        dist
+    }
+
+    #[test]
+    fn dist_seed_for_disables_the_seed_under_a_scratch_dir() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        let session = zfb_types::ScratchLayout::for_scratch_dir(
+            project.path(),
+            project.path().join("scratch"),
+        );
+        assert_eq!(dist_seed_for(&session, &dist), None);
+    }
+
+    #[test]
+    fn dist_seed_for_keeps_the_seed_for_the_default_layout() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        let default = zfb_types::ScratchLayout::default_for(project.path());
+        assert_eq!(dist_seed_for(&default, &dist), Some(dist));
+    }
+
+    /// Issue #3344 — the `defer_dev_bundle_decision` row `run` feeds: a
+    /// servable `dist/` is on disk, but under a scratch dir the seed is
+    /// disabled, so Auto does not defer — nothing may be served from `dist/`
+    /// during the deferred-bundle window. The default layout still defers.
+    #[test]
+    fn auto_does_not_defer_on_a_servable_dist_when_the_seed_is_disabled() {
+        let project = tempfile::tempdir().unwrap();
+        let dist = write_servable_dist(project.path());
+        assert!(dist_is_servable_seed(&dist));
+        let servable_seed = |layout: &zfb_types::ScratchLayout| {
+            dist_seed_for(layout, &dist)
+                .as_deref()
+                .is_some_and(dist_is_servable_seed)
+        };
+
+        let session = zfb_types::ScratchLayout::for_scratch_dir(
+            project.path(),
+            project.path().join("scratch"),
+        );
+        assert!(!defer_dev_bundle_decision(
+            true,
+            Some("1"),
+            servable_seed(&session),
+            None
+        ));
+
+        let default = zfb_types::ScratchLayout::default_for(project.path());
+        assert!(defer_dev_bundle_decision(
+            true,
+            Some("1"),
+            servable_seed(&default),
+            None
+        ));
+    }
+
     /// The render callback must:
     /// 1. Be tolerant of genuinely-unknown page ids (a source path that
     ///    maps to no `RouteUniverseEntry` at all) — return an empty list,
@@ -16682,6 +16769,9 @@ mod tests {
                 // explicit opt-in value is still a defer.
                 assert!(defer_dev_bundle_decision(true, Some("1"), true, Some("1")));
                 // boot-lazy on but NO servable dist => eager (no safe seed).
+                // A scratch dir (#3344) disables the seed and lands here even
+                // with a servable `dist/` on disk — see
+                // `auto_does_not_defer_on_a_servable_dist_when_the_seed_is_disabled`.
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
                 // The unset default is seedless lazy; an explicit off remains eager.
                 assert!(defer_dev_bundle_decision(true, None, true, None));

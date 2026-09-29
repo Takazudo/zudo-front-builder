@@ -118,6 +118,7 @@ async fn boot(
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
         dev_assets_root: None,
+        dev_dist_seed: true,
         html_root: dist_root.clone(),
         public_root,
         addr,

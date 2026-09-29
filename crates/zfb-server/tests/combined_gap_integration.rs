@@ -149,6 +149,7 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         project_root: project.path().to_path_buf(),
         dist_root: dist_root.clone(),
         dev_assets_root: None,
+        dev_dist_seed: true,
         html_root: dist_root,
         public_root,
         addr,

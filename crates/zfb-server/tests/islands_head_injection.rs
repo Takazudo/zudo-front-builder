@@ -59,6 +59,7 @@ impl Harness {
             project_root: root.clone(),
             dist_root: dist_root.clone(),
             dev_assets_root: None,
+            dev_dist_seed: true,
             html_root: dist_root,
             public_root: public_root.clone(),
             addr,
