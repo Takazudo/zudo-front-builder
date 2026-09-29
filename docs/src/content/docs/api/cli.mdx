@@ -315,7 +315,7 @@ zfb check --skip-tsc
 
 ## Scratch dirs
 
-By default, every command writes its generated artifacts under `<root>/.zfb-build/`. Two commands running at the same time in one checkout therefore share those files. A `zfb build` can overwrite the bundle a running `zfb dev` is serving, and two dev servers overwrite each other's dev pages and persisted graph. `--scratch-dir <PATH>` gives one invocation its own directory for these artifacts, so concurrent commands stay apart. Give **each** concurrent command its own scratch dir.
+By default, every command writes its generated artifacts to fixed locations in the project: the bundle and dev files under `<root>/.zfb-build/`, and the dev server's dependency graph at `<root>/.zfb/graph.bin`. Two commands running at the same time in one checkout therefore share those files. A `zfb build` can overwrite the bundle a running `zfb dev` is serving, and two dev servers overwrite each other's bundle and persisted dependency graph. `--scratch-dir <PATH>` gives one invocation its own directory for these artifacts, so concurrent commands stay apart. Give **each** concurrent command its own scratch dir.
 
 ```sh
 # Two dev servers and a build in one checkout, each with its own scratch dir
