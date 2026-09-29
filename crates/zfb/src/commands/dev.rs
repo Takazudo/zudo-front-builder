@@ -505,9 +505,9 @@ pub(crate) fn resolve_roots(project_root: &Path, cfg: &config::Config) -> Resolv
 
 /// Every authored watch root as an absolute path: in-root relative roots
 /// joined to the project root, out-of-root collection roots, and
-/// `extraWatchPaths` (canonicalized; missing entries skipped silently).
-/// Consumed by scratch-dir validation (R5) so all four commands apply the
-/// same overlap rule.
+/// `extraWatchPaths` — including entries missing on disk, which dev still
+/// watches once they appear. Consumed by scratch-dir validation (R5) so all
+/// four commands apply the same overlap rule; the validator canonicalizes.
 pub(crate) fn authored_watch_roots(project_root: &Path, cfg: &config::Config) -> Vec<PathBuf> {
     let roots = resolve_roots(project_root, cfg);
     let mut out: Vec<PathBuf> = roots
@@ -516,11 +516,11 @@ pub(crate) fn authored_watch_roots(project_root: &Path, cfg: &config::Config) ->
         .map(|r| project_root.join(r))
         .collect();
     out.extend(roots.out_of_root_watch_roots().iter().cloned());
-    out.extend(cfg.extra_watch_paths.iter().filter_map(|p| {
-        crate::commands::resolve::resolve_under_root(project_root, p)
-            .canonicalize()
-            .ok()
-    }));
+    out.extend(
+        cfg.extra_watch_paths
+            .iter()
+            .map(|p| crate::commands::resolve::resolve_under_root(project_root, p)),
+    );
     out
 }
 

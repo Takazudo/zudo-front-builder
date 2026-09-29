@@ -65,18 +65,16 @@ pub(super) fn resolve_probe_parent_dir(
         .map(|t| canonicalize_or_lexical(t))
         .collect();
 
-    // The candidate side needs the same treatment: `project_root` (or the
+    // The candidate side needs the same treatment: the scratch root (or the
     // OS temp dir) can itself sit behind a symlinked ancestor — e.g. macOS
     // resolves `/tmp` to `/private/tmp` and `/var` to `/private/var`, which
     // is exactly where `std::env::temp_dir()` and many project checkouts
     // live. Comparing a canonical target against a non-canonical candidate
-    // (or vice versa) would silently miss a real overlap, so canonicalise
-    // the base each candidate is built from before joining the scratch
-    // subpath — the base always exists (it's `project_root` /
-    // `std::env::temp_dir()`), so this canonicalisation is expected to
-    // succeed; `canonicalize_or_lexical` falls back to a LEXICAL
-    // `..`-collapse (not the raw base) if it doesn't, keeping the overlap
-    // checks below robust for the same reason as the targets above.
+    // (or vice versa) would silently miss a real overlap, so each candidate
+    // is canonicalised through its longest existing ancestor (the probe dir
+    // itself may not exist yet); `canonicalize_or_lexical` falls back to a
+    // LEXICAL `..`-collapse (not the raw path) if that fails, keeping the
+    // overlap checks below robust for the same reason as the targets above.
     let temp_dir = std::env::temp_dir();
     let canonical_temp_dir = canonicalize_or_lexical(&temp_dir);
 

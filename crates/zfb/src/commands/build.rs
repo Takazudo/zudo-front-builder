@@ -2624,25 +2624,7 @@ fn is_typescript_project_config(path: &Path) -> bool {
     (lower.starts_with("tsconfig") || lower.starts_with("jsconfig")) && lower.ends_with(".json")
 }
 
-fn normalize_shadow_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => out.push(prefix.as_os_str()),
-            std::path::Component::RootDir => out.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if out.file_name().is_some() {
-                    out.pop();
-                } else if !out.has_root() {
-                    out.push("..");
-                }
-            }
-            std::path::Component::Normal(segment) => out.push(segment),
-        }
-    }
-    out
-}
+use zfb_types::helpers::normalize_path_clamped_at_root as normalize_shadow_path;
 
 fn config_extends_values(value: &serde_json::Value) -> Vec<String> {
     match value.get("extends") {

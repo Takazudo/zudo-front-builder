@@ -158,30 +158,34 @@ pub fn normalize_path_lexical(p: &Path) -> PathBuf {
     out
 }
 
+/// Like [`normalize_path_lexical`], except a `..` directly under a root is
+/// dropped instead of kept (`/..` → `/`), matching the shadow-staging rebase.
+pub fn normalize_path_clamped_at_root(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.file_name().is_some() {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
 /// Canonicalize the longest existing ancestor of `path` and re-append the
 /// missing trailing components. Returns `None` when no ancestor can be
-/// canonicalized. `..` / `.` are collapsed lexically before and after (a `..`
-/// directly under a root is dropped, matching the shadow-staging rebase).
+/// canonicalized. `..` / `.` are collapsed lexically before and after via
+/// [`normalize_path_clamped_at_root`].
 pub fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
-    fn normalize(path: &Path) -> PathBuf {
-        let mut out = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(prefix) => out.push(prefix.as_os_str()),
-                Component::RootDir => out.push(component.as_os_str()),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if out.file_name().is_some() {
-                        out.pop();
-                    } else if !out.has_root() {
-                        out.push("..");
-                    }
-                }
-                Component::Normal(segment) => out.push(segment),
-            }
-        }
-        out
-    }
+    let normalize = normalize_path_clamped_at_root;
 
     let mut existing = normalize(path);
     let mut suffix = Vec::new();

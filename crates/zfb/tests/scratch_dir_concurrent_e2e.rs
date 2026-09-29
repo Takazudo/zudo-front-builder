@@ -12,8 +12,9 @@
 //!    keep its bundle, `dev-pages`, `dev-assets` under `session-a`.
 //! 3. While dev holds `session-a`, `zfb build` (session-b, define B) and
 //!    `zfb check` (session-c) both succeed, and neither touches dev's bundle.
-//! 4. ONE MDX edit, then wait for its tick (`l-lessons-dev-watcher-narrowing`:
-//!    write once, never loop rewriting).
+//! 4. One write per MDX file (a warmup entry, then `alpha`), each followed by
+//!    a wait for its tick (`l-lessons-dev-watcher-narrowing`: write once,
+//!    never loop rewriting).
 //! 5. Dev serves `A` in SSR and in the island bundle before and after the
 //!    recompile, 404s the prebuilt hashed asset that still sits in `dist/`,
 //!    and its SSR/islands `zudoReactBuild` tokens agree with each other and

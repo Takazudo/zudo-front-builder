@@ -313,6 +313,7 @@ mod tests {
         resolve(&root, &cfg, &t.path().join("elsewhere")).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn r1_rejects_root_parent_and_symlink_alias() {
         let (t, root, cfg) = setup();
@@ -331,6 +332,7 @@ mod tests {
         assert!(err(&root, &cfg, &root.join(".zfb-build/dev-assets/x")).contains("R2"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn r3_rejects_outdir_overlap_including_symlinked_alias() {
         let (t, root, cfg) = setup();
@@ -374,6 +376,18 @@ mod tests {
             extra.parent().unwrap().join("watched").as_path()
         )
         .contains("R5"));
+    }
+
+    #[test]
+    fn r5_rejects_overlap_with_a_not_yet_created_extra_watch_path() {
+        let (t, root, mut cfg) = setup();
+        let missing = t.path().join("later");
+        cfg.extra_watch_paths = vec![missing.clone()];
+        assert!(err(&root, &cfg, &missing.join("s")).contains("R5"));
+        assert!(
+            !missing.exists(),
+            "a rejected scratch dir must create nothing"
+        );
     }
 
     #[test]
