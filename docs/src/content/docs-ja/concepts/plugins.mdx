@@ -53,6 +53,36 @@ zfb <level>: [plugin:<name>] <message>
 
 `console` を経由しないプラグインホストサブプロセス自身の stderr への生の書き込み（ネイティブ依存ライブラリからの出力など）や、ホストが解析できなかった行は、帰属させるプラグインがないため、代わりに `zfb warn: [plugin-host stderr] <line>` / `zfb warn: [plugin-host stdout] <line>` としてレンダリングされます。
 
+## 中間ファイル用のスクラッチ領域
+
+すべてのフックコンテキスト（`setup`、`preBuild`/`postBuild`、`devMiddleware`、`previewMiddleware`）には `ctx.scratchDir` があります。これは、キャッシュ、生成したインデックス、ダウンロードしたデータなど、プラグイン自身だけが読み戻す中間ファイルを置くためのディレクトリです。
+
+- **常に存在し、絶対パスです。** デフォルトは `<projectRoot>/.zfb-build/plugins` です。コマンドを `--scratch-dir` や `ZFB_SCRATCH_DIR` 付きで実行した場合は `<スクラッチディレクトリ>/plugins` になるため、同時に実行するコマンドはそれぞれ別のプラグイン用ディレクトリを使います。[スクラッチディレクトリ](../api/cli.mdx#スクラッチディレクトリ) を参照してください。
+- **zfb はこのディレクトリを作成しません。** プラグイン側で作成してください。また、プラグイン同士が衝突しないよう、プラグイン名のサブディレクトリにファイルを置いてください。
+
+  ```ts
+  import { mkdir, writeFile } from "node:fs/promises";
+  import { join } from "node:path";
+  import { definePlugin } from "@takazudo/zfb/plugins";
+
+  export default definePlugin({
+    name: "search-index",
+    async preBuild({ scratchDir }) {
+      const dir = join(scratchDir, "search-index");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "terms.json"), JSON.stringify(terms));
+    },
+  });
+  ```
+
+- **置けるのは中間ファイルだけです。** `scratchDir` はインポートできる場所ではありません。ここに生成したルートモジュールなどのソースファイルはバンドルにステージされないため、`injectRoute`、`addAlias`、ページのインポートからここのファイルを参照しないでください。インポートされる生成ソースは従来どおりの場所に置き、ここにはプラグイン自身が読み戻すファイルだけを書き込んでください。
+
+<Note title="プラグインの分離にはプラグイン側の対応が必要">
+
+`--scratch-dir` が同時に実行するコマンド間で分離するのは、zfb 自身の生成物です。プロジェクトルートにある自前のディレクトリ（たとえば `.zudo-doc/`）に書き込み続けるプラグインは、それらのコマンドの間でそのディレクトリを共有したままなので、互いのファイルを上書きし合うことがあります。プラグインを安全に同時実行できるのは、そのプラグインが中間ファイルを `ctx.scratchDir` の下に移してからです。
+
+</Note>
+
 ## プラグインの entry ファイル — `.ts`、`.tsx`、`.mts`、`.cts` のサポート
 
 拡張子が `.ts`、`.tsx`、`.mts`、`.cts` のいずれかであるプラグインの `name` entry は、`zfb build`、`zfb dev`、`zfb preview` のいずれでも、ロードされる前に zfb 自身の pinned esbuild でバンドルされます。これにより、`.ts` プラグイン entry では次のことが可能です。
@@ -107,6 +137,7 @@ zfb <level>: [plugin:<name>] <message>
 setup({
   command,
   projectRoot,
+  scratchDir,
   config,
   options,
   logger,
@@ -261,7 +292,7 @@ addClientEntry("./client/analytics.client.ts");
 - `preBuild` は `setup` の後、バンドラ／レンダラ／CSS／islands の作業の前に実行されます。下流のステージが見るファイルを生成するのに使います。
 - `postBuild` は `dist/` が完全に書き出された後（アダプタによるラッピングを含む）に実行されます。ディスク上に完全なツリーを必要とする仕上げのステップに使います。
 
-どちらのフックも `{ projectRoot, outDir, config, options, logger }` を受け取ります。`postBuild` はさらに `ctx.routes` — ビルドの完全なルートマニフェスト — を受け取ります。完全な形については [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
+どちらのフックも `{ projectRoot, scratchDir, outDir, config, options, logger }` を受け取ります（`scratchDir` については [中間ファイル用のスクラッチ領域](#中間ファイル用のスクラッチ領域) を参照してください）。`postBuild` はさらに `ctx.routes` — ビルドの完全なルートマニフェスト — を受け取ります。完全な形については [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
 
 ### `ctx.routes` — ルートマニフェスト（postBuild のみ）
 
@@ -517,5 +548,6 @@ setup の登録が衝突しているか無効な場合、zfb は以下のいず�
 
 - [`defineConfig`](../api/define-config.mdx) — `plugins: [{ name: "...", options: {...} }]` の配線。
 - [ビルドパイプライン](./build-pipeline.mdx) — 各フックが全体の流れのどこに位置するか。
+- [CLI リファレンス — スクラッチディレクトリ](../api/cli.mdx#スクラッチディレクトリ) — 同時に実行するコマンドに別々のスクラッチディレクトリを使う方法と、そのときの `ctx.scratchDir` の場所。
 - [CLI リファレンス — `zfb preview`](../api/cli.mdx#zfb-preview) — `previewMiddleware` と `_redirects` が静的 preview のリクエストパイプラインにどう組み込まれるか。
 - [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-リダイレクト／リライトルール) — `previewMiddleware` が優先されるリダイレクト／リライトルール。

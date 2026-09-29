@@ -53,6 +53,36 @@ zfb <level>: [plugin:<name>] <message>
 
 A raw write to the plugin-host subprocess's own stderr that bypasses `console` entirely (e.g. from a native dependency), or a line the host could not parse at all, has no plugin to attribute and renders as `zfb warn: [plugin-host stderr] <line>` / `zfb warn: [plugin-host stdout] <line>` instead.
 
+## Scratch space for intermediates
+
+Every hook context — `setup`, `preBuild`/`postBuild`, `devMiddleware`, and `previewMiddleware` — carries `ctx.scratchDir`, a directory for the plugin's opaque intermediate files: caches, generated indexes, downloaded data, and similar files that only the plugin itself reads back.
+
+- **Always present and absolute.** It is `<projectRoot>/.zfb-build/plugins` by default. When the command runs with `--scratch-dir` or `ZFB_SCRATCH_DIR`, it is `<scratch dir>/plugins` instead, so concurrent commands get separate plugin directories. See [Scratch dirs](../api/cli.mdx#scratch-dirs).
+- **zfb does not create it.** Create it yourself, and keep your files in a subdirectory named after your plugin so plugins never collide:
+
+  ```ts
+  import { mkdir, writeFile } from "node:fs/promises";
+  import { join } from "node:path";
+  import { definePlugin } from "@takazudo/zfb/plugins";
+
+  export default definePlugin({
+    name: "search-index",
+    async preBuild({ scratchDir }) {
+      const dir = join(scratchDir, "search-index");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "terms.json"), JSON.stringify(terms));
+    },
+  });
+  ```
+
+- **Opaque intermediates only.** `scratchDir` is not an importable location. Route modules or other source files generated there are not staged into the bundle, so do not point `injectRoute`, `addAlias`, or page imports at files there. Keep importable generated source where it is today, and write only files the plugin reads back itself.
+
+<Note title="Plugin isolation requires plugin adoption">
+
+`--scratch-dir` isolates zfb's own artifacts between concurrent commands. A plugin that keeps writing to its own project-root directory (for example `.zudo-doc/`) is still shared between those commands, and two of them can overwrite each other's files there. A plugin becomes safe to run concurrently only once it moves those intermediates under `ctx.scratchDir`.
+
+</Note>
+
 ## Plugin entry files — `.ts`, `.tsx`, `.mts`, `.cts` support
 
 A plugin `name` entry with extension `.ts`, `.tsx`, `.mts`, or `.cts` is bundled with zfb's own pinned esbuild before it is loaded, in `zfb build`, `zfb dev`, and `zfb preview` alike. This means a `.ts` plugin entry can:
@@ -107,6 +137,7 @@ Under `zfb preview`, `setup` fires through a minimal, non-V8 path — `preBuild`
 setup({
   command,
   projectRoot,
+  scratchDir,
   config,
   options,
   logger,
@@ -263,7 +294,7 @@ Markdown extensibility lives **inside** zfb's tree as in-tree Rust visitors (TOC
 - `preBuild` runs after `setup` and before the bundler / renderer / CSS / islands work. Use it to emit files the downstream stages will see.
 - `postBuild` runs after `dist/` has been fully written (including any adapter wrapping). Use it for finalisation steps that need a complete tree on disk.
 
-Both hooks receive `{ projectRoot, outDir, config, options, logger }`. `postBuild` additionally receives `ctx.routes` — the complete route manifest for the build. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
+Both hooks receive `{ projectRoot, scratchDir, outDir, config, options, logger }` (see [Scratch space for intermediates](#scratch-space-for-intermediates) for `scratchDir`). `postBuild` additionally receives `ctx.routes` — the complete route manifest for the build. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
 
 ### `ctx.routes` — the route manifest (postBuild only)
 
@@ -519,5 +550,6 @@ Common candidates that do not need a plugin:
 
 - [`defineConfig`](../api/define-config.mdx) — wiring `plugins: [{ name: "...", options: {...} }]`.
 - [Build Pipeline](./build-pipeline.mdx) — where each hook lands in the overall sequence.
+- [CLI Reference — Scratch dirs](../api/cli.mdx#scratch-dirs) — running concurrent commands with separate scratch dirs, and where `ctx.scratchDir` points under one.
 - [CLI Reference — `zfb preview`](../api/cli.mdx#zfb-preview) — how `previewMiddleware` and `_redirects` fit into static preview's request pipeline.
 - [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) — the redirect/rewrite rules `previewMiddleware` takes priority over.

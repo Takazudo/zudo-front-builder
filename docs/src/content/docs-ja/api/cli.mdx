@@ -56,6 +56,7 @@ zfb new my-site --template node-free
 
 ```sh
 zfb dev [--port <port>] [--host [<host>]]
+        [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 ### フラグ
@@ -64,6 +65,8 @@ zfb dev [--port <port>] [--host [<host>]]
 |---|---|---|---|
 | `--port` | u16 | `3000`* | dev サーバーがバインドするポート。 |
 | `--host` | string | `localhost`* | バインドするホストインターフェース。値なしの `--host` は `0.0.0.0` のショートカットです。 |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | この dev サーバー専用の、zfb の生成物を置くディレクトリを指定します。スクラッチディレクトリを使う dev は、ビルド済みの出力ディレクトリを読みません。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
+| `--define` | `KEY=EXPR`（複数指定可） | なし | この呼び出しに限った esbuild の define を追加し、`bundle.define` をキー単位で上書きします。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
 
 \* 次の順にフォールバックします: CLI フラグ → `zfb.config.json` の `port`/`host` → 組み込みのデフォルト。
 
@@ -108,6 +111,7 @@ zfb dev --host 192.168.1.10 --port 4321
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
+          [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 ### フラグ
@@ -119,6 +123,8 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
 | `--strict-broken` | boolean flag | config/default | マークダウンのリンク検証が壊れたリンクを見つけたとき、このビルドを失敗させます（非ゼロ終了）。`strictBrokenLinks: false` または設定の省略より優先されます。`linkValidation` の設定がまったくないプロジェクトでは、何もしないのではなく、デフォルト設定でリンク検証を強制的に有効化します。 |
 | `--no-strict-broken` | boolean flag | config/default | このビルドを壊れたリンクで失敗させません。config や preset の `strictBrokenLinks: true` より優先されます。無効にするのはトップレベルの strict オーバーレイだけで、`failOnBroken: true` を明示的に設定した `linkValidation` ブロックは有効なままです。 |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | このビルド専用の、zfb の生成物を置くディレクトリを指定します。出力ディレクトリは引き続き共有されます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
+| `--define` | `KEY=EXPR`（複数指定可） | なし | このビルドに限った esbuild の define を追加し、`bundle.define` をキー単位で上書きします。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
 
 HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
 
@@ -139,6 +145,7 @@ zfb build --minify-html
 zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
+zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
 
 ## `zfb css`
@@ -216,6 +223,7 @@ zfb css \
 
 ```sh
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
+            [--scratch-dir <path>]
 ```
 
 静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
@@ -247,6 +255,7 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 | `--port` | u16 | `4321`* | preview サーバーがバインドするポート。 |
 | `--host` | string | `localhost`* | バインドするホストインターフェース。値なしの `--host` は `0.0.0.0` のショートカットです。 |
 | `--outdir` | path | config / `dist` | ビルド済み成果物を配信するディレクトリ。config の `outDir` より優先され、どちらもない場合は `dist` を使います。 |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | この preview 用のスクラッチディレクトリを検証してロックします。zfb 自身はそこに何も書き込みませんが、プラグインはその `plugins/` サブディレクトリを `ctx.scratchDir` として受け取ります。preview は何もバンドルしないため、`--define` は受け付けません。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 
 \* 次の順にフォールバックします: CLI フラグ → `zfb.config.json` の `port`/`host` → 組み込みのデフォルト。
 
@@ -265,7 +274,7 @@ zfb preview --host --outdir public
 プロジェクトの型チェックを行い、コンテンツコレクションのフロントマターをスキーマに対して検証します。
 
 ```sh
-zfb check [--skip-tsc]
+zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
 このコマンドは 2 つのチェックを実行します。
@@ -280,6 +289,8 @@ zfb check [--skip-tsc]
 | フラグ | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `--skip-tsc` | bool | `false` | `tsc --noEmit` サブプロセスをスキップします。スキーマ検証は引き続き実行されます。TypeScript がインストールされていない場合や、スキーマのみの CI レーンで便利です。 |
+| `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | スクラッチディレクトリを検証してロックします。`check` はそこに何も書き込みません。同じ引数リストや、エクスポートした `ZFB_SCRATCH_DIR` をすべてのコマンドで使えるようにするためのフラグです。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
+| `--define` | `KEY=EXPR`（複数指定可） | なし | 検証のみ行います。値は `tsc` には渡りません。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
 
 ### 例
 
@@ -294,6 +305,138 @@ zfb check --skip-tsc
 <Tip>
 
 `zfb check` は CI でコンテンツコレクションを検証する推奨手段です。`zfb build` の後に配置して、ビルドが黙って見逃すフロントマター違反を捕捉してください。
+
+</Tip>
+
+## スクラッチディレクトリ
+
+デフォルトでは、どのコマンドもプロジェクト内の決まった場所に生成物を書き込みます。バンドルや dev 用のファイルは `<root>/.zfb-build/` の下に、dev サーバーの依存グラフは `<root>/.zfb/graph.bin` に置かれます。そのため、同じチェックアウトで 2 つのコマンドを同時に実行すると、これらのファイルを共有してしまいます。たとえば `zfb build` が、実行中の `zfb dev` が配信しているバンドルを上書きしたり、2 つの dev サーバーが互いのバンドルや永続化された依存グラフを上書きしたりします。`--scratch-dir <PATH>` を指定すると、その呼び出し専用のディレクトリにこれらの生成物を置くため、同時に実行するコマンド同士が干渉しません。同時に実行するコマンドには、**それぞれ** 別のスクラッチディレクトリを指定してください。
+
+```sh
+# 同じチェックアウトで 2 つの dev サーバーと 1 つのビルドを、それぞれ専用のスクラッチディレクトリで実行する
+zfb dev --port 3000 --scratch-dir .zfb-build/dev-main
+zfb dev --port 3001 --scratch-dir .zfb-build/dev-preview
+zfb build --scratch-dir .zfb-build/build
+
+# 環境変数で指定する場合
+ZFB_SCRATCH_DIR=.zfb-build/dev-preview zfb dev --port 3001
+```
+
+### スクラッチディレクトリの指定
+
+- `--scratch-dir` は `zfb dev`、`zfb build`、`zfb check`、`zfb preview` で使えます。
+- フラグは環境変数 `ZFB_SCRATCH_DIR` より優先されます。空文字列や空白だけの `ZFB_SCRATCH_DIR` は未設定として扱われます。
+- 相対パスは現在の作業ディレクトリ、つまりプロジェクトルートを基準に解決されます。ディレクトリが存在しなければ zfb が作成しますが、作成するのはパスが後述のルールをすべて満たした場合だけです。
+- フラグも環境変数も指定しない場合、zfb はこれまでどおりデフォルトの `<root>/.zfb-build/` レイアウトを使います。ロックは取らず、余分なものも作成しません。
+
+### 置き場所
+
+推奨する置き場所は `<root>/.zfb-build/<name>` です。スキャフォールドのテンプレートは `.zfb-build/` をすでに gitignore しており、zfb がソースを走査する処理もすべてこのディレクトリをスキップします。
+
+プロジェクト内に置く場合、スクラッチディレクトリは `.zfb-build/` の **配下**（`.zfb-build` そのものは不可）でなければなりません。それ以外のプロジェクト内の場所は拒否されます。`/tmp/zfb-dev-main` のようなプロジェクト外の場所は、同じルールを満たす限り使えます。
+
+次の場所はいずれもエラーになります。エラーメッセージには、該当するルールのタグと関係するパスが表示されます。
+
+| タグ | 拒否される場所 |
+|---|---|
+| `R1` | プロジェクトルートそのもの、またはその祖先ディレクトリ。 |
+| `R2` | `.zfb-build/` の配下ではないプロジェクト内のパス（`.zfb-build` そのものを含む）。また、`.zfb-build/` より下のパスで、`dev-pages`、`dev-assets`、`watcher-liveness-probe`、`plugins` という名前の階層を含むもの。これらはデフォルトレイアウト自身が使うディレクトリです。 |
+| `R3` | そのコマンドの出力ディレクトリ（`--outdir`、なければ config の `outDir`）と重なるパス。内側にある場合も、出力ディレクトリを含む場合も該当します。 |
+| `R4` | `publicDir` と重なるパス（どちらの向きでも該当します）。 |
+| `R5` | 監視対象のルートと重なるパス（どちらの向きでも該当します）。監視対象のルートとは、デフォルトのルート（`pages`、`content`、`components`、`layouts`、`styles`、`data`、`src`、`zfb.config.*` ファイル）、コンテンツコレクションのディレクトリ、`extraWatchPaths` です。 |
+| `R6` | 別のスクラッチディレクトリの中にネストしたパス。つまり、上位のいずれかのディレクトリに `.zfb-scratch.lock` があるパスです。また、zfb 自身の一時ファイル掃除が削除する名前の階層を含むパス。`zfb-shadow-session-` で始まる名前と、`watcher-liveness-probe`、`zfb-dev-watcher-liveness-probe` が該当します。 |
+
+zfb はシンボリックリンクを解決したうえでパスを比較するため、シンボリックリンクの別名でルールをすり抜けることはできません。ルールはディレクトリの作成前に一度、作成後のディレクトリに対してもう一度チェックされます。一方、`R6` の逆、つまり既存のスクラッチディレクトリを内側に含むディレクトリを新たにスクラッチディレクトリにするケースは検出 **しません**。スクラッチディレクトリはネストさせず、`.zfb-build/dev-main` と `.zfb-build/build` のように兄弟として並べてください。
+
+### 所有権とロック
+
+コマンドは実行中、`<scratch>/.zfb-scratch.lock` に排他ロックを保持します。
+
+- **同じディレクトリを使う 2 つ目のコマンドは即座に失敗します。** スクラッチディレクトリが別の zfb プロセスで使用中である旨のエラーで終了します。ロックの解放を待つことも、ディレクトリを共有することもありません。
+- **ロックファイルは、そのディレクトリが zfb のものである目印にもなります。** このファイルがあるディレクトリは、後のコマンドで再利用できます。空のディレクトリも使えます。ロックファイルのない空でないディレクトリは拒否されるため、`--scratch-dir ~/Documents` のようなタイプミスでビルド成果物が自分のファイルに書き込まれることはありません。
+- **ロックにはローカルファイルシステムが必要です。** アドバイザリロックに対応していないファイルシステムでは、排他性なしで続行するのではなく、コマンドが失敗します。
+
+<Warning title="zfb はスクラッチディレクトリを削除しません">
+
+zfb はスクラッチディレクトリを削除せず、古いものを自動で回収することもありません。ロックファイルもコマンド終了後に残ります。不要になったスクラッチディレクトリは、それを使うコマンドがすべて終了してから、自分で削除してください。
+
+</Warning>
+
+### 中に置かれるもの
+
+| エントリ | 書き込むもの |
+|---|---|
+| `.zfb-scratch.lock` | スクラッチディレクトリを使うすべてのコマンド。 |
+| `bundle.mjs`（とそのソースマップ、アセット） | `zfb dev` と `zfb build`。 |
+| `bundle-runtime.mjs` | デプロイアダプタを設定したときの `zfb build`（アダプタに渡されるバンドル）。 |
+| `dev-pages/`、`dev-assets/` | `zfb dev`。 |
+| `graph.bin` | `zfb dev`（永続化された依存グラフ。デフォルトレイアウトでは `.zfb/graph.bin` に置かれます）。 |
+| `watcher-liveness-probe/` | `zfb dev`。 |
+| `plugins/` | `ctx.scratchDir` を通じてプラグインが書き込みます。zfb 自身は作成しません。[プラグイン](../concepts/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。 |
+
+`zfb check` と `zfb preview` は、スクラッチディレクトリに zfb 自身のファイルを何も書き込みません。検証してロックするだけです。ただし `zfb preview` で動くプラグインも `ctx.scratchDir` を受け取るため、そこに書き込むことはあります。
+
+### スクラッチディレクトリを使う `zfb dev` はビルド済みの出力ディレクトリを読まない
+
+スクラッチディレクトリを使う `zfb dev` は、出力ディレクトリを一切読みません。以前の `zfb build` が別の define や別の状態でビルドしたものかもしれないため、dev はそれを信用しません。
+
+- ルートが最初にレンダリングされる前に、ビルド済みの HTML を配信しません。
+- `/assets/*` を出力ディレクトリにフォールバックしません。
+- boot-lazy のシードとしても使わないため、`ZFB_DEV_BOOT_LAZY=1` は即時起動のレンダリングに戻ります。
+
+dev はその旨を 1 行の info ログで出力します。
+
+```text
+scratch dir in use (<scratch>): ignoring prebuilt <outDir> — no dist/ fallback for HTML or /assets
+```
+
+スクラッチディレクトリを使わない場合、dev の挙動はこれまでと変わりません。
+
+### 意図的に共有されるもの
+
+スクラッチディレクトリが分離するのは、zfb 自身の生成物です。次のものは、設計上、同時に実行するコマンドの間で共有されたままです。
+
+- **出力ディレクトリ。** 同じ出力ディレクトリを使う 2 つの `zfb build` は、互いに上書きし合います。それぞれに別の `--outdir` を指定してください。
+- **もともとプロセスごとに分かれている一時ファイル。** プロジェクトルートに置かれる esbuild のエントリ、tsconfig、仮想モジュールの一時ファイル、shadow セッション、設定ローダーの一時ディレクトリは、プロセスごとに一意の名前が付くため衝突しません。
+- **ユーザーの tsconfig が出力する `.tsbuildinfo`。** tsconfig で `incremental` や `composite` を有効にしている場合、`zfb check` は設定を変えずに `tsc` を実行するため、tsc は tsconfig の指定どおりの場所にこのファイルを書き込みます。
+- **`.zfb/` ステージングディレクトリ。** プロジェクトのコードがここからインポートするため、移動できません。
+- **プラグインが独自に持つディレクトリ。** プロジェクトルートにある自前のディレクトリ（たとえば `.zudo-doc/`）に書き込むプラグインは、同時に実行するコマンドの間でそれを共有したままです。プラグインまで分離するには、プラグイン側が `ctx.scratchDir` を使うように対応する必要があります。[プラグイン](../concepts/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。
+
+## 呼び出し単位の define
+
+`--define KEY=EXPR` は、config の [`bundle.define`](./define-config.mdx#bundle-設定-bundle-define) に加えて、その呼び出しに限った esbuild の define 置換を追加します。`zfb.config.ts` を書き換えずに、同じチェックアウトを別の値でビルドしたり配信したりするときに使います。環境ごとにオリジンを変える場合などです。
+
+```sh
+zfb build --define __ORIGIN__='"https://www.example.com"'
+zfb dev --scratch-dir .zfb-build/dev-preview \
+  --define __ORIGIN__='"https://preview.example.com"' \
+  --define __FEATURE_X__=true
+```
+
+- **対応コマンド。** `--define` は複数回指定でき、`zfb dev`、`zfb build`、`zfb check` で使えます。`zfb preview` はビルド済みの出力を配信するだけで何もバンドルしないため、このフラグを受け付けません。
+- **値は esbuild の生の式です。** `bundle.define` とまったく同じ扱いなので、文字列には内側の引用符が必要です: `--define __ORIGIN__='"https://a.example"'`。外側のシングルクォートで、シェルに内側のダブルクォートを残させます。フラグは最初の `=` で分割されるため、式の中に `=` を含めても構いません。
+- **マージ。** CLI の値は `bundle.define` にキー単位でマージされ、同じキーでは CLI が優先されます。同じキーを繰り返し指定した場合は最後の指定が勝つため、スクリプトで共通の引数リストの末尾に上書きを追加できます。プラグインは、マージ後のマップを `ctx.config.bundle.define` で参照できます。
+- **エラー。** `=` がない値、空のキー、空の式は、CLI の使い方エラーになります。予約済みのキー（`import.meta.env.PROD`、`import.meta.env.DEV`、`process.env.NODE_ENV`）も同様です。それ以上のキーの構文は zfb では検査しません。不正なキーは、`bundle.define` と同じくバンドル時に esbuild が報告します。
+- **セキュリティ。** `bundle.define` の警告はここにも当てはまります。どの値もブラウザ向けのバンドルに含まれるため、秘密情報は絶対に渡さないでください。
+
+### `zfb check` での `--define`
+
+`zfb check` は `--define` の値を検証してマージしますが、その値は使いません。define という概念を持たない `tsc` には渡りません。グローバル変数の型は、tsconfig が含める `.d.ts` ファイルで宣言してください。
+
+```ts
+// components/zfb-env.d.ts
+declare const __ORIGIN__: string;
+```
+
+`check` でもこのフラグを受け付けるのは、1 つの引数リストを `dev`、`build`、`check` で使い回せるようにするためです。また、不正な値は `check` の段階で失敗するため、`check` を通過して後のビルドで失敗することがありません。
+
+### define はビルドの同一性の一部
+
+有効な define のマップは、zfb がサーバーレンダリングした island のマークアップと island のバンドルに刻み込む、ビルドの同一性の一部です。異なる define でビルドされた SSR 出力と island が互いにハイドレーションすることはありません。同一性が一致しない island は、誤った値のまま黙ってハイドレーションするのではなく、`ZR_IDENTITY` エラーで失敗します。この同一性にスクラッチディレクトリの場所は影響せず、影響するのは define の値だけです。
+
+<Tip>
+
+dev サーバーで直近の `zfb build` と異なる `--define` を使うときは、`--scratch-dir` も指定してください。スクラッチディレクトリを使う dev はビルド済みの出力ディレクトリを読まないため、別の define でビルドされたページを配信することがありません。バンドルも、同時に実行するビルドとは別に保たれます。
 
 </Tip>
 
@@ -312,6 +455,7 @@ zfb check --skip-tsc
 | `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
 | `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../concepts/incremental-rebuild.mdx) を参照してください。 |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler 最小バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
+| `ZFB_SCRATCH_DIR` | 未設定 | `--scratch-dir` を渡さなかったときに `zfb dev`、`zfb build`、`zfb check`、`zfb preview` が使うスクラッチディレクトリ。空文字列や空白だけの値は未設定として扱われます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 
 <Note>
 
