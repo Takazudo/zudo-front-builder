@@ -210,6 +210,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let plugin_setup = crate::commands::plugins::run_plugin_setup(
         &plugin_host,
         &project_root,
+        &scratch.layout().plugin_scratch_dir(),
         &config,
         zfb_build::SetupCommand::Build,
     )
@@ -248,6 +249,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: outdir.clone(),
+            scratch_dir: scratch.layout().plugin_scratch_dir(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
             // preBuild: routes absent (undefined in JS) — spec AC for #262.
@@ -362,6 +364,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: outdir.clone(),
+            scratch_dir: scratch.layout().plugin_scratch_dir(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for postBuild ctx")?,
             // postBuild: routes present with all emitted URLs (#262).

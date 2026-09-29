@@ -1413,6 +1413,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let plugin_setup = crate::commands::plugins::run_plugin_setup(
         &plugin_host,
         &project_root,
+        &scratch_layout.plugin_scratch_dir(),
         &cfg,
         zfb_build::SetupCommand::Dev,
     )
@@ -1426,6 +1427,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: dist_root.clone(),
+            scratch_dir: scratch_layout.plugin_scratch_dir(),
             config: serde_json::to_value(&cfg)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
             // dev mode: routes always absent on preBuild (no manifest yet).
@@ -1442,6 +1444,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         crate::commands::plugins::build_dev_middleware_set(
             h,
             &project_root,
+            &scratch_layout.plugin_scratch_dir(),
             &cfg,
             zfb_server::ServerMode::Dev,
         )

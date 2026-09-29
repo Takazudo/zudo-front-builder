@@ -20,7 +20,7 @@
 //        ...
 //      ] }
 //
-//   { "id": <number>, "kind": "setup", "ctx": { "projectRoot",
+//   { "id": <number>, "kind": "setup", "ctx": { "projectRoot", "scratchDir",
 //        "command": "build" | "dev" | "preview", "config" } }
 //        -- calls each plugin's `setup(ctx)`. ctx exposes
 //           addAlias, addVirtualModule, injectRoute, addClientEntry. The host
@@ -34,7 +34,7 @@
 //           function's doc comment for why.
 //
 //   { "id": <number>, "kind": "preBuild", "ctx": { "projectRoot",
-//        "outDir", "config" } }   -- runs preBuild on every plugin in order.
+//        "scratchDir", "outDir", "config" } }   -- runs preBuild on every plugin in order.
 //        Never sent by the preview lifecycle (#1542 decision 3) —
 //        `zfb preview` serves an already-built `dist/` and has no
 //        `outDir` to (re)generate into.
@@ -42,7 +42,7 @@
 //   { "id": <number>, "kind": "postBuild", "ctx": { ... } }
 //
 //   { "id": <number>, "kind": "devRegister", "ctx": {
-//        "projectRoot", "config" } }
+//        "projectRoot", "scratchDir", "config" } }
 //        -- calls each plugin's `devMiddleware(ctx)` and accumulates
 //           registrations; reply contains the (path, handlerId) pairs.
 //
@@ -52,7 +52,7 @@
 //           dev-middleware handler; reply contains the response.
 //
 //   { "id": <number>, "kind": "previewRegister", "ctx": {
-//        "projectRoot", "config" } }
+//        "projectRoot", "scratchDir", "config" } }
 //        -- #1542: calls each plugin's `previewMiddleware(ctx)` and
 //           accumulates registrations; reply contains the (path,
 //           handlerId) pairs. Distinct from `devRegister` — a plugin
@@ -293,6 +293,7 @@ async function runBuildHook(id, hookName, ctx) {
     if (typeof fn !== "function") continue;
     const hookCtx = {
       projectRoot: ctx.projectRoot,
+      scratchDir: ctx.scratchDir,
       outDir: ctx.outDir,
       config: ctx.config,
       options: p.options,
@@ -355,6 +356,7 @@ async function handleSetup(id, msg) {
     const ctx = {
       command,
       projectRoot: msg.ctx.projectRoot,
+      scratchDir: msg.ctx.scratchDir,
       config: msg.ctx.config,
       options: p.options,
       logger: makeLogger(p.name),
@@ -637,6 +639,7 @@ async function registerMiddleware(id, msg, { hookName, handlers, idPrefix }) {
     const localPaths = new Map(); // path -> handlerId for THIS plugin
     const ctx = {
       projectRoot: msg.ctx.projectRoot,
+      scratchDir: msg.ctx.scratchDir,
       config: msg.ctx.config,
       options: p.options,
       logger: makeLogger(p.name),

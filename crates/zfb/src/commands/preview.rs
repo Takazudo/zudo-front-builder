@@ -201,8 +201,7 @@ async fn run_static(
     project_root: &Path,
     cfg: &config::Config,
     dist_root: &Path,
-    // Reserved for the plugin setup's `scratchDir` (#3346).
-    _scratch: &zfb_types::ScratchLayout,
+    scratch: &zfb_types::ScratchLayout,
     host: &str,
     port: u16,
 ) -> Result<()> {
@@ -229,13 +228,20 @@ async fn run_static(
     let plugin_host = crate::commands::plugins::maybe_spawn_host(cfg).await?;
     let cfg_json = serde_json::to_value(cfg)
         .context("plugin lifecycle: serialise config for preview setup ctx")?;
-    zfb_build::run_preview_setup(plugin_host.as_ref(), project_root, &cfg_json)
-        .await
-        .context("preview setup lifecycle hook")?;
+    let plugin_scratch_dir = scratch.plugin_scratch_dir();
+    zfb_build::run_preview_setup(
+        plugin_host.as_ref(),
+        project_root,
+        &plugin_scratch_dir,
+        &cfg_json,
+    )
+    .await
+    .context("preview setup lifecycle hook")?;
     let plugin_set = if let Some(h) = plugin_host.as_ref() {
         crate::commands::plugins::build_dev_middleware_set(
             h,
             project_root,
+            &plugin_scratch_dir,
             cfg,
             ServerMode::Preview,
         )
