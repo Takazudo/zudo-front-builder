@@ -30,7 +30,7 @@ export default function Counter() {
 
 That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
 
-`components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed:
+`components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed. This shortened illustration shows the pattern; the shipped template also uses `Show` for its icon and includes utility classes and SVG markup:
 
 ```tsx
 "use client";

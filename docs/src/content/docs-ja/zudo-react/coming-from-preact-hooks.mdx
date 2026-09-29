@@ -351,7 +351,7 @@ getScope は同期的なセットアップ中に有効で、現在の所有者�
 
 ## 一連の移行例
 
-scaffold のテーマ切り替えは、決定的な light 状態から始め、ブラウザの設定を読んで effect に変更を反映します。まず scaffold にある従来の Preact 実装を示します。
+scaffold のテーマ切り替えは、決定的な light 状態から始め、ブラウザの設定を読んで effect に変更を反映します。まず旧 Preact のパターンを示す例を載せます。同梱の v3 scaffold は zudo-react を使います。
 
 ~~~tsx
 "use client";
@@ -453,7 +453,7 @@ export default function ThemeToggle() {
 }
 ~~~
 
-次の実装では、同じセットアップモデルによってサーバーとハイドレーションのセットアップを決定的に保ちます。ブラウザの値は有効化時に読み、文書とストレージへの effect は有効化後に始めます。変化するアイコンのサブツリーは Show が所有します。
+次の簡略化した移行例では、同じセットアップモデルによってサーバーとハイドレーションのセットアップを決定的に保ちます。ブラウザの値は有効化時に読み、文書とストレージへの effect は有効化後に始めます。変化するアイコンのサブツリーは Show が所有します。
 
 ~~~tsx
 import { computed, getScope, Show, signal } from "@takazudo/zfb/zudo-react";

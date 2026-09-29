@@ -351,7 +351,7 @@ These are design boundaries, not missing hook aliases. The runtime does not prom
 
 ## A worked example
 
-The scaffold toggle begins with deterministic light state, then reads browser preferences and mirrors changes in effects. This is the old Preact implementation as it exists in the scaffold:
+The scaffold toggle begins with deterministic light state, then reads browser preferences and mirrors changes in effects. The following old Preact sample illustrates the former pattern; the shipped v3 scaffold uses zudo-react:
 
 ~~~tsx
 "use client";
@@ -453,7 +453,7 @@ export default function ThemeToggle() {
 }
 ~~~
 
-After, the same setup model keeps the server and hydration setup deterministic. Browser reads happen in activation, the document and storage effect starts after activation, and Show owns the changing icon subtree:
+After, this simplified conversion keeps the server and hydration setup deterministic. Browser reads happen in activation, the document and storage effect starts after activation, and Show owns the changing icon subtree:
 
 ~~~tsx
 import { computed, getScope, Show, signal } from "@takazudo/zfb/zudo-react";

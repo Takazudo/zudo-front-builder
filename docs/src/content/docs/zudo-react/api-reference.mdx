@@ -382,6 +382,14 @@ export function renderToString(node: Child, options?: RenderOptions): string;
 
 renderToString serializes a complete synchronous description tree with escaping and no markers outside explicit island roots; see [Server rendering](./server-rendering.mdx).
 
+### islandRootType
+
+~~~ts
+export const islandRootType: symbol;
+~~~
+
+The server entry also exports the marker that identifies `islandRoot` descriptions to the renderer. Application code normally calls `islandRoot` instead.
+
 ### islandRoot
 
 ~~~ts
