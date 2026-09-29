@@ -180,8 +180,9 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
     let outdir = resolve_outdir(&project_root, &selected_outdir);
 
-    // Held until `run` returns; the layout is threaded into paths by #3343.
-    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+    // Held until `run` returns: an explicit scratch dir stays locked for the
+    // whole build.
+    let scratch = crate::commands::scratch_dir::resolve_from_env(
         &project_root,
         &config,
         &outdir,
@@ -317,6 +318,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
         run_build(BuildArgsResolved {
             project_root: &project_root,
+            scratch: scratch.layout(),
             build_pages_root: &build_pages_root,
             // codex P1 — user-page islands resolve against the REAL pages
             // dir, never the overlay; package-route islands seed from their
@@ -645,6 +647,10 @@ pub(crate) fn resolve_emit_render_artifacts(
 /// later doesn't ripple into call sites.
 struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     project_root: &'a Path,
+    /// Where zfb-owned build intermediates (`bundle.mjs`,
+    /// `bundle-runtime.mjs`) land, and which roots the CSS source plan
+    /// excludes as zfb-written.
+    scratch: &'a zfb_types::ScratchLayout,
     /// The pages root the bundler and router scan are pointed at (#1193).
     /// Equal to `project_root/pages` for a project with no package-owned
     /// routes; otherwise the per-build overlay temp dir. Threaded so
@@ -777,6 +783,7 @@ trait BuildRunner {
         package_route_entrypoints: &[PathBuf],
         outdir: &Path,
         config: &Config,
+        zfb_written_roots: &[PathBuf],
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)>;
 }
 
@@ -933,6 +940,7 @@ impl BuildRunner for DefaultRunner {
         package_route_entrypoints: &[PathBuf],
         outdir: &Path,
         config: &Config,
+        zfb_written_roots: &[PathBuf],
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
         let started = build_phase_start(self.timing_enabled);
         // Run `CssPipeline::build_emitter` and
@@ -950,6 +958,7 @@ impl BuildRunner for DefaultRunner {
             &self.islands_plugin_config.alias_entries,
             &self.islands_plugin_config.virtual_modules,
             &|_roots| {},
+            zfb_written_roots,
         )
         .context("CSS emitter (DefaultRunner) failed")?;
         emit_build_phase_timing("css", css_started);
@@ -1062,6 +1071,7 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         plugin_alias_entries,
         plugin_virtual_modules,
         on_source_plan,
+        &zfb_types::ScratchLayout::default_for(project_root).written_roots(),
     )?
     .payload)
 }
@@ -1319,6 +1329,7 @@ pub(crate) fn build_dev_css_payload_with_index(
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     on_source_plan: CssSourcePlanObserver<'_>,
+    zfb_written_roots: &[PathBuf],
     session: &mut Option<WindSessionIndex>,
     changes: Option<&zfb_build::CssChangeSet>,
 ) -> Result<CssPayloadPass> {
@@ -1330,11 +1341,13 @@ pub(crate) fn build_dev_css_payload_with_index(
         plugin_alias_entries,
         plugin_virtual_modules,
         on_source_plan,
+        zfb_written_roots,
         Some(session),
         changes,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_default_css_payload_with_details(
     project_root: &Path,
     outdir: &Path,
@@ -1343,6 +1356,7 @@ pub(crate) fn build_default_css_payload_with_details(
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     on_source_plan: CssSourcePlanObserver<'_>,
+    zfb_written_roots: &[PathBuf],
 ) -> Result<CssPayloadPass> {
     build_css_payload_with_index(
         project_root,
@@ -1352,6 +1366,7 @@ pub(crate) fn build_default_css_payload_with_details(
         plugin_alias_entries,
         plugin_virtual_modules,
         on_source_plan,
+        zfb_written_roots,
         None,
         None,
     )
@@ -1366,6 +1381,7 @@ fn build_css_payload_with_index(
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
     on_source_plan: CssSourcePlanObserver<'_>,
+    zfb_written_roots: &[PathBuf],
     session: Option<&mut Option<WindSessionIndex>>,
     changes: Option<&zfb_build::CssChangeSet>,
 ) -> Result<CssPayloadPass> {
@@ -1459,7 +1475,7 @@ fn build_css_payload_with_index(
                 package_route_entrypoints,
                 &sibling_mirror_roots,
                 plugin_virtual_modules,
-                &zfb_types::ScratchLayout::default_for(project_root).written_roots(),
+                zfb_written_roots,
             )?;
             let plan = crate::commands::css_source_plan::build_css_source_plan(&inputs);
             timings.source_plan_ms = source_started.elapsed().as_millis();
@@ -6775,6 +6791,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 ) -> Result<(usize, zfb_build::PostBuildRouteManifest)> {
     let BuildArgsResolved {
         project_root,
+        scratch,
         build_pages_root,
         user_pages_dir,
         package_route_entrypoints,
@@ -7051,7 +7068,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         _esbuild_handle: _embedded_esbuild_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
-        &zfb_types::ScratchLayout::default_for(project_root).bundle_outdir(),
+        &scratch.bundle_outdir(),
         config,
         BundleMode::Production,
         crate::commands::bundler_input::CssModuleFailMode::HardFail,
@@ -7185,6 +7202,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             package_route_entrypoints,
             outdir,
             config,
+            &scratch.written_roots(),
         )
         .context("production asset emitters failed")?;
     apply_asset_url_base(&mut prod_asset_inputs, config.base.as_deref());
@@ -8538,6 +8556,9 @@ mod tests {
         /// exercise `run_build`'s `strictContentBridge` bail check.
         content_bridge_fallback_pages: RefCell<Vec<String>>,
         dropped_plain_css_inputs: RefCell<Vec<PathBuf>>,
+        /// Write each bundle to `input.outdir/<bundle_basename>` (like the
+        /// real bundler) instead of the fixed `mock_bundle_path`.
+        bundle_to_input_outdir: std::cell::Cell<bool>,
     }
 
     impl FakeRunner {
@@ -8553,6 +8574,7 @@ mod tests {
                 emitted_wasm_assets: RefCell::new(Vec::new()),
                 content_bridge_fallback_pages: RefCell::new(Vec::new()),
                 dropped_plain_css_inputs: RefCell::new(Vec::new()),
+                bundle_to_input_outdir: std::cell::Cell::new(false),
             }
         }
 
@@ -8596,19 +8618,31 @@ mod tests {
             *self.dropped_plain_css_inputs.borrow_mut() = paths;
             self
         }
+
+        fn bundling_to_input_outdir(self) -> Self {
+            self.bundle_to_input_outdir.set(true);
+            self
+        }
     }
 
     impl BuildRunner for FakeRunner {
         fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
             self.bundle_calls.borrow_mut().push(input.clone());
-            std::fs::create_dir_all(self.mock_bundle_path.parent().unwrap()).ok();
-            std::fs::write(&self.mock_bundle_path, "// mock\n").ok();
+            let bundle_path = if self.bundle_to_input_outdir.get() {
+                input
+                    .outdir
+                    .join(input.bundle_basename.as_deref().unwrap_or("bundle.mjs"))
+            } else {
+                self.mock_bundle_path.clone()
+            };
+            std::fs::create_dir_all(bundle_path.parent().unwrap()).ok();
+            std::fs::write(&bundle_path, "// mock\n").ok();
             let emitted_wasm_assets = self.emitted_wasm_assets.borrow().clone();
             for asset in &emitted_wasm_assets {
                 let asset_path = if asset.is_absolute() {
                     asset.clone()
                 } else {
-                    self.mock_bundle_path.parent().unwrap().join(asset)
+                    bundle_path.parent().unwrap().join(asset)
                 };
                 if let Some(parent) = asset_path.parent() {
                     std::fs::create_dir_all(parent).ok();
@@ -8616,8 +8650,8 @@ mod tests {
                 std::fs::write(asset_path, b"\0asm").ok();
             }
             Ok(BundlerOutput {
-                bundle_path: self.mock_bundle_path.clone(),
-                sourcemap_path: self.mock_bundle_path.with_extension("mjs.map"),
+                sourcemap_path: bundle_path.with_extension("mjs.map"),
+                bundle_path,
                 manifest: BundleManifest {
                     bundle_basename: "bundle.mjs".into(),
                     routes: vec![RouteEntry {
@@ -8737,6 +8771,7 @@ mod tests {
             _package_route_entrypoints: &[PathBuf],
             _outdir: &Path,
             _config: &Config,
+            _zfb_written_roots: &[PathBuf],
         ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
             // Clone the canned inputs so multiple tests can share the
             // same FakeRunner without consuming its state.
@@ -8775,6 +8810,10 @@ mod tests {
             output_extension: None,
             static_html: false,
         }
+    }
+
+    fn default_layout(project_root: &Path) -> zfb_types::ScratchLayout {
+        zfb_types::ScratchLayout::default_for(project_root)
     }
 
     fn make_runtime(project_root: &Path) {
@@ -9231,6 +9270,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9288,6 +9328,7 @@ mod tests {
 
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9327,6 +9368,7 @@ mod tests {
 
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9369,6 +9411,7 @@ mod tests {
 
         let result = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9405,6 +9448,7 @@ mod tests {
 
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9446,6 +9490,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9503,6 +9548,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9570,6 +9616,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9624,6 +9671,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9683,6 +9731,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9745,6 +9794,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9792,6 +9842,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9871,6 +9922,7 @@ mod tests {
                 _package_route_entrypoints: &[PathBuf],
                 _outdir: &Path,
                 _config: &Config,
+                _zfb_written_roots: &[PathBuf],
             ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
                 Ok((
                     ProdAssetEmitterInputs::default(),
@@ -9885,6 +9937,7 @@ mod tests {
         let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
         let err = run_build(BuildArgsResolved {
             project_root: tmp.path(),
+            scratch: &default_layout(tmp.path()),
             build_pages_root: tmp.path(),
             user_pages_dir: tmp.path(),
             package_route_entrypoints: &[],
@@ -9927,6 +9980,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -9976,6 +10030,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10043,6 +10098,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10071,6 +10127,77 @@ mod tests {
             calls[0].1.emitted_wasm_assets,
             vec![PathBuf::from("answer-1234abcd.wasm")],
             "the runtime bundle's bundle-relative Wasm assets must reach the adapter"
+        );
+    }
+
+    #[test]
+    fn run_build_with_session_scratch_writes_both_bundles_under_the_scratch_root() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let scratch_tmp = tempdir().unwrap();
+        let scratch_root = scratch_tmp.path().join("session-a");
+        let layout = zfb_types::ScratchLayout::for_scratch_dir(project_root, scratch_root.clone());
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/foo.tsx"),
+            "export const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            Route {
+                source_path: PathBuf::from("pages/api/foo.tsx"),
+                segments: vec![Segment::Static("api".into()), Segment::Static("foo".into())],
+                kind: RouteKind::Static,
+                specificity: 0,
+                output_extension: None,
+                static_html: false,
+            },
+        ];
+        let runner = FakeRunner::new(PathBuf::new()).bundling_to_input_outdir();
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            scratch: &layout,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .unwrap();
+
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(calls.len(), 2, "SSG bundle + runtime bundle");
+        assert_eq!(calls[0].outdir, scratch_root);
+        assert_eq!(calls[1].outdir, scratch_root);
+        assert!(scratch_root.join("bundle.mjs").is_file());
+        assert!(scratch_root.join("bundle-runtime.mjs").is_file());
+        assert!(
+            !project_root.join(".zfb-build").exists(),
+            "a session build must not write the default scratch root"
+        );
+        let adapter_calls = fake_adapter.calls.borrow();
+        assert_eq!(
+            adapter_calls[0].1.input_bundle,
+            scratch_root.join("bundle-runtime.mjs")
         );
     }
 
@@ -10121,6 +10248,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let result = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10184,6 +10312,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10225,6 +10354,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10272,6 +10402,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10370,6 +10501,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10457,6 +10589,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10682,6 +10815,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10786,6 +10920,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -10892,6 +11027,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -17302,6 +17438,7 @@ mod tests {
                 &[],
                 &outdir,
                 &cfg,
+                &default_layout(project_root).written_roots(),
             )
             .expect("emit_prod_assets must succeed");
         let css = inputs
@@ -17623,6 +17760,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -17684,6 +17822,7 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18066,6 +18205,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18129,6 +18269,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18207,6 +18348,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18318,6 +18460,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18457,6 +18600,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18533,6 +18677,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18612,6 +18757,7 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            scratch: &default_layout(project_root),
             build_pages_root: project_root,
             user_pages_dir: project_root,
             package_route_entrypoints: &[],
@@ -18713,6 +18859,7 @@ mod tests {
             &[],
             &[],
             &|_| {},
+            &zfb_types::ScratchLayout::default_for(&project).written_roots(),
         )
         .unwrap();
         let css = String::from_utf8(pass.payload.unwrap().bytes).unwrap();
@@ -18859,6 +19006,7 @@ mod tests {
                 &[],
                 &[],
                 &|_| {},
+                &zfb_types::ScratchLayout::default_for(project).written_roots(),
             )
             .unwrap();
             let payload = pass.payload.unwrap();
@@ -19057,6 +19205,7 @@ mod tests {
             &[],
             &[],
             &|_| {},
+            &zfb_types::ScratchLayout::default_for(project).written_roots(),
         )
         .unwrap();
         assert!(pass.payload.is_some());

@@ -28,15 +28,12 @@ const SWEPT_NAMES: &[&str] = &["zfb-dev-watcher-liveness-probe", "watcher-livene
 
 /// The resolved scratch layout plus, for an explicit scratch dir, the held
 /// ownership lock. Keep it alive until the command returns.
-// The layout is read by the command paths once #3343 threads it through.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct ScratchLease {
     layout: ScratchLayout,
     _lock: Option<File>,
 }
 
-#[allow(dead_code)]
 impl ScratchLease {
     pub(crate) fn layout(&self) -> &ScratchLayout {
         &self.layout

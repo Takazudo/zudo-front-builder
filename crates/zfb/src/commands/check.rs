@@ -60,7 +60,8 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
         .await
         .context("failed to load project configuration")?;
 
-    // Held until `run` returns; the layout is threaded into paths by #3343.
+    // Held until `run` returns. `check` writes nothing, so there is no
+    // layout to thread.
     let _scratch = crate::commands::scratch_dir::resolve_from_env(
         &project_root,
         &cfg,

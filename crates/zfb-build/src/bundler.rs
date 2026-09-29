@@ -21639,6 +21639,22 @@ mod tests {
         assert_eq!(out.manifest.bundle_basename, "bundle-runtime.mjs");
     }
 
+    /// The dev V8 host and rebundle skip key re-read `bundle_path`, so a
+    /// scratch-dir outdir outside the project is all they need.
+    #[test]
+    fn bundle_path_follows_an_out_of_project_outdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.outdir = scratch.path().join("session-a");
+
+        let out = bundle(input).expect("mock bundle into an out-of-project outdir");
+
+        assert_eq!(out.bundle_path, scratch.path().join("session-a/bundle.mjs"));
+        assert!(out.bundle_path.is_file());
+        assert!(!tmp.path().join(".zfb-build").exists());
+    }
+
     #[test]
     fn worker_only_routes_preserves_full_manifest_routes() {
         // The filter only narrows what `write_entry_module` imports into
