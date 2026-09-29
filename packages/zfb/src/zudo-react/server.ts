@@ -1,6 +1,7 @@
 import type { Child, Description } from "./description.js";
 import type { IslandIdentity } from "./index.js";
 import { createDescription } from "./description.js";
+import { islandRootType } from "./island-root-type.js";
 import { renderHtml } from "./render-html.js";
 
 export { serializeProps } from "./props-transport.js";
@@ -15,7 +16,6 @@ export interface IslandOptions {
   skipSsr?: boolean | undefined;
   fallback?: Child;
 }
-export const islandRootType = Symbol.for("@takazudo/zfb/zudo-react/island-root-v1");
 export function islandRoot(child: Description, options: IslandOptions): Description {
   return createDescription(islandRootType as never, { child, options });
 }

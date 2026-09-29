@@ -5,7 +5,8 @@ import { readSnapshot } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
 import { serializeProps } from "./props-transport.js";
-import { islandRootType, type IslandOptions, type RenderOptions } from "./server.js";
+import { islandRootType } from "./island-root-type.js";
+import type { IslandOptions, RenderOptions } from "./server.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 
 const words = (value: string) => new Set(value.split(" "));
