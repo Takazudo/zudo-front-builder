@@ -325,11 +325,50 @@ else `feat:` → minor, else patch), so do it before finalizing the proposed ver
 
 ## Step 4: Bump + Sync + Package Changelog MDX
 
-### 4a. Update packages/zfb/package.json
+### 4a. Measure md-wasm sizes in CI at the release version (before the bump)
+
+The four `.wasm` files embed `ZFB_RELEASE_VERSION`. An exact-size column can change when the
+version stamp changes: the `3.0.0` probe on source `027c86fa` changed render-only `finalWasm` by
+−8 bytes, while a same-source `2.22.1` build matched the manifest. See the
+[3.0.0 probe run](https://github.com/Takazudo/zudo-front-builder/actions/runs/36570873352) and
+[2.22.1 comparison](https://github.com/Takazudo/zudo-front-builder/actions/runs/36571467542).
+Measure each release version separately; those runs do not establish that other stamps are safe.
+
+Before editing `packages/zfb/package.json` or pushing the version-bump commit:
+
+1. From the current `main`, make a disposable branch whose **only initial change** sets
+   `crates/zfb-md-wasm/npm/package.json`'s `version` to `<version>`. Push it and open a draft PR
+   targeting `main`. Do not run `scripts/sync-platform-versions.mjs` on this branch: it would undo
+   the isolated stamp. The `crates/zfb-md-wasm/**` path makes health.yml run `wasm-md (default)`.
+2. Read that job's run URL, head SHA, and the `Enforce four-artifact gzip budgets and report
+   metrics` step. Copy **all four CI-measured columns** (`finalWasm`, `gzip9`, `glue`,
+   `glueGzip9`) for default/root, highlight, render, and parse from its four metric lines.
+   Record every mismatch and gzip warning, including each delta. Check that all four gzip sizes
+   remain below their existing ceilings, and that `assert-zfb-md-wasm-exports.sh` passed. A
+   `manifest-mismatch` failure can skip packing; it does not make the measured metric lines
+   unusable. A missing metric, failed build or exports assert, or ceiling breach blocks the
+   release until diagnosed. Never measure or refresh the manifest from a Mac build.
+3. On the disposable branch, set `crates/zfb-md-wasm/shipped-sizes.json`'s
+   `measuredOnVersion` to `<version>` and replace its measured columns with the values from
+   that CI log. Keep the real ceilings unchanged. Run
+   `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`, then
+   `node scripts/assert-md-wasm-size-docs.mjs`. The fix command updates every dependent
+   documentation table and preserves the digest-disclaimer checks. Push this rehearsal commit
+   to the draft PR and require a new `wasm-md (default)` run with zero budget errors. Check
+   `assert-packed.mjs`, `assert-zfb-md-wasm-release.mjs`, the tarball budget against its existing
+   ceiling, and `assert-zfb-md-wasm-exports.sh` in that run. Gzip drift warnings within 64 bytes
+   are acceptable; exact-size errors and ceiling breaches are not.
+4. Copy the CI-measured manifest and synchronized documentation changes into the `main`
+   working tree for the single version-bump commit below. Close the disposable PR **unmerged**
+   and delete its branch. Do not carry its isolated npm-only bump onto `main`; Steps 4b–4d make
+   the real lockstep bump. The manifest refresh belongs in that same bump commit, not an
+   earlier push.
+
+### 4b. Update packages/zfb/package.json
 
 Update the `version` field in `packages/zfb/package.json` to the confirmed new version (without the `v` prefix). Do NOT touch the workspace root `package.json`.
 
-### 4b. Propagate to lockstep packages
+### 4c. Propagate to lockstep packages
 
 ```bash
 node scripts/sync-platform-versions.mjs
@@ -337,7 +376,7 @@ node scripts/sync-platform-versions.mjs
 
 This propagates the new version to all lockstep packages and updates `optionalDependencies` in `packages/zfb/package.json`.
 
-### 4c. Regenerate lockfile
+### 4d. Regenerate lockfile
 
 ```bash
 pnpm install --lockfile-only
@@ -358,7 +397,7 @@ git diff pnpm-lock.yaml | grep -P '^[+-](?!  )' | head -20
 
 If you see non-version-related changes (structural changes, unexpected lines), stop and surface the diff to the user before proceeding.
 
-### 4d. Write five package changelog MDX pages
+### 4e. Write five package changelog MDX pages
 
 Create exactly these five English pages (there are no Japanese mirrors because the changelog is
 default-locale-only):
@@ -460,7 +499,9 @@ five commands before the direct release push so type/content errors, strict brok
 malformed emitted HTML cannot be published. If anything fails, stop and tell the user. Do not
 proceed.
 
-If you used `--lockfile-only` in 4c (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
+Also run `node scripts/assert-md-wasm-size-docs.mjs` after the manifest and documentation edits.
+
+If you used `--lockfile-only` in 4d (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
 
 If this release touches `packages/zfb-runtime` router code, also run `pnpm test:webkit-back` (T4 local-heavy, Mac only — not covered by Step 7's CI wait; `pnpm test:router-chromium` already runs in CI via `router-chromium.yml`).
 
@@ -472,6 +513,12 @@ Stage and commit all bumped files atomically in a **single commit**:
 
 ```bash
 git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.yaml crates/zfb/src/commands/new.rs \
+  crates/zfb-md-wasm/shipped-sizes.json crates/zfb-md-wasm/README.md crates/zfb-md-wasm/npm/README.md \
+  docs/src/content/docs/api/md-wasm.mdx docs/src/content/docs-ja/api/md-wasm.mdx \
+  docs/src/content/docs/guides/browser-markdown-preview.mdx \
+  docs/src/content/docs-ja/guides/browser-markdown-preview.mdx \
+  docs/src/content/docs/guides/syntax-highlighting.mdx \
+  docs/src/content/docs-ja/guides/syntax-highlighting.mdx \
   docs/src/content/docs/changelog/zfb/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
