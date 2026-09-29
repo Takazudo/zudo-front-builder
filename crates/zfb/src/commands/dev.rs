@@ -1299,9 +1299,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
 
-    let cfg = config::load_from_dir(&project_root)
+    let mut cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    config::apply_define_overrides(&mut cfg, &args.define.define);
 
     // Configured `outDir` is dev's read-only production seed; live dev HTML
     // and assets use the isolated scratch roots established below.
@@ -2936,6 +2937,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // needs `project_root` + the digest roots), loads + seeds the graph, and
     // runs the boot render against `dev_session`.
     let project_root_for_boot = project_root.clone();
+    let cli_define_for_boot = args.define.define.clone();
     // #1550 — the digest walks the in-root relative roots PLUS the canonical
     // out-of-root roots. Routing out-of-root content through the extras
     // channel removed it from `watch_roots`, so without folding it back in
@@ -3454,8 +3456,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
 
             // 2. Manifest digest — the size-bound walk moved past bind.
-            let manifest_digest =
-                compute_manifest_digest(&project_root_for_boot, &digest_watch_roots);
+            let manifest_digest = compute_manifest_digest(
+                &project_root_for_boot,
+                &digest_watch_roots,
+                &cli_define_for_boot,
+            );
 
             // 3+4. Load the persisted graph (digest-gated) and assemble the
             //      boot graph under a single lock acquisition.
@@ -4491,7 +4496,39 @@ pub async fn run(_args: &DevArgs) -> Result<()> {
 /// denied while walking sources). On `None` the caller should bypass
 /// the persistence layer entirely — never falsely reuse a stale
 /// graph.
-fn compute_manifest_digest(project_root: &Path, watch_roots: &[PathBuf]) -> Option<ManifestDigest> {
+/// Fold the `--define` override list into the persisted-graph digest.
+/// Config-authored defines are already covered by the `zfb.config.*` bytes;
+/// the CLI list lives outside them. An empty list leaves the digest
+/// byte-identical, and the scratch-dir location never enters the hash.
+fn fold_cli_define_into_digest(
+    digest: ManifestDigest,
+    cli_define: &[(String, String)],
+) -> ManifestDigest {
+    if cli_define.is_empty() {
+        return digest;
+    }
+    let effective: std::collections::BTreeMap<&str, &str> = cli_define
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(digest.as_hex().as_bytes());
+    hasher.update(b"cli-define\0");
+    for (k, v) in effective {
+        hasher.update(k.as_bytes());
+        hasher.update([0]);
+        hasher.update(v.as_bytes());
+        hasher.update([0]);
+    }
+    ManifestDigest::from_bytes(hasher.finalize().into())
+}
+
+fn compute_manifest_digest(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+    cli_define: &[(String, String)],
+) -> Option<ManifestDigest> {
     // Config files that, when changed, must invalidate the graph
     // even though they live next to (not under) the watched roots.
     // Both JSON and TS are listed; missing ones are silently
@@ -4501,7 +4538,7 @@ fn compute_manifest_digest(project_root: &Path, watch_roots: &[PathBuf]) -> Opti
         PathBuf::from("zfb.config.ts"),
     ];
     match ManifestDigest::compute(project_root, watch_roots, &cfg_files) {
-        Ok(d) => Some(d),
+        Ok(d) => Some(fold_cli_define_into_digest(d, cli_define)),
         Err(err) => {
             output::warn(format!(
                 "graph persistence: manifest digest failed (cache disabled): {err:#}"
@@ -8875,6 +8912,10 @@ fn assemble_and_bundle_dev(
 }
 
 /// Compute the Phase-B skip key for a single dev refresh tick (issue #940).
+///
+/// Per process, and the hashed bundle bytes already contain any substituted
+/// `--define` / `bundle.define` value, so the define map needs no separate
+/// input here.
 ///
 /// The key is a SHA-256 digest of:
 ///
@@ -15383,6 +15424,27 @@ mod tests {
     /// external-content edit must change the digest — otherwise a stale
     /// `.zfb/graph.bin` could be reused after an out-of-tree content change.
     #[test]
+    fn cli_define_folds_into_manifest_digest_deterministically() {
+        let base = ManifestDigest::from_bytes([3u8; 32]);
+        let one = vec![("K".to_string(), "1".to_string())];
+        let two = vec![("K".to_string(), "2".to_string())];
+        assert_eq!(fold_cli_define_into_digest(base.clone(), &[]), base);
+        let d1 = fold_cli_define_into_digest(base.clone(), &one);
+        assert_ne!(d1, base);
+        assert_eq!(d1, fold_cli_define_into_digest(base.clone(), &one));
+        assert_ne!(d1, fold_cli_define_into_digest(base.clone(), &two));
+        let ab = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ];
+        let ba = vec![ab[1].clone(), ab[0].clone()];
+        assert_eq!(
+            fold_cli_define_into_digest(base.clone(), &ab),
+            fold_cli_define_into_digest(base, &ba)
+        );
+    }
+
+    #[test]
     fn manifest_digest_changes_on_external_content_edit() {
         let base = tempfile::tempdir().unwrap();
         let base = base.path().canonicalize().unwrap();
@@ -15400,10 +15462,10 @@ mod tests {
             "digest roots must include the canonical out-of-root dir"
         );
 
-        let d1 = compute_manifest_digest(&project_root, &roots).expect("digest 1");
+        let d1 = compute_manifest_digest(&project_root, &roots, &[]).expect("digest 1");
         // Length-changing edit guarantees a different (mtime+len) fingerprint.
         std::fs::write(&post, "aa-changed").unwrap();
-        let d2 = compute_manifest_digest(&project_root, &roots).expect("digest 2");
+        let d2 = compute_manifest_digest(&project_root, &roots, &[]).expect("digest 2");
         assert_ne!(
             d1, d2,
             "editing an out-of-root collection file must flip the manifest digest"

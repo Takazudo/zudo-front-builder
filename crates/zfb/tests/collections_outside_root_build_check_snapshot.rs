@@ -95,6 +95,7 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
         let result = check::run(&CheckArgs {
             skip_tsc: true,
             scratch: ScratchDirArg::default(),
+            define: Default::default(),
         })
         .await;
         assert!(

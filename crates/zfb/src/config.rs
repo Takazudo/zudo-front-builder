@@ -1797,6 +1797,29 @@ pub fn resolve_bundle_loaders(bundle: Option<&BundleConfig>) -> BTreeMap<String,
     }
 }
 
+/// Define keys owned by zfb's bundle mode; neither config nor `--define` may set them.
+pub(crate) const RESERVED_DEFINE_KEYS: &[&str] = &[
+    "import.meta.env.PROD",
+    "import.meta.env.DEV",
+    "process.env.NODE_ENV",
+];
+
+/// Merge per-invocation `--define KEY=EXPR` overrides into `bundle.define`.
+/// The CLI wins per key; among repeated CLI keys the last occurrence wins.
+pub fn apply_define_overrides(cfg: &mut Config, overrides: &[(String, String)]) {
+    if overrides.is_empty() {
+        return;
+    }
+    let define = cfg
+        .bundle
+        .get_or_insert_with(Default::default)
+        .define
+        .get_or_insert_with(Default::default);
+    for (key, expr) in overrides {
+        define.insert(key.clone(), expr.clone());
+    }
+}
+
 /// Resolve `bundle.define` into a deterministic key-to-expression map.
 /// Values remain raw esbuild expressions and are not JSON-encoded here.
 #[must_use]
@@ -2971,11 +2994,6 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         }
 
         if let Some(define) = &bundle.define {
-            const RESERVED_DEFINE_KEYS: &[&str] = &[
-                "import.meta.env.PROD",
-                "import.meta.env.DEV",
-                "process.env.NODE_ENV",
-            ];
             for key in define.keys() {
                 if RESERVED_DEFINE_KEYS.contains(&key.as_str()) {
                     bail!(
@@ -6252,6 +6270,35 @@ mod tests {
             ])
         );
         validate(&cfg, Path::new(".")).expect("valid bundle knobs pass validation");
+    }
+
+    #[test]
+    fn apply_define_overrides_cli_wins_last_repeat_wins_and_keeps_others() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({
+            "bundle": { "define": { "A": "1", "B": "2" } }
+        }))
+        .unwrap();
+        apply_define_overrides(
+            &mut cfg,
+            &[
+                ("A".into(), "x".into()),
+                ("C".into(), "3".into()),
+                ("A".into(), "y".into()),
+            ],
+        );
+        let d = resolve_bundle_define(cfg.bundle.as_ref());
+        assert_eq!(d["A"], "y");
+        assert_eq!(d["B"], "2");
+        assert_eq!(d["C"], "3");
+    }
+
+    #[test]
+    fn apply_define_overrides_creates_bundle_when_absent_and_noops_when_empty() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        apply_define_overrides(&mut cfg, &[]);
+        assert!(cfg.bundle.is_none());
+        apply_define_overrides(&mut cfg, &[("A".into(), "1".into())]);
+        assert_eq!(resolve_bundle_define(cfg.bundle.as_ref())["A"], "1");
     }
 
     #[test]
