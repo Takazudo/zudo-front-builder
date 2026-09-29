@@ -112,7 +112,7 @@ with the `zfb` package.
 Each entry has three things you can rely on:
 
 - `data` — the parsed, validated frontmatter (typed against your schema).
-- `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](./mdx-components.mdx) for details and `defaultComponents` recipes.
+- `Content` — a renderable zudo-react component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](./mdx-components.mdx) for details and `defaultComponents` recipes.
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
 The function signature is documented at [`getCollection`](../api/get-collection.mdx).

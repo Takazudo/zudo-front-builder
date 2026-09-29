@@ -1,0 +1,73 @@
+---
+title: Server rendering
+description: Render whole pages as escaped HTML and add owned markers only at explicit island roots.
+sidebar_position: 5
+---
+
+## Render a page
+
+The server entry is **@takazudo/zfb/zudo-react/server**. Its **renderToString** function renders a synchronous description tree to HTML. It accepts strings, numbers, empty values, arrays, descriptions, and scalar-valued reactive children. A string passed directly to the renderer is escaped text.
+
+~~~tsx
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+
+const html = renderToString(
+  <html>
+    <head><title>Example</title></head>
+    <body><main><h1>Hello</h1></main></body>
+  </html>
+);
+~~~
+
+This call produces a whole document. The renderer does not add a doctype. Text escapes ampersand and angle brackets; attributes also escape double quotes. It preserves prop insertion order with double-quoted attributes, emits paired template elements, and emits a literal lowercase closing head tag. Void HTML elements have no closing tag and reject children or rawHtml. SVG non-void elements are paired.
+
+Static output has no runtime comments or attributes outside explicit island boundaries. Ordinary component, array, and fragment boundaries do not add separators or whitespace. A page can therefore be rendered without hydration protocol markers.
+
+zfb may await a top-level asynchronous page function before calling the renderer. An async component or promise nested inside the rendered tree is rejected with ZR_ASYNC_COMPONENT; the runtime does not await nested work.
+
+## Mark an island explicitly
+
+Use **islandRoot** when a rendered subtree will be activated in the browser. It creates an inert wrapper description; component setup and prop serialization happen only when the wrapper is rendered.
+
+~~~tsx
+import { islandRoot, renderToString } from "@takazudo/zfb/zudo-react/server";
+
+const identity = { component: "Counter", build: "build-7" };
+const root = islandRoot(<Counter />, {
+  identity,
+  when: "visible",
+  fallback: <p>Loading the counter</p>
+});
+
+const html = renderToString(<main>{root}</main>);
+~~~
+
+The wrapper is a div. It has exactly one component marker: data-zfb-island or data-zfb-island-skip-ssr. It also carries data-when, data-zfb-transport="json/1", data-zfb-protocol="zudo-react/1", a nonempty data-zfb-build identity, and data-props even when props are empty. These attributes are emitted in that order, with data-media between data-when and transport only for media mode. The default data-when value is load; idle, visible, and media are also supported. Media mode requires a nonempty data-media query. The skip-SSR option selects the skip-SSR marker, validates identity and props without running the child, and renders its fallback without internal hydration markers.
+
+The component name and build identity must match the generated zfb metadata and client RootOptions. A component with a conflicting displayName, an anonymous component, or an unregistered component cannot be used as an island child. Use the existing zfb island integration for scanner registration, scheduling, and persistence; see the [island guide](../concepts/islands.mdx).
+
+The wrapper is retained by zfb. zudo-react markers describe ranges only inside that wrapper, so a surrounding document stays marker-free. Each root owns its local marker numbering; authors do not need a global element ID or a component registry of their own.
+
+## Render an inner island subtree
+
+For a caller that supplies its own wrapper attributes, **renderToString** also accepts an island identity option. This emits the same inner range markers without emitting a wrapper. The caller is responsible for supplying the matching container metadata.
+
+~~~tsx
+const inner = renderToString(<Counter />, { island: identity });
+~~~
+
+Do not use this mode to invent a wrapper protocol. For SDK-integrated islands, use the supported zfb boundary described in the [island API guide](../api/island.mdx).
+
+## Props use JSON transport
+
+**serializeProps** returns JSON text; the renderer applies HTML attribute escaping once when it emits the text as data-props. The transport accepts only plain data records, dense arrays, strings, booleans, null, and finite numbers. Repeated references serialize by value. It rejects undefined, cycles, functions, symbols, bigints, non-finite numbers, class instances, runtime descriptions, signals, and computed values.
+
+Validation happens before JSON serialization. Arrays must be dense and have no extra named or symbol properties. Records may be ordinary or null-prototype records; only own enumerable string data properties are accepted. Accessors, non-enumerable fields, custom toJSON methods, symbols, and prototype-sensitive record keys are rejected without being invoked. Props do not carry live signal identity across the boundary; construct signals during client setup.
+
+## See also
+
+- [Overview](./overview.mdx)
+- [Hydration](./hydration.mdx)
+- [Forms](./forms.mdx)
+- [Islands](../concepts/islands.mdx)
+- [Island API](../api/island.mdx)

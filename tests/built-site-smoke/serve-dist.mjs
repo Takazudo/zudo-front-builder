@@ -1,6 +1,6 @@
 /**
  * Minimal static file server for the built-site-smoke Playwright fixture
- * (issue #1401).
+ * (issues #1401 and #3291). It serves every generated fixture page directly.
  *
  * Serves tests/built-site-smoke/fixture-site/dist/ — the real output of a
  * `zfb build` run against fixture-site/ — at the server root, the same

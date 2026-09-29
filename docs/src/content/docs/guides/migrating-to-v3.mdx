@@ -1,0 +1,111 @@
+---
+title: Migrating to v3
+description: Move a zfb 2.x project to the owned styling and component engines.
+sidebar_position: 0.5
+---
+
+## Before you start
+
+This guide is for projects using Tailwind CSS, Preact or React components, islands, MDX, or the old zfb configuration. Version 3 removes those engine integrations. There is no compatibility mode or automatic conversion. Commit a working 2.x baseline and migrate your project and any configuration preset together. Upgrade a preset package first: a preset that still supplies a removed key fails configuration loading even after the app removes its copy.
+
+Use a v3 `zfb` binary and matching `@takazudo/zfb` packages for the checks below. A binary or types installed in a 2.x docs host still describe 2.x behavior.
+
+## Configuration
+
+Delete `framework`, including `framework: "preact"` or `framework: "react"`. The remaining key produces this configuration error:
+
+```text
+the framework key was removed in zfb 3; delete the key. zfb now uses zudo-react.
+```
+
+Replace `tailwind` with `wind`. To keep authored CSS and CSS Modules without generated utilities, use `wind: false` instead of `tailwind: { enabled: false }`. A leftover key produces:
+
+```text
+the tailwind key was removed in zfb 3; utilities are compiled by the built-in zudo-wind engine. Replace tailwind: { enabled: false } with wind: false, or delete the key. See the v3 migration guide
+```
+
+An absent `wind` key enables an empty v1 configuration with reset `none` and no tokens; it does not restore the old theme. Nested `wind` objects reject unknown fields. The [wind configuration reference](../zudo-wind/configuration.mdx) lists every field and merge rule.
+
+## Stylesheets
+
+Remove `@import "tailwindcss"`, its preflight and utilities imports, and Tailwind directives such as `@theme`, `@source`, `@apply`, `@utility`, and `@plugin` from the entry sheet and imported sheets. Remaining directives fail with diagnostic `ZW009`, including under `wind: false`. Put custom selectors and declarations in authored CSS; put utility values in `wind.tokens`.
+
+Version 3 supplies no implicit palette, spacing unit, named scales, or breakpoints. Select `none`, `minimal-v1`, or `owned-v1` explicitly for `wind.reset`; `none` is the default. The new basic-blog scaffold chooses `owned-v1` and defines its palette and `spacingUnit`, then restores prose list styling in authored CSS. Check headings, lists, borders, and form controls visually when choosing a reset.
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { accent: "var(--color-accent)" },
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+  },
+});
+```
+
+Declare `--color-accent` in your stylesheet, and add tokens for every utility your project uses. Unknown ordinary classes remain authored class text; invalid recognized utilities and missing tokens at strict origins receive diagnostics. Utility language and reset choices differ from Tailwind. Use the [Tailwind migration map](../zudo-wind/coming-from-tailwind.mdx) for directives, variants, tokens, and unsupported constructs.
+
+## Components and islands
+
+Set `compilerOptions.jsx` to `react-jsx` and `compilerOptions.jsxImportSource` to `@takazudo/zfb/zudo-react` in `tsconfig.json`. Keep `@takazudo/zfb` and `@takazudo/zfb-runtime` where the project uses them; remove direct `preact`, `react`, `react-dom`, `@types/react`, and `@types/react-dom` dependencies when they were present only for zfb's old engines. The runtime is shipped through `@takazudo/zfb/zudo-react`, not a separate package.
+
+```json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+```
+
+Rewrite hook components as setup-once zudo-react components. Use `signal()` for writable state and form models, `computed()` for readonly derivations, `getScope()` and `scope.effect()` for lifecycle work, and `Show` or `For` for owned conditional and keyed regions. Readonly or computed signals cannot serve as writable models. JSX uses HTML and CSS spellings such as `class`, `for`, and `style={{ "background-color": "red" }}`, with native `on:click` listeners. Replace React-style props and unbranded element literals with zudo-react JSX or `h()`. Use `rawHtml` only for trusted markup; it cannot have children. The [Preact hooks migration map](../zudo-react/coming-from-preact-hooks.mdx) gives the conversion patterns.
+
+`<Island>` remains the build-time wrapper for a component. Its transport is stricter: use one component child, JSON props, and an identity that agrees with the source scanner. Hand-authored wrappers need the complete valid metadata. Hydration adopts matching server markup or fails closed per island; skipped SSR roots use `data-when` scheduling and replace fallback after a successful client mount. Review form behavior because supported controls use explicit writable models, single-select only, and the DOM value wins during hydration. See the [islands guide](../concepts/islands.mdx).
+
+## MDX and md-wasm
+
+The `@takazudo/zfb-md-wasm` `compile()` and `renderHtml()` options no longer accept `jsxRuntime`. Remove the field rather than selecting `react` or `preact`; the typed API rejects it and the JSON validator reports an unknown field naming `jsxRuntime`. Compiled MDX imports its Fragment from `@takazudo/zfb/zudo-react/jsx-runtime`. Ensure a consumer bundling compiled output resolves that subpath and does not alias it to an old engine.
+
+## CLI and environment
+
+Remove `ZFB_TAILWIND_BIN` and `ZFB_TAILWIND_OXIDE_WARMUP` from scripts and CI. Tailwind's bundled binary and pin are gone. `zfb css` remains the standalone CSS command and now compiles with zudo-wind; its explicit `--source` inputs still work. `zfb wind explain <candidate>` explains one candidate, and `zfb wind audit` inspects project candidates. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`; standalone explicit sources can additionally use `.html` and `.mjs`.
+
+`zfb --version` now reports the release version and `embedded esbuild` version, with no Tailwind line. Use the [wind diagnostics guide](../zudo-wind/diagnostics-and-tools.mdx) to inspect migration failures.
+
+## Packages that ship classes or components
+
+A package that previously relied on a shipped safelist should publish complete candidates in a versioned JSON manifest. The consumer declares the file under its producer key; distinct producers survive preset and app merging. Every manifest entry is validated strictly, and the consumer must configure its tokens. A manifest does not define tokens or discover itself automatically.
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "widgets",
+  "candidates": ["group", "p-0", "hover:bg-accent"]
+}
+```
+
+```ts
+wind: {
+  manifests: { widgets: { path: "./node_modules/widgets/wind.json" } },
+  tokens: { colors: { accent: "#2563eb" } },
+}
+```
+
+Ship package components using imports from `@takazudo/zfb/zudo-react` and the same JSX import source. Do not ship Preact or React JSX runtime imports for zfb consumers. See [sources and candidates](../zudo-wind/sources-and-candidates.mdx) for manifest validation and root rules.
+
+## Checklist
+
+1. Upgrade configuration presets, then install matching v3 packages and binary; run `zfb --version` and inspect `package.json`.
+2. Remove `framework` and replace `tailwind` with `wind` or `wind: false`; run `zfb check` to catch removed keys and invalid nested data.
+3. Remove Tailwind imports and directives, set tokens and a reset, then run `zfb css --input <entry.css> --output <output.css>` using your project's entry and output paths.
+4. Change the JSX import source, dependencies, components, islands, and form models; run `zfb check` and fix type errors.
+5. Remove `jsxRuntime` from md-wasm calls and update compiled-output consumers; run your package's TypeScript check.
+6. Replace finite dynamic classes with complete literals or a manifest; run `zfb wind audit` and `zfb wind explain <candidate>` on representative classes.
+7. Remove Tailwind environment overrides from build scripts; run `zfb build` and compare key pages, islands, controls, and styles in a browser.

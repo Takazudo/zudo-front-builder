@@ -1,0 +1,176 @@
+---
+title: Cascade and reset
+description: Understand reset choices, generated layers, unlayered utilities, and deterministic rule ordering.
+sidebar_position: 7
+---
+
+## Layer order
+
+Whenever wind emits a reset, token, or utility rule, the generated layer prelude is:
+
+```css
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+```
+
+Wind appends authored layer-order statements after this prelude. They cannot move the five listed layers ahead of or behind one another. Other layer names follow ordinary CSS first-declaration order. Imported stylesheets are not wrapped in a layer implicitly; an explicit import layer remains valid.
+
+The integrated stylesheet order is:
+
+1. The generated layer prelude.
+2. Hoisted external imports.
+3. The highlight block in `@layer zfb-hi`.
+4. Generated reset and token layers.
+5. Generated `@property` registrations when needed.
+6. Authored bundled CSS, with imports already handled by the bundler.
+7. Unlayered generated utility rules.
+8. CSS Modules output at its pipeline append position.
+
+The prelude comes before any authored layer prefix, so authored CSS cannot replace the owned order. Wind utilities are unlayered and follow authored global rules. They therefore beat normal declarations in named layers. An unlayered authored rule with greater specificity still wins; an equal-specificity authored rule that occurs later also wins. Important declarations follow normal CSS layer rules, but there is no important modifier in the wind language.
+
+An entirely empty wind result emits no prelude. A selected reset can emit the prelude and reset even when no candidates resolve.
+
+## Reset choices
+
+The default is `none`, which emits no reset bytes. `minimal-v1` contains exactly these declarations:
+
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+}
+```
+
+`owned-v1` is a complete reset, not an extension of `minimal-v1`:
+
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
+}
+html {
+  line-height: 1.5;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+body {
+  line-height: inherit;
+}
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+a {
+  color: inherit;
+  text-decoration: inherit;
+}
+b,
+strong {
+  font-weight: bolder;
+}
+code,
+kbd,
+samp,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1em;
+}
+ol,
+ul,
+menu {
+  list-style: none;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+button,
+input:where([type="button"], [type="reset"], [type="submit"]) {
+  background-color: transparent;
+  background-image: none;
+}
+textarea {
+  resize: vertical;
+}
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block;
+  vertical-align: middle;
+}
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+table {
+  border-collapse: collapse;
+  border-color: inherit;
+  text-indent: 0;
+}
+summary {
+  display: list-item;
+}
+hr {
+  height: 0;
+  border-top-width: 1px;
+}
+```
+
+Both resets leave native focus outlines and `appearance` alone. Neither forces a display rule for `[hidden]`. Bare border utilities set a solid border themselves under every reset choice.
+
+## Deterministic ordering
+
+Rules sort by this ascending tuple:
+
+```text
+(responsive_rank, dark_rank, relation_rank, state_rank, pseudo_rank,
+ conflict_group_rank, scope_rank, catalog_rank, raw_candidate_utf8_bytes)
+```
+
+The base responsive rank is 0. For each configured breakpoint in ascending width order, minimum ranks are `2*i + 1` and maximum ranks are `2*i + 2`, with `i` starting at zero. Dark has rank 0 or 1. Relation, state, and pseudo ranks follow the orders in [Variants](./variants.mdx). Conflict groups use catalog table order starting at 1. Scope ranks are broad 0, axis 1, and side or corner 2; single-property families use 0. Catalog subentries use their listed order, then root bytes; raw candidate UTF-8 bytes break the final tie. This is emitted source order; it does not replace selector specificity.
+
+HTML class order has no effect. With `spacingUnit` set to `0.25rem`, every permutation of `p-4 px-2 pl-1` resolves to top and bottom `1rem`, right `0.5rem`, and left `0.25rem`. The same rule applies to margins. `gap-4 gap-x-2 gap-y-1` produces a column gap of `0.5rem` and row gap of `0.25rem`. Same-scope ties use raw candidate bytes, so `p-2` sorts after `p-10`.
+
+## Output bytes
+
+V1 generated CSS is not minified in development or production. There is no final stylesheet minifier. The printer uses LF, two-space indentation, one declaration per line, and a final LF. Identical inputs produce identical wind CSS in either mode; CSS Modules may still be minified separately in production.
+
+## See also
+
+- [Variants](./variants.mdx)
+- [Utility grammar](./utility-grammar.mdx)
+- [Tokens](./tokens.mdx)
+- [Diagnostics and tools](./diagnostics-and-tools.mdx)

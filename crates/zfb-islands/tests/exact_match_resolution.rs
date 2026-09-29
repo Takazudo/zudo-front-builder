@@ -24,6 +24,8 @@ use zfb_islands::{
 };
 use zfb_test_utils::locate_esbuild;
 
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
 /// Build a working_dir with a `components/` subtree holding one island
 /// TSX file. `island_source` is the file body; `aliased_target_filename`
 /// (when `Some`) is laid down at `<root>/src/<name>` so the caller can
@@ -76,8 +78,8 @@ fn alias_does_not_match_prefix_with_slash() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -89,7 +91,9 @@ fn alias_does_not_match_prefix_with_slash() {
         root.join("src/foo.tsx").to_string_lossy().into_owned(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
     let err = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect_err(
@@ -128,8 +132,8 @@ fn alias_matches_exact_specifier() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -141,7 +145,9 @@ fn alias_matches_exact_specifier() {
         root.join("src/foo.tsx").to_string_lossy().into_owned(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect("exact-match alias `@/foo` must resolve");
@@ -174,8 +180,8 @@ fn virtual_module_does_not_match_prefix_with_slash() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -187,7 +193,9 @@ fn virtual_module_does_not_match_prefix_with_slash() {
         "export default function Foo() { return null; }\n".to_string(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
     let err = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect_err(
@@ -222,8 +230,8 @@ fn virtual_module_matches_exact_specifier() {
 
     let cfg = EsbuildSubprocessConfig {
         extra_args: vec![
-            std::ffi::OsString::from("--external:preact"),
-            std::ffi::OsString::from("--external:preact/*"),
+            std::ffi::OsString::from("--external:vendor-lib"),
+            std::ffi::OsString::from("--external:vendor-lib/*"),
             std::ffi::OsString::from("--external:@takazudo/*"),
         ],
         ..EsbuildSubprocessConfig::default()
@@ -235,7 +243,9 @@ fn virtual_module_matches_exact_specifier() {
         "export default function VirtualFooMarker() { return null; }\n".to_string(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect("exact-match virtual module `virtual:foo` must resolve");

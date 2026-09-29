@@ -9,22 +9,14 @@
  */
 import { defaultComponents } from "@takazudo/zfb";
 import type { ContentProps } from "@takazudo/zfb/content";
-
-// Structural alias for the JSX-element shape returned by `entry.Content`
-// (mirrors `zfb/content`'s `ContentElement` so this template stays
-// renderer-agnostic — both Preact's and React's `jsx-runtime` accept it).
-type ContentElement = {
-  readonly type: string | ((...args: unknown[]) => unknown);
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly key: unknown;
-};
+import type { Description } from "@takazudo/zfb/zudo-react";
 
 type Post = {
   slug: string;
   data: { title: string; date?: string };
   body: string;
   module_specifier: string;
-  Content: (props: ContentProps) => ContentElement;
+  Content: (props: ContentProps) => Description;
 };
 
 export async function paths() {
@@ -44,7 +36,7 @@ export default function PostPage({ post }: Props) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{post.data.title} · node-free · zfb</title>
       </head>
@@ -56,7 +48,7 @@ export default function PostPage({ post }: Props) {
           <h1>{post.data.title}</h1>
           {post.data.date ? (
             <p>
-              <time dateTime={post.data.date}>{post.data.date}</time>
+              <time datetime={post.data.date}>{post.data.date}</time>
             </p>
           ) : null}
           {/*

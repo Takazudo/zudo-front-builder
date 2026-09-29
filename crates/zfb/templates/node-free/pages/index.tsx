@@ -27,7 +27,7 @@ export default function HomePage({ posts }: Props) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>node-free · zfb</title>
       </head>
@@ -45,7 +45,7 @@ export default function HomePage({ posts }: Props) {
               {post.data.date ? (
                 <>
                   {" — "}
-                  <time dateTime={post.data.date}>{post.data.date}</time>
+                  <time datetime={post.data.date}>{post.data.date}</time>
                 </>
               ) : null}
             </li>

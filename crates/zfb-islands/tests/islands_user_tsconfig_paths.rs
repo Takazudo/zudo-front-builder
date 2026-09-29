@@ -45,6 +45,8 @@ use zfb_islands::{
 };
 use zfb_test_utils::locate_esbuild;
 
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
 /// A unique marker symbol exported from the `@/`-aliased target module. Asserting
 /// it reaches the bundle proves the `@/marker` import resolved through the user's
 /// tsconfig `paths`.
@@ -77,11 +79,11 @@ fn write_user_tsconfig_fixture(root: &Path) {
 }
 
 /// The external flags every fixture shares — same set the neighbouring
-/// `exact_match_resolution.rs` uses so the preact runtime stays unbundled.
-fn preact_externals() -> Vec<std::ffi::OsString> {
+/// `exact_match_resolution.rs` uses so the vendor-lib runtime stays unbundled.
+fn vendor_lib_externals() -> Vec<std::ffi::OsString> {
     vec![
-        std::ffi::OsString::from("--external:preact"),
-        std::ffi::OsString::from("--external:preact/*"),
+        std::ffi::OsString::from("--external:vendor-lib"),
+        std::ffi::OsString::from("--external:vendor-lib/*"),
         std::ffi::OsString::from("--external:@takazudo/*"),
     ]
 }
@@ -114,7 +116,7 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
     .unwrap();
 
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)
@@ -126,7 +128,9 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
         "export default function Unrelated() { return null; }\n".to_string(),
     )]);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
@@ -168,7 +172,7 @@ fn client_script_resolves_user_tsconfig_path_with_plugin_present() {
     .unwrap();
 
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)
@@ -222,13 +226,15 @@ fn island_bundle_resolves_user_tsconfig_path_without_plugin() {
     // No `.with_virtual_modules` / `.with_alias_entries` — empty `paths_entries`,
     // so no `--tsconfig=` is emitted and esbuild discovers the real tsconfig.
     let cfg = EsbuildSubprocessConfig {
-        extra_args: preact_externals(),
+        extra_args: vendor_lib_externals(),
         ..EsbuildSubprocessConfig::default()
     }
     .with_binary_path(esbuild)
     .with_working_dir(&root);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)

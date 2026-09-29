@@ -1,7 +1,7 @@
 /**
  * Config type fixture.
  *
- * Compiled by `tsc -p tsconfig.preact-fixture.json` through the package's
+ * Compiled by `tsc -p tsconfig.config-fixture.json` through the package's
  * type-test include. Keep this file compile-only; it proves config
  * helper types reject invalid shapes without adding runtime test code.
  */
@@ -21,6 +21,9 @@ export const bundleInlineLoadersAndRawDefines = defineConfig({
   },
 });
 
+// @ts-expect-error the framework selector was removed; zfb uses zudo-react.
+export const removedFramework = defineConfig({ framework: "zudo-react" });
+
 export const bundleRejectsAssetEmittingLoaders = defineConfig({
   bundle: {
     loaders: {
@@ -28,4 +31,39 @@ export const bundleRejectsAssetEmittingLoaders = defineConfig({
       ".png": "file",
     },
   },
+});
+
+export const windAcceptsFullConfiguration = defineConfig({
+  wind: {
+    spec: 1,
+    reset: "none",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--project-panel)" },
+      fontSizes: { small: { size: "0.875rem", lineHeight: "1.25rem" } },
+      easings: { gentle: "ease-in-out" },
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    safelist: { app: ["sm:hover:bg-panel", "rounded"] },
+    authoredClasses: { prose: true },
+    manifests: { widgets: { path: "@example/widgets/wind.json" } },
+  },
+});
+
+export const windCanBeDisabled = defineConfig({ wind: false });
+
+export const windRejectsUnsupportedSpec = defineConfig({
+  // @ts-expect-error zudo-wind currently supports only configuration version 1.
+  wind: { spec: 2 },
+});
+
+export const windRejectsTrueShorthand = defineConfig({
+  // @ts-expect-error wind is either false or a configuration object.
+  wind: true,
+});
+
+export const tailwindKeyIsRejected = defineConfig({
+  // @ts-expect-error Tailwind configuration was removed in zfb 3.
+  tailwind: { enabled: false },
 });

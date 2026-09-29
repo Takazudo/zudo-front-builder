@@ -7,8 +7,8 @@
 //! owned by Sub 1 in [`crate::bundler`]; this module is the production
 //! implementation that wraps the esbuild subprocess.
 //!
-//! Mirror of `zfb_css::engine::TailwindSubprocessEngine`: a config struct
-//! that locates the binary (defaulting to `crates/zfb/binaries/esbuild`),
+//! This adapter uses a config struct that locates the binary (defaulting
+//! to `crates/zfb/binaries/esbuild`),
 //! an implementation that builds the command line, runs esbuild, reads the
 //! output back into memory, and returns it in [`crate::bundler::BundleOutput`]
 //! — the bundler does NOT write `islands.js` to disk. Downstream consumers
@@ -54,11 +54,40 @@ use zfb_build::metafile_deps::audit_metafile_stage_escape_at_path;
 use zfb_types::json_string;
 
 use crate::bundler::{
-    bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, BundleResource,
-    ClientBundler, FrameworkKind, Island, IslandBundle, ModuleId, ModuleWorkerBundleEntry,
-    PerIslandBundleOutput,
+    bundle_link_href, BundleChunk, BundleConfig, BundleOutput, BundleResource, ClientBundler,
+    Island, ModuleId, ModuleWorkerBundleEntry,
 };
 use crate::client_scripts::ClientScriptWorkerEntry;
+
+/// Invalid or missing owned build identity for a nonempty public islands bundle.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum IslandsBundleBuildIdentityError {
+    #[error("nonempty owned islands bundle requires zudo_react_build")]
+    Missing,
+    #[error("nonempty owned islands bundle requires a 16-character lowercase hex zudo_react_build token")]
+    Invalid,
+}
+
+fn validate_owned_build_identity(
+    islands: &[Island],
+    config: &BundleConfig,
+) -> std::result::Result<(), IslandsBundleBuildIdentityError> {
+    if islands.is_empty() {
+        return Ok(());
+    }
+    let build = config
+        .zudo_react_build
+        .as_deref()
+        .ok_or(IslandsBundleBuildIdentityError::Missing)?;
+    if build.len() != 16
+        || !build
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(IslandsBundleBuildIdentityError::Invalid);
+    }
+    Ok(())
+}
 
 /// In-memory output of one client-script bundle plus its module-worker
 /// companions.
@@ -344,8 +373,8 @@ pub struct EsbuildSubprocessConfig {
     ///
     /// Default: `crates/zfb/binaries/esbuild/esbuild` (relative to the
     /// workspace root). Sub 2 reserves the parent `esbuild/` directory in
-    /// the release tarball layout (mirroring the Tailwind v4 slot pattern;
-    /// the directory shape gives release tooling room to drop sidecars
+    /// the release tarball layout; the directory shape gives release tooling
+    /// room to drop sidecars
     /// like a checksum manifest next to the binary). Override via
     /// [`Self::with_binary_path`] or via the `ZFB_ESBUILD_BIN` environment
     /// variable (checked at engine construction time, not at every
@@ -630,7 +659,9 @@ impl EsbuildSubprocessConfig {
 ///
 /// let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default());
 /// let islands = vec![Island::new("Counter", PathBuf::from("components/counter.tsx"))];
-/// let out = bundler.bundle(&islands, &BundleConfig::production()).unwrap();
+/// let config = BundleConfig::production()
+///     .with_zudo_react_build(Some("0123456789abcdef".to_string()));
+/// let out = bundler.bundle(&islands, &config).unwrap();
 /// assert_eq!(out.asset_url, "/assets/islands.js");
 /// ```
 #[derive(Debug, Clone)]
@@ -1047,13 +1078,11 @@ impl EsbuildSubprocessBundler {
     /// generalized to the tsconfig + virtual-module classes by issue #2109)
     /// — see [`sweep_orphaned_in_project_temp_files`].
     ///
-    /// Called ONCE per build, at the [`ClientBundler::bundle`] /
-    /// [`Self::bundle_per_island`] / [`Self::bundle_client_script_file_with_workers`]
+    /// Called once at the [`ClientBundler::bundle`] or
+    /// [`Self::bundle_client_script_file_with_workers`]
     /// lifecycle boundary and strictly BEFORE the first entry is allocated. It
-    /// deliberately does not live in [`Self::bundle_one_entry`], which runs
-    /// once per island plus the runtime pass: there, every sweep after the
-    /// first is a full `read_dir` of the project root that can only be a
-    /// no-op, repeated on every `zfb dev` rebuild.
+    /// deliberately does not live in [`Self::bundle_one_entry`], where a
+    /// sweep would repeat for unrelated client-script and worker jobs.
     fn sweep_stranded_entries(&self) {
         if self.config.mock_subprocess || !self.config.working_dir.is_dir() {
             return;
@@ -1080,181 +1109,24 @@ impl EsbuildSubprocessBundler {
         config: &BundleConfig,
     ) -> Result<OneEntryOutput> {
         validate_locked_resource_loader_overrides(&config.loaders)?;
-        // Derive the mount-glue framework from `config.jsx_import_source`
-        // — the single field the orchestrator already sets via
-        // `with_jsx_import_source(config.framework…)`. This guarantees the
-        // emitted hydration glue (Preact `h()` vs React `createRoot`)
-        // and the esbuild `--jsx-import-source` flag can never disagree.
-        let framework = FrameworkKind::from_jsx_import_source(&config.jsx_import_source);
-        let entry_source =
-            render_shared_bundle_entry_source(framework, islands, config.client_router);
+        let entry_source = render_shared_bundle_entry_source_with_build(
+            islands,
+            config.client_router,
+            config.zudo_react_build.as_deref(),
+        );
         // Shared-bundle path: splitting ON. This is the ONLY path that ships
         // and serves chunks (#806/#808/#809) — `OneEntryOutput::chunks` is
         // threaded into `BundleOutput` here.
         self.bundle_one_entry(&entry_source, config, true, "shared entry")
     }
 
-    /// Per-island bundle pass.
-    ///
-    /// Generates one tiny entry script per island that imports the
-    /// island's component module **and** the framework-specific
-    /// hydration glue, then runs `esbuild --bundle --format=esm` on it
-    /// (one subprocess per island — code-split by isolation rather than
-    /// by `--splitting`, so dynamic-imports from the runtime stay 1:1
-    /// with components). Each per-island bundle is written to the
-    /// stable path `{outdir}/islands/{ComponentName}.js`. Sourcemaps
-    /// are preserved end-to-end when [`BundleConfig::sourcemap`] is
-    /// true: esbuild emits a sibling `<file>.map` alongside the asset
-    /// and a `//# sourceMappingURL=` comment in the JS so DevTools
-    /// picks it up automatically.
-    ///
-    /// In addition to the per-island bundles, a small **runtime**
-    /// bundle is emitted under
-    /// `{outdir}/islands/islands-runtime.js`. The runtime is
-    /// produced from a generated entry that imports
-    /// `scheduleHydrate` + `mountIslands` from the
-    /// `@takazudo/zfb-runtime` style runtime (`packages/zfb/src/runtime.ts`)
-    /// and ships a manifest of `marker_name → island-bundle-URL` so
-    /// the runtime can dynamic-import the right per-island bundle for
-    /// each `[data-zfb-island]` element on the page.
-    ///
-    /// # Hashing
-    ///
-    /// All filenames written by this method are **stable** — no
-    /// `-<hash>` suffix. The Prod Asset Graph epic centralises content
-    /// hashing in `ProductionAssetPipeline`, which is the only place
-    /// allowed to produce hashed URLs/filenames so HTML rewrites do
-    /// not double-hash. For dev-mode change detection, the per-island
-    /// hash is still computed and exposed through
-    /// [`crate::IslandBundle::hash`].
-    ///
-    /// # Determinism
-    ///
-    /// The per-island and runtime bundles are deterministic for a
-    /// given `(islands, framework, config)` triple: the island order is
-    /// preserved verbatim from the input slice, the runtime manifest is
-    /// keyed by `marker_name` (the `data-zfb-island` attribute value the
-    /// runtime looks up at hydration time), and the on-disk filenames are
-    /// stable sequential slugs `island-{i}.js` (0-based) that are immune
-    /// to `marker_name` non-uniqueness across source files.
-    pub fn bundle_per_island(
-        &self,
-        islands: &[Island],
-        framework: FrameworkKind,
-        config: &BundleConfig,
-    ) -> Result<PerIslandBundleOutput> {
-        self.sweep_stranded_entries();
-
-        // Outdir layout: {outdir}/islands/.
-        let islands_dir = config.outdir.join("islands");
-        std::fs::create_dir_all(&islands_dir)
-            .with_context(|| format!("failed to create {}", islands_dir.display()))?;
-
-        // Per-island path always knows the framework explicitly (it is
-        // a separate parameter), so override `BundleConfig::jsx_import_source`
-        // with the framework's accessor before handing it down. This
-        // keeps `bundle_one_entry` reading the JSX import source from a
-        // single source of truth (the config) regardless of which
-        // entrypoint started the bundle.
-        let mut framework_cfg = config.clone();
-        framework_cfg.jsx_import_source = framework.jsx_import_source().to_string();
-        let config = &framework_cfg;
-
-        let mut bundle_entries: Vec<IslandBundle> = Vec::with_capacity(islands.len());
-        let mut manifest: Vec<(String, String)> = Vec::with_capacity(islands.len());
-
-        for (i, island) in islands.iter().enumerate() {
-            // 1. Generate the per-island entry source.
-            let entry_source = render_island_entry_source(framework, island);
-
-            // 2. Bundle it. In mock mode the entry source itself doubles
-            //    as the bundled output so unit tests can assert what we
-            //    *would* have shipped without spawning esbuild.
-            //
-            //    Per-island chunk shipping/serving is OUT OF SCOPE (#802/#806):
-            //    this path is not production-wired. We bundle with `splitting =
-            //    false` so esbuild INLINES any dynamic `import()` into the
-            //    single entry — no chunk files are emitted, so taking only the
-            //    entry `.js` is lossless and the on-disk shape (`island-{i}.js`)
-            //    stays self-contained. (Were splitting left on, an island doing
-            //    `import("./heavy")` would emit a dangling
-            //    `import("./islands-chunk-*.js")` to a chunk this path never
-            //    writes.)
-            let job_label = format!("per-island {}", island.component_name);
-            let bundled_js = self
-                .bundle_one_entry(&entry_source, config, false, &job_label)?
-                .js;
-
-            // Stable sequential filename: `<outdir>/islands/island-{i}.js`.
-            // Using an index (not marker_name) guarantees collision-freedom:
-            // marker_name is non-unique across files (two files can export
-            // identically-named functions, or both default-export unnamed
-            // components — both get the same marker_name). The sequential
-            // scheme mirrors the shared-bundle's `__zfb_island_{i}` naming.
-            // `ProductionAssetPipeline` is the only place allowed to emit
-            // content-addressed names; this path keeps a stable shape so
-            // S0's "no hashed URLs in zfb-islands" rule applies to both the
-            // shared-bundle and per-island emitters. The `IslandBundle::hash`
-            // field is still populated so dev-mode change detection has
-            // something to compare against without touching the on-disk name.
-            let hash = hash_8(&bundled_js);
-            let filename = format!("island-{i}.js");
-            // Sequential index filenames can never contain a path separator,
-            // but assert the invariant so future scheme changes don't silently
-            // introduce a security hole (path traversal via separator injection).
-            debug_assert!(
-                !filename.contains('/') && !filename.contains(std::path::MAIN_SEPARATOR),
-                "island filename must not contain a path separator: {filename:?}"
-            );
-            let asset_path = islands_dir.join(&filename);
-            std::fs::write(&asset_path, bundled_js.as_bytes())
-                .with_context(|| format!("failed to write {}", asset_path.display()))?;
-
-            let asset_url = island_link_href(&config.base_url, &asset_path);
-            // Manifest is keyed by marker_name (the data-zfb-island attribute
-            // value). The runtime's mountIslands does manifest[componentName]
-            // where componentName is derived from the SSR marker — which is
-            // always marker_name, NOT component_name (the export-side name).
-            manifest.push((island.marker_name.clone(), asset_url.clone()));
-
-            bundle_entries.push(IslandBundle {
-                component_name: island.component_name.clone(),
-                asset_path,
-                asset_url,
-                hash,
-            });
-        }
-
-        // 3. Runtime bundle. The manifest entries are passed directly to
-        //    render_runtime_entry_source, which handles serialisation
-        //    internally. Stable filename `islands-runtime.js` —
-        //    `ProductionAssetPipeline` would do any hashing pass.
-        let runtime_entry_source = render_runtime_entry_source(&manifest);
-        // Runtime bundle: same out-of-scope, splitting-off handling as the
-        // per-island entries above — dynamic imports inline, no chunks emitted,
-        // take only the entry JS.
-        let runtime_js = self
-            .bundle_one_entry(&runtime_entry_source, config, false, "runtime")?
-            .js;
-        let runtime_asset_path = islands_dir.join("islands-runtime.js");
-        std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
-            .with_context(|| format!("failed to write {}", runtime_asset_path.display()))?;
-        let runtime_asset_url = island_link_href(&config.base_url, &runtime_asset_path);
-
-        Ok(PerIslandBundleOutput {
-            islands: bundle_entries,
-            runtime_asset_path,
-            runtime_asset_url,
-        })
-    }
-
     /// Internal: bundle a single in-memory entry source. Writes the
     /// source to a temp file (because esbuild expects entry points on
-    /// disk), runs the subprocess, returns the bundled JS string.
+    /// disk), runs the subprocess, and returns its JS and companion outputs.
     ///
     /// `job_label` identifies this invocation for
     /// [`EsbuildSubprocessConfig::stage_audit`] failure messages (e.g.
-    /// `"shared entry"`, `"per-island Counter"`, `"runtime"`); it is unused
+    /// `"shared entry"`); it is unused
     /// when no stage-audit policy is configured.
     fn bundle_one_entry(
         &self,
@@ -1308,19 +1180,17 @@ impl EsbuildSubprocessBundler {
         //
         // **Why we allocate inside `working_dir` rather than `$TMPDIR`**
         //
-        // The synthesised entry's bare imports (`@takazudo/zfb/runtime`,
-        // `preact`) need to resolve against the project's
-        // `node_modules/`. esbuild walks UP from the entry file's
-        // directory looking for `node_modules`, **not** from process
-        // cwd. If the entry lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`,
-        // esbuild walks `/tmp -> /` and never reaches the project, so
-        // both bare imports fail with `Could not resolve "preact"` /
-        // `Could not resolve "@takazudo/zfb/runtime"` (issue #147 /
-        // zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating inside
-        // `working_dir` (= the consumer project root, set by
-        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp
-        // file next to the project's `node_modules/` so esbuild's
-        // upward walk finds the runtime + preact on the first hop.
+        // The synthesized entry's imports (`@takazudo/zfb/runtime` and
+        // `@takazudo/zfb/zudo-react/client`) must resolve from the project's
+        // `node_modules/`. esbuild walks UP from the entry file's directory
+        // looking for `node_modules`, **not** from process cwd. If the entry
+        // lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`, esbuild walks `/tmp -> /`
+        // and never reaches the project, so those imports fail to resolve
+        // (issue #147 / zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating
+        // inside `working_dir` (= the consumer project root, set by
+        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp file
+        // next to the project's `node_modules/` so esbuild's upward walk
+        // finds both packages on the first hop.
         //
         // We fall back to the system tempdir (the original behaviour)
         // when `working_dir` does not exist on disk; that is the case
@@ -1662,11 +1532,8 @@ fn validate_module_worker_entries(entries: &[ModuleWorkerBundleEntry]) -> Result
 /// beside it.
 ///
 /// `chunks` is empty for a zero-dynamic-import entry, always in mock mode,
-/// and always on the per-island/runtime path (which bundles with
-/// `splitting = false`, so esbuild inlines dynamic imports instead of
-/// emitting chunks). The per-island path — not production-wired, chunk
-/// shipping/serving out of scope — reads only `js`; the shared-bundle path
-/// bundles with `splitting = true` and threads `chunks`/`workers` into
+/// and on non-splitting client-script jobs. The shared-bundle path
+/// uses `splitting = true` and threads `chunks`/`workers` into
 /// [`BundleOutput`].
 #[derive(Debug)]
 struct OneEntryOutput {
@@ -1860,17 +1727,15 @@ fn matches_in_project_temp_class(name: &str) -> bool {
 /// ([`IN_PROJECT_TEMP_CLASSES`]) — the synthesized esbuild entry, either
 /// synthetic tsconfig class, or the virtual-module materialization?
 ///
-/// The dev watcher's intake suppression consumes this (issue #3215), mirroring
-/// [`zfb_css::is_tailwind_entry_tmp`]'s role for Tailwind's own entry temp
-/// file (zfb#2345): every one of these classes is allocated inside
-/// `working_dir`, which is the watched project root (see
-/// [`allocate_locked_entry_tmp`]'s doc comment for why), so without
-/// suppression the `Created`/`Removed` events they generate re-trigger a
-/// second full watcher tick after every islands rebuild. Basename-only,
-/// matching the sweep's own prefix+suffix check exactly (`matches_in_project_temp_class`)
-/// rather than the tighter exact-random-length match `is_tailwind_entry_tmp`
-/// uses — these classes are already dot-prefixed and zfb-namespaced, so a
-/// user file colliding with one is not a realistic concern.
+/// The dev watcher's intake suppression consumes this (issue #3215): every
+/// recognized class is allocated inside `working_dir`, which is the watched
+/// project root (see [`allocate_locked_entry_tmp`]'s doc comment for why),
+/// so without suppression the `Created`/`Removed` events re-trigger a second
+/// full watcher tick after every islands rebuild. Basename-only matching uses
+/// the same prefix/suffix shape as the sweep's own predicate
+/// (`matches_in_project_temp_class`). These classes are dot-prefixed and
+/// zfb-namespaced, so a user file colliding with one is not a realistic
+/// concern.
 pub fn is_zfb_islands_temp_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -2374,12 +2239,8 @@ fn validate_locked_resource_loader_overrides(loaders: &BTreeMap<String, String>)
 /// pass. Split out from `bundle_one_entry` so unit tests can assert
 /// against the flag list without spawning the subprocess.
 ///
-/// The args mirror the historical `bundle_one_entry` shape verbatim
-/// **plus** the `--jsx=automatic --jsx-import-source=<value>` pair
-/// (issue #151). Without those two flags esbuild's default classic
-/// JSX transform emits bare `React.createElement(…)` references that
-/// throw `ReferenceError: React is not defined` at mount time when
-/// host components have been migrated to `preact/compat`.
+/// The args use automatic JSX with the single owned import source. Without
+/// those flags esbuild's classic transform emits unresolved React references.
 ///
 /// Order is stable across calls so callers (and tests) can rely on a
 /// deterministic argv layout.
@@ -2471,22 +2332,13 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     // zero-dynamic-import project emits only the entry — identical to the
     // pre-splitting single-file build.
     //
-    // The per-island and runtime paths pass `splitting = false`: their chunk
-    // shipping/serving is OUT OF SCOPE (#802/#806), and those paths read only
-    // the entry `.js` (dropping chunks). With splitting on, an island doing
-    // `import("./heavy")` would emit a relative `import("./islands-chunk-*.js")`
-    // referencing a chunk file that never gets written — a dangling import. With
-    // splitting off, esbuild INLINES dynamic imports into the single entry,
-    // matching the pre-#806 behaviour and keeping the per-island output
-    // self-contained.
+    // Client-script jobs pass `splitting = false`; their dynamic imports
+    // are inlined so the single output file remains self-contained.
     if splitting {
         args.push(OsString::from("--splitting=true"));
     }
     args.push(OsString::from("--tree-shaking=true"));
-    // Per-island bundles ship to the browser. See `produce_bundle_js`
-    // for the full rationale; mirrored here so both the legacy
-    // shared-bundle and per-island paths stay aligned on platform
-    // target + node:* externalization.
+    // Shared islands and client scripts ship to the browser.
     args.push(OsString::from("--platform=browser"));
     args.push(OsString::from("--external:node:*"));
     // Issue #1395: an island importing a `.css` file (e.g.
@@ -2515,43 +2367,12 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     for (extension, loader) in &config.loaders {
         args.push(OsString::from(format!("--loader:{extension}={loader}")));
     }
-    // Issue #151: route esbuild through the automatic JSX transform
-    // pointed at the host framework's import source (typically
-    // `"preact"`). Without these two flags esbuild defaults to the
-    // classic transform and emits bare `React.createElement` /
-    // `React.Fragment` references; islands using `preact/compat` for
-    // hooks have no `React` binding and crash at mount time
-    // (zudolab/zudo-doc#1355 Wave 8).
     args.push(OsString::from("--jsx=automatic"));
     args.push(OsString::from(format!(
         "--jsx-import-source={}",
-        config.jsx_import_source
+        zfb_types::owned_runtime::JSX_IMPORT_SOURCE
     )));
-    // Mirror the main SSR bundler's Preact `--alias` block in
-    // `crates/zfb-build/src/bundler.rs` (the `Framework::Preact` arm of the
-    // SSR esbuild command builder). next.18 dist modules carry an explicit,
-    // framework-neutral `import { jsx } from "react/jsx-runtime"` (e.g.
-    // `@takazudo/zfb-runtime/client-router`, which the shared islands bundle
-    // side-effect-imports when `client_router` is set — see
-    // `render_shared_bundle_entry_source`). In a Preact project `react` is not
-    // installed, so esbuild cannot resolve `react/jsx-runtime` and the islands
-    // build aborts (issue #633). Rewrite it (and the dev-runtime sibling) to the
-    // Preact runtime — the same trick the SSR bundler and the wider Preact
-    // ecosystem use. React projects resolve `react/jsx-runtime` natively, so the
-    // alias is Preact-only (same gate as the SSR bundler), leaving the React
-    // argv byte-identical. `--alias`'s prefix-with-slash semantics are safe here
-    // because `react/jsx-runtime` has no deeper subpath to corrupt.
-    if matches!(
-        FrameworkKind::from_jsx_import_source(&config.jsx_import_source),
-        FrameworkKind::Preact
-    ) {
-        args.push(OsString::from(
-            "--alias:react/jsx-runtime=preact/jsx-runtime",
-        ));
-        args.push(OsString::from(
-            "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
-        ));
-    }
+    args.push(OsString::from("--keep-names"));
     if config.minify {
         args.push(OsString::from("--minify"));
     }
@@ -2589,7 +2410,7 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
             "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
         )));
     }
-    // Inline NODE_ENV so React/Preact pick their mode-specific build.
+    // Inline NODE_ENV so framework packages pick their mode-specific build.
     // Mode is intentionally independent from minification. esbuild expects
     // the define value to be a JS literal, hence the embedded quotes.
     if config.mode.is_prod() {
@@ -2654,38 +2475,7 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     args
 }
 
-/// JS boolean expression that tests whether `value_var` is component-shaped:
-/// a plain function, or a compat `memo()`/`forwardRef()` object carrying
-/// `$$typeof` (issue #998). `dollar_receiver` is the expression used to read
-/// `.$$typeof` off the value — the per-island sites (TS `.tsx` entries where
-/// the value is typed `any`) cast via `(Component as any)`, the shared-bundle
-/// sites read it directly. Hoisted so all four island render paths share one
-/// predicate instead of copy-pasting it.
-fn component_shape_predicate(value_var: &str, dollar_receiver: &str) -> String {
-    format!(
-        "typeof {value_var} === \"function\" || (typeof {value_var} === \"object\" && {value_var} !== null && {dollar_receiver}.$$typeof)"
-    )
-}
-
-/// JS `console.warn(...)` statement emitted when an island export is not
-/// component-shaped (issue #998). `export_name_expr` / `module_label_expr`
-/// are JS expressions naming the export and its source module; `action` is
-/// the skipped-verb phrase (`"registration"` for the shared bundle,
-/// `"mount"` for per-island). Hoisted so all four island render paths emit
-/// one identical warning string instead of copy-pasting it.
-fn non_component_warn(
-    value_var: &str,
-    export_name_expr: &str,
-    module_label_expr: &str,
-    action: &str,
-) -> String {
-    format!(
-        "console.warn(\"[zfb] island export \" + {export_name_expr} + \" from \" + {module_label_expr} + \" is not a component (got \" + ({value_var} === null ? \"null\" : typeof {value_var}) + \"); skipping {action}.\");"
-    )
-}
-
-/// Generate the synthetic single-entry source for the legacy shared
-/// bundle.
+/// Generate the synthetic single-entry source for the owned shared bundle.
 ///
 /// When `client_router` is `true`, a side-effect
 /// `import "@takazudo/zfb-runtime/client-router";` is prepended so the
@@ -2706,10 +2496,8 @@ fn non_component_warn(
 /// without a top-level call into the hydration runtime, the SSR'd
 /// `data-zfb-island` markers stay un-hydrated and interactivity never
 /// activates (issue #146 / zudolab/zudo-doc#1355 Wave 6). The
-/// per-island path emits `mountIslands(MANIFEST)` from
-/// `render_runtime_entry_source`; the shared-bundle path mirrors that
-/// here so the islands bundle is the only script the page needs to load
-/// to get hydration glue **and** the island source code in one HTTP
+/// shared-bundle entry calls `mountIslands(MANIFEST)`, so one script supplies
+/// the hydration glue and island source code in one HTTP
 /// request.
 ///
 /// The synthesised entry imports each island as a namespace and
@@ -2718,24 +2506,15 @@ fn non_component_warn(
 /// helper picks the component (`__zfb_pick` — named export first, then
 /// `default`) and stashes a mount thunk under `markerName`.
 ///
-/// `markerName` is the **scanner-derived SSR-marker name** baked into the
-/// generated source as a static JSON literal — NOT a runtime
-/// `displayName ?? name` read. It matches the value the SSR side
-/// (`packages/zfb/src/island.ts::captureComponentName`, which derives
-/// `data-zfb-island="…"` from `type.displayName ?? type.name`) writes onto
-/// the marker, so both sides of the boundary agree on the key. Keying on
-/// the export-side `Island::component_name` instead would collapse every
-/// host-shape default-export island onto the literal `"default"` key (issue
-/// #149); a runtime `function.name` read is unsafe because esbuild
-/// minification renames functions (lesson from PR #148). `moduleLabel`
-/// names the source module in the non-component skip warning (#998). See
-/// the inline `__zfb_register` comment below for the full rationale.
+/// `markerName` is the scanner-derived SSR marker name baked into the source.
+/// Registration checks the component's runtime name against that literal,
+/// and uses the literal as the manifest key. The server boundary checks the
+/// same name against scanner metadata before writing the wrapper.
 ///
 /// The runtime's `mountIslands` accepts this object shape directly
-/// (no second dynamic import) — see the `IslandManifestValue`
-/// widening in `packages/zfb/src/runtime.ts`. Each `mount` thunk
-/// mirrors `render_island_entry_source(Preact, …)`: build a vnode and
-/// dispatch to `hydrate` / `render` based on the SSR / SSR-skip mode.
+/// (no second dynamic import) — see `IslandManifestValue` in
+/// `packages/zfb/src/runtime.ts`. Each `mount` thunk builds an owned
+/// description and returns the RootHandle from `hydrate` or `mount`.
 ///
 /// # Why namespace imports
 ///
@@ -2763,25 +2542,17 @@ fn non_component_warn(
 /// (downstream tests rely on this for the bundle's content hash to be
 /// stable across runs).
 ///
-/// # Framework
-///
-/// The synthesised wrapper emits framework-specific imports + mount
-/// glue selected by `framework`, mirroring the per-island path's
-/// `FrameworkKind` branches in `render_island_entry_source`:
-/// - `Preact` → bare `preact` imports + `h()/hydrate()/render()` glue.
-/// - `React` → `react` `createElement` + `react-dom/client`
-///   `hydrateRoot`/`createRoot` glue with a module-scope `WeakMap` of
-///   roots so `unmount` can dispose the right root.
-///
-/// Mixed-framework projects are not supported by the production
-/// shared-bundle path today (the per-island path is the right home for
-/// that, since it composes the framework glue per-island). The whole
-/// project shares one `framework`, derived from the configured
-/// `jsx_import_source`.
-pub fn render_shared_bundle_entry_source(
-    framework: FrameworkKind,
+/// Deterministic source-shape helper for tests and tooling. This uses a fixed
+/// synthetic build identity; shipping callers must use [`ClientBundler::bundle`],
+/// which validates the real owned identity before invoking esbuild.
+pub fn render_shared_bundle_entry_source(islands: &[Island], client_router: bool) -> String {
+    render_shared_bundle_entry_source_with_build(islands, client_router, Some("0123456789abcdef"))
+}
+
+fn render_shared_bundle_entry_source_with_build(
     islands: &[Island],
     client_router: bool,
+    build: Option<&str>,
 ) -> String {
     let mut out =
         String::from("// Generated by zfb-islands::EsbuildSubprocessBundler::produce_bundle_js\n");
@@ -2810,288 +2581,47 @@ pub fn render_shared_bundle_entry_source(
         // array literal.
         return out;
     }
-    out.push_str(r#"import { mountIslands } from "@takazudo/zfb/runtime";"#);
-    out.push('\n');
-    // Framework-specific hydration imports. Both branches mirror the
-    // per-island path's `FrameworkKind` arms in
-    // `render_island_entry_source`. For React the roots map is declared
-    // at module scope (one WeakMap shared across all islands) so each
-    // manifest entry's `unmount` thunk can find and dispose the root it
-    // created with `hydrateRoot`/`createRoot`.
-    match framework {
-        FrameworkKind::Preact => {
-            out.push_str(r#"import { h, hydrate, render } from "preact";"#);
-            out.push('\n');
+    {
+        let build = build.expect("nonempty island entry source requires a build identity");
+        out.push_str("import { mountIslands } from \"@takazudo/zfb/runtime\";\n");
+        out.push_str("import { h } from \"@takazudo/zfb/zudo-react\";\n");
+        out.push_str("import { hydrate, mount } from \"@takazudo/zfb/zudo-react/client\";\n");
+        for (i, island) in islands.iter().enumerate() {
+            out.push_str(&format!(
+                "import * as __zfb_island_{i} from {};\n",
+                json_string(&island.source_path.to_string_lossy())
+            ));
         }
-        FrameworkKind::React => {
-            out.push_str(r#"import { createElement } from "react";"#);
-            out.push('\n');
-            out.push_str(r#"import { hydrateRoot, createRoot } from "react-dom/client";"#);
-            out.push('\n');
-            out.push_str("const __zfb_roots = new WeakMap();\n");
-        }
-    }
-    for (i, island) in islands.iter().enumerate() {
-        let path = island.source_path.to_string_lossy();
+        out.push_str("const __zfb_manifest = Object.create(null);\n");
+        out.push_str("function __zfb_pick(ns, exportName) { const named = ns[exportName]; return (named !== undefined && named !== null) ? named : ns.default; }\n");
+        out.push_str("function __zfb_register(ns, exportName, markerName, moduleLabel) {\n");
+        out.push_str("  const C = __zfb_pick(ns, exportName);\n");
+        out.push_str("  if (typeof C !== \"function\") { console.error(\"[zfb] owned island export \" + exportName + \" from \" + moduleLabel + \" must be a function\"); return; }\n");
+        out.push_str("  const name = C.displayName ?? C.name;\n");
+        out.push_str("  if (name !== markerName) { console.error(\"[zfb] owned island identity mismatch: \" + markerName + \" versus \" + name); return; }\n");
+        out.push_str(&format!("  __zfb_manifest[markerName] = {{ identity: {{ component: markerName, build: {} }}, mount: (props, element, mode) => {{\n", json_string(build)));
         out.push_str(&format!(
-            "import * as __zfb_island_{i} from {};\n",
-            json_string(&path)
+            "    const identity = {{ component: markerName, build: {} }};\n",
+            json_string(build)
         ));
-    }
-    // Manifest registration helper.
-    //
-    // `__zfb_pick(ns, exportName)` returns the component value: it
-    // prefers a *truthy* named export under `exportName` (so that
-    // `ns.default = function Foo(){}` plus `ns.Foo = undefined` does
-    // not pick `undefined` and lose the component) and falls back to
-    // `ns.default`. That mirrors `render_island_entry_source` for the
-    // per-island path.
-    //
-    // `__zfb_register(ns, exportName, markerName, moduleLabel)` writes a
-    // mount thunk for the resolved component under the **static marker
-    // name** the scanner discovered for this island (issue #149). The marker
-    // name is a JSON-encoded literal in the generated source, NOT a runtime
-    // introspection of `displayName ?? name` — that's the lesson from the
-    // previous round (PR #148): esbuild minification renames functions, so
-    // `function.name` is unstable and unsafe to key the manifest on.
-    // `moduleLabel` names the source module in the non-component skip
-    // warning (#998).
-    //
-    // The mount thunk picks `hydrate` vs `render` based on the SSR /
-    // SSR-skip mode the runtime supplies, mirroring the per-island
-    // entry script's behaviour exactly.
-    out.push_str(
-        "const __zfb_manifest = {};\n\
-function __zfb_pick(ns, exportName) {\n\
-  const named = ns[exportName];\n\
-  return (named !== undefined && named !== null) ? named : ns.default;\n\
-}\n",
-    );
-    // The mount / unmount thunk bodies are framework-specific and mirror
-    // the per-island path's `FrameworkKind` arms exactly. Keeping the
-    // helper-function shape identical across frameworks (same name, same
-    // args, same `__zfb_manifest[markerName]` slot) means only the thunk
-    // internals change. The guard prelude (component-shape check + the
-    // non-component skip warning) is identical for both frameworks, so it
-    // is built once from the shared helpers (#998).
-    let register_prelude = format!(
-        "function __zfb_register(ns, exportName, markerName, moduleLabel) {{\n\
-  const C = __zfb_pick(ns, exportName);\n\
-  if (!({predicate})) {{\n\
-    {warn}\n\
-    return;\n\
-  }}\n",
-        predicate = component_shape_predicate("C", "C"),
-        warn = non_component_warn("C", "exportName", "moduleLabel", "registration"),
-    );
-    match framework {
-        FrameworkKind::Preact => {
-            out.push_str(&register_prelude);
-            out.push_str(
-                "  __zfb_manifest[markerName] = {\n\
-    mount: (props, element, mode) => {\n\
-      const v = h(C, props);\n\
-      if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
-    },\n\
-    unmount: (element) => { render(null, element); },\n\
-  };\n\
-}\n",
-            );
+        out.push_str("    return mode === \"hydrate\" ? hydrate(h(C, props), element, { identity }) : mount(h(C, props), element, { identity });\n");
+        out.push_str("  } };\n}\n");
+        for (i, island) in islands.iter().enumerate() {
+            out.push_str(&format!(
+                "__zfb_register(__zfb_island_{i}, {}, {}, {});\n",
+                json_string(&island.component_name),
+                json_string(&island.marker_name),
+                json_string(&island.source_path.to_string_lossy())
+            ));
         }
-        FrameworkKind::React => {
-            out.push_str(&register_prelude);
-            out.push_str(
-                "  __zfb_manifest[markerName] = {\n\
-    mount: (props, element, mode) => {\n\
-      const v = createElement(C, props);\n\
-      if (mode === \"hydrate\") {\n\
-        const root = hydrateRoot(element, v);\n\
-        __zfb_roots.set(element, root);\n\
-      } else {\n\
-        const root = createRoot(element);\n\
-        root.render(v);\n\
-        __zfb_roots.set(element, root);\n\
-      }\n\
-    },\n\
-    unmount: (element) => {\n\
-      const root = __zfb_roots.get(element);\n\
-      if (root) { root.unmount(); __zfb_roots.delete(element); }\n\
-    },\n\
-  };\n\
-}\n",
-            );
-        }
+        out.push_str("mountIslands(__zfb_manifest);\n");
     }
-    // One register call per island. The `__zfb_register(...)` calls
-    // are top-level side effects esbuild MUST preserve, and they
-    // reference each namespace identifier — so tree-shaking retains
-    // every island's exports just as the previous
-    // `(globalThis).__zfb_islands ??= [...]` anchor did (#144).
-    //
-    // The third argument is the **scanner-derived SSR-marker name**
-    // (`Island::marker_name`), which matches the value the SSR side
-    // writes into `data-zfb-island` / `data-zfb-island-skip-ssr`. For
-    // host-shape default-export islands the scanner uses the function
-    // identifier name (`export default function FooBar()` →
-    // `"FooBar"`); for SSR-skip wrappers it uses the literal first
-    // argument of `renderSsrSkipPlaceholder("X", …)` — see
-    // `crates/zfb-islands/src/scanner.rs::exported_island_records`.
-    for (i, island) in islands.iter().enumerate() {
-        let name_lit = json_string(&island.component_name);
-        let marker_lit = json_string(&island.marker_name);
-        // Issue #998: pass the resolved source path as `moduleLabel` so the
-        // non-component skip warning can name which module the bad export
-        // came from.
-        let module_lit = json_string(&island.source_path.to_string_lossy());
-        out.push_str(&format!(
-            "__zfb_register(__zfb_island_{i}, {name_lit}, {marker_lit}, {module_lit});\n"
-        ));
-    }
-    out.push_str("mountIslands(__zfb_manifest);\n");
     out
-}
-
-/// Generate the per-island entry script for `framework`.
-///
-/// The entry imports the component module by its resolved source path
-/// (esbuild resolves it from the bundler's working directory), wraps
-/// it in framework-specific `mount(props, element, mode)` glue, and
-/// exposes the function as the bundle's default export. The hydration
-/// runtime dynamic-imports this default export.
-///
-/// Mode is one of:
-/// - `"hydrate"` — used for SSR'd islands (`[data-zfb-island]`).
-/// - `"render"` — used for SSR-skip islands
-///   (`[data-zfb-island-skip-ssr]`); avoids hydrate-mismatch warnings
-///   because the DOM is empty when we mount.
-pub fn render_island_entry_source(framework: FrameworkKind, island: &Island) -> String {
-    let path = island.source_path.to_string_lossy();
-    let path_lit = json_string(&path);
-    let component_name = &island.component_name;
-    let component_lit = json_string(component_name);
-    // Component-shape guard + non-component skip warning, hoisted into the
-    // shared helpers so the shared-bundle path and both per-island framework
-    // arms emit one identical snippet (#998). `Component` is typed `any`
-    // here (it comes off `(Mod as any)[…]`), so the `$$typeof` read is cast.
-    let predicate = component_shape_predicate("Component", "(Component as any)");
-    let warn = non_component_warn("Component", &component_lit, &path_lit, "mount");
-    match framework {
-        FrameworkKind::Preact => format!(
-            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
-import * as Mod from {path_lit};
-import {{ h, hydrate, render }} from "preact";
-const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
-// Issue #998: only mount component-shaped exports. A plain function is a
-// component; the compat memo()/forwardRef() helpers produce an object
-// carrying `$$typeof`. Anything else (a string/object constant that slipped
-// through as an island marker) is skipped with a loud warning rather than
-// handed to h() — which would otherwise build a DOM element from a bogus type.
-const __zfb_ok = {predicate};
-if (!__zfb_ok) {{
-  {warn}
-}}
-export function mount(props, element, mode) {{
-  if (!__zfb_ok) return;
-  const vnode = h(Component, props);
-  if (mode === "hydrate") {{
-    hydrate(vnode, element);
-  }} else {{
-    render(vnode, element);
-  }}
-}}
-export function unmount(element) {{
-  if (!__zfb_ok) return;
-  render(null, element);
-}}
-export default mount;
-"#
-        ),
-        FrameworkKind::React => format!(
-            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
-import * as Mod from {path_lit};
-import {{ createElement }} from "react";
-import {{ hydrateRoot, createRoot }} from "react-dom/client";
-const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
-// Issue #998: only mount component-shaped exports. A plain function is a
-// component; react memo()/forwardRef() produce an object carrying
-// `$$typeof`. Anything else (a string/object constant that slipped through
-// as an island marker) is skipped with a loud warning rather than handed to
-// createElement() — which would otherwise try to build a DOM element from a
-// bogus type.
-const __zfb_ok = {predicate};
-if (!__zfb_ok) {{
-  {warn}
-}}
-const __zfb_roots = new WeakMap();
-export function mount(props, element, mode) {{
-  if (!__zfb_ok) return;
-  const vnode = createElement(Component, props);
-  if (mode === "hydrate") {{
-    const root = hydrateRoot(element, vnode);
-    __zfb_roots.set(element, root);
-  }} else {{
-    const root = createRoot(element);
-    root.render(vnode);
-    __zfb_roots.set(element, root);
-  }}
-}}
-export function unmount(element) {{
-  if (!__zfb_ok) return;
-  const root = __zfb_roots.get(element);
-  if (root) {{ root.unmount(); __zfb_roots.delete(element); }}
-}}
-export default mount;
-"#
-        ),
-    }
-}
-
-/// Generate the runtime entry script from a manifest of
-/// `(marker_name → asset_url)` pairs.
-///
-/// The runtime imports the framework-agnostic hydration runtime from
-/// the `zfb` SDK package, hands it the manifest so it can
-/// dynamic-import the right per-island bundle for each
-/// `[data-zfb-island]` element. The manifest is inlined as a JSON
-/// literal — no extra fetch — so the runtime works in static-host
-/// environments.
-///
-/// The `framework` parameter has been removed; the shim is
-/// framework-agnostic because each island's per-island bundle carries
-/// the framework-specific glue. This function takes the manifest
-/// entries directly rather than a pre-serialised JSON string so
-/// callers do not need to reach into the private [`serialize_manifest`]
-/// helper.
-pub fn render_runtime_entry_source(manifest: &[(String, String)]) -> String {
-    let manifest_json = serialize_manifest(manifest);
-    format!(
-        r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
-import {{ mountIslands }} from "@takazudo/zfb/runtime";
-const ISLAND_MANIFEST = {manifest_json};
-mountIslands(ISLAND_MANIFEST);
-"#
-    )
-}
-
-/// Serialize a manifest of `(marker_name → asset_url)` pairs to a
-/// JSON object literal. Order of keys is preserved (the runtime does
-/// not rely on it but determinism matters for hashing).
-fn serialize_manifest(entries: &[(String, String)]) -> String {
-    let mut s = String::from("{");
-    for (i, (k, v)) in entries.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&json_string(k));
-        s.push(':');
-        s.push_str(&json_string(v));
-    }
-    s.push('}');
-    s
 }
 
 impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
+        validate_owned_build_identity(islands, config)?;
         self.sweep_stranded_entries();
 
         let OneEntryOutput {
@@ -3156,7 +2686,7 @@ impl EsbuildSubprocessBundler {
     /// imports all islands), a client-script file IS the entry — no synthetic
     /// wrapper is generated. The file is bundled with `--splitting=false` so any
     /// dynamic `import()` calls are inlined into the single output file (identical
-    /// rationale to the per-island path at line 619-628).
+    /// rationale: a single emitted client-script file must contain its imports.
     ///
     /// `entry_name` is the logical name for this bundle — typically the file stem
     /// minus the `.client` suffix (e.g. `"search-widget"` for
@@ -3185,7 +2715,7 @@ impl EsbuildSubprocessBundler {
     /// entries into an in-memory entry plus strict contract-named companions.
     ///
     /// Sweeps stranded in-project temp files first (issue #2109), matching
-    /// [`ClientBundler::bundle`] and [`Self::bundle_per_island`] — otherwise a
+    /// [`ClientBundler::bundle`] — otherwise a
     /// client-script-only project (one that never runs an islands build)
     /// would accumulate its own worker-tsconfig/virtual-module strays
     /// indefinitely, only reaped whenever an unrelated islands build happens
@@ -3344,6 +2874,8 @@ pub fn hash_8(js: &str) -> String {
 mod tests {
     use super::*;
 
+    const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
     /// Write an in-project entry-shaped file and backdate its mtime by `age`.
     fn write_entry_aged(dir: &Path, name: &str, age: std::time::Duration) -> PathBuf {
         let path = dir.join(name);
@@ -3356,12 +2888,10 @@ mod tests {
 
     #[test]
     fn is_zfb_islands_temp_file_drops_every_in_project_temp_class_but_keeps_real_sources() {
-        // Issue #3215: the dev watcher's intake filter dropped only
-        // Tailwind's own temp files, so the islands entry's `Created`/
-        // `Removed` events got through and re-triggered a second full tick
-        // after every island rebuild. This pins the predicate the fix wires
-        // into that filter — one representative filename per recognized
-        // class, plus a normal source file that must NOT match.
+        // Issue #3215: every islands temp class must be dropped by the
+        // dev watcher's intake filter so its `Created`/`Removed` events do
+        // not trigger a second full tick after a rebuild. Pin one filename
+        // per recognized class, plus a normal source file that must NOT match.
         for name in [
             ".zfb-esbuild-entry-APmUkl.tsx",
             ".zfb-islands-tsconfig-abc123.json",
@@ -4093,7 +3623,7 @@ mod tests {
     fn redact_temp_path_replaces_cwd_relative_form() {
         let cwd = Path::new("/Users/dev/my-project");
         let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
-        let stderr = "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
+        let stderr = "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
         let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
         assert!(
             friendly.contains("<synthesized entry>"),
@@ -4119,7 +3649,7 @@ mod tests {
         let cwd = Path::new("/Users/dev/my-project");
         let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
         let stderr =
-            "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    components/counter.tsx:2:9:\n";
+            "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    components/counter.tsx:2:9:\n";
         let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
         assert_eq!(friendly, stderr);
     }
@@ -4130,274 +3660,6 @@ mod tests {
         assert_eq!(json_string("a\"b"), "\"a\\\"b\"");
         assert_eq!(json_string("a\\b"), "\"a\\\\b\"");
         assert_eq!(json_string("a\nb"), "\"a\\nb\"");
-    }
-
-    #[test]
-    fn serialize_manifest_round_trips_through_serde_json() {
-        // Stable URLs per the S0 contract — hashing happens later in
-        // `ProductionAssetPipeline`, not in the bundler.
-        let entries = vec![
-            ("Counter".into(), "/islands/Counter.js".into()),
-            ("Button".into(), "/islands/Button.js".into()),
-        ];
-        let s = serialize_manifest(&entries);
-        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid json");
-        assert_eq!(parsed["Counter"].as_str(), Some("/islands/Counter.js"));
-        assert_eq!(parsed["Button"].as_str(), Some("/islands/Button.js"));
-    }
-
-    #[test]
-    fn render_island_entry_source_preact_imports_bare_preact() {
-        let island = Island::new("Counter", "/abs/components/Counter.tsx");
-        let src = render_island_entry_source(FrameworkKind::Preact, &island);
-        assert!(src.contains(r#"from "preact""#));
-        assert!(!src.contains("preact/compat"));
-        assert!(src.contains("hydrate"));
-        assert!(src.contains("render"));
-        assert!(src.contains(r#"from "/abs/components/Counter.tsx""#));
-        assert!(src.contains("export function mount"));
-        assert!(src.contains("export default mount"));
-        // Per-island Preact bundles must export unmount for lifecycle cleanup.
-        assert!(
-            src.contains("export function unmount"),
-            "expected unmount export in Preact bundle: {src}"
-        );
-        assert!(
-            src.contains("render(null, element)"),
-            "expected render(null, element) in Preact unmount: {src}"
-        );
-    }
-
-    #[test]
-    fn render_island_entry_source_react_uses_client_apis() {
-        let island = Island::new("Modal", "/abs/components/Modal.tsx");
-        let src = render_island_entry_source(FrameworkKind::React, &island);
-        assert!(src.contains(r#"from "react-dom/client""#));
-        assert!(src.contains("hydrateRoot"));
-        assert!(src.contains("createRoot"));
-        // Distinguish hydrate path (SSR'd) from render path (SSR-skip).
-        assert!(src.contains(r#"mode === "hydrate""#));
-        // Per-island React bundles must export unmount using WeakMap-tracked Root.
-        assert!(
-            src.contains("export function unmount"),
-            "expected unmount export in React bundle: {src}"
-        );
-        assert!(
-            src.contains("__zfb_roots"),
-            "expected WeakMap __zfb_roots in React bundle: {src}"
-        );
-        assert!(
-            src.contains("root.unmount()"),
-            "expected root.unmount() call in React unmount: {src}"
-        );
-        // #1002: unmount must carry the same __zfb_ok gate as the Preact arm.
-        assert!(
-            src.contains("export function unmount(element) {\n  if (!__zfb_ok) return;"),
-            "expected __zfb_ok gate in React unmount: {src}"
-        );
-    }
-
-    #[test]
-    fn render_runtime_entry_source_inlines_manifest_and_calls_mount() {
-        // Stable URLs per the S0 contract.
-        let manifest = vec![
-            ("Counter".into(), "/islands/Counter.js".into()),
-            ("Button".into(), "/islands/Button.js".into()),
-        ];
-        let src = render_runtime_entry_source(&manifest);
-        assert!(src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
-        assert!(src.contains(r#""Counter":"/islands/Counter.js""#));
-        assert!(src.contains("mountIslands(ISLAND_MANIFEST);"));
-    }
-
-    #[test]
-    fn bundle_per_island_in_mock_mode_writes_per_island_assets_and_runtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = EsbuildSubprocessConfig::default();
-        // Empty mock_output makes bundle_one_entry echo the entry source
-        // back, so each island's bytes (and therefore its hash) reflect
-        // the deterministic entry shape.
-        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
-            mock_subprocess: true,
-            ..cfg
-        });
-        let islands = vec![
-            Island::new("Counter", "/abs/components/Counter.tsx"),
-            Island::new("Modal", "/abs/components/Modal.tsx"),
-        ];
-        let config = BundleConfig::default()
-            .with_outdir(dir.path().to_path_buf())
-            .with_base_url("/");
-        let out = bundler
-            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
-            .expect("bundle_per_island in mock mode succeeds");
-
-        // Two per-island bundles, in the same order as input.
-        assert_eq!(out.islands.len(), 2);
-        assert_eq!(out.islands[0].component_name, "Counter");
-        assert_eq!(out.islands[1].component_name, "Modal");
-
-        for (i, entry) in out.islands.iter().enumerate() {
-            // Hash is still computed and exposed (8 lowercase hex
-            // chars) for dev-mode change detection, but it is **not**
-            // part of the on-disk filename or URL — those are stable
-            // per the S0 single-source-of-truth-for-hashing contract.
-            assert_eq!(entry.hash.len(), 8);
-            assert!(entry.hash.chars().all(|c| c.is_ascii_hexdigit()));
-            // File exists on disk at the stable sequential path
-            // `<outdir>/islands/island-{i}.js`.
-            assert!(entry.asset_path.exists(), "{:?}", entry.asset_path);
-            assert!(entry.asset_path.starts_with(dir.path().join("islands")));
-            let expected_filename = format!("island-{i}.js");
-            assert_eq!(
-                entry.asset_path.file_name().unwrap().to_string_lossy(),
-                expected_filename,
-            );
-            // Public URL is the stable `/islands/island-{i}.js`.
-            assert_eq!(entry.asset_url, format!("/islands/{expected_filename}"));
-        }
-
-        // Runtime bundle exists at the stable path
-        // `<outdir>/islands/islands-runtime.js` (no hash suffix) and
-        // bears the matching stable URL `/islands/islands-runtime.js`.
-        assert!(out.runtime_asset_path.exists());
-        assert_eq!(
-            out.runtime_asset_path
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "islands-runtime.js",
-        );
-        assert_eq!(out.runtime_asset_url, "/islands/islands-runtime.js");
-    }
-
-    #[test]
-    fn bundle_per_island_is_deterministic_across_runs() {
-        let dir = tempfile::tempdir().unwrap();
-        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
-            mock_subprocess: true,
-            ..EsbuildSubprocessConfig::default()
-        });
-        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let config = BundleConfig::default().with_outdir(dir.path().to_path_buf());
-        let a = bundler
-            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
-            .unwrap();
-        let b = bundler
-            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
-            .unwrap();
-        // Stable filenames mean the URLs are determined entirely by
-        // the input slice — independent of the bundled byte stream.
-        // The exposed `hash` field still varies with byte content and
-        // therefore must also be stable across identical inputs.
-        assert_eq!(a.islands[0].hash, b.islands[0].hash);
-        assert_eq!(a.islands[0].asset_url, b.islands[0].asset_url);
-        assert_eq!(a.runtime_asset_url, b.runtime_asset_url);
-    }
-
-    #[test]
-    fn bundle_per_island_default_export_islands_do_not_collide() {
-        // Two islands from different files both with marker_name "default"
-        // (anonymous default exports). With component_name-based filenames they
-        // would have written to the same "default.js" path; the sequential
-        // island-{i}.js scheme guarantees distinct files.
-        let dir = tempfile::tempdir().unwrap();
-        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
-            mock_subprocess: true,
-            ..EsbuildSubprocessConfig::default()
-        });
-        // marker_name="default" for both, but distinct source_path.
-        // component_name values ("Foo" / "Bar") are used for the SSR-side
-        // pairing; the runtime manifest key is the marker_name ("Foo"/"Bar"
-        // here, which are also the component_names — note with_marker_name
-        // takes (component_name, source_path, marker_name)).
-        let islands = vec![
-            Island::with_marker_name("default", "/abs/A.tsx", "Foo"),
-            Island::with_marker_name("default", "/abs/B.tsx", "Bar"),
-        ];
-        let config = BundleConfig::default()
-            .with_outdir(dir.path().to_path_buf())
-            .with_base_url("/");
-        let out = bundler
-            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
-            .expect("bundle_per_island with colliding marker_names succeeds");
-
-        assert_eq!(out.islands.len(), 2);
-        // Sequential filenames are distinct — no overwrite.
-        assert_eq!(
-            out.islands[0]
-                .asset_path
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "island-0.js",
-        );
-        assert_eq!(
-            out.islands[1]
-                .asset_path
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "island-1.js",
-        );
-        assert!(out.islands[0].asset_path.exists());
-        assert!(out.islands[1].asset_path.exists());
-        // Files have different content (different source_path in entry source).
-        let content_0 = std::fs::read(&out.islands[0].asset_path).unwrap();
-        let content_1 = std::fs::read(&out.islands[1].asset_path).unwrap();
-        assert_ne!(
-            content_0, content_1,
-            "island-0.js and island-1.js must have distinct content"
-        );
-        // Runtime manifest has two distinct entries, keyed by marker_name
-        // ("Foo" and "Bar"), each pointing to the correct island-{i}.js URL.
-        let runtime_src = std::fs::read_to_string(&out.runtime_asset_path).unwrap();
-        assert!(
-            runtime_src.contains(r#""Foo":"/islands/island-0.js""#),
-            "runtime manifest must contain Foo entry: {runtime_src}"
-        );
-        assert!(
-            runtime_src.contains(r#""Bar":"/islands/island-1.js""#),
-            "runtime manifest must contain Bar entry: {runtime_src}"
-        );
-    }
-
-    #[test]
-    fn bundle_per_island_manifest_keys_use_marker_name() {
-        // A default-export island whose marker_name differs from component_name:
-        // the runtime manifest key must be marker_name, not component_name.
-        let dir = tempfile::tempdir().unwrap();
-        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
-            mock_subprocess: true,
-            ..EsbuildSubprocessConfig::default()
-        });
-        // component_name="default" (export-side), marker_name="SidebarToggle"
-        // (the identifier the SSR side and data-zfb-island attribute use).
-        let islands = vec![Island::with_marker_name(
-            "default",
-            "/abs/SidebarToggle.tsx",
-            "SidebarToggle",
-        )];
-        let config = BundleConfig::default()
-            .with_outdir(dir.path().to_path_buf())
-            .with_base_url("/");
-        let out = bundler
-            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
-            .expect("bundle_per_island with marker_name succeeds");
-
-        assert_eq!(out.islands.len(), 1);
-        // The runtime file is produced by render_runtime_entry_source which
-        // serialises the manifest. In mock mode the bundler echoes the entry
-        // source back, so the file contents contain the raw manifest JS.
-        let runtime_src = std::fs::read_to_string(&out.runtime_asset_path).unwrap();
-        assert!(
-            runtime_src.contains(r#""SidebarToggle":"#),
-            "manifest key must be marker_name 'SidebarToggle': {runtime_src}"
-        );
-        assert!(
-            !runtime_src.contains(r#""default":"#),
-            "manifest key must NOT be component_name 'default': {runtime_src}"
-        );
     }
 
     #[test]
@@ -4414,7 +3676,7 @@ mod tests {
             Island::new("Counter", "/abs/components/Counter.tsx"),
             Island::new("Modal", "/abs/components/Modal.tsx"),
         ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
         assert!(
             src.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#),
             "missing namespace-import for Counter: {src}"
@@ -4458,7 +3720,7 @@ mod tests {
         // macOS / Linux) must not break the synthesized JS — it gets
         // JSON-escaped just like component names.
         let islands = vec![Island::new("Weird", "/abs/components/has\"quote/Weird.tsx")];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
         assert!(
             src.contains(
                 r#"import * as __zfb_island_0 from "/abs/components/has\"quote/Weird.tsx";"#
@@ -4475,7 +3737,7 @@ mod tests {
         // is mostly defensive, but we still want it to produce valid JS
         // rather than panic or emit a `mountIslands({})` call that
         // would query the DOM for islands the page doesn't have.
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &[], false);
+        let src = render_shared_bundle_entry_source(&[], false);
         assert!(!src.contains("import"));
         assert!(!src.contains("mountIslands"));
         assert!(src.starts_with("// Generated"));
@@ -4493,8 +3755,8 @@ mod tests {
             Island::new("Counter", "/abs/components/Counter.tsx"),
             Island::new("Modal", "/abs/components/Modal.tsx"),
         ];
-        let without = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
-        let with = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, true);
+        let without = render_shared_bundle_entry_source(&islands, false);
+        let with = render_shared_bundle_entry_source(&islands, true);
 
         assert!(
             !without.contains("@takazudo/zfb-runtime/client-router"),
@@ -4517,9 +3779,9 @@ mod tests {
     fn render_shared_bundle_entry_source_client_router_true_with_no_islands() {
         // Issue #289: a `<ClientRouter />`-only project (no `"use client"`
         // islands) still gets the side-effect import — and nothing else
-        // (no preact import, no mountIslands call) so the entry stays
-        // minimal.
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &[], true);
+        // (the legacy Preact import stays absent, no mountIslands call) so
+        // the entry stays minimal.
+        let src = render_shared_bundle_entry_source(&[], true);
         assert!(src.contains("import \"@takazudo/zfb-runtime/client-router\";"));
         assert!(!src.contains("mountIslands"));
         assert!(!src.contains("from \"preact\""));
@@ -4531,7 +3793,7 @@ mod tests {
         // With both islands and client-router, the side-effect import and
         // the normal island registration shape coexist.
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, true);
+        let src = render_shared_bundle_entry_source(&islands, true);
         assert!(src.contains("import \"@takazudo/zfb-runtime/client-router\";"));
         assert!(src.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#));
         assert!(src.contains("mountIslands(__zfb_manifest);"));
@@ -4556,7 +3818,7 @@ mod tests {
                 "/v2/packages/zudo-doc-v2/src/sidebar/sidebar.tsx",
             ),
         ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
         assert!(src.contains("import * as __zfb_island_0 from "));
         assert!(src.contains("import * as __zfb_island_1 from "));
         assert!(src.contains("import * as __zfb_island_2 from "));
@@ -4581,23 +3843,21 @@ mod tests {
             Island::new("Counter", "/abs/components/Counter.tsx"),
             Island::new("Modal", "/abs/components/Modal.tsx"),
         ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
 
         assert!(
             src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#),
             "missing mountIslands import: {src}"
         );
         assert!(
-            src.contains(r#"import { h, hydrate, render } from "preact""#),
-            "missing preact glue imports: {src}"
+            src.contains(r#"import { hydrate, mount } from "@takazudo/zfb/zudo-react/client""#),
+            "missing owned glue imports: {src}"
         );
 
         // Helper functions present, plus an `__zfb_register` call per
         // island. Issue #149: the manifest key (third arg) is now a
-        // **static literal** — the scanner-derived `marker_name`. No
-        // runtime `displayName ?? name` introspection: that path was
-        // broken by esbuild minification (function names become single
-        // letters in production bundles).
+        // **static literal** — the scanner-derived `marker_name`. The owned
+        // glue checks the function name against that marker before mounting.
         assert!(src.contains("function __zfb_pick("));
         assert!(src.contains("function __zfb_register("));
         assert!(
@@ -4607,86 +3867,17 @@ mod tests {
         assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
         assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
 
-        // hydrate vs render branching mirrors render_island_entry_source.
-        assert!(src.contains(r#"if (mode === "hydrate") { hydrate(v, element); }"#));
-        assert!(src.contains("else { render(v, element); }"));
+        // hydrate vs render branching follows the runtime contract.
+        assert!(src.contains("mode === \"hydrate\" ? hydrate(h(C, props)"));
+        assert!(src.contains("mount(h(C, props)"));
 
-        // Shared-bundle manifest entries must include an unmount thunk (Preact-only path).
+        // The owned runtime receives RootHandles from the mount thunk.
         assert!(
-            src.contains("unmount: (element) => { render(null, element); }"),
-            "expected unmount thunk in shared-bundle manifest entry: {src}"
+            !src.contains("unmount: (element)"),
+            "legacy unmount thunk must be absent: {src}"
         );
 
         // Final invocation hands the populated manifest to the runtime.
-        assert!(src.contains("mountIslands(__zfb_manifest);"));
-    }
-
-    #[test]
-    fn render_shared_bundle_entry_source_react_uses_client_apis() {
-        // React-mode shared bundle: a project with `framework: "react"`
-        // must emit React hydration glue (createElement + react-dom/client
-        // hydrateRoot/createRoot + a module-scope WeakMap of roots) instead
-        // of the Preact `h()/hydrate()/render()` shape — mirroring the
-        // per-island React branch in `render_island_entry_source`. Without
-        // this, a React project's shared bundle ships bare `from "preact"`
-        // imports that crash at hydrate time.
-        let islands = vec![
-            Island::new("Counter", "/abs/components/Counter.tsx"),
-            Island::new("Modal", "/abs/components/Modal.tsx"),
-        ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::React, &islands, false);
-
-        // React client imports present; no bare Preact import.
-        assert!(
-            src.contains(r#"import { createElement } from "react""#),
-            "missing react createElement import: {src}"
-        );
-        assert!(
-            src.contains(r#"import { hydrateRoot, createRoot } from "react-dom/client""#),
-            "missing react-dom/client import: {src}"
-        );
-        assert!(
-            !src.contains(r#"from "preact""#),
-            "react-mode bundle must NOT contain a bare preact import: {src}"
-        );
-
-        // Module-scope roots map (declared once, not per-register).
-        assert_eq!(
-            src.matches("const __zfb_roots = new WeakMap();").count(),
-            1,
-            "expected exactly one module-scope WeakMap of roots: {src}"
-        );
-
-        // The shared helper shape is unchanged; only the thunk bodies differ.
-        assert!(src.contains("function __zfb_pick("));
-        assert!(src.contains("function __zfb_register("));
-        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
-        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
-
-        // React mount glue: createElement + hydrateRoot/createRoot, and an
-        // unmount thunk that disposes the stored root.
-        assert!(
-            src.contains("const v = createElement(C, props);"),
-            "missing React createElement mount: {src}"
-        );
-        assert!(
-            src.contains("const root = hydrateRoot(element, v);"),
-            "missing hydrateRoot call: {src}"
-        );
-        assert!(
-            src.contains("const root = createRoot(element);"),
-            "missing createRoot call: {src}"
-        );
-        assert!(
-            src.contains("root.unmount(); __zfb_roots.delete(element);"),
-            "missing React unmount glue: {src}"
-        );
-        // No Preact `h()` / `render()` thunk leakage into the React path.
-        assert!(
-            !src.contains("const v = h(C, props);"),
-            "react-mode bundle must NOT contain the Preact h() thunk: {src}"
-        );
-
         assert!(src.contains("mountIslands(__zfb_manifest);"));
     }
 
@@ -4718,7 +3909,7 @@ mod tests {
                 "AiChatModal",
             ),
         ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
 
         // The third argument is the SSR-marker name, distinct from the
         // export-side `component_name = "default"`. Static literal —
@@ -4767,7 +3958,7 @@ mod tests {
                 "ImageEnlarge",
             ),
         ];
-        let src = render_shared_bundle_entry_source(FrameworkKind::Preact, &islands, false);
+        let src = render_shared_bundle_entry_source(&islands, false);
 
         // Lookup uses the wrapper export name (so the import * as ns
         // round-trip lands on the wrapper component). The manifest key
@@ -4810,7 +4001,9 @@ mod tests {
             Island::new("Modal", "/abs/components/Modal.tsx"),
             Island::new("Sidebar", "/abs/components/Sidebar.tsx"),
         ];
-        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
 
         let out = bundler.bundle(&islands, &cfg).expect("multi-island bundle");
 
@@ -5018,12 +4211,8 @@ mod tests {
         assert!(worker_metafile.path().is_file());
     }
 
-    /// The six job types (shared entry, per-island, runtime, shared worker,
-    /// client script, client-script module worker) share one audit helper —
-    /// this pins that an audit failure always carries the caller's
-    /// `job_label` verbatim, mirroring the exact label shapes each of the
-    /// six production call sites constructs (see `bundle_one_entry`,
-    /// `bundle_per_island`, and `bundle_client_script_file_with_workers`).
+    /// Shared entry, worker, client script, and client-script worker jobs
+    /// share one audit helper. Failures must carry the caller's job label.
     #[test]
     fn run_stage_escape_audit_failure_surfaces_owning_job_identity_for_every_job_type() {
         let policy = StageAuditPolicy {
@@ -5036,8 +4225,6 @@ mod tests {
         let missing_metafile = PathBuf::from("/nonexistent/.zfb-stage-audit-missing.json");
         let job_labels = [
             "shared entry".to_string(),
-            "per-island Counter".to_string(),
-            "runtime".to_string(),
             format!("shared worker {}", "worker-src-s-search-d-worker-d-ts.js"),
             format!(
                 "client script {:?}",
@@ -5081,7 +4268,9 @@ mod tests {
             .with_stage_audit(policy);
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let tmp = tempfile::tempdir().unwrap();
-        let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+        let bundle_cfg = BundleConfig::production()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(tmp.path());
         let result = bundler.bundle(
             &[Island::new(
                 "Counter",
@@ -5188,8 +4377,8 @@ mod tests {
 
     /// The shared browser-islands pass alone owns the locked file-loader
     /// contract. Its flags come after user loader arguments and include the
-    /// private metafile read-back oracle; the non-splitting per-island path
-    /// remains unchanged.
+    /// private metafile read-back oracle; non-splitting client-script jobs
+    /// retain their separate argument contract.
     #[test]
     fn shared_bundle_args_include_locked_resource_contract_only_when_splitting() {
         let cfg = BundleConfig::default()
@@ -5245,10 +4434,12 @@ mod tests {
             let bundler = EsbuildSubprocessBundler::new(
                 EsbuildSubprocessConfig::default().with_mock_output("export {};"),
             );
-            let cfg = BundleConfig::default().with_loaders(BTreeMap::from([(
-                extension.to_string(),
-                "empty".to_string(),
-            )]));
+            let cfg = BundleConfig::default()
+                .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+                .with_loaders(BTreeMap::from([(
+                    extension.to_string(),
+                    "empty".to_string(),
+                )]));
             let err = bundler
                 .bundle(&[Island::new("ResourceIsland", "/tmp/resource.tsx")], &cfg)
                 .expect_err("reserved shared resource loader must be rejected");
@@ -5258,24 +4449,20 @@ mod tests {
         }
     }
 
-    /// Per-island/runtime path contract (review-fix, codex finding 3):
-    /// `splitting = false` must NOT emit any `--splitting` flag, so esbuild
-    /// inlines dynamic imports into the single entry (pre-#806 behaviour).
-    /// `--chunk-names` is meaningless without splitting and must be absent,
-    /// while `--outdir` + `--entry-names` stay so the read-back still finds
-    /// the stable `islands.js` entry.
+    /// Non-splitting jobs omit `--splitting` and `--chunk-names`; esbuild
+    /// inlines dynamic imports into their single output file.
     #[test]
-    fn build_esbuild_args_per_island_path_disables_splitting() {
+    fn build_esbuild_args_non_splitting_path_disables_splitting() {
         let cfg = BundleConfig::default();
         let args = args_as_strings(&cfg, false);
 
         assert!(
             !args.iter().any(|a| a.starts_with("--splitting")),
-            "per-island path must not pass any --splitting flag: {args:?}"
+            "non-splitting path must not pass any --splitting flag: {args:?}"
         );
         assert!(
             !args.iter().any(|a| a.starts_with("--chunk-names")),
-            "per-island path must not pass --chunk-names (no chunks): {args:?}"
+            "non-splitting path must not pass --chunk-names (no chunks): {args:?}"
         );
         // The stable-entry read-back contract still holds without splitting.
         assert!(
@@ -5372,7 +4559,9 @@ mod tests {
         let source = project.path().join("worker.ts");
         std::fs::write(&source, "self.postMessage('ok');").unwrap();
         let worker = ModuleWorkerBundleEntry::new(project.path(), &source, &source).unwrap();
-        let config = BundleConfig::dev().with_module_workers(vec![worker.clone(), worker]);
+        let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_module_workers(vec![worker.clone(), worker]);
         let bundler = EsbuildSubprocessBundler::new(
             EsbuildSubprocessConfig::default().with_mock_output("export {};"),
         );
@@ -5741,14 +4930,9 @@ mod tests {
     /// Regression for issue #151 (zudolab/zudo-doc#1355 Wave 8).
     ///
     /// The esbuild subprocess argument list MUST include
-    /// `--jsx=automatic` AND `--jsx-import-source=preact` (the default
-    /// framework). Without those two flags esbuild's classic JSX
-    /// transform emits bare `React.createElement` references that
-    /// throw `ReferenceError: React is not defined` at mount time when
-    /// host components have been migrated to `preact/compat` for
-    /// hooks.
+    /// `--jsx=automatic` and the owned JSX import source.
     #[test]
-    fn build_esbuild_args_includes_automatic_jsx_flags_for_preact_default() {
+    fn build_esbuild_args_includes_automatic_owned_jsx_flags() {
         let cfg = BundleConfig::default();
         let args = args_as_strings(&cfg, true);
         assert!(
@@ -5756,8 +4940,9 @@ mod tests {
             "missing --jsx=automatic in args: {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "--jsx-import-source=preact"),
-            "missing --jsx-import-source=preact in args: {args:?}"
+            args.iter()
+                .any(|a| a == "--jsx-import-source=@takazudo/zfb/zudo-react"),
+            "missing owned JSX import source in args: {args:?}"
         );
         // Both flags must appear before the entry path (which is
         // always last) so esbuild parses them as flags rather than as
@@ -5772,8 +4957,8 @@ mod tests {
             .expect("--jsx=automatic present");
         let import_idx = args
             .iter()
-            .position(|a| a == "--jsx-import-source=preact")
-            .expect("--jsx-import-source=preact present");
+            .position(|a| a == "--jsx-import-source=@takazudo/zfb/zudo-react")
+            .expect("owned JSX import source present");
         assert!(jsx_idx < entry_idx);
         assert!(import_idx < entry_idx);
     }
@@ -5907,76 +5092,37 @@ mod tests {
         assert!(alpha_idx < zeta_idx, "args: {args:?}");
     }
 
-    /// `BundleConfig::jsx_import_source` is honoured verbatim — the
-    /// helper does not hardcode `"preact"`, so callers that bundle for
-    /// React (or any future adapter) get the right
-    /// `--jsx-import-source=<value>` flag.
     #[test]
-    fn build_esbuild_args_honours_custom_jsx_import_source() {
-        let cfg = BundleConfig::default().with_jsx_import_source("react");
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            args.iter().any(|a| a == "--jsx=automatic"),
-            "missing --jsx=automatic in args: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a == "--jsx-import-source=react"),
-            "missing --jsx-import-source=react in args: {args:?}"
-        );
-        // The Preact default must NOT leak when the caller overrode it.
-        assert!(
-            !args.iter().any(|a| a == "--jsx-import-source=preact"),
-            "stale --jsx-import-source=preact present: {args:?}"
-        );
+    fn owned_args_use_runtime_without_compat_aliases() {
+        let args = args_as_strings(&BundleConfig::default(), true);
+        assert!(args.iter().any(|arg| arg == "--jsx=automatic"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--jsx-import-source=@takazudo/zfb/zudo-react"));
+        assert!(args.iter().any(|arg| arg == "--keep-names"));
+        assert!(!args.iter().any(|arg| arg.starts_with("--alias:react")));
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("--alias:@takazudo/zfb/jsx-factory")));
     }
 
-    /// Regression for issue #633.
-    ///
-    /// next.18 dist modules carry an explicit framework-neutral
-    /// `import { jsx } from "react/jsx-runtime"` (e.g.
-    /// `@takazudo/zfb-runtime/client-router`, pulled into the islands shared
-    /// bundle when `clientRouter: true`). In a Preact project `react` is not
-    /// installed, so the islands esbuild must rewrite `react/jsx-runtime` (and
-    /// the dev-runtime sibling) to the Preact runtime — mirroring the main SSR
-    /// bundler (`crates/zfb-build/src/bundler.rs`, `Framework::Preact` arm). For
-    /// the Preact default both aliases MUST be present.
     #[test]
-    fn build_esbuild_args_aliases_react_jsx_runtime_for_preact() {
-        let cfg = BundleConfig::default();
-        assert_eq!(cfg.jsx_import_source, "preact", "default must be Preact");
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            args.iter()
-                .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
-            "missing --alias:react/jsx-runtime=preact/jsx-runtime in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
-            "missing --alias:react/jsx-dev-runtime=preact/jsx-dev-runtime in args: {args:?}"
-        );
-    }
-
-    /// Companion to the #633 regression: React projects resolve
-    /// `react/jsx-runtime` natively, so the alias is Preact-only and the React
-    /// argv MUST NOT carry either `react/jsx-runtime` alias (same Preact-only
-    /// gate as the SSR bundler — keeps the React bundle byte-stable).
-    #[test]
-    fn build_esbuild_args_omits_react_jsx_runtime_alias_for_react() {
-        let cfg = BundleConfig::default().with_jsx_import_source("react");
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            !args
-                .iter()
-                .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
-            "react path must not alias react/jsx-runtime: {args:?}"
-        );
-        assert!(
-            !args
-                .iter()
-                .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
-            "react path must not alias react/jsx-dev-runtime: {args:?}"
-        );
+    fn owned_glue_is_deterministic_and_uses_runtime_client() {
+        let islands = [Island::with_marker_name(
+            "Counter",
+            "/fixture/counter.tsx",
+            "Counter",
+        )];
+        let first = render_shared_bundle_entry_source_with_build(&islands, false, Some("build-1"));
+        let second = render_shared_bundle_entry_source_with_build(&islands, false, Some("build-1"));
+        assert_eq!(first, second);
+        assert_eq!(first.matches("@takazudo/zfb/zudo-react/client").count(), 1);
+        assert!(first.contains("@takazudo/zfb/zudo-react/client"));
+        assert!(first.contains("build-1"));
+        assert!(first.contains("hydrate(h(C, props)"));
+        assert!(first.contains("mount(h(C, props)"));
+        assert!(!first.contains("from \"preact\""));
+        assert!(!first.contains("from \"react\""));
     }
 
     // -----------------------------------------------------------------------
@@ -6036,7 +5182,9 @@ mod tests {
         };
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
         // Mock output is returned in-memory — no disk write.
         assert_eq!(out.bytes, b"// alias mock output");
@@ -6057,7 +5205,9 @@ mod tests {
         };
         let bundler = EsbuildSubprocessBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
-        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
         // Mock output is returned in-memory — no disk write.
         assert_eq!(out.bytes, b"// virtual mock output");

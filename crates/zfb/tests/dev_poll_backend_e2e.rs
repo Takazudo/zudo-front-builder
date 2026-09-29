@@ -152,7 +152,6 @@ fn enable_poll_backend(root: &Path) {
         root.join("zfb.config.json"),
         format!(
             r#"{{
-  "framework": "preact",
   "collections": [
     {{
       "name": "posts",

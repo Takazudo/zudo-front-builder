@@ -28,7 +28,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Mirror the behaviour of `zfb/src/commands/build.rs::read_tsconfig_paths`:
@@ -145,15 +144,14 @@ fn workspace_package_resolves_at_alias_via_synthetic_tsconfig() {
 
     let mut input = BundlerInput::for_project(
         root.clone(),
-        Framework::Preact,
         BundleMode::Production,
         root.join(".zfb-build"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.tsconfig_paths = paths;
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);
@@ -274,15 +272,14 @@ fn workspace_pkg_alias_target_is_css_module_resolves_and_transforms() {
 
     let mut input = BundlerInput::for_project(
         root.clone(),
-        Framework::Preact,
         BundleMode::Production,
         root.join(".zfb-build"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.tsconfig_paths = paths;
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

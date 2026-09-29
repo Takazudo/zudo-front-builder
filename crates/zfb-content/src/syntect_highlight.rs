@@ -711,7 +711,7 @@ impl ClassHighlightOutcome {
 /// Invalid direct class-highlight options.
 ///
 /// Native `zfb` config prefixes these field-oriented messages with
-/// `codeHighlight.` while retaining theme mutual-exclusion and Tailwind policy
+/// `codeHighlight.` while retaining theme mutual-exclusion and wind policy
 /// validation in its own layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassHighlightValidationError {

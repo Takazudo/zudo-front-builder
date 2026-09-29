@@ -48,7 +48,6 @@ use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -405,9 +404,8 @@ fn write_full_fixture(root: &std::path::Path) {
     )
     .unwrap();
 
-    // Split-import CSS (#191 / #159): using tailwindcss sub-paths so the
-    // engine does not prepend the full `@import "tailwindcss";` and avoids
-    // leaking default color tokens.
+    // Legacy split-import CSS fixture (#191 / #159), retained to cover the
+    // migration path without adding synthesized default color tokens.
     fs::write(
         root.join("styles/global.css"),
         "@import \"tailwindcss/preflight\";\n@import \"tailwindcss/utilities\";\n",
@@ -428,13 +426,12 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),
@@ -793,7 +790,7 @@ fn zzmod_all_five_migration_fixes_compose() {
     // #664 (load-bearing): a CJS-only bad story that lives in the ALIASED
     // dir with a glob-MATCHING name (`bad.story.tsx`), so the eager
     // `import.meta.glob('./*.story.tsx')` barrel WOULD statically import it.
-    // Under --platform=neutral (Preact path, no --main-fields) the CJS-only
+    // Under --platform=neutral (external package path, no --main-fields) the CJS-only
     // dep is unresolvable, so WITHOUT `bundle.exclude` the build fails — that
     // is what makes the exclude assertion non-vacuous. With exclude, the file
     // is dropped from BOTH shadow materialisation AND the glob expansion.
@@ -816,14 +813,13 @@ fn zzmod_all_five_migration_fixes_compose() {
     let paths = tsconfig_paths_absolute(&root, &[("@lib/*", "src/lib/*")]);
     let mut input = BundlerInput::for_project(
         root.clone(),
-        Framework::Preact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

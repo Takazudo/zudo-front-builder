@@ -10,9 +10,7 @@
 //!    dropped; functions, classes, call expressions (`memo`/`forwardRef`/
 //!    `lazy`/`styled`/…), tagged templates, and anything ambiguous are kept.
 //!
-//! 2. **Generated-source runtime guard** (`render_island_entry_source` /
-//!    `render_shared_bundle_entry_source`) — the per-island and shared
-//!    bundle entries reject non-component values with a loud `console.warn`
+//! 2. **Generated-source runtime guard** (`render_shared_bundle_entry_source`) — the shared bundle entry reject non-component values with a loud `console.warn`
 //!    instead of a truthy-only check that would hand a bogus type to
 //!    `h()` / `createElement()`.
 //!
@@ -21,10 +19,7 @@
 
 use std::path::PathBuf;
 
-use zfb_islands::{
-    render_island_entry_source, render_shared_bundle_entry_source, scan_islands, FrameworkKind,
-    InMemoryResolver, Island,
-};
+use zfb_islands::{render_shared_bundle_entry_source, scan_islands, InMemoryResolver, Island};
 
 fn root() -> PathBuf {
     PathBuf::from("/proj")
@@ -414,60 +409,31 @@ fn ts_cast_const_exports_are_retained_as_ambiguous() {
 fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
 
-    for framework in [FrameworkKind::Preact, FrameworkKind::React] {
-        let src = render_shared_bundle_entry_source(framework, &islands, false);
-        // The old truthy-only guard must be gone.
-        assert!(
-            !src.contains("if (!C) return;"),
-            "truthy-only guard `if (!C) return;` must be replaced ({framework:?}):\n{src}"
-        );
-        // Component-shape guard present.
-        assert!(
-            src.contains("typeof C === \"function\""),
-            "expected typeof-function check ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("C.$$typeof"),
-            "expected $$typeof object check for memo/forwardRef ({framework:?}):\n{src}"
-        );
-        // Loud, non-silent rejection naming the export + module.
-        assert!(
-            src.contains("console.warn(") && src.contains("is not a component"),
-            "expected a loud console.warn on rejection ({framework:?}):\n{src}"
-        );
-        // The module label is threaded through as the 4th register arg.
-        assert!(
-            src.contains(
-                "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
-            ),
-            "expected module label passed as the 4th __zfb_register arg ({framework:?}):\n{src}"
-        );
-    }
-}
-
-#[test]
-fn per_island_entry_guards_mount_with_component_shape_check() {
-    let island = Island::new("Counter", "/abs/components/Counter.tsx");
-
-    for framework in [FrameworkKind::Preact, FrameworkKind::React] {
-        let src = render_island_entry_source(framework, &island);
-        assert!(
-            src.contains("typeof Component === \"function\""),
-            "expected typeof-function guard ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("$$typeof"),
-            "expected $$typeof object check ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("if (!__zfb_ok) return;"),
-            "mount must bail out when the export is not a component ({framework:?}):\n{src}"
-        );
-        assert!(
-            src.contains("console.warn(")
-                && src.contains("is not a component")
-                && src.contains("/abs/components/Counter.tsx"),
-            "expected a loud console.warn naming the module ({framework:?}):\n{src}"
-        );
-    }
+    let src = render_shared_bundle_entry_source(&islands, false);
+    // The old truthy-only guard must be gone.
+    assert!(
+        !src.contains("if (!C) return;"),
+        "truthy-only guard `if (!C) return;` must be replaced:\n{src}"
+    );
+    // Component-shape guard present.
+    assert!(
+        src.contains("typeof C !== \"function\""),
+        "expected typeof-function check:\n{src}"
+    );
+    assert!(
+        src.contains("name !== markerName"),
+        "expected static identity check against the scanner marker:\n{src}"
+    );
+    // Loud, non-silent rejection naming the export + module.
+    assert!(
+        src.contains("console.error(") && src.contains("must be a function"),
+        "expected a loud console.error on rejection:\n{src}"
+    );
+    // The module label is threaded through as the 4th register arg.
+    assert!(
+        src.contains(
+            "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
+        ),
+        "expected module label passed as the 4th __zfb_register arg:\n{src}"
+    );
 }

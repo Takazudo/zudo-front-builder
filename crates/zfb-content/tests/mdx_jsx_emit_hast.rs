@@ -18,7 +18,7 @@
 //!    `<div class="mermaid" data-mermaid>…</div>`.
 //! 4. syntect: a non-mermaid fenced code block routes through
 //!    syntect (output reaches the JSX module wrapped in
-//!    `dangerouslySetInnerHTML`).
+//!    `rawHtml`).
 //! 5. strip-md-ext (opt-in): internal `[x](./guide.md)` links lose
 //!    the `.md` and gain a trailing slash on the JSX path.
 //! 6. MDX component passthrough: a `<Note>` reference still triggers
@@ -117,11 +117,11 @@ fn mermaid_plugin_fires_on_jsx_path() {
 #[test]
 fn syntect_plugin_fires_on_jsx_path() {
     // syntect emits HTML, which the bridge wraps in
-    // dangerouslySetInnerHTML — both markers must show up.
+    // rawHtml — both markers must show up.
     let out = emit_with_defaults("```rust\nfn main() {}\n```\n");
     assert!(
-        out.contains("dangerouslySetInnerHTML"),
-        "syntect HTML output must be embedded via dangerouslySetInnerHTML:\n{out}",
+        out.contains("rawHtml"),
+        "syntect HTML output must be embedded via rawHtml:\n{out}",
     );
     assert!(
         out.contains("syntect-"),
@@ -199,8 +199,8 @@ fn defaults_compose_for_titled_rust_block() {
         "title bar must survive composition:\n{out}",
     );
     assert!(
-        out.contains("dangerouslySetInnerHTML"),
-        "syntect output must be embedded via dangerouslySetInnerHTML:\n{out}",
+        out.contains("rawHtml"),
+        "syntect output must be embedded via rawHtml:\n{out}",
     );
     assert!(
         out.contains("syntect-"),
@@ -209,7 +209,7 @@ fn defaults_compose_for_titled_rust_block() {
 }
 
 /// SWC-acceptance smoke: every plugin's output (including the
-/// dangerouslySetInnerHTML wrap and the JsxRaw passthrough) must
+/// rawHtml wrap and the JsxRaw passthrough) must
 /// produce a valid TSX module that survives SWC's JSX transform.
 #[test]
 #[cfg(feature = "compiler")]
@@ -942,8 +942,8 @@ fn nested_fence_in_mdx_jsx_is_highlighted_inline_mode() {
         "nested fence must carry the syntect class hook:\n{out}",
     );
     assert!(
-        out.contains("dangerouslySetInnerHTML"),
-        "nested syntect token HTML must be embedded via dangerouslySetInnerHTML:\n{out}",
+        out.contains("rawHtml"),
+        "nested syntect token HTML must be embedded via rawHtml:\n{out}",
     );
     assert!(
         !out.contains("language-rust"),
@@ -975,7 +975,7 @@ fn nested_fence_in_mdx_jsx_is_highlighted_class_mode() {
         out.contains("class=\"hi-root\""),
         "nested fence must carry the class-mode root class:\n{out}",
     );
-    // Role classes live inside the dangerouslySetInnerHTML JS string
+    // Role classes live inside the rawHtml JS string
     // literal (quotes escaped), so assert the bare token — same
     // convention as `bundler_class_mode_confirm.rs`.
     assert!(
@@ -1051,7 +1051,7 @@ fn directive_nested_fence_is_highlighted_class_mode() {
         "directive-nested fence must carry hi-root in class mode:\n{out}",
     );
     // Bare token — role classes sit inside the escaped
-    // dangerouslySetInnerHTML string literal (see the <Note> twin above).
+    // rawHtml string literal (see the <Note> twin above).
     assert!(
         out.contains("hi-kw"),
         "directive-nested fence must carry role classes in class mode:\n{out}",

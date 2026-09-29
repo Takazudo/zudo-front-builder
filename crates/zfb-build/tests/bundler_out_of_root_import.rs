@@ -13,7 +13,6 @@
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 #[test]
@@ -60,16 +59,15 @@ fn escaping_relative_import_gets_actionable_boundary_error() {
 
     let mut input = BundlerInput::for_project(
         app_root.clone(),
-        Framework::Preact,
         BundleMode::Production,
         app_root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     // Keep the SSR entry's own bare imports external so this fixture does
     // not need a real node_modules tree (mirrors bundler_integration.rs).
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
     input.esbuild_binary = Some(esbuild);

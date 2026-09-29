@@ -144,12 +144,11 @@ document, matching GitHub's own footnote behavior:
   plugins), and both reference and backreference links carry accessibility
   attributes (`aria-describedby`/`aria-label`) matching GitHub's markup.
 - The landmark is hidden by an **inline `style`**, not by the `sr-only`
-  class it also carries. zfb ships no stylesheet defining `.sr-only`, and
-  because the class is emitted by zfb itself it never appears in any file
-  Tailwind scans, so Tailwind's own `sr-only` utility is never generated
-  either — a class-only approach would leave the landmark visible in most
-  projects. The class remains as a styling hook. To make the heading
-  visible instead, override the inline style with `!important`:
+  class it also carries. That class appears only in renderer output, not in a
+  scanned source file, so it does not become a utility candidate by itself.
+  The inline style is what keeps the landmark hidden; the class remains as a
+  styling hook. To make the heading visible instead, override the inline style
+  with `!important`:
 
   ```css
   .footnotes [role="heading"] {

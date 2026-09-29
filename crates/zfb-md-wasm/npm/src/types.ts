@@ -109,9 +109,6 @@ export interface PipelineOptions {
   features?: MarkdownFeaturesConfig;
 }
 
-/** `jsxRuntime` option values. Consumed only by `compile`. */
-export type JsxRuntime = "preact" | "react";
-
 /**
  * The options JSON document shared by `compile` and `renderHtml`. Every
  * field is optional; `{}` selects all defaults. Unknown fields are
@@ -129,8 +126,6 @@ export interface ZfbMdWasmOptions {
    * Without an override, `.md` selects CommonMark and `.mdx` selects MDX.
    */
   dialect?: ParseDialect;
-  /** Consumed only by `compile`; `renderHtml` accepts and ignores it. */
-  jsxRuntime?: JsxRuntime;
   /** Consumed only by `compile`; `renderHtml` accepts and ignores it. */
   development?: boolean;
   pipeline?: PipelineOptions;

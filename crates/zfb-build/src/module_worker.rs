@@ -52,14 +52,13 @@ pub struct ModuleWorkerBuildContext {
     sourcemap: bool,
     loader_args: Vec<String>,
     define: BTreeMap<String, String>,
-    jsx_import_source: String,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
 }
 
 impl Default for ModuleWorkerBuildContext {
     fn default() -> Self {
-        Self::new(false, &BTreeMap::new(), &BTreeMap::new(), "preact")
+        Self::new(false, &BTreeMap::new(), &BTreeMap::new())
     }
 }
 
@@ -69,7 +68,6 @@ impl ModuleWorkerBuildContext {
         production: bool,
         loaders: &BTreeMap<String, String>,
         define: &BTreeMap<String, String>,
-        jsx_import_source: impl Into<String>,
     ) -> Self {
         Self {
             production,
@@ -80,7 +78,6 @@ impl ModuleWorkerBuildContext {
                 .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
                 .collect(),
             define: define.clone(),
-            jsx_import_source: jsx_import_source.into(),
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
         }
@@ -92,7 +89,6 @@ impl ModuleWorkerBuildContext {
         production: bool,
         loader_args: &[String],
         define: &BTreeMap<String, String>,
-        jsx_import_source: impl Into<String>,
     ) -> Self {
         let mut loader_args = loader_args.to_vec();
         loader_args.sort();
@@ -103,7 +99,6 @@ impl ModuleWorkerBuildContext {
             sourcemap: !production,
             loader_args,
             define: define.clone(),
-            jsx_import_source: jsx_import_source.into(),
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
         }
@@ -192,7 +187,7 @@ impl ModuleWorkerBuildContext {
         field(
             aggregate,
             b"jsx-import-source",
-            self.jsx_import_source.as_bytes(),
+            zfb_types::owned_runtime::JSX_IMPORT_SOURCE.as_bytes(),
         );
         for loader in &self.loader_args {
             field(aggregate, b"loader", loader.as_bytes());
@@ -3282,13 +3277,11 @@ mod tests {
             false,
             &BTreeMap::new(),
             &BTreeMap::from([("__WORKER_FLAG__".into(), "1".into())]),
-            "preact",
         );
         let after = ModuleWorkerBuildContext::new(
             false,
             &BTreeMap::new(),
             &BTreeMap::from([("__WORKER_FLAG__".into(), "2".into())]),
-            "preact",
         );
         let first =
             rewrite_module_worker_urls_with_context(source, &importer, project.path(), &before)
@@ -3308,21 +3301,16 @@ mod tests {
         let define = BTreeMap::from([("__FLAG__".to_string(), "true".to_string())]);
         let plugins = vec![("worker:alias".to_string(), "/project/alias.ts".to_string())];
         let virtuals = vec![("virtual:worker".to_string(), "export default 1".to_string())];
-        let browser = ModuleWorkerBuildContext::new(true, &loaders, &define, "preact")
+        let browser = ModuleWorkerBuildContext::new(true, &loaders, &define)
             .with_plugins(plugins.clone(), virtuals.clone())
             .with_output_semantics(true, false);
         let loader_args = loaders
             .iter()
             .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
             .collect::<Vec<_>>();
-        let ssr = ModuleWorkerBuildContext::from_esbuild_loader_args(
-            true,
-            &loader_args,
-            &define,
-            "preact",
-        )
-        .with_plugins(plugins, virtuals)
-        .with_output_semantics(true, false);
+        let ssr = ModuleWorkerBuildContext::from_esbuild_loader_args(true, &loader_args, &define)
+            .with_plugins(plugins, virtuals)
+            .with_output_semantics(true, false);
         assert_eq!(browser, ssr);
     }
 

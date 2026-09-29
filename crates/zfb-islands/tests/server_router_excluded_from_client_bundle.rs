@@ -62,6 +62,8 @@ use zfb_islands::{
 };
 use zfb_test_utils::locate_esbuild;
 
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
 /// The post-fix `@takazudo/zfb-runtime` stub bodies, shared by both cases.
 ///
 /// The barrel (`index.js`) is the **fixed** shape: it re-exports only the
@@ -129,14 +131,14 @@ fn write_island(root: &Path) -> std::path::PathBuf {
     island_path
 }
 
-/// Externals scoped to `@takazudo/zfb` (and subpaths) + preact — NOT
+/// Externals scoped to `@takazudo/zfb` (and subpaths) + vendor-lib — NOT
 /// `@takazudo/zfb-runtime`, which must be bundled so esbuild walks into the
-/// stub barrel. Mirrors `preact_jsx_runtime_alias.rs::shared_externals` and
-/// the real islands `shared_externals()`.
+/// stub barrel. The external flags keep the third-party sample package separate
+/// while esbuild follows the owned zfb entry points.
 fn shared_externals() -> Vec<OsString> {
     [
-        "--external:preact",
-        "--external:preact/*",
+        "--external:vendor-lib",
+        "--external:vendor-lib/*",
         "--external:@takazudo/zfb",
         "--external:@takazudo/zfb/*",
     ]
@@ -190,7 +192,9 @@ fn root_barrel_import_excludes_server_router_and_hono() {
     .with_binary_path(esbuild)
     .with_working_dir(root);
 
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let out = bundler
@@ -257,7 +261,9 @@ fn literal_1298_pnpm_store_layout_islands_build_succeeds() {
     .with_binary_path(esbuild)
     .with_working_dir(root);
 
-    let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(root.join("dist"));
 
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let out = bundler

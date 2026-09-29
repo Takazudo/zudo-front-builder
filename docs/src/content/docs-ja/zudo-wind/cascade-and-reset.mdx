@@ -1,0 +1,176 @@
+---
+title: カスケードとリセット
+description: リセットの選択、生成レイヤー、レイヤーのないユーティリティ、決定的なルール順序を説明します。
+sidebar_position: 7
+---
+
+## レイヤーの順序
+
+wind がリセット、トークン、ユーティリティのいずれかのルールを出力するとき、生成されるレイヤーの前置きは次のとおりです。
+
+```css
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+```
+
+この前置きの後に、手書きのレイヤー順序宣言が追加されます。列挙された 5 つのレイヤーの前後関係は変更できません。ほかのレイヤー名は通常の CSS の最初の宣言順に従います。import したスタイルシートが暗黙にレイヤーで包まれることはなく、明示的な import レイヤーは有効です。
+
+統合されたスタイルシートの順序は次のとおりです。
+
+1. 生成されるレイヤーの前置き。
+2. 巻き上げられた外部 import。
+3. `@layer zfb-hi` 内のハイライトブロック。
+4. 生成されるリセットとトークンのレイヤー。
+5. 必要な場合の生成される `@property` 登録。
+6. 手書きのバンドル CSS。import はバンドラーが処理済みです。
+7. レイヤーのない生成ユーティリティルール。
+8. パイプラインの追加位置に置かれる CSS Modules の出力。
+
+前置きは手書きのレイヤー接頭辞より前に置かれるため、手書きの CSS は所有された順序を置き換えられません。wind のユーティリティにはレイヤーがなく、手書きのグローバルルールの後に続きます。そのため、名前付きレイヤーの通常の宣言より優先されます。ただし、レイヤーのない手書きのルールで詳細度が高ければそちらが優先され、詳細度が同じでも後にある手書きのルールが優先されます。important 宣言には通常の CSS レイヤー規則が適用されますが、wind 言語に important 修飾子はありません。
+
+wind の結果が完全に空なら、前置きも出力しません。リセットを選ぶと、候補が解決されなくても前置きとリセットを出力できます。
+
+## リセットの選択
+
+デフォルトの `none` はリセットのバイト列を出力しません。`minimal-v1` に含まれる宣言は、正確に次のものだけです。
+
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+}
+```
+
+`owned-v1` は完全なリセットで、`minimal-v1` の拡張ではありません。
+
+```css
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
+}
+html {
+  line-height: 1.5;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+body {
+  line-height: inherit;
+}
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+a {
+  color: inherit;
+  text-decoration: inherit;
+}
+b,
+strong {
+  font-weight: bolder;
+}
+code,
+kbd,
+samp,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1em;
+}
+ol,
+ul,
+menu {
+  list-style: none;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+button,
+input:where([type="button"], [type="reset"], [type="submit"]) {
+  background-color: transparent;
+  background-image: none;
+}
+textarea {
+  resize: vertical;
+}
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block;
+  vertical-align: middle;
+}
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+table {
+  border-collapse: collapse;
+  border-color: inherit;
+  text-indent: 0;
+}
+summary {
+  display: list-item;
+}
+hr {
+  height: 0;
+  border-top-width: 1px;
+}
+```
+
+どちらのリセットも、ブラウザ標準のフォーカスアウトラインと `appearance` は変更しません。`[hidden]` に表示ルールを強制することもありません。接尾辞のない border ユーティリティは、どのリセットを選んでも自身で実線のボーダーを設定します。
+
+## 決定的な順序
+
+ルールは次のタプルの昇順に並びます。
+
+```text
+(responsive_rank, dark_rank, relation_rank, state_rank, pseudo_rank,
+ conflict_group_rank, scope_rank, catalog_rank, raw_candidate_utf8_bytes)
+```
+
+基本のレスポンシブ順位は 0 です。設定されたブレークポイントを幅の昇順に並べ、各ブレークポイントの最小幅の順位を `2*i + 1`、最大幅の順位を `2*i + 2` とします。`i` はゼロから始まります。ダークの順位は 0 または 1 です。関係、状態、疑似要素の順位は[バリアント](./variants.mdx)の順序に従います。競合グループはカタログ表の順序で 1 から始まります。スコープ順位は広域が 0、軸が 1、辺や角が 2 です。単一プロパティの群は 0 を使います。カタログの下位項目は記載順、次に基部のバイト列で並び、最後に候補の生の UTF-8 バイト列で同順位を解決します。これは出力ソースの順序であり、セレクタの詳細度を置き換えるものではありません。
+
+HTML のクラス順は影響しません。`spacingUnit` が `0.25rem` なら、`p-4 px-2 pl-1` のどの並びでも、上下は `1rem`、右は `0.5rem`、左は `0.25rem` になります。margin にも同じ規則が適用されます。`gap-4 gap-x-2 gap-y-1` は列間隔 `0.5rem` と行間隔 `0.25rem` を生成します。同じスコープの順位は候補の生のバイト列で決まり、`p-2` は `p-10` より後に並びます。
+
+## 出力バイト列
+
+v1 の生成 CSS は開発時も本番時も圧縮されません。最終的なスタイルシートのミニファイもありません。プリンターは LF、2 スペースのインデント、1 行 1 宣言、最後の LF を使います。入力が同じなら、どちらのモードでも wind CSS は同一です。CSS Modules は本番時に別途圧縮されることがあります。
+
+## 関連項目
+
+- [バリアント](./variants.mdx)
+- [ユーティリティの文法](./utility-grammar.mdx)
+- [トークン](./tokens.mdx)
+- [診断とツール](./diagnostics-and-tools.mdx)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { definePreset } from "../config.js";
+import { defineConfig, definePreset } from "../config.js";
 import type { CollectionDef } from "../config.js";
 
 describe("definePreset", () => {
@@ -16,15 +16,13 @@ describe("definePreset", () => {
   it("passes through non-plugin fields unchanged", () => {
     const result = definePreset("my-preset-pkg", {
       outDir: "build",
-      framework: "react",
       plugins: [{ name: "p" }],
     });
     expect(result.outDir).toBe("build");
-    expect(result.framework).toBe("react");
   });
 
   it("returns config unchanged when plugins is absent", () => {
-    const config = { outDir: "dist", framework: "preact" as const };
+    const config = { outDir: "dist" };
     const result = definePreset("my-preset-pkg", config);
     expect(result).toBe(config);
   });
@@ -62,6 +60,46 @@ describe("definePreset", () => {
       { name: "./outer-plugin.mjs", source_package: "@scope/outer-preset" },
       { name: "./inner-plugin.mjs", source_package: "@scope/inner-preset" },
     ]);
+  });
+
+  it("stamps wind manifest provenance and preserves an inner preset marker", () => {
+    const inner = definePreset("@scope/inner-preset", {
+      wind: { manifests: { widgets: { path: "./wind.json" } } },
+    });
+    const outer = definePreset("@scope/outer-preset", {
+      wind: inner.wind,
+    });
+
+    expect(inner).toMatchObject({
+      wind: {
+        manifests: {
+          widgets: {
+            path: "./wind.json",
+            __zfb_source_package: "@scope/inner-preset",
+          },
+        },
+      },
+    });
+    expect(outer).toMatchObject({
+      wind: {
+        manifests: {
+          widgets: { __zfb_source_package: "@scope/inner-preset" },
+        },
+      },
+    });
+  });
+});
+
+describe("defineConfig", () => {
+  it("passes wind configuration through unchanged", () => {
+    const wind = {
+      spec: 1,
+      reset: "minimal-v1",
+      tokens: { colors: { panel: "var(--project-panel)" } },
+      breakpoints: { sm: { minWidthPx: 640 } },
+    } as const;
+
+    expect(defineConfig({ wind }).wind).toBe(wind);
   });
 });
 

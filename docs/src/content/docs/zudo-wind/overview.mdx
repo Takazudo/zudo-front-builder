@@ -1,0 +1,68 @@
+---
+title: Overview
+description: Learn how zudo-wind turns complete class candidates and project tokens into versioned CSS.
+sidebar_position: 1
+---
+
+## What zudo-wind does
+
+zudo-wind is the utility CSS language owned by zfb. It recognizes a closed set of complete class candidates, resolves them against the tokens and breakpoints you configure, and asks the zfb compiler to emit CSS. Its contract is versioned, so the supported language does not expand implicitly when another tool changes.
+
+A candidate either resolves to a utility, is recognized but invalid and receives a diagnostic, or remains an ordinary class with no generated rule. A class name that is not constructed as a complete candidate cannot be guessed at build time. zudo-wind does not load utility plugins or execute project JavaScript to discover classes.
+
+## Where it fits
+
+The build gathers candidates from the configured source plan, combines generated wind rules with authored global CSS, and processes CSS Modules on their separate path. Authored CSS remains the place for selectors and declarations outside the utility language. Wind rules are emitted without a CSS layer after authored global rules; see [Cascade and reset](./cascade-and-reset.mdx) for the full ordering.
+
+Source discovery reads eligible file contents as text. It does not run the application. For the files scanned in build and dev, see [Sources and candidates](./sources-and-candidates.mdx). For global CSS and CSS Modules, see [the styling guide](../concepts/styling.mdx).
+
+## A first example
+
+This configuration supplies every non-static value used below. The default reset is none, and no palette or spacing scale is added for you.
+
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "var(--app-panel)"
+      },
+      "radii": {
+        "default": "0.5rem"
+      }
+    }
+  }
+}
+```
+
+Place the same top-level `wind` value in `zfb.config.ts` or `zfb.config.json`. An authored stylesheet can define the project property that the color token references:
+
+```css
+:root {
+  --app-panel: #f4f1ec;
+}
+```
+
+A component can then use these complete candidates:
+
+```html
+<section class="rounded bg-panel p-4 text-panel">
+  Welcome
+</section>
+```
+
+`rounded` uses `radii.default`, `bg-panel` and `text-panel` use `colors.panel`, and `p-4` multiplies four by the configured spacing unit. If a required token or unit is absent, the recognized utility produces a missing-token diagnostic instead of receiving an invented value. The [token guide](./tokens.mdx) explains these bindings.
+
+## Versioned behavior
+
+The v1 language has `spec: 1`; omitting that field means version 1. The compiler identifies generated rules as `zudo-wind://spec/1`. V1 does not generate a source map or promise line mappings for its generated CSS.
+
+The utility syntax may look familiar if you have used Tailwind, but zudo-wind does not promise compatibility; see [Coming from Tailwind](./coming-from-tailwind.mdx).
+
+## See also
+
+- [Configuration](./configuration.mdx)
+- [Sources and candidates](./sources-and-candidates.mdx)
+- [Utility reference](./utilities/index.mdx)
+- [Cascade and reset](./cascade-and-reset.mdx)

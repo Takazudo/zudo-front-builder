@@ -1,5 +1,4 @@
 {
-  "framework": "preact",
   "outDir": "dist",
   "publicDir": "public",
   "collections": [

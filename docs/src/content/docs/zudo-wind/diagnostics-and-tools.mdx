@@ -1,0 +1,79 @@
+---
+title: Diagnostics and tools
+description: Inspect candidate outcomes, source-aware diagnostics, audits, and the standalone CSS command.
+sidebar_position: 8
+---
+
+## Four candidate outcomes
+
+A candidate has one of four results:
+
+| Outcome | Result |
+| --- | --- |
+| Resolved utility | Emit its generated rule. |
+| Recognized but invalid candidate | Report a diagnostic. Strict origins fail the pass; lower-confidence source text is audit information. |
+| Ordinary class or marker | Emit no utility rule. An accepted `group` or `peer` marker carries metadata but has no CSS. |
+| Malformed, unsupported, or unknown explicit utility input | Fail the pass with a diagnostic. |
+
+An unknown name such as `site-header` in a class attribute remains ordinary CSS-class text. A recognized prefix with a missing token, such as `text-missing`, is diagnosed. Low-confidence complete literals can contribute valid rules, but invalid ones do not fail a build. Explicit safelist and manifest entries are strict.
+
+## Diagnostic codes
+
+| Code | Meaning and severity |
+| --- | --- |
+| ZW001 | Candidate syntax. Error for class, safelist, or strict manifest origins; audit-only information for other literals. |
+| ZW002 | Unknown or unconfigured variant. Uses the same origin-aware severity as ZW001. |
+| ZW003 | Duplicate or noncanonical variant chain. A sortable unique chain may include a suggestion. |
+| ZW004 | Deliberately unsupported language feature. |
+| ZW005 | Invalid value, modifier, or negative. |
+| ZW006 | Missing token, spacing unit, or default. |
+| ZW007 | Invalid config, token schema, or token value; validation fails. |
+| ZW008 | Unknown explicit utility; safelist and manifest entries fail, while ordinary source classes are not errors. |
+| ZW009 | Leftover stylesheet directive or legacy value function; always an error. |
+| ZW010 | Required source or manifest is missing, unreadable, or invalid; error. |
+| ZW011 | Scanned source is not UTF-8; warning, skip the file, and remove its old contribution. |
+| ZW012 | Dynamic candidate construction; audit-only information, no utility is invented. |
+| ZW013 | Property conflict inside one class-list literal; audit-only information explains the deterministic winner. |
+
+Diagnostic records retain the candidate where available, severity, code, origin, message, optional suggestion, and optional rejection ID. Origins are structured by kind:
+
+| Origin | Location data |
+| --- | --- |
+| Source | Stable source ID, UTF-8 byte offset and length, one-based line and byte-column, enclosing literal span, and whether the position is a class or literal. |
+| Safelist | Owner ID and array index. |
+| Manifest | Producer ID, path, and candidate index. |
+| Config | Configuration key path. |
+| Role class | Role key. |
+| Stylesheet | Path and source span. |
+
+Occurrences are retained and ordered by origin, offset or key/index, code, and candidate bytes.
+
+ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. Unknown ordinary names remain ordinary, while a recognized utility with an unresolved token receives ZW006.
+
+## Explain and audit
+
+Run `zfb wind explain` to inspect how a candidate is parsed and resolved. Explain exposes the catalog entry, language version and revision, token bindings, any category-unverified value, declarations, selector, conditions, and complete sort tuple. With `wind: false`, it returns a disabled outcome without generating CSS.
+
+Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, and property conflicts within an enclosing class-list literal. It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
+
+`codeHighlight.roleClasses` is deliberately tolerant: a valid utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. Audit may report that role as ignored. An exact match in `authoredClasses` suppresses utility validation, generation, and utility diagnostics at every candidate origin. It cannot suppress configuration errors or stylesheet checks.
+
+## Leftover directives and CSS command
+
+The compiler rejects legacy engine imports and directives, including `@tailwind`, `@theme` with any modifier, `@source`, `@custom-variant`, `@apply`, `@utility`, `@variant`, `@plugin`, `@config`, and `@reference`. Imports of `tailwindcss` and its subpaths are rejected too. The old value functions `theme()`, `--spacing()`, `--alpha()`, and `--value()` in declaration values are also errors. Diagnostics name the spelling and stylesheet file and span and link to [Coming from Tailwind](./coming-from-tailwind.mdx).
+
+The scanner ignores comments and string contents, decodes escaped CSS identifiers and import strings, and checks the authored stylesheet and every imported stylesheet before trying to resolve a forbidden import. This check still runs when `wind` is false. Ordinary `@layer` and imports that explicitly name a layer remain valid.
+
+The standalone `zfb css` command remains the wind compiler. When generation is enabled, `--source` and `--no-auto-source` retain their source-discovery meaning, and highlight flags retain their highlighting role. With `wind: false`, the command processes authored CSS and highlighting without wind generation. The separate `zfb wind explain` and `zfb wind audit` commands provide candidate inspection and source audit.
+
+## Generated identity
+
+Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 2. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
+
+## See also
+
+- [Sources and candidates](./sources-and-candidates.mdx)
+- [Utility grammar](./utility-grammar.mdx)
+- [Cascade and reset](./cascade-and-reset.mdx)
+- [Coming from Tailwind](./coming-from-tailwind.mdx)
+- [CLI reference](../api/cli.mdx)

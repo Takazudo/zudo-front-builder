@@ -170,7 +170,7 @@ pnpm build
 # title "Hello, zfb" (content/blog/hello-zfb.mdx) — so both markers only
 # appear if getCollection("blog") resolved AND the page template rendered
 # correctly. Both greps match on text, not markup: the heading carries
-# Tailwind utility classes, so the literal tag string is not in the HTML.
+# utility CSS classes, so the literal tag string is not in the HTML.
 
 pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }

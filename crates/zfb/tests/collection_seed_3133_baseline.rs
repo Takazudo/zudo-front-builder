@@ -35,8 +35,8 @@
 //!   (`button.tsx`, `orphan.tsx`) from the shadow, and the seed walk applies
 //!   the same filter, so they no longer seed the closure. Before #3142 they
 //!   did: they reached a workspace package, flipped staging on, and dragged
-//!   every deferred live dependency (preact, preact-render-to-string, the
-//!   zfb runtime, hono) plus the workspace packages' pnpm-private closure
+//!   every deferred live dependency (`@takazudo/zfb` runtime subpaths,
+//!   `@takazudo/zfb-runtime`, hono) plus the workspace packages' pnpm-private closure
 //!   through the import-parsing walk (`7/9/true`, measured in #3141 — the
 //!   RED state of this assertion). `button.mdx`'s own `import` is dropped
 //!   by the MDX compiler, so it seeds nothing either.
@@ -99,7 +99,7 @@
 //!   present in the isolated staged view — a symlink to the repo's
 //!   `packages/zfb-runtime` workspace package would canonicalise OUTSIDE
 //!   any `node_modules` and be rejected by `workspace_package_source_is_eligible`.
-//! - `<ws>/apps/site/node_modules/` — `preact`, `preact-render-to-string`
+//! - `<ws>/apps/site/node_modules/` — `@takazudo/zfb` runtime entry points
 //!   (this monorepo's installed store copies, found by prefix so a version
 //!   bump cannot strand the test), `@takazudo/{zfb,zfb-runtime}` (the store
 //!   copies above), and the `shared-utils` / `ui` workspace links
@@ -201,13 +201,10 @@ fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) ->
 }
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary) — same convention as
+/// esbuild binary) — same convention as
 /// `end_to_end_basic_blog_build.rs`'s `is_known_skip`.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).
@@ -262,7 +259,7 @@ impl Variant {
     /// `packages/ui/node_modules/shared-utils`, its pnpm-private
     /// `leftpad-priv` / `shared-icons` aliases flipped workspace staging on,
     /// and the deferred live dependencies (`@takazudo/zfb-runtime`, `hono`,
-    /// `preact`, `preact-render-to-string`, `packages/ui`'s `leftpad-priv`)
+    /// `@takazudo/zfb` runtime subpaths, `packages/ui`'s `leftpad-priv`)
     /// were drained. See the fixture README for the full derivation.
     fn expected_stats(&self) -> StagingStats {
         match self {
@@ -376,18 +373,6 @@ fn materialise_fixture(variant: &Variant) -> (tempfile::TempDir, PathBuf) {
         );
     }
     symlink(
-        &find_pnpm_store_package(&repo_pnpm_dir, "preact@", "preact"),
-        &site_node_modules.join("preact"),
-    );
-    symlink(
-        &find_pnpm_store_package(
-            &repo_pnpm_dir,
-            "preact-render-to-string@",
-            "preact-render-to-string",
-        ),
-        &site_node_modules.join("preact-render-to-string"),
-    );
-    symlink(
         &workspace_root.join("packages/shared-utils"),
         &site_node_modules.join("shared-utils"),
     );
@@ -482,7 +467,7 @@ fn zfb_build_staging_stats_match_expectation_for_both_fixture_variants() {
             if is_known_skip(&outcome.combined) {
                 eprintln!(
                     "[collection_seed_3133_baseline] zfb build exited non-zero with a \
-                     known-skip indicator (V8/esbuild/tailwind unavailable); skipping test."
+                     known-skip indicator (V8/esbuild unavailable); skipping test."
                 );
                 return;
             }
@@ -645,7 +630,7 @@ struct DevReadyOutcome {
 /// Boots a real `zfb dev --port 0` over `project_root` and waits for the
 /// FIRST `GET /` 200 — the "dev-ready" instant reported as `elapsed_ms`
 /// telemetry (no latency bound — #3146). Returns `None` when the process exits with a known
-/// environmental skip indicator (no V8 / no esbuild / no tailwind),
+/// environmental skip indicator (no V8 / no esbuild),
 /// matching `is_known_skip`'s convention above and
 /// `dev_out_of_root_collection_e2e.rs`'s `boot_and_handshake`.
 #[cfg(unix)]

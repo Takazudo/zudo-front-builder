@@ -269,18 +269,26 @@ export default {
 
 </Tip>
 
-### ロールを Tailwind ユーティリティにマッピングする
+### ロールを zudo-wind のユーティリティにマッピングする
 
-デフォルトの `hi-*` クラスの代わりに、`roleClasses` で任意のロールを自分のユーティリティクラス（もっとも有用なのは Tailwind）にマッピングできます。
+デフォルトの `hi-*` クラスの代わりに、`roleClasses` で任意のロールを zudo-wind のユーティリティクラスにマッピングできます。使うトークンはプロジェクトで設定してください。zudo-wind にデフォルトのパレットはありません。
 
 ```ts
 // zfb.config.ts
 export default {
+  wind: {
+    tokens: {
+      colors: {
+        violet: "#6d28d9",
+        emerald: "#047857",
+      },
+    },
+  },
   codeHighlight: {
     mode: "class",
     roleClasses: {
-      keyword: "text-violet-600 dark:text-violet-400",
-      string: "text-emerald-600 dark:text-emerald-400",
+      keyword: "text-violet",
+      string: "text-emerald",
     },
   },
 };
@@ -288,11 +296,11 @@ export default {
 
 キーは上記 18 個のロール名のいずれかである必要があります。値はスペース区切りで複数のクラスを持てますが、素の `line` トークンを含めることはできません（code-enrichment の行ラッパークラスと衝突します）。マッピングしなかったロールは、デフォルトの `{classPrefix}{suffix}` クラスのままです。
 
-マッピングされたユーティリティは **自動でセーフリスト化** されます。ハイライトされた markup は Rust パイプラインが生成し、Tailwind がスキャンしないレンダリング済みの `dist/*.html` にのみ出力されます。そのため、何もしなければユーティリティは tree-shaking で除去されてしまいます（ビルドは成功するのにトークンは無スタイル）。zfb は各 `roleClasses` の値を Tailwind の `@source inline("…")` エントリとして出力するため、これらのクラスは常に生成されます。
+ロールの各値は候補として扱われます。設定に照らして有効なユーティリティは出力され、無効または未知の値はビルド診断なしの通常クラスとして残ります。この例では、2 つの色トークンを設定しているため両方のロールのユーティリティが解決されます。
 
 <Warning>
 
-**オーサリング CSS 経路（`tailwind: { enabled: false }`）。** Tailwind を無効にした状態で `roleClasses` を設定することは許可されますが、ビルド警告が出ます。この経路では Tailwind のセーフリストを生成できないため、マッピング先のユーティリティは、自分で手書きした CSS の中に既に存在している必要があります。
+**手書き CSS の経路（`wind: false`）。** この場合 wind はユーティリティルールを生成しません。`roleClasses` は設定できますが、スタイルを適用したい場合は対応するルールを自分の CSS に追加してください。ビルド警告は出ませんが、audit は無視されたロール値を報告できます。
 
 </Warning>
 
@@ -318,13 +326,16 @@ export default {
 ```tsx
 "use client";
 
-import { useEffect, useRef } from "preact/hooks";
+import { getScope } from "@takazudo/zfb/zudo-react";
 import Prism from "prismjs";
 import "prismjs/components/prism-typescript";
 
 export default function PrismRoot({ children }) {
-  const ref = useRef(null);
-  useEffect(() => { Prism.highlightAllUnder(ref.current); }, []);
+  const scope = getScope();
+  const ref: { current: HTMLDivElement | null } = { current: null };
+  scope.effect(() => {
+    if (ref.current) Prism.highlightAllUnder(ref.current);
+  });
   return <div ref={ref}>{children}</div>;
 }
 ```
@@ -365,7 +376,7 @@ Markdown/MDX エディタ、貼り付けてプレビューするボックス、�
 `@takazudo/zfb-md-wasm/highlight` サブパスからインポートしてください。公開 API と
 リソースは後方互換のまま、#2450 の完全パリティと `swc_core` 不在ゲートを通った
 出荷グラフは SWC-free になっています。しかもダウンロード量はルートエントリのおよそ
-半分です: 2.15.0 では gzip-9 で 817,951 B、ルートは 1,516,383 B です。
+半分です: 2.22.1 では gzip-9 で 817,953 B、ルートは 1,516,161 B です。
 
 </Tip>
 

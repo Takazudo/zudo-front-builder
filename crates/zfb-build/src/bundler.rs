@@ -11,7 +11,7 @@
 //!
 //! This module targets the *server side*: every page module the router
 //! can serve, every layout/component they transitively pull in, plus the
-//! framework's hydration shim for parity with the islands bundle. The
+//! owned server router. The
 //! output is one ESM file the runtime imports to dispatch SSR for any
 //! route. Mixing both jobs into `zfb-islands` would conflate "what runs
 //! in the browser" with "what runs on the worker"; keeping them in
@@ -31,46 +31,35 @@
 //!    text is parsed as JSX. This means user-authored `.mdx` import
 //!    paths keep working without a custom esbuild plugin (the CLI
 //!    cannot load JS plugins).
-//! 3. **Materialise the framework hydration shim** as a real file under
-//!    the shadow tree (`__zfb_internal_hydrate.jsx`). The synthetic
-//!    `zfb:internal/...` specifier from
-//!    [`zfb_render::adapters::Adapter::hydrate_shim_specifier`] is
-//!    recorded in the [`BundleManifest`] for downstream consumers; the
-//!    generated entry-point file imports the shim by relative path so
-//!    we don't need esbuild's URL-scheme resolver.
-//! 4. **Emit a synthetic `tsconfig.json`** in the shadow root that
+//! 3. **Emit a synthetic `tsconfig.json`** in the shadow root that
 //!    carries the user's [`BundlerInput::tsconfig_paths`] (resolved
 //!    against the project's `extends` chain by the caller). esbuild
 //!    reads this via `--tsconfig=` and uses it to resolve the user's
 //!    path aliases (`@/components/foo` → `./components/foo`).
-//! 5. **Emit a synthetic `entry.mjs`** that imports every page module
-//!    found under `pages/`, plus the hydration shim, plus the framework's
-//!    `renderToString`, plus `createPageRouter` from
+//! 4. **Emit a synthetic `entry.mjs`** that imports every page module
+//!    found under `pages/`, plus `createPageRouter` from
 //!    `@takazudo/zfb-runtime/server`, and re-exports a `routes` map of
-//!    route-path → page module, a `hydrateIsland` function, and a Workers
+//!    route-path → page module and a Workers
 //!    entry shape `default { fetch }`. This is the single load-bearing
 //!    module the embedded V8 host and the runtime SSR adapter consume.
-//! 6. **Spawn esbuild** with the configured `--define`s, `--alias`es,
+//! 5. **Spawn esbuild** with the configured `--define`s, `--alias`es,
 //!    and the synthetic `tsconfig.json`.
 //!
 //! ## What the consumer (T6) sees
 //!
 //! The output bundle is a single ESM file at [`BundlerOutput::bundle_path`]
-//! with three exports the runtime contract pins:
+//! with two exports the runtime contract pins:
 //!
 //! - `routes` — an object literal mapping route path strings to the page
 //!   module's namespace (`{ default, getStaticProps?, … }`). The set of
 //!   keys is also enumerated in
 //!   [`BundleManifest::routes`][BundleManifest] so consumers don't have
 //!   to import-and-introspect to know what routes the bundle serves.
-//! - `hydrateIsland` — re-exported from the framework adapter shim;
-//!   the Worker entry bundle expects this symbol so the same bundle
-//!   can also feed the islands hydration runtime.
 //! - `default` — a Workers-style `{ fetch }` object whose `fetch` field
 //!   is a `(Request) => Promise<Response>` constructed by passing
-//!   `routes`, an embedded `ContentSnapshot` placeholder, and an inline
-//!   framework adapter (the framework's own `renderToString` import) to
-//!   `createPageRouter` from `@takazudo/zfb-runtime/server`. This is the entry
+//!   `routes` and an embedded `ContentSnapshot` to `createPageRouter` from
+//!   `@takazudo/zfb-runtime/server`. The router imports the owned renderer
+//!   directly. This is the entry
 //!   shape the embedded V8 host expects (`export default { fetch }`);
 //!   without it, the host boot fails with a missing-export
 //!   workerd error. Even when the route map is empty the wrapper is
@@ -134,7 +123,6 @@ use zfb_content::{
     compile_mdx_to_jsx_module_cached, compile_mdx_to_jsx_module_cached_with_deps, CompiledMdx,
     CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
 };
-use zfb_render::adapters::{make_adapter, Framework};
 use zfb_types::{
     json_string as json_str, normalize_path_lexical, path_to_posix_string, RenderRegionEdge,
     REGION_ID_ATTR, RENDER_REGION_ATTR,
@@ -154,8 +142,9 @@ use crate::module_worker::{
     canonical_project_relative_target, collect_runtime_import_specifiers_from_file,
     discover_module_preprocessing_with_context, discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context, normalize_macos_var_alias,
-    remap_virtual_module_project_imports_to_shadow_with_materialized_files, respell_under_root,
-    rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
+    probe_graph_candidate, remap_virtual_module_project_imports_to_shadow_with_materialized_files,
+    respell_under_root, rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext,
+    ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
     expand_raw_imports_with_aliases, supported_raw_import_specifier_for_path,
@@ -345,8 +334,7 @@ pub struct BundlerInput {
     /// can `import * as __zfb_content_<i> from "./content/<name>/..."`
     /// for every `.mdx` entry. The paired bridge installer
     /// (`globalThis.__zfb.content`) is then emitted in `entry.mjs`
-    /// before `createPageRouter`, matching the contract documented in
-    /// `crates/zfb-render/src/loader.rs`.
+    /// before `createPageRouter`, matching the content bridge contract.
     ///
     /// Empty by default. Callers that want the bridge wired (i.e. all
     /// production builds whose `zfb.config.ts` declares collections)
@@ -356,9 +344,8 @@ pub struct BundlerInput {
     pub components_dir: PathBuf,
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
-    /// Which JSX framework's hydration shim to fold into the bundle.
-    /// Drives [`make_adapter`] selection.
-    pub framework: Framework,
+    /// Static scanner marker names available before owned page evaluation.
+    pub zudo_react_island_names: Option<Vec<String>>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string
     /// expressions must already be quoted JSON. This path is deliberately
@@ -391,9 +378,8 @@ pub struct BundlerInput {
     /// graceful fallback). Targets NOT under `project_root` (plugin /
     /// virtual / out-of-tree) are written unchanged.
     pub tsconfig_paths: BTreeMap<String, Vec<String>>,
-    /// Bare specifiers to leave unresolved in the bundle. Use for
-    /// `preact`, `react`, `react-dom/server`, etc. — packages the
-    /// runtime SSR adapter (T2) provides at embedded V8 host load time. An
+    /// Bare specifiers to leave unresolved in the bundle for the deployment
+    /// runtime to provide at embedded V8 host load time. An
     /// empty vec means "bundle everything from node_modules".
     pub external: Vec<String>,
     /// Explicit esbuild `--main-fields` list for the `--platform=neutral`
@@ -404,10 +390,8 @@ pub struct BundlerInput {
     /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
     /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`).
     ///
-    /// Empty (the default) -> no `--main-fields` is emitted EXCEPT the existing
-    /// React-only `main,module` shim, so a non-React bundle stays
-    /// byte-identical to a build without this knob. When non-empty it applies
-    /// to every framework and takes precedence over the React shim.
+    /// Empty (the default) means no `--main-fields` argument is emitted. When
+    /// non-empty, this list is passed to esbuild.
     pub main_fields: Vec<String>,
     /// Additional validated esbuild `--loader:<ext>=<loader>` arguments.
     /// Appended after [`ESBUILD_LOADER_ARGS`] in deterministic config order.
@@ -501,9 +485,7 @@ pub struct BundlerInput {
     /// `None`), so callers cannot desync the map from the route spec.
     /// Set every other knob here; leave the map alone.
     ///
-    /// The dev loader at `crates/zfb-render/src/loader.rs` honours the
-    /// same knobs via its own `with_*` builders so `zfb dev` and
-    /// `zfb build` produce the same output shape.
+    /// Both `zfb dev` and `zfb build` use this pipeline specification.
     pub pipeline_spec: zfb_content::PipelineSpec,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
@@ -567,7 +549,7 @@ pub struct BundlerInput {
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
     /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
-    /// flags alongside the hard-coded preact shim aliases.
+    /// flags.
     ///
     /// Populated by the command layer from `setup_registries.aliases` for
     /// both `zfb build` and `zfb dev`. Default: empty.
@@ -777,7 +759,6 @@ impl BundlerInput {
     /// new_value, ..BundlerInput::for_project(...) }`.
     pub fn for_project(
         project_root: PathBuf,
-        framework: Framework,
         mode: BundleMode,
         outdir: PathBuf,
         content_snapshot_json: Option<String>,
@@ -792,7 +773,7 @@ impl BundlerInput {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework,
+            zudo_react_island_names: None,
             define_vars: Default::default(),
             public_env_vars: Default::default(),
             tsconfig_paths: Default::default(),
@@ -828,7 +809,7 @@ impl BundlerInput {
 #[derive(Debug, Clone)]
 pub struct BundlerOutput {
     /// Final ESM bundle on disk. ESM, not CommonJS — exports `routes`
-    /// and `hydrateIsland` per the module-level contract.
+    /// and a default Workers-style fetch handler.
     pub bundle_path: PathBuf,
     /// Linked sourcemap next to `bundle_path` (esbuild's
     /// `--sourcemap=linked` shape). When the bundler ran in
@@ -938,20 +919,6 @@ impl NodeModulesStagingStats {
 /// having to import the bundle itself.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BundleManifest {
-    /// Framework name (`"preact"` / `"react"`) the bundle was built for.
-    /// Mirrors [`zfb_render::adapters::Adapter::name`] and is the same
-    /// string the runtime adapter (T2) keys on to load the right
-    /// render-to-string module.
-    pub framework: String,
-    /// JSX import source the bundler injected. Mirrors
-    /// [`zfb_render::adapters::Adapter::jsx_import_source`].
-    pub jsx_import_source: String,
-    /// Synthetic `zfb:internal/...` specifier that **identifies** the
-    /// hydration shim. The bundle itself does not import
-    /// the shim under this specifier (the CLI cannot resolve URL
-    /// schemes; we use a relative import internally). Consumers (T6,
-    /// docs) use this string for tracing / diagnostics.
-    pub hydrate_shim_specifier: String,
     /// Filename of the bundle on disk (matches `bundle_path.file_name()`).
     pub bundle_basename: String,
     /// Routes the bundle serves, in `pages_dir` walk order.
@@ -1005,7 +972,6 @@ pub struct RouteEntry {
     pub rel_under_pages: PathBuf,
 }
 
-const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
 const SHADOW_ENTRY_FILENAME: &str = "entry.mjs";
 const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 /// Server-only runtime subpath the generated `entry.mjs` imports `createPageRouter`
@@ -1213,7 +1179,7 @@ const MDX_COMPONENTS_FILENAME: &str = "mdx-components.tsx";
 ///   **longest** file extension, so `.module.css` wins over `.css`
 ///   here — plain `.css` still routes to `=empty`. The scoped CSS
 ///   itself is shipped externally via `styles-<hash>.css` exactly
-///   like Tailwind output. When a `.module.css` file has no map entry
+///   like generated utility CSS. When a `.module.css` file has no map entry
 ///   (e.g. the CSS pipeline was not run or a deep import was missed),
 ///   `rewrite_css_modules_in_shadow` writes `export default {};` —
 ///   a graceful degradation: `styles.foo` evaluates to `undefined`
@@ -1713,7 +1679,7 @@ pub struct ShadowSession {
     lock_file: Option<std::fs::File>,
     /// SHA-256 of the last-written bytes per shadow-relative path. Only
     /// real files written through [`ShadowWriter`] are recorded; symlinks
-    /// and the always-write infra files (entry.mjs / shim / tsconfig)
+    /// and the always-write infra files (entry.mjs / tsconfig)
     /// are not.
     written: HashMap<PathBuf, [u8; 32]>,
     /// Shadow-relative paths visited by the previous call's materialise
@@ -1783,7 +1749,7 @@ pub struct ShadowSession {
     /// Cross-call cache of the `node_modules` dependency-staging closure's
     /// per-package import scans (#3178), keyed by the CANONICAL package dir —
     /// the same key the closure walk's per-call dedup map uses. Without it
-    /// every tick re-parses every file of every staged package (hono, preact,
+    /// every tick re-parses every file of every staged package (hono and
     /// the embedded runtime) although the result is a pure function of the
     /// package's bytes.
     ///
@@ -2831,6 +2797,427 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     bundle_with_session(input, None)
 }
 
+/// A pre-bundle identity shared by owned SSR and browser island glue.
+/// Hash logical paths and bytes so temporary shadow paths never enter the token.
+const OWNED_OUTPUT_MARKER: &str = ".zfb-generated-output-v1";
+
+pub fn zudo_react_build_token(project_root: &Path) -> Result<String> {
+    zudo_react_build_token_with_aliases(project_root, &[])
+}
+
+/// Include explicit plugin aliases alongside tsconfig paths. Both the server
+/// bundler and islands emitter pass their copy of the same plugin alias set.
+pub fn zudo_react_build_token_with_aliases(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+) -> Result<String> {
+    zudo_react_build_token_with_inputs(project_root, plugin_aliases, &[])
+}
+
+pub fn zudo_react_build_token_with_inputs(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+) -> Result<String> {
+    zudo_react_build_token_with_inputs_and_output(
+        project_root,
+        plugin_aliases,
+        plugin_virtual_modules,
+        &project_root.join("dist"),
+    )
+}
+
+/// Exclude the selected output directory from the source digest, including
+/// custom outdir names used by dev sessions and production builds.
+pub fn zudo_react_build_token_with_inputs_and_output(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    output_dir: &Path,
+) -> Result<String> {
+    let project_canonical = fs::canonicalize(project_root)?;
+    let output_dir = if output_dir.is_absolute() {
+        output_dir.to_path_buf()
+    } else {
+        project_root.join(output_dir)
+    };
+    let output_dir = zfb_types::normalize_path_lexical(&output_dir);
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut visited_packages = BTreeSet::new();
+    collect_zudo_react_token_tree(
+        project_root,
+        Path::new(""),
+        &project_canonical,
+        false,
+        Some(&output_dir),
+        &mut visited_packages,
+        &mut files,
+    )?;
+    let mut sorted_aliases = plugin_aliases.to_vec();
+    sorted_aliases.sort();
+    for (name, target) in &sorted_aliases {
+        let target_path = Path::new(target);
+        let target_path = if target_path.is_absolute() {
+            target_path.to_path_buf()
+        } else {
+            project_root.join(target_path)
+        };
+        collect_zudo_react_external_target(
+            &target_path,
+            &PathBuf::from(format!("plugin-alias/{name}")),
+            &project_canonical,
+            &mut visited_packages,
+            &mut files,
+        )?;
+    }
+    for (name, targets) in zfb_plugin_resolver::read_tsconfig_paths_into_map(project_root) {
+        for (index, target) in targets.iter().enumerate() {
+            let prefix = target
+                .split('*')
+                .next()
+                .unwrap_or(target)
+                .trim_end_matches('/');
+            collect_zudo_react_external_target(
+                Path::new(prefix),
+                &PathBuf::from(format!("tsconfig-path/{name}/{index}")),
+                &project_canonical,
+                &mut visited_packages,
+                &mut files,
+            )?;
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut digest = Sha256::new();
+    digest.update(b"zudo-react/1\njson/1\n");
+    let mut virtual_modules = plugin_virtual_modules.to_vec();
+    virtual_modules.sort();
+    for (specifier, source) in virtual_modules {
+        digest.update(b"virtual-module\0");
+        digest.update(specifier.as_bytes());
+        digest.update([0]);
+        digest.update(source.as_bytes());
+        digest.update([0]);
+    }
+    for (logical, physical) in files {
+        digest.update(logical.to_string_lossy().replace('\\', "/").as_bytes());
+        digest.update([0]);
+        digest.update(fs::read(physical)?);
+        digest.update([0]);
+    }
+    Ok(hex::encode(digest.finalize())[..16].to_string())
+}
+
+fn collect_zudo_react_external_target(
+    target: &Path,
+    logical: &Path,
+    project_canonical: &Path,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let target = if target.exists() {
+        target.to_path_buf()
+    } else {
+        let mut resolved = None;
+        // page-extension-drift-guard: allow — external token input probe, not a route allowlist.
+        for extension in ["ts", "tsx", "js", "jsx", "mjs"] {
+            let candidate = target.with_extension(extension);
+            if candidate.is_file() {
+                resolved = Some(candidate);
+                break;
+            }
+        }
+        let Some(resolved) = resolved else {
+            return Ok(());
+        };
+        resolved
+    };
+    let canonical = fs::canonicalize(&target)?;
+    if canonical.starts_with(project_canonical) {
+        return Ok(());
+    }
+    if canonical.is_file() {
+        if let Some(package_root) = canonical
+            .parent()
+            .into_iter()
+            .flat_map(Path::ancestors)
+            .find(|ancestor| ancestor.join("package.json").is_file())
+        {
+            if visited_packages.insert(package_root.to_path_buf()) {
+                collect_zudo_react_token_tree(
+                    package_root,
+                    logical,
+                    project_canonical,
+                    true,
+                    None,
+                    visited_packages,
+                    files,
+                )?;
+            }
+        } else if zudo_react_token_source(&canonical) {
+            collect_zudo_react_external_file_closure(
+                vec![(
+                    canonical.clone(),
+                    logical.join(canonical.file_name().unwrap()),
+                )],
+                None,
+                files,
+            )?;
+        }
+    } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
+        collect_zudo_react_token_tree(
+            &canonical,
+            logical,
+            project_canonical,
+            true,
+            None,
+            visited_packages,
+            files,
+        )?;
+    }
+    Ok(())
+}
+
+/// The AST import collector and esbuild-style candidate probe are shared with
+/// the module-worker graph. Follow relative imports rather than hashing an
+/// arbitrary parent directory when an external file has no package manifest.
+fn collect_zudo_react_external_file_closure(
+    mut seeds: Vec<(PathBuf, PathBuf)>,
+    already_scanned_root: Option<&Path>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    seeds.sort_by(|left, right| left.1.cmp(&right.1));
+    let mut pending: Vec<_> = seeds
+        .into_iter()
+        .map(|(physical, logical)| (physical, logical, already_scanned_root.is_none()))
+        .collect();
+    let mut visited = BTreeSet::new();
+    let mut total_bytes = 0_u64;
+    while let Some((physical, logical, strict)) = pending.pop() {
+        let physical = fs::canonicalize(physical)?;
+        if !visited.insert(physical.clone()) {
+            continue;
+        }
+        if visited.len() > 4096 {
+            bail!(
+                "owned island build token external import closure exceeds 4096 files at {}",
+                logical.display()
+            );
+        }
+        total_bytes += fs::metadata(&physical)?.len();
+        if total_bytes > 64 * 1024 * 1024 {
+            bail!(
+                "owned island build token external import closure exceeds 64 MiB at {}",
+                logical.display()
+            );
+        }
+        if !already_scanned_root
+            .is_some_and(|root| physical.starts_with(root) && zudo_react_token_source(&physical))
+        {
+            files.push((logical.clone(), physical.clone()));
+        }
+        let extension = physical.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            // page-extension-drift-guard: allow — external token import graph inputs, not pages.
+            Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
+        ) {
+            continue;
+        }
+        // Declaration imports describe the type graph, not code loaded by
+        // either bundle. The runtime resolver does not need to resolve them.
+        if physical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+            })
+        {
+            continue;
+        }
+        let mut specifiers = match collect_runtime_import_specifiers_from_file(&physical) {
+            Ok(specifiers) => specifiers,
+            Err(_error) if !strict => continue,
+            Err(error) => return Err(error),
+        };
+        specifiers.sort();
+        for specifier in specifiers.into_iter().rev() {
+            let path = specifier.split(['?', '#']).next().unwrap_or(&specifier);
+            if !path.starts_with("./") && !path.starts_with("../") {
+                continue;
+            }
+            let candidate = normalize_path_lexical(&physical.parent().unwrap().join(path));
+            let target = probe_graph_candidate(&candidate, false).ok_or_else(|| anyhow!(
+                "owned island build token cannot resolve external relative import {specifier:?} from {}",
+                physical.display()
+            ))?;
+            let mut next_logical = normalize_path_lexical(&logical.parent().unwrap().join(path));
+            if let Some(extension) = target.extension() {
+                next_logical.set_extension(extension);
+            }
+            pending.push((target, next_logical, true));
+        }
+    }
+    Ok(())
+}
+
+fn zudo_react_token_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some(
+            "ts" | "tsx"
+                | "mts"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "json"
+                | "jsonc"
+                | "yaml"
+                | "yml"
+                // page-extension-drift-guard: allow — build token source files, not pages.
+                | "md"
+                | "mdx"
+                | "html"
+                | "css"
+        )
+    )
+}
+
+/// Walk project files and local linked packages, excluding vendor stores and
+/// generated project output. Logical `node_modules/<name>` paths make the
+/// digest independent of checkout and symlink target locations.
+fn collect_zudo_react_token_tree(
+    physical_root: &Path,
+    logical_root: &Path,
+    project_canonical: &Path,
+    linked_package: bool,
+    output_dir: Option<&Path>,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let first_file = files.len();
+    let mut node_modules_dirs = Vec::new();
+    for entry in walkdir::WalkDir::new(physical_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if output_dir
+                .is_some_and(|output| zfb_types::normalize_path_lexical(entry.path()) == output)
+            {
+                return false;
+            }
+            // A prior build may have used a different output directory. Its
+            // marker keeps those generated bytes out of the next source token.
+            if entry.file_type().is_dir() && entry.path().join(OWNED_OUTPUT_MARKER).is_file() {
+                return false;
+            }
+            let name = entry.file_name().to_str();
+            !matches!(name, Some("node_modules" | ".git" | ".zfb" | "target"))
+                && !name.is_some_and(|name| name.starts_with(".zfb-"))
+                && (linked_package || name != Some("dist"))
+        })
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            let node_modules = path.join("node_modules");
+            if node_modules.is_dir() {
+                node_modules_dirs.push(node_modules);
+            }
+        } else if entry.file_type().is_file() && zudo_react_token_source(path) {
+            files.push((
+                logical_root.join(path.strip_prefix(physical_root)?),
+                path.to_path_buf(),
+            ));
+        }
+    }
+    node_modules_dirs.sort();
+    for node_modules in node_modules_dirs {
+        let logical_node_modules = logical_root.join(node_modules.strip_prefix(physical_root)?);
+        let mut entries = fs::read_dir(&node_modules)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('@') && path.is_dir() {
+                let mut scoped = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
+                scoped.sort_by_key(|entry| entry.file_name());
+                for package in scoped {
+                    collect_zudo_react_linked_package(
+                        &package.path(),
+                        &logical_node_modules
+                            .join(entry.file_name())
+                            .join(package.file_name()),
+                        project_canonical,
+                        visited_packages,
+                        files,
+                    )?;
+                }
+            } else {
+                collect_zudo_react_linked_package(
+                    &path,
+                    &logical_node_modules.join(entry.file_name()),
+                    project_canonical,
+                    visited_packages,
+                    files,
+                )?;
+            }
+        }
+    }
+    if linked_package {
+        let canonical_root = fs::canonicalize(physical_root)?;
+        let seeds = files[first_file..]
+            .iter()
+            .filter(|(_, physical)| {
+                physical.starts_with(&canonical_root)
+                    && matches!(
+                        physical.extension().and_then(|ext| ext.to_str()),
+                        // page-extension-drift-guard: allow — linked package token inputs, not pages.
+                        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css")
+                    )
+            })
+            .map(|(logical, physical)| (physical.clone(), logical.clone()))
+            .collect();
+        collect_zudo_react_external_file_closure(seeds, Some(&canonical_root), files)?;
+    }
+    Ok(())
+}
+
+fn collect_zudo_react_linked_package(
+    link: &Path,
+    logical: &Path,
+    project_canonical: &Path,
+    visited_packages: &mut BTreeSet<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    if !fs::symlink_metadata(link)?.file_type().is_symlink() {
+        return Ok(());
+    }
+    let target = match fs::canonicalize(link) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !target.is_dir()
+        || !target.join("package.json").is_file()
+        || target.starts_with(project_canonical)
+        || target.components().any(|part| part.as_os_str() == ".pnpm")
+        || !visited_packages.insert(target.clone())
+    {
+        return Ok(());
+    }
+    collect_zudo_react_token_tree(
+        &target,
+        logical,
+        project_canonical,
+        true,
+        None,
+        visited_packages,
+        files,
+    )
+}
+
 /// [`bundle`] with an optional persistent dev [`ShadowSession`]
 /// (issue #993). `None` is the production path; `Some` reuses the
 /// session's shadow tree across calls, skipping byte-identical rewrites
@@ -2853,8 +3240,6 @@ pub fn bundle_with_session(
             pages_dir.display()
         );
     }
-
-    let adapter = make_adapter(input.framework);
 
     // `copy_mode` — when esbuild will run WITHOUT `--preserve-symlinks`
     // (branch 4: project node_modules + non-empty tsconfig paths), every
@@ -2930,7 +3315,7 @@ pub fn bundle_with_session(
 
     // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
     // `materialise` (tempdir alloc + every materialise walk + diagnostics
-    // gates + css rewrite + entry/shim/tsconfig writes), `esbuild` (the
+    // gates + css rewrite + entry/tsconfig writes), `esbuild` (the
     // subprocess), `post` (manifest assembly after the subprocess), and
     // `teardown` (the shadow TempDir's recursive delete, timed via an
     // explicit drop). One stderr line per successful call; error paths
@@ -2973,7 +3358,7 @@ pub fn bundle_with_session(
     // tree — the workspace root in a pnpm workspace — and the PROJECT mirror
     // (`shadow`) is nested at the project's workspace-relative subpath. Every
     // downstream step keeps keying off `shadow` (entry.mjs / synthetic
-    // tsconfig / hydration shim live there; esbuild's cwd is `shadow`), so
+    // tsconfig live there; esbuild's cwd is `shadow`), so
     // without a workspace `first_party_root == project_root`, `workspace_rel`
     // is empty, and `shadow == work` — a byte-identical no-op vs the pre-#1668
     // single-mirror layout. Sibling-package sources are NOT staged in this
@@ -3048,7 +3433,6 @@ pub fn bundle_with_session(
         input.mode.is_prod(),
         &input.extra_loader_args,
         &input.define_vars,
-        make_adapter(input.framework).jsx_import_source(),
     )
     .with_plugins(
         input.plugin_alias_entries.clone(),
@@ -3307,8 +3691,8 @@ pub fn bundle_with_session(
     // "2a-sibling" section and `mirror_derived_preprocessing_files`.
 
     // Seed the staged-dependency closure from the materialized project module
-    // graph and the framework packages the generated entry/hydration shim
-    // import (issue #1645). Source discovery also runs with an empty exclude so
+    // graph and the framework packages the generated entry and JSX imports
+    // need (issue #1645). Source discovery also runs with an empty exclude so
     // package-name workspace siblings can be detected and copied before the
     // stage-escape audit. Ordinary dependencies remain live-link-resolved in
     // that mode; the root-seed loop below only admits workspace sources.
@@ -3375,13 +3759,16 @@ pub fn bundle_with_session(
         );
 
         // The server runtime subpath (`createPageRouter`), the framework
-        // render-to-string module, and the JSX runtime source (which also
-        // covers the hydration shim's bare framework import) appear in NO
+        // render-to-string module, and the JSX runtime source appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
         synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        synthetic_entry_import_specifiers
+            .insert(zfb_types::owned_runtime::JSX_IMPORT_SOURCE.to_string());
+        synthetic_entry_import_specifiers
+            .insert("@takazudo/zfb/zudo-react/jsx-runtime".to_string());
+        synthetic_entry_import_specifiers
+            .insert(zfb_types::owned_runtime::SERVER_MODULE.to_string());
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -4815,20 +5202,6 @@ pub fn bundle_with_session(
         .context("bundler: failed rewriting CSS Modules in node_modules isolation")?;
     }
 
-    // 3. Hydration shim.
-    //
-    // Always-write infra file: written unconditionally every call (like
-    // the tsconfig and entry.mjs below), so it bypasses the #993
-    // ShadowWriter — never recorded as visited, therefore never eligible
-    // for the prune pass, which only deletes previously-visited paths.
-    let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
-    fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
-        format!(
-            "bundler: failed writing hydration shim to {}",
-            shim_path.display()
-        )
-    })?;
-
     // 4. Synthetic tsconfig.json honouring the user's `paths`. Rebase
     //    under-project_root alias targets to a shadow-first dual-target so
     //    an aliased import reaches the in-shadow transform (see
@@ -4840,8 +5213,12 @@ pub fn bundle_with_session(
     //    real-root fallback safe.
     let rebased_paths =
         rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
-    write_synthetic_tsconfig(shadow, &rebased_paths, adapter.jsx_import_source())
-        .context("bundler: failed writing synthetic tsconfig.json")?;
+    write_synthetic_tsconfig(
+        shadow,
+        &rebased_paths,
+        zfb_types::owned_runtime::JSX_IMPORT_SOURCE,
+    )
+    .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
     //
@@ -4885,7 +5262,6 @@ pub fn bundle_with_session(
         shadow,
         entry_routes_for_write,
         &EntryModuleInputs {
-            render_to_string_module: adapter.render_to_string_module(),
             content_snapshot_json: entry_snapshot_for_write,
             content_imports: entry_content_imports_for_write,
             site: input.site.as_deref(),
@@ -4900,6 +5276,30 @@ pub fn bundle_with_session(
         },
     )
     .context("bundler: failed writing entry.mjs")?;
+    let build = zudo_react_build_token_with_inputs_and_output(
+        &input.project_root,
+        &input.plugin_alias_entries,
+        &input.plugin_virtual_modules,
+        &input.outdir,
+    )?;
+    let names = input
+        .zudo_react_island_names
+        .as_ref()
+        .ok_or_else(|| anyhow!("owned runtime requires scanner island identity metadata"))?;
+    fs::write(
+            shadow.join("zudo-react-build.mjs"),
+            format!(
+                "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {}; globalThis.__zfb.zudoReactIslands = {};\n",
+                json_str(&build),
+                serde_json::to_string(names)?
+            ),
+        )?;
+    let entry_path = shadow.join("entry.mjs");
+    let entry = fs::read_to_string(&entry_path)?;
+    fs::write(
+        entry_path,
+        format!("import \"./zudo-react-build.mjs\";\n{entry}"),
+    )?;
 
     // 5b. Prune stale shadow files (#993 — session mode only, no-op
     //     otherwise). MUST run before esbuild: a deleted/renamed/newly-
@@ -4936,6 +5336,8 @@ pub fn bundle_with_session(
     };
     fs::create_dir_all(&outdir)
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
+    fs::write(outdir.join(OWNED_OUTPUT_MARKER), b"")
+        .context("bundler: failed to mark owned output directory")?;
     // Bundle filename — `bundle_basename` lets callers run two bundle()
     // passes in the same outdir (full SSG vs runtime-only) without clobber.
     let bundle_filename: &str = input.bundle_basename.as_deref().unwrap_or("bundle.mjs");
@@ -5178,9 +5580,6 @@ pub fn bundle_with_session(
         None
     };
     let manifest = BundleManifest {
-        framework: adapter.name().to_string(),
-        jsx_import_source: adapter.jsx_import_source().to_string(),
-        hydrate_shim_specifier: adapter.hydrate_shim_specifier().to_string(),
         bundle_basename: bundle_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -7139,7 +7538,6 @@ fn is_reserved_shadow_root_name(name: &str) -> bool {
     // different directory or purpose.
     name == SHADOW_TSCONFIG_FILENAME
         || name == SHADOW_ENTRY_FILENAME
-        || name == SHADOW_HYDRATE_FILENAME
         || name == ".zfb-metafile.json"
         || name.starts_with(zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX)
 }
@@ -7156,7 +7554,7 @@ fn is_reserved_shadow_root_name(name: &str) -> bool {
 /// by the extra-dirs pass; only depth-1 files are handled here.
 ///
 /// Reserved generated names ([`is_reserved_shadow_root_name`]) are SKIPPED so
-/// the generated `tsconfig.json` / `entry.mjs` / hydrate shim / `.zfb-*`
+/// the generated `tsconfig.json` / `entry.mjs` / `.zfb-*`
 /// infra files always win. `mdx-components.tsx` keeps its own dedicated pass.
 /// Hidden dotfiles are skipped (never resolved by a bare `@/<name>` import).
 fn stage_project_root_loose_files(
@@ -7683,7 +8081,7 @@ fn materialise_symlinked_dir(
 /// Keep an ordinary installed package's physical identity when a workspace
 /// source is staged beside it. The sibling mirror resolves through the live
 /// workspace install root; copying the same pnpm package under the project
-/// mirror gives esbuild two module instances (and two Preact options objects).
+/// mirror gives esbuild two module instances of the owned runtime.
 /// With symlink preservation disabled, both spellings resolve to this one
 /// canonical source. Workspace packages remain real staged copies, and active
 /// exclusions retain the existing bounded-copy and audit path.
@@ -8422,7 +8820,7 @@ fn materialise_shadow(
     // See zfb#127 / #128.
     //
     // Note: `zfb dev` is the bundler in Development mode — it also goes
-    // through this path.  The `zfb-render ModuleLoader` is a separate
+    // through this path.  The former library loader was a separate
     // library/embedder path not used by the `zfb` CLI at all.
     //
     // The opt-in `StripMdExtensionPlugin` is appended here when the
@@ -11240,7 +11638,7 @@ fn extend_node_modules_dependency_staging(
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
 
-    // Packages the generated `entry.mjs` and hydration shim import but which
+    // Packages the generated `entry.mjs` and JSX imports need but which
     // appear in no project source file (issue #1645). Resolve them from a
     // synthetic project-root importer so the closure stages them like any other
     // bare dependency; subpath specifiers collapse to their owning package via
@@ -12134,7 +12532,6 @@ fn write_synthetic_tsconfig(
 // future `globalThis.__zfb.*` slots add a field here instead of widening the
 // function signature.
 struct EntryModuleInputs<'a> {
-    render_to_string_module: &'a str,
     content_snapshot_json: Option<&'a str>,
     content_imports: &'a [ContentImport],
     site: Option<&'a str>,
@@ -12156,19 +12553,13 @@ struct EntryModuleInputs<'a> {
 }
 
 /// Generate the `entry.mjs` module that re-exports `routes`,
-/// `hydrateIsland`, and a Workers-style `default { fetch }` wrapper
+/// a Workers-style `default { fetch }` wrapper
 /// driven by `createPageRouter` from `@takazudo/zfb-runtime/server`. This is
 /// the single load-bearing module the embedded V8 host (T6/T7) and the
 /// runtime SSR adapter (T2) consume.
 ///
-/// `render_to_string_module` is the framework's `renderToString`
-/// specifier (e.g. `"preact-render-to-string"` for Preact,
-/// `"react-dom/server"` for React) — drawn from
-/// [`zfb_render::adapters::Adapter::render_to_string_module`]. The
-/// wrapper imports `renderToString` by name from this specifier and
-/// hands it to `createPageRouter` as the framework adapter, so the
-/// bundle pins its own SSR call without leaking the framework choice
-/// into the embedded V8 host's boot.
+/// The server router imports the owned renderer directly. The generated
+/// entry supplies pages and the content snapshot without a renderer selector.
 ///
 /// The default-fetch wrapper is emitted unconditionally, even when
 /// `routes` is empty: an empty Hono app simply 404s every request, but
@@ -12189,8 +12580,7 @@ struct EntryModuleInputs<'a> {
 ///    `globalThis.__zfb.content` bridge map. Both the hash-bearing
 ///    `mdx://<collection>/<slug>#<hash>` form (Rust snapshot) and the
 ///    hash-stripped `mdx://<collection>/<slug>` form (JS stub) are
-///    registered so `bridge.get(...)` resolves either flavour, per
-///    the contract documented in `crates/zfb-render/src/loader.rs`.
+///    registered so `bridge.get(...)` resolves either flavour.
 ///
 /// When `content_imports` is empty the bridge installer is omitted —
 /// runtime `bridge?.get(...)` calls fall through to the
@@ -12201,7 +12591,6 @@ fn write_entry_module(
     routes: &[RouteEntry],
     inputs: &EntryModuleInputs<'_>,
 ) -> Result<()> {
-    let render_to_string_module = inputs.render_to_string_module;
     let content_snapshot_json = inputs.content_snapshot_json;
     let content_imports = inputs.content_imports;
     let site = inputs.site;
@@ -12222,10 +12611,7 @@ fn write_entry_module(
     src.push_str(
         "// Single ESM entry shared by the embedded V8 host (T6/T7) and the runtime SSR adapter.\n",
     );
-    src.push_str("// Exports: { routes, hydrateIsland, default: { fetch } }.\n\n");
-    src.push_str(&format!(
-        "import {{ hydrateIsland }} from \"./{SHADOW_HYDRATE_FILENAME}\";\n",
-    ));
+    src.push_str("// Exports: { routes, default: { fetch } }.\n\n");
     // `createPageRouter` lives at the server-only subpath so the client-safe
     // root barrel (`@takazudo/zfb-runtime`) never pulls Hono into an island's
     // `--platform=browser` bundle (issue #1298). This SSR entry runs on the
@@ -12235,12 +12621,6 @@ fn write_entry_module(
     writeln!(
         &mut src,
         "import {{ createPageRouter }} from \"{ZFB_RUNTIME_SERVER_SPECIFIER}\";"
-    )
-    .unwrap();
-    writeln!(
-        &mut src,
-        "import {{ renderToString as __zfb_renderToString }} from {spec};",
-        spec = json_str(render_to_string_module),
     )
     .unwrap();
 
@@ -12307,7 +12687,6 @@ fn write_entry_module(
         .unwrap();
     }
     src.push_str("};\n\n");
-    src.push_str("export { hydrateIsland };\n\n");
 
     // -----------------------------------------------------------------
     // Workers-style default-fetch wrapper.
@@ -12328,9 +12707,6 @@ fn write_entry_module(
     //     content-using pages must still be authored to handle an
     //     empty snapshot. The wrapper is emitted unconditionally so
     //     embedded V8 host boot is decoupled from the snapshot deliverable.
-    //   - `framework`: an inline adapter pinning `renderToString` to
-    //     the framework's import. This keeps `@takazudo/zfb-runtime`
-    //     framework-agnostic and lets the bundle pick its own SSR call.
     // -----------------------------------------------------------------
     // The `__zfb_pages` array feeds Hono's router via `createPageRouter`.
     // Hono uses `:param` / `:param{.+}` syntax for dynamic segments, not
@@ -12494,8 +12870,7 @@ fn write_entry_module(
     // bridge before `createPageRouter` so the very first SSR call
     // already sees the populated map.
     //
-    // Both forms documented in `crates/zfb-render/src/loader.rs`
-    // are registered:
+    // Both content module specifier forms are registered:
     //
     // - `mdx://<collection>/<slug>#<hash>` — the Rust snapshot's
     //   `module_specifier`, baked by
@@ -12543,7 +12918,6 @@ fn write_entry_module(
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
-    src.push_str("  framework: { renderToString: __zfb_renderToString },\n");
     src.push_str("});\n\n");
     src.push_str("export default {\n");
     src.push_str("  fetch: (request) => __zfb_router(request),\n");
@@ -12691,7 +13065,7 @@ pub(crate) fn render_md_page_shell(
          \u{0020} return (\n\
          \u{0020}   <html lang={{__lang}}>\n\
          \u{0020}     <head>\n\
-         \u{0020}       <meta charSet=\"utf-8\" />\n\
+         \u{0020}       <meta charset=\"utf-8\" />\n\
          \u{0020}       <title>{{__title}}</title>\n\
          \u{0020}     </head>\n\
          \u{0020}     <body>\n\
@@ -12791,8 +13165,6 @@ fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
 fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
     if !input.main_fields.is_empty() {
         input.main_fields.iter().map(String::as_str).collect()
-    } else if matches!(input.framework, Framework::React) {
-        vec!["main", "module"]
     } else {
         Vec::new()
     }
@@ -12808,6 +13180,388 @@ fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
 // The shadow layout roots (`shadow`/`first_party_root`/`work_root`) are passed
 // separately rather than folded into a struct so each stays explicit at the
 // single call site (issue #1668).
+#[cfg(test)]
+mod framework_esbuild_flags_tests {
+    use super::*;
+
+    #[test]
+    fn owned_build_token_tracks_source_changes_and_ignores_output() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("pages")).unwrap();
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "export default function Home() {}",
+        )
+        .unwrap();
+        let first = zudo_react_build_token(project.path()).unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::create_dir(project.path().join("dist")).unwrap();
+        fs::write(project.path().join("dist/index.html"), "ignored").unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::create_dir(project.path().join(".zfb-build")).unwrap();
+        fs::write(project.path().join(".zfb-build/bundle.mjs"), "generated").unwrap();
+        assert_eq!(first, zudo_react_build_token(project.path()).unwrap());
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "export default function Changed() {}",
+        )
+        .unwrap();
+        assert_ne!(first, zudo_react_build_token(project.path()).unwrap());
+    }
+
+    #[test]
+    fn owned_build_token_ignores_selected_custom_output_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let output = project.path().join("dist-session");
+        fs::write(project.path().join("page.tsx"), "export const page = 1;").unwrap();
+        let token = || {
+            zudo_react_build_token_with_inputs_and_output(project.path(), &[], &[], &output)
+                .unwrap()
+        };
+        let first = token();
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("bundle.mjs"), "generated first").unwrap();
+        assert_eq!(first, token());
+        fs::write(output.join("bundle.mjs"), "generated second").unwrap();
+        assert_eq!(first, token());
+        let previous_output = project.path().join("dist-previous");
+        fs::create_dir(&previous_output).unwrap();
+        fs::write(previous_output.join(OWNED_OUTPUT_MARKER), "").unwrap();
+        fs::write(
+            previous_output.join("bundle.mjs"),
+            "previous generated output",
+        )
+        .unwrap();
+        assert_eq!(first, token());
+        fs::write(project.path().join("page.tsx"), "export const page = 2;").unwrap();
+        assert_ne!(first, token());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_linked_package_source_under_logical_path() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("pages")).unwrap();
+        fs::write(
+            project.path().join("pages/index.tsx"),
+            "import '@demo/widget'",
+        )
+        .unwrap();
+        fs::create_dir(package.path().join("src")).unwrap();
+        fs::write(
+            package.path().join("package.json"),
+            r#"{"name":"@demo/widget"}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.path().join("src/index.tsx"),
+            "export const value = 1",
+        )
+        .unwrap();
+        let scope = project.path().join("node_modules/@demo");
+        fs::create_dir_all(&scope).unwrap();
+        symlink(package.path(), scope.join("widget")).unwrap();
+        let first = zudo_react_build_token(project.path()).unwrap();
+
+        let other_project = tempfile::tempdir().unwrap();
+        let other_package = tempfile::tempdir().unwrap();
+        fs::create_dir(other_project.path().join("pages")).unwrap();
+        fs::write(
+            other_project.path().join("pages/index.tsx"),
+            "import '@demo/widget'",
+        )
+        .unwrap();
+        fs::create_dir(other_package.path().join("src")).unwrap();
+        fs::write(
+            other_package.path().join("package.json"),
+            r#"{"name":"@demo/widget"}"#,
+        )
+        .unwrap();
+        fs::write(
+            other_package.path().join("src/index.tsx"),
+            "export const value = 1",
+        )
+        .unwrap();
+        let other_scope = other_project.path().join("node_modules/@demo");
+        fs::create_dir_all(&other_scope).unwrap();
+        symlink(other_package.path(), other_scope.join("widget")).unwrap();
+        assert_eq!(first, zudo_react_build_token(other_project.path()).unwrap());
+
+        fs::write(
+            package.path().join("src/index.tsx"),
+            "export const value = 2",
+        )
+        .unwrap();
+        let changed = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(first, changed);
+        fs::create_dir(project.path().join("dist")).unwrap();
+        fs::write(project.path().join("dist/index.html"), "generated output").unwrap();
+        assert_eq!(changed, zudo_react_build_token(project.path()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_external_plugin_and_tsconfig_sources() {
+        let project = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        let tsconfig_target = tempfile::tempdir().unwrap();
+        fs::write(
+            plugin.path().join("package.json"),
+            r#"{"name":"plugin-widget"}"#,
+        )
+        .unwrap();
+        fs::write(plugin.path().join("widget.ts"), "export const plugin = 1").unwrap();
+        fs::write(
+            plugin.path().join("dependency.ts"),
+            "export const dependency = 1",
+        )
+        .unwrap();
+        fs::write(
+            tsconfig_target.path().join("widget.ts"),
+            "export const path = 1",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("pages.tsx"),
+            "import 'plugin:widget'; import '@external/widget'",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("tsconfig.json"),
+            serde_json::json!({
+                "compilerOptions": { "baseUrl": ".", "paths": { "@external/*": [format!("{}/*", tsconfig_target.path().display())] } }
+            }).to_string(),
+        ).unwrap();
+        let aliases = vec![(
+            "plugin:widget".to_string(),
+            plugin
+                .path()
+                .join("widget.ts")
+                .to_string_lossy()
+                .into_owned(),
+        )];
+        let first = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(plugin.path().join("widget.ts"), "export const plugin = 2").unwrap();
+        let second = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(first, second);
+        fs::write(
+            plugin.path().join("dependency.ts"),
+            "export const dependency = 2",
+        )
+        .unwrap();
+        let with_dependency_edit =
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(second, with_dependency_edit);
+        fs::write(
+            tsconfig_target.path().join("widget.ts"),
+            "export const path = 2",
+        )
+        .unwrap();
+        assert_ne!(
+            with_dependency_edit,
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
+        );
+        let virtual_before = zudo_react_build_token_with_inputs(
+            project.path(),
+            &aliases,
+            &[(
+                "virtual:widget".to_string(),
+                "export const value = 1".to_string(),
+            )],
+        )
+        .unwrap();
+        let virtual_after = zudo_react_build_token_with_inputs(
+            project.path(),
+            &aliases,
+            &[(
+                "virtual:widget".to_string(),
+                "export const value = 2".to_string(),
+            )],
+        )
+        .unwrap();
+        assert_ne!(virtual_before, virtual_after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_package_less_external_relative_import_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::create_dir(external.path().join("src")).unwrap();
+        fs::write(
+            external.path().join("src/widget.ts"),
+            "import './helper.ts'; import '../parent-helper.ts'; export const widget = true",
+        )
+        .unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 1",
+        )
+        .unwrap();
+        fs::write(
+            external.path().join("parent-helper.ts"),
+            "export const parent = 1",
+        )
+        .unwrap();
+        let aliases = vec![(
+            "plugin:widget".to_string(),
+            external
+                .path()
+                .join("src/widget.ts")
+                .to_string_lossy()
+                .into_owned(),
+        )];
+        let first = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 2",
+        )
+        .unwrap();
+        let second = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(first, second, "./helper.ts must change the token");
+        fs::write(
+            external.path().join("parent-helper.ts"),
+            "export const parent = 2",
+        )
+        .unwrap();
+        let third = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(second, third, "../parent-helper.ts must change the token");
+        fs::write(
+            project.path().join("tsconfig.json"),
+            serde_json::json!({
+                "compilerOptions": { "baseUrl": ".", "paths": { "@external": [external.path().join("src/widget.ts").to_string_lossy()] } }
+            }).to_string(),
+        ).unwrap();
+        let tsconfig_before = zudo_react_build_token(project.path()).unwrap();
+        fs::write(
+            external.path().join("src/helper.ts"),
+            "export const helper = 3",
+        )
+        .unwrap();
+        let tsconfig_after = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(
+            tsconfig_before, tsconfig_after,
+            "exact tsconfig target must follow ./helper.ts"
+        );
+        let with_aliases = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::create_dir(project.path().join(".zfb-build")).unwrap();
+        fs::write(project.path().join(".zfb-build/bundle.mjs"), "generated").unwrap();
+        assert_eq!(
+            with_aliases,
+            zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap()
+        );
+    }
+
+    #[test]
+    fn owned_build_token_external_declarations_do_not_resolve_type_imports() {
+        let external = tempfile::tempdir().unwrap();
+        let declaration = external.path().join("index.d.ts");
+        let runtime = external.path().join("index.ts");
+        let dependency = external.path().join("dependency.ts");
+        fs::write(
+            &declaration,
+            "import type { Validator } from './missing-validator';\n",
+        )
+        .unwrap();
+        fs::write(&runtime, "import './dependency';\n").unwrap();
+        fs::write(&dependency, "export const value = 1;\n").unwrap();
+
+        let collect = || {
+            let mut files = Vec::new();
+            collect_zudo_react_external_file_closure(
+                vec![
+                    (declaration.clone(), PathBuf::from("package/index.d.ts")),
+                    (runtime.clone(), PathBuf::from("package/index.ts")),
+                ],
+                None,
+                &mut files,
+            )
+            .unwrap();
+            files
+        };
+        let files = collect();
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&declaration).unwrap()));
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&runtime).unwrap()));
+        assert!(files
+            .iter()
+            .any(|(_, path)| path == &fs::canonicalize(&dependency).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_alias_order_is_stable_for_one_external_package() {
+        let project = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        fs::write(package.path().join("package.json"), r#"{"name":"shared"}"#).unwrap();
+        fs::write(package.path().join("widget.ts"), "export const widget = 1").unwrap();
+        let target = package
+            .path()
+            .join("widget.ts")
+            .to_string_lossy()
+            .into_owned();
+        let forward = vec![
+            ("plugin:zeta".to_string(), target.clone()),
+            ("plugin:alpha".to_string(), target),
+        ];
+        let reverse = forward.iter().cloned().rev().collect::<Vec<_>>();
+        assert_eq!(
+            zudo_react_build_token_with_aliases(project.path(), &forward).unwrap(),
+            zudo_react_build_token_with_aliases(project.path(), &reverse).unwrap(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_build_token_tracks_imports_escaping_external_directory_and_package_roots() {
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::create_dir(external.path().join("src")).unwrap();
+        fs::write(
+            external.path().join("src/widget.ts"),
+            "import '../shared.ts'; export const widget = 1",
+        )
+        .unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 1").unwrap();
+        fs::write(project.path().join("tsconfig.json"), serde_json::json!({
+            "compilerOptions": { "baseUrl": ".", "paths": { "@external/*": [format!("{}/*", external.path().join("src").display())] } }
+        }).to_string()).unwrap();
+        let directory_before = zudo_react_build_token(project.path()).unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 2").unwrap();
+        let directory_after = zudo_react_build_token(project.path()).unwrap();
+        assert_ne!(
+            directory_before, directory_after,
+            "wildcard directory must include ../shared.ts"
+        );
+
+        let package = external.path().join("pkg");
+        fs::create_dir(&package).unwrap();
+        fs::write(package.join("package.json"), r#"{"name":"external-pkg"}"#).unwrap();
+        fs::write(
+            package.join("widget.ts"),
+            "import '../shared.ts'; export const widget = 1",
+        )
+        .unwrap();
+        let aliases = vec![(
+            "plugin:pkg".to_string(),
+            package.join("widget.ts").to_string_lossy().into_owned(),
+        )];
+        let package_before = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        fs::write(external.path().join("shared.ts"), "export const shared = 3").unwrap();
+        let package_after = zudo_react_build_token_with_aliases(project.path(), &aliases).unwrap();
+        assert_ne!(
+            package_before, package_after,
+            "package root must include ../shared.ts"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_esbuild(
     input: &BundlerInput,
@@ -12864,40 +13618,7 @@ fn run_esbuild(
         cmd.arg(format!("--metafile={}", meta.display()));
     }
 
-    // MDX modules emitted by `compile_mdx_to_jsx_module_cached` carry a
-    // hard-coded `import { Fragment as _Fragment } from "react/jsx-runtime";`
-    // (the emitter targets the React JSX-runtime convention). Esbuild's
-    // own JSX transform handles JSX *syntax* through tsconfig's
-    // `jsxImportSource`, but **explicit import statements** are passed
-    // through unchanged. So when the project's framework is Preact, we
-    // rewrite `react/jsx-runtime` (and the dev-runtime sibling) to the
-    // Preact equivalents at the bundler level. This is the same trick
-    // the Preact ecosystem uses with bundlers like Vite.
-    if matches!(input.framework, Framework::Preact) {
-        cmd.arg("--alias:react/jsx-runtime=preact/jsx-runtime");
-        cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
-    }
-
-    // React-only: route conditional-exports resolution through the
-    // `worker` condition so `react-dom/server` resolves to its
-    // `server.browser.js` build instead of the `default` →
-    // `server.node.js` build. The node build does
-    // `require("stream")` / `require("util")`, which esbuild cannot
-    // satisfy under `--platform=neutral` (this bundle runs as a
-    // workerd-style ES module in the embedded V8 host, where node
-    // builtins do not exist) — without this it fails with
-    // `Could not resolve "stream"`. react-dom's exports map keys the
-    // browser-safe SSR entry under the `worker`/`browser`/`deno`
-    // conditions; `worker` is the surgical choice because react-dom
-    // honors it for the server-render entry while Preact's packages do
-    // not use it, so the Preact bundle's resolution is unaffected.
-    // Gated on `Framework::React` so the Preact path adds no new arg and
-    // cannot regress. esbuild's exports-map resolution takes precedence
-    // over `--main-fields`, so no main-fields change is needed for the
-    // exports-based react-dom package.
-    if matches!(input.framework, Framework::React) {
-        cmd.arg("--conditions=worker");
-    }
+    cmd.arg("--keep-names");
 
     // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`
     // esbuild's main-fields list is EMPTY by default, so a package resolved
@@ -12905,22 +13626,12 @@ fn run_esbuild(
     // `Could not resolve "<pkg>" ... The "main" field here was ignored. Main
     // fields must be configured explicitly when using the "neutral" platform.`
     //
-    // Resolution order:
-    // 1. An explicit `bundle.mainFields` (input.main_fields) wins for EVERY
-    //    framework -- the #676 host knob (e.g. a Preact project hitting
-    //    `msw` -> `path-to-regexp@6` sets `["main", "module"]`).
-    // 2. Otherwise React keeps its historical `main,module` default (the
-    //    `@headlessui/react` -> `@floating-ui/react` -> `tabbable` chain the T6
-    //    configurator depends on; `tabbable` ships `main`/`module`, no
-    //    `exports`). `--conditions=worker` cannot help -- it only steers
-    //    `exports`-map resolution.
-    // 3. Otherwise (non-React, no knob) NO `--main-fields` is emitted, keeping
-    //    the Preact bundle's arg set byte-identical (zero regression).
+    // An explicit `bundle.mainFields` (input.main_fields) lets a project
+    // resolve packages that publish only `main` / `module` fields. Without
+    // the setting, no `--main-fields` argument is emitted.
     //
-    // Safe in all cases: `--main-fields` only affects packages WITHOUT an
-    // `exports` map (`exports` always takes precedence), so it can only turn a
-    // currently *failing* main-only resolution into a success, never alter a
-    // working one. `main,module` matches esbuild's node-platform default order.
+    // `--main-fields` only affects packages WITHOUT an `exports` map
+    // (`exports` always takes precedence).
     let effective_main_fields = effective_ssr_main_fields(input);
     if !effective_main_fields.is_empty() {
         cmd.arg(format!("--main-fields={}", effective_main_fields.join(",")));
@@ -13136,14 +13847,8 @@ fn run_esbuild(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
     );
-    // Recreate the adapter to get `jsx_import_source` — cheap (adapters
-    // are zero-state) and avoids threading another parameter
-    // through `run_esbuild`. Stays in sync with step 4 above so a
-    // future framework switch can't make the two writes diverge.
-    let jsx_import_source = make_adapter(input.framework)
-        .jsx_import_source()
-        .to_string();
-    write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
+    let jsx_import_source = zfb_types::owned_runtime::JSX_IMPORT_SOURCE;
+    write_synthetic_tsconfig(shadow, &merged_paths, jsx_import_source)
         .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
 
     // Virtual-module `--alias:<spec>=<tmp.mjs>` flags (#1263). esbuild does
@@ -13181,17 +13886,12 @@ fn run_esbuild(
     // Mode defines are always emitted and deliberately independent of minify.
     // process.env.NODE_ENV is mode-driven and framework-agnostic.
     //
-    // React's CJS entry (`react`, `react-dom/server`) reads
-    // `process.env.NODE_ENV` at module-init time to pick its
-    // production-vs-development code path. In the SSR/main bundle this
-    // runs inside V8 with no Node `process` global, so without inlining
-    // the value the bundle throws `ReferenceError: process is not defined`
-    // before any React component can render. The islands *client* bundle
-    // already defines this unconditionally (see
-    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); mirror it here so
-    // both pipelines agree. Preact does not need it but the define is
-    // harmless for Preact (esbuild just folds the unused branch away), so
-    // it is not framework-gated — matching the client bundle's behaviour.
+    // Dependencies can read `process.env.NODE_ENV` at module-init time. In
+    // the SSR/main bundle this runs inside V8 with no Node `process` global,
+    // so inline the mode value before any component can render. The islands
+    // client bundle also defines it unconditionally (see
+    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); keep both pipelines
+    // aligned without framework gating.
     for arg in bundle_mode_define_args(input.mode) {
         cmd.arg(arg);
     }
@@ -13432,7 +14132,7 @@ fn friendly_esbuild_error(
             continue;
         };
         if !(specifier.starts_with("./") || specifier.starts_with("../")) {
-            // Bare/package specifiers (`preact`, `@scope/pkg`) are never a
+            // Bare/package specifiers (`vendor-lib`, `@scope/pkg`) are never a
             // shadow-root escape — nothing to annotate.
             continue;
         }
@@ -13816,7 +14516,11 @@ mod tests {
     #[cfg(unix)]
     fn scan_cache_input(site: &Path) -> BundlerInput {
         BundlerInput {
-            external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+            zudo_react_island_names: Some(vec![]),
+            external: vec![
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb-runtime".into(),
+            ],
             mock_subprocess_output: Some("export default {};\n".to_string()),
             node_modules_dir: Some(site.join("node_modules")),
             tsconfig_paths: BTreeMap::from([(
@@ -13828,7 +14532,6 @@ mod tests {
             )]),
             ..BundlerInput::for_project(
                 site.to_path_buf(),
-                Framework::Preact,
                 BundleMode::Production,
                 site.join("dist"),
                 None,
@@ -14106,7 +14809,7 @@ mod tests {
         let mut staged = Vec::new();
         for version in ["1.0.0", "2.0.0"] {
             let source = project.path().join(format!(
-                "node_modules/.pnpm/preact@{version}/node_modules/preact"
+                "node_modules/.pnpm/vendor-lib@{version}/node_modules/vendor-lib"
             ));
             fs::create_dir_all(&source).unwrap();
             fs::write(
@@ -14114,8 +14817,10 @@ mod tests {
                 format!("{{\"version\":\"{version}\"}}"),
             )
             .unwrap();
-            let logical = root.join(format!("node_modules/{version}/node_modules/preact"));
-            let dest = stage.path().join(format!("{version}/node_modules/preact"));
+            let logical = root.join(format!("node_modules/{version}/node_modules/vendor-lib"));
+            let dest = stage
+                .path()
+                .join(format!("{version}/node_modules/vendor-lib"));
             assert!(link_ordinary_dependency_to_canonical_source(
                 &logical, &source, &dest, &root, &writer
             )
@@ -14687,17 +15392,20 @@ mod tests {
     #[test]
     fn package_is_external_matches_whole_package_only() {
         let external = vec![
-            "preact".to_string(),
+            "vendor-lib".to_string(),
             "@takazudo/zfb-runtime".to_string(),
             "@scope/*".to_string(),
         ];
-        assert!(package_is_external("preact", &external));
+        assert!(package_is_external("vendor-lib", &external));
         assert!(package_is_external("@takazudo/zfb-runtime", &external));
         // A namespace wildcard external matches every package in the namespace.
         assert!(package_is_external("@scope/anything", &external));
         assert!(!package_is_external("not-external", &external));
-        // `--external:preact` must NOT externalize the distinct `preact-*` package.
-        assert!(!package_is_external("preact-render-to-string", &external));
+        // `--external:vendor-lib` must NOT externalize the distinct `vendor-lib-*` package.
+        assert!(!package_is_external(
+            "vendor-lib-render-to-string",
+            &external
+        ));
     }
 
     fn shadow_env(
@@ -15769,7 +16477,7 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::Preact,
+            zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::new(),
             public_env_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
@@ -15780,10 +16488,7 @@ mod tests {
             mode: BundleMode::Production,
             minify: false,
             esbuild_binary: None,
-            mock_subprocess_output: Some(
-                "// mock bundle\nexport const routes = {};\nexport const hydrateIsland = () => {};\n"
-                    .to_string(),
-            ),
+            mock_subprocess_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
@@ -15912,7 +16617,6 @@ mod tests {
             shadow,
             &routes,
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -15926,15 +16630,15 @@ mod tests {
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
-        // Imports the runtime factory and the framework's renderToString.
+        // The generated entry delegates owned rendering to the server router.
         assert!(
             body.contains("from \"@takazudo/zfb-runtime/server\""),
             "entry.mjs must import createPageRouter from the server-only subpath \
              @takazudo/zfb-runtime/server (issue #1298); got:\n{body}"
         );
         assert!(
-            body.contains("\"preact-render-to-string\""),
-            "entry.mjs must import renderToString from the framework module; got:\n{body}"
+            !body.contains("renderToString"),
+            "entry.mjs must not carry a renderer selector; got:\n{body}"
         );
 
         // Constructs the router with the routes-derived pages array.
@@ -15947,8 +16651,8 @@ mod tests {
             "createPageRouter call must hand it the pages array; got:\n{body}"
         );
         assert!(
-            body.contains("renderToString: __zfb_renderToString"),
-            "createPageRouter call must hand it the framework adapter; got:\n{body}"
+            !body.contains("framework"),
+            "createPageRouter call must not carry a framework adapter; got:\n{body}"
         );
         assert!(
             body.contains("route: \"/\", module: () => Promise.resolve(__zfb_route_0)"),
@@ -15969,10 +16673,14 @@ mod tests {
             "default export must carry a fetch field delegating to the router; got:\n{body}"
         );
 
-        // Existing exports must still be present so the runtime
-        // adapter (T2) and the islands hydration path keep working.
+        // The route export must still be present for the runtime adapter.
         assert!(body.contains("export const routes = {"));
-        assert!(body.contains("export { hydrateIsland };"));
+
+        // Browser hydration belongs to zfb-islands' generated client entry (#3315).
+        assert!(
+            !body.contains("__zfb_internal_hydrate.jsx") && !body.contains("hydrateIsland"),
+            "the SSR entry must not import or export the retired hydration shim; got:\n{body}"
+        );
     }
 
     #[test]
@@ -16000,7 +16708,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -16078,7 +16785,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16115,7 +16821,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: Some("https://example.com"),
@@ -16164,7 +16869,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16196,7 +16900,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16245,7 +16948,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16277,7 +16979,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16326,7 +17027,6 @@ mod tests {
         fs::create_dir_all(&off).unwrap();
         fs::create_dir_all(&on).unwrap();
         let inputs = |emit_render_artifacts: bool| EntryModuleInputs {
-            render_to_string_module: "preact-render-to-string",
             content_snapshot_json: None,
             content_imports: &[],
             site: Some("https://example.com"),
@@ -16375,7 +17075,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16423,7 +17122,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16454,7 +17152,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16568,7 +17265,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16624,7 +17320,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[], // zero content imports
                 site: None,
@@ -16660,7 +17355,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16703,7 +17397,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -16967,7 +17660,6 @@ mod tests {
             &shadow_root,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "preact-render-to-string",
                 content_snapshot_json: None,
                 content_imports: &imports,
                 site: None,
@@ -19370,15 +20062,15 @@ mod tests {
 
         let input = BundlerInput {
             esbuild_binary: Some(bin),
+            zudo_react_island_names: Some(vec![]),
             external: vec![
-                "preact".into(),
-                "preact-render-to-string".into(),
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb/zudo-react/server".into(),
                 "@takazudo/zfb-runtime".into(),
                 "@takazudo/zfb-runtime/*".into(),
             ],
             ..BundlerInput::for_project(
                 root.to_path_buf(),
-                Framework::Preact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -20784,7 +21476,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "react-dom/server",
                 content_snapshot_json: None,
                 content_imports: &[],
                 site: None,
@@ -20797,7 +21488,8 @@ mod tests {
         .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
-        assert!(body.contains("\"react-dom/server\""));
+        assert!(body.contains("import { createPageRouter } from \"@takazudo/zfb-runtime/server\""));
+        assert!(!body.contains("renderToString"));
         assert!(body.contains("export default {"));
         assert!(body.contains("fetch: (request) => __zfb_router(request)"));
         // pages array exists but is empty.
@@ -20813,7 +21505,6 @@ mod tests {
             shadow,
             &[],
             &EntryModuleInputs {
-                render_to_string_module: "react-dom/server",
                 content_snapshot_json: snapshot,
                 content_imports: &[],
                 site: None,
@@ -20893,12 +21584,6 @@ mod tests {
 
         let out = bundle(input).expect("mock bundle should succeed");
         assert!(out.bundle_path.exists());
-        assert_eq!(out.manifest.framework, "preact");
-        assert_eq!(out.manifest.jsx_import_source, "preact");
-        assert!(out
-            .manifest
-            .hydrate_shim_specifier
-            .starts_with("zfb:internal/"));
         assert_eq!(out.manifest.routes.len(), 1);
         assert_eq!(out.manifest.routes[0].route, "/");
         assert_eq!(
@@ -20914,7 +21599,6 @@ mod tests {
         // discovered route, and the bundle filename stays `bundle.mjs`.
         let input = BundlerInput::for_project(
             PathBuf::from("/tmp/dummy"),
-            Framework::Preact,
             BundleMode::Production,
             PathBuf::from("/tmp/dummy/dist"),
             None,
@@ -21023,15 +21707,15 @@ mod tests {
     /// materialise → prune pipeline whose shadow layout these tests inspect.
     fn mock_ssr_input(project_root: &Path) -> BundlerInput {
         BundlerInput {
+            zudo_react_island_names: Some(vec![]),
             mock_subprocess_output: Some("export default {};\n".to_string()),
             external: vec![
-                "preact".into(),
-                "preact-render-to-string".into(),
+                "@takazudo/zfb/zudo-react".into(),
+                "@takazudo/zfb/zudo-react/server".into(),
                 "@takazudo/zfb-runtime".into(),
             ],
             ..BundlerInput::for_project(
                 project_root.to_path_buf(),
-                Framework::Preact,
                 BundleMode::Production,
                 project_root.join("dist"),
                 None,
@@ -21079,10 +21763,8 @@ mod tests {
         // and as a claimed member of a pnpm workspace. The workspace build must
         // nest the WHOLE project mirror under the project's workspace-relative
         // subpath, and its layout — stripped of that prefix — must equal the
-        // standalone (flat) layout. That single equality proves BOTH acceptance
-        // criteria: a non-workspace build is a byte-identical no-op, and a
-        // workspace build nests the project mirror carrying project-only
-        // content.
+        // standalone (flat) layout. Compare file contents too, so rerooting
+        // preserves both the inventory and the generated/source bytes.
         fn seed_project(root: &Path) {
             for dir in ["pages", "content", "components", "layouts"] {
                 fs::create_dir_all(root.join(dir)).unwrap();
@@ -21147,16 +21829,36 @@ mod tests {
             ws_stripped, flat_files,
             "the workspace layout minus its project-rel prefix must equal the flat layout"
         );
-        for expected in [
-            "__zfb_internal_hydrate.jsx",
-            "entry.mjs",
-            "layouts/default.tsx",
-            "pages/index.tsx",
-            "tsconfig.json",
-        ] {
-            assert!(
-                flat_files.iter().any(|file| file == expected),
-                "the flat layout must contain {expected}: {flat_files:?}"
+        // The SSR shim was retired in a991a870; reject stale generated files too (#3315).
+        assert_eq!(
+            flat_files,
+            [
+                "entry.mjs",
+                "layouts/default.tsx",
+                "pages/index.tsx",
+                "tsconfig.json",
+                "zudo-react-build.mjs",
+            ],
+            "the flat SSR shadow must contain the entry, owned identity metadata, tsconfig and project sources"
+        );
+        for file in &flat_files {
+            if file == "zudo-react-build.mjs" {
+                // The workspace manifest is a token input, so the two build
+                // identities may differ even though their project files match.
+                for path in [
+                    flat_session.shadow_root().join(file),
+                    ws_session.shadow_root().join(prefix).join(file),
+                ] {
+                    let source = fs::read_to_string(path).unwrap();
+                    assert!(source.contains("zudoReactBuild"), "{source}");
+                    assert!(source.contains("zudoReactIslands"), "{source}");
+                }
+                continue;
+            }
+            assert_eq!(
+                fs::read(flat_session.shadow_root().join(file)).unwrap(),
+                fs::read(ws_session.shadow_root().join(prefix).join(file)).unwrap(),
+                "rerooting must preserve the bytes of {file}"
             );
         }
     }
@@ -21285,7 +21987,7 @@ mod tests {
         // node_modules under the project → the isolation slot (unchanged tier).
         assert_eq!(
             shadow_path_for_project_path(
-                &project.join("node_modules/preact/index.js"),
+                &project.join("node_modules/vendor-lib/index.js"),
                 project,
                 first_party,
                 shadow,
@@ -21294,7 +21996,7 @@ mod tests {
             ),
             shadow
                 .join(".zfb-exact-isolation")
-                .join("node_modules/preact/index.js"),
+                .join("node_modules/vendor-lib/index.js"),
         );
         // A workspace sibling (under first_party_root, outside the project) →
         // its workspace-relative slot in the work mirror (the new tier).
@@ -21728,7 +22430,7 @@ mod tests {
         );
 
         // Locate workspace node_modules so esbuild can resolve
-        // @takazudo/zfb-runtime + preact-render-to-string. Pre-#197 this test
+        // @takazudo/zfb-runtime and the owned renderer. Pre-#197 this test
         // was silently skipped because no esbuild was downloaded; now that
         // build.rs always populates the binary slot, the test runs and needs
         // real dependency resolution. In pnpm hoisted layouts these packages
@@ -21767,7 +22469,7 @@ mod tests {
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: Framework::Preact,
+            zudo_react_island_names: Some(vec![]),
             define_vars: BTreeMap::from([
                 (
                     "process.env.PUBLIC_COLLISION".to_string(),
@@ -21780,7 +22482,7 @@ mod tests {
             ]),
             public_env_vars: defs,
             tsconfig_paths: BTreeMap::new(),
-            external: vec!["preact".into()],
+            external: vec!["@takazudo/zfb/zudo-react".into()],
             main_fields: Vec::new(),
             extra_loader_args: Vec::new(),
             outdir: root.join("dist"),
@@ -21901,13 +22603,13 @@ mod tests {
 
         let input = BundlerInput {
             esbuild_binary: Some(bin),
-            external: vec!["preact".into()],
+            zudo_react_island_names: Some(vec![]),
+            external: vec!["@takazudo/zfb/zudo-react".into()],
             node_modules_dir: nm_dir,
             // The override file is discovered at the project root.
             mdx_components_file: Some(root.join("mdx-components.tsx")),
             ..BundlerInput::for_project(
                 root.clone(),
-                Framework::Preact,
                 BundleMode::Production,
                 root.join("dist"),
                 None,
@@ -22603,7 +23305,6 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let input = BundlerInput::for_project(
             root.clone(),
-            zfb_render::adapters::Framework::Preact,
             BundleMode::Production,
             root.join("dist"),
             None,
@@ -22715,6 +23416,20 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn render_md_page_shell_uses_owned_charset_spelling() {
+        let shell = render_md_page_shell(
+            &serde_json::json!({"title": "Owned"}),
+            "owned",
+            "./_zfb_md_body_owned.jsx",
+            Some("mdx://pages/owned#12345678"),
+        );
+        assert!(shell.contains("<meta charset=\"utf-8\" />"), "{shell}");
+        assert!(!shell.contains("charSet"));
+        assert!(shell.contains("<template data-zfb-render-region=\"start\""));
+        assert!(shell.contains("<template data-zfb-render-region=\"end\""));
+    }
+
+    #[test]
     fn render_md_page_shell_uses_title_from_frontmatter() {
         let fm = serde_json::json!({"title": "About Us"});
         let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
@@ -22734,7 +23449,7 @@ mod tests {
             "html element with lang; got:\n{shell}"
         );
         assert!(
-            shell.contains("<meta charSet=\"utf-8\" />"),
+            shell.contains("<meta charset=\"utf-8\" />"),
             "charset meta; got:\n{shell}"
         );
         assert!(
@@ -22862,7 +23577,7 @@ mod tests {
     }
 
     #[test]
-    fn render_md_page_shell_is_byte_identical_to_the_pre_marker_shell_without_a_region_id() {
+    fn render_md_page_shell_is_byte_identical_without_a_region_id() {
         // Flag-off parity: the emitted shell must be exactly what the
         // pre-#2421 generator produced, so a build with the feature off
         // cannot differ by a byte.
@@ -22880,7 +23595,7 @@ mod tests {
              \u{0020} return (\n\
              \u{0020}   <html lang={__lang}>\n\
              \u{0020}     <head>\n\
-             \u{0020}       <meta charSet=\"utf-8\" />\n\
+             \u{0020}       <meta charset=\"utf-8\" />\n\
              \u{0020}       <title>{__title}</title>\n\
              \u{0020}     </head>\n\
              \u{0020}     <body>\n\
@@ -23808,7 +24523,7 @@ mod tests {
     /// ancestor of `project_root`: such a root would make
     /// `is_under_css_mirror_root` true for every path in the project, and the
     /// gate would silently become the option (a) the epic REJECTED — every
-    /// ordinary markdown edit rerunning the Tailwind scan — with no test
+    /// ordinary markdown edit rerunning the zudo-wind candidate scan — with no test
     /// failing anywhere. (The gate carries its own defensive re-check, pinned
     /// by `orchestrator::tests::degenerate_project_containing_mirror_root_does_not_rerun_css`;
     /// this test is the primary guard, at the source that publishes roots.)
@@ -25966,23 +26681,24 @@ mod tests {
     fn exact_target_session_copy_then_link_keeps_the_installed_file() {
         let tmp = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(tmp.path()).unwrap();
-        let store = base.join("store/node_modules/.pnpm/preact@10.29.8/node_modules/preact");
+        let store =
+            base.join("store/node_modules/.pnpm/vendor-lib@10.29.8/node_modules/vendor-lib");
         let installed = store.join("hooks/dist/hooks.mjs");
         fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(store.join("package.json"), r#"{"name":"preact"}"#).unwrap();
+        fs::write(store.join("package.json"), r#"{"name":"vendor-lib"}"#).unwrap();
         fs::write(&installed, "INSTALLED_HOOKS").unwrap();
         let project = base.join("site");
         fs::create_dir_all(project.join("node_modules")).unwrap();
-        std::os::unix::fs::symlink(&store, project.join("node_modules/preact")).unwrap();
-        let physical = project.join("node_modules/preact/hooks/dist/hooks.mjs");
+        std::os::unix::fs::symlink(&store, project.join("node_modules/vendor-lib")).unwrap();
+        let physical = project.join("node_modules/vendor-lib/hooks/dist/hooks.mjs");
 
         let mut session = ShadowSession::new(&project).unwrap();
         let root = session.shadow_root().to_path_buf();
         // Nested below the root, like a workspace project mirror, so the
         // prune's top-level `node_modules` shortcut does not apply.
-        let shadow_pkg = root.join("site/node_modules/preact");
+        let shadow_pkg = root.join("site/node_modules/vendor-lib");
         let to = shadow_pkg.join("hooks/dist/hooks.mjs");
-        let rel = PathBuf::from("site/node_modules/preact/hooks/dist/hooks.mjs");
+        let rel = PathBuf::from("site/node_modules/vendor-lib/hooks/dist/hooks.mjs");
 
         // Tick N: staged as a copy.
         {
@@ -26003,8 +26719,8 @@ mod tests {
         for _ in 0..2 {
             let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
             assert!(link_ordinary_dependency_to_canonical_source(
-                &project.join("node_modules/preact"),
-                &project.join("node_modules/preact"),
+                &project.join("node_modules/vendor-lib"),
+                &project.join("node_modules/vendor-lib"),
                 &shadow_pkg,
                 &project,
                 &writer,

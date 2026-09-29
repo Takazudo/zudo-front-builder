@@ -13,7 +13,7 @@
 
 use std::process::Command;
 
-use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 /// Compile and run `zfb --version` with `ZFB_RELEASE_VERSION` set to a
 /// well-known test value and assert the output reflects that value.
@@ -30,12 +30,12 @@ fn version_stamp_from_env() {
     let tmp = tempfile::tempdir().expect("failed to create temp dir for target isolation");
     let isolated_target = tmp.path().join("target");
 
-    // Suppress build.rs binary downloads: point the override env vars at the
-    // binaries already staged in the workspace-relative crates/zfb/binaries/
-    // directory so build.rs stages those (no network fetch) instead of
+    // Suppress build.rs binary downloads: point the override env var at the
+    // esbuild binary already staged in crates/zfb/binaries/ so build.rs uses
+    // that file (no network fetch) instead of
     // attempting a download if run in an environment with no staged slot.
-    // build.rs requires override paths to be absolute (see BUILDING.md's
-    // "ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN override contract"), so these are
+    // build.rs requires the override path to be absolute (see BUILDING.md's
+    // "ZFB_ESBUILD_BIN override contract"), so this is
     // resolved from CARGO_MANIFEST_DIR rather than the old bare `"skip"`
     // sentinel, which relied on pre-#1772 behavior that never validated the
     // override value.
@@ -45,12 +45,6 @@ fn version_stamp_from_env() {
     } else {
         "esbuild"
     });
-    let tailwind_bin = binaries_dir.join(if cfg!(windows) {
-        "tailwindcss-v4.exe"
-    } else {
-        "tailwindcss-v4"
-    });
-
     // env!("CARGO") is the path to the cargo binary that invoked this test,
     // guaranteed to exist and match the toolchain in use.
     let output = Command::new(env!("CARGO"))
@@ -58,7 +52,6 @@ fn version_stamp_from_env() {
         .env("ZFB_RELEASE_VERSION", test_version)
         .env("CARGO_TARGET_DIR", &isolated_target)
         .env("ZFB_ESBUILD_BIN", &esbuild_bin)
-        .env("ZFB_TAILWIND_BIN", &tailwind_bin)
         .output()
         .expect("failed to spawn cargo run for version_stamp test");
 
@@ -74,11 +67,6 @@ fn version_stamp_from_env() {
     assert!(
         stdout.trim().contains(&expected),
         "expected --version to contain '{expected}', got: '{}'",
-        stdout.trim()
-    );
-    assert!(
-        stdout.contains(EXPECTED_TAILWIND_VERSION),
-        "expected --version to report embedded Tailwind CSS {EXPECTED_TAILWIND_VERSION}, got: '{}'",
         stdout.trim()
     );
     assert!(

@@ -80,7 +80,6 @@ cat > zfb.config.ts << 'EOF'
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
   outDir: "dist",
   publicDir: "public",
   collections: [

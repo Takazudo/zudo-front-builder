@@ -3,7 +3,7 @@ name = "zfb-css"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via lightningcss, hashed global asset emission"
+description = "zfb CSS pipeline: zudo-wind utility generation, CSS Modules via lightningcss, hashed global asset emission"
 
 [lib]
 
@@ -13,6 +13,7 @@ description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via 
 # adapter and the renderer / `ProductionAssetPipeline` consumer in
 # `zfb-build` without string duplication.
 zfb-types = { path = "../zfb-types" }
+zudo-wind = { path = "../zudo-wind" }
 
 # Workspace-shared helpers.
 anyhow = { workspace = true }
@@ -20,16 +21,10 @@ thiserror = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 
-# CSS pipeline crates (direct deps — not yet in workspace deps).
-lightningcss = "1.0.0-alpha.71"
+# CSS parser version is workspace-shared; hashing crates remain direct deps.
+lightningcss = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
-
-# `url()` attribution over the Tailwind `--map` inline sourcemap
-# (#2311/#2315): `sourcemap` parses the Source Map v3 payload (never
-# hand-roll VLQ), `base64` decodes the data-URL it arrives in.
-sourcemap = { workspace = true }
-base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

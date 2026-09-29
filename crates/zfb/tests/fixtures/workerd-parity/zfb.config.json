@@ -1,4 +1,3 @@
 {
-  "framework": "preact",
   "adapter": "@takazudo/zfb-adapter-cloudflare"
 }

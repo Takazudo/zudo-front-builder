@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // (unlike the activation shim `../client-router.js`, which runs `init()` on
 // import).
 import { ClientRouter } from "../client-router-component.js";
+import { isDescription } from "@takazudo/zfb/zudo-react";
 
 afterEach(() => {
   // Clean up any globalThis.__zfb mutations between tests.
@@ -65,22 +66,16 @@ describe("ClientRouter — prefetch disabled flag", () => {
     expect(nodes).toHaveLength(4);
   });
 
-  it("the zfb-prefetch-disabled meta node is a real JSX-runtime element (not a hand-rolled literal)", () => {
+  it("the zfb-prefetch-disabled meta node is an owned description (not a hand-rolled literal)", () => {
     (globalThis as { __zfb?: { prefetchDisabled?: boolean } }).__zfb = { prefetchDisabled: true };
     const nodes = ClientRouter();
     const prefetchMeta = nodes.find(
       (n) => n.type === "meta" && n.props["name"] === "zfb-prefetch-disabled",
     );
-    // Head nodes are minted via `jsx` from the per-project JSX runtime
-    // (react in this test's config; preact in a Preact project via the engine
-    // alias), NOT a hand-rolled `{ type, props, key, constructor: undefined }`
-    // literal. A real element carries the `$$typeof` element brand
-    // (`Symbol.for("react.element" | "react.transitional.element")`), which a
-    // plain literal cannot have. This is what makes the node render under React
-    // without error #31. The structural `.type`/`.props` surface is unchanged.
+    // The test resolver selects the owned JSX factory. A description has the
+    // contract brand and the same structural `.type`/`.props` surface.
     expect(prefetchMeta).toBeDefined();
-    const brand = (prefetchMeta as { $$typeof?: unknown } | undefined)?.$$typeof;
-    expect(typeof brand).toBe("symbol");
+    expect(isDescription(prefetchMeta)).toBe(true);
     expect(prefetchMeta?.type).toBe("meta");
     expect(prefetchMeta?.props["content"]).toBe("true");
   });
@@ -124,14 +119,13 @@ describe("ClientRouter — preserveHtmlAttrs", () => {
     expect(meta).toBeUndefined();
   });
 
-  it("the preserve-attrs meta is a real JSX-runtime element (carries the $$typeof brand)", () => {
+  it("the preserve-attrs meta is an owned description (carries the owned description brand)", () => {
     const nodes = ClientRouter({ preserveHtmlAttrs: ["data-theme"] });
     const meta = nodes.find(
       (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
     );
     expect(meta).toBeDefined();
-    const brand = (meta as { $$typeof?: unknown } | undefined)?.$$typeof;
-    expect(typeof brand).toBe("symbol");
+    expect(isDescription(meta)).toBe(true);
   });
 });
 
@@ -161,12 +155,11 @@ describe("ClientRouter — traverseRefetch", () => {
     expect(nodes).toHaveLength(4);
   });
 
-  it("the traverse-refetch meta is a real JSX-runtime element (carries the $$typeof brand)", () => {
+  it("the traverse-refetch meta is an owned description (carries the owned description brand)", () => {
     const nodes = ClientRouter({ traverseRefetch: true });
     const meta = nodes.find((n) => n.type === "meta" && n.props["name"] === "zfb-traverse-refetch");
     expect(meta).toBeDefined();
-    const brand = (meta as { $$typeof?: unknown } | undefined)?.$$typeof;
-    expect(typeof brand).toBe("symbol");
+    expect(isDescription(meta)).toBe(true);
   });
 });
 

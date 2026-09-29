@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zfb_build::bundler::{BundleMode, BundlerInput};
+use zfb_islands::{scan_islands_with_meta_and_first_party_root, FsResolver};
 
 use crate::config::Config;
 
@@ -256,7 +257,6 @@ pub(crate) fn assemble_bundler_input(
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
-        crate::render_pipeline::cfg_framework_to_render(config.framework),
         bundle_mode,
         project_root.join(".zfb-build"),
         content_snapshot_json,
@@ -379,7 +379,6 @@ pub(crate) fn assemble_bundler_input(
     // discovery failure is handled by the identical `css_fail_mode` policy.
     let css_worker_build_context = crate::commands::build::module_worker_build_context(
         matches!(bundle_mode, BundleMode::Production),
-        config.framework,
         config.bundle.as_ref(),
         &plugin_alias_entries,
         &plugin_virtual_modules,
@@ -514,8 +513,8 @@ pub(crate) fn assemble_bundler_input(
     // #676 — thread `bundle.mainFields` / `bundle.external` so hosts can make
     // the `--platform=neutral` page/SSR pass resolve (or externalize)
     // CJS-main-only deps (e.g. `msw` -> `path-to-regexp@6`).  main_fields
-    // applies to every framework when set; external is APPENDED so any
-    // framework-required externals are preserved.  Empty → byte-identical.
+    // applies to the owned runtime when set; external is appended to the
+    // bundler's required imports. Empty → byte-identical.
     bundler_input.main_fields = crate::config::resolve_bundle_main_fields(config.bundle.as_ref());
     bundler_input
         .external
@@ -541,6 +540,50 @@ pub(crate) fn assemble_bundler_input(
     // setup_registries so both paths produce identical alias resolution.
     bundler_input.plugin_alias_entries = plugin_alias_entries;
     bundler_input.plugin_virtual_modules = plugin_virtual_modules;
+    {
+        let mut entries = Vec::new();
+        let pages = project_root.join("pages");
+        if pages.is_dir() {
+            for entry in walkdir::WalkDir::new(&pages) {
+                let entry = entry?;
+                if entry.file_type().is_file()
+                    && entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&ext))
+                    && !zfb_types::is_page_sidecar_file(entry.path())
+                {
+                    entries.push(entry.path().to_path_buf());
+                }
+            }
+        }
+        entries.extend(
+            bundler_input
+                .injected_route_entrypoints
+                .iter()
+                .filter(|path| path.is_file())
+                .cloned(),
+        );
+        entries.sort();
+        entries.dedup();
+        let resolver = FsResolver::new()
+            .with_project_root(project_root)
+            .with_injected_route_roots(&bundler_input.injected_route_entrypoints)
+            .with_virtual_modules(project_root, &bundler_input.plugin_virtual_modules);
+        let first_party_root = zfb_types::first_party_root_for(project_root);
+        let (islands, _) = scan_islands_with_meta_and_first_party_root(
+            &entries,
+            &resolver,
+            Some(&first_party_root),
+        )
+        .context("owned island scanner preflight failed")?;
+        let names: std::collections::BTreeSet<_> = islands
+            .iter()
+            .map(|island| island.marker_name.clone())
+            .collect();
+        bundler_input.zudo_react_island_names = Some(names.into_iter().collect());
+    }
 
     // Sub #212 follow-up — pre-extract the embedded esbuild binary and pin
     // its path on the input so consumer projects without the

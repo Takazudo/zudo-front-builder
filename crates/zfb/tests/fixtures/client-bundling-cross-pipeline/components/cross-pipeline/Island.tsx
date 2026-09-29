@@ -31,7 +31,7 @@ export function CrossPipelineIsland() {
         nodeMode,
         modeTuple,
       ].join("|")}
-      onClick={() => new Worker(new URL("./worker.ts", import.meta.url), { type: "module" })}
+      on:click={() => new Worker(new URL("./worker.ts", import.meta.url), { type: "module" })}
     >
       ZFB_CROSS_PIPELINE_ISLAND
     </button>

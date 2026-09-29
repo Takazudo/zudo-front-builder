@@ -44,7 +44,7 @@
 // loaded synchronously on first fs-path use. Type-only imports below stay
 // at the top because TypeScript erases them at compile time — they leave
 // no runtime traces for esbuild to chase.
-import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "./zudo-react/jsx-runtime.js";
 
 import type * as NodeFs from "node:fs";
 import type * as NodePath from "node:path";
@@ -52,6 +52,7 @@ import type * as NodePath from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import type { ParsedFrontmatter } from "./frontmatter.js";
 import type { VNode } from "./jsx-types.js";
+import type { Description } from "./zudo-react/description.js";
 
 // Re-export the parser surface so existing `zfb/content` consumers that
 // import `parseFrontmatter` / `ParsedFrontmatter` from the content
@@ -226,20 +227,10 @@ export interface ContentProps {
 /**
  * Public JSX-element shape returned by [`CollectionEntry.Content`].
  *
- * Matches the structural shape that both Preact's and React's `jsx-runtime`
- * accept on either side of the boundary, mirroring the Island wrapper's
- * approach. Consumers should treat this as opaque — its only contract is
- * "renderable JSX value".
- *
- * Aliased as `JSX.Element` in the field signature: the JS runtime is
- * type-erased and the actual VNode shape is supplied by the framework
- * adapter at evaluation time.
+ * A description-shaped value produced by the owned JSX runtime. Consumers
+ * should treat this as opaque and renderable.
  */
-export type ContentElement = {
-  readonly type: string | ((...args: unknown[]) => unknown);
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly key: unknown;
-};
+export type ContentElement = Description;
 
 /**
  * Bridge contract published by the Rust-side `zfb-render` `Renderer` before
@@ -329,7 +320,7 @@ export type CollectionEntry<T = Record<string, unknown>> = {
    *
    * **Typed signature.** Returns `ContentElement` (a structural alias for
    * `JSX.Element`) so consumers can drop `<entry.Content components={...} />`
-   * into both React and Preact JSX without per-framework type setup.
+   * into owned JSX without additional type setup.
    *
    * @example
    *   const post = (await getCollection("blog"))[0];
@@ -462,9 +453,7 @@ function buildContentComponent(
         components: mergeMdxComponents(zfb?.mdxComponents, props.components),
       };
       // Trust the bridge to return a JSX-element-shaped value — we don't
-      // try to validate; both Preact and React JSX runtimes accept any
-      // structural `{ type, props, key }` object on either side of the
-      // boundary, and the renderer is the source of truth here.
+      // try to validate; the compiled renderer is the source of truth for its returned value.
       const rendered = renderer(mergedProps) as ContentElement;
       // Render-artifact instrumentation (epic #2421). Off by default and
       // never set outside `zfb build`, so the common path returns the
@@ -509,14 +498,7 @@ const REGION_ID_ATTR = "data-zfb-region-id";
  * `Content` rendered inside another emits properly nested pairs; the
  * extraction state machine matches identical-id pairs by nesting order.
  *
- * **Runtime-agnostic by construction.** `Fragment` / `jsxs` come from
- * the same `react/jsx-runtime` specifier `mintElement` already uses,
- * which the engine alias-rewrites to `preact/jsx-runtime` in Preact mode
- * (bundler.rs `--alias:react/jsx-runtime=preact/jsx-runtime`) — so both
- * modes get their own real Fragment, and neither imports the other's.
- * `jsxs` (not `jsx`) is the static-children form: it tells React the
- * child array is compiler-generated, which is what keeps the runtime
- * from demanding `key` props on the three children.
+ * Fragment and `jsxs` are imported directly from the owned JSX runtime.
  */
 function wrapInRenderRegion(regionId: string, rendered: ContentElement): ContentElement {
   return jsxs(Fragment, {
@@ -525,7 +507,7 @@ function wrapInRenderRegion(regionId: string, rendered: ContentElement): Content
       rendered,
       renderRegionMarker("end", regionId),
     ],
-  }) as unknown as ContentElement;
+  });
 }
 
 /** One `<template>` sentinel. See [`wrapInRenderRegion`]. */
@@ -537,17 +519,7 @@ function renderRegionMarker(edge: "start" | "end", regionId: string): ContentEle
 }
 
 /**
- * Mint a content element through the per-project JSX runtime.
- *
- * Calls `jsx` from `react/jsx-runtime` — alias-rewritten to
- * `preact/jsx-runtime` in Preact mode by the engine (bundler.rs ~2886),
- * native in React mode — so the returned value is a real element for
- * whichever framework the project configured. This replaces the previous
- * hand-rolled `{ type, props, key, constructor: undefined }` object literal
- * (the Preact diff-path sentinel): that shape made `preact-render-to-string`
- * treat it as a VNode, but React's renderer rejects it as a child with
- * error #31 ("Objects are not valid as a React child") because a real React
- * element carries `$$typeof: Symbol.for("react.element")`. `children` is
+ * Mint a content element through the owned JSX runtime. `children` is
  * passed inside `props` so a single child or an array both pass through
  * verbatim. Same migration as `Island` in this package. Kept private so
  * callers keep treating `ContentElement` / `ContentComponentElement` as
@@ -556,9 +528,8 @@ function renderRegionMarker(edge: "start" | "end", regionId: string): ContentEle
 function mintElement(type: string, props: Record<string, unknown>): ContentElement {
   // `jsx`'s `type` param is typed `ElementType` (string-literal intrinsic
   // tags or component types), which rejects an arbitrary runtime `string`.
-  // The tag is dynamic here, so cast to the factory's own first-param type —
-  // robust whether the engine aliases `jsx` to react or preact at build time.
-  return jsx(type as Parameters<typeof jsx>[0], props) as unknown as ContentElement;
+  // The tag is dynamic here, so cast to the owned factory's first-param type.
+  return jsx(type as Parameters<typeof jsx>[0], props);
 }
 
 /**
@@ -805,29 +776,20 @@ export function _relPathToSlug(relPath: string): string {
 // `defaultComponents`** so consumers can tree-shake-import a single component
 // (`import { ContentLink } from "zfb"`) without dragging in the whole map.
 //
-// Implementation note: components return the structural JSX-element shape
-// directly — same pattern as `Island`. This keeps the package
-// JSX-runtime-agnostic so it works under either Preact or React without
-// importing a runtime. Both `jsx-runtime` implementations accept the
-// `{ type, props, key }` object on either side of the boundary.
+// Overrides return descriptions minted by the owned JSX runtime.
 // ---------------------------------------------------------------------------
 
 /**
  * Public JSX-element shape returned by every override in [`defaultComponents`].
  *
  * Mirrors [`ContentElement`] and [`IslandElement`]: a structural alias for
- * `JSX.Element` so consumers can drop these overrides into both React and
- * Preact JSX without per-framework type setup.
+ * `JSX.Element` for owned JSX consumers.
  */
-export type ContentComponentElement = {
-  readonly type: string;
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly key: unknown;
-};
+export type ContentComponentElement = Description;
 
 /**
  * Props accepted by every default override. `children` and any extra
- * attributes (`className`, `id`, `href`, …) are passed through verbatim
+ * attributes (`class`, `id`, `href`, …) are passed through verbatim
  * to the underlying HTML element.
  */
 export interface ContentComponentProps {
@@ -838,10 +800,8 @@ export interface ContentComponentProps {
 /** Internal helper: build a structural JSX element of the given tag. */
 function buildOverrideElement(tag: string, props: ContentComponentProps): ContentComponentElement {
   const { children, ...rest } = props;
-  // Minted through the per-project JSX runtime (`mintElement`) so the
-  // override is a real element under both React and Preact — see the
-  // helper's docblock (zudo-doc#505; React error #31 rationale).
-  return mintElement(tag, { ...rest, children }) as unknown as ContentComponentElement;
+  // Minted through the owned JSX runtime.
+  return mintElement(tag, { ...rest, children });
 }
 
 /**

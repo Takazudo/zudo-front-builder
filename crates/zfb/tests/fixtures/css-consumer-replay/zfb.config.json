@@ -1,5 +1,21 @@
 {
-  "framework": "preact",
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "surface": "#eef3ff",
+        "fg": "#14213d"
+      },
+      "radii": {
+        "lg": "0.5rem"
+      }
+    },
+    "manifests": {
+      "zudo-doc": {
+        "path": "@takazudo/zudo-doc/wind.json"
+      }
+    }
+  },
   "codeHighlight": {
     "mode": "class",
     "defaultStylesheet": true

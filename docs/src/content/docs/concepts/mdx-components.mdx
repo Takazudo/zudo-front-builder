@@ -1,6 +1,6 @@
 ---
 title: MDX Components
-description: How MDX entries reach your pages as renderable React/Preact components, and how to override individual elements via the components prop.
+description: How MDX entries reach your pages as zudo-react components, and how to override individual elements via the components prop.
 sidebar_position: 2.5
 category: Concepts
 ---
@@ -154,7 +154,7 @@ Each override component receives only the attributes that the markdown pipeline 
 | `h2`–`h6`    | `id` (present when the heading-links plugin is active and has slugged the heading), `children` |
 | `h1`          | `children` only — `h1` is not slugged                |
 | `pre`         | `children` (wraps a `<code>` child)                  |
-| `code`        | `className="language-*"` (fenced blocks only; inline code receives `children` only) |
+| `code`        | `class="language-*"` (fenced blocks only; inline code receives `children` only) |
 | `ol`          | `start` (only when non-1), `children`                |
 | all others    | `children` only                                       |
 
@@ -216,7 +216,7 @@ description: What this starter contains and how the pieces fit together.
 ---
 
 Welcome to **basic-blog**. This is a working zfb site: a content collection,
-a handful of routes, one interactive island, and Tailwind for styling.
+a handful of routes, one interactive island, and a shared stylesheet.
 
 <Tip>
 
@@ -253,11 +253,11 @@ export default { Note, Tip, Important, Warning, Caution };
 
 Putting the five names there rather than in each route is what makes them work in **plain `.md`** posts too. The template enables `markdown.features.githubAlerts` in its `zfb.config.ts`, so a `> [!NOTE]` blockquote is rewritten into a `<Note>` element before rendering — and a PascalCase name missing from the map throws at render time. Wiring them per route would mean every route that renders a post has to remember all five.
 
-The components themselves are ordinary Preact (or React) components. `components/callout.tsx` exports one base component plus five named wrappers, each taking only `children`:
+The components themselves are ordinary synchronous zudo-react components. `components/callout.tsx` exports one base component plus five named wrappers, each taking only `children`:
 
 ```tsx
 // components/callout.tsx
-import type { ComponentChildren } from "preact";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
 type Variant = "note" | "tip" | "important" | "warning" | "caution";
 
@@ -269,7 +269,7 @@ const LABELS: Record<Variant, string> = {
   caution: "Caution",
 };
 
-export function Callout({ variant, children }: { variant: Variant; children: ComponentChildren }) {
+export function Callout({ variant, children }: { variant: Variant; children: Child }) {
   return (
     <aside data-component={variant} role="note">
       <p>{LABELS[variant]}</p>
@@ -278,7 +278,7 @@ export function Callout({ variant, children }: { variant: Variant; children: Com
   );
 }
 
-export function Note({ children }: { children: ComponentChildren }) {
+export function Note({ children }: { children: Child }) {
   return <Callout variant="note">{children}</Callout>;
 }
 

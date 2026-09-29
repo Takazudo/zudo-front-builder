@@ -44,7 +44,7 @@
 //!    they are skipped from `dist/`.
 //!
 //! 2. **Worker entry wrapping.** The bundler ([`zfb_build::bundle`])
-//!    emits an ESM bundle that exports `routes` + `hydrateIsland` but
+//!    emits an ESM bundle that exports `routes` but
 //!    not `default { fetch }`, while
 //!    [`zfb_build::renderer::render_all`] expects a Worker-shaped
 //!    bundle. Wrapping is its own sub-task; today the renderer call
@@ -81,18 +81,15 @@ use zfb_router::{Route, RouteKind, Segment};
 //
 // 1. `@takazudo/zfb` and `@takazudo/zfb-runtime` (sub #198): TypeScript source
 //    of the runtime packages, copied from the `packages/` workspace dirs.
-// 2. `preact`, `preact-render-to-string`, `hono` (sub #209): published trees
-//    copied from zfb's pnpm-installed `node_modules/.pnpm/<name>@<ver>*/` so
-//    consumers without their own node_modules can still resolve framework
-//    imports.
+// 2. `hono` (sub #209): the published tree copied from zfb's pnpm-installed
+//    `node_modules/.pnpm/<name>@<ver>*/` so consumers without their own
+//    node_modules can still resolve the runtime dependency.
 //
 // Both groups land as siblings under `$OUT_DIR/vendor/`:
 //
 //   $OUT_DIR/vendor/
 //     @takazudo/zfb/             (TS source + package.json)
 //     @takazudo/zfb-runtime/     (TS source + package.json)
-//     preact/                    (published dist/ + package.json + ...)
-//     preact-render-to-string/   (published dist/ + package.json + ...)
 //     hono/                      (published dist/ + package.json)
 //
 // `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<this dir>` so the
@@ -103,8 +100,8 @@ use zfb_router::{Route, RouteKind, Segment};
 // for esbuild resolution. The tempdir is kept alive for the duration of the
 // build by returning the `TempDir` handle alongside the path.
 
-/// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` + framework
-/// runtime packages, staged by `build.rs`).
+/// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` packages and
+/// Hono, staged by `build.rs`).
 ///
 /// `include_dir!` expands `$VAR` using the env var set via `cargo:rustc-env`.
 /// `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<path>` pointing at
@@ -128,11 +125,9 @@ static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
     let node_modules = dir.path().join("node_modules");
-    // Skip the top-level `bin/` entry — those are helper binaries (esbuild,
-    // tailwindcss-v4) staged by `stage_binaries_into_vendor` for
-    // `embedded_binary()` to extract on demand. They have no business inside
-    // a node_modules tree, and not extracting them avoids ~100 MB of wasted
-    // copies on every esbuild bundler invocation.
+    // Skip the top-level `bin/` entry: esbuild is staged there for
+    // `embedded_binary()` to extract on demand. It does not belong in
+    // node_modules, and skipping it avoids a copy on every bundle.
     extract_dir_with_prefix_filtered(&EMBEDDED_VENDOR, &node_modules, Path::new(""), &|p| {
         p.iter().next().map(|s| s == "bin").unwrap_or(false)
     })
@@ -151,12 +146,12 @@ pub(crate) fn embedded_node_modules_for_project(
     )
 }
 
-/// Extract a single embedded helper binary (esbuild, tailwindcss-v4, …) from
+/// Extract an embedded helper binary (esbuild) from
 /// the `bin/` subtree of [`EMBEDDED_VENDOR`] into a fresh tempdir so the TS
-/// config loader and the CSS engine can shell out to it without a
+/// config loader can shell out to it without a
 /// workspace-relative `crates/zfb/binaries/` slot.
 ///
-/// `name` is the binary's stem (e.g. `"esbuild"`, `"tailwindcss-v4"`). On
+/// `name` is the binary's stem (e.g. `"esbuild"`). On
 /// Windows this function additionally probes for `<name>.exe` so a caller
 /// passing `"esbuild"` resolves the Windows variant transparently.
 ///
@@ -186,7 +181,7 @@ pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
         anyhow::anyhow!(
             "embedded binary `{name}` not found under bin/ inside the embedded vendor snapshot. \
              Make sure `crates/zfb/build.rs::stage_binaries_into_vendor` ran during the last \
-             build (it copies crates/zfb/binaries/{{esbuild,tailwindcss-v4}} into \
+             build (it copies crates/zfb/binaries/esbuild/esbuild into \
              $OUT_DIR/vendor/bin/ so include_dir! picks them up)."
         )
     })?;
@@ -1519,15 +1514,6 @@ pub(crate) fn check_runtime_installed_with_overrides(
     .context("zfb runtime resolution check failed")
 }
 
-/// Convert the project's [`crate::config::Framework`] into the
-/// renderer/bundler-facing [`zfb_render::adapters::Framework`].
-pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapters::Framework {
-    match f {
-        crate::config::Framework::Preact => zfb_render::adapters::Framework::Preact,
-        crate::config::Framework::React => zfb_render::adapters::Framework::React,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2175,10 +2161,34 @@ mod tests {
         assert!(msg.contains("embedded vendor snapshot"), "{msg}");
     }
 
+    /// Assert the complete embedded root, including the target-specific binary.
+    #[test]
+    fn embedded_vendor_top_level_entries_match_expected_set() {
+        let mut actual: Vec<_> = EMBEDDED_VENDOR
+            .entries()
+            .iter()
+            .map(|entry| entry.path().to_str().expect("vendor entry is UTF-8"))
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(actual, ["@takazudo", "bin", "hono"]);
+
+        let bin = EMBEDDED_VENDOR
+            .get_dir("bin")
+            .expect("embedded bin directory");
+        let mut binaries: Vec<_> = bin
+            .entries()
+            .iter()
+            .map(|entry| entry.path().file_name().unwrap().to_str().unwrap())
+            .collect();
+        binaries.sort_unstable();
+        let exe_suffix = zfb_toolchain_pins::exe_suffix_for_target(env!("ZFB_BUILD_TARGET"));
+        assert_eq!(binaries, [format!("esbuild{exe_suffix}")]);
+    }
+
     /// Smoke-test that [`embedded_node_modules`] extracts a proper
     /// `node_modules/@takazudo/zfb/package.json`,
-    /// `node_modules/@takazudo/zfb-runtime/package.json`, and the framework
-    /// runtime packages (`preact`, `preact-render-to-string`, `hono`) layout
+    /// `node_modules/@takazudo/zfb-runtime/package.json`, and Hono's
+    /// `node_modules/hono/` layout
     /// that `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
     #[test]
     fn embedded_node_modules_extracts_runtime_layout() {
@@ -2200,6 +2210,30 @@ mod tests {
             nm_path.join("@takazudo/zfb/src/index.ts").exists(),
             "missing @takazudo/zfb/src/index.ts"
         );
+        let owned_entries = [
+            ("./zudo-react", "src/zudo-react/index.ts"),
+            ("./zudo-react/jsx-runtime", "src/zudo-react/jsx-runtime.ts"),
+            (
+                "./zudo-react/jsx-dev-runtime",
+                "src/zudo-react/jsx-dev-runtime.ts",
+            ),
+            ("./zudo-react/server", "src/zudo-react/server.ts"),
+            ("./zudo-react/client", "src/zudo-react/client.ts"),
+        ];
+        let sdk_package: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(nm_path.join("@takazudo/zfb/package.json")).unwrap(),
+        )
+        .unwrap();
+        for (key, source) in owned_entries {
+            assert!(
+                nm_path.join("@takazudo/zfb").join(source).exists(),
+                "missing embedded {source}"
+            );
+            assert_eq!(
+                sdk_package["exports"][key]["default"],
+                format!("./{source}")
+            );
+        }
         assert!(
             nm_path.join("@takazudo/zfb-runtime/src/index.ts").exists(),
             "missing @takazudo/zfb-runtime/src/index.ts"
@@ -2225,15 +2259,13 @@ mod tests {
              export condition (issue #1298); got:\n{runtime_pkg_json}"
         );
 
-        // Sub #209 — framework runtime package roots must exist alongside.
-        for pkg in ["preact", "preact-render-to-string", "hono"] {
-            let pkg_json = nm_path.join(pkg).join("package.json");
-            assert!(
-                pkg_json.exists(),
-                "missing {pkg}/package.json in extracted layout: {}",
-                pkg_json.display()
-            );
-        }
+        // Sub #209 — Hono's runtime dependency root must exist alongside.
+        let hono_package_json = nm_path.join("hono/package.json");
+        assert!(
+            hono_package_json.exists(),
+            "missing hono/package.json in extracted layout: {}",
+            hono_package_json.display()
+        );
 
         // Verify check_runtime_installed sees the embedded runtime via the
         // exe-dir path (the nm_path is the node_modules dir; its parent is
@@ -2279,54 +2311,6 @@ mod tests {
                 "extracted esbuild binary should be executable: mode = {mode:o}"
             );
         }
-        drop(handle);
-    }
-
-    /// #3159 — `build.rs::stage_binaries_into_vendor` stamps
-    /// `ZFB_EMBEDDED_TAILWIND_SHA256` as the SHA-256 (hex) of the STAGED
-    /// tailwind binary, the same bytes `include_dir!` later embeds and
-    /// [`embedded_binary`] extracts. Pinning that the env constant matches
-    /// the extracted binary's own hash is what lets
-    /// `TailwindSubprocessConfig::with_embedded_binary_and_digest` skip
-    /// re-hashing the ~76 MB file at runtime (`zfb_css::engine`'s
-    /// `oxide_warmup_key`) without ever trusting a stale or mismatched
-    /// value.
-    #[test]
-    fn embedded_tailwind_digest_env_matches_extracted_binary_sha256() {
-        use sha2::{Digest, Sha256};
-
-        let digest_env = env!("ZFB_EMBEDDED_TAILWIND_SHA256");
-        assert_eq!(
-            digest_env.len(),
-            64,
-            "digest must be 64 hex characters: {digest_env:?}"
-        );
-        assert!(
-            digest_env
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-            "digest must be lowercase hex: {digest_env:?}"
-        );
-
-        let (handle, path) =
-            embedded_binary("tailwindcss-v4").expect("embedded tailwindcss-v4 binary");
-        let mut hasher = Sha256::new();
-        std::io::copy(
-            &mut std::fs::File::open(&path).expect("open extracted tailwind binary"),
-            &mut hasher,
-        )
-        .expect("hash extracted tailwind binary");
-        let digest_hex: String = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-
-        assert_eq!(
-            digest_env, digest_hex,
-            "env!(\"ZFB_EMBEDDED_TAILWIND_SHA256\") must equal the SHA-256 of the bytes \
-             embedded_binary(\"tailwindcss-v4\") extracts"
-        );
         drop(handle);
     }
 
@@ -2892,7 +2876,7 @@ export default function PostPage({ title, params }: Props) {
             content_collections: vec![zfb_build::ContentCollectionSpec::new("blog", &blog_dir)],
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
-            framework: zfb_render::adapters::Framework::Preact,
+            zudo_react_island_names: Some(vec![]),
             define_vars: std::collections::BTreeMap::new(),
             public_env_vars: std::collections::HashMap::new(),
             tsconfig_paths: BTreeMap::new(),

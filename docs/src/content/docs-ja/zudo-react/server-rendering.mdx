@@ -1,0 +1,73 @@
+---
+title: サーバーレンダリング
+description: ページ全体をエスケープ済みの HTML にレンダリングし、明示的な島ルートの内側にだけ専用マーカーを追加します。
+sidebar_position: 5
+---
+
+## ページをレンダリングする
+
+サーバーエントリは **@takazudo/zfb/zudo-react/server** です。**renderToString** は同期的な記述ツリーを HTML にレンダリングします。文字列、数値、空の値、配列、記述、スカラー値を持つリアクティブな子を受け付けます。レンダラーへ直接渡した文字列はテキストとしてエスケープされます。
+
+~~~tsx
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+
+const html = renderToString(
+  <html>
+    <head><title>Example</title></head>
+    <body><main><h1>Hello</h1></main></body>
+  </html>
+);
+~~~
+
+この呼び出しで文書全体を生成します。レンダラーは doctype を追加しません。テキストではアンパサンドと山括弧、属性ではさらに二重引用符をエスケープします。prop の挿入順を保って属性を二重引用符で囲み、template 要素には開始タグと終了タグを出力し、head の終了タグは小文字でそのまま出力します。HTML の空要素には終了タグがなく、子や rawHtml は使えません。SVG の空要素以外は開始タグと終了タグを出力します。
+
+静的な出力では、明示的な島の境界の外にランタイムのコメントや属性は付きません。通常のコンポーネント、配列、Fragment の境界でも区切りや空白は増えません。このため、ハイドレーション用のプロトコルマーカーなしでページをレンダリングできます。
+
+zfb は最上位の非同期ページ関数を待ってからレンダラーを呼べます。一方、レンダリングツリー内の非同期コンポーネントや Promise は ZR_ASYNC_COMPONENT で拒否され、ランタイムは入れ子の処理を待ちません。
+
+## 島を明示的に指定する
+
+レンダリングしたサブツリーをブラウザで有効化する場合は **islandRoot** を使います。これは不活性なラッパー記述を作り、コンポーネントのセットアップと prop のシリアライズはラッパーをレンダリングするときにだけ行われます。
+
+~~~tsx
+import { islandRoot, renderToString } from "@takazudo/zfb/zudo-react/server";
+
+const identity = { component: "Counter", build: "build-7" };
+const root = islandRoot(<Counter />, {
+  identity,
+  when: "visible",
+  fallback: <p>Loading the counter</p>
+});
+
+const html = renderToString(<main>{root}</main>);
+~~~
+
+ラッパーは div です。コンポーネントマーカーは data-zfb-island または data-zfb-island-skip-ssr のどちらか一つだけです。さらに data-when、data-zfb-transport="json/1"、data-zfb-protocol="zudo-react/1"、空ではない data-zfb-build の識別子、props が空でも data-props を持ちます。属性はこの順に出力され、media モードの場合だけ data-when と transport の間に data-media が入ります。data-when のデフォルトは load で、idle、visible、media も使えます。media には空でない data-media クエリーが必要です。skip-SSR オプションは専用マーカーを選び、子を実行せずに identity と props を検証し、内部のハイドレーションマーカーなしで fallback をレンダリングします。
+
+コンポーネント名とビルドの識別子は、生成された zfb メタデータとクライアントの RootOptions に一致する必要があります。displayName が衝突するコンポーネント、無名コンポーネント、未登録のコンポーネントは島の子にできません。スキャナーへの登録、スケジュール、永続化には既存の zfb の島連携を使ってください。詳しくは[島のガイド](../concepts/islands.mdx)を参照してください。
+
+ラッパーは zfb が保持します。zudo-react のマーカーはラッパー内の範囲だけを示すので、周囲の文書にマーカーは付きません。各ルートは独立したマーカー番号を持ち、作成者がグローバルな要素 ID や独自のコンポーネントレジストリーを用意する必要はありません。
+
+## 島の内部サブツリーをレンダリングする
+
+呼び出し元がラッパー属性を自分で用意する場合、**renderToString** は島の identity オプションも受け付けます。この場合、ラッパーは出力せず、同じ内部範囲マーカーを出力します。一致するコンテナーのメタデータを用意するのは呼び出し元の責任です。
+
+~~~tsx
+const inner = renderToString(<Counter />, { island: identity });
+~~~
+
+このモードで独自のラッパープロトコルを作らないでください。SDK と連携する島では、[島 API ガイド](../api/island.mdx)で説明する zfb のサポート済み境界を使います。
+
+## Props は JSON で転送する
+
+**serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。複数回参照される値は値としてシリアライズされます。undefined、循環参照、関数、symbol、bigint、非有限数、クラスインスタンス、ランタイムの記述、signal、computed 値は拒否されます。
+
+検証は JSON シリアライズより前に行われます。配列には欠けがなく、追加の名前付きプロパティや symbol プロパティも付けられません。レコードは通常のものでも null プロトタイプでもよく、自身が持つ列挙可能な文字列キーのデータプロパティだけが許可されます。アクセサー、列挙不可のフィールド、独自の toJSON、symbol、プロトタイプに影響するキーは、呼び出されることなく拒否されます。props は境界を越えて生きた signal の同一性を運びません。クライアントのセットアップ中に signal を作ってください。
+
+## 関連ページ
+
+- [概要](./overview.mdx)
+- [ハイドレーション](./hydration.mdx)
+- [フォーム](./forms.mdx)
+- [島](../concepts/islands.mdx)
+- [島 API](../api/island.mdx)

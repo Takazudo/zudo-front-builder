@@ -24,14 +24,14 @@ export default function HomePage({ posts }: Props) {
   return (
     <DefaultLayout
       title="basic-blog · a zfb starter"
-      description="A small, complete zfb blog: content collections, markdown features, an island, and Tailwind."
+      description="A small, complete zfb blog: content collections, markdown features, an island, and zudo-wind."
     >
       <h1 class="text-3xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
         basic-blog
       </h1>
       <p class="mt-4 text-lg leading-relaxed">
         A small but complete zfb site. It has a content collection, a set of markdown features
-        turned on, one client island, and Tailwind for styling — enough to show the shape of a real
+        turned on, one client island, and zudo-wind for styling — enough to show the shape of a real
         project without hiding it behind abstractions.
       </p>
       <p class="mt-4">
@@ -61,7 +61,7 @@ export default function HomePage({ posts }: Props) {
                 </p>
               ) : null}
               <time
-                dateTime={post.data.date}
+                datetime={post.data.date}
                 class="mt-2 block text-xs text-neutral-500 tabular-nums"
               >
                 {post.data.date}

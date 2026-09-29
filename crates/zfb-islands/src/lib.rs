@@ -15,11 +15,6 @@
 //!    Rust-native bundler (placeholder lives in [`future_rust_native`],
 //!    analog of `zfb_css::native_engine`).
 //!
-//! 3. Server-side HTML rewrite that turns each rendered island's
-//!    marker-bracketed output into the `<div data-zfb-island="…"
-//!    data-props="…">` wrapper the client-side hydration runtime walks
-//!    (Sub 3 — see [`hydration`]).
-//!
 //! ## Layering
 //!
 //! Like `zfb-css`, this crate deliberately does **not** depend on
@@ -33,15 +28,13 @@ pub mod client_scripts;
 pub mod esbuild;
 pub mod future_rust_native;
 pub mod html_tree;
-pub mod hydration;
 pub mod manifest;
 pub mod scanner;
 
 pub use bundler::{
-    build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
-    BundleMode, BundleOutput, BundleResource, ClientBundler, FrameworkKind, Island, IslandBundle,
-    IslandsChunk, IslandsResource, ModuleId, ModuleWorkerBundleEntry, PerIslandBundleOutput,
-    ProductionIslandsAsset,
+    build_production_islands_asset, bundle_link_href, BundleChunk, BundleConfig, BundleMode,
+    BundleOutput, BundleResource, ClientBundler, Island, IslandsChunk, IslandsResource, ModuleId,
+    ModuleWorkerBundleEntry, ProductionIslandsAsset,
 };
 pub use client_scripts::{
     build_production_client_scripts, build_production_client_scripts_with_workers,
@@ -50,17 +43,12 @@ pub use client_scripts::{
     CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use esbuild::{
-    hash_8, is_zfb_islands_temp_file, render_island_entry_source, render_runtime_entry_source,
-    render_shared_bundle_entry_source, ClientScriptBundleOutput, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+    hash_8, is_zfb_islands_temp_file, render_shared_bundle_entry_source, ClientScriptBundleOutput,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, IslandsBundleBuildIdentityError,
+    StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
-pub use hydration::{
-    hydration_script_tag, inject_runtime_script_into_head, islands_runtime_script_tag,
-    rewrite_islands, rewrite_islands_in_attr_skeleton, HeadInjection, IslandDescriptor,
-    IslandRewriteError, IslandSkeletonRewriteError, WhenHint,
-};
 pub use manifest::{is_same_package_duplicate, manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
     is_bare_specifier, scan_islands, scan_islands_with_meta,

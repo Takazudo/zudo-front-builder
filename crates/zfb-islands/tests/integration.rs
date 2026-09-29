@@ -17,9 +17,12 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, Island, Manifest,
-    ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island,
+    IslandsBundleBuildIdentityError, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
+    StageAuditPolicy, WorkspacePackageImportEdge,
 };
+
+const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
 fn island(name: &str, path: &str) -> Island {
     Island::new(name, PathBuf::from(path))
@@ -42,6 +45,83 @@ fn native_bundler_returns_not_implemented_error() {
 }
 
 #[test]
+fn public_owned_bundle_requires_real_identity_before_emitting_assets() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outdir = tmp.path().join("dist");
+    let island = island("Counter", "components/counter.tsx");
+    // A missing executable makes an accidental subprocess attempt fail with
+    // the wrong error; identity validation must happen first.
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_binary_path("/nonexistent/zfb-esbuild-identity-regression"),
+    );
+    let missing = BundleConfig::default().with_outdir(&outdir);
+    let err = bundler
+        .bundle(std::slice::from_ref(&island), &missing)
+        .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<IslandsBundleBuildIdentityError>(),
+        Some(&IslandsBundleBuildIdentityError::Missing)
+    );
+    assert!(!outdir.exists(), "missing token must not emit assets");
+
+    for invalid in [
+        "",
+        "test-build",
+        "0123456789abcde",
+        "0123456789abcdef0",
+        "0123456789abcdeF",
+    ] {
+        let config = BundleConfig::default()
+            .with_zudo_react_build(Some(invalid.to_string()))
+            .with_outdir(&outdir);
+        let err = bundler
+            .bundle(std::slice::from_ref(&island), &config)
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<IslandsBundleBuildIdentityError>(),
+            Some(&IslandsBundleBuildIdentityError::Invalid),
+            "invalid token {invalid:?}"
+        );
+        assert!(!outdir.exists(), "invalid token must not emit assets");
+    }
+
+    // Mock mode with empty output echoes the generated entry source. The
+    // public path must carry the supplied token into both identity sites.
+    let bundler =
+        EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+    let valid = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(&outdir);
+    let output = bundler
+        .bundle(&[island], &valid)
+        .expect("valid owned bundle");
+    let glue = String::from_utf8(output.bytes).expect("JS source");
+    assert_eq!(
+        glue.matches(&format!("build: \"{TEST_BUILD_TOKEN}\""))
+            .count(),
+        2
+    );
+    assert!(!glue.contains("test-build"));
+    assert!(
+        !outdir.exists(),
+        "bundler returns bytes without emitting assets"
+    );
+}
+
+#[test]
+fn client_router_only_bundle_allows_missing_owned_identity() {
+    let bundler =
+        EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+    let config = BundleConfig::default().with_client_router(true);
+    let output = bundler.bundle(&[], &config).expect("router-only bundle");
+    let source = String::from_utf8(output.bytes).expect("JS source");
+    assert!(source.contains("@takazudo/zfb-runtime/client-router"));
+    assert!(!source.contains("mountIslands"));
+    assert!(!source.contains("test-build"));
+}
+
+#[test]
 fn subprocess_bundler_mock_short_circuits_command() {
     // Use the mock-output escape hatch so this test does not require the
     // esbuild binary to be present.
@@ -49,7 +129,9 @@ fn subprocess_bundler_mock_short_circuits_command() {
     let cfg =
         EsbuildSubprocessConfig::default().with_mock_output("export const Counter = () => null;\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out: BundleOutput = bundler
         .bundle(&[island("Counter", "components/counter.tsx")], &bundle_cfg)
         .expect("mock bundler should succeed");
@@ -91,7 +173,9 @@ fn bundle_filename_is_stable_regardless_of_payload() {
     let make = |payload: &str, root: &Path| {
         let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
         let bundler = EsbuildSubprocessBundler::new(cfg);
-        let bundle_cfg = BundleConfig::default().with_outdir(root);
+        let bundle_cfg = BundleConfig::default()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(root);
         bundler
             .bundle(&[island("X", "components/x.tsx")], &bundle_cfg)
             .expect("bundle")
@@ -115,7 +199,9 @@ fn bundle_output_layout_is_stable_assets_islands_js() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
@@ -157,7 +243,9 @@ fn module_ids_list_preserves_island_order() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(
             &[
@@ -179,6 +267,7 @@ fn asset_url_uses_configured_base_url() {
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path())
         .with_base_url("https://cdn.example.com");
     let out = bundler
@@ -203,7 +292,9 @@ fn bundle_output_bytes_carries_js_in_memory() {
     let payload = "// bundled islands JS\nexport const x = 1;\n";
     let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
     let bundler = EsbuildSubprocessBundler::new(cfg);
-    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::default()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
@@ -226,9 +317,10 @@ fn bundle_output_bytes_carries_js_in_memory() {
 fn subprocess_bundler_against_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
-    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
-    // `render` from `preact` (see `shared_bundle_keeps_islands_with_no_top_level_side_effect`
-    // below) — esbuild needs those specifiers resolvable via node_modules.
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and client helpers
+    // from `@takazudo/zfb/zudo-react/client` (see
+    // `shared_bundle_keeps_islands_with_no_top_level_side_effect` below) —
+    // esbuild needs those specifiers resolvable via node_modules.
     stage_minimal_node_modules(tmp.path());
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
@@ -239,7 +331,9 @@ fn subprocess_bundler_against_real_binary() {
     let entry = tmp.path().join("entry.js");
     std::fs::write(&entry, "export const Counter = () => null;\n").expect("write entry");
 
-    let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(tmp.path());
     let out = bundler
         .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
@@ -289,9 +383,9 @@ fn subprocess_bundler_against_real_binary() {
 fn shared_bundle_keeps_islands_with_no_top_level_side_effect() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
-    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
-    // `render` from `preact` — esbuild needs those specifiers resolvable via
-    // node_modules.
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and client helpers
+    // from `@takazudo/zfb/zudo-react/client` — esbuild needs those specifiers
+    // resolvable via node_modules.
     stage_minimal_node_modules(tmp.path());
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
@@ -324,6 +418,7 @@ export default function NoEffectFn() { return null; }
     .expect("write no-effect");
 
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path())
         // Disable minification so we can grep the output by source-name
         // identifiers rather than mangled symbols.
@@ -353,9 +448,10 @@ export default function NoEffectFn() { return null; }
 
 /// Stage a minimal `node_modules` under `root` that satisfies the bare
 /// imports the synthesized shared-bundle entry emits (`@takazudo/zfb/runtime`
-/// and `preact`), so the real-esbuild splitting tests below are hermetic
-/// (no dependency on the workspace's own install). Only the symbols the
-/// entry imports are stubbed.
+/// and `@takazudo/zfb/zudo-react` entry points), so the real-esbuild splitting
+/// tests below are hermetic (no dependency on the workspace's own install).
+/// The runtime entry points are stubbed, alongside a neutral third-party
+/// package fixture.
 fn stage_minimal_node_modules(root: &Path) {
     let nm = root.join("node_modules");
 
@@ -363,7 +459,7 @@ fn stage_minimal_node_modules(root: &Path) {
     std::fs::create_dir_all(&zfb_runtime).unwrap();
     std::fs::write(
         zfb_runtime.join("package.json"),
-        r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+        r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -371,16 +467,26 @@ fn stage_minimal_node_modules(root: &Path) {
         "export function mountIslands() {}\n",
     )
     .unwrap();
-
-    let preact = nm.join("preact");
-    std::fs::create_dir_all(&preact).unwrap();
     std::fs::write(
-        preact.join("package.json"),
-        r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+        zfb_runtime.join("zudo-react.js"),
+        "export function h() {}\n",
     )
     .unwrap();
     std::fs::write(
-        preact.join("index.js"),
+        zfb_runtime.join("zudo-react-client.js"),
+        "export function hydrate() {} export function mount() {}\n",
+    )
+    .unwrap();
+
+    let vendor_lib = nm.join("vendor-lib");
+    std::fs::create_dir_all(&vendor_lib).unwrap();
+    std::fs::write(
+        vendor_lib.join("package.json"),
+        r#"{"name":"vendor-lib","version":"10.0.0","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        vendor_lib.join("index.js"),
         "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
     )
     .unwrap();
@@ -418,8 +524,9 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
     let app_dir = root.path().join("app");
     std::fs::create_dir_all(&app_dir).unwrap();
     // The synthesized shared-bundle entry imports `mountIslands` from
-    // `@takazudo/zfb/runtime` and Preact's hydration glue — stage those
-    // the same way `subprocess_bundler_against_real_binary` does.
+    // `@takazudo/zfb/runtime` and client helpers from
+    // `@takazudo/zfb/zudo-react/client` — stage them the same way
+    // `subprocess_bundler_against_real_binary` does.
     stage_minimal_node_modules(&app_dir);
 
     // A genuine pnpm-workspace-style sibling package living OUTSIDE
@@ -457,7 +564,9 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
             .with_working_dir(&app_dir)
             .with_stage_audit(policy),
     );
-    let bundle_cfg = BundleConfig::production().with_outdir(app_dir.join("dist"));
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(app_dir.join("dist"));
 
     let err = bundler
         .bundle(&[Island::new("Counter", component)], &bundle_cfg)
@@ -554,6 +663,7 @@ fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir
     // `islands_shadow_preserve_symlinks_is_load_bearing` below for the
     // same load-bearing contract in the glob-shadow tests).
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(app_dir.join("dist"))
         .with_preserve_symlinks(true);
 
@@ -606,6 +716,7 @@ fn splitting_emits_chunk_for_dynamic_import() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -671,6 +782,7 @@ fn splitting_emits_chunk_for_dynamic_import() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp2.path()),
     );
     let cfg2 = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp2.path().join("dist"))
         .with_minify(false);
     let out2 = bundler2
@@ -709,6 +821,7 @@ fn no_dynamic_import_yields_single_file() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -771,6 +884,7 @@ export default function ResourceIsland() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
     let out = bundler
@@ -1088,6 +1202,7 @@ fn islands_shadow_raw_import_bundles_text() {
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
     let config = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"))
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -1171,6 +1286,7 @@ fn islands_shadow_alias_raw_import_bundles_text() {
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
     let config = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"))
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -1331,6 +1447,7 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
         EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
     );
     let config = BundleConfig::dev()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(&dev_assets_root)
         .with_sourcemap(false)
         .with_module_workers(vec![worker_entry]);
@@ -1426,7 +1543,6 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
             false,
             &std::collections::BTreeMap::new(),
             &define,
-            "preact",
         )
         .with_output_semantics(false, false);
         let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
@@ -1442,6 +1558,7 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
         );
         let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_define(define)
@@ -1532,6 +1649,7 @@ fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
         );
         let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_module_workers(vec![worker_entry]);
@@ -1611,6 +1729,7 @@ fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
                 .with_virtual_modules(virtuals),
         );
         let config = BundleConfig::dev()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_outdir(root.join("dist"))
             .with_sourcemap(false)
             .with_module_workers(vec![
@@ -1686,6 +1805,7 @@ fn island_css_import_bundles_without_error() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -1748,6 +1868,7 @@ fn island_module_css_import_bundles_without_error() {
         EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
     );
     let cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(tmp.path().join("dist"))
         .with_minify(false);
 
@@ -2180,6 +2301,7 @@ fn islands_shadow_expands_glob_and_executes() {
         EsbuildSubprocessConfig::default().with_working_dir(proj_root.to_path_buf()),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_minify(false)
         .with_preserve_symlinks(true);
@@ -2249,6 +2371,7 @@ fn islands_shadow_preserve_symlinks_is_load_bearing() {
         EsbuildSubprocessConfig::default().with_working_dir(proj.path().to_path_buf()),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_minify(false)
         .with_preserve_symlinks(false);
@@ -2276,16 +2399,9 @@ fn node_available() -> bool {
 // In-project entry temp-file hygiene (#1970, fixed in #1976) — real-esbuild
 // -----------------------------------------------------------------------------
 
-/// Acceptance test for issue #1970: after a successful multi-entry bundle the
-/// project root must carry no `.zfb-esbuild-entry-*.tsx` — neither this run's
-/// own entries nor one stranded by an earlier zfb process that was killed
-/// mid-bundle.
-///
-/// `bundle_per_island` is used because it is genuinely multi-entry: it drives
-/// `bundle_one_entry` once per island plus once for the runtime bundle, so a
-/// handle leaked on any single pass (rather than only on the last one) still
-/// fails this test. The shared-bundle entry point runs afterwards against the
-/// same working dir for the production-wired path's own coverage.
+/// Acceptance test for issue #1970: after a successful shared bundle the
+/// project root must carry no `.zfb-esbuild-entry-*.tsx`, including one
+/// stranded by an earlier process killed mid-bundle.
 ///
 /// The stranded file is aged past `ORPHANED_ENTRY_GRACE` because the sweep
 /// deliberately spares recent entries — a concurrent `zfb dev` in the same
@@ -2321,16 +2437,14 @@ fn working_dir_is_clean_after_multi_entry_bundle() {
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
-    let bundle_cfg = BundleConfig::production().with_outdir(out_dir.path());
+    let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+        .with_outdir(out_dir.path());
     let islands = [
         Island::new("Alpha", alpha.clone()),
         Island::new("Beta", beta.clone()),
     ];
 
-    let per_island = bundler
-        .bundle_per_island(&islands, FrameworkKind::Preact, &bundle_cfg)
-        .expect("per-island bundle");
-    assert_eq!(per_island.islands.len(), 2);
     let shared = bundler
         .bundle(&islands, &bundle_cfg)
         .expect("shared bundle");
@@ -2492,6 +2606,7 @@ fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker(
             )]),
     );
     let bundle_cfg = BundleConfig::production()
+        .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(out_dir.path())
         .with_module_workers(vec![worker_entry]);
     let islands = [Island::new("Alpha", island_path.clone())];
@@ -2518,10 +2633,10 @@ fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker(
 
 /// Issue #2111, Scenario B: a dedicated client-script-only proof. Extending
 /// Scenario A's fixture is NOT sufficient to prove #2109's fix — Scenario-A-
-/// style tests exercise `bundle()`/`bundle_per_island()`, which already
+/// style tests exercise `bundle()`, which already
 /// called the sweep before this epic (only `bundle_client_script_file_with_workers`
 /// was missing the call, per #2109's Part 4). This test makes that call the
-/// FIRST operation — never preceded by `bundle()` or `bundle_per_island()` —
+/// FIRST operation — never preceded by `bundle()` —
 /// so it directly proves the newly-wired call site reaps strays for a
 /// project that never runs an islands build at all.
 #[test]
@@ -2601,7 +2716,7 @@ fn client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_is
     let config = BundleConfig::production().with_outdir(out_dir.path());
 
     // The FIRST operation in this test is a real client-script-only bundle
-    // call — never `bundle()`, never `bundle_per_island()`, and no islands
+    // call — never `bundle()`, and no islands
     // operation precedes it anywhere in this test. This is the only direct
     // proof that the call site #2109 wired into
     // `bundle_client_script_file_with_workers` actually reaps strays for a

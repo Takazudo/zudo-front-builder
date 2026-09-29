@@ -5,26 +5,22 @@ import { setContentSnapshot } from "@takazudo/zfb/content";
 import { createPageRouter } from "../router.js";
 import type { PageDefinition, PageModule } from "../router.js";
 import type { ContentSnapshot } from "../snapshot.js";
-import type { FrameworkAdapter } from "../framework.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Stub framework adapter. The real production path uses
- * `preact-render-to-string` (or `react-dom/server`); the runtime is
- * agnostic by design, so unit tests use a deterministic stub that
- * serializes the vnode in a stable way. This lets us pin the exact
- * output bytes for the determinism test.
- */
-function stubFramework(): FrameworkAdapter {
-  return {
-    renderToString(vnode: unknown): string {
-      return serializeVnode(vnode);
-    },
-  };
-}
+const rendererStub = vi.hoisted(() => ({
+  override: undefined as undefined | ((node: unknown) => string),
+}));
+vi.mock("@takazudo/zfb/zudo-react/server", () => ({
+  renderToString(node: unknown): string {
+    return rendererStub.override ? rendererStub.override(node) : serializeVnode(node);
+  },
+}));
+afterEach(() => {
+  rendererStub.override = undefined;
+});
 
 function serializeVnode(node: unknown): string {
   if (node === null || node === undefined || node === false) return "";
@@ -133,14 +129,14 @@ describe("createPageRouter", () => {
 
   it("returns a function that takes a Request and returns a Promise<Response>", () => {
     const { pages, contentSnapshot } = buildFixture();
-    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const router = createPageRouter({ pages, contentSnapshot });
     expect(typeof router).toBe("function");
     expect(router.length).toBe(1);
   });
 
   it("routes a GET to a registered page and returns 200 + text/html with the rendered body", async () => {
     const { pages, contentSnapshot } = buildFixture();
-    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const router = createPageRouter({ pages, contentSnapshot });
 
     const res = await router(new Request("http://test.local/"));
     expect(res.status).toBe(200);
@@ -152,7 +148,7 @@ describe("createPageRouter", () => {
 
   it("routes a second registered path independently", async () => {
     const { pages, contentSnapshot } = buildFixture();
-    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const router = createPageRouter({ pages, contentSnapshot });
 
     const res = await router(new Request("http://test.local/blog/hello"));
     expect(res.status).toBe(200);
@@ -163,7 +159,7 @@ describe("createPageRouter", () => {
 
   it("returns 404 for an unregistered route", async () => {
     const { pages, contentSnapshot } = buildFixture();
-    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const router = createPageRouter({ pages, contentSnapshot });
     const res = await router(new Request("http://test.local/missing"));
     expect(res.status).toBe(404);
   });
@@ -182,7 +178,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/api/echo", module: () => Promise.resolve(apiPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
     });
     const res = await router(
       new Request("http://test.local/api/echo", { method: "POST", body: "{}" }),
@@ -209,7 +204,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/api/post-only", module: () => Promise.resolve(methodPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
     });
     const res = await router(new Request("http://test.local/api/post-only", { method: "POST" }));
     expect(res.status).toBe(201);
@@ -228,7 +222,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/feed.xml", module: () => Promise.resolve(xmlPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
     });
     const res = await router(new Request("http://test.local/feed.xml"));
     expect(res.status).toBe(200);
@@ -237,7 +230,7 @@ describe("createPageRouter", () => {
 
   it("registers the supplied ContentSnapshot with zfb/content (in-memory bridge)", async () => {
     const { pages, contentSnapshot } = buildFixture();
-    createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    createPageRouter({ pages, contentSnapshot });
 
     // After init, `getCollection("blog")` should resolve from memory
     // rather than touching `fs`. We import lazily so the import fans
@@ -252,7 +245,7 @@ describe("createPageRouter", () => {
 
   it("returns an empty array for an unknown collection name (snapshot path)", async () => {
     const { pages, contentSnapshot } = buildFixture();
-    createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    createPageRouter({ pages, contentSnapshot });
     const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection("nope");
     expect(items).toEqual([]);
@@ -274,7 +267,6 @@ describe("createPageRouter", () => {
           ],
         },
       },
-      framework: stubFramework(),
     });
     void router; // not used here; we only care that the snapshot was registered
     const { getCollection } = await import("@takazudo/zfb/content");
@@ -302,7 +294,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const res = await router(new Request("http://test.local/blog/hello"));
@@ -328,7 +319,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const res = await router(new Request("http://test.local/blog/hello"));
@@ -355,7 +345,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(ssrPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const res = await router(new Request("http://test.local/blog/hello"));
@@ -371,7 +360,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const res = await router(new Request("http://test.local/blog/missing"));
@@ -386,7 +374,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(brokenPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const res = await router(new Request("http://test.local/blog/hello"));
@@ -400,7 +387,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/x", module: () => Promise.resolve(broken as unknown as PageModule) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
     });
     const res = await router(new Request("http://test.local/x"));
     expect(res.status).toBe(500);
@@ -425,7 +411,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
     });
     const res = await router(new Request("http://test.local/throws"));
     expect(res.status).toBe(500);
@@ -439,20 +424,18 @@ describe("createPageRouter", () => {
 
   it("returns 500 with the real error message when renderToString throws during SSR", async () => {
     // Covers the second half of the guarded path: errors thrown inside
-    // opts.framework.renderToString (e.g. preact-render-to-string choking
+    // opts.framework.renderToString (e.g. an SSR renderer choking
     // on malformed markup like the ruby <rt>/<rb> shape from #600) must
     // also surface rather than being swallowed.
     const page: PageModule = {
       default: () => ({ type: "ruby", props: { children: "broken" }, key: null }),
     };
+    rendererStub.override = () => {
+      throw new Error("renderToString: unexpected element shape");
+    };
     const router = createPageRouter({
       pages: [{ route: "/ruby-page", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: {
-        renderToString: () => {
-          throw new Error("renderToString: unexpected element shape");
-        },
-      },
     });
     const res = await router(new Request("http://test.local/ruby-page"));
     expect(res.status).toBe(500);
@@ -479,7 +462,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
       includeErrorStack: false,
     });
     const res = await router(new Request("http://test.local/throws"));
@@ -500,7 +482,6 @@ describe("createPageRouter", () => {
     const router = createPageRouter({
       pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
       contentSnapshot: { collections: {} },
-      framework: stubFramework(),
       includeErrorStack: true,
     });
     const res = await router(new Request("http://test.local/throws"));
@@ -515,7 +496,7 @@ describe("createPageRouter", () => {
   it("successful renders are unaffected after adding the render try/catch", async () => {
     // Happy-path guard: the try/catch must not interfere with 200 renders.
     const { pages, contentSnapshot } = buildFixture();
-    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const router = createPageRouter({ pages, contentSnapshot });
     const res = await router(new Request("http://test.local/"));
     expect(res.status).toBe(200);
     const body = await res.text();
@@ -541,13 +522,12 @@ describe("createPageRouter — SSR doctype prepend (issue #530)", () => {
     contentType?: string,
   ): ReturnType<typeof createPageRouter> {
     const page: PageModule = {
-      default: () => null,
+      default: () => renderedHtml,
       ...(contentType ? { contentType } : {}),
     };
     return createPageRouter({
       pages: [{ route: "/", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => renderedHtml },
     });
   }
 
@@ -647,8 +627,8 @@ describe("createPageRouter — determinism", () => {
    */
   it("two routers built from the same input produce byte-equal responses", async () => {
     const fx = buildFixture();
-    const r1 = createPageRouter({ ...fx, framework: stubFramework() });
-    const r2 = createPageRouter({ ...fx, framework: stubFramework() });
+    const r1 = createPageRouter({ ...fx });
+    const r2 = createPageRouter({ ...fx });
 
     const [b1, b2] = await Promise.all([
       r1(new Request("http://test.local/")).then((r) => r.text()),
@@ -665,7 +645,7 @@ describe("createPageRouter — determinism", () => {
 
   it("a single router is idempotent under repeat requests for the same route", async () => {
     const fx = buildFixture();
-    const router = createPageRouter({ ...fx, framework: stubFramework() });
+    const router = createPageRouter({ ...fx });
     const a = await router(new Request("http://test.local/blog/hello")).then((r) => r.text());
     const b = await router(new Request("http://test.local/blog/hello")).then((r) => r.text());
     const c = await router(new Request("http://test.local/blog/hello")).then((r) => r.text());
@@ -691,7 +671,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(slugPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/blog/:slug");
@@ -710,7 +689,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [{ route: "/tags/:tag", module: () => Promise.resolve(asyncPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/tags/:tag");
@@ -724,7 +702,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/no-such/:slug");
@@ -739,7 +716,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [{ route: "/about", module: () => Promise.resolve(staticPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/about");
@@ -759,7 +735,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [{ route: "/broken/:slug", module: () => Promise.resolve(brokenPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/broken/:slug");
@@ -790,7 +765,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
         { route: "/blog/:slug", module: () => Promise.resolve(slugPage) },
       ],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/blog/:slug");
@@ -813,7 +787,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const router = createPageRouter({
       pages: [{ route: "/r/:x", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/r/:x");
@@ -857,7 +830,6 @@ describe("createPageRouter — __paths__ endpoint", () => {
           ],
         },
       },
-      framework: { renderToString: () => "" },
     });
 
     const encoded = encodeURIComponent("/blog/:slug");
@@ -886,7 +858,6 @@ describe("createPageRouter — __paths__ shadow warning", () => {
       createPageRouter({
         pages: [{ route, module: () => Promise.resolve({ default: () => null }) }],
         contentSnapshot: { collections: {} },
-        framework: { renderToString: () => "" },
       });
 
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -904,7 +875,6 @@ describe("createPageRouter — __paths__ shadow warning", () => {
     const router = createPageRouter({
       pages: [{ route: "/__paths__/foo", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -933,7 +903,6 @@ describe("createPageRouter — __paths__ shadow warning", () => {
       createPageRouter({
         pages: [{ route, module: () => Promise.resolve({ default: () => null }) }],
         contentSnapshot: { collections: {} },
-        framework: { renderToString: () => "" },
       });
 
       expect(warnSpy).not.toHaveBeenCalled();
@@ -973,7 +942,6 @@ describe("createPageRouter — optional catchall (issue #812)", () => {
     const router = createPageRouter({
       pages: [{ route: "/docs/:slug{.+}?", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
     return { router, received: () => received };
   }
@@ -1023,7 +991,6 @@ describe("createPageRouter — optional catchall (issue #812)", () => {
     const router = createPageRouter({
       pages: [{ route: "/docs/:slug{.+}", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
     const bare = await router(new Request("http://test.local/docs"));
     expect(bare.status).toBe(404);
@@ -1039,7 +1006,6 @@ describe("createPageRouter — optional catchall (issue #812)", () => {
     const router = createPageRouter({
       pages: [{ route: "/docs/:slug{.+}?", module: () => Promise.resolve(page) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
     const res = await router(new Request("http://test.local/docs"));
     expect(res.status).toBe(404);
@@ -1077,7 +1043,6 @@ describe("createPageRouter — paths() invocation-count memo (issue #974)", () =
     const router = createPageRouter({
       pages: [{ route: "/blog/:slug", module: () => Promise.resolve(blogPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     // The Rust build pipeline calls /__paths__ first to enumerate routes.
@@ -1112,7 +1077,6 @@ describe("createPageRouter — paths() invocation-count memo (issue #974)", () =
     const router = createPageRouter({
       pages: [{ route: "/retry/:slug", module: () => Promise.resolve(flakyPage) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     // First call throws → 500.
@@ -1145,12 +1109,10 @@ describe("createPageRouter — paths() invocation-count memo (issue #974)", () =
     const routerA = createPageRouter({
       pages: [{ route: "/a/:slug", module: () => Promise.resolve(modA) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
     const routerB = createPageRouter({
       pages: [{ route: "/a/:slug", module: () => Promise.resolve(modB) }],
       contentSnapshot: { collections: {} },
-      framework: { renderToString: () => "" },
     });
 
     // Drive both routers — each should invoke paths() exactly once.

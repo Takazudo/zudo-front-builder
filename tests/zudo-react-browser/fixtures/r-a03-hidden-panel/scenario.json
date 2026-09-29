@@ -1,0 +1,7 @@
+{
+  "page": "r-a03-hidden-panel",
+  "component": "component.tsx",
+  "props": {},
+  "mode": "hydrate",
+  "stylesheet": "page.css"
+}

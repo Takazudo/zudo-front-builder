@@ -1,5 +1,7 @@
 /**
- * Playwright configuration for the built-site-smoke L4 suite (issue #1401).
+ * Playwright configuration for the built-site-smoke L4 suite (issues #1401,
+ * #3291). The added identity, lifecycle, navigation and runtime specs use the
+ * same already-built fixture output and existing Chromium server/port.
  *
  * Structural guard for the #1385 bug class (an emitted client bundle that
  * throws at hydration) — the one gap every other tier leaves open:

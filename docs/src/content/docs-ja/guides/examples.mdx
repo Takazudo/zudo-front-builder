@@ -36,6 +36,12 @@ zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属�
 で扱っているパターンです。残る 1 つの `password-gate` はアダプタを一切インストールせず、
 静的ビルドの前段に自分で書いた Worker を置いています。
 
+<Note title="このデモは zfb 2.x 向けです">
+
+これらの外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](./migrating-to-v3.mdx) を参照してください。
+
+</Note>
+
 | サンプル | レンダリング | バインディングとシークレット | スタイリング | リンク |
 | --- | --- | --- | --- | --- |
 | [AI Summarizer](/ja/docs/recipes/ai-summarizer) | SSG と `prerender = false` の API ルート 1 つ（アダプタ） | Workers AI `AI`、名前付き環境 `ai` にのみ宣言 | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-ai-summarizer) · [デモ](https://zfb-example-ai-summarizer.takazudomodular.com/) |

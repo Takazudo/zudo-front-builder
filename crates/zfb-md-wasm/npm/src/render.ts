@@ -38,6 +38,5 @@ export type {
   CodeHighlightMode,
   CodeHighlightOptions,
   MarkdownFeaturesConfig,
-  JsxRuntime,
   HighlightRole,
 } from "./types.js";

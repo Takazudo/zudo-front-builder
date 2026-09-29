@@ -71,7 +71,7 @@ const crateName = "zfb-md-wasm";
 // wasm-bindgen requires an EXACT version match between this CLI and the
 // `wasm-bindgen` crate resolved in the workspace Cargo.lock -- pinned here,
 // following crates/zfb-toolchain-pins' "pin + verify at use-time" pattern
-// used for esbuild/wrangler/tailwindcss. Bump procedure: update this
+// used for esbuild and wrangler. Bump procedure: update this
 // constant to match `grep -A1 '^name = "wasm-bindgen"$' Cargo.lock`, then
 // `cargo install wasm-bindgen-cli --version <new> --locked --force`.
 const EXPECTED_WASM_BINDGEN_VERSION = "0.2.121";

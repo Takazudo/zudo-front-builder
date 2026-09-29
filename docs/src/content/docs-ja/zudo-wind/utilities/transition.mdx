@@ -1,0 +1,51 @@
+---
+title: トランジション
+description: トランジション対象のプロパティ群と組み込みのタイミング初期値を選びます。
+sidebar_position: 55
+generated: true
+---
+
+トランジション対象のプロパティ群と組み込みのタイミング初期値を選びます。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## transition
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.transition` |
+| クラスパターン | `transition` or `transition-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"transition-property","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `6` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `transition` (`35`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `transition-property`, `transition-duration`, `transition-timing-function` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `null` | `"all"` |
+| `keyword` | `"all"` | `"all"` |
+| `keyword` | `"none"` | `"none"` |
+| `keyword` | `"colors"` | `"color,background-color,border-color,text-decoration-color,fill,stroke"` |
+| `keyword` | `"opacity"` | `"opacity"` |
+| `keyword` | `"transform"` | `"transform,translate,rotate,scale"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `transition-property` | `resolved` | `null` |
+| `transition-duration` | `transitionDuration` | `null` |
+| `transition-timing-function` | `transitionTimingFunction` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `transition-colors` | `transition-property: color,background-color,border-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |

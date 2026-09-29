@@ -4,7 +4,7 @@
 //! passed — and inverted here in Wave 2 (#1997), which implemented the fix.
 //! After epic #1799 a sibling mirror-root edit correctly *delivers* a
 //! filesystem event to a real `zfb dev` session; what #1819 was about is
-//! that for a `.md`/`.mdx` file the event did not rerun the Tailwind content
+//! that for a `.md`/`.mdx` file the event did not rerun the utility source
 //! scan, so a utility class authored only in a sibling markdown file never
 //! reached the served dev CSS without a restart. Dev-loop only; prod builds
 //! were never affected (`discover_css_source_files`,
@@ -27,7 +27,7 @@
 //! `zfb_build::orchestrator::tests::in_root_content_edit_outside_mirror_roots_does_not_rerun_css`.
 //!
 //! ## Fixture discipline (modeled on
-//! `dev_sibling_watch_1678_e2e.rs::e2e_dev_sibling_tailwind_utility_class_refreshes_served_css`)
+//! `dev_sibling_watch_1678_e2e.rs::e2e_dev_sibling_wind_utility_class_refreshes_served_css`)
 //!
 //! - The sibling directory is claimed ONLY through a tsconfig wildcard alias
 //!   (`SiblingMirrorPlan` claim source (b), which is purely alias-based per
@@ -39,17 +39,11 @@
 //!   with the eventual #1997 fix fully reverted (see
 //!   `l-lessons-dev-watcher-narrowing`'s "a second dynamic-watch registry"
 //!   entry).
-//! - The project carries its own `.gitignore` excluding `.zfb-build/` —
-//!   Tailwind v4's automatic content detection respects `.gitignore`, and
-//!   dev's own intermediate SSR bundle under `.zfb-build/` would otherwise
-//!   leak the class string into auto-detection and mask whether the mirror
-//!   root's CSS scan did anything (same confound documented at
-//!   `sibling_css_module_command_layer_build.rs:649-662`). The same
-//!   `.gitignore` excludes `.zfb-dev-*.log` for the identical reason: this
-//!   file's own `spawn_dev` writes the dev server's stdout/stderr INTO the
-//!   project root, i.e. inside that same auto-detection scan root, so a
-//!   utility class that ever appeared in a dev log line would be picked up
-//!   just as the bundle would.
+//! - The project carries its own `.gitignore` excluding generated build files
+//!   and dev logs. The wind source plan independently excludes generated
+//!   directories, so those files cannot substitute for the sibling source
+//!   under test. The log exclusion also keeps test diagnostics out of the
+//!   project root's authored source surface.
 //! - Proof the FS event genuinely arrives (the whole point of #1819 is that
 //!   delivery already worked and only the CSS rerun was missing): this test
 //!   waits for a `[zfb-timing] tick(): kinds=[<mdx filename>:...]` line under
@@ -86,27 +80,11 @@ use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
-/// Locate a tailwindcss v4 binary, mirroring
-/// `dev_sibling_watch_1678_e2e.rs::locate_tailwind` /
-/// `sibling_css_module_command_layer_build.rs`'s resolution
-/// (`ZFB_TAILWIND_BIN` env var, else the workspace-staged
-/// `crates/zfb/binaries/tailwindcss-v4` slot).
-fn locate_tailwind() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ZFB_TAILWIND_BIN") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let slot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tailwindcss-v4");
-    slot.is_file().then_some(slot)
-}
-
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 const BOOT_CONTENT_DEADLINE: Duration = Duration::from_secs(60);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(30);
 // The affirmative assertion polls until the recompiled stylesheet carries
-// the new class. Generous: the tick has to rerun the Tailwind subprocess
+// the new class. Generous: the tick has to rerun the wind compiler
 // over the whole content set before the served bytes change.
 const CSS_REFRESH_DEADLINE: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -152,9 +130,8 @@ impl DevSession {
 }
 
 /// Spawn `zfb dev --port 0` with `ZFB_DEV_TIMING=1` (surfaces both the
-/// `watch-extra registered:` and `tick():` signals) and both binaries
-/// pinned.
-fn spawn_dev(root: &Path, esbuild: &Path, tailwind: &Path) -> DevSession {
+/// `watch-extra registered:` and `tick():` signals) and esbuild pinned.
+fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
@@ -166,7 +143,6 @@ fn spawn_dev(root: &Path, esbuild: &Path, tailwind: &Path) -> DevSession {
         .arg("0")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", esbuild)
-        .env("ZFB_TAILWIND_BIN", tailwind)
         .env("ZFB_DEV_TIMING", "1")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
@@ -282,7 +258,7 @@ async fn wait_for_tick_mentioning(session: &DevSession, filename: &str) -> Strin
 /// Build a fresh pnpm-workspace fixture: a HOST project reaching a SIBLING
 /// directory (`lib/ushared-mdx`) through a tsconfig wildcard alias — the
 /// same claim shape as
-/// `dev_sibling_watch_1678_e2e.rs::write_tailwind_sibling_dev_fixture`, but
+/// `dev_sibling_watch_1678_e2e.rs::write_wind_sibling_dev_fixture`, but
 /// the sibling here contains ONLY an `.mdx` file, never a `.tsx`/`.ts`
 /// module, and nothing anywhere in the fixture imports it.
 fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
@@ -299,29 +275,18 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
     let project = ws_root.join("sub-packages/mdxhost");
     fs::create_dir_all(project.join("pages")).expect("create pages/");
 
-    // Same `.zfb-build/`-leak confound as
-    // `sibling_css_module_command_layer_build.rs:649-662` and
-    // `dev_sibling_watch_1678_e2e.rs`'s Scenario E fixture, restated for
-    // this DEV session: without this, dev's own generated SSR bundle under
-    // `.zfb-build/` could leak the new utility class into Tailwind's
-    // automatic content detection and mask whether the mirror-root scan
-    // under test did anything.
-    //
-    // `.zfb-dev-*.log` is excluded for the identical reason: `spawn_dev`
-    // writes the dev server's stdout/stderr into the project root, inside
-    // the same auto-detection scan root, and a utility class echoed into a
-    // log line would be picked up exactly like the `.zfb-build/` bundle.
+    // Exclude generated bundles and dev logs from this fixture's authored
+    // source surface. Wind's source plan also excludes generated files.
     fs::write(
         project.join(".gitignore"),
         ".zfb-build/\ndist/\nnode_modules/\n.zfb-dev-*.log\n",
     )
     .expect("write project .gitignore");
 
-    // No `tailwind` key -> CSS (and the Tailwind utility scan) is enabled by
-    // default.
+    // Select wind explicitly with a marker token for the served CSS.
     fs::write(
         project.join("zfb.config.json"),
-        "{\n  \"framework\": \"preact\"\n}\n",
+        "{\n  \n  \"wind\": { \"tokens\": { \"colors\": { \"marker\": \"#123456\" } } }\n}\n",
     )
     .expect("write zfb.config.json");
 
@@ -344,7 +309,7 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
 
     let sibling = ws_root.join("lib/ushared-mdx");
     fs::create_dir_all(&sibling).expect("create lib/ushared-mdx");
-    // Boot state: no Tailwind utility class the assertion below looks for
+    // Boot state: no wind utility class the assertion below looks for
     // exists anywhere in the fixture yet. Plain markdown prose, no JSX —
     // the bug is about the FILE'S PathClass (Content, by extension), not
     // about whether the content happens to look like JSX.
@@ -358,21 +323,14 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
 }
 
 /// Issue #1819 (epic #1995, fix landed in #1997): editing a
-/// sibling-mirror-root `.mdx` file to introduce a brand-new Tailwind utility
+/// sibling-mirror-root `.mdx` file to introduce a brand-new wind utility
 /// class refreshes the served `/assets/styles.css` without a `zfb dev`
 /// restart. The filesystem event for that edit is separately proven to reach
 /// the dev orchestrator (the `tick():` timing line) so a delivery regression
 /// can never be misread as a CSS-rerun regression.
 ///
-/// Needs the Tailwind binary in addition to esbuild — skips cleanly when
-/// unavailable.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: tailwindcss v4 + esbuild — cargo test -p zfb --test \
-            mirror_css_scan_mdx_e2e -- --ignored --exact \
-            sibling_mdx_utility_class_reaches_dev_css_scan \
-            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
-            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH). Written RED \
-            in #1996, inverted in #1997 — see epic #1995 / issue #1819."]
+#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
 async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
@@ -382,19 +340,12 @@ async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
         );
         return;
     };
-    let Some(tailwind) = locate_tailwind() else {
-        eprintln!(
-            "[mirror_css_scan_mdx] no tailwindcss v4 binary available; skipping. \
-             Set ZFB_TAILWIND_BIN or stage crates/zfb/binaries/tailwindcss-v4."
-        );
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("mirror-css-scan-mdx fixture tempdir");
     let (project, _nm_handle) = write_sibling_mdx_dev_fixture(workspace.path());
     let sibling_mdx = workspace.path().join("lib/ushared-mdx/notes.mdx");
 
-    let mut session = spawn_dev(&project, &esbuild, &tailwind);
+    let mut session = spawn_dev(&project, &esbuild);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -433,6 +384,10 @@ async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
         }
     };
     assert!(
+        boot_css.contains("--zw-color-marker"),
+        "wind marker missing: {boot_css}"
+    );
+    assert!(
         !boot_css.contains("3c9a7b"),
         "boot stylesheet must not already contain the sibling-only utility class before \
          the edit below introduces it\n{}",
@@ -441,10 +396,8 @@ async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
 
     // THE EDIT — a sibling `.mdx` file (`PathClass::Content`, the
     // classification the #1288 `mark_css` rule skipped) gains a NEW
-    // Tailwind-shaped utility-class token, used nowhere else in the
-    // fixture. MDX content doesn't need to be real JSX for the Tailwind
-    // automatic content scanner to pick up an arbitrary-value class token —
-    // it scans raw text for candidate class-like substrings.
+    // wind utility-class token, used nowhere else in the fixture. The wind
+    // extractor reads a static class attribute from MDX without a JSX render.
     fs::write(
         &sibling_mdx,
         "# Sibling notes\n\n<span class=\"bg-[#3c9a7b]\">edited</span>\n",
@@ -467,7 +420,7 @@ async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
 
     // THE ASSERTION (inverted from #1996's RED form by #1997) — the tick
     // now marks CSS for a `PathClass::Content` path under a registered
-    // `css_mirror_root`, so the Tailwind content scan reruns and the served
+    // `css_mirror_root`, so the wind source scan reruns and the served
     // stylesheet picks up the sibling-only utility class, restart-free.
     let started = Instant::now();
     loop {

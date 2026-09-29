@@ -41,9 +41,9 @@
 //!   orchestrator's surface lets `zfb-build` compile cheaply for tests
 //!   and for callers that only need orchestration types.
 //! - The CSS / islands crates ship trait-based plug points
-//!   (`CssEngine`, `ClientBundler`) plus subprocess wrappers around
-//!   third-party CLIs (Tailwind, esbuild). Pulling them in transitively
-//!   would force every consumer of `zfb-build` to pay that cost.
+//!   (`CssEngine`, `ClientBundler`) and the esbuild subprocess wrapper.
+//!   Pulling them in transitively would force every consumer of `zfb-build`
+//!   to pay that cost.
 //! - Tests need fakes that count invocations without spawning binaries.
 //!
 //! So the public API takes function-typed inputs. The bin crate
@@ -68,7 +68,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use zfb_graph::PageId;
 
-use crate::plan::RebuildPlan;
+use crate::plan::{CssChangeSet, RebuildPlan};
 
 pub mod dev;
 pub mod orchestrator;
@@ -260,16 +260,20 @@ pub type PageRenderer = Arc<
         + 'static,
 >;
 
-/// Function that runs the CSS pipeline once and returns whether the
-/// emitted asset is new (i.e. whether the asset URL changed).
-///
-/// `true` here triggers a re-render of any page that embeds the CSS asset
-/// URL — but the orchestrator does *not* automatically schedule that
-/// re-render in this version. Production builds that need URL stability
-/// in HTML manage that explicitly through
-/// [`prod::ProductionAssetPipeline`]'s [`AssetEmitter`] mechanism instead
-/// of this opaque-bool runner.
-pub type CssRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
+/// The request passed to a dev CSS runner for one watcher tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CssPassRequest {
+    /// Whether the planner explicitly requested a full CSS rerun.
+    pub rerun_requested: bool,
+    /// Watcher path hints for incremental CSS consumers.
+    pub changes: CssChangeSet,
+}
+
+/// Function that runs the dev CSS pipeline and returns whether the
+/// generation should trigger a CSS reload. A successful CSS emit returns
+/// `true` even though its dev asset URL stays stable; a tick with no CSS
+/// payload returns `false`.
+pub type CssRunner = Arc<dyn Fn(&CssPassRequest) -> Result<bool> + Send + Sync + 'static>;
 
 /// Information about a freshly-emitted islands bundle.
 ///

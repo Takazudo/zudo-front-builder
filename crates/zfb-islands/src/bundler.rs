@@ -178,6 +178,10 @@ impl BundleMode {
 /// Bundle configuration handed to [`ClientBundler::bundle`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
+    /// Identity shared with the owned server entry before either bundle is emitted.
+    /// Required for a nonempty owned islands bundle; zfb produces a 16-character
+    /// lowercase hex digest and the public bundler rejects missing or invalid values.
+    pub zudo_react_build: Option<String>,
     /// Production / development mode for compile-time environment defines.
     pub mode: BundleMode,
 
@@ -197,24 +201,6 @@ pub struct BundleConfig {
     /// Public base URL prefix used by [`bundle_link_href`].
     /// Default: `"/"`.
     pub base_url: String,
-
-    /// JSX import source the esbuild subprocess should target via
-    /// `--jsx=automatic --jsx-import-source=<value>`. Mirrors
-    /// `zfb_render::adapters::Adapter::jsx_import_source()` and
-    /// `zfb_build::bundler::BundleConfig::jsx_import_source`.
-    ///
-    /// Why this matters: without `--jsx=automatic --jsx-import-source=…`
-    /// esbuild's default classic JSX transform emits bare
-    /// `React.createElement(…)` / `React.Fragment` references in the
-    /// bundled island code. When host components have been migrated to
-    /// `preact/compat` for hooks (no `React` namespace import), those
-    /// references are dangling and the bundle throws
-    /// `ReferenceError: React is not defined` at mount time
-    /// (issue #151 / zudolab/zudo-doc#1355 Wave 8). Setting this
-    /// field to `"preact"` (the default, matching
-    /// [`FrameworkKind::Preact`]) routes the JSX transform through
-    /// `preact/jsx-runtime` so no `React` symbol is ever emitted.
-    pub jsx_import_source: String,
 
     /// When `true`, the islands bundler injects a side-effect
     /// `import "@takazudo/zfb-runtime/client-router";` into the synthetic
@@ -289,12 +275,12 @@ pub struct BundleConfig {
 impl Default for BundleConfig {
     fn default() -> Self {
         Self {
+            zudo_react_build: None,
             mode: BundleMode::Development,
             minify: false,
             sourcemap: true,
             outdir: PathBuf::from("dist"),
             base_url: "/".to_string(),
-            jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
             client_router: false,
             preserve_symlinks: false,
             loaders: BTreeMap::new(),
@@ -305,6 +291,10 @@ impl Default for BundleConfig {
 }
 
 impl BundleConfig {
+    pub fn with_zudo_react_build(mut self, build: Option<String>) -> Self {
+        self.zudo_react_build = build;
+        self
+    }
     /// Production preset: minify on, sourcemap off.
     pub fn production() -> Self {
         Self {
@@ -341,17 +331,6 @@ impl BundleConfig {
     /// Toggle sourcemap emission (chainable).
     pub fn with_sourcemap(mut self, sourcemap: bool) -> Self {
         self.sourcemap = sourcemap;
-        self
-    }
-
-    /// Override the JSX import source the esbuild subprocess targets via
-    /// `--jsx-import-source=<value>` (chainable). Use the framework's
-    /// `jsx_import_source` accessor (e.g.
-    /// `FrameworkKind::Preact.jsx_import_source()`,
-    /// `zfb_render::adapters::Adapter::jsx_import_source()`) to derive
-    /// the value rather than hardcoding a literal at the call site.
-    pub fn with_jsx_import_source(mut self, jsx_import_source: impl Into<String>) -> Self {
-        self.jsx_import_source = jsx_import_source.into();
         self
     }
 
@@ -593,133 +572,6 @@ pub trait ClientBundler {
     /// Bundle `islands` according to `config`. Must be deterministic for a
     /// given `(islands, config)` pair.
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput>;
-}
-
-/// One per-island bundle output, produced by
-/// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
-///
-/// Per-island bundles land at the stable path
-/// `{outdir}/islands/island-{i}.js` (0-based sequential index) so the
-/// runtime can dynamic-import each island's JS independently. The
-/// sequential index avoids filename collisions when multiple source files
-/// export identically-named functions (same `marker_name`). Sharing is
-/// the bundler's concern — at this layer we just record one entry per
-/// island. The content-hash field is still computed and exposed (see
-/// [`IslandBundle::hash`]) for dev-mode change detection and for
-/// downstream consumers that wrap this output through
-/// `ProductionAssetPipeline`, but it is **not** baked into the
-/// filename or URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IslandBundle {
-    /// Component export name. Mirrors [`Island::component_name`] of the
-    /// input island so callers can pair entries by name.
-    pub component_name: String,
-    /// Output file path on disk — the stable sequential form
-    /// `dist/islands/island-{i}.js` (0-based index into the input slice).
-    pub asset_path: PathBuf,
-    /// Public URL the runtime should `import()` from — the stable sequential
-    /// form `/islands/island-{i}.js` (0-based index into the input slice).
-    pub asset_url: String,
-    /// 8-char content hash (lowercase hex) of the bundled JS. Reported
-    /// for dev-mode change detection and for downstream consumers
-    /// that delegate hashing to `ProductionAssetPipeline`. The hash is
-    /// **not** part of the on-disk filename or URL — those are
-    /// stable-named per the S0 single-source-of-truth-for-hashing
-    /// contract.
-    pub hash: String,
-}
-
-/// Result of a successful per-island bundle pass.
-///
-/// In addition to the per-island bundles, the per-island pipeline emits
-/// a small **runtime** bundle — the framework-agnostic shim that walks
-/// `[data-zfb-island]` / `[data-zfb-island-skip-ssr]` elements in the
-/// DOM, dynamic-imports the matching per-island bundle, and dispatches
-/// to `hydrate` / `render`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PerIslandBundleOutput {
-    /// One entry per island, in the same order the input slice provided.
-    pub islands: Vec<IslandBundle>,
-    /// Runtime bundle file path — the stable form
-    /// `dist/islands/islands-runtime.js`. Hashing, when needed, is
-    /// applied later by `ProductionAssetPipeline`.
-    pub runtime_asset_path: PathBuf,
-    /// Runtime bundle public URL — the `<script type="module" src="…">`
-    /// the page-router HTML pass injects into `<head>`. Stable form:
-    /// `/islands/islands-runtime.js`.
-    pub runtime_asset_url: String,
-}
-
-/// Which JS framework the islands pipeline should target.
-///
-/// This is intentionally a small enum local to `zfb-islands` so the
-/// crate stays free of a `zfb-render` dependency (mirroring the
-/// `Adapter` contract from there). The orchestrator wires the two
-/// together at the seam where it constructs the bundler.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FrameworkKind {
-    /// Preact — bare `preact` + `preact/jsx-runtime`.
-    #[default]
-    Preact,
-    /// React 18+ — `react` + `react-dom/client`.
-    React,
-}
-
-impl FrameworkKind {
-    /// Stable lowercase name. Mirrors `zfb_render::Adapter::name()`.
-    pub fn name(self) -> &'static str {
-        match self {
-            FrameworkKind::Preact => "preact",
-            FrameworkKind::React => "react",
-        }
-    }
-
-    /// JSX import source for esbuild's automatic JSX transform.
-    /// Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
-    /// the bundler passes this to esbuild as
-    /// `--jsx-import-source=<value>` so the compiled output routes
-    /// through `<value>/jsx-runtime` instead of the classic
-    /// `React.createElement` shape.
-    pub fn jsx_import_source(self) -> &'static str {
-        match self {
-            FrameworkKind::Preact => "preact",
-            FrameworkKind::React => "react",
-        }
-    }
-
-    /// Recover the [`FrameworkKind`] from a `jsx_import_source` string
-    /// (the inverse of [`Self::jsx_import_source`]). Used by the
-    /// shared-bundle path to derive the mount-glue framework from
-    /// [`BundleConfig::jsx_import_source`] — the single source of truth
-    /// the orchestrator already sets via `with_jsx_import_source`. Keeping
-    /// one field drive both the esbuild `--jsx-import-source` flag AND the
-    /// emitted hydration glue makes the two structurally incapable of
-    /// diverging (a React JSX transform with a Preact `h()` mount thunk
-    /// would crash at hydrate time). Anything other than `"react"` maps to
-    /// `Preact`, matching the default.
-    pub fn from_jsx_import_source(s: &str) -> Self {
-        match s {
-            "react" => FrameworkKind::React,
-            _ => FrameworkKind::Preact,
-        }
-    }
-}
-
-/// Build the public URL for a per-island JS asset.
-///
-/// Mirrors [`bundle_link_href`] but lives under `/islands/` instead of
-/// `/assets/` so per-island and shared bundles can share an outdir
-/// without colliding. With S0's stable-naming contract the typical
-/// inputs look like `dist/islands/Counter.js` →
-/// `/islands/Counter.js`; `ProductionAssetPipeline` is the only
-/// component allowed to substitute hashed forms.
-pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
-    let filename = asset_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let trimmed = base_url.trim_end_matches('/');
-    format!("{trimmed}/islands/{filename}")
 }
 
 /// Build the public URL for the islands JS asset.
@@ -1035,66 +887,6 @@ mod tests {
         // A workspace-sibling target rejected by `new` (project-scoped)
         // still succeeds through `new_scoped`.
         assert!(ModuleWorkerBundleEntry::new(project_root, &logical, "/shadow/worker.ts").is_err());
-    }
-
-    #[test]
-    fn bundle_config_default_jsx_import_source_is_preact() {
-        // Issue #151: the default JSX import source must match the
-        // default `FrameworkKind` (Preact) so esbuild's
-        // --jsx=automatic transform routes through `preact/jsx-runtime`
-        // instead of emitting bare `React.createElement` references.
-        assert_eq!(BundleConfig::default().jsx_import_source, "preact");
-        assert_eq!(BundleConfig::production().jsx_import_source, "preact");
-        assert_eq!(BundleConfig::dev().jsx_import_source, "preact");
-    }
-
-    #[test]
-    fn bundle_config_with_jsx_import_source_overrides() {
-        let cfg = BundleConfig::default().with_jsx_import_source("react");
-        assert_eq!(cfg.jsx_import_source, "react");
-    }
-
-    #[test]
-    fn framework_kind_jsx_import_source_matches_zfb_render_adapter_contract() {
-        // Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
-        // the value the bundler hands to esbuild via
-        // `--jsx-import-source=<value>` must agree with what the
-        // renderer's SWC pipeline targets, otherwise the SSR'd HTML
-        // and the hydrated bundle disagree on how JSX compiles.
-        assert_eq!(FrameworkKind::Preact.jsx_import_source(), "preact");
-        assert_eq!(FrameworkKind::React.jsx_import_source(), "react");
-    }
-
-    #[test]
-    fn framework_kind_from_jsx_import_source_round_trips() {
-        // `from_jsx_import_source` is the inverse used by the shared-bundle
-        // path to derive the mount-glue framework from
-        // `BundleConfig::jsx_import_source` (one field driving both the
-        // esbuild flag and the emitted glue). Round-trip both variants and
-        // confirm the default fallback for unknown sources.
-        for fw in [FrameworkKind::Preact, FrameworkKind::React] {
-            assert_eq!(
-                FrameworkKind::from_jsx_import_source(fw.jsx_import_source()),
-                fw
-            );
-        }
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("react"),
-            FrameworkKind::React
-        );
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("preact"),
-            FrameworkKind::Preact
-        );
-        // Unknown / empty falls back to the Preact default.
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source("solid"),
-            FrameworkKind::Preact
-        );
-        assert_eq!(
-            FrameworkKind::from_jsx_import_source(""),
-            FrameworkKind::Preact
-        );
     }
 
     #[test]

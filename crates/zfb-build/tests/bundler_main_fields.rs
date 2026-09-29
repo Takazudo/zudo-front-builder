@@ -37,7 +37,6 @@
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Write a hand-rolled CJS-only package into `<root>/node_modules/<name>`.
@@ -91,9 +90,9 @@ fn scaffold_project_importing(root: &std::path::Path, dep: &str) {
     .unwrap();
 }
 
-/// Preact + neutral worker bundle (the failing combination): node_modules
+/// external package + neutral worker bundle (the failing combination): node_modules
 /// adjacent to the project so the hand-rolled package is resolvable, and
-/// preact/runtime bare specifiers marked external so the synthetic `entry.mjs`
+/// owned runtime bare specifiers marked external so the synthetic `entry.mjs`
 /// itself bundles. `main_fields` / extra `external` are the knobs under test.
 fn make_input(
     root: &std::path::Path,
@@ -103,14 +102,13 @@ fn make_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::Preact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.external.extend(extra_external);
@@ -120,7 +118,7 @@ fn make_input(
     input
 }
 
-/// Core proof: a Preact/neutral bundle whose page imports a CJS-main-only dep
+/// Core proof: an external-runtime/neutral bundle whose page imports a CJS-main-only dep
 /// FAILS without `bundle.mainFields` and PASSES (with the dep actually
 /// resolved + inlined) when `main_fields = ["main", "module"]`.
 #[test]
@@ -142,7 +140,7 @@ fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
     ));
     assert!(
         fail.is_err(),
-        "WITHOUT bundle.mainFields the Preact/neutral pass has an empty \
+        "WITHOUT bundle.mainFields the external-runtime/neutral pass has an empty \
          main-fields list and must reject the CJS-main-only dep. A green build \
          here means the negative control is broken."
     );

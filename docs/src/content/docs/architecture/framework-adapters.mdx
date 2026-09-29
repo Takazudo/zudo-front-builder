@@ -1,66 +1,74 @@
 ---
-title: Framework adapters
-description: How zfb supports both Preact and React behind a single renderer, and the shape of the boundary that makes adding a third framework additive.
+title: The zudo-react runtime
+description: How zfb uses one owned runtime to render whole documents and adopt island subtrees.
 sidebar_position: 3
 ---
 
-zfb renders TSX. JSX is a syntax — the *runtime* that turns it into HTML is supplied by a framework. zfb supports two: **Preact** (default) and **React**.
+zfb uses one rendering runtime: **zudo-react**, shipped as subpath exports of
+`@takazudo/zfb`. JSX remains the authoring syntax, while the runtime defines
+how descriptions become HTML and how an island takes ownership of its existing
+HTML in the browser. There is no framework selector or adapter layer.
 
-## The need
+## One runtime on both sides
 
-Two goals pull opposite ways. One: a single renderer pipeline that works the same for both frameworks, so we never fork the build. Two: many users want React (existing components, React-only libraries) and many want Preact (footprint, signals). zfb lets them pick:
+The engine needs three connected capabilities from zudo-react:
+
+1. **A synchronous server renderer for the whole document.** The server entry
+   accepts the completed page description and returns an HTML string. zfb may
+   await the page function before rendering, but rendering the resulting tree
+   is synchronous.
+2. **A client entry that adopts an island subtree.** The client entry receives
+   the component description, its wrapper element, and the expected component
+   and build identity. `hydrate` checks and adopts the server DOM; `mount`
+   creates a new client subtree when no server-rendered child DOM should be
+   adopted.
+3. **Island glue that carries zfb's boundary metadata into those calls.** The
+   `<Island>` wrapper stays in the document as a `div`. Its
+   `data-zfb-island*` attributes identify the component and the wrapper; the
+   transport, protocol, build, and JSON props attributes let the client verify
+   that it is adopting the matching output. Runtime comment regions are local
+   to the child subtree and do not mark the rest of the page.
+
+The public entries make those roles explicit:
 
 ```ts
-// zfb.config.ts
-export default {
-  framework: "preact", // or "react"
-};
+import { signal } from "@takazudo/zfb/zudo-react";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { hydrate, mount } from "@takazudo/zfb/zudo-react/client";
 ```
 
-Read once at config-load time and threaded through the build. A one-line change for the user. For the renderer, the choice never appears — it talks to a uniform `Adapter` trait and has no `if framework == "react"` branches past adapter construction.
+Components run once during setup. Signals provide live values, and scoped
+effects and cleanup own browser work for that component instance. See the
+[zudo-react overview](../zudo-react/overview.mdx) for the component model and
+the rest of the runtime API.
 
-## The boundary
+## Island lifecycle
 
-The contract lives in `crates/zfb-render/src/adapters/mod.rs`. Every adapter implements the same narrow trait:
+The generated client manifest exposes one mount function per registered
+component. Its final contract is
+`mount(props, element, mode: "hydrate" | "render") => RootHandle | null`.
+`hydrate` means adopt the child DOM already inside the wrapper; `render` means
+create a fresh child subtree. A failed preflight or mount returns `null` and
+leaves the server markup inert rather than silently switching modes.
 
-```rust
-#[async_trait(?Send)]
-pub trait Adapter {
-    fn name(&self) -> &'static str;
-    fn jsx_import_source(&self) -> &'static str;
-    fn render_to_string_module(&self) -> &'static str;
-    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
-    fn hydrate_shim_specifier(&self) -> &'static str;
-    fn hydrate_shim_source(&self) -> &'static str;
-}
-```
+The returned handle separates resource release from DOM removal. `dispose()`
+stops effects, subscriptions, and listeners while leaving the child DOM in
+place, so zfb can replace a page body without deleting content on its own.
+`unmount()` disposes the root and removes the child nodes owned by that handle;
+the zfb wrapper remains. When a persisted island's component or props change,
+zfb disposes its old root and uses `render` for the replacement. Unchanged
+persisted roots keep their DOM and live state.
 
-Three groups of responsibility, no more:
+## One JSX dialect
 
-1. **Tell the SWC pipeline which JSX import source to inject** (`jsx_import_source`). This drives the `transform-react` pass with `runtime: "automatic"` so user code never writes `import { h } from "preact"` or `import React from "react"` and never spells a `@jsxImportSource` pragma. The framework choice lives in config; SWC threads it everywhere.
-2. **Tell the runtime where the synchronous `renderToString` lives** (`render_to_string_module`) and **install a shim** (`pre_render_setup`) that aliases it as `globalThis.__zfbRenderToString`. The render orchestrator in `render.rs` then calls `__zfbRenderToString(vnode)` once per page, with no branching on framework identity.
-3. **Provide the client-side hydration shim** (`hydrate_shim_specifier` + `hydrate_shim_source`). The islands bundler folds this module into the islands bundle as the framework-specific entry. It exports `hydrateIsland(Component, props, element)`, and the framework-agnostic hydration runtime in `zfb-islands` calls it for every `[data-zfb-island]` element in the DOM.
+Consumers set `jsxImportSource` to `@takazudo/zfb/zudo-react`. The runtime uses
+HTML and SVG attribute spellings such as `class` and `for`, function listeners
+such as `on:click`, and an explicit `rawHtml` prop for content the caller
+already trusts. Signals replace render-time state hooks: a component creates
+its state once, and the renderer updates the bindings that use it. This is a
+small, owned runtime rather than a compatibility facade; existing framework
+components need to be rewritten to its API.
 
-That is the entire surface. Hook semantics, signal interop, event delegation strategy — none of these are inside the boundary. Each framework keeps its own behaviour; the adapter only controls *which* framework is reached through.
-
-## Why a setup-phase shim
-
-`pre_render_setup` runs once, before the first page render, and installs `__zfbRenderToString` on `globalThis`. Per-page rendering is then one function call from Rust into JS — no module re-resolution, no shim re-installation, no per-call import dance. The cost is paid once per host lifetime; the benefit accrues across thousands of pages.
-
-Two tempting alternatives are ruled out. We are not generating per-page JS modules that import `preact-render-to-string` directly — that pushes module resolution onto the per-render hot path. We are not exposing a `hydrate_call()` API that returns a JS expression for Rust to template into source — that puts JS-expression concatenation in Rust, the wrong language for it. The shim keeps the Rust-to-JS boundary expressed purely as static module strings.
-
-## The Preact adapter
-
-Lives at `crates/zfb-render/src/adapters/preact.rs`. JSX import source `"preact"`; render module `"preact-render-to-string"`; hydration shim wraps `hydrate(vnode, container)`. Preact is the default because its footprint fits zfb's static-output target cleanly — `preact-render-to-string` is purpose-built for synchronous SSR and the runtime image stays small.
-
-## The React adapter
-
-Lives at `crates/zfb-render/src/adapters/react.rs`. Larger than Preact, opt-in for users who need the React ecosystem. JSX import source `"react"`; render module `"react-dom/server"`; hydration shim wraps React 18+'s `hydrateRoot(container, vnode)` — note the swapped argument order versus Preact, which the adapter owns so user code does not have to.
-
-The React adapter uses **synchronous** `renderToString`, not `renderToReadableStream` or `renderToPipeableStream`. zfb produces ahead-of-time static HTML; a sync string is simpler, deterministic, and avoids dragging Node streaming primitives into the build host. The cost is no streaming HTML and no React Server Components in v1.
-
-## Future adapters
-
-Solid, Vue SSR, Svelte SSR — none ship today. The `Adapter` trait is small enough that adding one is purely additive: a new adapter file, a new `Framework` enum variant, a new `make_adapter` arm. The render orchestrator does not change.
-
-If a future framework cannot satisfy the trait — for example, it requires an async render entry that does not fit `renderToString → string` — that is a reason to widen the trait deliberately, not to special-case it.
+For the zfb side of scheduling, persisted wrappers, and server-to-client props,
+see [Islands](../concepts/islands.mdx). For the exact description, prop, and
+hydration rules, see the [Island API](../api/island.mdx).

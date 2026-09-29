@@ -1,0 +1,267 @@
+---
+title: 外側の余白
+description: 対応する負の値と自動余白を含め、物理的な外側の余白を設定します。
+sidebar_position: 30
+generated: true
+---
+
+対応する負の値と自動余白を含め、物理的な外側の余白を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## m
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.m` |
+| クラスパターン | `m-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-top`, `margin-right`, `margin-bottom`, `margin-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+| `margin-right` | `resolved` | `null` |
+| `margin-bottom` | `resolved` | `null` |
+| `margin-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `m-0` | `margin-top: 0`; `margin-right: 0`; `margin-bottom: 0`; `margin-left: 0` |
+
+## mx
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.mx` |
+| クラスパターン | `mx-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-left`, `margin-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-left` | `resolved` | `null` |
+| `margin-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `mx-0` | `margin-left: 0`; `margin-right: 0` |
+
+## my
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.my` |
+| クラスパターン | `my-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-top`, `margin-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+| `margin-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `my-0` | `margin-top: 0`; `margin-bottom: 0` |
+
+## mb
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.mb` |
+| クラスパターン | `mb-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-bottom","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `mb-0` | `margin-bottom: 0` |
+
+## ml
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.ml` |
+| クラスパターン | `ml-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-left","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `ml-0` | `margin-left: 0` |
+
+## mr
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.mr` |
+| クラスパターン | `mr-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-right","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `mr-0` | `margin-right: 0` |
+
+## mt
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.mt` |
+| クラスパターン | `mt-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"margin-top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `margin` (`10`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `margin-top` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"auto"` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `margin-top` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `mt-0` | `margin-top: 0` |

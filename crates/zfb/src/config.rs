@@ -6,10 +6,8 @@
 //! ## Bootstrap rule
 //!
 //! The JS runtime used to *parse* this config is fixed by the zfb binary
-//! itself — the config CANNOT choose its own runtime. The config CAN choose
-//! `framework: "preact" | "react"` (applied after the config is loaded by the
-//! framework adapter), `outDir`, `publicDir`, content + Tailwind options, and
-//! plugins. There is exactly one runtime; it is not user-overridable in v1.
+//! itself. The removed `framework` key is rejected with a migration error.
+//! Other settings include `outDir`, `publicDir`, content options, and plugins.
 //!
 //! See issue #9 (Wave 2 / Sub 3).
 //!
@@ -253,17 +251,17 @@ pub struct Config {
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
 
-    /// JSX framework runtime. Default: `Preact`.
-    #[serde(default)]
-    pub framework: Framework,
-
     /// Content collections.
     #[serde(default)]
     pub collections: Vec<CollectionDef>,
 
-    /// Tailwind-specific config; absent = default behavior.
-    #[serde(default)]
-    pub tailwind: Option<TailwindConfig>,
+    /// zudo-wind v1 configuration. Absent enables the default empty configuration.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_wind",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub wind: Option<WindSetting>,
 
     /// Prefetch options. When `prefetch.disabled` is `true`, the bundler
     /// emits `globalThis.__zfb.prefetchDisabled = true` in `entry.mjs` and
@@ -727,9 +725,8 @@ impl Default for Config {
             host: None,
             port: None,
             allowed_hosts: Vec::new(),
-            framework: Framework::default(),
             collections: Vec::new(),
-            tailwind: None,
+            wind: None,
             prefetch: None,
             minify_html: false,
             strict_broken_links: false,
@@ -794,15 +791,6 @@ pub enum OutputMode {
     Auto,
 }
 
-/// JSX runtime selection. `Preact` is the v1 default.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Framework {
-    #[default]
-    Preact,
-    React,
-}
-
 /// One content collection (e.g. blog posts under `content/blog/`).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -864,13 +852,257 @@ pub struct CollectionDef {
     pub allow_outside_root: bool,
 }
 
-/// Tailwind options. Empty by default (Tailwind enabled); users can flip
-/// `enabled: false` to opt out.
+/// The top-level wind setting: `false` disables wind, while an object enables it.
+///
+/// This has a handwritten deserializer so malformed values and unknown nested
+/// fields retain serde's field-path diagnostics instead of becoming the generic
+/// untagged-enum error.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindSetting {
+    Disabled,
+    Enabled(Box<WindConfig>),
+}
+
+fn deserialize_present_wind<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<WindSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    WindSetting::deserialize(deserializer).map(Some)
+}
+
+impl Serialize for WindSetting {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Disabled => serializer.serialize_bool(false),
+            Self::Enabled(config) => config.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WindSetting {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct WindSettingVisitor;
+
+        impl<'de> de::Visitor<'de> for WindSettingVisitor {
+            type Value = WindSetting;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("false or a wind configuration object")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value {
+                    Err(E::custom(
+                        "wind must be false or an object; omit the key to enable defaults",
+                    ))
+                } else {
+                    Ok(WindSetting::Disabled)
+                }
+            }
+
+            fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                WindConfig::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(Box::new)
+                    .map(WindSetting::Enabled)
+            }
+        }
+
+        deserializer.deserialize_any(WindSettingVisitor)
+    }
+}
+
+/// zudo-wind v1 options. See the configuration contract in
+/// research/3242-zudo-wind-v1-spec.md, section Tokens and configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindConfig {
+    /// Language contract version. Version 1 is the only supported value.
+    #[serde(default = "default_wind_spec")]
+    pub spec: u32,
+    /// Reset policy. Validation accepts none, minimal-v1, and owned-v1.
+    #[serde(default = "default_wind_reset")]
+    pub reset: String,
+    /// Explicit design tokens. No implicit palette or named scale is added.
+    #[serde(default)]
+    pub tokens: WindTokens,
+    /// Configured positive integer CSS-pixel breakpoints.
+    #[serde(default)]
+    pub breakpoints: BTreeMap<String, WindBreakpoint>,
+    /// Optional dark selector; false is the default.
+    #[serde(default)]
+    pub dark: WindDarkSetting,
+    /// Complete utility candidates keyed by their safelist owner.
+    #[serde(default)]
+    pub safelist: BTreeMap<String, Vec<String>>,
+    /// Authored classes that suppress utility interpretation.
+    #[serde(default, rename = "authoredClasses")]
+    pub authored_classes: BTreeMap<String, bool>,
+    /// File-backed utility manifests keyed by producer id.
+    #[serde(default)]
+    pub manifests: BTreeMap<String, WindManifest>,
+}
+
+impl Default for WindConfig {
+    fn default() -> Self {
+        Self {
+            spec: default_wind_spec(),
+            reset: default_wind_reset(),
+            tokens: WindTokens::default(),
+            breakpoints: BTreeMap::new(),
+            dark: WindDarkSetting::Disabled,
+            safelist: BTreeMap::new(),
+            authored_classes: BTreeMap::new(),
+            manifests: BTreeMap::new(),
+        }
+    }
+}
+
+/// The optional token categories supported by zudo-wind v1.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindTokens {
+    #[serde(default)]
+    pub spacing_unit: Option<String>,
+    #[serde(default)]
+    pub colors: BTreeMap<String, String>,
+    #[serde(default)]
+    pub spacing: BTreeMap<String, String>,
+    #[serde(default)]
+    pub sizes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub font_sizes: BTreeMap<String, WindFontSize>,
+    #[serde(default)]
+    pub font_families: BTreeMap<String, String>,
+    #[serde(default)]
+    pub font_weights: BTreeMap<String, String>,
+    #[serde(default)]
+    pub line_heights: BTreeMap<String, String>,
+    #[serde(default)]
+    pub letter_spacings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub radii: BTreeMap<String, String>,
+    #[serde(default)]
+    pub shadows: BTreeMap<String, String>,
+    #[serde(default)]
+    pub z_indices: BTreeMap<String, String>,
+    #[serde(default)]
+    pub easings: BTreeMap<String, String>,
+}
+
+/// A font size token and its optional paired line-height token.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TailwindConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindFontSize {
+    pub size: String,
+    #[serde(default)]
+    pub line_height: Option<String>,
+}
+
+/// The required CSS-pixel width for one configured breakpoint.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindBreakpoint {
+    pub min_width_px: f64,
+}
+
+/// The dark selector setting: false or a selector object.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WindDarkSetting {
+    #[default]
+    Disabled,
+    Enabled(WindDarkConfig),
+}
+
+impl Serialize for WindDarkSetting {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Disabled => serializer.serialize_bool(false),
+            Self::Enabled(config) => config.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WindDarkSetting {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct WindDarkVisitor;
+
+        impl<'de> de::Visitor<'de> for WindDarkVisitor {
+            type Value = WindDarkSetting;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("false or a dark selector object")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value {
+                    Err(E::custom("wind.dark must be false or an object"))
+                } else {
+                    Ok(WindDarkSetting::Disabled)
+                }
+            }
+
+            fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                WindDarkConfig::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(WindDarkSetting::Enabled)
+            }
+        }
+
+        deserializer.deserialize_any(WindDarkVisitor)
+    }
+}
+
+/// The selector used for dark variants.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindDarkConfig {
+    pub attribute: String,
+    pub value: String,
+}
+
+/// A package or generated candidate manifest declaration.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindManifest {
+    pub path: String,
+    /// Package whose directory anchors this manifest's relative path. `None`
+    /// means the declaring project root. This is internal provenance for the
+    /// source-plan builder and never appears in the public config value.
+    #[serde(skip)]
+    pub(crate) source_package: Option<String>,
+}
+
+fn default_wind_spec() -> u32 {
+    1
+}
+
+fn default_wind_reset() -> String {
+    "none".to_string()
 }
 
 /// Prefetch options. Mirrors `PrefetchConfig` in `packages/zfb/src/config.ts`.
@@ -924,9 +1156,9 @@ pub struct BundleConfig {
     /// (no `exports` map) fails with `The "main" field here was ignored. Main
     /// fields must be configured explicitly when using the "neutral"
     /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
-    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). Applies to every
-    /// framework; absent/empty -> byte-identical to a build without the knob
-    /// (the React-only `main,module` shim still applies).
+    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). A configured list
+    /// applies to every build mode; absent/empty means no `--main-fields`
+    /// argument is emitted.
     ///
     /// Mirrors `BundleConfig.mainFields` in `packages/zfb/src/config.ts`.
     #[serde(default)]
@@ -1053,7 +1285,7 @@ pub struct CodeHighlightConfig {
 
     /// Per-role class overrides for class mode, e.g.
     /// `{ "keyword": "text-violet-600 dark:text-violet-400" }` to map a
-    /// role onto Tailwind utilities instead of the default
+    /// role onto wind utilities instead of the default
     /// `{classPrefix}{role}` class. Keys must be one of the fixed role
     /// names in [`CODE_HIGHLIGHT_ROLES`]; a value may hold multiple
     /// space-separated classes. `None` (the default) uses
@@ -1081,7 +1313,7 @@ pub enum CodeHighlightMode {
     #[default]
     Inline,
     /// Per-token semantic role classes; colors resolved via CSS custom
-    /// properties or user-authored/Tailwind utilities instead of inline
+    /// properties or user-authored/wind utilities instead of inline
     /// styles.
     Class,
 }
@@ -1175,12 +1407,6 @@ pub struct ResolveMarkdownLinksDir {
     /// Route prefix prepended to each file's slug. Include leading and
     /// trailing slashes (e.g. `"/docs/"` or `"/ja/docs/"`).
     pub route_prefix: String,
-}
-
-impl Default for TailwindConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
 }
 
 /// One user plugin entry.
@@ -1732,15 +1958,34 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         // the original `text` so a TYPE/schema error keeps the line/column
         // message (`from_value` on a merged Value loses position info). Only
         // the preset path needs the Value-layer merge.
+        reject_removed_top_level_keys(&user_value)
+            .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
         let presets =
             take_presets(&mut user_value).map_err(|e| anyhow!("{}: {}", json_path.display(), e))?;
-        let mut cfg: Config = if let Some(presets) = presets {
+        let mut cfg: Config = if let Some(mut presets) = presets {
+            annotate_wind_manifest_sources(&mut user_value, false)
+                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
             // Validate each preset as a `Config` fragment BEFORE merging so an
             // invalid preset field surfaces even when the user also sets that
             // key (all `Config` fields are `#[serde(default)]`, so a partial
             // fragment deserializes cleanly).
-            for (i, preset_value) in presets.iter().enumerate() {
-                serde_json::from_value::<Config>(preset_value.clone()).map_err(|e| {
+            for (i, preset_value) in presets.iter_mut().enumerate() {
+                reject_removed_top_level_keys(preset_value)
+                    .map_err(|e| anyhow!("{}: presets[{i}]: {e}", json_path.display()))?;
+                annotate_wind_manifest_sources(preset_value, false).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                        json_path.display()
+                    )
+                })?;
+                let mut validation_value = preset_value.clone();
+                take_wind_manifest_sources(&mut validation_value).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                        json_path.display()
+                    )
+                })?;
+                serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
                     anyhow!(
                         "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
                         json_path.display(),
@@ -1749,19 +1994,32 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
                 })?;
             }
             let preset_defaults = build_preset_defaults(presets);
-            let merged_value = merge_user_over_presets(preset_defaults, user_value);
+            let mut merged_value = merge_user_over_presets(preset_defaults, user_value);
+            let manifest_sources = take_wind_manifest_sources(&mut merged_value)
+                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
             // A merged Value loses byte offsets, so a type error can't name a
             // line/column — `.with_context()` still names the file.
-            serde_json::from_value(merged_value)
-                .with_context(|| format!("{}: invalid zfb config", json_path.display()))?
+            let mut config: Config = serde_path_to_error::deserialize(merged_value)
+                .with_context(|| format!("{}: invalid zfb config", json_path.display()))?;
+            apply_wind_manifest_sources(&mut config, manifest_sources);
+            config
         } else {
-            serde_json::from_str(&text).map_err(|e| {
+            let mut deserializer = serde_json::Deserializer::from_str(&text);
+            serde_path_to_error::deserialize(&mut deserializer).map_err(|e| {
+                let path = e.path().to_string();
+                let inner = e.into_inner();
+                let path_context = if path.is_empty() {
+                    String::new()
+                } else {
+                    format!("{path}: ")
+                };
                 anyhow!(
-                    "{}: invalid config JSON at line {}, column {}: {}",
+                    "{}: invalid config JSON at line {}, column {}: {}{}",
                     json_path.display(),
-                    e.line(),
-                    e.column(),
-                    e
+                    inner.line(),
+                    inner.column(),
+                    path_context,
+                    inner
                 )
             })?
         };
@@ -2029,6 +2287,7 @@ fn parse_loaded_config(
     // the resolved top-level plugins keep their `resolved_module` and the
     // count guard saw the original indices.
     let mut had_presets = false;
+    reject_removed_top_level_keys(&value).map_err(|e| anyhow!("{}: {e}", ts_path.display()))?;
     let presets = take_presets(&mut value).map_err(|e| {
         anyhow!(
             "{}: failed to parse the default export: {}",
@@ -2036,10 +2295,31 @@ fn parse_loaded_config(
             e
         )
     })?;
-    let merged_value = if let Some(presets) = presets {
+    let (merged_value, manifest_sources) = if let Some(mut presets) = presets {
         had_presets = true;
-        for (i, preset_value) in presets.iter().enumerate() {
-            serde_json::from_value::<Config>(preset_value.clone()).map_err(|e| {
+        annotate_wind_manifest_sources(&mut value, false).map_err(|e| {
+            anyhow!(
+                "{}: failed to parse the default export: {e}",
+                ts_path.display()
+            )
+        })?;
+        for (i, preset_value) in presets.iter_mut().enumerate() {
+            reject_removed_top_level_keys(preset_value)
+                .map_err(|e| anyhow!("{}: presets[{i}]: {e}", ts_path.display()))?;
+            annotate_wind_manifest_sources(preset_value, true).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    ts_path.display()
+                )
+            })?;
+            let mut validation_value = preset_value.clone();
+            take_wind_manifest_sources(&mut validation_value).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    ts_path.display()
+                )
+            })?;
+            serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
                 anyhow!(
                     "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
                     ts_path.display(),
@@ -2048,14 +2328,21 @@ fn parse_loaded_config(
             })?;
         }
         let preset_defaults = build_preset_defaults(presets);
-        merge_user_over_presets(preset_defaults, value)
+        let mut merged_value = merge_user_over_presets(preset_defaults, value);
+        let manifest_sources = take_wind_manifest_sources(&mut merged_value).map_err(|e| {
+            anyhow!(
+                "{}: failed to parse the default export: {e}",
+                ts_path.display()
+            )
+        })?;
+        (merged_value, manifest_sources)
     } else {
         // Still strip a `presets: []` / `presets: null` key before the final
         // deserialize so it never reaches `Config`.
         if let Some(map) = value.as_object_mut() {
             map.remove("presets");
         }
-        value
+        (value, BTreeMap::new())
     };
 
     // serde_path_to_error wraps the deserialize with the field path that
@@ -2071,6 +2358,7 @@ fn parse_loaded_config(
             merged_value
         )
         })?;
+    apply_wind_manifest_sources(&mut config, manifest_sources);
 
     // Resolve any plugin entries that still have `resolved_module = None`
     // (i.e. those contributed by presets). Mirrors the JSON-load path
@@ -2171,6 +2459,24 @@ fn strip_presets(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+/// Top-level configuration keys that no longer deserialize in zfb 3.
+const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] = &[
+(
+    "tailwind",
+    "the tailwind key was removed in zfb 3; utilities are compiled by the built-in zudo-wind engine. Replace tailwind: { enabled: false } with wind: false, or delete the key. See the v3 migration guide",
+),
+("framework", "the framework key was removed in zfb 3; delete the key. zfb now uses zudo-react."),
+];
+
+fn reject_removed_top_level_keys(value: &serde_json::Value) -> Result<(), String> {
+    for (key, message) in REMOVED_TOP_LEVEL_KEYS {
+        if value.get(key).is_some() {
+            return Err((*message).to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Remove the top-level `presets` key from the user config Value and return
 /// its entries when present and non-empty (#1196). The key is removed in place
 /// so it never reaches the final `from_value::<Config>` (presets are merged,
@@ -2198,6 +2504,93 @@ fn take_presets(value: &mut serde_json::Value) -> Result<Option<Vec<serde_json::
             "`presets` must be an array of config fragments, got {}",
             json_type_name(&other)
         )),
+    }
+}
+
+const WIND_MANIFEST_SOURCE_PACKAGE_KEY: &str = "__zfb_source_package";
+
+/// Add an internal marker to each manifest declaration before the preset
+/// Value merge. A null marker means that declaration belongs to the project
+/// root; a package name is emitted by `definePreset` for package presets.
+fn annotate_wind_manifest_sources(
+    value: &mut serde_json::Value,
+    allow_preset_source: bool,
+) -> Result<(), String> {
+    let Some(manifests) = value
+        .as_object_mut()
+        .and_then(|root| root.get_mut("wind"))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|wind| wind.get_mut("manifests"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+
+    for (producer, declaration) in manifests {
+        let Some(declaration) = declaration.as_object_mut() else {
+            // The schema deserializer below reports a wrong entry type.
+            continue;
+        };
+        match declaration.get(WIND_MANIFEST_SOURCE_PACKAGE_KEY) {
+            Some(serde_json::Value::String(_)) if allow_preset_source => {}
+            Some(serde_json::Value::Null) if allow_preset_source => {}
+            Some(_) => {
+                return Err(format!(
+                    "wind.manifests.{producer}.{WIND_MANIFEST_SOURCE_PACKAGE_KEY} is reserved for preset provenance"
+                ));
+            }
+            None => {
+                declaration.insert(
+                    WIND_MANIFEST_SOURCE_PACKAGE_KEY.to_string(),
+                    serde_json::Value::Null,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove the internal marker before strict public-schema deserialization and
+/// return the package provenance by producer. This runs after value merging,
+/// so the same producer's user declaration replaces its preset base too.
+fn take_wind_manifest_sources(
+    value: &mut serde_json::Value,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let Some(manifests) = value
+        .as_object_mut()
+        .and_then(|root| root.get_mut("wind"))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|wind| wind.get_mut("manifests"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut sources = BTreeMap::new();
+    for (producer, declaration) in manifests {
+        let Some(declaration) = declaration.as_object_mut() else {
+            continue;
+        };
+        let source_package = match declaration.remove(WIND_MANIFEST_SOURCE_PACKAGE_KEY) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(package)) => Some(package),
+            Some(_) => {
+                return Err(format!(
+                    "wind.manifests.{producer}.{WIND_MANIFEST_SOURCE_PACKAGE_KEY} must be a package name or null"
+                ));
+            }
+        };
+        sources.insert(producer.clone(), source_package);
+    }
+    Ok(sources)
+}
+
+fn apply_wind_manifest_sources(config: &mut Config, sources: BTreeMap<String, Option<String>>) {
+    let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() else {
+        return;
+    };
+    for (producer, declaration) in &mut wind.manifests {
+        declaration.source_package = sources.get(producer).cloned().flatten();
     }
 }
 
@@ -2290,7 +2683,150 @@ fn merge_user_over_presets(
 /// Errors:
 /// - duplicate `collections[].name`.
 /// - `collections[].path` that is absolute or escapes `dir` via `..`.
+fn validate_wind_config(wind: &WindConfig) -> Result<()> {
+    if wind.spec != 1 {
+        bail!(
+            "wind.spec must be the supported version 1, got {}",
+            wind.spec
+        );
+    }
+    if !matches!(wind.reset.as_str(), "none" | "minimal-v1" | "owned-v1") {
+        bail!(
+            "wind.reset must be one of none, minimal-v1, or owned-v1, got {:?}",
+            wind.reset
+        );
+    }
+
+    macro_rules! check_token_names {
+        ($field:ident, $path:literal) => {
+            validate_wind_token_names($path, &wind.tokens.$field)?;
+        };
+    }
+    check_token_names!(colors, "wind.tokens.colors");
+    check_token_names!(spacing, "wind.tokens.spacing");
+    check_token_names!(sizes, "wind.tokens.sizes");
+    check_token_names!(font_sizes, "wind.tokens.fontSizes");
+    check_token_names!(font_families, "wind.tokens.fontFamilies");
+    check_token_names!(font_weights, "wind.tokens.fontWeights");
+    check_token_names!(line_heights, "wind.tokens.lineHeights");
+    check_token_names!(letter_spacings, "wind.tokens.letterSpacings");
+    check_token_names!(radii, "wind.tokens.radii");
+    check_token_names!(shadows, "wind.tokens.shadows");
+    check_token_names!(z_indices, "wind.tokens.zIndices");
+    check_token_names!(easings, "wind.tokens.easings");
+
+    let mut breakpoint_widths = Vec::with_capacity(wind.breakpoints.len());
+    for (name, breakpoint) in &wind.breakpoints {
+        if !is_wind_name(name) || name.starts_with("max-") {
+            bail!("wind.breakpoints.{name}: name must match the zudo-wind breakpoint-name rule");
+        }
+        let width = breakpoint.min_width_px;
+        if !width.is_finite() || width <= 0.0 || width.fract() != 0.0 {
+            bail!("wind.breakpoints.{name}.minWidthPx must be a positive integer CSS-pixel width");
+        }
+        if breakpoint_widths.contains(&width) {
+            bail!(
+                "wind.breakpoints.{name}.minWidthPx duplicates another breakpoint width ({width})"
+            );
+        }
+        breakpoint_widths.push(width);
+    }
+
+    if let WindDarkSetting::Enabled(dark) = &wind.dark {
+        let mut chars = dark.attribute.bytes();
+        let valid_attribute = chars.next().is_some_and(|first| first.is_ascii_lowercase())
+            && chars.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !valid_attribute {
+            bail!(
+                "wind.dark.attribute must match [a-z][a-z0-9-]*, got {:?}",
+                dark.attribute
+            );
+        }
+        if dark.value.is_empty() || dark.value.chars().any(char::is_control) {
+            bail!("wind.dark.value must be nonempty and contain no control characters");
+        }
+    }
+
+    for (owner, candidates) in &wind.safelist {
+        if !is_wind_owner_id(owner) {
+            bail!("wind.safelist.{owner}: owner id must match [A-Za-z0-9][A-Za-z0-9._/-]*");
+        }
+        for (index, candidate) in candidates.iter().enumerate() {
+            if candidate.is_empty() {
+                bail!("wind.safelist.{owner}[{index}] must not be empty");
+            }
+        }
+    }
+
+    for (class, enabled) in &wind.authored_classes {
+        if class.is_empty()
+            || class
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control())
+        {
+            bail!(
+                "wind.authoredClasses key {class:?} must be a nonempty class token without whitespace or control characters"
+            );
+        }
+        if !enabled {
+            bail!("wind.authoredClasses.{class} must be true when declared");
+        }
+    }
+
+    for (producer, manifest) in &wind.manifests {
+        if !is_wind_owner_id(producer) {
+            bail!("wind.manifests.{producer}: producer id must match [A-Za-z0-9][A-Za-z0-9._/-]*");
+        }
+        if manifest.path.is_empty() {
+            bail!("wind.manifests.{producer}.path must not be empty");
+        }
+    }
+    Ok(())
+}
+
+fn validate_wind_token_names<T>(path: &str, values: &BTreeMap<String, T>) -> Result<()> {
+    for name in values.keys() {
+        if !is_wind_name(name) {
+            bail!("{path}.{name}: token name must match the zudo-wind G13 name rule");
+        }
+    }
+    Ok(())
+}
+
+/// G13 token names: lowercase ASCII letters/digits split by single hyphens,
+/// with an alphanumeric at both ends.
+fn is_wind_name(name: &str) -> bool {
+    let mut previous_hyphen = false;
+    for (index, byte) in name.bytes().enumerate() {
+        let alphanumeric = byte.is_ascii_lowercase() || byte.is_ascii_digit();
+        if alphanumeric {
+            previous_hyphen = false;
+            continue;
+        }
+        if byte != b'-' || index == 0 || index + 1 == name.len() || previous_hyphen {
+            return false;
+        }
+        previous_hyphen = true;
+    }
+    !name.is_empty() && !previous_hyphen
+}
+
+/// W27 owner and producer ids are ASCII identifiers with slash-separated
+/// package path characters allowed by the contract.
+fn is_wind_owner_id(id: &str) -> bool {
+    let mut bytes = id.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'))
+}
+
 fn validate(cfg: &Config, dir: &Path) -> Result<()> {
+    if let Some(WindSetting::Enabled(wind)) = &cfg.wind {
+        validate_wind_config(wind)?;
+    }
+
     let mut seen: HashSet<&str> = HashSet::new();
     for c in &cfg.collections {
         if !seen.insert(c.name.as_str()) {
@@ -2374,16 +2910,10 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         )
         .map_err(|error| anyhow::anyhow!("codeHighlight.{error}"))?;
         if let Some(role_classes) = &ch.role_classes {
-            // Authored-CSS path (`tailwind.enabled=false`): allowed, but no
-            // safelist can be generated for these classes on that path, so
-            // the mapped utilities must already exist in user-authored CSS.
-            let tailwind_enabled = cfg.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
-            if !role_classes.is_empty() && !tailwind_enabled {
+            // Authored-only path: mapped classes must exist in user CSS.
+            if !role_classes.is_empty() && matches!(cfg.wind, Some(WindSetting::Disabled)) {
                 tracing::warn!(
-                    "codeHighlight.roleClasses is set with tailwind.enabled=false: no \
-                     Tailwind safelist can be generated for these classes on the \
-                     authored-CSS path — ensure the mapped utilities already exist in \
-                     your own CSS"
+                    "codeHighlight.roleClasses is set with wind=false: ensure the mapped classes exist in your authored CSS"
                 );
             }
         }
@@ -2584,10 +3114,565 @@ mod tests {
     /// Value over it, then deserialize the result into a typed [`Config`].
     /// Used by the `#1196` / `#1199` / `#1202` unit tests in place of the old
     /// `merge_preset_into(&mut cfg, preset, &baseline)` direct call.
-    fn merge_presets_to_config(presets: Vec<serde_json::Value>, user: serde_json::Value) -> Config {
+    fn merge_presets_to_config(
+        mut presets: Vec<serde_json::Value>,
+        mut user: serde_json::Value,
+    ) -> Config {
+        for preset in &mut presets {
+            annotate_wind_manifest_sources(preset, true)
+                .expect("preset manifest provenance is valid");
+        }
+        annotate_wind_manifest_sources(&mut user, false)
+            .expect("user config cannot set internal manifest provenance");
         let preset_defaults = build_preset_defaults(presets);
-        let merged = merge_user_over_presets(preset_defaults, user);
-        serde_json::from_value(merged).expect("merged preset config deserializes")
+        let mut merged = merge_user_over_presets(preset_defaults, user);
+        let manifest_sources =
+            take_wind_manifest_sources(&mut merged).expect("manifest sources are valid");
+        let mut config = serde_json::from_value(merged).expect("merged preset config deserializes");
+        apply_wind_manifest_sources(&mut config, manifest_sources);
+        config
+    }
+
+    fn config_with_wind(wind: serde_json::Value) -> Config {
+        serde_json::from_value(serde_json::json!({ "wind": wind }))
+            .expect("wind config deserializes")
+    }
+
+    #[test]
+    fn wind_config_absent_stays_absent() {
+        let config: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(config.wind.is_none());
+        assert!(!serde_json::to_value(config)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("wind"));
+    }
+
+    #[test]
+    fn wind_config_false_disables_and_round_trips_as_false() {
+        let config = config_with_wind(serde_json::json!(false));
+        assert_eq!(config.wind, Some(WindSetting::Disabled));
+
+        let value = serde_json::to_value(&config).expect("serialize wind false");
+        assert_eq!(value["wind"], serde_json::json!(false));
+        let round_trip: Config = serde_json::from_value(value).expect("deserialize wind false");
+        assert_eq!(round_trip.wind, Some(WindSetting::Disabled));
+    }
+
+    #[test]
+    fn wind_rejects_true_and_null_values() {
+        for invalid in [serde_json::json!(true), serde_json::Value::Null] {
+            let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+                "wind": invalid
+            }))
+            .expect_err("wind true and null must be rejected");
+            assert!(error.to_string().contains("wind"));
+        }
+    }
+
+    #[test]
+    fn wind_config_empty_object_uses_version_one_defaults() {
+        let config = config_with_wind(serde_json::json!({}));
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert_eq!(wind.spec, 1);
+        assert_eq!(wind.reset, "none");
+        assert!(wind.tokens.colors.is_empty());
+        assert!(wind.breakpoints.is_empty());
+        assert_eq!(wind.dark, WindDarkSetting::Disabled);
+    }
+
+    #[test]
+    fn wind_config_accepts_full_v1_shape() {
+        let config = config_with_wind(serde_json::json!({
+            "spec": 1,
+            "reset": "owned-v1",
+            "tokens": {
+                "spacingUnit": "0.25rem",
+                "colors": { "panel": "var(--project-panel)" },
+                "spacing": { "gutter": "1.5rem" },
+                "sizes": { "2xl": "42rem" },
+                "fontSizes": { "small": { "size": "0.875rem", "lineHeight": "1.25rem" } },
+                "fontFamilies": { "mono": "ui-monospace, monospace" },
+                "fontWeights": { "medium": "500" },
+                "lineHeights": { "relaxed": "1.625" },
+                "letterSpacings": { "tight": "-0.025em" },
+                "radii": { "default": "0.25rem" },
+                "shadows": { "default": "0 1px 2px black" },
+                "zIndices": { "overlay": "20" },
+                "easings": { "gentle": "ease-in-out" }
+            },
+            "breakpoints": { "sm": { "minWidthPx": 640 } },
+            "dark": { "attribute": "data-theme", "value": "dark" },
+            "safelist": { "app": ["sm:hover:bg-panel", "rounded"] },
+            "authoredClasses": { "prose": true },
+            "manifests": { "widgets": { "path": "@example/widgets/wind.json" } }
+        }));
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert_eq!(wind.reset, "owned-v1");
+        assert_eq!(
+            wind.tokens.font_sizes["small"].line_height.as_deref(),
+            Some("1.25rem")
+        );
+        assert_eq!(wind.breakpoints["sm"].min_width_px, 640.0);
+        assert_eq!(wind.safelist["app"].len(), 2);
+        assert_eq!(wind.manifests["widgets"].path, "@example/widgets/wind.json");
+    }
+
+    #[test]
+    fn wind_unknown_nested_key_reports_key_and_path() {
+        let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+            "wind": { "tokens": { "colors": {}, "unknownCategory": {} } }
+        }))
+        .expect_err("unknown wind token category must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("wind.tokens"),
+            "missing field path: {message}"
+        );
+        assert!(
+            message.contains("unknownCategory"),
+            "missing unknown key: {message}"
+        );
+    }
+
+    #[test]
+    fn wind_partial_preset_fragment_loads_and_merges() {
+        let config = merge_presets_to_config(
+            vec![serde_json::json!({
+                "wind": {
+                    "tokens": { "colors": { "panel": "var(--panel)" } },
+                    "manifests": {
+                        "widgets": {
+                            "path": "./wind.json",
+                            "__zfb_source_package": "@example/wind-preset"
+                        }
+                    }
+                }
+            })],
+            serde_json::json!({}),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("preset wind object should enable the engine")
+        };
+        assert_eq!(wind.tokens.colors["panel"], "var(--panel)");
+        assert_eq!(wind.spec, 1);
+        assert!(wind.breakpoints.is_empty());
+        assert_eq!(
+            wind.manifests["widgets"].source_package.as_deref(),
+            Some("@example/wind-preset")
+        );
+        assert_eq!(
+            serde_json::to_value(&wind.manifests["widgets"]).unwrap(),
+            serde_json::json!({ "path": "./wind.json" })
+        );
+    }
+
+    #[test]
+    fn wind_manifest_provenance_merges_by_producer() {
+        let config = merge_presets_to_config(
+            vec![
+                serde_json::json!({
+                    "wind": { "manifests": { "widgets": {
+                        "path": "./widgets.json",
+                        "__zfb_source_package": "@example/widgets"
+                    } } }
+                }),
+                serde_json::json!({
+                    "wind": { "manifests": { "icons": {
+                        "path": "./icons.json",
+                        "__zfb_source_package": "@example/icons"
+                    } } }
+                }),
+            ],
+            serde_json::json!({}),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("merged wind object should enable the engine")
+        };
+        assert_eq!(
+            wind.manifests["widgets"].source_package.as_deref(),
+            Some("@example/widgets")
+        );
+        assert_eq!(
+            wind.manifests["icons"].source_package.as_deref(),
+            Some("@example/icons")
+        );
+    }
+
+    #[test]
+    fn wind_manifest_user_replacement_resets_source_to_project_root() {
+        let config = merge_presets_to_config(
+            vec![serde_json::json!({
+                "wind": { "manifests": { "widgets": {
+                    "path": "./preset-wind.json",
+                    "__zfb_source_package": "@example/wind-preset"
+                } } }
+            })],
+            serde_json::json!({
+                "wind": { "manifests": { "widgets": { "path": "./user-wind.json" } } }
+            }),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("user wind object should enable the engine")
+        };
+        assert_eq!(wind.manifests["widgets"].path, "./user-wind.json");
+        assert_eq!(wind.manifests["widgets"].source_package, None);
+    }
+
+    #[test]
+    fn wind_manifest_public_shape_rejects_unknown_fields() {
+        let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+            "wind": { "manifests": { "widgets": {
+                "path": "./wind.json",
+                "unexpected": "value"
+            } } }
+        }))
+        .expect_err("unknown manifest fields must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("wind.manifests.widgets"),
+            "path: {message}"
+        );
+        assert!(message.contains("unexpected"), "key: {message}");
+    }
+
+    #[test]
+    fn wind_false_replaces_preset_object() {
+        let config = merge_presets_to_config(
+            vec![serde_json::json!({ "wind": { "tokens": { "colors": { "panel": "red" } } } })],
+            serde_json::json!({ "wind": false }),
+        );
+        assert_eq!(config.wind, Some(WindSetting::Disabled));
+    }
+
+    #[test]
+    fn wind_nested_safelist_arrays_are_user_wins() {
+        let config = merge_presets_to_config(
+            vec![serde_json::json!({
+                "wind": { "safelist": { "app": ["text-from-preset"], "widgets": ["block"] } }
+            })],
+            serde_json::json!({ "wind": { "safelist": { "app": ["text-from-user"] } } }),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("merged wind object should enable the engine")
+        };
+        assert_eq!(wind.safelist["app"], vec!["text-from-user".to_string()]);
+        assert_eq!(wind.safelist["widgets"], vec!["block".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn load_from_dir_reads_wind_from_json_config() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"wind":{"breakpoints":{"sm":{"minWidthPx":640}}}}"#,
+        )
+        .await
+        .unwrap();
+
+        let config = load_from_dir(tmp.path()).await.expect("JSON config loads");
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object should load")
+        };
+        assert_eq!(wind.breakpoints["sm"].min_width_px, 640.0);
+    }
+
+    #[tokio::test]
+    async fn load_from_dir_reports_unknown_wind_key_path() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"wind":{"tokens":{"unknownCategory":{}}}}"#,
+        )
+        .await
+        .unwrap();
+
+        let error = load_from_dir(tmp.path())
+            .await
+            .expect_err("unknown nested wind key must be rejected");
+        let message = format!("{error:#}");
+        assert!(message.contains("wind.tokens"), "missing path: {message}");
+        assert!(
+            message.contains("unknownCategory"),
+            "missing unknown key: {message}"
+        );
+    }
+
+    #[test]
+    fn wind_validation_rejects_unsupported_spec() {
+        let config = config_with_wind(serde_json::json!({ "spec": 2 }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("unsupported spec must fail");
+        assert!(error.to_string().contains("wind.spec"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_unknown_reset() {
+        let config = config_with_wind(serde_json::json!({ "reset": "default" }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("unknown reset must fail");
+        assert!(error.to_string().contains("wind.reset"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_invalid_token_names() {
+        let config = config_with_wind(serde_json::json!({
+            "tokens": { "colors": { "Bad_Name": "red" } }
+        }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("invalid token names must fail");
+        assert!(error.to_string().contains("wind.tokens.colors.Bad_Name"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_invalid_breakpoint_names_and_widths() {
+        let invalid_name = config_with_wind(serde_json::json!({
+            "breakpoints": { "max-sm": { "minWidthPx": 640 } }
+        }));
+        let error = validate_wind_config(match invalid_name.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("invalid breakpoint name must fail");
+        assert!(error.to_string().contains("wind.breakpoints.max-sm"));
+
+        for width in [0.0, -1.0, 640.5, f64::INFINITY] {
+            let mut wind = WindConfig::default();
+            wind.breakpoints.insert(
+                "sm".to_string(),
+                WindBreakpoint {
+                    min_width_px: width,
+                },
+            );
+            let error = validate_wind_config(&wind).expect_err("invalid width must fail");
+            assert!(error.to_string().contains("minWidthPx"));
+        }
+    }
+
+    #[test]
+    fn wind_validation_rejects_duplicate_breakpoint_widths() {
+        let config = config_with_wind(serde_json::json!({
+            "breakpoints": {
+                "sm": { "minWidthPx": 640 },
+                "tablet": { "minWidthPx": 640 }
+            }
+        }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("duplicate widths must fail");
+        assert!(error.to_string().contains("duplicates another breakpoint"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_empty_safelist_entries() {
+        let config = config_with_wind(serde_json::json!({ "safelist": { "app": [""] } }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("empty safelist entry must fail");
+        assert!(error.to_string().contains("wind.safelist.app[0]"));
+    }
+
+    #[tokio::test]
+    async fn removed_tailwind_key_is_rejected_in_project_and_preset_json() {
+        for json in [
+            serde_json::json!({ "tailwind": { "enabled": false } }),
+            serde_json::json!({ "presets": [{ "tailwind": {} }] }),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(tmp.path().join("zfb.config.json"), json.to_string())
+                .await
+                .unwrap();
+            let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+            assert!(
+                message.contains("tailwind key was removed in zfb 3"),
+                "{message}"
+            );
+            assert!(message.contains("wind: false"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_framework_key_json_config_fails_with_migration_message() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"framework":"zudo-react"}"#,
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+        assert!(message.contains("zfb.config.json"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn removed_framework_key_preset_fragment_fails_with_index() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"presets":[{"framework":"zudo-react"}]}"#,
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("presets[0]"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
+    #[test]
+    fn removed_framework_key_ts_loader_value_fails_with_migration_message() {
+        let loaded = zfb_config_loader::LoadedTsConfig {
+            config: serde_json::json!({ "framework": "zudo-react" }),
+            resolved_plugins: Vec::new(),
+        };
+        let message = format!(
+            "{:#}",
+            parse_loaded_config(loaded, Path::new("zfb.config.ts"), Path::new(".")).unwrap_err()
+        );
+        assert!(message.contains("zfb.config.ts"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn removed_framework_key_real_ts_config_fails_with_migration_message() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.ts"),
+            "export default { framework: 'zudo-react' };\n",
+        )
+        .await
+        .unwrap();
+        let message = format!("{:#}", load_from_dir(tmp.path()).await.unwrap_err());
+        assert!(message.contains("zfb.config.ts"), "{message}");
+        assert!(message.contains("framework key was removed"), "{message}");
+        assert!(message.contains("delete the key"), "{message}");
+    }
+
+    #[test]
+    fn removed_tailwind_key_is_rejected_in_project_and_preset_ts_values() {
+        for value in [
+            serde_json::json!({ "tailwind": {} }),
+            serde_json::json!({ "presets": [{ "tailwind": { "enabled": false } }] }),
+        ] {
+            let loaded = zfb_config_loader::LoadedTsConfig {
+                config: value,
+                resolved_plugins: Vec::new(),
+            };
+            let error = parse_loaded_config(loaded, Path::new("zfb.config.ts"), Path::new("."))
+                .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("tailwind key was removed in zfb 3"),
+                "{message}"
+            );
+            assert!(message.contains("wind: false"), "{message}");
+        }
+    }
+
+    #[test]
+    fn wind_validation_rejects_invalid_dark_selector() {
+        let config = config_with_wind(serde_json::json!({
+            "dark": { "attribute": "Data_theme", "value": "dark" }
+        }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("invalid dark attribute must fail");
+        assert!(error.to_string().contains("wind.dark.attribute"));
+
+        for value in ["", "dark\n"] {
+            let config = config_with_wind(serde_json::json!({
+                "dark": { "attribute": "data-theme", "value": value }
+            }));
+            let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+                WindSetting::Enabled(wind) => wind,
+                WindSetting::Disabled => panic!("wind object expected"),
+            })
+            .expect_err("invalid dark value must fail");
+            assert!(error.to_string().contains("wind.dark.value"));
+        }
+    }
+
+    #[test]
+    fn wind_validation_rejects_bad_owner_ids_and_authored_classes() {
+        let invalid_owner = config_with_wind(serde_json::json!({
+            "safelist": { "bad owner": ["block"] }
+        }));
+        let error = validate_wind_config(match invalid_owner.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("invalid owner id must fail");
+        assert!(error.to_string().contains("wind.safelist.bad owner"));
+
+        let invalid_class = config_with_wind(serde_json::json!({
+            "authoredClasses": { "two words": true }
+        }));
+        let error = validate_wind_config(match invalid_class.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("authored class must be a single token");
+        assert!(error.to_string().contains("wind.authoredClasses"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_false_authored_class_values() {
+        let config = config_with_wind(serde_json::json!({
+            "authoredClasses": { "prose": false }
+        }));
+        let error = validate_wind_config(match config.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("authored class entries must be true");
+        assert!(error.to_string().contains("wind.authoredClasses.prose"));
+    }
+
+    #[test]
+    fn wind_validation_rejects_invalid_manifest_declarations() {
+        let invalid_producer = config_with_wind(serde_json::json!({
+            "manifests": { "bad producer": { "path": "manifest.json" } }
+        }));
+        let error = validate_wind_config(match invalid_producer.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("invalid producer id must fail");
+        assert!(error.to_string().contains("wind.manifests.bad producer"));
+
+        let empty_path = config_with_wind(serde_json::json!({
+            "manifests": { "widgets": { "path": "" } }
+        }));
+        let error = validate_wind_config(match empty_path.wind.as_ref().unwrap() {
+            WindSetting::Enabled(wind) => wind,
+            WindSetting::Disabled => panic!("wind object expected"),
+        })
+        .expect_err("empty manifest path must fail");
+        assert!(error.to_string().contains("wind.manifests.widgets.path"));
     }
 
     // --- JsonSchema newtype tests ---------------------------------------------
@@ -2793,9 +3878,8 @@ mod tests {
         assert_eq!(cfg.public_dir, PathBuf::from("public"));
         assert_eq!(cfg.host, None);
         assert_eq!(cfg.port, None);
-        assert_eq!(cfg.framework, Framework::Preact);
         assert!(cfg.collections.is_empty());
-        assert!(cfg.tailwind.is_none());
+        assert!(cfg.wind.is_none());
         assert!(cfg.plugins.is_empty());
         // `stripMdExt` is opt-in; absent / default = disabled. Mirrors
         // the Sub 1 outcome byte-for-byte (zfb#127 / #129).
@@ -3443,16 +4527,15 @@ mod tests {
         assert_eq!(ch.class_prefix, "Hi_Token-");
     }
 
-    /// `roleClasses` set while `tailwind.enabled` is `false` (the
-    /// authored-CSS path) is ALLOWED — not an error — even though no
-    /// Tailwind safelist can be generated for those classes on that path.
+    /// `roleClasses` with `wind: false` is allowed with a warning because
+    /// mapped classes must exist in authored CSS.
     #[tokio::test]
-    async fn code_highlight_role_classes_with_tailwind_disabled_is_allowed() {
+    async fn code_highlight_role_classes_with_wind_disabled_is_allowed() {
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(
             tmp.path().join("zfb.config.json"),
             r#"{
-                "tailwind": { "enabled": false },
+                "wind": false,
                 "codeHighlight": {
                     "mode": "class",
                     "roleClasses": { "keyword": "my-keyword-class" }
@@ -3463,7 +4546,7 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path())
             .await
-            .expect("roleClasses + tailwind.enabled=false must be allowed (warning only)");
+            .expect("roleClasses + wind=false must be allowed (warning only)");
         let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
         assert_eq!(
             ch.role_classes.as_ref().and_then(|m| m.get("keyword")),
@@ -3541,12 +4624,11 @@ mod tests {
             "publicDir": "static",
             "host": "0.0.0.0",
             "port": 4000,
-            "framework": "react",
             "collections": [
                 { "name": "blog", "path": "content/blog" },
                 { "name": "docs", "path": "content/docs" }
             ],
-            "tailwind": { "enabled": false },
+            "wind": false,
             "plugins": [
                 { "name": "./plugin.mjs", "options": { "level": 2 } }
             ]
@@ -3559,11 +4641,10 @@ mod tests {
         assert_eq!(cfg.public_dir, PathBuf::from("static"));
         assert_eq!(cfg.host.as_deref(), Some("0.0.0.0"));
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::React);
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "blog");
         assert_eq!(cfg.collections[1].path, PathBuf::from("content/docs"));
-        assert_eq!(cfg.tailwind, Some(TailwindConfig { enabled: false }));
+        assert!(matches!(cfg.wind, Some(WindSetting::Disabled)));
         assert_eq!(cfg.plugins.len(), 1);
         assert_eq!(cfg.plugins[0].name, "./plugin.mjs");
     }
@@ -3907,7 +4988,7 @@ mod tests {
     #[tokio::test]
     async fn watch_poll_interval_ms_accepts_50_to_99_with_warning() {
         // 50..100 is accepted (not an error) but logs a warning — mirroring
-        // the `codeHighlight.roleClasses` + `tailwind.enabled=false`
+        // the `codeHighlight.roleClasses` + `wind=false`
         // precedent above, this only asserts the value loads and is stored;
         // the warning itself isn't captured (no tracing-capture harness
         // exists in this crate).
@@ -4221,7 +5302,7 @@ mod tests {
         .unwrap();
         let opts = LoadOptions {
             test_default_export_json: Some(
-                r#"{"port": 4000, "framework": "react", "collections": [{"name":"blog","path":"content/blog"}]}"#
+                r#"{"port": 4000, "collections": [{"name":"blog","path":"content/blog"}]}"#
                     .to_string(),
             ),
             ..LoadOptions::default()
@@ -4230,7 +5311,6 @@ mod tests {
             .await
             .expect("ts loader (mocked) should succeed");
         assert_eq!(cfg.port, Some(4000));
-        assert_eq!(cfg.framework, Framework::React);
         assert_eq!(cfg.collections.len(), 1);
         assert_eq!(cfg.collections[0].name, "blog");
     }
@@ -5571,44 +6651,42 @@ mod tests {
     /// `test_default_export_json` mock — this is Level 3 (executes the
     /// emitted bundle in real V8), not a logic-only test.
     ///
-    /// `framework` is deliberately given a WRONG VALUE, not omitted:
-    /// `Config.framework` is `#[serde(default)]` (defaults to `Preact`), so a
-    /// missing field loads cleanly and could never make this test fail.
+    /// An invalid enum value must name its field and the source file.
     #[cfg(feature = "embed_v8")]
     #[tokio::test]
     async fn invalid_zfb_config_ts_points_at_field_and_file() {
         let tmp = TempDir::new().unwrap();
         let ts_path = tmp.path().join("zfb.config.ts");
-        tokio::fs::write(&ts_path, "export default { framework: \"vue\" };\n")
+        tokio::fs::write(&ts_path, "export default { output: \"invalid\" };\n")
             .await
             .unwrap();
 
         let err = load_from_dir(tmp.path())
             .await
-            .expect_err("unknown framework variant should be rejected");
+            .expect_err("unknown output variant should be rejected");
         let msg = format!("{err:#}");
 
         assert!(
             msg.contains(ts_path.to_str().unwrap()),
             "error should name the absolute zfb.config.ts path: {msg}"
         );
-        // The `framework: unknown variant` shape is serde_path_to_error's
-        // `{path}: {inner}` rendering — a bare `contains("framework")` would
+        // The `output: unknown variant` shape is serde_path_to_error's
+        // `{path}: {inner}` rendering — a bare `contains("output")` would
         // also pass via the `--- received ---` JSON echo, which is exactly
         // the failure mode this test exists to rule out.
         assert!(
-            msg.contains("framework: unknown variant"),
+            msg.contains("output: unknown variant"),
             "error should name the bad field via its serde path: {msg}"
         );
         assert!(
-            msg.contains("preact") && msg.contains("react"),
-            "error should list the expected union values: {msg}"
+            msg.contains("`static`") && msg.contains("`hybrid`") && msg.contains("`auto`"),
+            "error should list supported output values: {msg}"
         );
     }
 
     /// Second real-pipeline error-quality case (issue #1359): a collection
     /// entry missing its required `path` field. `CollectionDef.path` has no
-    /// `#[serde(default)]`, so — unlike `framework` — omitting it is a
+    /// `#[serde(default)]`, so omitting it is a
     /// genuine schema error, letting this case exercise the missing-field
     /// branch of `serde_path_to_error` rather than the unknown-variant
     /// branch the sibling test above covers.

@@ -5,7 +5,7 @@
 //! which pages need to be re-rendered?"
 //!
 //! Consumes the resolved-dep output of Epic 3's module resolver
-//! ([`zfb_render::loader::ModuleLoader`]). The exact resolver output type is
+//! (the retired library loader). The exact resolver output type is
 //! not yet shared as a public struct, so this crate is intentionally
 //! structurally-typed: it accepts any iterable of `(page, deps)` tuples whose
 //! page is identified by its source path and whose deps are absolute paths.
@@ -181,7 +181,7 @@ pub struct AssetDeps {
     /// hydrates.
     pub islands: BTreeSet<String>,
     /// CSS-Modules source paths the page pulls in. Plain stylesheets that
-    /// land in the global Tailwind asset are not tracked here — those
+    /// land in the global CSS asset are not tracked here — those
     /// dirty every page through the regular `DepKind::Style` edge.
     pub css_modules: BTreeSet<PathBuf>,
 }

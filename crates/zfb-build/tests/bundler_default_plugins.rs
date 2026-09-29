@@ -72,7 +72,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal user-project tree exercising all three marker plugin
@@ -340,7 +339,7 @@ fn make_input(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -348,8 +347,7 @@ fn make_input(
         // as external — we don't need a node_modules tree for this
         // wiring test.
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join(outdir_name),

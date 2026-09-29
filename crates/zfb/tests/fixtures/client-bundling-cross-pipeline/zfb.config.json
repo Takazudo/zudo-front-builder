@@ -1,8 +1,5 @@
 {
-  "framework": "preact",
-  "tailwind": {
-    "enabled": false
-  },
+  "wind": false,
   "bundle": {
     "loaders": {
       ".fixture": "text"

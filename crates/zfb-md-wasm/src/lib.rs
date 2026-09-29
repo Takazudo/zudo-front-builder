@@ -29,7 +29,6 @@
 //! ```json
 //! {
 //!   "filename": "posts/hello.mdx",
-//!   "jsxRuntime": "preact",
 //!   "development": false,
 //!   "pipeline": { "theme": null, "gfm": {}, "cjkFriendly": true,
 //!                 "hardBreaks": false,
@@ -55,9 +54,8 @@
 //! [`render_html`]. `dialect` (`"markdown"` | `"mdx"`) is consumed only by
 //! [`render_html`]; when absent, `.md` selects CommonMark and `.mdx` selects
 //! MDX. [`compile`] remains MDX-only and accepts/ignores `dialect`, just as
-//! [`render_html`] accepts/ignores the compile-only `jsxRuntime`
-//! (`"preact"` | `"react"`) and `development` fields, so one options
-//! document can serve both tiers. `pipeline` is
+//! [`render_html`] accepts/ignores the compile-only `development` field,
+//! so one options document can serve both tiers. `pipeline` is
 //! [`zfb_content::facade::PipelineOptions`] verbatim — see that type's
 //! rustdoc for the authoritative shape.
 //! Unknown fields are rejected at both levels (`deny_unknown_fields`).
@@ -129,28 +127,7 @@ use zfb_content::syntect_highlight::{
     DEFAULT_CLASS_HIGHLIGHT_PREFIX,
 };
 #[cfg(feature = "compile")]
-use zfb_render::swc_pipeline::{CompileOptions, JsxRuntime, SwcPipeline};
-
-/// `jsxRuntime` option values, mirroring
-/// [`zfb_render::swc_pipeline::JsxRuntime`].
-#[cfg(feature = "render")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum JsxRuntimeOption {
-    #[default]
-    Preact,
-    React,
-}
-
-#[cfg(feature = "compile")]
-impl From<JsxRuntimeOption> for JsxRuntime {
-    fn from(o: JsxRuntimeOption) -> Self {
-        match o {
-            JsxRuntimeOption::Preact => JsxRuntime::Preact,
-            JsxRuntimeOption::React => JsxRuntime::React,
-        }
-    }
-}
+use zfb_render::swc_pipeline::{CompileOptions, SwcPipeline};
 
 /// The wasm-boundary options document — see the crate docs for the JSON
 /// shape. Wraps the facade's [`PipelineOptions`] under `pipeline` and
@@ -162,7 +139,6 @@ struct WasmOptions {
     filename: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_non_null")]
     dialect: Option<ParseDialect>,
-    jsx_runtime: JsxRuntimeOption,
     development: bool,
     pipeline: PipelineOptions,
 }
@@ -414,7 +390,6 @@ struct Prepared {
     pipeline: Pipeline,
     filename: String,
     #[cfg(feature = "compile")]
-    jsx_runtime: JsxRuntimeOption,
     #[cfg(feature = "compile")]
     development: bool,
 }
@@ -524,7 +499,6 @@ fn prepare(
         pipeline,
         filename,
         #[cfg(feature = "compile")]
-        jsx_runtime: opts.jsx_runtime,
         #[cfg(feature = "compile")]
         development: opts.development,
     })
@@ -743,7 +717,6 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
         body_offset,
         mut pipeline,
         filename,
-        jsx_runtime,
         development,
     } = prepared;
 
@@ -766,7 +739,6 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
 
     let swc_opts = CompileOptions {
         filename,
-        jsx_runtime: jsx_runtime.into(),
         development,
     };
     match SwcPipeline::new().compile(&jsx, &swc_opts) {

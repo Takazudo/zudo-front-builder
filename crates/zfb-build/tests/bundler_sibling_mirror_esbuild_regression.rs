@@ -50,7 +50,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Standard content-root dirs `bundle()` expects under a project.
@@ -73,20 +72,19 @@ fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
     (tmp_root.to_path_buf(), project)
 }
 
-/// Shared `BundlerInput` defaults for these fixtures: Preact production
-/// build, real esbuild binary, runtime/preact bare specifiers marked
+/// Shared `BundlerInput` defaults for these fixtures: owned-runtime production
+/// build, real esbuild binary, owned runtime bare specifiers marked
 /// external (mirrors `bundler_exclude_glob.rs`'s `make_input`).
 fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::Preact,
         BundleMode::Production,
         project.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

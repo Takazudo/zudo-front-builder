@@ -11,9 +11,8 @@
 //! `pages/index.tsx` (home — lists every post), `pages/about.tsx`, and
 //! `pages/404.tsx` (emits a flat `dist/404.html`, not `dist/404/index.html`
 //! — see that file's own header comment). A full build emits 6 pages.
-//! Tailwind is ENABLED in the template's `zfb.config.ts`, so this build also
-//! exercises the tailwindcss-v4 subprocess slot staged by
-//! `crates/zfb/build.rs`.
+//! The template selects zudo-wind in `zfb.config.ts`, so this build also
+//! exercises the owned CSS engine with its project-defined tokens and reset.
 //!
 //! `content/blog/markdown-showcase.md` renders one example of every
 //! markdown feature the template's `zfb.config.ts` `markdown` block turns
@@ -39,24 +38,18 @@
 //! ## No pnpm install required
 //!
 //! `zfb build` needs no project-level `node_modules`: when none is present,
-//! the embedded `@takazudo/zfb`, `@takazudo/zfb-runtime`, `preact`, and
-//! `preact-render-to-string` packages (staged into the binary by
-//! `crates/zfb/build.rs`) are extracted on demand
-//! (`render_pipeline::embedded_node_modules`), and the embedded esbuild /
-//! tailwindcss-v4 helper binaries are extracted the same way
-//! (`render_pipeline::embedded_binary`). See `build.rs:1344-1379` for the
-//! fallback wiring. This mirrors `content_snapshot_no_deferred.rs`, which
+//! the embedded `@takazudo/zfb` and `@takazudo/zfb-runtime` packages
+//! (staged into the binary by `crates/zfb/build.rs`) are extracted on demand
+//! (`render_pipeline::embedded_node_modules`), and the embedded esbuild
+//! helper binary is extracted the same way
+//! (`render_pipeline::embedded_binary`); wind runs inside `zfb`. This mirrors
+//! `content_snapshot_no_deferred.rs`, which
 //! runs `zfb build` with no extra env vars for the same reason.
 //!
 //! ## Skip behaviour
 //!
-//! Guards against a missing embedded V8 / esbuild / tailwindcss-v4 slot
-//! (e.g. a build without the `embed_v8` feature, or a stripped CI image)
-//! via the same known-skip indicators used across the sibling build-command
-//! tests (`content_snapshot_no_deferred.rs`, `build_package_routes.rs`,
-//! `dev_dep_invalidation_1284_e2e.rs`): `"embed_v8"`, `"no esbuild"`,
-//! `"no tailwind"`, or the tailwindcss-v4 binary-not-found message emitted
-//! by `zfb-css/src/engine.rs` (`"tailwindcss"` + `"not found"`).
+//! Guards against missing embedded V8 or esbuild using the same known-skip
+//! indicators as sibling build-command tests: `"embed_v8"` and `"no esbuild"`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,7 +59,7 @@ use zfb_test_utils::zfb_binary;
 
 /// The 3 post slugs in `templates/basic-blog/content/blog/` (filename stem,
 /// per `zfb_content::collection::derive_slug_for_file`).
-const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-tailwind"];
+const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-zudo-wind"];
 
 /// Substrings expected in the built `markdown-showcase` page, one per
 /// enabled markdown feature it demonstrates. Paired with a label naming the
@@ -136,13 +129,10 @@ fn template_dir() -> PathBuf {
 }
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary), matching the skip pattern used
+/// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).
@@ -292,7 +282,7 @@ fn end_to_end_basic_blog_build() {
         if is_known_skip(&combined) {
             eprintln!(
                 "[end_to_end_basic_blog_build] zfb build exited non-zero with \
-                 a known-skip indicator (V8/esbuild/tailwind unavailable); \
+                 a known-skip indicator (V8/esbuild unavailable); \
                  skipping test.\nstdout: {stdout}\nstderr: {stderr}"
             );
             return;

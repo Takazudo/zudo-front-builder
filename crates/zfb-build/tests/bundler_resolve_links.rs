@@ -40,7 +40,6 @@ use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Write the fixture project tree:
@@ -103,13 +102,12 @@ fn make_input_with_resolve(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join(outdir_name),
@@ -163,13 +161,12 @@ fn make_input_without_resolve(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join(outdir_name),

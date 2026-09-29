@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # scripts/release-binary-slot-restore.sh
 #
-# Save/restore helpers for the two shared, arch-unqualified vendor binary
-# slots that crates/zfb/build.rs's download_binaries() stages at:
+# Save/restore helpers for the shared, arch-unqualified vendor binary
+# slot that crates/zfb/build.rs's download_binaries() stages at:
 #   - crates/zfb/binaries/esbuild/esbuild
-#   - crates/zfb/binaries/tailwindcss-v4
 #
 # scripts/build-macos-x64-local.sh cross-builds zfb for x86_64-apple-darwin
 # from an arm64 host. build.rs correctly detects that the staged arm64
-# binaries fail the x64 SHA-256 pins and overwrites BOTH slots with
-# darwin-x64 binaries — correct for the cross-build itself, but it leaves
-# the shared repo slots wrong-arch for the host afterward until something
+# binary fails the x64 SHA-256 pin and overwrites the slot with
+# a darwin-x64 binary — correct for the cross-build itself, but it leaves
+# the shared repo slot wrong-arch for the host afterward until something
 # re-runs the build script natively. That is the pollution source behind
 # issue #2178 (a fresh worktree's test lookups walk up to the main repo's
 # slot and find the wrong architecture).
@@ -25,8 +24,8 @@
 #
 # restore_binary_slots removes its backup directory once every slot has been
 # restored SUCCESSFULLY, so repeated local release builds don't accumulate
-# stale copies of the ~75 MB tailwindcss-v4 slot under $TMPDIR. If any slot
-# restore failed the backup is RETAINED and its path named on stderr — at
+# stale backup copies under $TMPDIR. If the slot
+# restore fails, the backup is RETAINED and its path named on stderr — at
 # that point it holds the only surviving copy of the original slot bytes
 # while the shared slot is left wrong-arch or partially overwritten, so
 # deleting it would destroy the only route to recovery or a retry.
@@ -41,7 +40,6 @@
 # workspace_root).
 BINARY_SLOT_PATHS=(
   "crates/zfb/binaries/esbuild/esbuild"
-  "crates/zfb/binaries/tailwindcss-v4"
 )
 
 # Set by save_binary_slots(); restore_binary_slots() reads it and removes it
@@ -122,8 +120,7 @@ restore_binary_slots() {
   fi
   # Every slot was restored successfully, so the backup has served its
   # purpose — remove it so repeated local release builds don't accumulate
-  # stale copies of the ~75 MB tailwindcss-v4 slot under $TMPDIR (codex
-  # review finding).
+  # stale backup copies under $TMPDIR.
   rm -rf "$BINARY_SLOT_BACKUP_DIR"
   BINARY_SLOT_BACKUP_DIR=""
   return 0

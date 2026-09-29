@@ -17,8 +17,9 @@
 //! ```
 //!
 //! (Empirically confirmed against esbuild 0.27.7 while authoring this test;
-//! `--main-fields` is only set for `Framework::React`, so a Preact/neutral
-//! bundle has an empty main-fields list and cannot resolve such a package.)
+//! `--main-fields` is emitted only when the caller explicitly sets the knob,
+//! so the default external-runtime bundle has an empty main-fields list and cannot
+//! resolve such a package.)
 //!
 //! `bundle.exclude` is the control that keeps the migration build green: it
 //! drops the offending file from BOTH the shadow tree and the glob expansion.
@@ -43,7 +44,6 @@
 use std::fs;
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Write a hand-rolled CJS-only package into `<root>/node_modules/<name>`.
@@ -79,9 +79,9 @@ fn write_cjs_only_package(root: &std::path::Path, name: &str) {
     .unwrap();
 }
 
-/// Shared `BundlerInput` for these fixtures: Preact + neutral worker bundle
+/// Shared `BundlerInput` for these fixtures: external package + neutral worker bundle
 /// (the failing combination), node_modules adjacent to the project so the
-/// hand-rolled package is resolvable, runtime/preact bare specifiers marked
+/// hand-rolled package is resolvable, owned runtime bare specifiers marked
 /// external so the synthetic `entry.mjs` itself bundles.
 fn make_input(
     root: &std::path::Path,
@@ -90,14 +90,13 @@ fn make_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::Preact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

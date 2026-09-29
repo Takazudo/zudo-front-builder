@@ -6089,17 +6089,16 @@ name = "zfb-css"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64",
  "hex",
  "lightningcss",
  "serde_json",
  "sha2",
- "sourcemap",
  "syntect",
  "tempfile",
  "thiserror",
  "zfb-content",
  "zfb-types",
+ "zudo-wind",
 ]
 
 [[package]]
@@ -6320,4 +6319,15 @@ dependencies = [
  "potential_utf",
  "resb",
  "serde",
+]
+
+[[package]]
+name = "zudo-wind"
+version = "0.0.0"
+dependencies = [
+ "ignore",
+ "lightningcss",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]

@@ -24,7 +24,7 @@ my-site/
 │   └── blog/
 │       ├── hello-zfb.mdx
 │       ├── markdown-showcase.md
-│       └── styling-with-tailwind.md
+│       └── styling-with-zudo-wind.md
 ├── lib/
 │   └── types.ts
 ├── styles/
@@ -72,7 +72,7 @@ Content collections. `content/blog/` holds the three seed entries of a `blog` co
 
 - `hello-zfb.mdx` — how a page becomes HTML, and what MDX adds over plain Markdown.
 - `markdown-showcase.md` — worked examples of the markdown features the template turns on (tables, strikethrough, task lists, footnotes, alerts, enriched code blocks, and the heading-marker TOC), each linked to its reference page.
-- `styling-with-tailwind.md` — where the Tailwind setup lives and how dark mode is wired.
+- `styling-with-zudo-wind.md` — the starter's utility tokens, authored CSS, and dark-mode setup.
 
 Collection schemas are declared in `zfb.config.ts` under `collections`. See [Content Collections](../concepts/content-collections.mdx) for the query API.
 
@@ -88,9 +88,9 @@ Shared TypeScript utilities. The template ships `lib/types.ts` with the frontmat
 
 ## styles/
 
-Global CSS. `styles/global.css` is the entry point, imported from `layouts/default.tsx`. It opens with `@import "tailwindcss";`, defines the project's theme tokens in an `@theme` block, binds Tailwind's `dark:` variant to the `data-theme` attribute the theme toggle writes, and closes with a scoped `.prose` block for rendered Markdown bodies.
+Global CSS. `styles/global.css` is the entry point, imported from `layouts/default.tsx`. It contains authored CSS for the site's base styles and `.prose` block. The `wind` object in `zfb.config.ts` supplies the starter's utility tokens, breakpoint, reset, and `data-theme` dark variant; wind configuration is data rather than stylesheet directives.
 
-The split is deliberate: page chrome in `.tsx` files uses Tailwind utilities inline, while Markdown produces plain tags no utility class can reach, so those are styled once in CSS and opted into with `class="prose"`. The template sets no `tailwind` key in its config — Tailwind is on unless you set `tailwind: { enabled: false }`. See [Styling](../concepts/styling.mdx).
+The split is deliberate: page chrome in `.tsx` files uses zudo-wind utilities inline, while Markdown produces plain tags no utility class can reach, so those are styled once in CSS and opted into with `class="prose"`. The starter explicitly configures `wind`; other projects can omit it for the empty enabled default, or set `wind: false` for authored CSS only. See [Styling](../concepts/styling.mdx) and [zudo-wind configuration](../zudo-wind/configuration.mdx).
 
 ## public/
 
@@ -117,7 +117,19 @@ The template scaffolds a TypeScript config that wraps its object in `defineConfi
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { accent: "var(--color-accent)" },
+      sizes: { "2xl": "42rem" },
+      // The starter supplies the rest of its explicit palette and scales here.
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    authoredClasses: { prose: true },
+  },
   collections: [{ name: "blog", path: "content/blog", schema: { /* … */ } }],
   markdown: {
     gfm: { taskListItem: true, footnoteDefinition: true },
@@ -126,9 +138,9 @@ export default defineConfig({
 });
 ```
 
-Every option zfb already defaults to is omitted on purpose — `outDir`, `publicDir`, and `tailwind` are all left implicit, so the file shows only the decisions the project actually made. What remains is three top-level keys: `framework` (`"preact"`), the `blog` collection (with a JSON Schema that `zfb check` validates every post's frontmatter against), and the markdown opt-ins — GFM task lists and footnotes on top of the always-on tables and strikethrough, plus [GitHub alerts](../markdown-features/github-alerts.mdx), [code enrichment](../markdown-features/code-enrichment.mdx), and the [heading-marker TOC](../markdown-features/heading-marker-toc.mdx). The [markdown features index](../markdown-features/index.mdx) is the full map of what else you can turn on.
+This shortened example shows the starter's explicit wind settings alongside its `blog` collection and markdown opt-ins. `outDir` and `publicDir` use their defaults; the full starter palette and scales are declared in its config. GFM task lists and footnotes are enabled on top of the always-on tables and strikethrough, along with [GitHub alerts](../markdown-features/github-alerts.mdx), [code enrichment](../markdown-features/code-enrichment.mdx), and the [heading-marker TOC](../markdown-features/heading-marker-toc.mdx). The [markdown features index](../markdown-features/index.mdx) is the full map of what else you can turn on.
 
-The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`, the `zfb dev` server default — `zfb preview` falls back to `4321` instead when unset), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
+The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`, the `zfb dev` server default — `zfb preview` falls back to `4321` instead when unset), `wind`, `collections`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 
 `outDir` is honored by `zfb dev`, `zfb build`, and `zfb preview`. For build and preview, CLI `--outdir` overrides config `outDir`; the built-in fallback is `dist/`.
 
@@ -136,10 +148,10 @@ A plain `zfb.config.json` is also accepted as a legacy fallback — the schema i
 
 ## package.json, tsconfig.json, README.md, .gitignore
 
-Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and four scripts: `dev`, `build`, `preview`, and `typecheck` (which runs `zfb check` — TypeScript plus collection-schema validation). `zfb new` exact-pins `@takazudo/zfb` and `@takazudo/zfb-runtime` to the version of the CLI that scaffolded the project — an exact pin like `=0.1.0-next.7`, not a `^`/`~` range — so a fresh scaffold never silently drifts to a future release.
+Standard project plumbing. `package.json` declares project dependencies and four scripts: `dev`, `build`, `preview`, and `typecheck` (which runs `zfb check` — TypeScript plus collection-schema validation). The owned JSX runtime is a subpath of `@takazudo/zfb`, so it does not require a separate framework package. `zfb new` pins its zfb packages to the version of the CLI that scaffolded the project, so a fresh scaffold does not silently drift to a future release.
 
-`tsconfig.json` is configured so TSX across the project type-checks cleanly, with a single path alias: `~/*` resolves to the project root, and the template uses it consistently in every import.
+`tsconfig.json` points the automatic JSX transform at `@takazudo/zfb/zudo-react` through `jsxImportSource` and configures one path alias: `~/*` resolves to the project root, and the template uses it consistently in every import.
 
 `README.md` is a short tour of the same tree, plus two tables listing which markdown features are on in the starter and which are available but left off, each linked to its reference page.
 
-The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus the temp files zfb's pipelines synthesise while a build is in flight — including `**/zfb-tailwind-entry-*.css`, the entry file the Tailwind pipeline writes next to your CSS entry (see [Styling](../concepts/styling.mdx)).
+The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control. It also covers temporary files staged while zfb bundles islands, plugins, and module workers; those files are cleaned up after a run and ignored in case a process is interrupted.

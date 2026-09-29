@@ -88,8 +88,8 @@ tracing = "0.1"
 # the TS-config path (config-loader.mjs returns Node-style file URLs).
 url = "2"
 # Source-file discovery for the production asset emit path: the CSS
-# pipeline takes a `Vec<PathBuf>` of project sources to feed into
-# Tailwind's content scanner, and the islands scanner takes the same
+# pipeline takes a `Vec<PathBuf>` of project sources for zudo-wind
+# candidate extraction, and the islands scanner takes the same
 # shape as DFS entry points.
 walkdir = { workspace = true }
 # `default-features = false` for the V8 gate (issue #371, sub-task

@@ -40,7 +40,6 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port. The built-in fallback differs per command when this is omitted: `zfb dev` falls back to `3000`, `zfb preview` falls back to `4321`. Setting `port` here overrides both commands' fallback; the CLI `--port` flag in turn overrides this config value. See [CLI Reference](./cli.mdx).
 - `allowedHosts?: string[]` — Host header values the dev/preview server accepts when bound to a non-localhost interface (mirrors Vite's `server.allowedHosts`). Only consulted for non-loopback binds; `localhost`, the explicitly bound host, and any IP-literal Host (`127.0.0.1`, `[::1]`, the LAN URLs the startup banner prints) are always allowed — DNS rebinding needs a DNS name, so raw IPs are safe. Entries match exactly (case-insensitive, request port stripped); a leading-dot entry like `".example.com"` also matches subdomains.
-- `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
 - `collections?: CollectionDef[]` — content collections. Each entry has:
   - `name: string` — identifier used in `getCollection` calls.
   - `path: string` — directory relative to the project root.
@@ -49,7 +48,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
   - `exclude?: string[]` — glob patterns; matching entries are dropped (evaluated after `include`).
   - `idStripSuffix?: string` — suffix stripped from each entry's slug and module specifier (e.g. `".en"` for multi-locale layouts).
   - `allowOutsideRoot?: boolean` — opt in to a `path` that escapes the project root via `..` (e.g. a monorepo-shared content directory living outside this package). Default `false` keeps `path` confined to the project root. Absolute paths are rejected regardless of this flag — only `..`-relative escapes are relaxed. See [Collections outside the project root](../concepts/content-collections.mdx#collections-outside-the-project-root) for the monorepo use case and the preset-trust and dev-watching caveats.
-- `tailwind?: { enabled?: boolean }` — Tailwind options. `enabled` defaults to `true`; set `tailwind: { enabled: false }` to disable Tailwind while keeping authored CSS and CSS Modules.
+- `wind?: false | WindConfig` — zudo-wind generation and configuration. An omitted key is equivalent to `{}`: generation is enabled with reset `none`, empty token maps and the source plan supplied by zfb. `false` disables wind generation, token validation, manifests and wind candidate scanning while authored CSS, CSS Modules, and highlighting continue; leftover stylesheet directive checks still run. `WindConfig` accepts optional `spec?: 1`, `reset?: "none" | "minimal-v1" | "owned-v1"`, `tokens`, `breakpoints`, `dark`, `safelist`, `authoredClasses`, and `manifests`; each nested object has a strict shape. See [zudo-wind configuration](../zudo-wind/configuration.mdx) for the complete schema and defaults.
 - `prefetch?: { disabled?: boolean }` — prefetch options. When `disabled: true`, the runtime's prefetch wiring is skipped entirely via a build-time meta tag.
 - `minifyHtml?: boolean` — opt in to production HTML minification. Default: `false` (off). The minifier runs as Rust-side post-processing and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped. `zfb build --minify-html` / `--no-minify-html` can override the config value for one build.
 - `strictBrokenLinks?: boolean` — raise broken-link diagnostics from markdown link validation to errors, failing `zfb build` with a non-zero exit instead of merely warning. Default: `false` (off, and the key may be omitted entirely). When `markdown.features.linkValidation` is absent, setting this to `true` **force-enables** link validation with its defaults rather than doing nothing; when it is present, only its `failOnBroken` is overridden and every other setting is preserved. `zfb build --strict-broken` / `--no-strict-broken` can override the config value for one build. Build-only — `zfb dev` is never affected. Scope is the `linkValidation` mechanism only; the separate `resolveMarkdownLinks.onBrokenLinks` knob below is unaffected. See [Link validation](../markdown-features/link-validation.mdx).
@@ -92,9 +91,15 @@ The following keys are part of the same `ZfbConfig` type — `defineConfig` and 
   - `themeDark?: string` — dark-mode syntect theme name for dual-theme highlighting. Must be set **together with** `themeLight`; mutually exclusive with `theme`. See `themeLight` for the full dual-mode contract.
   - `mode?: "inline" | "class"` — token output mode. `"inline"` (**default**) bakes per-token colours into `style="color:…"` (or the dual `--shiki-*` properties). `"class"` emits a semantic role class per token instead, so colours resolve through re-themeable CSS custom properties. **Class mode is mutually exclusive with every theme knob** (`theme`, `themeLight`, `themeDark`, `themesDir`) — themes do not affect class emission, so setting one alongside `mode: "class"` is a build error. See the guide's [Class mode](../guides/syntax-highlighting.mdx#class-mode-recommended) section.
   - `classPrefix?: string` — class-name prefix for class mode (default `"hi-"`, yielding `hi-root`, `hi-kw`, …). Must match `/^[A-Za-z][A-Za-z0-9_-]*$/` (first char an ASCII letter; rest letters, digits, `_`, or `-`); an empty, leading-digit, or otherwise non-matching prefix is a build error. Only meaningful in class mode. The shipped default stylesheet's `.hi-*` selectors are rewritten to the configured prefix; the `--zfb-hi-*` custom properties stay `--zfb-hi-*`.
-  - `roleClasses?: Partial<Record<Role, string>>` — per-role class overrides for class mode, e.g. `{ keyword: "text-violet-600 dark:text-violet-400" }`. Keys must be one of the 18 fixed role names (`escape`, `operator`, `comment`, `string`, `number`, `constant`, `keyword`, `function`, `type`, `namespace`, `property`, `variable`, `tag`, `attribute`, `punctuation`, `inserted`, `deleted`, `heading`) — an unknown key is a build error. A value may hold several space-separated classes but must not contain the bare token `line` (collides with the code-enrichment line wrapper). Mapped Tailwind utilities are auto-safelisted via `@source inline`; setting `roleClasses` while `tailwind.enabled` is `false` is allowed but emits a build warning (no safelist can be generated on the authored-CSS path).
+  - `roleClasses?: Partial<Record<Role, string>>` — per-role class overrides for class mode, e.g. `{ keyword: "text-violet" }`. Keys must be one of the 18 fixed role names (`escape`, `operator`, `comment`, `string`, `number`, `constant`, `keyword`, `function`, `type`, `namespace`, `property`, `variable`, `tag`, `attribute`, `punctuation`, `inserted`, `deleted`, `heading`) — an unknown key is a build error. A value may hold several space-separated classes but must not contain the bare token `line` (collides with the code-enrichment line wrapper). A valid zudo-wind utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. With `wind: false`, provide any desired role styling in authored CSS. Audit may report an ignored role value; see [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx).
   - `defaultStylesheet?: boolean` — whether to inject the built-in `--zfb-hi-*` token stylesheet (`zfb-hi.css`) into the combined `styles.css`. Default `true`. Only meaningful in class mode; set `false` to supply your own stylesheet entirely.
 - `pluginHookTimeoutSecs` — timeout (seconds) for plugin hook invocations.
+
+<Note title="Removed keys">
+
+Leftover top-level `tailwind` or `"framework"` keys fail config loading with a key-specific migration error. Move style configuration to `wind` as needed; use `wind: false` for authored CSS only. Remove the old runtime selector and follow the [v3 migration guide](../guides/migrating-to-v3.mdx).
+
+</Note>
 
 ## Bundle settings
 
@@ -172,7 +177,7 @@ explicitly when using the "neutral" platform.` After: esbuild consults
 `bundle.external` — bare specifiers to mark `--external` for the neutral
 pass, so esbuild leaves them unbundled instead of trying to resolve them.
 The other escape hatch for a CJS-only dependency that `mainFields` alone
-can't satisfy. Appended to the framework-provided externals.
+can't satisfy. zfb combines this list with its own external specifiers for the pass.
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -383,14 +388,12 @@ import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   outDir: "dist",
-  framework: "preact",
   collections: [
     {
       name: "blog",
       path: "content/blog",
     },
   ],
-  tailwind: { enabled: true },
 });
 ```
 
@@ -400,14 +403,12 @@ The loader accepts `zfb.config.ts` (preferred) and `zfb.config.json` (legacy fal
 // zfb.config.json — legacy form, still supported
 {
   "outDir": "dist",
-  "framework": "preact",
   "collections": [
     {
       "name": "blog",
       "path": "content/blog"
     }
-  ],
-  "tailwind": { "enabled": true }
+  ]
 }
 ```
 

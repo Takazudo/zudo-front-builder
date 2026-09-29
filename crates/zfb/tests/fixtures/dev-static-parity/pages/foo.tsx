@@ -7,7 +7,7 @@ export default function FooPage() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>Foo page</title>
       </head>
       <body>

@@ -28,7 +28,6 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, NodeModulesStagingStats};
-use zfb_render::adapters::Framework;
 
 const COLLECTION_ROOT: &str = "../../packages/ui/src/components";
 
@@ -164,7 +163,10 @@ fn staging_stats(
     bundle_exclude: Vec<String>,
 ) -> NodeModulesStagingStats {
     let input = BundlerInput {
-        external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+        external: vec![
+            "@takazudo/zfb/zudo-react".into(),
+            "@takazudo/zfb-runtime".into(),
+        ],
         mock_subprocess_output: Some("export default {};\n".to_string()),
         node_modules_dir: Some(site.join("node_modules")),
         // Any non-empty `paths` map makes the closure resolve through
@@ -178,9 +180,9 @@ fn staging_stats(
         )]),
         content_collections: collections,
         bundle_exclude,
+        zudo_react_island_names: Some(vec![]),
         ..BundlerInput::for_project(
             site.to_path_buf(),
-            Framework::Preact,
             BundleMode::Production,
             site.join("dist"),
             None,

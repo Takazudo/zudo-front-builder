@@ -1,12 +1,13 @@
 ---
 title: Island
-description: Wrap a component as a client-hydrated island using the Island JSX wrapper.
+description: Wrap one registered component as a client island with a checked JSON props boundary.
 sidebar_position: 4
 ---
 
 ## The `<Island>` wrapper
 
-Import `Island` from `"@takazudo/zfb"` and wrap any component that should hydrate in the browser. Everything else stays server-rendered HTML.
+Import `Island` from `@takazudo/zfb` and wrap one component that should run in
+the browser. The page and the rest of the tree are rendered as ordinary HTML.
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -17,52 +18,108 @@ export default function Page() {
     <main>
       <h1>My Page</h1>
       <Island when="visible">
-        <Counter />
+        <Counter label="Clicks" />
       </Island>
     </main>
   );
 }
 ```
 
-At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The generated hydration bootstrap imports `mountIslands` from `"@takazudo/zfb/runtime"`, queries these markers, and mounts the component when the `when` condition fires. After the generated `mount()` function returns, the runtime adds the `data-zfb-island-mounted` marker.
+The wrapper remains a `<div>` with the existing `data-zfb-island*` boundary
+attributes. A normal island carries `data-zfb-island`; a skip-SSR island carries
+`data-zfb-island-skip-ssr`. The wrapper also carries its scheduling value,
+`data-zfb-transport="json/1"`, `data-zfb-protocol="zudo-react/1"`, a nonempty
+`data-zfb-build` identity, and `data-props` even when the props are `{}`. The
+client checks this metadata before it runs component setup.
 
-## IslandProps
+`Island` is an SDK boundary helper. The runtime itself exposes a branded
+description and child model from its core entry:
 
 ```ts
-interface IslandProps {
-  when?: When;
-  media?: string;
-  ssrFallback?: VNode;
-  children?: VNode;
-}
+import type {
+  Child,
+  Component,
+  Description,
+  ElementType,
+} from "@takazudo/zfb/zudo-react";
 ```
 
-- `when` — hydration strategy. Defaults to `"load"`. See [Hydration strategies](#hydration-strategies) below.
-- `media` — CSS media query string for `when="media"` islands. The island hydrates when this query first matches (including later viewport changes via resize or rotation). Required when `when="media"`; ignored (with a dev warning) for other strategies.
-- `ssrFallback` — enables SSR-skip mode (equivalent to Astro's `client:only`). When provided, the heavy `children` are **not** evaluated server-side; `ssrFallback` is rendered in their place and the client swaps in the real component on hydration.
-- `children` — the component to hydrate.
+`Description` exposes `type`, `props`, and `key` with a `$$zudo` brand. Its
+factories copy props and do not run the component. `Child` is a synchronous
+scalar, description, reactive scalar, or nested array of child values. Copying
+a description with ordinary object spread is supported; constructing an
+unbranded lookalike is not.
+
+## The island boundary
+
+After empty JSX children are flattened away, the wrapper accepts exactly one
+description whose type is a registered synchronous function component. A raw
+string, host element, multiple component descriptions, unregistered function,
+or nested island boundary fails during server rendering. The child component
+cannot receive nonempty `props.children`, because children do not cross the
+island boundary implicitly. Null, undefined, booleans, and recursively empty
+arrays count as empty and are omitted.
+
+The server component name must exactly match zfb's statically scanned marker
+name (`type.displayName ?? type.name`). Anonymous, conflicting, and
+unregistered names fail rather than guessing which client entry to load. The
+client also verifies the same component name and nonempty build identity from
+the wrapper before setup.
+
+Only JSON data crosses in `data-props`. The top-level value must be a plain
+record; ordinary and null-prototype records are accepted. Nested values may be
+null, booleans, strings, finite numbers, dense arrays, and plain records.
+Repeated references serialize by value. Getters and custom `toJSON` methods
+are never invoked.
+
+The serializer rejects undefined values and array holes, functions, symbols,
+bigints, non-finite numbers, cycles, class instances, dates, maps, sets, DOM
+nodes, promises, descriptions, and signals. It also rejects accessors,
+non-enumerable or symbol properties, and the own keys `__proto__`, `prototype`,
+and `constructor`. Nested properties named `children` are ordinary JSON data;
+only the wrapper's top-level empty `children` is omitted. A bad server payload
+fails the page render; an invalid client payload fails that island alone.
+
+The wrapper element and the `data-zfb-island*` names stay stable for selectors
+and persistence. Hydration comment regions are emitted only inside the island
+subtree. A hand-authored persisted wrapper remains supported when it includes
+the complete marker, scheduling, transport, protocol, build, and props
+metadata, and its inner HTML was rendered with
+`renderToString(child, { island: identity })`. Partial legacy wrappers do not
+receive inferred metadata. The existing `data-zfb-transition-persist` and
+`data-zfb-transition-persist-props` attributes remain available on that
+wrapper.
 
 ## Hydration strategies
 
-The `when` prop accepts four values, all shipped today:
+The `when` prop accepts four values. The default is `"load"`, and the emitted
+wrapper always has a `data-when` value.
 
 | Value | Behaviour |
 | --- | --- |
-| `"load"` | Hydrate immediately when the page's JavaScript runs. This is the default when `when` is omitted. |
-| `"visible"` | Hydrate when the island's root element enters the viewport (IntersectionObserver, threshold 0). Cheapest deferral for off-screen content. |
-| `"idle"` | Hydrate during the browser's next idle callback. Falls back to `setTimeout(0)` on platforms without `requestIdleCallback`. |
-| `"media"` | Hydrate when a CSS media query first matches (`window.matchMedia`). Requires the companion `media` prop. Continues to respond to later viewport changes (resize, orientation). Degrades to immediate hydration when `matchMedia` is unavailable. **Note:** SSR-skip (`ssrFallback`) islands ignore `when` entirely — they render immediately. |
+| `"load"` | Adopt the server DOM as soon as the client bundle runs. |
+| `"visible"` | Adopt when the wrapper enters the viewport. |
+| `"idle"` | Adopt during the browser's next idle callback. |
+| `"media"` | Adopt when the required `media` query first matches. |
+
+For media scheduling, pass both the strategy and a nonempty query:
 
 ```tsx
-// Hydrate only on narrow viewports (e.g. mobile menu)
 <Island when="media" media="(max-width: 768px)">
   <MobileMenu />
 </Island>
 ```
 
-## SSR-skip mode
+The browser can cancel a pending trigger if the root is removed. If a required
+scheduling API is unavailable, the runtime uses its immediate fallback. The
+same scheduling rules apply to skip-SSR islands.
 
-Pass `ssrFallback` to skip server rendering the heavy child entirely:
+## Skip server rendering
+
+Pass `ssrFallback` when the child must not run on the server. The server checks
+its identity and props, then renders the fallback without hydration markers.
+When the client trigger fires, `mount` builds the child off-DOM and replaces
+the fallback only after setup and validation succeed:
 
 ```tsx
 import { Island } from "@takazudo/zfb";
@@ -70,158 +127,67 @@ import HeavyChart from "./HeavyChart";
 
 export default function Page() {
   return (
-    <Island ssrFallback={<div>Loading chart…</div>}>
-      <HeavyChart data={data} />
+    <Island ssrFallback={<div>Loading chart…</div>} when="visible">
+      <HeavyChart data={chartData} />
     </Island>
   );
 }
 ```
 
-The server emits `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>`. On hydration the client runtime renders `HeavyChart` into the placeholder and adds the same `data-zfb-island-mounted` marker after its generated `mount()` function returns.
+If setup fails or activation is cancelled, the fallback stays in place.
 
-## Post-mount marker
+## Mount state and persisted roots
 
-`data-zfb-island-mounted` appears on both hydrated (`data-zfb-island`) and SSR-skip
-(`data-zfb-island-skip-ssr`) markers only after the runtime's `mount()` function returns. It
-means **"the runtime called the mount function and it returned"**, not **"the component is
-interactive"**. React's `hydrateRoot` is internally concurrent, and the generated `mount()` can
-silently no-op, so treat this attribute as a lifecycle signal rather than proof that interaction
-is ready.
+The runtime writes `data-zfb-island-mounted` only after a root is mounted
+successfully. The marker is observational; the live handle stored on the
+wrapper is the duplicate-mount guard. It does not certify that arbitrary
+asynchronous work started by the component has finished.
 
-Use the marker to gate pre-hydration styling with the selector a consumer would write:
+`dispose()` releases signals, effects, and listeners but leaves the child DOM
+in place. `unmount()` disposes and removes the nodes owned by that root while
+retaining the wrapper. During navigation, an unchanged persisted island keeps
+its live root. A changed component identity or refreshed props disposes the old
+root and invokes `render`, never `hydrate`, for the replacement.
 
-```css
-[data-zfb-island]:not([data-zfb-island-mounted]) {
-  opacity: 0.7;
-}
-```
+## The `"use client"` directive
 
-The runtime removes the marker when an island is unmounted. In a client-router body swap, an
-unchanged persisted island keeps its marker and mounted instance when its
-`data-zfb-transition-persist` id is present in the incoming body, while a discarded island has
-its marker cleared and is mounted again from the incoming markup. A props-changed persisted
-island has its marker cleared while the old instance is torn down and gets it back after the
-forced remount returns. A fresh runtime module strips a stale marker from an element it has not
-mounted before, then writes its own marker after mounting.
-
-## VNode type export
-
-`VNode`, `VNodeArray`, and `VNodeObject` are exported as public types from `"@takazudo/zfb"`:
-
-```ts
-import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
-```
-
-These structural types are framework-agnostic. `VNode` includes a bare `object` member (matching Preact's own `ComponentChild` design), so Preact's `ComponentChildren`, `VNode<Props>`, `JSX.Element`, and `JSX.Element[]` are all directly assignable at `Island` input boundaries — `children` and `ssrFallback` — with no `as unknown as` casts:
-
-```tsx
-import type { ComponentChildren } from "preact";
-import { Island } from "@takazudo/zfb";
-
-// Forwarding ComponentChildren as children — no cast needed
-function Wrapper({ children }: { children: ComponentChildren }) {
-  return <Island when="load">{children}</Island>;
-}
-
-// Forwarding ComponentChildren as ssrFallback — no cast needed
-function SkipWrapper({ fallback }: { fallback: ComponentChildren }) {
-  return (
-    <Island ssrFallback={fallback}>
-      <HeavyWidget />
-    </Island>
-  );
-}
-```
-
-### Annotating slots as ComponentChildren (return direction)
-
-When a slot variable holds the return value of `<Island>`, annotate its type as `ComponentChildren` or `JSX.Element` — not as `IslandElement`. `IslandElement` is intentionally a narrow structural type that requires `props.children`, and `VNode<{}>` from Preact is NOT assignable to it by design. Use a Preact-native type for the slot instead:
-
-```tsx
-import type { ComponentChildren } from "preact";
-
-function Page() {
-  const slot: ComponentChildren = (
-    <Island when="visible">
-      <Counter />
-    </Island>
-  );
-  return <main>{slot}</main>;
-}
-```
-
-### Name-collision note for Preact consumers
-
-If a file already has `import { VNode } from "preact"`, use a qualified import to avoid the name clash:
-
-```ts
-import type { VNode as ZfbVNode } from "@takazudo/zfb";
-```
-
-## Exported constants and helpers
-
-The following are exported from `"@takazudo/zfb"` alongside `Island`:
-
-- `HYDRATE_MARKER_ATTR` — the `data-zfb-island` attribute name.
-- `SKIP_SSR_MARKER_ATTR` — the `data-zfb-island-skip-ssr` attribute name.
-- `ISLAND_MOUNTED_ATTR` — the `data-zfb-island-mounted` attribute name written after the runtime's `mount()` function returns.
-- `ANONYMOUS_COMPONENT_NAME` — fallback name used when a wrapped child's identity cannot be determined.
-- `DEFAULT_WHEN` — the default hydration strategy (`"load"`).
-- `WHEN_VALUES` — the readonly list of valid hydration strategies: `"visible"`, `"idle"`, `"load"`, and `"media"`.
-- `isWhen(value: unknown): value is When` — type guard for hydration strategy values.
-- `resolveWhen(when: unknown): When` — validates and normalises a `when` value. Unknown inputs fall back to `"load"` (with a warning in development).
-
-## "use client" directive
-
-zfb also supports a `"use client"` file-level directive as an alternative authoring style. A component file whose first statement is the literal string `"use client"` is treated as an island entry by the build scanner (`crates/zfb-islands`). The esbuild-backed bundler compiles it to ESM separately, with its own dependency graph.
+As an alternative to wrapping a component at a call site, mark its `.tsx` file
+with a first-statement `"use client"` directive. The build scanner registers
+that component as an island entry.
 
 ```tsx
 "use client";
 
-import { useState } from "preact/hooks";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
-  const [count, setCount] = useState(0);
+  const count = signal(0);
   return (
-    <button onClick={() => setCount(count + 1)}>
+    <button on:click={() => { count.value += 1; }}>
       Count: {count}
     </button>
   );
 }
 ```
 
-Import the island from a server component or page module. The build pipeline wires the hydration bootstrap automatically.
+The generated client manifest receives the checked JSON props and wrapper. Its
+mount function selects `"hydrate"` to adopt existing child DOM or `"render"`
+to create a new subtree. A failed preflight returns `null` and leaves the
+server DOM inert. It does not fall back to a destructive client render.
 
-For the broader story on islands architecture and when to reach for one, see [Islands](../concepts/islands.mdx).
+For the broader story on island boundaries and when to use them, see
+[Islands](../concepts/islands.mdx). For the runtime component model, start with
+the [zudo-react overview](../zudo-react/overview.mdx).
 
 ## Footgun: do not self-wrap an island
 
-<Warning title="Nested island markers mis-hydrate">
-
-Do **not** place an `<Island>` wrapper inside a component's own render output. The runtime discovers all island markers in the DOM and mounts each one — if a marker is nested inside another, two independent framework instances try to own the same DOM subtree, causing conflicts.
-
-**Wrong** — `<Island>` inside the component itself:
+Do not place an `<Island>` boundary inside the component that already owns the
+island. Nested roots are rejected because two independent owners cannot safely
+adopt the same DOM subtree.
 
 ```tsx
-// Counter.tsx — do NOT do this
-export default function Counter() {
-  return (
-    <Island when="idle">
-      <InnerWidget />
-    </Island>
-  );
-}
-```
-
-**Right** — apply `<Island>` at the call site:
-
-```tsx
-// Page.tsx
+// Page.tsx — place the boundary at the call site.
 <Island when="idle">
   <Counter />
 </Island>
 ```
-
-In development the runtime emits a `console.warn` naming the offending component when it detects this pattern.
-
-</Warning>

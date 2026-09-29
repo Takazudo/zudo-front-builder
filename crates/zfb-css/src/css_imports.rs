@@ -3,11 +3,11 @@
 //!
 //! ## Why this exists
 //!
-//! zfb shells out to the Tailwind v4 standalone CLI as an opaque `-i/-o`
-//! transform ([`crate::engine`]). Tailwind resolves `@import` targets
-//! invisibly and exposes **no machine-readable dependency manifest**, so zfb
-//! never learns the real on-disk paths of the CSS files an entry transitively
-//! pulls in. That breaks dev invalidation two ways:
+//! The owned CSS pipeline needs canonical input paths for development
+//! invalidation. This module resolves each authored import to its real file so
+//! the dev layer can watch dependencies that are otherwise hidden by package
+//! resolution. Without those paths, editing an imported file would not refresh
+//! `/assets/styles.css`:
 //!
 //! 1. editing a transitively-imported CSS file (`@import './tokens.css';`)
 //!    does not refresh `/assets/styles.css`, because no dependency edge / watch
@@ -44,6 +44,17 @@ use std::sync::Mutex;
 use lightningcss::bundler::{Bundler, ResolveResult, SourceProvider};
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
+
+use crate::url_attribution::{rewrite_package_urls_for_source, PackageUrlResolver};
+use crate::{CssInputDependency, CssInputDependencyKind, PackageUrlAsset};
+
+/// A flattened authored stylesheet with its package URL companions and inputs.
+#[derive(Debug, Clone)]
+pub struct AuthoredCssBundle {
+    pub css: String,
+    pub companions: Vec<PackageUrlAsset>,
+    pub input_dependencies: Vec<CssInputDependency>,
+}
 
 /// Specifiers that name Tailwind's own virtual entry — never an on-disk file
 /// zfb should resolve or watch.
@@ -152,6 +163,65 @@ pub fn bundle_authored_css(
         .map(|result| result.code)
 }
 
+/// Bundle authored CSS and resolve package-owned relative URLs against the
+/// canonical stylesheet that declared them, before Lightning CSS flattens it.
+pub fn bundle_authored_css_with_assets(
+    entry: &Path,
+    project_root: &Path,
+    authored_css: &str,
+) -> anyhow::Result<AuthoredCssBundle> {
+    let entry_real = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    reject_forbidden_imports(authored_css, &entry_real)?;
+    let import_ordered = order_authored_imports(authored_css).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to prepare authored CSS imports at {}: {error}",
+            entry.display()
+        )
+    })?;
+    let provider =
+        AuthoredCssSourceProvider::new_with_assets(&entry_real, project_root, &import_ordered);
+    let mut bundler = Bundler::new(&provider, None, ParserOptions::default());
+    let stylesheet = bundler.bundle(&entry_real).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to parse or bundle authored CSS at {}: {error}",
+            entry.display()
+        )
+    })?;
+    let css = stylesheet
+        .to_css(PrinterOptions::default())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to print bundled authored CSS at {}: {error}",
+                entry.display()
+            )
+        })?
+        .code;
+    let state = provider.assets.as_ref().unwrap().lock().unwrap();
+    let mut input_dependencies: Vec<_> = state
+        .stylesheets
+        .iter()
+        .map(|path| CssInputDependency {
+            path: path.clone(),
+            kind: CssInputDependencyKind::Stylesheet,
+        })
+        .collect();
+    input_dependencies.extend(
+        state
+            .resolver
+            .asset_paths
+            .iter()
+            .map(|path| CssInputDependency {
+                path: path.clone(),
+                kind: CssInputDependencyKind::Asset,
+            }),
+    );
+    Ok(AuthoredCssBundle {
+        css,
+        companions: state.resolver.companions.clone(),
+        input_dependencies,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 enum AuthoredCssSourceError {
     #[error("failed to resolve authored CSS import {specifier:?} from {origin}")]
@@ -183,6 +253,14 @@ enum AuthoredCssSourceError {
         path: PathBuf,
         message: String,
     },
+    #[error("failed to attribute authored CSS assets at {path}: {message}")]
+    Assets { path: PathBuf, message: String },
+}
+
+#[derive(Default)]
+struct AssetAwareState {
+    resolver: PackageUrlResolver,
+    stylesheets: BTreeSet<PathBuf>,
 }
 
 struct AuthoredCssSourceProvider<'a> {
@@ -191,6 +269,7 @@ struct AuthoredCssSourceProvider<'a> {
     authored_css: &'a str,
     imported_sources: Mutex<Vec<*mut String>>,
     import_contexts: Mutex<HashMap<PathBuf, (PathBuf, String)>>,
+    assets: Option<Mutex<AssetAwareState>>,
 }
 
 impl<'a> AuthoredCssSourceProvider<'a> {
@@ -201,7 +280,46 @@ impl<'a> AuthoredCssSourceProvider<'a> {
             authored_css,
             imported_sources: Mutex::new(Vec::new()),
             import_contexts: Mutex::new(HashMap::new()),
+            assets: None,
         }
+    }
+
+    fn new_with_assets(entry: &Path, project_root: &'a Path, authored_css: &'a str) -> Self {
+        let mut provider = Self::new(entry, project_root, authored_css);
+        provider.assets = Some(Mutex::new(AssetAwareState::default()));
+        provider
+    }
+
+    fn prepare_assets(
+        &self,
+        file: &Path,
+        source: String,
+    ) -> Result<String, AuthoredCssSourceError> {
+        let Some(assets) = &self.assets else {
+            return Ok(source);
+        };
+        reject_forbidden_imports(&source, file).map_err(|error| {
+            AuthoredCssSourceError::Assets {
+                path: file.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        let mut state = assets.lock().unwrap();
+        let rewritten = rewrite_package_urls_for_source(&source, file, &mut state.resolver)
+            .map_err(|error| AuthoredCssSourceError::Assets {
+                path: file.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        state.stylesheets.insert(file.to_path_buf());
+        Ok(rewritten)
+    }
+
+    fn retain_source(&self, source: String) -> &str {
+        let ptr = Box::into_raw(Box::new(source));
+        self.imported_sources.lock().unwrap().push(ptr);
+        // SAFETY: the box remains owned by imported_sources until the
+        // provider is dropped after the bundler releases its references.
+        unsafe { &*ptr }
     }
 }
 
@@ -215,7 +333,11 @@ impl SourceProvider for AuthoredCssSourceProvider<'_> {
 
     fn read<'a>(&'a self, file: &Path) -> Result<&'a str, Self::Error> {
         if file == self.entry {
-            return Ok(self.authored_css);
+            if self.assets.is_none() {
+                return Ok(self.authored_css);
+            }
+            let source = self.prepare_assets(file, self.authored_css.to_string())?;
+            return Ok(self.retain_source(source));
         }
 
         let (origin, specifier) = self
@@ -239,11 +361,8 @@ impl SourceProvider for AuthoredCssSourceProvider<'_> {
                 path: file.to_path_buf(),
                 message,
             })?;
-        let ptr = Box::into_raw(Box::new(source));
-        self.imported_sources.lock().unwrap().push(ptr);
-        // SAFETY: `ptr` remains owned by `imported_sources` until this provider
-        // is dropped, after the bundler has released every returned reference.
-        Ok(unsafe { &*ptr })
+        let source = self.prepare_assets(file, source)?;
+        Ok(self.retain_source(source))
     }
 
     fn resolve(
@@ -286,6 +405,30 @@ impl Drop for AuthoredCssSourceProvider<'_> {
             drop(unsafe { Box::from_raw(ptr) });
         }
     }
+}
+
+/// Inspect parsed import rules so comments, strings, and escaped specifiers
+/// cannot impersonate or conceal an active Tailwind import.
+fn reject_forbidden_imports(css: &str, source: &Path) -> anyhow::Result<()> {
+    let prepared = crate::pipeline::hoist_external_imports(css);
+    let stylesheet = StyleSheet::parse(&prepared, ParserOptions::default()).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to inspect authored CSS imports at {}: {error}",
+            source.display()
+        )
+    })?;
+    for rule in &stylesheet.rules.0 {
+        if let CssRule::Import(import) = rule {
+            let specifier = import.url.as_ref();
+            if is_virtual_specifier(specifier) {
+                return Err(anyhow::anyhow!(
+                    "ZW009: forbidden @import {specifier:?} in {}; see /docs/zudo-wind/coming-from-tailwind/",
+                    source.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_external_import(specifier: &str) -> bool {

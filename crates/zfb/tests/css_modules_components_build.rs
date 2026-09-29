@@ -92,7 +92,7 @@
 //!
 //! The fixture mirrors corp's shape exactly:
 //!
-//! - `zfb.config.json` with NO `tailwind` key — `css_enabled` falls
+//! - `zfb.config.json` with no `wind` setting — CSS stays enabled
 //!   through to `true` (matches corp's `zfb.config.ts`).
 //! - Relative imports (no `@/...` alias) — matches corp's `tsconfig.json`
 //!   (no `paths`).
@@ -204,11 +204,11 @@ fn pascal_case(s: &str) -> String {
 /// caller can verify they are not corrupted by the build (symlink-write
 /// hazard).
 fn write_corp_shape_fixture(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
-    // No `tailwind` key → CSS enabled by default. `pages/` directory
+    // No `wind` setting → utility CSS enabled by default. `pages/` directory
     // satisfies `zfb`'s "is this a project" sniff.
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact" }
+        r#"{ }
 "#,
     )
     .unwrap();
@@ -359,7 +359,7 @@ fn build_and_assert_corp_shape(
     // Note: we don't add a negative `!html_blob.contains("class=\"section\"")`
     // assertion. The component sources use `class={styles.section}` (a JSX
     // expression), so if the rewrite produces `export default {};` then
-    // `styles.section` is `undefined` and Preact omits the attribute
+    // `styles.section` is `undefined` and the owned renderer omits the attribute
     // entirely — `class="section"` would never appear as a literal even
     // in the bug state. The positive `_section` check above already
     // catches the empty-map case (it would fail to find any hashed

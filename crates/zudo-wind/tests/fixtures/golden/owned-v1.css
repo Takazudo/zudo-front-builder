@@ -1,0 +1,174 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    border-style: solid;
+    border-color: currentColor;
+  }
+  html {
+    line-height: 1.5;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+  }
+  body {
+    line-height: inherit;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+  b,
+  strong {
+    font-weight: bolder;
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 1em;
+  }
+  ol,
+  ul,
+  menu {
+    list-style: none;
+  }
+  button,
+  input,
+  optgroup,
+  select,
+  textarea {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+  button,
+  input:where([type="button"], [type="reset"], [type="submit"]) {
+    background-color: transparent;
+    background-image: none;
+  }
+  textarea {
+    resize: vertical;
+  }
+  img,
+  svg,
+  video,
+  canvas,
+  audio,
+  iframe,
+  embed,
+  object {
+    display: block;
+    vertical-align: middle;
+  }
+  img,
+  video {
+    max-width: 100%;
+    height: auto;
+  }
+  table {
+    border-collapse: collapse;
+    border-color: inherit;
+    text-indent: 0;
+  }
+  summary {
+    display: list-item;
+  }
+  hr {
+    height: 0;
+    border-top-width: 1px;
+  }
+}
+@layer zw-tokens {
+  :root {
+    --zw-color-panel: #123456;
+    --zw-font-size-sm: .875rem;
+    --zw-font-size-sm-leading: 1.25rem;
+    --zw-spacing-unit: .25rem;
+  }
+}
+@property --zw-translate-x {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --zw-translate-y {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+.block {
+  display: block;
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}
+.px-2 {
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+.pl-1 {
+  padding-left: 0.25rem;
+}
+.text-sm {
+  font-size: var(--zw-font-size-sm);
+  line-height: var(--zw-font-size-sm-leading);
+}
+.border {
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-right-width: 1px;
+  border-right-style: solid;
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+  border-left-width: 1px;
+  border-left-style: solid;
+}
+.divide-y > :not([hidden]) ~ :not([hidden]) {
+  border-top-width: 1px;
+  border-top-style: solid;
+}
+.transition-colors {
+  transition-property: color,background-color,border-color,text-decoration-color,fill,stroke;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+.duration-300 {
+  transition-duration: 300ms;
+}
+.translate-x-2 {
+  --zw-translate-x: 0.5rem;
+  translate: var(--zw-translate-x) var(--zw-translate-y);
+}
+.translate-y-4 {
+  --zw-translate-y: 1rem;
+  translate: var(--zw-translate-x) var(--zw-translate-y);
+}
+@media (min-width: 640px) and (hover: hover) {
+  :where(.group:hover) .sm\:dark\:group-hover\:focus\:before\:text-panel:where([data-theme="dark"], [data-theme="dark"] *):focus::before {
+    color: var(--zw-color-panel);
+  }
+}
+@media (width < 640px) and (hover: hover) {
+  :where(.peer:hover) ~ .max-sm\:peer-hover\:space-y-2 > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.5rem;
+  }
+}

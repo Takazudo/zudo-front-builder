@@ -37,7 +37,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 #[test]
@@ -148,7 +147,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: paths,
@@ -162,8 +161,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         // esbuild `--external:@takazudo/zfb-runtime` does NOT cover the
         // `/server` subpath, so it is listed explicitly.
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime/server".into(),
         ],
         outdir: root.join("dist"),
@@ -204,7 +202,6 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
     );
 
     // 3. Manifest reports the single route.
-    assert_eq!(out.manifest.framework, "preact");
     assert_eq!(
         out.manifest.routes.len(),
         1,
@@ -230,11 +227,8 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         "PROD ternary's true branch should be reachable in the bundle"
     );
 
-    // 5. The bundle should re-export `routes` and `hydrateIsland`.
-    assert!(
-        body.contains("routes") && body.contains("hydrateIsland"),
-        "expected `routes` and `hydrateIsland` exports"
-    );
+    // 5. The bundle should export `routes`.
+    assert!(body.contains("routes"), "expected `routes` export");
 
     // 6. Well-formed: re-parse the bundle through esbuild itself in
     //    "no-bundle" mode. This is the cheapest hermetic JS parse we
@@ -259,18 +253,6 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
     assert!(
         body.contains("MDXContent") || body.contains("_createMdxContent"),
         "expected MDX emitter output (MDXContent / _createMdxContent) in bundle"
-    );
-
-    // 8. The hydration shim was folded in (Preact's shim exports the
-    //    hydrateIsland symbol; the import pattern from "preact" stays
-    //    bare because we marked preact external).
-    assert!(
-        body.contains("hydrateIsland"),
-        "hydrate shim's hydrateIsland export should be present"
-    );
-    assert!(
-        body.contains("from \"preact\"") || body.contains("from'preact'"),
-        "preact import should remain external in the bundle"
     );
 }
 
@@ -355,13 +337,12 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),

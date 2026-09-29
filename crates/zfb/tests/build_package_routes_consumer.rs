@@ -361,7 +361,7 @@ fn write_control_project(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         // No plugins key — overlay machinery never activates.
-        r#"{ "framework": "preact" }
+        r#"{ }
 "#,
     )
     .unwrap();
@@ -448,7 +448,7 @@ fn compiled_node_modules_virtual_paths_certify_zudo_doc_can_drop_staging() {
     let entrypoint = routes_dir.join("docs-slug.js");
     fs::write(
         &entrypoint,
-        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 import { virtualSlugs } from "virtual:zudo-doc-route-slugs";
 function paths() {
   return virtualSlugs.map((slug) => ({ params: { slug }, props: { slug } }));
@@ -513,7 +513,7 @@ export { DocsPage as default, paths };
     .unwrap();
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .unwrap();
@@ -601,7 +601,7 @@ fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
         .unwrap();
         fs::write(
             host.join("zfb.config.json"),
-            r#"{ "framework": "preact", "bundle": { "mainFields": ["main", "module"], "exclude": [] }, "plugins": [{ "name": "./preset.mjs" }] }"#,
+            r#"{ "bundle": { "mainFields": ["main", "module"], "exclude": [] }, "plugins": [{ "name": "./preset.mjs" }] }"#,
         )
         .unwrap();
 
@@ -856,7 +856,7 @@ export default function GeneratedRoute() {{
     }
     fs::write(
         routes.join("_context.ts"),
-        r#"import { h } from "preact";
+        r#"import { h } from "@takazudo/zfb/zudo-react";
 import { sharedMarker } from "./shared";
 export default function GeneratedContext() {
   return h("html", null, h("body", null, "PROJECT_LOCAL_ROUTE_context_" + sharedMarker));
@@ -905,7 +905,7 @@ export default function GeneratedNestedRoute() {
     .expect("write generated-routes preset");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .expect("write generated-routes config");
@@ -1010,7 +1010,7 @@ export default function HiddenPage() {
     .expect("write hidden-page preset");
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+        r#"{ "plugins": [{ "name": "./preset.mjs" }] }
 "#,
     )
     .expect("write hidden-page config");
@@ -1051,7 +1051,7 @@ fn write_combined_stage_escape_consumer_fixture(workspace: &Path) -> PathBuf {
         r#"{
   "name": "combined-host",
   "private": true,
-  "dependencies": { "@acme/ui-preact": "workspace:*" }
+  "dependencies": { "@acme/ui-kit": "workspace:*" }
 }"#,
     )
     .expect("write host package manifest");
@@ -1098,12 +1098,12 @@ export function RootCard() {
     )
     .expect("write root alias component");
 
-    let ui = workspace.join("sub-packages/ui-preact");
+    let ui = workspace.join("sub-packages/ui-kit");
     fs::create_dir_all(ui.join("src/code")).expect("create package source directory");
     fs::write(
         ui.join("package.json"),
         r#"{
-  "name": "@acme/ui-preact",
+  "name": "@acme/ui-kit",
   "exports": { "./code": "./src/code/code.tsx" }
 }"#,
     )
@@ -1116,13 +1116,13 @@ export function RootCard() {
     .expect("write sibling package source");
     fs::create_dir_all(workspace.join("node_modules/@acme"))
         .expect("create scoped hoisted node_modules directory");
-    std::os::unix::fs::symlink(&ui, workspace.join("node_modules/@acme/ui-preact"))
+    std::os::unix::fs::symlink(&ui, workspace.join("node_modules/@acme/ui-kit"))
         .expect("link declared workspace package into hoisted install");
 
     fs::write(
         root.join("pages/index.tsx"),
         r#"import { RootCard } from "@components/root-card";
-import { packageMarker } from "@acme/ui-preact/code";
+import { packageMarker } from "@acme/ui-kit/code";
 
 export default function Home() {
   return <main><RootCard />:{packageMarker}</main>;

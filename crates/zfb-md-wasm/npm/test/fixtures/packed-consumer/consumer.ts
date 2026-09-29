@@ -18,7 +18,6 @@ import {
   type DiagnosticSource,
   type GfmOptions,
   type HighlightRole,
-  type JsxRuntime,
   type MarkdownFeaturesConfig,
   type ParseDialect as RenderDialect,
   type PipelineOptions,
@@ -94,11 +93,15 @@ import {
 const options: ZfbMdWasmOptions = {
   filename: "packed.mdx",
   dialect: "markdown" satisfies RenderDialect,
-  jsxRuntime: "preact" satisfies JsxRuntime,
   pipeline: {
     gfm: { table: true } satisfies GfmOptions,
   } satisfies PipelineOptions,
 };
+const removedRuntimeOption: ZfbMdWasmOptions = {
+  // @ts-expect-error jsxRuntime was removed from the published options type.
+  jsxRuntime: "preact",
+};
+void removedRuntimeOption;
 const compiled = await compile("# Root\n", options);
 const highlighted: Promise<HighlightCodeResult> = highlightCode("x", {
   language: "text",
@@ -125,7 +128,6 @@ type RenderTypes = [
   CodeHighlightMode,
   CodeHighlightOptions,
   MarkdownFeaturesConfig,
-  JsxRuntime,
   HighlightRole,
 ];
 type ParseTypes = [

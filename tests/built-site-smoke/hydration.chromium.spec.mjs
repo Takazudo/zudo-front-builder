@@ -15,7 +15,7 @@
  *   2. The Counter island actually hydrated: clicking its button increments
  *      the rendered count. Static SSR markup alone renders "Count: 0" but
  *      cannot respond to a click — only a live, successfully-hydrated
- *      Preact instance can, so this assertion is also the sensitivity check
+ *      owned runtime island can, so this assertion is also the sensitivity check
  *      that a broken bundle (one that loads but throws before attaching
  *      event listeners) fails this lane even when it produces no visible
  *      page error.
@@ -24,7 +24,7 @@
  *
  * The `[data-zfb-island="Counter"]` selector targets the wrapper `<div>`
  * emitted by the `<Island>` JSX component (packages/zfb/src/island.ts) —
- * the same marker attribute crates/zfb-islands/src/hydration.rs documents
+ * the same marker attribute the server emits
  * and crates/zfb/src/commands/island_marker_check.rs cross-checks against
  * the islands registry at build time.
  *
@@ -93,7 +93,7 @@ test("built site loads with zero page errors and its island hydrates", async ({ 
     await expect(counterButton).toHaveText("Count: 0");
 
     // The actual hydration proof: a click only updates the DOM if the client
-    // bundle loaded, ran, and attached a real Preact event listener.
+    // bundle loaded, ran, and attached a real zudo-react event listener.
     await counterButton.click();
     await expect(counterButton).toHaveText("Count: 1");
 

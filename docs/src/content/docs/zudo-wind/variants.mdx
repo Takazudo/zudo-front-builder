@@ -1,0 +1,61 @@
+---
+title: Variants
+description: Apply the configured responsive, dark, relation, state, and pseudo-element variants in canonical order.
+sidebar_position: 6
+---
+
+## Admitted variants
+
+V1 admits configured responsive breakpoints, optional dark mode, unnamed group and peer relations, eight element states plus `open`, and five pseudo-elements. At most one variant from each category may appear in a candidate. The canonical order is:
+
+    responsive → dark → relation → state → pseudo-element → utility
+
+Use one responsive variant and one dark variant at most. A candidate may contain one relation and one self state; the relation variant itself names a state on its group or peer. No variant may repeat. There is no combined minimum and maximum breakpoint form.
+
+## Responsive and dark variants
+
+A breakpoint is a configured name whose `minWidthPx` is a positive integer. `sm` at 640 means a minimum-width media condition of 640 CSS pixels. `max-sm` uses the exclusive condition `width < 640px`; it does not subtract an epsilon. Pixel widths stay fixed regardless of the root font size.
+
+Dark mode is disabled by default. Configure its lowercase attribute name and nonempty value to enable `dark`. The condition accepts that attribute on the element or any ancestor. The generated selector uses `:where(...)`, so dark mode adds zero specificity. The value is escaped as a CSS string.
+
+## Relation and state variants
+
+The supported self states, in their canonical rank order, are:
+
+| Rank | Variant | Selector behavior |
+| --- | --- | --- |
+| 1 | `first` | `:first-child` |
+| 2 | `last` | `:last-child` |
+| 3 | `open` | `:is([open], :popover-open)` |
+| 4 | `focus-within` | `:focus-within` |
+| 5 | `hover` | `:hover` |
+| 6 | `focus` | `:focus` |
+| 7 | `focus-visible` | `:focus-visible` |
+| 8 | `active` | `:active` |
+| 9 | `disabled` | `:disabled` |
+
+State rank 0 is the absence of a state; the table lists ranks 1 through 9. The other state selectors use the state name as a pseudo-class. Every hover state, including group and peer hover, is guarded by `@media (hover: hover)`.
+
+A `group` marker is an ancestor; a `peer` marker must be a preceding sibling. A group state uses `:where(.group:S) C`; a peer state uses `:where(.peer:S) ~ C`, where `C` is the escaped candidate selector and `S` is the selected state. Relation selectors contribute zero specificity. Relation rank 0 is no relation; group states use ranks 1 through 9, followed by peer states at ranks 10 through 18, each in state order. Named markers and named relation forms such as `group/menu` and `group-hover/menu:block` are unsupported.
+
+## Pseudo-elements
+
+The admitted pseudo-elements are `before`, `after`, `marker`, `placeholder`, and `backdrop`. They are appended after state selectors with ranks 1 through 5 in that order; rank 0 means no pseudo-element. `before` and `after` do not insert a `content` declaration; add the needed declaration in authored CSS.
+
+## Order and rejection
+
+A full chain uses responsive, dark, relation, state, pseudo-element, then utility order. For example, `sm:dark:hover:bg-panel` is canonical if `sm`, dark mode, and `colors.panel` are configured. `hover:sm:block` is out of order and returns ZW003 with the sorted suggestion `sm:hover:block`. A duplicate or an unknown variant has no automatic reorder suggestion.
+
+The same selector is escaped from the original complete candidate. With dark configured as `data-theme="dark"`, the selector for `dark:hover:bg-panel` is:
+
+    .dark\:hover\:bg-panel:where([data-theme="dark"], [data-theme="dark"] *):hover
+
+Responsive and hover conditions are combined with `and` in one media wrapper; the dark condition stays in the selector. `first` and `last` map to child positions, and `open` also recognizes popover-open elements.
+
+V1 rejects `aria-*` and `data-*` attribute variants, arbitrary-selector variants, and variants when dark mode is disabled with ZW004. Use authored CSS for those selectors. A candidate with a pseudo-element variant and child spacing or divide utilities is rejected as R23/ZW005 because the child selector would target children of the pseudo-element.
+
+## See also
+
+- [Utility grammar](./utility-grammar.mdx)
+- [Utility reference](./utilities/index.mdx)
+- [Cascade and reset](./cascade-and-reset.mdx)

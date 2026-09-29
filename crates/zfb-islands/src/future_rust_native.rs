@@ -20,8 +20,9 @@
 //!
 //! Until then, this stub guards the API surface against drift: if someone
 //! widens [`crate::ClientBundler`] without updating both bundlers, the
-//! build breaks here, not in production. (Same rationale as
-//! `zfb_css::native_engine::NativeRustEngine`.)
+//! build breaks here, not in production. This keeps the placeholder
+//! aligned with the current client-bundler trait without exposing a second
+//! implementation path.
 
 use anyhow::{anyhow, Result};
 

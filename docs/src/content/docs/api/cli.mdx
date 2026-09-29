@@ -6,18 +6,19 @@ sidebar_position: 6
 
 ## Overview
 
-The `zfb` binary exposes six subcommands for the full development lifecycle:
+The `zfb` binary exposes seven top-level commands for the full development lifecycle:
 
 ```
 zfb new    — scaffold a new project from a template
 zfb dev    — local development server with live reload
 zfb build  — production build
 zfb css    — compile a CSS entrypoint without building the site
+zfb wind   — inspect utility candidates and source usage
 zfb preview — serve a previously built site
 zfb check  — typecheck and validate content-collection schemas
 ```
 
-Run `zfb --help` or `zfb <subcommand> --help` to see the generated help text directly.
+Run `zfb --help` or `zfb <command> --help` to see the generated help text directly.
 
 ## `zfb new`
 
@@ -149,7 +150,7 @@ zfb build --no-emit-render-artifacts
 
 ## `zfb css`
 
-Compile one CSS entrypoint with zfb's embedded Tailwind CSS v4 engine, without discovering routes, rendering pages, bundling application code, or starting the plugin host.
+Compile one CSS entrypoint with zudo-wind and zfb's authored-CSS processing, without discovering routes, rendering pages, bundling application code, or starting the plugin host.
 
 ```sh
 zfb css --input <entry.css> --output <compiled.css>
@@ -167,8 +168,8 @@ zfb css --input <entry.css> --output <compiled.css>
 | `--input` | path | required | CSS entrypoint. Relative paths resolve from the current working directory. |
 | `--output` | path | required | Destination CSS file. Relative paths resolve from the current working directory. It must not resolve to the same file as the input. |
 | `--project-root` | path | current working directory | Root used to load `zfb.config` and resolve `--source` globs. A relative path itself resolves from the current working directory. |
-| `--source` | glob, repeatable | none | Explicit Tailwind content source, resolved from `--project-root`. Each glob must match at least one file. Caller order is preserved; exact duplicates use their first occurrence. |
-| `--no-auto-source` | boolean flag | `false` | Omit the five default content roots (`pages`, `components`, `layouts`, `content`, and `src`). Explicit `--source` values and the configured syntax-highlight role-class safelist remain active. |
+| `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
+| `--no-auto-source` | boolean flag | `false` | Omit the command's conventional source-plan roots. Explicit `--source` values and the configured syntax-highlight role classes remain active. |
 | `--code-highlight-mode` | `class` or `inline` | config/default | Override `codeHighlight.mode` when deciding whether to include zfb's framework syntax-highlight CSS. Other `codeHighlight` settings, including `classPrefix` and `roleClasses`, still come from config. |
 | `--no-default-highlight-styles` | boolean flag | `false` | Suppress zfb's built-in class-mode `zfb-hi.css` stylesheet. This also overrides `codeHighlight.defaultStylesheet: true`. |
 
@@ -178,8 +179,6 @@ A library package can keep an ordered entry such as `packages/zudo-doc/src/compi
 
 ```css
 @layer zd-preflight, zd-flow;
-@import "tailwindcss/preflight" layer(zd-preflight);
-@import "tailwindcss/utilities";
 
 @import "@takazudo/zudo-doc/theme.css";
 @import "@takazudo/zudo-doc/safelist.css";
@@ -204,10 +203,19 @@ Here, `--input`, `--output`, and `--project-root` are anchored to the repository
 
 ### Notes
 
-- **Sourcing is always explicit.** `zfb css` rewrites the active `@import "tailwindcss"` or split `@import "tailwindcss/utilities"` to carry `source(none)`, disabling Tailwind's ambient git-aware source detection. An active Tailwind import that already has a `source(...)` modifier is rejected rather than silently overridden. By default the command emits the five roots under `--project-root` as explicit `@source` directives. `--no-auto-source` omits those defaults, as in the example, while retaining repeated `--source` values and the inline safelist derived from `codeHighlight.roleClasses`. This policy deliberately differs from `zfb build`.
+- **Sources follow the configured source plan.** `--source` supplies explicit inputs; `--no-auto-source` omits the command's conventional roots while preserving explicit inputs and the classes configured in `codeHighlight.roleClasses`. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md` by default; standalone explicit inputs can also use `.html` and `.mjs`. See [Sources and candidates](../zudo-wind/sources-and-candidates.mdx) for source-plan details.
 - **Output is deterministic and replaced atomically.** The same entry, config, and ordered source set produce timestamp-, sourcemap-, and temporary-path-free bytes. A successful compile atomically replaces `--output`; a failed compile leaves any existing output untouched.
 - **This is a global-CSS-only command.** CSS Modules are not discovered or processed. Package-attributed `url()` assets that would require companion files are rejected in v1 with a non-zero exit instead of being emitted beside the stylesheet.
-- **Config use is narrow.** When present, `zfb.config.json` or `zfb.config.ts` supplies syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. Invoking `zfb css` always runs Tailwind even when config sets `tailwind.enabled: false`.
+- **Config use is narrow.** When present, `zfb.config.json` or `zfb.config.ts` supplies wind tokens, reset, sources, and syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. `wind: false` disables wind generation while authored CSS and highlight processing continue. An omitted key uses the empty enabled wind config.
+- **V1 wind output is not minified.** Generated wind CSS uses the fixed printer described in [Cascade and reset](../zudo-wind/cascade-and-reset.mdx).
+
+## `zfb wind`
+
+Use `zfb wind explain` to inspect how a candidate is parsed, resolved, and emitted. The explanation includes its catalog entry, token bindings, declarations, selector, conditions, and ordering data.
+
+Use `zfb wind audit` to review ordinary class-position names, missing or unused utilities, dynamic class fragments, and property conflicts within a single class-list literal. An exact `authoredClasses` match and `group`/`peer` markers are excluded. With `wind: false`, explain reports generation disabled and audit returns an empty candidate report.
+
+These commands inspect the configured project; they do not execute application code to discover class candidates. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx) for outcome and origin details.
 
 ## `zfb preview`
 
@@ -307,8 +315,6 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_DEV_TIMING` | unset | Set to `1` or `true` to print dev-mode phase timings for each file-change tick. |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
 | `ZFB_ESBUILD_BIN` | unset | Absolute path to an esbuild binary. Used by the bundler, islands compiler, tests, and TypeScript config loading (`zfb.config.ts`) when an embedded/staged esbuild binary is unavailable or should be overridden. |
-| `ZFB_TAILWIND_BIN` | unset | Absolute path to a Tailwind CSS v4 binary. Overrides the embedded/staged Tailwind binary used by the CSS engine. An empty value is treated the same as unset, matching the `ZFB_ESBUILD_BIN` contract above. When the selected executable is recognized as a Node/npm Tailwind CLI, the oxide warm-up is skipped automatically; otherwise it runs unless `ZFB_TAILWIND_OXIDE_WARMUP` overrides the decision. |
-| `ZFB_TAILWIND_OXIDE_WARMUP` | unset | Controls the one-off Tailwind oxide warm-up. `1`, `true`, or `on` forces it on; `0`, `false`, or `off` forces it off. Unset, empty, or unrecognized values select automatic behavior: the warm-up is skipped for recognized Node/npm Tailwind CLIs and runs for everything else, including executables that cannot be classified. |
 | `ZFB_DEBUG_SNAPSHOT` | unset | Set to `1` or `true` to log the content snapshot's entry count and serialized byte size to stderr during `zfb build`, for monitoring V8 memory pressure on large sites. See [Incremental Rebuild](../concepts/incremental-rebuild.mdx). |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler minimum-version gate. Intended for temporary release-engineering use. |
 

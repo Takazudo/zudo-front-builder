@@ -74,11 +74,12 @@
       import { init } from "/dist/client-router/router.js";
       import { init as prefetchInit } from "/dist/client-router/prefetch.js";
       // syncHistoryEntry lives in router.js itself, NOT the client-router/index.js
-      // barrel. The barrel re-exports <ClientRouter /> from client-router.ts, which
-      // imports the bare specifier "react/jsx-runtime" at module scope — this
-      // fixture has no import-map entry for it (no bundler here), so pulling in
-      // the barrel would throw a browser module-resolution error. router.js has no
-      // such dependency, so importing straight from it is both correct and safe.
+      // barrel. The barrel re-exports <ClientRouter /> from client-router.ts,
+      // whose component imports the bare package specifier
+      // "@takazudo/zfb/zudo-react/jsx-runtime" — this fixture has no import-map
+      // entry for it (no bundler here), so pulling in the barrel would throw a
+      // browser module-resolution error. router.js has no such dependency, so
+      // importing straight from it is both correct and safe.
       import { syncHistoryEntry } from "/dist/client-router/router.js";
       init();
       prefetchInit();

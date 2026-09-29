@@ -250,11 +250,7 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path),
             );
-            if combined.contains("embed_v8")
-                || combined.contains("no esbuild")
-                || combined.contains("no tailwind")
-                || combined.contains("tailwindcss") && combined.contains("not found")
-            {
+            if combined.contains("embed_v8") || combined.contains("no esbuild") {
                 eprintln!(
                     "[cold_rewrite_prewarm_e2e] known unavailable dependency; skipping.\n{}",
                     session.logs(),
@@ -291,7 +287,7 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
 
 fn home_page_source(revision: u32) -> String {
     format!(
-        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        <title>cold-rewrite-prewarm fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
+        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charset=\"utf-8\" />\n        <title>cold-rewrite-prewarm fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
     )
 }
 

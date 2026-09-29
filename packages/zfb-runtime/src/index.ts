@@ -18,8 +18,7 @@
 //   const router = createPageRouter({
 //     pages: [...],
 //     contentSnapshot: __ZFB_CONTENT_SNAPSHOT__, // embedded by the bundler
-//     framework: { renderToString: render },     // preact-render-to-string etc.
-//   });
+////   });
 //
 //   export default { fetch: router };
 //
@@ -32,7 +31,6 @@ export type {
   PageModule,
   PageRouter,
 } from "./router.js";
-export type { FrameworkAdapter } from "./framework.js";
 export type { ContentSnapshot, EntrySnapshot } from "./snapshot.js";
 export { ViewTransitions, type ViewTransitionsElement } from "./view-transitions.js";
 

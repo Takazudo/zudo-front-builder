@@ -12,8 +12,6 @@
     "hono",
     "page-router",
     "content-snapshot",
-    "preact",
-    "react",
     "view-transitions"
   ],
   "license": "MIT",
@@ -101,20 +99,12 @@
     "hono": "^4.12.25"
   },
   "peerDependencies": {
-    "@takazudo/zfb": "workspace:*",
-    "react": "^19.2.3"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    }
+    "@takazudo/zfb": "workspace:*"
   },
   "devDependencies": {
     "@takazudo/zfb": "workspace:*",
     "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
     "happy-dom": "^15.7.4",
-    "react": "^19.2.3",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9"
   }

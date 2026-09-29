@@ -51,7 +51,9 @@ use zfb_watcher::{Change, ChangeKind, WatchBackend, WatchOptions, Watcher};
 
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
-use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
+use crate::policy::{
+    classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
+};
 
 trait DynamicWatchRegistrar: Send + 'static {
     fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf>;
@@ -496,11 +498,10 @@ async fn maybe_pre_tick_refresh(config: &OrchestratorConfig, changes: &[(PathBuf
 /// Owned by the `zfb` command layer, like
 /// [`OrchestratorConfig::css_mirror_skip_dir_names`]: this crate stores
 /// the closure opaquely and knows nothing about what it matches. The
-/// motivating consumer is the CSS engine's own synthesised Tailwind entry
-/// temp file (`zfb_css::is_tailwind_entry_tmp`), which lands in a watched
-/// directory on every CSS pass — without suppression each pass's watch
-/// event triggers the next CSS pass under a fresh random name, so the
-/// dev loop never goes idle (issue #2343).
+/// current consumer is the `zfb` command layer, which suppresses
+/// in-project temporary files written by the islands bundler. Those files
+/// land in a watched directory during each islands pass; without suppression
+/// their events would schedule an unnecessary follow-up tick (issue #3215).
 ///
 /// Kind-agnostic on purpose — suppression must cover `Created`,
 /// `Modified`, AND `Removed`: a close-after-write can be delivered as
@@ -773,6 +774,9 @@ fn watch_options_for(config: &OrchestratorConfig) -> WatchOptions {
     WatchOptions::default()
         .with_debounce(debounce)
         .with_backend(config.backend)
+        .with_exact_files(
+            ["zfb.config.json", "zfb.config.ts"].map(|name| config.project_root.join(name)),
+        )
 }
 
 /// The dev-loop orchestrator.
@@ -814,16 +818,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
 
     /// Class-agnostic containment test: does `path` live inside a
     /// registered CSS sibling-mirror root (issue #1802's `css_mirror_roots`
-    /// registry), once the two containment rules below are applied? This is
-    /// "the `@source` scan would have read this file, wherever it sits in
-    /// the tree" — it carries no opinion on `PathClass` at all. Split out of
-    /// `content_under_css_mirror_root` in #2077 so the REMOVED-path fold
-    /// (`tick_with_kinds`) can consult it for every path class, not just the
-    /// three the live-edit arms happen to gate on.
+    /// registry), once the two containment rules below are applied? It
+    /// answers the mirror-root policy question independently of `PathClass`;
+    /// `discover_css_source_files` applies the source-extension allowlist.
+    /// Split out of `content_under_css_mirror_root` in #2077 so the
+    /// REMOVED-path fold (`tick_with_kinds`) can consult it for every path
+    /// class, not just the three the live-edit arms happen to gate on.
     ///
-    /// Two containment rules ride on top of the bare subtree test, both
-    /// keeping this gate equivalent to "the `@source` scan would have read
-    /// this file":
+    /// Two containment rules ride on top of the bare subtree test:
     ///
     /// - **Non-degeneracy.** A root that CONTAINS `project_root` would match
     ///   every path in the project and silently convert this into the
@@ -832,15 +834,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     ///   `bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`),
     ///   so this is defense in depth against a future claim-policy change —
     ///   not a live condition.
-    /// - **Infra skip-dirs.** Tailwind's `@source` globs exclude the
-    ///   `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (`dist/`,
-    ///   `node_modules/`, …) at any depth under a mirror root, so an event
-    ///   from one cannot change the emitted CSS. The list is the command
-    ///   layer's, threaded down through
+    /// - **Infra skip-dirs.** Wind source discovery and this gate share the
+    ///   `CSS_SIBLING_MIRROR_SKIP_DIRS` list (`dist/`, `node_modules/`, …)
+    ///   at any depth under a mirror root. The list is threaded down through
     ///   [`OrchestratorConfig::css_mirror_skip_dir_names`] — the SAME value
     ///   the recursive-directory watch already suppresses on — rather than
-    ///   re-spelled here, so the two can never drift into two different
-    ///   definitions of "inside a claimed mirror region".
+    ///   re-spelled here, so the two can never drift into different
+    ///   definitions of a claimed mirror region.
     fn path_under_css_mirror_root(&self, path: &Path) -> bool {
         let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
             return false;
@@ -863,33 +863,30 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     }
 
     /// Issue #1819 (epic #1995) — option (b): a `PathClass::Content` change
-    /// (`.md`/`.mdx`) must rerun the Tailwind content scan ONLY when it lies
+    /// (`.md`/`.mdx`) must rerun the wind candidate discovery ONLY when it lies
     /// under a registered CSS sibling-mirror root. Thin class-gated wrapper
     /// around [`Self::path_under_css_mirror_root`] for the LIVE-edit arms
     /// (`plan_for_changes`'s three call sites) — behaviourally identical to
     /// the pre-#2077 combined function for every class it ever accepted.
     ///
-    /// `discover_css_source_files` (`crates/zfb/src/commands/build.rs`) scans
-    /// `.md`/`.mdx` inside a claimed mirror root, and Tailwind's `@source`
-    /// globs cover the whole subtree — so a utility class authored only in a
-    /// sibling markdown file IS part of the CSS input, but #1288's `mark_css`
-    /// rule is gated on `PathClass::Module` alone and never fired for it. The
-    /// symptom is dev-loop only: prod builds rescan unconditionally.
+    /// `discover_css_source_files` (`crates/zfb/src/commands/build.rs`) includes
+    /// `.md`/`.mdx` inside a claimed mirror root, so a utility class authored
+    /// only in a sibling markdown file is part of the wind input. But #1288's
+    /// `mark_css` rule is gated on `PathClass::Module` alone and never fired
+    /// for it. The symptom is dev-loop only: prod builds rescan unconditionally.
     ///
     /// Deliberately NOT unconditional on `Content`: that would make every
-    /// ordinary markdown edit rerun the Tailwind scan, which is a real
+    /// ordinary markdown edit rerun the wind candidate discovery, which is a real
     /// dev-loop cost on content-heavy sites. The mirror-root gate is what
     /// keeps in-root content edits as cheap as they are today.
     ///
-    /// `Data` and `External` ride along with `Content` because Tailwind's
-    /// `@source` scan covers the WHOLE mirror-root subtree, not just the
-    /// extensions this classifier happens to whitelist: an out-of-root
-    /// `.json`/`.yaml` classifies `Data`, an out-of-root
-    /// `.html`/`.vue`/`.svelte` classifies `External`, and a class token in
-    /// either is real CSS input. Those three are the complete set that can
-    /// reach a CSS-inert arm from outside the project root — an out-of-root
-    /// path never classifies `Page`, while `Module` and `Style` already
-    /// `mark_css` unconditionally.
+    /// `Data` and `External` ride along with `Content` through the same
+    /// mirror-root gate. The classifier recognizes more extensions than the
+    /// wind source allowlist; `discover_css_source_files` remains the authority
+    /// on which files contribute candidates. These classes keep the
+    /// invalidation decision independent of the caller's file-class branch —
+    /// an out-of-root path never classifies `Page`, while `Module` and `Style`
+    /// already `mark_css` unconditionally.
     ///
     /// This is a CSS-rerun signal and nothing else — it never touches page
     /// selection (see the `PageSelection::All` note in the
@@ -1023,6 +1020,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         while let Some(path) = changes_iter.next() {
             let path: PathBuf = path.clone();
             plan.record_trigger(path.clone());
+            // CSS source membership belongs to the consumer. Keep every
+            // path, including those claimed by the external override below.
+            plan.css_changes.record_upsert(path.clone());
+            // A declared package manifest is CSS input even when its .json
+            // path lies under node_modules and classifies as Data. Root
+            // config edits also invalidate CSS without relying on graph globals.
+            if self.config.policy.is_css_manifest(&path)
+                || is_css_config_path(&self.config.project_root, &path)
+            {
+                plan.mark_css();
+            }
 
             // External-narrowing override (issue #1038): a configured hook
             // mapped this out-of-root path to a specific page set in the
@@ -1055,7 +1063,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 // #1288/#1804 — the same unconditional Module→mark_css rule
                 // the main classified-path arm below applies (a `.tsx` edit
-                // may author a new Tailwind utility class) must also apply
+                // may author a new utility class) must also apply
                 // here: a narrowing hook only overrides the page SELECTION,
                 // not the asset-rebuild flags (see the comment above this
                 // arm), and without this line a hook-narrowed external
@@ -1118,9 +1126,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // would duplicate it — leave it to the take.
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
+                    full.css_changes = std::mem::take(&mut plan.css_changes);
                     let _ = path;
                     for remaining in changes_iter {
                         full.triggers.push(remaining.clone());
+                        full.css_changes.record_upsert(remaining.clone());
                     }
                     return full;
                 }
@@ -1156,7 +1166,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         plan.mark_islands();
                     }
                     // #1288 — a component (`.tsx` `Module`) edit may author a
-                    // new Tailwind utility class (symptom C). The CSS content
+                    // new utility class (symptom C). The CSS content
                     // scan only re-runs on `rerun_css`, which a `.css` edit
                     // sets today; a `.tsx` edit did not. Re-run the content
                     // scan so a newly-introduced class is emitted into
@@ -1212,7 +1222,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     plan.mark_ssr_reload_needed();
                     // #1819 (epic #1995) — a whole-site page re-render does
                     // NOT rerun the CSS content scan. An external file under
-                    // a claimed CSS mirror root is Tailwind `@source` input,
+                    // a claimed CSS mirror root is wind candidate input,
                     // so it needs the flag explicitly.
                     if self.content_under_css_mirror_root(class, &path) {
                         plan.mark_css();
@@ -1515,6 +1525,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // handled precisely. Without this, a deletion-only tick leaves CSS /
         // islands / SSR stale until the next non-removed edit.
         for path in &removed {
+            // Keep removals separate from upserts: a path can occur in both
+            // sets, and a removed directory can contain a recreated file.
+            plan.css_changes.record_removal(path.clone());
+            if self.config.policy.is_css_manifest(path)
+                || is_css_config_path(&self.config.project_root, path)
+            {
+                plan.mark_css();
+            }
             let class = {
                 let graph = self.graph.lock().unwrap_or_else(|p| {
                     warn!(
@@ -1556,32 +1574,23 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
             }
-            // #1819 (epic #1995), widened by #2077 — DELETING a path under a
-            // registered CSS mirror root always changes the Tailwind content
-            // set: its classes must stop being emitted. Unlike the live-edit
-            // arms above (which gate on `content_under_css_mirror_root`'s
-            // `Content`/`Data`/`External` class list, because the narrower
-            // `Module`/`Style` classes already `mark_css` unconditionally on
-            // a LIVE edit), a removal has no such per-class shortcut — none
-            // of the match arms above already covers a mirror-root deletion
-            // — so this consults the class-agnostic
-            // [`Self::path_under_css_mirror_root`] directly, unconditionally,
-            // for EVERY removed-path class reached above: `Global` and
-            // `Style` already call `mark_css` unconditionally (this is a
-            // harmless no-op re-set for them), and `Page`/`Module`/`Content`/
-            // `Data`/`External`/`Asset`/`Unclassified` all now gain the
-            // mirror-root signal a `content_under_css_mirror_root(class, ..)`
-            // call could never give `Module`/`Asset`/`Unclassified` — those
-            // classes never pass its class gate.
-            //
-            // In-root deletions (any class) remain UNCHANGED:
-            // `path_under_css_mirror_root` only matches a path inside a
-            // REGISTERED mirror root, and a mirror root can never swallow the
-            // project (`root_swallows_the_project`, checked inside the
-            // helper), so a deleted in-root `.tsx` still does not rerun the
-            // scan. That gap is PRE-EXISTING (deleted in-root modules have
-            // always behaved this way) and deliberately out of scope here;
-            // closing it is a broader behaviour change tracked separately.
+            // #3316: an in-root source removal must reach the CSS runner
+            // on this tick. Its change hints alone do not request a pass,
+            // and a later unrelated pass cannot recover this owner's removal.
+            // Include source directories (classified by their root segment),
+            // without relying on metadata for a path that no longer exists.
+            // Page selection remains the precise former-consumer set above.
+            if path.starts_with(&self.config.project_root)
+                && matches!(
+                    class,
+                    PathClass::Page | PathClass::Module | PathClass::Content
+                )
+            {
+                plan.mark_css();
+            }
+            // #1819/#2077: sibling removals use the existing class-agnostic
+            // mirror claim and infra-directory exclusions. The in-root rule
+            // above must not widen those external claims.
             if self.path_under_css_mirror_root(path) {
                 plan.mark_css();
             }
@@ -2193,9 +2202,126 @@ mod tests {
         )
     }
 
+    #[test]
+    fn declared_package_manifest_event_requests_css_even_though_json_is_data() {
+        let manifest = PathBuf::from("/proj/node_modules/@fixture/widgets/wind.json");
+        let ambient = PathBuf::from("/proj/node_modules/@fixture/widgets/other.json");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation
+            .replace_css_manifests_read_since([manifest.clone()], std::time::SystemTime::now());
+        let policy = GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let config = OrchestratorConfig::new(
+            "/proj",
+            vec![PathBuf::from("pages"), PathBuf::from("content")],
+        )
+        .with_policy(policy);
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+        assert!(orch.plan_for_changes([manifest.clone()]).rerun_css);
+        assert!(!orch.plan_for_changes([ambient]).rerun_css);
+
+        let applies = orch.pipeline.applies.clone();
+        orch.tick_with_kinds(
+            vec![(manifest, ChangeKind::Removed)],
+            &noop_ctx(Path::new("/tmp")),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_css);
+    }
+
+    #[test]
+    fn css_config_events_request_css_without_graph_globals() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![]),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        for path in ["/proj/zfb.config.json", "/proj/zfb.config.ts"] {
+            assert!(!orch.graph.lock().unwrap().is_global(Path::new(path)));
+            let plan = orch.plan_for_changes([path]);
+            assert!(plan.rerun_css);
+            assert!(!plan.rerun_islands);
+            assert_css_change_paths(&plan, &[path], &[]);
+            // With no pages, deletion would otherwise be a CSS no-op too.
+            orch.tick_with_kinds(
+                vec![(PathBuf::from(path), ChangeKind::Removed)],
+                &noop_ctx(Path::new("/tmp")),
+                None,
+            )
+            .unwrap();
+            let recorded = applies.lock().unwrap();
+            let removed = recorded.last().expect("config removal must reach pipeline");
+            assert!(removed.rerun_css);
+            assert!(!removed.rerun_islands);
+            assert_css_change_paths(removed, &[], &[path]);
+        }
+        for path in [
+            "/proj/data/config.json",
+            "/proj/data/zfb.config.json",
+            "/proj/node_modules/pkg/zfb.config.json",
+        ] {
+            assert!(!orch.plan_for_changes([path]).rerun_css, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn declared_package_manifest_watch_delivers_single_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let manifest = project.join("node_modules/@fixture/widgets/wind.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(&manifest, "v1").unwrap();
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation
+            .replace_css_manifests_read_since([manifest.clone()], std::time::SystemTime::now());
+        let policy = GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &project,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert_eq!(
+            register_dynamic_dependency_watches(&mut watcher, &policy, &[]),
+            vec![manifest.parent().unwrap().to_path_buf()]
+        );
+        settle_watch_with_sentinels(&mut rx, manifest.parent().unwrap(), "wind-manifest").await;
+        std::fs::write(&manifest, "v2").unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(change) = rx.recv().await {
+                if change.path == manifest {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .expect("declared package manifest edit must reach watcher");
+        watcher.shutdown().await;
+        assert!(matches!(
+            observed,
+            Some(ChangeKind::Created | ChangeKind::Modified)
+        ));
+    }
+
     // -----------------------------------------------------------------
     // Watch backend selection (issue #2174, constructor-selection site a)
     // -----------------------------------------------------------------
+
+    #[test]
+    fn watch_options_include_both_config_paths_even_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = OrchestratorConfig::new(temp.path(), vec![]);
+        assert_eq!(
+            watch_options_for(&config).exact_files,
+            vec![
+                temp.path().join("zfb.config.json"),
+                temp.path().join("zfb.config.ts"),
+            ]
+        );
+    }
 
     #[test]
     fn watch_options_for_defaults_to_native_backend() {
@@ -2258,7 +2384,7 @@ mod tests {
         // components/ is in default islands roots -> islands rerun.
         assert!(plan.rerun_islands);
         // #1288 — a component (`Module`) edit now also re-runs the CSS content
-        // scan, because it may author a new Tailwind utility class that must be
+        // scan, because it may author a new utility class that must be
         // emitted into `/assets/styles.css` without touching the CSS entry
         // (symptom C of #1284). This flipped from the previous `!rerun_css`.
         assert!(plan.rerun_css);
@@ -2286,17 +2412,13 @@ mod tests {
     ///    `ctx.run_css()` (`pipeline/dev.rs`, the `if plan.rerun_css { .. }`
     ///    block).
     ///
-    /// **Scope boundary — read before assuming this covers content too:**
-    /// this chain holds for `.tsx` / `PathClass::Module` sibling edits
-    /// ONLY. An out-of-root `.md`/`.mdx` edit classifies as
-    /// `PathClass::Content` instead (see `classify_by_extension`), and
-    /// `mark_css` is gated on `PathClass::Module` alone — so a
-    /// Content-classified mirror-root edit does NOT rerun the Tailwind
-    /// scan today, even though `discover_css_source_files` also scans
-    /// `.md`/`.mdx`. That gap is tracked separately as issue #1819 (found
-    /// during this epic's Wave 2 codex review) and is deliberately NOT
-    /// fixed here — it shares planner logic with a much wider blast
-    /// radius and needs its own test-first pass.
+    /// **Scope boundary:** this chain proves the `.tsx` /
+    /// `PathClass::Module` sibling-edit path. `.md`/`.mdx` siblings
+    /// classify as `PathClass::Content` instead and use the separate
+    /// `content_under_css_mirror_root` gate added for issue #1819: those
+    /// edits rerun the scan only when they are under a registered CSS
+    /// mirror root. Ordinary in-project content edits remain cheap and do
+    /// not rerun the scan.
     #[test]
     fn out_of_root_module_change_without_hook_still_reruns_css() {
         let orch = make_orch(CountingPipeline::default());
@@ -2585,7 +2707,7 @@ mod tests {
     }
 
     /// Issue #1804 (Tailwind Sibling Source epic #1799, Wave 3 confirm
-    /// pass): the #1288 rule — a `Module` change may author a new Tailwind
+    /// pass): the #1288 rule — a `Module` change may author a new zudo-wind
     /// utility class, so `mark_css` fires unconditionally on any
     /// `Module`-classified change — was applied only in the main
     /// classified-path arm, never in this external-override arm. A
@@ -2663,6 +2785,255 @@ mod tests {
             run_client_scripts: None,
             reload_renderer: None,
         }
+    }
+
+    /// Record the applied plan, checking the pre-existing scheduling decisions
+    /// before each CSS change-set regression assertion below.
+    fn css_change_tick(
+        changes: &[(&str, ChangeKind)],
+        known: &[&str],
+        pages: &[&str],
+        rerun_css: bool,
+    ) -> RebuildPlan {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let (orch, registry) = make_orch_with_known_content(pipeline, known);
+        for path in known {
+            assert!(registry.contains(std::path::Path::new(path)));
+        }
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                changes
+                    .iter()
+                    .map(|(path, kind)| (PathBuf::from(path), *kind))
+                    .collect(),
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap()
+            .is_some());
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1, "the CSS hints must reach an applied plan");
+        let plan = plans[0].clone();
+        assert_eq!(plan.rerun_css, rerun_css);
+        assert_eq!(
+            plan.pages,
+            PageSelection::Specific(pages.iter().map(|path| pid(path)).collect())
+        );
+        plan
+    }
+
+    fn assert_css_change_paths(plan: &RebuildPlan, upserted: &[&str], removed: &[&str]) {
+        assert_eq!(
+            plan.css_changes,
+            crate::plan::CssChangeSet {
+                upserted: upserted.iter().map(PathBuf::from).collect(),
+                removed: removed.iter().map(PathBuf::from).collect(),
+            },
+            "applied CSS change set must preserve every delivered path and kind"
+        );
+    }
+
+    const CSS_CHANGE_ALL_PAGES: &[&str] = &[
+        "/proj/pages/a.tsx",
+        "/proj/pages/b.tsx",
+        "/proj/pages/c.tsx",
+    ];
+
+    #[test]
+    fn css_changes_in_root_page_edit() {
+        let path = "/proj/pages/a.tsx";
+        let plan = css_change_tick(&[(path, ChangeKind::Modified)], &[], &[path], false);
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_in_root_mdx_edit() {
+        let path = "/proj/content/post.mdx";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Modified)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_in_root_deletion() {
+        for path in [
+            "/proj/components/Widget.tsx",
+            "/proj/src/deleted.tsx",
+            "/proj/pages/deleted.tsx",
+            "/proj/content/deleted.mdx",
+            "/proj/src/removed-directory",
+        ] {
+            let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], &[], true);
+            assert_css_change_paths(&plan, &[], &[path]);
+        }
+    }
+
+    #[test]
+    fn css_changes_rename_pair() {
+        let old = "/proj/content/post.md";
+        let new = "/proj/content/renamed.mdx";
+        let plan = css_change_tick(
+            &[(old, ChangeKind::Removed), (new, ChangeKind::Modified)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            true,
+        );
+        assert_css_change_paths(&plan, &[new], &[old]);
+    }
+
+    #[test]
+    fn css_changes_created_known_content_is_upserted_once() {
+        let path = "/proj/content/known.mdx";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Created), (path, ChangeKind::Modified)],
+            &[path],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert!(plan.content_narrowing.as_ref().unwrap().fan_out_safe);
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_created_directory_is_upserted() {
+        let path = "/proj/content/new-dir";
+        let plan = css_change_tick(
+            &[(path, ChangeKind::Created)],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            false,
+        );
+        assert_css_change_paths(&plan, &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_removed_and_created_keep_both_sets() {
+        let directory = "/proj/content/nested";
+        let child = "/proj/content/nested/post.mdx";
+        let both = "/proj/content/recreated.mdx";
+        let plan = css_change_tick(
+            &[
+                (child, ChangeKind::Created),
+                (directory, ChangeKind::Removed),
+                (both, ChangeKind::Removed),
+                (both, ChangeKind::Created),
+            ],
+            &[child, both],
+            CSS_CHANGE_ALL_PAGES,
+            true,
+        );
+        assert!(!plan.content_narrowing.as_ref().unwrap().fan_out_safe);
+        assert_css_change_paths(&plan, &[child, both], &[directory, both]);
+    }
+
+    #[test]
+    fn css_changes_external_override_keeps_upsert() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let hook: ExternalInvalidationHook = Arc::new(|_| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(pipeline, hook);
+        let path = "/srv/shared/post.mdx";
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(PathBuf::from(path), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(!plans[0].rerun_css);
+        assert_eq!(
+            plans[0].pages,
+            PageSelection::Specific([pid("/proj/pages/a.tsx")].into())
+        );
+        assert_css_change_paths(&plans[0], &[path], &[]);
+    }
+
+    #[test]
+    fn css_changes_global_preserves_prior_current_remaining_and_removed_paths() {
+        let before = "/proj/content/post.mdx";
+        let global = "/proj/zfb.config.ts";
+        let after = "/proj/public/logo.png";
+        let removed = "/proj/components/Widget.tsx";
+        let plan = css_change_tick(
+            &[
+                (before, ChangeKind::Modified),
+                (global, ChangeKind::Modified),
+                (after, ChangeKind::Modified),
+                (removed, ChangeKind::Removed),
+            ],
+            &[],
+            CSS_CHANGE_ALL_PAGES,
+            true,
+        );
+        assert_css_change_paths(&plan, &[before, global, after], &[removed]);
+    }
+
+    #[test]
+    fn css_changes_record_all_classes_without_changing_noop_skips() {
+        let paths = [
+            ("/proj/pages/a.tsx", PathClass::Page),
+            ("/proj/components/Header.tsx", PathClass::Module),
+            ("/proj/content/post.mdx", PathClass::Content),
+            ("/proj/data/value.json", PathClass::Data),
+            ("/proj/styles/main.css", PathClass::Style),
+            ("/proj/public/logo.png", PathClass::Asset),
+            ("/proj/unknown", PathClass::Unclassified),
+            ("/srv/shared/unknown", PathClass::External),
+            ("/proj/zfb.config.ts", PathClass::Global),
+        ];
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+        for (path, class) in paths {
+            assert_eq!(
+                classify_change_with_content_roots(
+                    std::path::Path::new(path),
+                    std::path::Path::new("/proj"),
+                    &[],
+                    |path| orch.graph().lock().unwrap().is_global(path),
+                ),
+                class
+            );
+            let plan = orch.plan_for_changes([path]);
+            assert_css_change_paths(&plan, &[path], &[]);
+            if matches!(class, PathClass::Asset | PathClass::Unclassified) {
+                assert!(plan.is_noop());
+                for kind in [ChangeKind::Modified, ChangeKind::Removed] {
+                    assert!(orch
+                        .tick_with_kinds(
+                            vec![(PathBuf::from(path), kind)],
+                            &noop_ctx(dist.path()),
+                            None,
+                        )
+                        .unwrap()
+                        .is_none());
+                }
+            }
+        }
+        assert!(applies.lock().unwrap().is_empty());
+        let all_paths: Vec<_> = paths.iter().map(|(path, _)| *path).collect();
+        let changes: Vec<_> = paths
+            .iter()
+            .map(|(path, _)| (*path, ChangeKind::Removed))
+            .collect();
+        // The global deletion makes this tick apply, exposing even the
+        // otherwise-noop removed classes to the recording pipeline.
+        let plan = css_change_tick(
+            &changes,
+            &[],
+            &["/proj/pages/b.tsx", "/proj/pages/c.tsx"],
+            true,
+        );
+        assert_css_change_paths(&plan, &[], &all_paths);
     }
 
     /// A tick made exclusively of Modified content files produces the
@@ -3693,7 +4064,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Issue #1819 / epic #1995 — option (b): `PathClass::Content` reruns
-    // the Tailwind content scan ONLY under a registered CSS mirror root.
+    // the wind candidate discovery ONLY under a registered CSS mirror root.
     // -----------------------------------------------------------------
 
     /// Build a workspace-shaped fixture whose HOST project sits at
@@ -3800,7 +4171,7 @@ mod tests {
 
         assert!(
             plan.rerun_css,
-            "a .mdx edit inside a claimed CSS mirror root must rerun the Tailwind \
+            "a .mdx edit inside a claimed CSS mirror root must rerun the zudo-wind \
              content scan (#1819)"
         );
         // Page selection is deliberately UNTOUCHED by this epic: an unknown
@@ -3815,7 +4186,7 @@ mod tests {
 
     /// The negative that distinguishes option (b) from the REJECTED option
     /// (a) (`Content` → `mark_css` unconditionally). An ordinary in-root
-    /// markdown edit must NOT gain a Tailwind rescan — that would be a real
+    /// markdown edit must NOT gain a zudo-wind rescan — that would be a real
     /// dev-loop cost on content-heavy sites.
     ///
     /// The registry is non-empty here on purpose: the gate must discriminate
@@ -3839,7 +4210,7 @@ mod tests {
 
         assert!(
             !plan.rerun_css,
-            "an ordinary in-root markdown edit must NOT rerun the Tailwind content \
+            "an ordinary in-root markdown edit must NOT rerun the zudo-wind content \
              scan — that is the whole reason option (b) was chosen over the \
              unconditional option (a)"
         );
@@ -3850,7 +4221,7 @@ mod tests {
     /// `is_under_css_mirror_root` is a subtree test, so a root that CONTAINS
     /// `project_root` matches every path in the project — silently turning
     /// option (b) into the rejected option (a) (every ordinary markdown edit
-    /// reruns the Tailwind scan) with no other test failing. Today the
+    /// reruns the wind candidate discovery) with no other test failing. Today the
     /// registry cannot hold such a root, because `resolve_mirror_root`
     /// rejects project-containing claims
     /// (`bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`);
@@ -3879,16 +4250,16 @@ mod tests {
         assert!(
             !orch.plan_for_changes([in_root_mdx]).rerun_css,
             "a mirror root containing the project must not make every in-root \
-             markdown edit rerun the Tailwind scan — that is option (a), which \
+             markdown edit rerun the wind candidate discovery — that is option (a), which \
              this epic rejected"
         );
     }
 
-    /// The gate must apply the SAME infra-dir exclusions the `@source` scan
+    /// The gate must apply the SAME infra-dir exclusions wind source discovery
     /// applies (`CSS_SIBLING_MIRROR_SKIP_DIRS`, threaded down as
     /// `OrchestratorConfig::css_mirror_skip_dir_names`). A build artifact
     /// under a sibling's `dist/` cannot change the emitted CSS — the
-    /// exclusion globs guarantee Tailwind never reads it — so rerunning the
+    /// exclusion globs guarantee wind source discovery never includes it — so rerunning the
     /// scan for it is pure cost, and a gate that disagreed with the scan
     /// would be a second, drifting definition of "inside a claimed mirror
     /// region".
@@ -3912,7 +4283,7 @@ mod tests {
 
         assert!(
             !orch.plan_for_changes([generated]).rerun_css,
-            "a file under a mirror root's `dist/` is excluded from the @source \
+            "a file under a mirror root's `dist/` is excluded from the wind source \
              scan, so it can never change the emitted CSS"
         );
         assert!(
@@ -3929,7 +4300,7 @@ mod tests {
     }
 
     /// The removed-path fold: deleting a mirror-root markdown file changes
-    /// the Tailwind content set too (its classes must stop being emitted),
+    /// the wind candidate set too (its classes must stop being emitted),
     /// so the fold applies the same rule as the live arm.
     #[test]
     fn sibling_mirror_root_mdx_removal_reruns_css() {
@@ -4010,13 +4381,10 @@ mod tests {
         );
     }
 
-    /// Negative paired with the RED test above: an ORDINARY in-root Module
-    /// removal must NOT gain a Tailwind rescan — that gap is documented,
-    /// pre-existing, and deliberately out of scope for #2077 (see the fold's
-    /// own doc comment). Must pass BOTH before and after the fix, proving
-    /// in-root behavior is genuinely unchanged rather than merely uncovered.
+    /// #3316 closes the in-root removal gap left outside #2077: a deleted
+    /// source must deliver its removal hint to the CSS consumer immediately.
     #[test]
-    fn in_root_module_removal_does_not_rerun_css() {
+    fn in_root_module_removal_reruns_css() {
         use zfb_watcher::ChangeKind;
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().canonicalize().unwrap();
@@ -4038,7 +4406,7 @@ mod tests {
         assert!(
             !policy.is_under_css_mirror_root(&in_root_tsx),
             "fixture sanity: the in-root path must not itself be under the registered \
-             mirror root, or this negative proves nothing"
+             mirror root, or this test does not isolate in-root invalidation"
         );
 
         let pipeline = CountingPipeline::default();
@@ -4056,15 +4424,14 @@ mod tests {
 
         let plan = applies.lock().unwrap().last().unwrap().clone();
         assert!(
-            !plan.rerun_css,
-            "an in-root Module deletion must NOT rerun the Tailwind content scan — that \
-             gap is documented and deliberately out of scope for #2077"
+            plan.rerun_css,
+            "an in-root Module deletion must retract its CSS candidates on this tick"
         );
     }
 
     /// Negative paired with the RED test above: a removal under a mirror
     /// root's `dist/` (a `css_mirror_skip_dir_names` infra dir) must NOT
-    /// rerun the Tailwind scan, matching the live-edit arm's own
+    /// rerun the wind candidate discovery, matching the live-edit arm's own
     /// `mirror_root_infra_dir_event_does_not_rerun_css` — the skip-dir
     /// exclusion must hold for the removed-path fold too, even though the
     /// fold now consults the class-agnostic check unconditionally.
@@ -4113,16 +4480,16 @@ mod tests {
         let plan = applies.lock().unwrap().last().unwrap().clone();
         assert!(
             !plan.rerun_css,
-            "a removal under a mirror root's dist/ is excluded from the @source scan, \
+            "a removal under a mirror root's dist/ is excluded from the wind source discovery, \
              so it can never change the emitted CSS"
         );
     }
 
     /// `PathClass::Data`: an out-of-root `.json`/`.yaml` inside a mirror
-    /// root is read by the same whole-subtree `@source` scan, so a class
-    /// token authored there is CSS input like any other. Raised by codex
-    /// review of the first #1997 pass, which covered only `Content` and
-    /// `External`.
+    /// root takes the same conservative CSS-invalidation path as `Content`
+    /// and `External`. The wind source allowlist still decides which files
+    /// contribute candidates. Raised by review of the first #1997 pass,
+    /// which covered only `Content` and `External`.
     #[test]
     fn sibling_mirror_root_data_file_reruns_css() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4157,9 +4524,10 @@ mod tests {
 
     /// The `External` arm: a mirror root can hold files whose extension is
     /// not on the classifier's whitelist (an out-of-root `.vue` classifies
-    /// `External`), while Tailwind's own `@source` scanner still reads them.
-    /// The live `External` arm's `PageSelection::All` does not imply a CSS
-    /// rescan, so the flag is set explicitly.
+    /// `External`). The wind source allowlist may exclude that extension, but
+    /// the mirror-root invalidation policy still applies. The live `External`
+    /// arm's `PageSelection::All` does not imply a CSS rescan, so the flag is
+    /// set explicitly.
     #[test]
     fn sibling_mirror_root_external_file_reruns_css() {
         let tmp = tempfile::tempdir().unwrap();
@@ -6265,15 +6633,14 @@ mod tests {
     // Watch-intake suppression (issue #2345)
     // -----------------------------------------------------------------
 
-    /// A test stand-in for `zfb_css::is_tailwind_entry_tmp` — this crate
-    /// must not depend on `zfb-css` (the knob is opaque by design), so the
-    /// suppression tests carry their own shape-alike predicate as plain
-    /// test data.
+    /// A test stand-in for `zfb_islands::is_zfb_islands_temp_file` — this crate
+    /// keeps the predicate opaque, so suppression tests carry a shape-alike
+    /// predicate as plain test data.
     fn temp_entry_suppression() -> IntakeSuppressionPredicate {
         Arc::new(|path: &Path| {
             path.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("zfb-tailwind-entry-") && n.ends_with(".css"))
+                .is_some_and(|n| n.starts_with(".zfb-esbuild-entry-") && n.ends_with(".tsx"))
         })
     }
 
@@ -6293,15 +6660,15 @@ mod tests {
         let main_css = PathBuf::from("/proj/styles/main.css");
         let batch = vec![
             (
-                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                 ChangeKind::Created,
             ),
             (
-                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                 ChangeKind::Modified,
             ),
             (
-                PathBuf::from("/proj/styles/zfb-tailwind-entry-d4E5f6.css"),
+                PathBuf::from("/proj/.zfb-esbuild-entry-d4E5f6.tsx"),
                 ChangeKind::Removed,
             ),
             (main_css.clone(), ChangeKind::Modified),
@@ -6334,15 +6701,15 @@ mod tests {
             &config,
             vec![
                 (
-                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                     ChangeKind::Created,
                 ),
                 (
-                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                     ChangeKind::Modified,
                 ),
                 (
-                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                     ChangeKind::Removed,
                 ),
             ],
@@ -6360,7 +6727,7 @@ mod tests {
         let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]);
         let batch = vec![
             (
-                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                PathBuf::from("/proj/.zfb-esbuild-entry-a1B2c3.tsx"),
                 ChangeKind::Created,
             ),
             (PathBuf::from("/proj/styles/main.css"), ChangeKind::Modified),
@@ -6386,9 +6753,7 @@ mod tests {
         std::fs::create_dir_all(project_root.join("styles")).unwrap();
         let main_css = project_root.join("styles").join("main.css");
         std::fs::write(&main_css, "body { margin: 0; }\n").unwrap();
-        let temp_entry = project_root
-            .join("styles")
-            .join("zfb-tailwind-entry-a1B2c3.css");
+        let temp_entry = project_root.join(".zfb-esbuild-entry-a1B2c3.tsx");
         std::fs::write(&temp_entry, "/* synthesised entry */\n").unwrap();
 
         let pipeline = CountingPipeline::default();
@@ -6403,7 +6768,7 @@ mod tests {
         let dist = tempfile::tempdir().unwrap();
         let (run, tx) = spawn_drain_loop(orch, noop_ctx(dist.path()));
 
-        // Synthetic delivery (issue #2253): the CSS pass's own temp-entry
+        // Synthetic delivery (issue #2253): the islands pass's own entry-temp
         // lifecycle as the watcher would report it.
         for kind in [
             ChangeKind::Created,

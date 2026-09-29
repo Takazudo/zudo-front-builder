@@ -39,9 +39,9 @@
 //! `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --test dev_sibling_watch_1678_e2e -- --ignored`.
 //!
 //! **Scenario E** (issue #1805, epic #1799 gap (a) confirm pass) lives in its
-//! own test function below, `e2e_dev_sibling_tailwind_utility_class_refreshes_served_css`,
+//! own test function below, `e2e_dev_sibling_wind_utility_class_refreshes_served_css`,
 //! rather than as a fifth scenario in the function above: it needs the
-//! Tailwind binary in addition to esbuild, and its sibling must be reached
+//! esbuild binary, and its sibling must be reached
 //! ONLY through a tsconfig alias claim (`zfb_build::SiblingMirrorPlan`'s
 //! claim source (b)) — never through a `?raw`/worker/plain-module import —
 //! so the `css_mirror_roots` recursive-directory watch (#1801/#1802) is the
@@ -91,26 +91,6 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
-
-/// Locate a tailwindcss v4 binary for Scenario E, mirroring
-/// `sibling_css_module_command_layer_build.rs`'s two env-gate tests'
-/// resolution (`ZFB_TAILWIND_BIN` env var, else the workspace-staged
-/// `crates/zfb/binaries/tailwindcss-v4` slot). Unlike
-/// `zfb_test_utils::locate_esbuild` this has no pnpm-store/PATH fallback —
-/// Scenario E is gated on the exact same slot the rest of this repo's
-/// Tailwind env-gate tests rely on, so there is no reason to search further.
-/// Returns `None` so the caller can skip cleanly on a machine that only
-/// staged esbuild.
-fn locate_tailwind() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ZFB_TAILWIND_BIN") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let slot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tailwindcss-v4");
-    slot.is_file().then_some(slot)
-}
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 // Boot CONTENT polls happen after the ready banner, when the eager boot bundle
@@ -196,11 +176,8 @@ impl DevSession {
 
 /// Spawn `zfb dev --port 0` in its own process group with `ZFB_DEV_TIMING=1`
 /// (so the `watch-extra registered:` signal is emitted) and logs captured.
-/// `tailwind` sets `ZFB_TAILWIND_BIN` for the child when `Some` (Scenario E);
-/// scenarios A-D pass `None`, leaving the child's env byte-identical to
-/// before issue #1805.
-fn spawn_dev(root: &Path, esbuild: &Path, tailwind: Option<&Path>) -> DevSession {
-    spawn_dev_with_env(root, esbuild, tailwind, &[], "")
+fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
+    spawn_dev_with_env(root, esbuild, &[], "")
 }
 
 /// [`spawn_dev`] plus extra child env vars (issue #3163's deferred-boot
@@ -209,7 +186,6 @@ fn spawn_dev(root: &Path, esbuild: &Path, tailwind: Option<&Path>) -> DevSession
 fn spawn_dev_with_env(
     root: &Path,
     esbuild: &Path,
-    tailwind: Option<&Path>,
     extra_env: &[(&str, &str)],
     log_tag: &str,
 ) -> DevSession {
@@ -231,9 +207,6 @@ fn spawn_dev_with_env(
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    if let Some(tailwind) = tailwind {
-        command.env("ZFB_TAILWIND_BIN", tailwind);
-    }
     command.envs(extra_env.iter().copied());
     command.process_group(0);
     let child = command.spawn().expect("spawn `zfb dev --port 0`");
@@ -412,7 +385,7 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
     let host_root = workspace.path().join("sub/host");
     let shared_dir = workspace.path().join("sub/shared");
 
-    let mut session = spawn_dev(&host_root, &esbuild, None);
+    let mut session = spawn_dev(&host_root, &esbuild);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -578,7 +551,7 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
 /// claim source (b)) — no `?raw`/worker/plain-module import ever reaches it
 /// — so the ONLY registry that can make its edits observable is the
 /// `css_mirror_roots` recursive-directory watch (#1801/#1802).
-fn write_tailwind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
+fn write_wind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
     fs::write(
         ws_root.join("pnpm-workspace.yaml"),
         "packages:\n  - 'sub-packages/*'\n",
@@ -592,27 +565,19 @@ fn write_tailwind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
     let project = ws_root.join("sub-packages/uhost");
     fs::create_dir_all(project.join("pages")).expect("create pages/");
 
-    // Issue #1803's confound (documented at
-    // sibling_css_module_command_layer_build.rs:649-662, restated here for a
-    // DEV session): `zfb dev` writes its own SSR bundle under
-    // `<project_root>/.zfb-build/`, which inlines every JSX class-attribute
-    // string literal it touches. Tailwind v4's automatic content detection
-    // (active here since no `source(none)` is ever added) respects
-    // `.gitignore` — WITHOUT this file it could see the sibling's new
-    // utility class through that generated bundle instead of through the
-    // mirror-root `@source` wiring under test, making the assertion below
-    // pass for the wrong reason.
+    // Keep generated bundles out of the fixture's authored source surface.
+    // Wind's explicit source plan also excludes generated directories, so
+    // the sibling class must arrive through the claimed mirror root.
     fs::write(
         project.join(".gitignore"),
         ".zfb-build/\ndist/\nnode_modules/\n",
     )
     .expect("write project .gitignore");
 
-    // No `tailwind` key -> CSS (and the Tailwind utility scan) is enabled by
-    // default.
+    // Select wind explicitly with a marker token for the served CSS.
     fs::write(
         project.join("zfb.config.json"),
-        "{\n  \"framework\": \"preact\"\n}\n",
+        "{\n  \n  \"wind\": { \"tokens\": { \"colors\": { \"marker\": \"#123456\" } } }\n}\n",
     )
     .expect("write zfb.config.json");
 
@@ -632,7 +597,7 @@ fn write_tailwind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
 
     let sibling = ws_root.join("lib/ushared");
     fs::create_dir_all(&sibling).expect("create lib/ushared");
-    // Boot state: no Tailwind utility class the assertion below looks for
+    // Boot state: no wind utility class the assertion below looks for
     // exists anywhere in the fixture yet.
     fs::write(
         sibling.join("Badge.tsx"),
@@ -645,11 +610,9 @@ fn write_tailwind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
 }
 
 /// Scenario E acceptance: a sibling `.tsx` edit that introduces a NEW
-/// Tailwind utility class used nowhere else in the fixture refreshes the
+/// wind utility class used nowhere else in the fixture refreshes the
 /// served `/assets/styles.css` without a `zfb dev` restart.
 ///
-/// Needs the Tailwind binary in addition to esbuild — skips cleanly when
-/// unavailable (see `locate_tailwind`).
 ///
 /// Falsifiability: reverting `orchestrator.rs`'s
 /// `register_dynamic_dependency_watches` call to
@@ -659,12 +622,8 @@ fn write_tailwind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
 /// filesystem event the orchestrator ever sees, and `edit_until_served`
 /// times out on `SCENARIO_DEADLINE` instead of observing the new class.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: tailwindcss v4 + esbuild — cargo test -p zfb --test \
-            dev_sibling_watch_1678_e2e -- --ignored --exact \
-            e2e_dev_sibling_tailwind_utility_class_refreshes_served_css \
-            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
-            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH)"]
-async fn e2e_dev_sibling_tailwind_utility_class_refreshes_served_css() {
+#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+async fn e2e_dev_sibling_wind_utility_class_refreshes_served_css() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
@@ -674,19 +633,12 @@ async fn e2e_dev_sibling_tailwind_utility_class_refreshes_served_css() {
         );
         return;
     };
-    let Some(tailwind) = locate_tailwind() else {
-        eprintln!(
-            "[dev_sibling_watch_1678 scenario E] no tailwindcss v4 binary available; \
-             skipping. Set ZFB_TAILWIND_BIN or stage crates/zfb/binaries/tailwindcss-v4."
-        );
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("scenario E fixture tempdir");
-    let (project, _nm_handle) = write_tailwind_sibling_dev_fixture(workspace.path());
+    let (project, _nm_handle) = write_wind_sibling_dev_fixture(workspace.path());
     let sibling_badge = workspace.path().join("lib/ushared/Badge.tsx");
 
-    let mut session = spawn_dev(&project, &esbuild, Some(&tailwind));
+    let mut session = spawn_dev(&project, &esbuild);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -728,6 +680,10 @@ async fn e2e_dev_sibling_tailwind_utility_class_refreshes_served_css() {
         }
     };
     assert!(
+        boot_css.contains("--zw-color-marker"),
+        "wind marker missing: {boot_css}"
+    );
+    assert!(
         !boot_css.contains("ff6ad5"),
         "scenario E: boot stylesheet must not already contain the sibling-only \
          utility class before the edit below introduces it\n{}",
@@ -736,7 +692,7 @@ async fn e2e_dev_sibling_tailwind_utility_class_refreshes_served_css() {
 
     // THE EDIT — a sibling `.tsx` file (`PathClass::Module`; the #1288 rule
     // unconditionally marks CSS dirty on this classification) gains a NEW
-    // Tailwind utility class (`bg-[#ff6ad5]`) used nowhere else in the
+    // wind utility class (`bg-[#ff6ad5]`) used nowhere else in the
     // fixture.
     edit_until_served(
         &client,
@@ -850,7 +806,7 @@ fn write_zfb_project_shell(project: &Path, name: &str, deps: &[&str]) {
     .expect("write project package.json");
     fs::write(
         project.join("zfb.config.json"),
-        "{\n  \"framework\": \"preact\",\n  \"tailwind\": { \"enabled\": false }\n}\n",
+        "{\n  \n  \"wind\": false\n}\n",
     )
     .expect("write zfb.config.json");
 }
@@ -863,7 +819,7 @@ fn ssr_page(imports: &str, values: &[&str]) -> String {
         .collect();
     format!(
         "{imports}\nexport default function WorkspaceDepPage() {{\n  return (\n    \
-         <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        \
+         <html lang=\"en\">\n      <head>\n        <meta charset=\"utf-8\" />\n        \
          <title>ZFB3163_PAGE</title>\n      </head>\n      <body>\n        <main>\n\
          {paragraphs}        </main>\n      </body>\n    </html>\n  );\n}}\n"
     )
@@ -917,7 +873,7 @@ async fn boot_3163(
     extra_env: &[(&str, &str)],
     log_tag: &str,
 ) -> Option<(DevSession, String)> {
-    let mut session = spawn_dev_with_env(project, esbuild, None, extra_env, log_tag);
+    let mut session = spawn_dev_with_env(project, esbuild, extra_env, log_tag);
     let port = wait_for_ready(&mut session).await?;
     Some((session, format!("http://localhost:{port}/")))
 }
@@ -1477,7 +1433,7 @@ async fn single_edit_before_watch_arm_is_served(
     let before = fs::read_to_string(edited).expect("read the file to edit");
     let after = edit(before.clone());
     assert_ne!(before, after, "{label}: the edit must change the file");
-    let mut session = spawn_dev_with_env(root, &esbuild, None, &SLOW_WATCH_ARM_ENV, "");
+    let mut session = spawn_dev_with_env(root, &esbuild, &SLOW_WATCH_ARM_ENV, "");
     let Some(port) = wait_for_ready(&mut session).await else {
         return false;
     };

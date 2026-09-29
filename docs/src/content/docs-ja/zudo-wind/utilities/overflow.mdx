@@ -1,0 +1,232 @@
+---
+title: オーバーフロー
+description: 要素または軸の内容のオーバーフローとオーバースクロールを制御します。
+sidebar_position: 33
+generated: true
+---
+
+要素または軸の内容のオーバーフローとオーバースクロールを制御します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## overflow
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overflow` |
+| クラスパターン | `overflow-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"hidden"` | `"hidden"` |
+| `keyword` | `"clip"` | `"clip"` |
+| `keyword` | `"visible"` | `"visible"` |
+| `keyword` | `"scroll"` | `"scroll"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overflow-auto` | `overflow: auto` |
+
+## overscroll
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overscroll` |
+| クラスパターン | `overscroll-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overscroll-behavior` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"contain"` | `"contain"` |
+| `keyword` | `"none"` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overscroll-behavior` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overscroll-auto` | `overscroll-behavior: auto` |
+
+## overflow-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overflow-x` |
+| クラスパターン | `overflow-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow-x` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"hidden"` | `"hidden"` |
+| `keyword` | `"clip"` | `"clip"` |
+| `keyword` | `"visible"` | `"visible"` |
+| `keyword` | `"scroll"` | `"scroll"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow-x` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overflow-x-auto` | `overflow-x: auto` |
+
+## overflow-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overflow-y` |
+| クラスパターン | `overflow-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow-y` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"hidden"` | `"hidden"` |
+| `keyword` | `"clip"` | `"clip"` |
+| `keyword` | `"visible"` | `"visible"` |
+| `keyword` | `"scroll"` | `"scroll"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow-y` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overflow-y-auto` | `overflow-y: auto` |
+
+## overscroll-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overscroll-x` |
+| クラスパターン | `overscroll-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overscroll-behavior-x` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"contain"` | `"contain"` |
+| `keyword` | `"none"` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overscroll-behavior-x` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overscroll-x-auto` | `overscroll-behavior-x: auto` |
+
+## overscroll-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overscroll-y` |
+| クラスパターン | `overscroll-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `overflow` (`13`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overscroll-behavior-y` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"contain"` | `"contain"` |
+| `keyword` | `"none"` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overscroll-behavior-y` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overscroll-y-auto` | `overscroll-behavior-y: auto` |

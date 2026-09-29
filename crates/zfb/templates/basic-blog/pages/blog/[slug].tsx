@@ -31,7 +31,7 @@ export default function BlogPostPage({ post }: Props) {
             {post.data.title}
           </h1>
           <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-neutral-500">
-            <time dateTime={post.data.date} class="tabular-nums">
+            <time datetime={post.data.date} class="tabular-nums">
               {post.data.date}
             </time>
             {tags.map((tag) => (

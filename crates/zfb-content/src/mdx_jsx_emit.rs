@@ -28,10 +28,10 @@
 //!   caller's `components` prop and trigger an explicit
 //!   `throw new Error(...)` if missing.
 //! - MDX flow & text expressions: emitted verbatim inside `{...}`.
-//! - HTML literals: wrapped in `dangerouslySetInnerHTML` on a span so
-//!   the DOM gets the original markup. (Trade-off: the embedded HTML
+//! - HTML literals: wrapped in a span using the owned `rawHtml` prop so the
+//!   DOM gets the original markup. The embedded HTML
 //!   is escaped once for the JS string literal, then injected raw at
-//!   runtime — visually faithful, no double-escape.)
+//!   runtime — visually faithful, no double-escape.
 //! - Frontmatter: NOT handled here. The caller is expected to strip
 //!   YAML/TOML frontmatter via `crate::frontmatter::parse` first.
 //!
@@ -553,7 +553,7 @@ fn mdx_to_jsx_module_inner(
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
-        // The no-pipeline JsxEmitter path is byte-stable and does not hoist
+        // The no-pipeline JsxEmitter path does not hoist
         // hast-phase JsxRaw nodes (it never runs hast visitors). Return an
         // empty Vec so the tuple shape is uniform. It carries no diagnostic
         // channel either (see `mdx_to_jsx_module`'s doc comment) — an
@@ -606,7 +606,9 @@ fn mdx_to_jsx_module_inner(
     }
 
     let mut out = String::new();
-    out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n");
+    out.push_str(
+        "import { Fragment as _Fragment } from \"@takazudo/zfb/zudo-react/jsx-runtime\";\n\n",
+    );
     out.push_str(&render_headings_export(&headings));
     out.push('\n');
     // Emit synthesized module-level exports (e.g. readingTimeMinutes).
@@ -1254,16 +1256,7 @@ impl JsxEmitter {
             MdastNode::Blockquote(b) => self.emit_html("blockquote", &[], &b.children),
             MdastNode::ThematicBreak(_) => self.emit_html_void("hr", &[]),
             MdastNode::Break(_) => self.emit_html_void("br", &[]),
-            MdastNode::Html(h) => {
-                // Wrap raw HTML in a span with dangerouslySetInnerHTML so
-                // the DOM still receives the original markup. The JS-string
-                // escape happens here; React/Preact then injects the raw
-                // bytes at runtime — no double-escape.
-                format!(
-                    "<span dangerouslySetInnerHTML={{{{__html: {}}}}} />",
-                    js_string_literal(&h.value),
-                )
-            }
+            MdastNode::Html(h) => raw_html_element("span", &h.value),
             MdastNode::MdxJsxFlowElement(j) => {
                 self.emit_jsx(j.name.as_deref(), &j.attributes, &j.children)
             }
@@ -1414,14 +1407,12 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
-    // Build a style attr string for column index `col`. Object-valued,
-    // matching the other two emit paths — a string `style` prop makes
-    // React throw. See `jsx_style_attr`.
+    // Build a CSS-spelled style string for column index `col`.
     let style_attr = |col: usize| -> String {
         align
             .get(col)
             .and_then(align_style)
-            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
+            .map(|v| jsx_style_string_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1544,7 +1535,7 @@ fn is_module_level_esm(s: &str) -> bool {
 /// - Plain text → JS string literal in braces (so JSX never sees raw
 ///   `<` / `>` in content).
 /// - [`HastNode::Raw`] (HTML — produced by syntect, `MdastNode::Html`,
-///   etc.) → wrapped in a span with `dangerouslySetInnerHTML` so the
+///   etc.) → wrapped in a span with the dialect's raw-HTML prop so the
 ///   DOM still receives the original markup. JSX cannot embed
 ///   arbitrary HTML such as inline `<span style="...">` verbatim
 ///   because the JSX transform would treat unknown attribute shapes as
@@ -1639,7 +1630,7 @@ impl HastJsxBridge {
                 void,
             } => self.emit_element(tag, attrs, children, *void),
             HastNode::Text(s) => js_string_literal_in_braces(s),
-            // HTML passthrough — wrap in dangerouslySetInnerHTML so the
+            // HTML passthrough — use the selected raw-HTML prop so the
             // browser receives the original markup untouched. JSX
             // cannot inline arbitrary HTML safely.
             HastNode::Raw(s) => {
@@ -1648,18 +1639,11 @@ impl HastJsxBridge {
                 } else if starts_with_block_level_tag(s) {
                     // Block-level raw HTML (e.g. <pre>, <table>, <div>, <ul>) cannot
                     // be wrapped in a <span> per HTML5 content model. Use <div> so
-                    // preact-render-to-string emits <div>…</div>, which is flow
-                    // content and may contain block elements.
-                    format!(
-                        "<div dangerouslySetInnerHTML={{{{__html: {}}}}} />",
-                        js_string_literal(s),
-                    )
+                    // the resulting <div> is flow content and may contain block elements.
+                    raw_html_element("div", s)
                 } else {
                     // Inline raw HTML stays in a <span> — same shape as today.
-                    format!(
-                        "<span dangerouslySetInnerHTML={{{{__html: {}}}}} />",
-                        js_string_literal(s),
-                    )
+                    raw_html_element("span", s)
                 }
             }
             // JSX-shaped passthrough (MDX components, `{…}` expressions)
@@ -1691,9 +1675,7 @@ impl HastJsxBridge {
         void: bool,
     ) -> String {
         // Some tags emitted by hast plugins (e.g. <svg>, <polygon>,
-        // <button>, <figure>) are not in the React-DOM "always
-        // override-able" set we expose by default, but the contract
-        // remains: route every lowercase tag through `_components.<tag>`
+        // <button>, <figure>) still route through `_components.<tag>`
         // so authors can override anything. Pascal-case tags do not
         // appear in hast Element nodes (mdast emits them as JsxRaw).
         self.html_tags.insert(tag.to_string());
@@ -1734,8 +1716,7 @@ fn is_void_html_tag(tag: &str) -> bool {
 
 /// Render hast `(name, value)` attribute pairs as JSX attribute text.
 ///
-/// The `class` attribute name is preserved verbatim — both Preact and
-/// React (via SWC's classic JSX transform) accept the HTML-style name.
+/// HTML/SVG attribute spellings are preserved for the owned JSX runtime.
 /// Attribute values are HTML-escaped to keep the JSX parser happy
 /// (mirrors `jsx_string_attr` in [`JsxEmitter`]).
 ///
@@ -1748,7 +1729,7 @@ fn is_void_html_tag(tag: &str) -> bool {
 /// way to spell a bare attribute (its values are plain `String`s), so the
 /// HTML serializer's `disabled=""` is the only spelling available on that
 /// side; carrying the empty string straight into JSX would hand
-/// React/Preact a falsy prop, and a task-list checkbox would hydrate
+/// the owned runtime a falsy prop, and a task-list checkbox would hydrate
 /// enabled and unchecked. Data attributes keep `=""` — they are ordinary
 /// strings, and `true` would serialize as the visibly different
 /// `data-footnote-ref="true"`.
@@ -1759,11 +1740,20 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
     let mut out = String::new();
     for (k, v) in attrs {
         if k == "style" {
-            out.push_str(&jsx_style_attr(v));
+            out.push_str(&jsx_style_string_attr(v));
             continue;
         }
         out.push(' ');
-        out.push_str(k);
+        out.push_str(match k.as_str() {
+            "className" => "class",
+            "htmlFor" => "for",
+            "charSet" => "charset",
+            "dateTime" => "datetime",
+            "tabIndex" => "tabindex",
+            "readOnly" => "readonly",
+            "strokeWidth" => "stroke-width",
+            _ => k,
+        });
         if v.is_empty() && is_html_boolean_attr(k) {
             continue;
         }
@@ -1773,80 +1763,17 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
     out
 }
 
-/// Render a CSS declaration string as a JSX `style` **object** prop:
-/// ` style={{"position": "absolute", …}}`. Returns the empty string when
-/// nothing parses, so the attribute is omitted entirely.
-///
-/// React throws outright on a string-valued `style` prop ("The `style`
-/// prop expects a mapping from style properties to values, not a string"),
-/// which would take down every page carrying one. hast stores attribute
-/// values as plain `String`s, so the CSS text has to be converted here, at
-/// the JSX boundary — the HTML serializer keeps writing the string form
-/// untouched.
-///
-/// Hyphenated property names are camelCased (`white-space` → `whiteSpace`)
-/// because React ignores the hyphenated spelling with a warning. Custom
-/// properties (`--shiki-dark-bg`, emitted by `SyntectPlugin`'s dual-theme
-/// mode) keep their exact name — both React and Preact read those verbatim.
-///
-/// Splitting is deliberately simple: `;` separates declarations and the
-/// FIRST `:` separates name from value. That is sufficient for every
-/// declaration this crate emits (footnote label hiding, table
-/// `text-align`, syntect colors) and for ordinary author CSS. A value
-/// containing a literal `;` — a `url(data:…;base64,…)` — would split
-/// wrongly; no producer here emits one.
-fn jsx_style_attr(css: &str) -> String {
-    let mut props: Vec<String> = Vec::new();
-    for decl in css.split(';') {
-        let decl = decl.trim();
-        if decl.is_empty() {
-            continue;
-        }
-        let Some((name, value)) = decl.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        let value = value.trim();
-        if name.is_empty() || value.is_empty() {
-            continue;
-        }
-        let key = if name.starts_with("--") {
-            name.to_string()
-        } else {
-            camel_case_css_property(name)
-        };
-        props.push(format!(
-            "{}: {}",
-            js_string_literal(&key),
-            js_string_literal(value)
-        ));
-    }
-    if props.is_empty() {
-        return String::new();
-    }
-    format!(" style={{{{{}}}}}", props.join(", "))
+fn raw_html_element(tag: &str, html: &str) -> String {
+    let value = js_string_literal(html);
+    format!("<{tag} rawHtml={{{value}}} />")
 }
 
-/// `white-space` → `whiteSpace`. Leaves an already-camelCase or
-/// single-word name untouched.
-fn camel_case_css_property(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut upper_next = false;
-    for ch in name.chars() {
-        if ch == '-' {
-            upper_next = true;
-        } else if upper_next {
-            out.extend(ch.to_uppercase());
-            upper_next = false;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
+fn jsx_style_string_attr(css: &str) -> String {
+    format!(" style={}", jsx_string_attr(css))
 }
 
 /// True for HTML attributes whose presence alone means "true" and which
-/// React/Preact expose as boolean props.
+/// the owned JSX runtime represents as boolean props.
 ///
 /// Only consulted for EMPTY-valued attributes (see [`render_hast_attrs`]);
 /// an explicit value is always preserved verbatim.
@@ -2465,12 +2392,11 @@ fn jsx_render_table(
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let style_attr = |col: usize| -> String {
-        // Object-valued, matching the hast bridge's own `style` handling —
-        // a string `style` prop makes React throw. See `jsx_style_attr`.
+        // Use the same CSS-spelled style string as the hast bridge.
         t.align
             .get(col)
             .and_then(align_style)
-            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
+            .map(|v| jsx_style_string_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -2535,8 +2461,8 @@ fn jsx_render_table(
 /// serializes identically whether it sits at a document's top level or
 /// inside a JSX component's children. `disabled`/`checked` stay BARE
 /// (JSX `true`) rather than `=""`: they are real HTML boolean attributes,
-/// and an empty string is falsy as a React/Preact prop — a `checked=""`
-/// checkbox hydrates unchecked and enabled. `render_hast_attrs` applies
+/// and the owned JSX runtime receives these as booleans — a string-valued
+/// `checked=""` would not express the checked, disabled state. `render_hast_attrs` applies
 /// the same rule when bridging the hast path's empty-valued
 /// `disabled`/`checked` into JSX.
 fn task_list_checkbox_jsx(checked: bool) -> String {
@@ -4331,6 +4257,49 @@ mod tests {
         assert_eq!(cache.len(), 2, "different config must add its own entry");
     }
 
+    #[test]
+    fn generated_jsx_uses_owned_runtime_props_and_preserves_authored_jsx() {
+        let source = "# Heading\n\n```js\nconst n = 1;\n```\n\n| Value |\n| :---: |\n| cell |\n\n<div className=\"authored\" />\n\n<b>raw</b>\n";
+        let mut pipeline = Pipeline::with_defaults();
+        let owned =
+            mdx_to_jsx_module_with_pipeline(source, MdxJsxOptions::default(), &mut pipeline)
+                .expect("owned emit");
+        assert!(owned.contains("from \"@takazudo/zfb/zudo-react/jsx-runtime\""));
+        assert!(owned.contains(" rawHtml={"), "{owned}");
+        assert!(owned.contains(" class=\""), "{owned}");
+        assert!(owned.contains(" style=\"text-align: center\""), "{owned}");
+        assert!(
+            owned.contains("<_components.div className=\"authored\" />"),
+            "{owned}"
+        );
+        assert!(!owned.contains("from \"react/jsx-runtime\""));
+        assert!(!owned.contains("dangerouslySetInnerHTML"));
+        assert!(!owned.contains(" className=\"language-"));
+        assert!(!owned.contains(" style={{"));
+    }
+
+    #[test]
+    fn owned_hast_attributes_keep_html_and_css_spelling() {
+        let attrs = vec![
+            ("htmlFor".to_string(), "target".to_string()),
+            ("charSet".to_string(), "utf-8".to_string()),
+            ("className".to_string(), "name".to_string()),
+            (
+                "style".to_string(),
+                "--shade:#111;text-align: center".to_string(),
+            ),
+        ];
+        let owned = render_hast_attrs(&attrs);
+        assert_eq!(
+            owned,
+            " for=\"target\" charset=\"utf-8\" class=\"name\" style=\"--shade:#111;text-align: center\""
+        );
+        assert_eq!(
+            raw_html_element("span", "<b>ok</b>"),
+            "<span rawHtml={\"<b>ok</b>\"} />"
+        );
+    }
+
     /// #2423: the render-artifact metadata channel must resolve on a
     /// compile-cache HIT, where the mdast walk that allocates heading
     /// slugs never runs. `CompiledMdx::headings` is therefore stored with
@@ -5283,7 +5252,7 @@ mod tests {
     /// upstream callers may swap parse options later — keep it under
     /// test so the behaviour stays defined.
     #[test]
-    fn html_node_emits_dangerously_set_inner_html() {
+    fn html_node_emits_owned_raw_html() {
         use markdown::mdast::Html;
         let mut emitter = JsxEmitter::new();
         let node = MdastNode::Html(Html {
@@ -5291,10 +5260,7 @@ mod tests {
             position: None,
         });
         let out = emitter.emit_node(&node);
-        assert!(
-            out.contains("dangerouslySetInnerHTML={{__html:"),
-            "got: {out}"
-        );
+        assert!(out.contains("rawHtml={"), "got: {out}");
         // Source survives, double-quote-escaped inside the JS literal.
         assert!(out.contains("<style>"), "got: {out}");
     }
@@ -5437,15 +5403,8 @@ mod tests {
         );
     }
 
-    /// Per-column alignment is emitted as a `style` OBJECT prop
-    /// (`style={{"textAlign": "left"}}`) on `<th>` and `<td>` elements.
+    /// Per-column alignment uses CSS-spelled string styles in owned JSX.
     /// `:---` = left, `---:` = right, `:---:` = center.
-    ///
-    /// The spelling changed from the string form `style="text-align: left"`
-    /// during epic #2021's review pass: React throws on a string-valued
-    /// `style` prop, so every JSX emit site now goes through
-    /// `jsx_style_attr`. The alignment semantics asserted here are
-    /// unchanged — only how the declaration is spelled in JSX.
     #[test]
     fn pipe_table_alignment_emits_style_attr() {
         // Columns: left | right | center | none
@@ -5454,21 +5413,21 @@ mod tests {
 
         // Header cells carry the alignment.
         assert!(
-            out.contains("style={{\"textAlign\": \"left\"}}"),
+            out.contains("style=\"text-align: left\""),
             "left alignment missing: {out}"
         );
         assert!(
-            out.contains("style={{\"textAlign\": \"right\"}}"),
+            out.contains("style=\"text-align: right\""),
             "right alignment missing: {out}"
         );
         assert!(
-            out.contains("style={{\"textAlign\": \"center\"}}"),
+            out.contains("style=\"text-align: center\""),
             "center alignment missing: {out}"
         );
         // The fourth column has no alignment → no style attr on that cell.
         // A loose check: the output must not have a 4th `style=` that
         // would indicate the None column sprouted one.
-        let style_count = out.matches("style={{\"textAlign\":").count();
+        let style_count = out.matches("style=\"text-align:").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
         assert_eq!(
@@ -5476,24 +5435,22 @@ mod tests {
             "expected 6 style attrs (3 cols × 2 rows): {out}"
         );
         assert!(
-            !out.contains("style=\""),
-            "no JSX emit site may produce a STRING style prop — React \
-             throws on one: {out}"
+            out.contains("style=\""),
+            "owned JSX keeps CSS style strings: {out}"
         );
     }
 
     // ─── HastNode::Raw block-aware wrapper tests (#1490) ────────────────────
 
     /// syntect's output starts with `<pre` — the bridge must wrap it in
-    /// `<div dangerouslySetInnerHTML …>`, not `<span>`, so that
-    /// preact-render-to-string does not emit the invalid `<span><pre>` nesting.
+    /// `<div rawHtml …>`, not `<span>`, to avoid invalid `<span><pre>` nesting.
     #[test]
     fn raw_pre_emits_div_wrapper() {
         let mut bridge = HastJsxBridge::new();
         let node = HastNode::Raw(r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string());
         let out = bridge.emit_node(&node);
         assert!(
-            out.starts_with("<div dangerouslySetInnerHTML"),
+            out.starts_with("<div rawHtml"),
             "syntect <pre> raw node must use <div> wrapper, got: {out}"
         );
         assert!(
@@ -5510,7 +5467,7 @@ mod tests {
         let node = HastNode::Raw("<code>x</code>".to_string());
         let out = bridge.emit_node(&node);
         assert!(
-            out.starts_with("<span dangerouslySetInnerHTML"),
+            out.starts_with("<span rawHtml"),
             "inline raw node must still use <span> wrapper, got: {out}"
         );
     }
@@ -5523,7 +5480,7 @@ mod tests {
         let node = HastNode::Raw("<table><tr><td>x</td></tr></table>".to_string());
         let out = bridge.emit_node(&node);
         assert!(
-            out.starts_with("<div dangerouslySetInnerHTML"),
+            out.starts_with("<div rawHtml"),
             "<table> raw node must use <div> wrapper, got: {out}"
         );
     }
@@ -5536,7 +5493,7 @@ mod tests {
         let node = HastNode::Raw("  \n<pre>hello</pre>".to_string());
         let out = bridge.emit_node(&node);
         assert!(
-            out.starts_with("<div dangerouslySetInnerHTML"),
+            out.starts_with("<div rawHtml"),
             "leading whitespace before <pre> must still produce <div> wrapper, got: {out}"
         );
     }
@@ -5549,7 +5506,7 @@ mod tests {
         let node = HastNode::Raw("<!-- comment -->".to_string());
         let out = bridge.emit_node(&node);
         assert!(
-            out.starts_with("<span dangerouslySetInnerHTML"),
+            out.starts_with("<span rawHtml"),
             "HTML comment raw node must use <span> wrapper, got: {out}"
         );
     }
@@ -6570,48 +6527,33 @@ mod tests {
     }
 
     #[test]
-    fn jsx_style_attr_emits_a_react_compatible_object_prop() {
+    fn jsx_style_attr_preserves_css_string() {
         assert_eq!(
-            jsx_style_attr("text-align: center"),
-            " style={{\"textAlign\": \"center\"}}"
+            jsx_style_string_attr("text-align: center"),
+            " style=\"text-align: center\""
         );
-        // Custom properties keep their exact name — React and Preact both
-        // read `--x` verbatim, and camelCasing would break them.
         assert_eq!(
-            jsx_style_attr("--shiki-dark-bg:#111;color:#eee"),
-            " style={{\"--shiki-dark-bg\": \"#111\", \"color\": \"#eee\"}}"
+            jsx_style_string_attr("--shiki-dark-bg:#111;color:#eee"),
+            " style=\"--shiki-dark-bg:#111;color:#eee\""
         );
-        // A value may contain `:` and `,` (`clip: rect(0,0,0,0)`); only the
-        // FIRST `:` separates name from value.
-        assert_eq!(
-            jsx_style_attr("clip:rect(0,0,0,0)"),
-            " style={{\"clip\": \"rect(0,0,0,0)\"}}"
-        );
-        // Nothing parseable → the attribute is omitted entirely rather
-        // than emitted empty.
-        assert_eq!(jsx_style_attr(""), "");
-        assert_eq!(jsx_style_attr(";  ;"), "");
-        assert_eq!(jsx_style_attr("novalue"), "");
     }
 
     #[test]
     fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
-        // `sr-only` is a Tailwind utility, and this class is emitted from
-        // Rust — Tailwind's content scan never sees the string, so the
-        // utility is never generated; zfb ships no stylesheet defining it
+        // `sr-only` is in the wind catalog, but this class is emitted from
+        // Rust — candidate discovery never sees the rendered markup, so it
+        // cannot add the class to the utility set; zfb ships no stylesheet defining it
         // either. The inline style is what actually makes the documented
         // "visually hidden" landmark true.
         let jsx = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
-        // Emitted as a style OBJECT, never a string — React throws on a
-        // string `style` prop. `jsx_style_attr` camelCases the hyphenated
-        // property names on the way through.
+        // Owned JSX preserves the CSS declaration string and property names.
         assert!(
-            jsx.contains(&jsx_style_attr(FOOTNOTE_LABEL_STYLE)),
+            jsx.contains(&jsx_style_string_attr(FOOTNOTE_LABEL_STYLE)),
             "the footnote label must carry the visually-hidden inline style: {jsx}"
         );
         assert!(
-            jsx.contains("\"whiteSpace\": \"nowrap\"") && !jsx.contains("white-space"),
-            "hyphenated CSS property names must be camelCased for React: {jsx}"
+            jsx.contains("white-space:nowrap") && !jsx.contains("whiteSpace"),
+            "owned JSX preserves CSS property spellings: {jsx}"
         );
         assert!(
             jsx.contains("class=\"sr-only\""),

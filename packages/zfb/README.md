@@ -77,12 +77,8 @@ surface. Today it covers:
   the `zfb/slugify` subpath for heading-id parity with the Rust content
   pipeline.
 
-The package is JSX-runtime-agnostic: the `Island` component does not
-import preact or react, so it works under either framework adapter
-without bundling the wrong runtime. `react` is listed as a peer
-dependency but is **optional** (`peerDependenciesMeta.react.optional`)
-— a preact/compat-only consumer does not need `react` installed and
-does not need `auto-install-peers=true`.
+The package uses the owned `@takazudo/zfb/zudo-react` runtime for island
+rendering and hydration. Consumers do not install a separate JSX runtime.
 
 ## Usage
 
@@ -212,9 +208,9 @@ runtime's mount function returns, with the practical CSS selector:
 ```
 
 This means **"the runtime called the mount function and it returned"**, not **"the
-component is interactive"**. React's `hydrateRoot` is internally concurrent, and the
-generated `mount()` can silently no-op, so the attribute is a lifecycle signal rather
-than proof that interaction is ready.
+component is interactive"**. The generated `mount()` can be a no-op for a marker
+that does not hydrate, so the attribute is a lifecycle signal rather than proof that
+interaction is ready.
 
 The marker is removed when an island is unmounted. During a body swap, an unchanged
 `data-zfb-transition-persist` island keeps its mounted instance and marker when the

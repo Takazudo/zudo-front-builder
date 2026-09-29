@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use zfb_build::{
     bundle_with_session, BundleMode, BundlerInput, RawImportInvalidation, ShadowSession,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
@@ -78,14 +77,13 @@ fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
 fn dev_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
-        Framework::Preact,
         BundleMode::Development,
         project.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild);

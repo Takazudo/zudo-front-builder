@@ -1,0 +1,46 @@
+---
+title: アスペクト比
+description: 自動、名前付き、または任意のアスペクト比を設定します。
+sidebar_position: 62
+generated: true
+---
+
+自動、名前付き、または任意のアスペクト比を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## aspect
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.aspect` |
+| クラスパターン | `aspect-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `aspect` (`42`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `aspect-ratio` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"square"` | `"1 / 1"` |
+| `keyword` | `"video"` | `"16 / 9"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `aspect-ratio` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `aspect-[1200/630]` | `aspect-ratio: 1200 / 630` |

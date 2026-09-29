@@ -24,7 +24,7 @@ my-site/
 │   └── blog/
 │       ├── hello-zfb.mdx
 │       ├── markdown-showcase.md
-│       └── styling-with-tailwind.md
+│       └── styling-with-zudo-wind.md
 ├── lib/
 │   └── types.ts
 ├── styles/
@@ -72,7 +72,7 @@ my-site/
 
 - `hello-zfb.mdx` — ページがどのように HTML になるか、そして MDX が素の Markdown に何を加えるか。
 - `markdown-showcase.md` — テンプレートが有効にしている markdown 機能（テーブル、打ち消し線、タスクリスト、フットノート、アラート、エンリッチされたコードブロック、見出しマーカー TOC）の実例を、リファレンスページへのリンク付きで掲載。
-- `styling-with-tailwind.md` — Tailwind の設定がどこにあり、ダークモードがどう組まれているか。
+- `styling-with-zudo-wind.md` — スターターのユーティリティトークン、手書き CSS、ダークモードの設定を説明します。
 
 コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。クエリ API については [Content Collections](../concepts/content-collections.mdx) を参照してください。
 
@@ -88,9 +88,9 @@ my-site/
 
 ## styles/
 
-グローバル CSS です。`styles/global.css` がエントリポイントで、`layouts/default.tsx` から import します。冒頭は `@import "tailwindcss";` で始まり、`@theme` ブロックでプロジェクトのテーマトークンを定義し、Tailwind の `dark:` バリアントをテーマトグルが書き込む `data-theme` 属性に結び付け、最後にレンダリング済み Markdown 本文向けのスコープ付き `.prose` ブロックを置いています。
+グローバル CSS です。`styles/global.css` がエントリポイントで、`layouts/default.tsx` から import します。サイトのベーススタイルと `.prose` ブロックは手書き CSS にあります。`zfb.config.ts` の `wind` オブジェクトはスターターのユーティリティトークン、ブレークポイント、リセット、`data-theme` による dark バリアントを設定します。wind の設定はスタイルシートのディレクティブではなくデータです。
 
-この分割は意図的なものです。`.tsx` ファイル内のページの外枠は Tailwind ユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。そこで後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。テンプレートは設定に `tailwind` キーを持ちません。`tailwind: { enabled: false }` を指定しない限り Tailwind は有効です。[スタイリング](../concepts/styling.mdx) を参照してください。
+この分割は意図的なものです。`.tsx` ファイル内のページの外枠は zudo-wind のユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。スターターは `wind` を明示的に設定します。他のプロジェクトではキーを省略すると空の有効な設定になり、`wind: false` なら手書き CSS だけを使います。[スタイリング](../concepts/styling.mdx)と [zudo-wind の設定](../zudo-wind/configuration.mdx)を参照してください。
 
 ## public/
 
@@ -117,7 +117,19 @@ my-site/
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { accent: "var(--color-accent)" },
+      sizes: { "2xl": "42rem" },
+      // The starter supplies the rest of its explicit palette and scales here.
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    authoredClasses: { prose: true },
+  },
   collections: [{ name: "blog", path: "content/blog", schema: { /* … */ } }],
   markdown: {
     gfm: { taskListItem: true, footnoteDefinition: true },
@@ -126,9 +138,9 @@ export default defineConfig({
 });
 ```
 
-zfb がすでにデフォルト値を持つオプションは、意図的にすべて省いてあります。`outDir`・`publicDir`・`tailwind` はいずれも暗黙のままなので、このファイルにはプロジェクトが実際に下した判断だけが並びます。残っているトップレベルのキーは 3 つです。`framework`（`"preact"`）、`blog` コレクション（`zfb check` が全記事のフロントマターを検証する JSON Schema 付き）、そして markdown のオプトインです。最後のものは、常時有効なテーブルと打ち消し線に加えて GFM のタスクリストとフットノート、そして [GitHub アラート](../markdown-features/github-alerts.mdx)・[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)・[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) です。他に何を有効にできるかの全体像は [Markdown 機能](../markdown-features/index.mdx)のインデックスにあります。
+この短い例は、スターターの明示的な wind 設定と `blog` コレクション、markdown のオプトインを示します。`outDir` と `publicDir` はデフォルトを使い、パレットとスケールの残りは実際の設定ファイルで宣言します。GFM のタスクリストとフットノート、[GitHub アラート](../markdown-features/github-alerts.mdx)、[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) が有効です。全機能は [Markdown 機能](../markdown-features/index.mdx)を参照してください。
 
-設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000` — これは `zfb dev` サーバーのデフォルトで、`zfb preview` は未設定時に代わりに `4321` にフォールバックします）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
+設定ファイルは camelCase スキーマを使います。主なキーは `outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（`zfb dev` は `3000`、`zfb preview` は `4321` にフォールバック）、`wind`、`collections`、`plugins` です。完全なスキーマは [defineConfig](../api/define-config.mdx) を参照してください。
 
 `outDir` は `zfb dev`、`zfb build`、`zfb preview` のすべてで尊重されます。build と preview では CLI の `--outdir` が config の `outDir` より優先され、組み込みのフォールバックは `dist/` です。
 
@@ -136,10 +148,10 @@ zfb がすでにデフォルト値を持つオプションは、意図的にす�
 
 ## package.json、tsconfig.json、README.md、.gitignore
 
-標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、4 つのスクリプト `dev`・`build`・`preview`・`typecheck`（`zfb check` を実行し、TypeScript とコレクションスキーマの検証を行います）を宣言します。`zfb new` は `@takazudo/zfb` と `@takazudo/zfb-runtime` を、そのプロジェクトをスキャフォールドした CLI のバージョンに厳密ピン留めします — `=0.1.0-next.7` のような exact pin であり、`^`/`~` レンジではありません。これにより、スキャフォールドしたプロジェクトが将来のリリースへ静かにドリフトすることがなくなります。
+標準的なプロジェクトの設定ファイル群です。`package.json` はプロジェクトの依存関係と `dev`、`build`、`preview`、`typecheck` の 4 つのスクリプトを宣言します。所有 JSX ランタイムは `@takazudo/zfb` のサブパスで、別のフレームワークパッケージは不要です。`zfb new` は zfb のパッケージをスキャフォールドに使用した CLI のバージョンへ厳密に固定し、新しいリリースへ静かに移らないようにします。
 
-`tsconfig.json` はプロジェクト全体の TSX がクリーンに型チェックされるよう構成されており、パスエイリアスは 1 つだけです。`~/*` がプロジェクトルートに解決され、テンプレートはすべての import でこれを一貫して使っています。
+`tsconfig.json` は自動 JSX 変換の `jsxImportSource` に `@takazudo/zfb/zudo-react` を指定し、`~/*` をプロジェクトルートに解決するパスエイリアスを設定します。テンプレートはすべての import でこれを一貫して使います。
 
 `README.md` は同じツリーの短い案内に加えて、このスターターで有効になっている markdown 機能と、利用可能だが無効にしてある機能を、それぞれリファレンスページへのリンク付きで表にまとめたものです。
 
-同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて、ビルド実行中に zfb の各パイプラインが生成する一時ファイルも除外します。その 1 つが `**/zfb-tailwind-entry-*.css` で、Tailwind パイプラインが CSS エントリの隣に書き出すエントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。
+同梱の `.gitignore` は `dist/` と `node_modules/` を除外します。また、islands、プラグイン、module worker のバンドル中に作られる一時ファイルも除外します。これらは通常実行後に削除されますが、プロセスが中断された場合も無視されます。

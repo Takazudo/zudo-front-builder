@@ -1,32 +1,22 @@
-//! Tailwind-free CSS engine: pass authored global CSS through verbatim.
+//! Authored-only CSS engine for `wind: false` projects.
 //!
-//! When a project sets `tailwind: { enabled: false }` in its config it
-//! wants to opt out of the Tailwind layers — the `@import "tailwindcss"`,
-//! the `@source` utility scan, the preflight/reset, and the subprocess —
-//! while keeping its authored global stylesheet and CSS Modules.
-//!
-//! [`AuthoredCssEngine`] is the engine half of that path. It implements
-//! [`crate::CssEngine`] by returning a fixed CSS string (the project's
-//! authored `styles/global.css`, or empty when none exists) without
-//! spawning any subprocess or synthesising any Tailwind directives. The
-//! rest of the pipeline — CSS Modules compilation, concatenation,
-//! hashing, asset emission — is engine-agnostic and runs unchanged, so
-//! the disabled path reuses [`crate::CssPipeline`] instead of
-//! hand-rolling its own combine + hash logic.
+//! Passes authored global CSS and its companion assets through the shared
+//! pipeline, which also handles CSS Modules and stylesheet emission.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 
 use crate::engine::CssEngine;
+use crate::{AuthoredCssBundle, CssEngineId, CssEngineOutput, CssInputDependency, PackageUrlAsset};
 
 /// A [`CssEngine`] that emits a pre-supplied authored CSS string and runs
-/// no subprocess. Used for the `tailwind.enabled = false` path so the
-/// authored global stylesheet still reaches the combined output while the
-/// Tailwind import/scan/preflight are skipped entirely.
+/// no subprocess. Used for the `wind: false` path.
 #[derive(Debug, Clone, Default)]
 pub struct AuthoredCssEngine {
     css: String,
+    companions: Vec<PackageUrlAsset>,
+    input_dependencies: Vec<CssInputDependency>,
 }
 
 impl AuthoredCssEngine {
@@ -35,13 +25,29 @@ impl AuthoredCssEngine {
     /// project's authored global stylesheet, or the empty string when the
     /// project has none.
     pub fn new(css: impl Into<String>) -> Self {
-        Self { css: css.into() }
+        Self {
+            css: css.into(),
+            companions: Vec::new(),
+            input_dependencies: Vec::new(),
+        }
+    }
+
+    /// Construct an engine from the asset-aware authored bundle.
+    pub fn with_bundle(bundle: AuthoredCssBundle) -> Self {
+        Self {
+            css: bundle.css,
+            companions: bundle.companions,
+            input_dependencies: bundle.input_dependencies,
+        }
     }
 }
 
 impl CssEngine for AuthoredCssEngine {
-    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
-        Ok(self.css.clone())
+    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<CssEngineOutput> {
+        let mut output = CssEngineOutput::new(self.css.clone(), CssEngineId::new("authored", None));
+        output.companions = self.companions.clone();
+        output.input_dependencies = self.input_dependencies.clone();
+        Ok(output)
     }
 }
 
@@ -53,13 +59,13 @@ mod tests {
     fn returns_authored_css_verbatim() {
         let engine = AuthoredCssEngine::new("body { margin: 0; }");
         let out = engine.produce_utility_css(&[]).unwrap();
-        assert_eq!(out, "body { margin: 0; }");
+        assert_eq!(out.css, "body { margin: 0; }");
     }
 
     #[test]
     fn empty_when_no_authored_css() {
         let engine = AuthoredCssEngine::default();
         let out = engine.produce_utility_css(&[]).unwrap();
-        assert!(out.is_empty());
+        assert!(out.css.is_empty());
     }
 }

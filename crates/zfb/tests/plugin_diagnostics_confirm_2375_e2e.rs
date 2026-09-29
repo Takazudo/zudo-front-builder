@@ -14,7 +14,7 @@
 //!
 //! Generated inline (matching `build_cleans_outdir.rs`'s style — no
 //! standing fixture directory needed for a project this small): a minimal
-//! preact page plus a `.ts` plugin registered via `zfb.config.json`'s
+//! zudo-react page plus a `.ts` plugin registered via `zfb.config.json`'s
 //! relative-path plugin loading (`config.rs`'s `resolve_json_plugin_modules`).
 //! The plugin entry being a genuine `.ts` file (not `.mjs`) is load-bearing
 //! — it is what routes the plugin through `plugin_bundler::bundle_plugin_entry`
@@ -138,14 +138,13 @@ fn dump(output: &std::process::Output) -> String {
     )
 }
 
-/// Write the fixture: a minimal preact page plus a `.ts` plugin registered
+/// Write the fixture: a minimal zudo-react page plus a `.ts` plugin registered
 /// via `zfb.config.json`. Returns the plugin's own directory (where the
 /// staged bundle — live and stale — lands).
 fn write_fixture(root: &Path) -> std::path::PathBuf {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
   "plugins": [{ "name": "./plugin/diag-plugin.ts" }]
 }
 "#,

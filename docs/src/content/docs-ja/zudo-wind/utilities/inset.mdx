@@ -1,0 +1,274 @@
+---
+title: 位置オフセット
+description: 余白値、auto、full を使い、物理的な辺のオフセットを設定します。
+sidebar_position: 23
+generated: true
+---
+
+余白値、auto、full を使い、物理的な辺のオフセットを設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## inset
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.inset` |
+| クラスパターン | `inset-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `top`, `right`, `bottom`, `left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `top` | `resolved` | `null` |
+| `right` | `resolved` | `null` |
+| `bottom` | `resolved` | `null` |
+| `left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inset-0` | `top: 0`; `right: 0`; `bottom: 0`; `left: 0` |
+
+## inset-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.inset-x` |
+| クラスパターン | `inset-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `left`, `right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `left` | `resolved` | `null` |
+| `right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inset-x-0` | `left: 0`; `right: 0` |
+
+## inset-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.inset-y` |
+| クラスパターン | `inset-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `top`, `bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `top` | `resolved` | `null` |
+| `bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inset-y-0` | `top: 0`; `bottom: 0` |
+
+## bottom
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.bottom` |
+| クラスパターン | `bottom-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `bottom` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `bottom` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `bottom-0` | `bottom: 0` |
+
+## left
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.left` |
+| クラスパターン | `left-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `left` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `left` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `left-0` | `left: 0` |
+
+## right
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.right` |
+| クラスパターン | `right-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `right` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `right` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `right-0` | `right: 0` |
+
+## top
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.top` |
+| クラスパターン | `top-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `4` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `inset` (`3`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `top` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `top` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `top-0` | `top: 0` |

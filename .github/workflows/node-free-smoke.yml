@@ -43,7 +43,7 @@
 #     │                                   until the worker exists. NOT required.
 #     └─► built-site-browser-smoke (ubuntu-latest) — issue #1401: builds
 #                                         tests/built-site-smoke/fixture-site/
-#                                         (a real interactive Preact island)
+#                                         (a real interactive island using zudo-react)
 #                                         with this leg's binary, serves the
 #                                         resulting dist/ statically, and
 #                                         loads it in real Chromium via
@@ -178,7 +178,7 @@ jobs:
           node-version: "22"
           cache: "pnpm"
 
-      # build.rs (embed_framework_packages) needs node_modules at build time.
+      # build.rs reads Hono from node_modules at build time.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -226,18 +226,17 @@ jobs:
       # container, so a restored slot is visible to the build script and its
       # SHA check skips the download. The x86_64 leg's key matches health.yml
       # so those jobs share one cache entry.
-      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+      - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
-          # Only the two gitignored executable slots — never the whole dir:
+          # Only the gitignored executable slot — never the whole dir:
           # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
           # and an exact-key restore would untar stale cached copies of those
           # over the checkout whenever a PR edits them without touching the
           # hashed pin files (codex review, zfb#2385 PR).
           path: |
             crates/zfb/binaries/esbuild/esbuild
-            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-${{ matrix.platform.target }}-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # Install cross-rs for the arm64 cross-compile target (same as release.yml).
@@ -753,10 +752,10 @@ jobs:
   #     (grep / string checks), never execute the emitted JS.
   #
   # This job builds a small fixture site with one working interactive
-  # island (tests/built-site-smoke/fixture-site/, a Preact counter) using
+  # island (tests/built-site-smoke/fixture-site/, a counter using zudo-react) using
   # THIS leg's freshly built binary — no separate compile, no pnpm
   # workspace deps needed for the build itself (the binary embeds
-  # @takazudo/zfb / @takazudo/zfb-runtime / preact and extracts them on
+  # @takazudo/zfb / @takazudo/zfb-runtime and extracts them on
   # demand, same as the Rust end_to_end_basic_blog_build test) — then
   # serves the resulting dist/ statically and drives it with Playwright,
   # mirroring router-chromium.yml's Chromium setup.

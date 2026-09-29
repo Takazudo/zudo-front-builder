@@ -28,11 +28,9 @@
 //! ## Selector vs substring
 //!
 //! This pass uses `lol_html`'s CSS attribute selector (`[data-zfb-island]`,
-//! `[data-zfb-island-skip-ssr]`) rather than a substring scan.  This mirrors
-//! the approach taken in `crates/zfb-islands/src/hydration.rs:471-478` and
+//! `[data-zfb-island-skip-ssr]`) rather than a substring scan.  This
 //! avoids false-positive matches inside `<pre>` / `<code>` / Markdown-rendered
-//! code blocks that contain the literal attribute string.  See the hazard note
-//! at `crates/zfb-islands/src/hydration.rs:239-243`.
+//! code blocks that contain the literal attribute string.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,7 +135,7 @@ pub fn check_island_markers(pages: &[PathBuf], registered_names: &BTreeSet<Strin
 ///
 /// Uses the attribute selector (`[data-zfb-island]` / `[data-zfb-island-skip-ssr]`)
 /// rather than a substring scan — see module-level note for rationale.
-fn collect_marker_names_in_page(html: &str) -> BTreeSet<String> {
+pub(crate) fn collect_marker_names_in_page(html: &str) -> BTreeSet<String> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -216,6 +214,15 @@ mod tests {
         let html = r#"<div data-zfb-island="Counter"></div>"#;
         let names = collect_marker_names_in_page(html);
         assert!(names.contains("Counter"), "got: {names:?}");
+    }
+
+    #[test]
+    fn collect_owned_attributes_and_inner_comments_do_not_add_names() {
+        let html = r#"<div data-zfb-island="Counter" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="abc" data-props="{}"><!--zr:1:0:c--><span>x</span><!--/zr:1:0--></div>"#;
+        assert_eq!(
+            collect_marker_names_in_page(html),
+            BTreeSet::from(["Counter".to_string()])
+        );
     }
 
     #[test]

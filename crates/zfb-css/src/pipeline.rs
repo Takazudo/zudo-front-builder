@@ -2,7 +2,7 @@
 //!
 //! Stage 3 of the CSS pipeline:
 //!
-//! 1. Engine output (Tailwind utilities) and CSS Modules output are
+//! 1. Wind engine output (utility CSS) and CSS Modules output are
 //!    concatenated, in that order, separated by `\n`.
 //! 2. The combined bytes are hashed with SHA-256, and the first 8 hex
 //!    characters become the asset filename suffix (`styles-{hash}.css`).
@@ -74,7 +74,7 @@ pub struct CssPipelineConfig {
     /// still returned in [`CssPipelineOutput`].
     pub class_map_dir: Option<PathBuf>,
 
-    /// Framework-shipped CSS spliced in ahead of the Tailwind utility
+    /// Framework-shipped CSS spliced in ahead of the wind utility
     /// output (issue #1533; today this carries zfb's default
     /// `--zfb-hi-*` token stylesheet for class-mode syntax highlighting,
     /// see [`crate::default_hi_css`]). `None` (default) omits the block
@@ -137,9 +137,8 @@ pub struct CssPipelineOutput {
 
 /// Top-level CSS pipeline.
 ///
-/// Generic over the engine type so callers can swap [`crate::TailwindSubprocessEngine`]
-/// for [`crate::NativeRustEngine`] (or a test double) without touching the
-/// pipeline code.
+/// Generic over the CSS engine so callers can use the wind compiler, the
+/// authored-CSS engine, or a test double without duplicating pipeline stages.
 pub struct CssPipeline<E: CssEngine> {
     engine: E,
     modules: CssModulesProcessor,
@@ -164,7 +163,7 @@ impl<E: CssEngine> CssPipeline<E> {
         // de-duplicated.
         let (module_files, per_source_modules) = self.collect_modules()?;
 
-        let tailwind = self
+        let engine_output = self
             .engine
             .produce_utility_css(&self.config.sources)
             .context("CSS engine stage failed")?;
@@ -175,8 +174,8 @@ impl<E: CssEngine> CssPipeline<E> {
             .context("CSS Modules stage failed")?;
 
         let framework = self.config.framework_css.as_deref();
-        let combined = combine(framework, &tailwind, &modules.css);
-        let hash = hash_8(framework, &tailwind, &modules.css);
+        let combined = combine(framework, &engine_output.css, &modules.css);
+        let hash = hash_8(framework, &engine_output.css, &modules.css);
         let asset_path = self
             .config
             .output_root
@@ -227,17 +226,10 @@ impl<E: CssEngine> CssPipeline<E> {
     pub fn build_emitter(&self) -> Result<CssEmitterOutput> {
         let (module_files, _per_source_modules) = self.collect_modules()?;
 
-        let tailwind = self
+        let engine_output = self
             .engine
             .produce_utility_css(&self.config.sources)
             .context("CSS engine stage failed")?;
-        // Package-attributed `url()` companions the engine resolved while
-        // producing `tailwind` above (issue #2316) — must be fetched right
-        // after `produce_utility_css`, before any other call that could
-        // reuse `self.engine` and overwrite its "most recent" companion
-        // snapshot.
-        let companions = self.engine.take_package_url_companions();
-
         let modules = self
             .modules
             .process(&module_files)
@@ -245,7 +237,7 @@ impl<E: CssEngine> CssPipeline<E> {
 
         let combined = combine(
             self.config.framework_css.as_deref(),
-            &tailwind,
+            &engine_output.css,
             &modules.css,
         );
 
@@ -266,7 +258,10 @@ impl<E: CssEngine> CssPipeline<E> {
         Ok(CssEmitterOutput {
             bytes: combined.into_bytes(),
             stable_url: zfb_types::STABLE_CSS_URL.to_string(),
-            companions,
+            companions: engine_output.companions,
+            input_dependencies: engine_output.input_dependencies,
+            diagnostics: engine_output.diagnostics,
+            engine: engine_output.engine,
         })
     }
 
@@ -299,8 +294,7 @@ impl<E: CssEngine> CssPipeline<E> {
         &self.config
     }
 
-    /// Borrow the underlying engine. Useful for inspection in tests
-    /// (e.g. fetching [`crate::TailwindSubprocessEngine::last_entry_css`]).
+    /// Borrow the supplied engine. Useful for tests that inspect engine state.
     pub fn engine_ref(&self) -> &E {
         &self.engine
     }
@@ -373,22 +367,22 @@ fn write_class_map_files(
 /// tests and the hashing helper agree on the canonical form.
 ///
 /// `framework` is [`CssPipelineConfig::framework_css`] (issue #1533); when
-/// `Some`, it is spliced in ahead of the Tailwind + modules body — but
+/// `Some`, it is spliced in ahead of the wind utility CSS and modules body — but
 /// **after** any leading `@charset` / `@layer name,…;` order statements the
-/// Tailwind half emits (see [`splice_framework_after_layer_prefix`] for why a
+/// wind output emits (see [`splice_framework_after_layer_prefix`] for why a
 /// naive index-0 prepend would corrupt import hoisting). When `None` the
 /// output is byte-for-byte identical to the pre-#1533 two-piece form
-/// (`tailwind + "\n" + modules`).
+/// (`utility_css + "\n" + modules`).
 ///
 /// After concatenation, external `@import` at-rules are hoisted to the top
 /// of the stylesheet via [`hoist_external_imports`] — see that function for
-/// why. The hash (`hash_8`) is computed from the raw `(framework, tailwind,
+/// why. The hash (`hash_8`) is computed from the raw `(framework, utility_css,
 /// modules)` pieces, not from this combined form, so hoisting does not
 /// perturb asset hashing: it is a deterministic pure function of the same
 /// inputs.
-pub(crate) fn combine(framework: Option<&str>, tailwind: &str, modules: &str) -> String {
-    let mut body = String::with_capacity(tailwind.len() + modules.len() + 1);
-    body.push_str(tailwind);
+pub(crate) fn combine(framework: Option<&str>, utility_css: &str, modules: &str) -> String {
+    let mut body = String::with_capacity(utility_css.len() + modules.len() + 1);
+    body.push_str(utility_css);
     body.push('\n');
     body.push_str(modules);
 
@@ -406,8 +400,8 @@ pub(crate) fn combine(framework: Option<&str>, tailwind: &str, modules: &str) ->
 /// **Why not a naive prepend (issue #1533):** the framework block is a
 /// *populated* `@layer zfb-hi { … }` — [`classify_node`] classes it as
 /// [`NodeKind::Other`] (an insertion ceiling), not a leading order
-/// statement. Prepending it at index 0 would push Tailwind v4's own leading
-/// `@layer theme, base, components, utilities;` order preamble out of the
+/// statement. Prepending it at index 0 would push wind's leading
+/// `@layer zw-reset, zw-tokens, zfb-hi, base, components;` order preamble out of the
 /// leading-prefix region [`hoist_external_imports`] scans, so a trailing
 /// external `@import` (e.g. an authored webfont) would then hoist *above*
 /// that layer-order statement and silently reorder the cascade layers.
@@ -415,7 +409,7 @@ pub(crate) fn combine(framework: Option<&str>, tailwind: &str, modules: &str) ->
 /// first, so imports hoist below it exactly as they did pre-#1533.
 ///
 /// When `body` has no leading `@charset` / `@layer …;` prefix — the common
-/// case (Tailwind disabled, or the engine emits no order statement) — the
+/// case (wind disabled, or the engine emits no order statement) — the
 /// framework block lands at position 0, byte-identical to a naive prepend.
 fn splice_framework_after_layer_prefix(body: &str, framework: &str) -> String {
     let nodes = split_top_level(body);
@@ -448,10 +442,9 @@ fn splice_framework_after_layer_prefix(body: &str, framework: &str) -> String {
 /// at-rules and style rules in a stylesheet — the only things allowed before
 /// them are a leading `@charset` and empty `@layer name, …;` layer-ordering
 /// statements. **An `@import` that follows any style rule is invalid and
-/// silently dropped by every browser.** zfb's Tailwind v4 pipeline inlines
-/// the local `@import "tailwindcss/…"` statements into real style rules *in
-/// place*, so a consumer's external `@import url(<webfont>)` authored *below*
-/// those lines ends up after thousands of emitted rules and is dropped — the
+/// silently dropped by every browser.** The CSS pipeline combines generated
+/// utility rules with authored CSS, so a consumer's external
+/// `@import url(<webfont>)` can otherwise end up below those rules and be dropped — the
 /// webfont never loads, with every build/lint gate still green because the
 /// string is present but inert. Hoisting here makes the position-sensitivity
 /// trap disappear.
@@ -691,10 +684,10 @@ fn starts_with_ascii_ci(haystack: &str, needle: &str) -> bool {
     h.len() >= nd.len() && h[..nd.len()].eq_ignore_ascii_case(nd)
 }
 
-/// Compute the 8-char hex hash for the given (framework, tailwind, modules)
-/// pieces.
+/// Compute the 8-char hex hash for the given (framework, utility_css,
+/// modules) pieces.
 ///
-/// The hash is the first 8 characters of `sha256(tailwind + "\n" +
+/// The hash is the first 8 characters of `sha256(utility_css + "\n" +
 /// modules)`, with `framework + "\n"` prepended to the hasher input when
 /// `Some`. Using a fixed separator means appending a class to one piece is
 /// distinguishable from prepending it to another.
@@ -708,13 +701,13 @@ fn starts_with_ascii_ci(haystack: &str, needle: &str) -> bool {
 /// [`combine`]) is what makes toggling [`CssPipelineConfig::framework_css`]
 /// change the emitted filename on either path, so a stale cached copy is
 /// never reused (issue #1533).
-pub fn hash_8(framework: Option<&str>, tailwind: &str, modules: &str) -> String {
+pub fn hash_8(framework: Option<&str>, utility_css: &str, modules: &str) -> String {
     let mut hasher = Sha256::new();
     if let Some(framework) = framework {
         hasher.update(framework.as_bytes());
         hasher.update(b"\n");
     }
-    hasher.update(tailwind.as_bytes());
+    hasher.update(utility_css.as_bytes());
     hasher.update(b"\n");
     hasher.update(modules.as_bytes());
     let digest = hasher.finalize();
@@ -977,12 +970,12 @@ mod tests {
     }
 
     #[test]
-    fn combine_hoists_external_import_in_the_tailwind_half() {
+    fn combine_hoists_external_import_in_the_utility_css_half() {
         // End-to-end through the canonical combine() form: a font import that
-        // trails the (inlined) Tailwind rules lands above them.
-        let tailwind = "@layer a, b;\n.tw { color: red }\n\
+        // trails the generated utility rules lands above them.
+        let utility_css = "@layer a, b;\n.tw { color: red }\n\
                         @import url(\"https://fonts.googleapis.com/css2?family=Noto\");";
-        let combined = combine(None, tailwind, "");
+        let combined = combine(None, utility_css, "");
         assert!(
             offset_of(&combined, "@import") < offset_of(&combined, ".tw"),
             "combine() must hoist the trailing font import:\n{combined}"
@@ -1003,7 +996,7 @@ mod tests {
         let after = hash_8(None, ".a{color:green}", ".b{color:blue}");
         assert_ne!(
             before, after,
-            "changing a class in the tailwind half must change the hash"
+            "changing a class in the utility CSS half must change the hash"
         );
 
         let after2 = hash_8(None, ".a{color:red}", ".b{color:teal}");
@@ -1079,20 +1072,20 @@ mod tests {
     fn combine_keeps_import_below_leading_layer_statement_with_framework_block() {
         // Regression (issue #1533): the framework block is a *populated*
         // `@layer …{ … }` (an import-hoist ceiling). A naive index-0 prepend
-        // pushes Tailwind's leading `@layer …;` order statement out of the
+        // pushes wind's leading `@layer …;` order statement out of the
         // hoist prefix region, so a trailing external @import would hoist
         // ABOVE the order statement and reorder the cascade layers. The
         // splice must keep the order statement first.
         let framework = "@layer zfb-hi { .hi-kw { color: var(--zfb-hi-kw) } }";
-        let tailwind = "@layer theme, base, components, utilities;\n\
+        let utility_css = "@layer zw-reset, zw-tokens, zfb-hi, base, components;\n\
                         .tw { color: red }\n\
                         @import url(\"https://fonts.googleapis.com/css2?family=Noto\");";
-        let combined = combine(Some(framework), tailwind, "");
+        let combined = combine(Some(framework), utility_css, "");
 
         // The @layer order statement stays first — the import hoists BELOW it,
         // not above it.
         assert!(
-            offset_of(&combined, "@layer theme,") < offset_of(&combined, "@import"),
+            offset_of(&combined, "@layer zw-reset,") < offset_of(&combined, "@import"),
             "the leading @layer order statement must stay above the hoisted import:\n{combined}"
         );
         // The import is still hoisted above the style rule — its whole purpose.
@@ -1102,7 +1095,7 @@ mod tests {
         );
         // And the framework block is present, spliced after the order statement.
         assert!(
-            offset_of(&combined, "@layer theme,") < offset_of(&combined, "@layer zfb-hi"),
+            offset_of(&combined, "@layer zw-reset,") < offset_of(&combined, "@layer zfb-hi {"),
             "the framework @layer block must sit after the order statement:\n{combined}"
         );
     }

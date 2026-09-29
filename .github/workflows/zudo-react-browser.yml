@@ -1,0 +1,82 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing comment names the release.
+
+name: zudo-react-browser
+
+# Level-4 package browser coverage for the packed zudo-react runtime. This
+# path-filtered workflow is intentionally non-required: unrelated PRs do not
+# trigger it, so it must not become a required status check.
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "packages/zfb/src/zudo-react/**"
+      - "packages/zfb/package.json"
+      - "packages/zfb/tsconfig.json"
+      - "packages/zfb/scripts/**"
+      - "tests/zudo-react-browser/**"
+      - ".github/workflows/zudo-react-browser.yml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+  push:
+    branches:
+      - main
+      - "base/**"
+    paths:
+      - "packages/zfb/src/zudo-react/**"
+      - "packages/zfb/package.json"
+      - "packages/zfb/tsconfig.json"
+      - "packages/zfb/scripts/**"
+      - "tests/zudo-react-browser/**"
+      - ".github/workflows/zudo-react-browser.yml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zudo-react-browser-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zudo-react-browser:
+    name: zudo-react-browser (L4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run zudo-react browser suite
+        run: pnpm test:zudo-react-browser
+
+      - name: Upload Playwright traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zudo-react-browser-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

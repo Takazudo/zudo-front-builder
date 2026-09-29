@@ -75,9 +75,11 @@ The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Cl
 These are minimal stubs to get started. Extend them with your design system's tokens, icons, and ARIA roles.
 
 ```tsx title="components/admonitions.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 type AdmonitionProps = {
   title?: string;
-  children: React.ReactNode;
+  children: Child;
 };
 
 function admonition(kind: string) {
@@ -100,9 +102,11 @@ export const Caution = admonition("caution");
 ```
 
 ```tsx title="components/details.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 type DetailsProps = {
   title?: string;
-  children: React.ReactNode;
+  children: Child;
 };
 
 export function Details({ title, children }: DetailsProps) {

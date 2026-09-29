@@ -11,40 +11,12 @@
 //   click/form intercepts live in `client-router/router.ts` and are registered
 //   via `init()`. No inline <script> dangerouslySetInnerHTML is emitted.
 //
-// Component/activation split (#2437): this module is the pure component —
-// it imports ONLY `react/jsx-runtime` and `./client-router/prefetch.js`
-// (`prefetch.ts` has zero module-scope side effects), never
-// `./client-router/router.js`, and performs no top-level `document`/`window`
-// access. Importing it — including via the root barrel `@takazudo/zfb-runtime`
-// — registers no listeners and writes no history. `./client-router.ts` is the
-// activation shim: it re-exports this module's surface and additionally runs
-// `init()` as a side effect on import, which `import "@takazudo/zfb-runtime/client-router"`
-// (auto-injected by the islands bundler) relies on for byte-compatible activation.
-//
-// Framework-agnostic element minting (no JSX syntax):
-//   `@takazudo/zfb-runtime` does not depend on a framework runtime. Head nodes
-//   are minted by calling `jsx` from `react/jsx-runtime` directly — NOT JSX
-//   syntax, so this stays a plain `.ts` file with no tsconfig JSX changes. The
-//   engine alias-rewrites `react/jsx-runtime` → `preact/jsx-runtime` in Preact
-//   mode (bundler.rs ~2886) and resolves it natively in React mode, so the same
-//   call mints a real element for whichever framework the project configured.
-//   The previous approach (a hand-rolled `{ type, props, key, constructor:
-//   undefined }` object literal — the Preact diff-path sentinel) only worked for
-//   Preact: React's renderer rejects such an object as a child with React error
-//   #31 ("Objects are not valid as a React child"), because a real React element
-//   carries `$$typeof: Symbol.for("react.element")` a literal cannot fake. Same
-//   migration as `Island` in @takazudo/zfb.
-//
-// The component renders three base sibling elements to <head> (plus optional
-// metas emitted conditionally — see `prefetchDisabled` and `preserveHtmlAttrs`):
-//   1. A <style> tag with the `.zfb-route-announcer` ARIA helper class.
-//   2. <meta name="zfb-view-transitions-enabled" content="true" />
-//   3. <meta name="zfb-view-transitions-fallback" content={fallback} />
-//
-// The route-announcer <div> is injected into <body> by `announce()` in
-// `client-router/router.ts` on every navigation.
+// Component/activation split (#2437): this pure module imports the owned
+// JSX factory and prefetch helpers without activating the client router.
+// The router activation shim remains at the client-router subpath.
 
-import { jsx } from "react/jsx-runtime";
+import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
+import type { Description } from "@takazudo/zfb/zudo-react";
 
 import { init as prefetchInit } from "./client-router/prefetch.js";
 
@@ -99,42 +71,20 @@ export interface ClientRouterProps {
   traverseRefetch?: boolean;
 }
 
-/**
- * Public element shape for each node returned by `<ClientRouter />`.
- * Structural type — intentionally matches the Preact/React VNode object shape
- * so consumers do not type-infer through the internal representation.
- */
-export type ClientRouterElement = {
-  readonly type: string;
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly key: unknown;
-};
+/** Head descriptions returned by ClientRouter. */
+export type ClientRouterElement = Description;
 
-/**
- * Mint a head element through the per-project JSX runtime.
- *
- * Calls `jsx` from `react/jsx-runtime` (alias-rewritten to
- * `preact/jsx-runtime` in Preact mode by the engine, native in React mode)
- * so the returned value is a real element for whichever framework the
- * project configured — NOT a hand-rolled `{ type, props, key }` literal,
- * which only Preact accepts and which makes React throw error #31. A stable
- * `key` is passed because `ClientRouter()` returns these nodes in a plain
- * array (React warns about keyless list children otherwise). Mirrors the
- * `Island` migration in `@takazudo/zfb`.
- */
+/** Mint a keyed owned head description without JSX syntax in this .ts file. */
 function makeVNode(type: string, props: Record<string, unknown>, key: string): ClientRouterElement {
-  // `jsx`'s `type` param is typed `ElementType` (string-literal intrinsic
-  // tags or component types), which rejects an arbitrary runtime `string`.
-  // The tag is dynamic here, so cast to the factory's own first-param type —
-  // robust whether the engine aliases `jsx` to react or preact at build time.
-  return jsx(type as Parameters<typeof jsx>[0], props, key) as unknown as ClientRouterElement;
+  // The static tag choices below are passed through this string parameter.
+  return jsx(type as Parameters<typeof jsx>[0], props, key);
 }
 
 // CSS for the route-announcer element. Ported verbatim from Astro's
 // `<style is:global>` block in ClientRouter.astro (lines 11–23), renaming
 // `.astro-route-announcer` → `.zfb-route-announcer` per W1B §5.
 // This is a global (non-scoped) <style> because the announcer <div> is
-// appended to document.body at runtime, outside any Preact-controlled subtree.
+// appended to document.body at runtime, outside the rendered head.
 const announcerCss = `
 .zfb-route-announcer {
 	position: absolute;
@@ -182,7 +132,7 @@ export function ClientRouter({
 
   const nodes: ClientRouterElement[] = [
     // Global styles for the ARIA route-announcer div injected into <body>.
-    makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }, "zfb-vt-style"),
+    makeVNode("style", { rawHtml: announcerCss }, "zfb-vt-style"),
     // Opt-in meta tag: router checks for this to decide whether to intercept navigations.
     makeVNode("meta", { name: "zfb-view-transitions-enabled", content: "true" }, "zfb-vt-enabled"),
     // Fallback strategy meta tag: read by getFallback() in router.ts.

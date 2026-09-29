@@ -173,48 +173,41 @@ jobs:
 
       # Staged-binaries cache (issue 2385) — see health.yml's identically
       # named step for the full rationale. Same key as health.yml's x86_64
-      # jobs so this weekly job shares their cache entry (a tailwind CDN blip
-      # here would file a tracking issue + notify at 04:17 UTC Saturday for
-      # nothing).
-      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+      # jobs.
+      - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
-          # Only the two gitignored executable slots — never the whole dir:
+          # Only the gitignored executable slot — never the whole dir:
           # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
           # and an exact-key restore would untar stale cached copies of those
           # over the checkout whenever a PR edits them without touching the
           # hashed pin files (codex review, zfb#2385 PR).
           path: |
             crates/zfb/binaries/esbuild/esbuild
-            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to download +
-      # SHA-verify + stage the pinned esbuild and tailwindcss v4 binaries into
-      # their crates/zfb/binaries/ slots — the same side effect health.yml's
+      # SHA-verify + stage the pinned esbuild binary into
+      # its crates/zfb/binaries/ slot — the same side effect health.yml's
       # esbuild staging step relies on.
       - run: cargo build --workspace --all-targets
 
       # Guard mirroring health.yml's "Assert esbuild was provisioned" step
-      # (issue #638): if either binary failed to stage, the env-gate tests
+      # (issue #638): if the binary failed to stage, the env-gate tests
       # below would either error clearly (good) or, worse, be silently
       # skipped by --run-ignored not matching anything real. Fail loudly here
       # instead of discovering a silent gap in the manifest run's log.
-      - name: Assert esbuild + tailwindcss binaries were provisioned
+      - name: Assert esbuild binary was provisioned
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
-          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
-            if [ ! -x "$slot" ]; then
-              echo "::error::$slot not staged — the env-gated manifest tests would not run for real. Failing the job instead."
-              exit 1
-            fi
-          done
+          if [ ! -x "$ESBUILD_SLOT" ]; then
+            echo "::error::$ESBUILD_SLOT not staged — the env-gated manifest tests would not run for real. Failing the job instead."
+            exit 1
+          fi
           "$ESBUILD_SLOT" --version
-          "$TAILWIND_SLOT" --version
 
       # The reconciled manifest, env-gate + heavy tags only (55 exact-name
       # entries after issue #2600 — see crates/CLAUDE.md's manifest table for
@@ -227,8 +220,7 @@ jobs:
       # — a future pending-feature #[ignore] would still be left out of this
       # filterset (it would just fail every run with no new information)
       # until its blocking issue resolves.
-      #
-      # ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN must be ABSOLUTE paths: nextest
+      # ZFB_ESBUILD_BIN must be an absolute path: nextest
       # (like plain `cargo test`) runs each test binary with its CWD set to
       # the owning package directory, not the workspace root, so the crates'
       # relative default binary_path (`crates/zfb/binaries/...`) would not
@@ -244,7 +236,6 @@ jobs:
         shell: bash
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
         run: |
           mkdir -p target/nextest-logs
           set +e
@@ -267,18 +258,15 @@ jobs:
               | test(=islands_shadow_preserve_symlinks_is_load_bearing)
               | test(=real_binary_build_and_dev_cover_client_bundling_contract)
               | test(=wrangler_dry_run_attaches_runtime_wasm_as_compiled_module)
-              | test(=subprocess_engine_against_real_binary)
-              | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
               | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
               | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
-              | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
               | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths)
               | test(=version_stamp_from_env)
               | test(=e2e_src_component_edit_rerenders_route)
               | test(=e2e_transitive_css_import_refreshes_stylesheet)
               | test(=e2e_new_utility_class_in_component_is_emitted)
               | test(=e2e_dev_watches_workspace_sibling_raw_and_worker_sources)
-              | test(=e2e_dev_sibling_tailwind_utility_class_refreshes_served_css)
+              | test(=e2e_dev_sibling_wind_utility_class_refreshes_served_css)
               | test(=e2e_3163_root_site_ssr_workspace_json_edit_is_served)
               | test(=e2e_3163_nested_site_ssr_workspace_deps_including_post_boot_import_are_served)
               | test(=e2e_3163_nested_site_compiled_dist_sibling_edit_is_served)
@@ -292,8 +280,8 @@ jobs:
               | test(=e2e_3202_client_raw_target_edit_before_the_watcher_is_armed_is_served)
               | test(=e2e_3210_static_html_page_edit_before_the_watcher_is_armed_is_served)
               | test(=e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_served)
-              | test(=sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted)
-              | test(=sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan)
+              | test(=sibling_only_utility_class_reaches_wind_source_scan_and_is_emitted)
+              | test(=sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan)
               | test(=islands_shadow_alias_raw_import_bundles_text)
               | test(=shared_bundle_discovers_marked_glue_and_wasm_resources)
               | test(=stage_escape_audit_rejects_workspace_package_symlink_escape)
@@ -306,17 +294,6 @@ jobs:
               | test(=ssr_only_cold_bootstrap_recovery_reloads_open_tab)
               | test(=embedded_host_matches_real_workerd_for_supported_rows_and_documented_divergences)
               | test(=e2e_poll_backend_content_edit_and_new_entry_discovery)
-              | test(=css_command_output_is_deterministic_and_matches_committed_golden)
-              | test(=css_command_highlight_class_default_and_inline_modes)
-              | test(=css_command_explicit_sources_isolate_ambient_decoy)
-              | test(=css_command_replays_consumer_entrypoint_with_explicit_sources)
-              | test(=css_command_missing_input_exits_nonzero)
-              | test(=css_command_zero_match_source_glob_exits_nonzero)
-              | test(=css_command_same_canonical_input_output_exits_nonzero)
-              | test(=css_command_missing_relative_import_exits_nonzero)
-              | test(=css_command_real_unresolved_apply_exits_nonzero)
-              | test(=css_command_atomic_success_replaces_and_failure_preserves_output)
-              | test(=css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e
@@ -363,7 +340,7 @@ jobs:
       # `steps.run_manifest.outputs.rc != '0'` implicitly ANDs in `success()`
       # (GitHub Actions' default for any `if:` referencing none of always()/
       # failure()/cancelled()), so a job that failed BEFORE this step — the
-      # esbuild/tailwindcss staging assert above, or a compile error in
+      # esbuild staging assert above, or a compile error in
       # `cargo build --workspace --all-targets` — filed nothing at all.
       # `always()` did not rescue that, though this comment used to claim it
       # did. The old claim was that an unset `outputs.rc` makes `'' != '0'`
@@ -432,27 +409,25 @@ jobs:
       # stages darwin-arm64 binaries here). Weekly cadence sits near GitHub's
       # 7-day cache retention boundary, so treat this entry as opportunistic —
       # a cold week just re-downloads once.
-      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+      - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
-          # Only the two gitignored executable slots — never the whole dir:
+          # Only the gitignored executable slot — never the whole dir:
           # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
           # and an exact-key restore would untar stale cached copies of those
           # over the checkout whenever a PR edits them without touching the
           # hashed pin files (codex review, zfb#2385 PR).
           path: |
             crates/zfb/binaries/esbuild/esbuild
-            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      # Install dependencies before cargo build so build.rs (embed_framework_packages)
-      # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc. — same
-      # ordering as release.yml's macOS build leg.
+      # Install dependencies before cargo build so the build script can read
+      # Hono from node_modules/.pnpm/ — same ordering as release.yml's macOS leg.
       - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to stage the
-      # pinned esbuild + tailwindcss v4 binaries — same as health.yml and this
+      # pinned esbuild binary — same as health.yml and this
       # workflow's quarantine-heavy job above. Needed so the assert step below
       # has something to check BEFORE the test run starts (nextest would
       # otherwise trigger the same compile+stage implicitly, but only once the
@@ -466,18 +441,14 @@ jobs:
       # binary is missing silently record themselves as PASS instead of
       # failing loudly — on the only platform this workflow exists to give
       # real coverage to.
-      - name: Assert esbuild + tailwindcss binaries were provisioned
+      - name: Assert esbuild binary was provisioned
         run: |
           ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
-          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
-            if [ ! -x "$slot" ]; then
-              echo "::error::$slot not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
-              exit 1
-            fi
-          done
+          if [ ! -x "$ESBUILD_SLOT" ]; then
+            echo "::error::$ESBUILD_SLOT not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
+            exit 1
+          fi
           "$ESBUILD_SLOT" --version
-          "$TAILWIND_SLOT" --version
 
       # Full platform re-exam: EVERY non-ignored test in the workspace,
       # unfiltered, on FSEvents instead of Linux inotify — this is the whole

@@ -14,7 +14,7 @@
 //! HTML — not merely asserting the scanner returns a route.
 //!
 //! `.ts` (and `.js`/`.jsx`) pages carry no JSX syntax, so the pages below
-//! build their element tree with preact's `h()` directly instead of JSX.
+//! build their element tree with the owned runtime's `h()` directly instead of JSX.
 
 use std::fs;
 use std::path::Path;
@@ -67,7 +67,7 @@ fn read_log(path: &Path) -> String {
 fn write_project(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
-        r#"{ "framework": "preact" }
+        r#"{ }
 "#,
     )
     .unwrap();
@@ -79,7 +79,7 @@ fn write_project(root: &Path) {
     // (zfb-router's pre-#1992 `ACCEPTED_PAGE_EXTENSIONS`) — issue #1742.
     fs::write(
         root.join("pages/index.ts"),
-        r#"import { h } from "preact";
+        r#"import { h } from "@takazudo/zfb/zudo-react";
 
 export default function Page() {
   return h(
@@ -96,7 +96,7 @@ export default function Page() {
     // `.js` sibling — same widening, different extension.
     fs::write(
         root.join("pages/about.js"),
-        r#"import { h } from "preact";
+        r#"import { h } from "@takazudo/zfb/zudo-react";
 
 export default function Page() {
   return h(
@@ -116,7 +116,7 @@ export default function Page() {
     // that `.tsx` already covers elsewhere.
     fs::write(
         root.join("pages/contact.jsx"),
-        r#"import { h } from "preact";
+        r#"import { h } from "@takazudo/zfb/zudo-react";
 
 export default function Page() {
   return h(
@@ -203,14 +203,10 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
     let combined = format!("{stdout}{stderr}");
 
     if !status.success() {
-        if combined.contains("embed_v8")
-            || combined.contains("no esbuild")
-            || combined.contains("no tailwind")
-            || (combined.contains("tailwindcss") && combined.contains("not found"))
-        {
+        if combined.contains("embed_v8") || combined.contains("no esbuild") {
             eprintln!(
                 "[page_extension_route_table_build] zfb build exited non-zero with \
-                 a known-skip indicator (V8/esbuild/tailwind unavailable); \
+                 a known-skip indicator (V8/esbuild unavailable); \
                  skipping test.\nstdout: {stdout}\nstderr: {stderr}"
             );
             return;

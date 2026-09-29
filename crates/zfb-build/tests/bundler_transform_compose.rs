@@ -25,7 +25,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Absolutise each `compilerOptions.paths` target against the project root
@@ -68,14 +67,13 @@ fn branch4_input(
 ) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
-        Framework::Preact,
         BundleMode::Production,
         root.join("dist"),
         None,
     );
+    input.zudo_react_island_names = Some(vec![]);
     input.external = vec![
-        "preact".into(),
-        "preact-render-to-string".into(),
+        "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
     input.esbuild_binary = Some(esbuild.to_path_buf());

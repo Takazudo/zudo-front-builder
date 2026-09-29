@@ -1,0 +1,67 @@
+---
+title: Tokens
+description: Define the project supplied values used by zudo-wind utility families.
+sidebar_position: 3
+---
+
+## No implicit theme
+
+V1 ships no color palette, spacing unit, named scale, breakpoint, font family, font weight, radius, shadow, or easing. The values `0`, `px`, and the closed catalog's static keywords are language constants; they are not theme entries. Add every project-specific value to `wind.tokens`.
+
+A token map contains data, not executable code. The available categories and their emitted custom-property prefixes are:
+
+| Config field | Emitted prefix | Utility use |
+| --- | --- | --- |
+| `colors` | `--zw-color-` | Text color, background color, border, divide, outline, and accent values |
+| `spacing` | `--zw-spacing-` | Named spacing and eligible sizing values |
+| `sizes` | `--zw-size-` | Named width, height, and size values |
+| `fontSizes` | `--zw-font-size-` | Text size, with optional paired leading |
+| `fontFamilies` | `--zw-font-family-` | Font family |
+| `fontWeights` | `--zw-font-weight-` | Font weight |
+| `lineHeights` | `--zw-leading-` | Line height |
+| `letterSpacings` | `--zw-tracking-` | Letter spacing |
+| `radii` | `--zw-radius-` | Border radius |
+| `shadows` | `--zw-shadow-` | Box shadow |
+| `zIndices` | `--zw-z-` | Z index |
+| `easings` | `--zw-ease-` | Transition timing function |
+
+The separate `spacingUnit` field emits `--zw-spacing-unit`. Breakpoints and dark-mode settings affect variants; they do not create token variables. Every configured token is emitted, even when no candidate currently uses it. Names and variables are ordered by category and token name.
+
+## Names and lookup rules
+
+Names use lowercase ASCII letters and digits, with single hyphens between alphanumeric segments. Names must start and end with an alphanumeric character. Numeric components are allowed, so `neutral-50` and `2xl` are valid. Uppercase `DEFAULT` is rejected; use lowercase `default` where the category allows it.
+
+`default` is reserved for `radii` and `shadows`, where it supplies bare `rounded` and `shadow`. It also supports explicit `rounded-default` and `shadow-default`. A color or spacing map cannot use it as a general fallback. Keys that collide with numeric suffixes, fixed keywords, or a reserved family name are rejected rather than shadowing the language.
+
+Some utility roots share lookup namespaces:
+
+- `spacing` and `sizes` names must be disjoint for sizing utilities.
+- `colors` and `fontSizes` names must be disjoint for `text-*`.
+- `fontFamilies` and `fontWeights` names must be disjoint for `font-*`.
+
+For example, adding the same key to `colors` and `fontSizes` makes that binding ambiguous. Resolve the collision by choosing distinct names.
+
+## Spacing and numeric values
+
+`spacingUnit` is a single nonnegative CSS dimension or zero. It cannot be a percentage, `calc()`, or `var()`. Nonzero numeric spacing is unavailable when the unit is missing; a configured zero unit is valid and makes numeric multiples zero. With a unit of `0.25rem`, `p-4` is calculated exactly as four times that unit; `p-1.5` produces `0.375rem`. Decimal multiplication uses decimal digits rather than floating point, with an 18-significant-digit limit on inputs and results. Zero and the unit constant `px` remain available without a configured scale.
+
+Named entries in `spacing` are used directly through a custom property. Numeric values and named values are distinct forms. Sizing roots also consult `sizes`, then `spacing`, while the token names for both maps must remain disjoint. A CSS fraction such as `w-1/2` is a separate sizing form; its slash never means color opacity.
+
+Breakpoints are configured separately as positive integer pixel widths. For example, `sm: ...` requires a configured `sm` entry; the configuration supplies `minWidthPx`. Breakpoint widths are compared numerically, not by their names, and duplicate widths fail validation.
+
+## Validating values
+
+Each token value is checked with the CSS parser for the property that consumes it. Examples include color for `colors`, padding length for `spacing`, width for `sizes`, font size for `fontSizes`, and border radius for `radii`. Radius entries must be a single nonnegative length-percentage. Z-index entries must be integers. Easing entries must be a single timing function or keyword.
+
+External custom properties may appear in values for categories other than `spacingUnit`. If the CSS parser cannot prove the property's type because the value references `var()`, the binding is marked category-unverified and exposed by `zfb wind explain`. The whole value must still parse; semicolons, braces, `!important`, URL functions, and keywords such as `inherit` or `revert` are rejected. Token values cannot reference the reserved `--zw-` namespace. Point a token at a project property and override that project property in authored CSS instead.
+
+## Emitted variables
+
+All configured values are exposed under the `--zw-` namespace inside `@layer zw-tokens`. The category-to-prefix table gives the exact mapping, including `fontSizes` values under `--zw-font-size-` and a paired `-leading` variable when configured. The font-size token key cannot itself end in `-leading`, because that name is reserved for the paired value. No theme namespace is wiped and token values are not substituted inline; a project may override the generated custom properties in authored CSS.
+
+## See also
+
+- [Configuration](./configuration.mdx)
+- [Utility reference](./utilities/index.mdx)
+- [Utility grammar](./utility-grammar.mdx)
+- [Cascade and reset](./cascade-and-reset.mdx)

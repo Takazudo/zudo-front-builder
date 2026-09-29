@@ -1,0 +1,76 @@
+---
+title: リアクティビティ
+description: 書き込み可能な signal と読み取り専用の computed 値を、回数制限付きのマイクロタスク更新で動くバインディングとして使います。
+sidebar_position: 3
+---
+
+## 書き込み可能な値と読み取り専用の値
+
+書き込み可能な値は **signal** で作り、読み取り専用の派生値は **computed** で作ります。signal は代入された値を Object.is で比較します。同じ値の代入は通知せず、NaN と符号付きゼロも Object.is の規則に従います。オブジェクトをその場で変更しても signal への代入にはならず、購読者には通知されません。
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function Counter() {
+  const count = signal(0);
+  const doubled = computed(() => count.value * 2);
+
+  return (
+    <button on:click={() => { count.value += 1; }}>
+      {count} × 2 = {doubled}
+    </button>
+  );
+}
+~~~
+
+computed 値は遅延評価されます。最後の評価で読み取った signal を追跡し、古い依存関係を捨て、循環を検出します。batch の内外どちらでも読み取れ、確定した値を返します。監視されていない computed 値は上流への購読を保持しません。
+
+## スナップショットとバインディングを区別する
+
+受け取り側で更新が必要なら、リアクティブなオブジェクトを JSX や子の prop に渡します。value を読むと、その時点のスナップショットが返ります。
+
+~~~tsx
+const name = signal("Ada");
+const snapshot = name.value;
+
+return <Profile liveName={name} initialName={snapshot} />;
+~~~
+
+liveName prop は signal です。initialName はセットアップ中に取得した文字列です。JSX 式の中で value を読んでも、その読み取りはリアクティブになりません。computed 値にも同じ規則が適用されます。
+
+書き込み可能な signal と読み取り専用の signal はリアクティブなブランドを共有しますが、書き込み可能な signal には必須の writable ブランドもあります。書き込み可能なモデルは `Signal<T>` 型にし、読み取り用の入力には `ReadonlySignal<T>` を使います。書き込み可能な signal は読み取り専用の signal が必要な場所にも渡せます。computed 値や読み取り専用のビューは、TypeScript でも実行時でもフォームモデルには使えません。signal の呼び出しで writable ブランドが付き、別の setter API はありません。
+
+~~~tsx
+import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+const name = signal("Ada");
+const label = computed(() => name.value.toUpperCase());
+const readable: ReadonlySignal<string> = name;
+const writable: Signal<string> = name;
+~~~
+
+## 同期的な書き込みをまとめる
+
+**batch** は同期的な代入をまとめ、監視者には確定後の結果を見せます。コールバックが例外を投げてもスケジューラーの状態を復元します。コールバックを遅延させたり、アプリケーションの Promise を待ったりはしません。
+
+スケジューラーはマイクロタスクでキューを処理します。各パスで computed の派生値を確定し、構造と DOM のバインディングをコミットしてから effect を実行します。購読者は一つのパスの各段階で最大一度だけ実行されるため、菱形の依存グラフにある中間値は DOM に書き込まれません。パス中の書き込みは次のパスを予約します。
+
+現在の DOM と effect の処理が落ち着くまで待つ必要がある場合は **flush** を使います。
+
+~~~tsx
+count.value = 2;
+await flush();
+// Reactive DOM and effects from the write have settled here.
+~~~
+
+flush はキューの処理中に追加された作業も含みますが、無関係な Promise は待ちません。処理がなければ直ちに解決します。一回の処理では最初のパスを含め最大 100 パスまで許可されます。さらにパスが必要になると、ランタイムは ZR_FLUSH_LIMIT を報告し、その処理でキューに入った作業を捨て、待機中の flush を reject します。後の外部からの書き込みは新しい処理を開始します。破棄されたジョブと失敗したルートは、無関係なルートから分離されます。
+
+サーバーでは、レンダリングは購読を作らずに各値を一度読みます。成功しても例外が起きても、レンダリングのスコープグラフは破棄されます。
+
+## 関連ページ
+
+- [概要](./overview.mdx)
+- [スコープとライフサイクル](./scopes-and-lifecycle.mdx)
+- [フォーム](./forms.mdx)
+- [API リファレンス](./api-reference.mdx)

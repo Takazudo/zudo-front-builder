@@ -31,12 +31,8 @@ zfb-graph = { path = "../zfb-graph" }
 # We reuse `compile_mdx_to_jsx_module_cached` rather than re-wrapping MDX
 # compilation so the bundler speaks the same MDX dialect as `zfb-render`.
 zfb-content = { path = "../zfb-content" }
-# Read-only consumption of the framework adapter contract.
-# The bundler only touches `Framework`, `make_adapter`, and the adapter's
-# `hydrate_shim_*` accessors. The JS runtime is no longer
-# embedded (deno_core was retired), so `zfb-render` is compile-cheap and
-# carries no V8 / native-runtime cost into `zfb-build`'s dependency
-# surface.
+# Read-only consumption of the renderer; V8 inclusion remains controlled by
+# the feature below. Owned runtime module constants live in zfb-types.
 #
 # `default-features = false` so this crate controls V8 inclusion via the
 # pass-through `embed_v8` feature above instead of silently inheriting
@@ -141,12 +137,12 @@ tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-t
 # Route scanning for the e2e integration test: discovers pages and their
 # dynamic-route templates without re-authoring the zfb-router walk.
 zfb-router = { path = "../zfb-router" }
-# Real CssPipeline + TailwindSubprocessEngine wiring so the prod-asset
+# Real CssPipeline + WindEngine wiring so the prod-asset
 # graph e2e test (`tests/prod_asset_graph_e2e.rs`) exercises the same
 # bytes-only emitter path that `DefaultRunner::emit_prod_assets` uses
-# in the `zfb` bin. The default test uses `mock_subprocess` to keep
-# the happy path binary-free; the `#[ignore]`-gated test calls the
-# real Tailwind v4 CLI when the binary slot is staged.
+# in the `zfb` bin. Stub-engine tests cover the emitted-byte path, and
+# `prod_asset_graph_with_real_wind_engine_against_fixture` exercises the
+# in-process compiler without a helper CLI binary.
 zfb-css = { path = "../zfb-css" }
 # Shared test utilities: locate_esbuild() and zfb_binary!(). Replaces
 # the duplicated locate_esbuild() bodies that previously lived in each

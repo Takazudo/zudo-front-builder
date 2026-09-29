@@ -1,25 +1,10 @@
 //! Level-3 real-engine integration coverage for `zfb css` (#2600).
 //!
-//! These tests inspect emitted CSS bytes and subprocess exit diagnostics. They
-//! use the real staged Tailwind v4 executable, so every scenario is an
-//! env-gated ignored test. The fixtures deliberately live below
-//! `tests/fixtures/css-*`; each test copies its fixture to a fresh temporary
-//! project before invoking the already-built `zfb` binary.
-//!
-//! Binary design: css-only scenarios and the build-parity scenario stay in one
-//! test binary so the command contract has one obvious scoped CI step. The
-//! parity scenario also spawns `zfb build` (and therefore esbuild); the whole
-//! binary is registered in nextest's `e2e-heavy` build-only bucket. This is
-//! intentional: the extra cross-binary serialization keeps this build leg away
-//! from the other V8/esbuild binaries. Each test uses its own temp project,
-//! while the Tailwind engine's cross-process warm-up lock handles its own
-//! concurrent subprocesses within this binary.
-//!
-//! The health workflow runs this binary directly with `--ignored` and both
-//! staged binary paths. The weekly exam runs the same test names through its
-//! exact-name ignored filterset. No browser or held-open server is involved.
+//! The tests inspect the bytes and diagnostics from the built CLI. Fixtures
+//! live below `tests/fixtures/css-*` and are copied to isolated projects before
+//! each invocation. Only the build-parity case needs esbuild; CSS-only cases
+//! run without external binaries or skip paths.
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -61,34 +46,8 @@ fn copied_fixture(name: &str) -> TempDir {
     temp
 }
 
-/// Resolve exactly the Tailwind slot used by the health/exam env-gate steps.
-/// An explicit operator override wins; unlike esbuild, this lookup deliberately
-/// has no PATH/pnpm fallback so a local run cannot accidentally use another
-/// Tailwind major version.
-fn locate_tailwind() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("ZFB_TAILWIND_BIN") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let slot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tailwindcss-v4");
-    slot.is_file().then_some(slot)
-}
-
-fn skip_without_tailwind(test: &str) -> Option<PathBuf> {
-    let path = locate_tailwind();
-    if path.is_none() {
-        eprintln!(
-            "[{test}] no staged Tailwind v4 binary; skipping. Set ZFB_TAILWIND_BIN or stage crates/zfb/binaries/tailwindcss-v4."
-        );
-    }
-    path
-}
-
 fn run_css(
     project_root: &Path,
-    tailwind: &Path,
     input: &str,
     output: &str,
     explicit_project_root: Option<&str>,
@@ -99,8 +58,7 @@ fn run_css(
     command
         .arg("css")
         .args(["--input", input, "--output", output])
-        .current_dir(project_root)
-        .env("ZFB_TAILWIND_BIN", tailwind);
+        .current_dir(project_root);
     if let Some(root) = explicit_project_root {
         command.args(["--project-root", root]);
     }
@@ -136,34 +94,8 @@ fn assert_failure(output: &Output, context: &str) {
     );
 }
 
-fn has_date_or_time_shape(bytes: &[u8]) -> bool {
-    bytes.windows(10).any(|window| {
-        window[4] == b'-'
-            && window[7] == b'-'
-            && window[..4].iter().all(|byte| byte.is_ascii_digit())
-            && window[5..7].iter().all(|byte| byte.is_ascii_digit())
-            && window[8..].iter().all(|byte| byte.is_ascii_digit())
-    }) || bytes.windows(10).any(|window| {
-        window[4] == b'/'
-            && window[7] == b'/'
-            && window[..4].iter().all(|byte| byte.is_ascii_digit())
-            && window[5..7].iter().all(|byte| byte.is_ascii_digit())
-            && window[8..].iter().all(|byte| byte.is_ascii_digit())
-    }) || bytes.windows(8).any(|window| {
-        window[2] == b':'
-            && window[5] == b':'
-            && window[..2].iter().all(|byte| byte.is_ascii_digit())
-            && window[3..5].iter().all(|byte| byte.is_ascii_digit())
-            && window[6..].iter().all(|byte| byte.is_ascii_digit())
-    })
-}
-
 fn assert_deterministic_css(bytes: &[u8], project_root: &Path) {
-    let text = String::from_utf8(bytes.to_vec()).expect("Tailwind output must be UTF-8 CSS");
-    assert!(
-        text.contains("/*! tailwindcss v4.2.0"),
-        "Tailwind's version banner must pass through unchanged"
-    );
+    let text = String::from_utf8(bytes.to_vec()).expect("wind output must be UTF-8 CSS");
     assert!(
         !text.contains("sourceMappingURL"),
         "CSS output must not carry a source map comment"
@@ -172,51 +104,14 @@ fn assert_deterministic_css(bytes: &[u8], project_root: &Path) {
         !bytes.contains(&b'\r'),
         "CSS output must use LF line endings only"
     );
-
     let project = project_root.to_string_lossy();
     assert!(
         !text.contains(project.as_ref()),
         "CSS output leaked its absolute project path: {project:?}"
     );
-    let temp_root_path = env::temp_dir();
-    let temp_root = temp_root_path.to_string_lossy();
     assert!(
-        !text.contains(temp_root.as_ref()),
-        "CSS output leaked the OS temp directory: {temp_root:?}"
-    );
-    for fragment in ["zfb-tailwind-entry-", "zfb-tailwind-out-"] {
-        assert!(
-            !text.contains(fragment),
-            "CSS output leaked a temporary filename prefix {fragment:?}"
-        );
-    }
-    for fragment in [
-        "/private/tmp/",
-        "/tmp/",
-        "/var/folders/",
-        "/Users/",
-        "/home/",
-        "file://",
-    ] {
-        assert!(
-            !text.contains(fragment),
-            "CSS output leaked an absolute filesystem path fragment {fragment:?}"
-        );
-    }
-    assert!(
-        !bytes.windows(3).enumerate().any(|(index, window)| {
-            window[0].is_ascii_alphabetic()
-                && window[1] == b':'
-                && matches!(window[2], b'/' | b'\\')
-                // Do not mistake the `s:/` suffix of `https://` for a
-                // Windows drive path.
-                && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric())
-        }),
-        "CSS output leaked a Windows absolute filesystem path"
-    );
-    assert!(
-        !has_date_or_time_shape(bytes),
-        "CSS output must not contain a timestamp or date-like token"
+        !text.contains("/private/tmp/") && !text.contains("/var/folders/"),
+        "CSS output leaked an absolute temporary path"
     );
 }
 
@@ -245,16 +140,10 @@ fn find_build_css(root: &Path) -> PathBuf {
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_output_is_deterministic_and_matches_committed_golden() {
-    let Some(tailwind) = skip_without_tailwind("css_command_determinism") else {
-        return;
-    };
     let temp = copied_fixture("css-determinism");
-
     let first = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "first.css",
         Some("."),
@@ -266,7 +155,6 @@ fn css_command_output_is_deterministic_and_matches_committed_golden() {
 
     let second = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "second.css",
         Some("."),
@@ -279,26 +167,20 @@ fn css_command_output_is_deterministic_and_matches_committed_golden() {
 
     assert_eq!(
         first_bytes, second_bytes,
-        "two independent real-engine CSS runs must be byte-identical"
+        "wind runs must be byte-identical"
     );
     assert_eq!(
         first_bytes, golden,
-        "real-engine output must match the committed minimal CSS golden"
+        "real-engine output must match the reviewed golden"
     );
     assert_deterministic_css(&first_bytes, temp.path());
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_highlight_class_default_and_inline_modes() {
-    let Some(tailwind) = skip_without_tailwind("css_command_highlight_modes") else {
-        return;
-    };
     let temp = copied_fixture("css-highlight");
-
     let default_mode = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "default.css",
         Some("."),
@@ -307,18 +189,11 @@ fn css_command_highlight_class_default_and_inline_modes() {
     );
     assert_success(&default_mode, "config-provided class highlight mode");
     let default_css = fs::read_to_string(temp.path().join("default.css")).unwrap();
-    assert!(
-        default_css.contains("--zfb-hi-"),
-        "class mode must emit zfb tokens"
-    );
-    assert!(
-        default_css.contains(".hi-kw"),
-        "class mode must emit semantic role rules"
-    );
+    assert!(default_css.contains("--zfb-hi-"));
+    assert!(default_css.contains(".hi-kw"));
 
     let class_mode = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "class.css",
         Some("."),
@@ -332,7 +207,6 @@ fn css_command_highlight_class_default_and_inline_modes() {
 
     let no_default = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "no-default.css",
         Some("."),
@@ -351,7 +225,6 @@ fn css_command_highlight_class_default_and_inline_modes() {
 
     let inline_mode = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "inline.css",
         Some("."),
@@ -365,31 +238,20 @@ fn css_command_highlight_class_default_and_inline_modes() {
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_explicit_sources_isolate_ambient_decoy() {
-    let Some(tailwind) = skip_without_tailwind("css_command_explicit_source") else {
-        return;
-    };
     let outer = tempfile::tempdir().expect("create explicit-source parent tempdir");
     let project = outer.path().join("project");
     copy_dir_recursive(&fixture_dir("css-explicit-source"), &project)
         .expect("copy explicit-source fixture");
-
-    // Keep this decoy outside the explicit source set, in a default content
-    // root, while the temporary project has no `.git` directory. That makes
-    // it outside any git-visible root but still visible to Tailwind's ambient
-    // detector: if `zfb css` accidentally leaves ambient detection on, this
-    // file is the only place the decoy class can come from.
     fs::create_dir_all(project.join("components")).unwrap();
     fs::write(
         project.join("components/ambient-decoy.html"),
-        "<div class=\"bg-[#cc44dd]\"></div>\n",
+        "<div class=\"hidden\"></div>\n",
     )
     .unwrap();
 
     let output = run_css(
         &project,
-        &tailwind,
         "entry.css",
         "compiled.css",
         Some("."),
@@ -399,27 +261,21 @@ fn css_command_explicit_sources_isolate_ambient_decoy() {
     assert_success(&output, "explicit-source CSS compilation");
     let css = fs::read_to_string(project.join("compiled.css")).unwrap();
     assert!(
-        css.contains("bg-\\[\\#11aa22\\]"),
-        "the explicitly named utility must be emitted:\n{css}"
+        css.contains(".bg-\\[\\#11aa22\\]"),
+        "allowed utility missing:\n{css}"
     );
     assert!(
-        !css.contains("bg-\\[\\#cc44dd\\]") && !css.contains("#cc44dd"),
-        "the ambient decoy outside the explicit source set leaked into CSS:\n{css}"
+        !css.contains(".hidden") && !css.contains("#cc44dd"),
+        "ambient utility outside the source plan leaked into CSS:\n{css}"
     );
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
-    let Some(tailwind) = skip_without_tailwind("css_command_consumer_replay") else {
-        return;
-    };
     let temp = copied_fixture("css-consumer-replay");
     let sources = ["src/**/*.{tsx,ts,jsx,js}"];
-
     let first = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "first.css",
         Some("."),
@@ -427,12 +283,9 @@ fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
         &["--no-auto-source"],
     );
     assert_success(&first, "first consumer CSS replay");
-    let first_bytes =
-        fs::read(temp.path().join("first.css")).expect("read first consumer CSS replay output");
-
+    let first_bytes = fs::read(temp.path().join("first.css")).expect("read consumer CSS");
     let second = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "second.css",
         Some("."),
@@ -440,12 +293,10 @@ fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
         &["--no-auto-source"],
     );
     assert_success(&second, "second consumer CSS replay");
-    let second_bytes =
-        fs::read(temp.path().join("second.css")).expect("read second consumer CSS replay output");
-
+    let second_bytes = fs::read(temp.path().join("second.css")).expect("read consumer CSS");
     assert_eq!(
         first_bytes, second_bytes,
-        "two real `zfb css --no-auto-source --source ...` runs must be byte-identical"
+        "consumer wind runs must be identical"
     );
     assert_deterministic_css(&first_bytes, temp.path());
 
@@ -453,25 +304,17 @@ fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
     for (selector, declaration) in [
         (".flex", "display: flex"),
         (".grid", "display: grid"),
-        (".bg-surface", "background-color: var(--color-surface)"),
-        (".text-fg", "color: var(--color-fg)"),
+        (".bg-surface", "background-color: var(--zw-color-surface)"),
+        (".text-fg", "color: var(--zw-color-fg)"),
+        (".rounded-lg", "border-top-left-radius: var(--zw-radius-lg)"),
     ] {
         assert!(
             css.contains(selector) && css.contains(declaration),
-            "consumer source utility {selector:?} with {declaration:?} is missing:\n{css}"
+            "consumer candidate {selector:?} with {declaration:?} missing:\n{css}"
         );
     }
-    assert!(
-        css.contains("--zfb-hi-"),
-        "class mode must emit zfb-hi variables"
-    );
-    assert!(
-        css.contains(".hi-root")
-            && css.contains("var(--zfb-hi-fg)")
-            && css.contains("var(--zfb-hi-bg)"),
-        "class mode must emit the zfb-hi root role rule:\n{css}"
-    );
-
+    assert!(css.contains("--zfb-hi-"));
+    assert!(css.contains(".hi-root") && css.contains("var(--zfb-hi-fg)"));
     for (marker, next_marker) in [
         (
             "--consumer-import-order-theme",
@@ -492,35 +335,27 @@ fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
     ] {
         assert!(
             css.find(marker).expect("ordered CSS marker present")
-                < css
-                    .find(next_marker)
-                    .expect("next ordered CSS marker present"),
-            "ordered package imports must retain {marker:?} before {next_marker:?}"
+                < css.find(next_marker).expect("next marker present"),
+            "package imports must preserve {marker:?} before {next_marker:?}"
         );
     }
-
     assert!(
-        !css.contains("#d34db7") && !css.contains("bg-\\[\\#d34db7\\]"),
-        "@source not catalog.js exclusion leaked its decoy utility:\n{css}"
+        !css.contains("#d34db7"),
+        "manifest decoy leaked into CSS:\n{css}"
     );
     for unresolved in ["@tailwind", "@apply", "@source", "@import"] {
         assert!(
             !css.contains(unresolved),
-            "consumer CSS output must not retain unresolved {unresolved} directives:\n{css}"
+            "unresolved {unresolved} remained:\n{css}"
         );
     }
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_missing_input_exits_nonzero() {
-    let Some(tailwind) = skip_without_tailwind("css_command_missing_input") else {
-        return;
-    };
     let temp = copied_fixture("css-failures");
     let output = run_css(
         temp.path(),
-        &tailwind,
         "missing.css",
         "compiled.css",
         Some("."),
@@ -538,15 +373,10 @@ fn css_command_missing_input_exits_nonzero() {
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_zero_match_source_glob_exits_nonzero() {
-    let Some(tailwind) = skip_without_tailwind("css_command_zero_match_source") else {
-        return;
-    };
     let temp = copied_fixture("css-failures");
     let output = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "compiled.css",
         Some("."),
@@ -562,17 +392,12 @@ fn css_command_zero_match_source_glob_exits_nonzero() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_same_canonical_input_output_exits_nonzero() {
-    let Some(tailwind) = skip_without_tailwind("css_command_same_path") else {
-        return;
-    };
     let temp = copied_fixture("css-failures");
     std::os::unix::fs::symlink("entry.css", temp.path().join("alias.css"))
         .expect("create input/output alias");
     let output = run_css(
         temp.path(),
-        &tailwind,
         "entry.css",
         "alias.css",
         Some("."),
@@ -580,20 +405,14 @@ fn css_command_same_canonical_input_output_exits_nonzero() {
         &["--no-auto-source"],
     );
     assert_failure(&output, "same canonical CSS input/output");
-    let diagnostics = combined_output(&output);
-    assert!(diagnostics.contains("same path"), "{diagnostics}");
+    assert!(combined_output(&output).contains("same path"));
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_missing_relative_import_exits_nonzero() {
-    let Some(tailwind) = skip_without_tailwind("css_command_missing_import") else {
-        return;
-    };
     let temp = copied_fixture("css-failures");
     let output = run_css(
         temp.path(),
-        &tailwind,
         "missing-relative-import.css",
         "compiled.css",
         Some("."),
@@ -607,53 +426,36 @@ fn css_command_missing_relative_import_exits_nonzero() {
         "{diagnostics}"
     );
     assert!(
-        diagnostics.contains("resolve") || diagnostics.contains("Tailwind CSS compilation failed")
+        diagnostics.contains("bundle") || diagnostics.contains("resolve"),
+        "{diagnostics}"
     );
     assert!(!temp.path().join("compiled.css").exists());
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_real_unresolved_apply_exits_nonzero() {
-    let Some(tailwind) = skip_without_tailwind("css_command_unresolved_apply") else {
-        return;
-    };
     let temp = copied_fixture("css-failures");
     let output = run_css(
         temp.path(),
-        &tailwind,
         "unresolved-apply.css",
         "compiled.css",
         Some("."),
         &["source.html"],
         &["--no-auto-source"],
     );
-    assert_failure(&output, "real Tailwind unresolved @apply directive");
+    assert_failure(&output, "leftover directive");
     let diagnostics = combined_output(&output);
-    assert!(
-        diagnostics.contains("totally-not-a-real-utility"),
-        "the unresolved utility must be named:\n{diagnostics}"
-    );
-    assert!(
-        diagnostics.contains("Cannot apply unknown utility class")
-            || diagnostics.contains("unknown utility"),
-        "the real engine must identify the unresolved @apply:\n{diagnostics}"
-    );
+    assert!(diagnostics.contains("ZW009"), "{diagnostics}");
+    assert!(diagnostics.contains("@apply"), "{diagnostics}");
     assert!(!temp.path().join("compiled.css").exists());
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_atomic_success_replaces_and_failure_preserves_output() {
-    let Some(tailwind) = skip_without_tailwind("css_command_atomicity") else {
-        return;
-    };
-
     let success = copied_fixture("css-atomic");
     fs::write(success.path().join("compiled.css"), b"SUCCESS_SENTINEL").unwrap();
     let success_output = run_css(
         success.path(),
-        &tailwind,
         "entry.css",
         "compiled.css",
         Some("."),
@@ -664,20 +466,18 @@ fn css_command_atomic_success_replaces_and_failure_preserves_output() {
     let success_bytes = fs::read(success.path().join("compiled.css")).unwrap();
     assert_ne!(success_bytes, b"SUCCESS_SENTINEL");
     let success_css = String::from_utf8_lossy(&success_bytes);
-    assert!(success_css.contains("/*! tailwindcss v4.2.0"));
-    assert!(success_css.contains("#334455"));
+    assert!(success_css.contains(".bg-\\[\\#334455\\]"), "{success_css}");
     assert!(!success_css.contains("SUCCESS_SENTINEL"));
 
     let failure = copied_fixture("css-atomic");
     fs::write(
         failure.path().join("entry.css"),
-        "@import \"tailwindcss\";\n.broken { @apply totally-not-a-real-utility; }\n",
+        ".broken { @apply unknown; }\n",
     )
     .unwrap();
     fs::write(failure.path().join("compiled.css"), b"FAILURE_SENTINEL").unwrap();
     let failure_output = run_css(
         failure.path(),
-        &tailwind,
         "entry.css",
         "compiled.css",
         Some("."),
@@ -688,16 +488,12 @@ fn css_command_atomic_success_replaces_and_failure_preserves_output() {
     assert_eq!(
         fs::read(failure.path().join("compiled.css")).unwrap(),
         b"FAILURE_SENTINEL",
-        "failed CSS compilation must leave the previous output bytes untouched"
+        "failed compilation must preserve the previous output bytes"
     );
 }
 
 #[test]
-#[ignore = "env-gate: tailwindcss v4 + esbuild — requires the staged Tailwind and esbuild binaries"]
 fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
-    let Some(tailwind) = skip_without_tailwind("css_command_build_parity") else {
-        return;
-    };
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[css_command_build_parity] no esbuild binary available; skipping. Set ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild."
@@ -717,30 +513,17 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
         .arg("build")
         .current_dir(&build_project)
         .env("ZFB_ESBUILD_BIN", &esbuild)
-        .env("ZFB_TAILWIND_BIN", &tailwind)
         .output()
         .expect("spawn `zfb build` for CSS parity");
     assert_success(&build, "build-parity zfb build");
     let build_css_path = find_build_css(&build_project);
     let build_css = fs::read(&build_css_path).expect("read hashed build stylesheet");
 
-    // `zfb build` leaves Tailwind's ambient source detection enabled, and its
-    // build bundle is part of that ambient root. Copy only that generated
-    // bundle (not `dist/`) into the otherwise fresh css project, then use
-    // `--source .` as the equivalent explicit plan. This scans the same
-    // source set while exercising the standalone command's source(none)
-    // contract without allowing the build's already-emitted CSS to mask a
-    // missing utility. The fixture has no CSS Modules, and there is no
-    // framework CSS override, so the complete hashed build asset is exactly
-    // the Tailwind utility/framework portion being compared.
-    copy_dir_recursive(
-        &build_project.join(".zfb-build"),
-        &css_project.join(".zfb-build"),
-    )
-    .expect("copy the build bundle into the equivalent CSS source plan");
+    // `zfb build` scans its conventional roots; the explicit standalone root
+    // scans the same source tree. Both plans exclude build output, and the
+    // fixture contains no CSS Modules, package roots or generated sources.
     let standalone = run_css(
         &css_project,
-        &tailwind,
         "styles/global.css",
         "../standalone.css",
         Some("."),
@@ -750,10 +533,10 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
     assert_success(&standalone, "build-parity standalone zfb css");
     let standalone_css =
         fs::read(outer.path().join("standalone.css")).expect("read standalone CSS parity output");
-
     assert_eq!(
-        build_css, standalone_css,
-        "the hashed `zfb build` stylesheet {} and equivalent explicit-plan `zfb css` output must be byte-identical",
+        build_css,
+        standalone_css,
+        "build stylesheet {} and equivalent standalone wind output must be byte-identical",
         build_css_path.display()
     );
 }

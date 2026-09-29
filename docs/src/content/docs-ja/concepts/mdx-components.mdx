@@ -1,6 +1,6 @@
 ---
 title: MDX Components
-description: MDX エントリがレンダリング可能な React/Preact コンポーネントとしてページに届く仕組みと、components prop で個々の要素をオーバーライドする方法。
+description: MDX エントリがレンダリング可能な zudo-react コンポーネントとしてページに届く仕組みと、components prop で個々の要素をオーバーライドする方法。
 sidebar_position: 2.5
 category: Concepts
 ---
@@ -154,7 +154,7 @@ export default { h2: MyH2 };
 | `h2`–`h6`    | `id`（見出しリンクプラグインが有効で、その見出しに slug が付与されている場合に存在）、`children` |
 | `h1`          | `children` のみ — `h1` には slug は付与されない      |
 | `pre`         | `children`（`<code>` の子をラップする）              |
-| `code`        | `className="language-*"`（フェンス付きブロックのみ。インラインコードは `children` のみ受け取る） |
+| `code`        | `class="language-*"`（フェンス付きブロックのみ。インラインコードは `children` のみ受け取る） |
 | `ol`          | `start`（1 以外のときのみ）、`children`              |
 | その他すべて  | `children` のみ                                       |
 
@@ -173,14 +173,14 @@ export default { h2: MyH2 };
   if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
   ```
 
-  `.mdx` ファイルで参照されている PascalCase コンポーネントが、レンダリング時に `components` マップに存在しない場合、ビルド時ではなく実行時に throw します。これは意図的なものです。コンパイル済みモジュールはポータブルなまま保たれ、必要なコンポーネントをすべて渡す責任は呼び出し側にあります。
+  A PascalCase component referenced in an `.mdx` file that is not present in the `components` map at render time throws at runtime — not at build time. This is intentional: the compiled module stays portable; the caller is responsible for passing all required components.
 
-## Islands による制約
+## Islands constraint
 
-`components` マップは、SSR 時に解決されるプレーンな JavaScript オブジェクトです。値が関数参照であるため、JSON としてハイドレーション境界を越えられません。これは次のことを意味します。
+A `components` map is a plain JavaScript object resolved at SSR time. It cannot cross the hydration boundary as JSON, because the values are function references. This means:
 
-- マップ内のコンポーネントは**サーバーサイド専用**です。サーバー上でレンダリングされ、その HTML が静的なマークアップとしてブラウザに届けられます。
-- マップ内のコンポーネントがクライアントサイドのインタラクティブ性（状態、イベントハンドラ、ブラウザ API）を必要とする場合は、そのインタラクティブな部分を `<Island>` コンポーネントでラップし、インタラクティブなコンポーネントを直接マップに入れないでください。
+- Components in the map are **server-side only**. They render on the server and their HTML is delivered to the browser as static markup.
+- If a component in your map needs client-side interactivity (state, event handlers, browser APIs), wrap the interactive part in an `<Island>` component instead of putting the interactive component directly in the map.
 
 ```tsx
 // Correct: interactive content goes through Island
@@ -198,15 +198,15 @@ function WrappedCounter() {
 export default { div: WrappedCounter };
 ```
 
-`components` マップは SSR を通ります。`<Island>` はブラウザへ抜けるための脱出口です。
+The `components` map runs through SSR; `<Island>` is the escape hatch for the browser.
 
-## 保留中の未解決項目 — `wrapper`
+## Deferred open item — `wrapper`
 
-MDX は `components` マップ内の特別な `wrapper` キーをサポートしています。これはレンダリング結果全体をラップするコンポーネントです。zfb のエミッターは `wrapper` を認識しません。本文は直接 `<_Fragment>` でラップされ、`wrapper` キーに対するルックアップは行われません。`wrapper` のサポートは追跡中の未解決項目であり、現在のリリースでは実装されていません。
+MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
 
-## カスタムコンポーネントで `.mdx` を書く
+## Authoring `.mdx` with custom components
 
-同梱の `basic-blog` テンプレートが、エンドツーエンドの形を実演しています。その `hello-zfb.mdx` は、本文に直接 JSX として `<Tip>` admonition を書いています。
+The bundled `basic-blog` template demonstrates the end-to-end shape. Its `hello-zfb.mdx` post writes a `<Tip>` admonition as JSX directly in the body:
 
 ```mdx
 ---
@@ -216,7 +216,7 @@ description: What this starter contains and how the pieces fit together.
 ---
 
 Welcome to **basic-blog**. This is a working zfb site: a content collection,
-a handful of routes, one interactive island, and Tailwind for styling.
+a handful of routes, one interactive island, and a shared stylesheet.
 
 <Tip>
 
@@ -226,7 +226,7 @@ validate every post's frontmatter against the collection schema.
 </Tip>
 ```
 
-投稿ごとのルートには `<Tip>` を配線している箇所はありません。ルートが渡しているのは `defaultComponents` だけです。
+Nothing in the per-post route wires `<Tip>` up. The route passes `defaultComponents` and nothing else:
 
 ```tsx
 // pages/blog/[slug].tsx
@@ -242,7 +242,7 @@ export default function BlogPostPage({ post }: Props) {
 }
 ```
 
-admonition は、zfb がすべてのエントリにマージするプロジェクトルートの `mdx-components.tsx` から届きます。
+The admonitions arrive through the project-root `mdx-components.tsx`, which zfb merges into every entry:
 
 ```tsx
 // mdx-components.tsx (project root)
@@ -251,13 +251,13 @@ import { Note, Tip, Important, Warning, Caution } from "~/components/callout";
 export default { Note, Tip, Important, Warning, Caution };
 ```
 
-5 つの名前をルートごとではなくここに置いていることが、**素の `.md`** 記事でもこれらを使えるようにしています。テンプレートは `zfb.config.ts` で `markdown.features.githubAlerts` を有効にしているため、`> [!NOTE]` の引用ブロックはレンダリング前に `<Note>` 要素へ書き換えられます。そしてマップに存在しない PascalCase の名前は、レンダリング時に例外を投げます。ルートごとに配線する形にすると、記事をレンダリングするすべてのルートが 5 つすべてを覚えておかなければなりません。
+Putting the five names there rather than in each route is what makes them work in **plain `.md`** posts too. The template enables `markdown.features.githubAlerts` in its `zfb.config.ts`, so a `> [!NOTE]` blockquote is rewritten into a `<Note>` element before rendering — and a PascalCase name missing from the map throws at render time. Wiring them per route would mean every route that renders a post has to remember all five.
 
-コンポーネント自体は、ごく普通の Preact（または React）コンポーネントです。`components/callout.tsx` はベースとなるコンポーネント 1 つと、`children` だけを受け取る 5 つの名前付きラッパーをエクスポートします。
+The components themselves are ordinary synchronous zudo-react components. `components/callout.tsx` exports one base component plus five named wrappers, each taking only `children`:
 
 ```tsx
 // components/callout.tsx
-import type { ComponentChildren } from "preact";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
 type Variant = "note" | "tip" | "important" | "warning" | "caution";
 
@@ -269,7 +269,7 @@ const LABELS: Record<Variant, string> = {
   caution: "Caution",
 };
 
-export function Callout({ variant, children }: { variant: Variant; children: ComponentChildren }) {
+export function Callout({ variant, children }: { variant: Variant; children: Child }) {
   return (
     <aside data-component={variant} role="note">
       <p>{LABELS[variant]}</p>
@@ -278,7 +278,7 @@ export function Callout({ variant, children }: { variant: Variant; children: Com
   );
 }
 
-export function Note({ children }: { children: ComponentChildren }) {
+export function Note({ children }: { children: Child }) {
   return <Callout variant="note">{children}</Callout>;
 }
 

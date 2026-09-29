@@ -1,0 +1,419 @@
+---
+title: テキスト装飾
+description: 文字の装飾、大小文字、フォントスタイル、数字の形、平滑化を設定します。
+sidebar_position: 41
+generated: true
+---
+
+文字の装飾、大小文字、フォントスタイル、数字の形、平滑化を設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## line-through
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.line-through` |
+| クラスパターン | `line-through` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-line` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"line-through"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `line-through` | `text-decoration-line: line-through` |
+
+## no-underline
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.no-underline` |
+| クラスパターン | `no-underline` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-line` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `no-underline` | `text-decoration-line: none` |
+
+## overline
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.overline` |
+| クラスパターン | `overline` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-line` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"overline"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `overline` | `text-decoration-line: overline` |
+
+## underline
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.underline` |
+| クラスパターン | `underline` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-line` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"underline"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-line` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `underline` | `text-decoration-line: underline` |
+
+## capitalize
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.capitalize` |
+| クラスパターン | `capitalize` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-transform` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"capitalize"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `capitalize` | `text-transform: capitalize` |
+
+## lowercase
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.lowercase` |
+| クラスパターン | `lowercase` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-transform` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"lowercase"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `lowercase` | `text-transform: lowercase` |
+
+## normal-case
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.normal-case` |
+| クラスパターン | `normal-case` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-transform` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `normal-case` | `text-transform: none` |
+
+## uppercase
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.uppercase` |
+| クラスパターン | `uppercase` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-transform` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"uppercase"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-transform` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `uppercase` | `text-transform: uppercase` |
+
+## italic
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.italic` |
+| クラスパターン | `italic` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `font-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"italic"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `font-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `italic` | `font-style: italic` |
+
+## not-italic
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.not-italic` |
+| クラスパターン | `not-italic` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `font-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"normal"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `font-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `not-italic` | `font-style: normal` |
+
+## tabular-nums
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.tabular-nums` |
+| クラスパターン | `tabular-nums` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `3` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `font-variant-numeric` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"tabular-nums"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `font-variant-numeric` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `tabular-nums` | `font-variant-numeric: tabular-nums` |
+
+## antialiased
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.antialiased` |
+| クラスパターン | `antialiased` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-style` (`21`) |
+| 並び順の順位 | `4` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `-webkit-font-smoothing`, `-moz-osx-font-smoothing` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"antialiased"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `-webkit-font-smoothing` | `fixed` | `"antialiased"` |
+| `-moz-osx-font-smoothing` | `fixed` | `"grayscale"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `antialiased` | `-webkit-font-smoothing: antialiased`; `-moz-osx-font-smoothing: grayscale` |

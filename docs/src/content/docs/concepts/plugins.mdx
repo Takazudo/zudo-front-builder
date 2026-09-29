@@ -77,7 +77,7 @@ Plugin bundling invokes esbuild with `--target=node22`. As a consequence, `.ts` 
 
 ### JSX in `.tsx` plugin entries
 
-The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. With no tsconfig present, esbuild's default classic transform (`React.createElement`) applies. A `.tsx` plugin entry that needs a different JSX runtime must ship its own tsconfig declaring the JSX mode, or import a compatible factory explicitly.
+The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. With no tsconfig present, esbuild's default classic JSX transform applies. A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
 
 ### Bundling errors
 
@@ -91,7 +91,7 @@ The staged file is deleted automatically when the plugin host that created it sh
 
 <Note title="Existing projects: add the gitignore entry">
 
-New scaffolds ignore staged plugin bundles automatically. If your project predates this glob, add `**/.zfb-plugin-bundle-*.mjs` to your `.gitignore` — plugin sources can live at any depth, so the glob is not root-anchored (mirrors how the Tailwind entry-file glob is documented in [Styling — Where Tailwind looks](./styling.mdx#tailwind-v4-where-tailwind-looks)).
+New scaffolds ignore staged plugin bundles automatically. If your project predates this glob, add `**/.zfb-plugin-bundle-*.mjs` to your `.gitignore` — plugin sources can live at any depth, so the glob is not root-anchored. For the wind source-plan model, see [Styling — Source discovery](./styling.mdx#zudo-wind-source-discovery).
 
 </Note>
 

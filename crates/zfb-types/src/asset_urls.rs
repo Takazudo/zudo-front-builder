@@ -7,16 +7,14 @@
 //! a **shared-bundle** model exposed through the public
 //! [`ClientBundler::bundle`] trait that emits a single
 //! `dist/assets/islands.js` (stable name; previously suffixed with a
-//! content hash), and a **per-island** model on the concrete
+//! content hash), and an older **per-island** model on the concrete
 //! `EsbuildSubprocessBundler` that emits `dist/islands/<Component>.js`
 //! plus a `dist/islands/islands-runtime.js` shim. The Prod Asset Graph
 //! epic picks the **shared-bundle** model as the prod source of truth:
 //! `ProductionAssetPipeline` ships exactly one [`AssetEmitter`] per
 //! [`AssetKind`] (one CSS asset, one islands asset), and the
 //! shared-bundle output matches that 1:1 contract directly. The
-//! per-island path remains in the codebase for now (it has its own
-//! tests and a different runtime story), but it is **not** the path
-//! `zfb build` will wire through `ProductionAssetPipeline`. Per the
+//! per-island path has been removed. Per the
 //! single-source-of-truth-for-hashing rule, every emitter under
 //! `zfb-islands` writes a stable filename and lets
 //! `ProductionAssetPipeline::apply()` perform the hashing + HTML

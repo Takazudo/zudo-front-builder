@@ -4,18 +4,9 @@ description: zfb を Node.js / npm 不要のスタンドアロンバイナリと
 sidebar_position: 1
 ---
 
-zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも
-Node.js は不要です** — esbuild と Tailwind は `zfb` 実行ファイルの vendor snapshot に
-埋め込まれ、サブプロセスとして呼び出される前に runtime で展開されます。`zfb` の隣に
-別々の release-tarball バイナリとして同梱されるわけではありません。Node が必要になるのは
-一部の機能をオプトインで使う場合だけです（下記の「Node が依然として必要なケース」を参照）。
+zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも Node.js は不要です。** esbuild は `zfb` 実行ファイルの vendor snapshot に埋め込まれ、実行時に展開されてサブプロセスとして呼び出されます。zudo-wind は zfb バイナリ自体にコンパイルされており、別の CSS エンジンプロセスを起動しません。どちらも `zfb` の隣に別の release tarball バイナリとして配布されません。Node が必要なのは一部の機能をオプトインで使う場合だけです（下記の [Node が依然として必要なケース](#node-が依然として必要なケース) を参照してください）。
 
-Node なしの経路でもコンテンツサイト向けの全機能が利用できます。Markdown・MDX・
-HTML ページ、**さらに islands** まで対応します — esbuild と Tailwind は `zfb` によって展開された
-ネイティブバイナリとして動作するため、クライアントサイドの
-ハイドレーションも CSS 処理も Node を一切介さずに動きます。npm を使うプロジェクトにとって
-組み込みの Tailwind が何を意味するかについては、
-[Tailwind は zfb に組み込まれている](../concepts/styling.mdx#tailwind-v4-tailwind-は-zfb-に組み込まれている) を参照してください。
+Node なしでも、コンテンツサイト向けの Markdown、MDX、HTML ページ、**islands** を利用できます。esbuild は zfb が展開するネイティブバイナリとして動作し、zudo-wind はバイナリ自身の一部です。クライアントサイドのハイドレーションと CSS 処理にも Node は不要です。CSS エンジンと手書き CSS の契約は [スタイリング](../concepts/styling.mdx#zudo-wind-zfb-に組み込まれたエンジン) を参照してください。
 
 ## サポートされているプラットフォーム
 
@@ -147,7 +138,6 @@ Node 専用 API は評価器内では利用できません。TypeScript の型�
 ```jsonc
 // zfb.config.json — こちらも Node なしで動作します
 {
-  "framework": "preact",
   "outDir": "dist",
   "collections": [
     {
@@ -171,7 +161,7 @@ Node 専用 API は評価器内では利用できません。TypeScript の型�
 | `--skip-tsc` なしの `zfb check` | TypeScript の型チェックは Node パッケージである `tsc` に委譲されます。TS 以外のチェックだけを実行するには `--skip-tsc` を指定してください。 |
 | Cloudflare アダプタ（`@takazudo/zfb-adapter-cloudflare`） | アダプタは Node CLI である Wrangler に依存します。Cloudflare Workers への SSR デプロイでは、デプロイ環境に常に Node が必要です。 |
 
-それ以外 — ビルド、開発サーバー、islands、Tailwind、MDX、コンテンツコレクション、
+それ以外 — ビルド、開発サーバー、islands、zudo-wind、MDX、コンテンツコレクション、
 `zfb.config.ts` の評価 — はすべて Node なしで動作します。
 
 ## zfb のアップグレード

@@ -20,10 +20,7 @@ fn node_available() -> bool {
 }
 
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn run_zfb_build(root: &Path, esbuild: &Path, extra_args: &[&str]) -> std::process::Output {
@@ -57,7 +54,6 @@ fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
   "base": "/site/",
   "minifyHtml": true,
   "plugins": [{ "name": "./postbuild-observer.mjs" }]
@@ -90,20 +86,28 @@ export default {
     .unwrap();
 
     fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("components/Counter.tsx"),
+        "'use client';\nexport function Counter() { return <span>Counter</span>; }\n",
+    )
+    .unwrap();
     fs::write(
         root.join("pages/index.tsx"),
-        r#"export default function Page() {
+        r#"import { Island } from "@takazudo/zfb";
+import { Counter } from "../components/Counter";
+export default function Page() {
   const html = `
   <section class="hero">
     <!-- keep comment -->
     <p>  Hello    world  </p>
-    <a href="/about" data-zfb-island="Counter">About</a>
+    <a href="/about" data-test-marker="kept">About</a>
   </section>
 `;
   return (
     <html lang="en">
       <head><title>HTML minify fixture</title></head>
-      <body dangerouslySetInnerHTML={{ __html: html }} />
+      <body><div rawHtml={html} /><Island><Counter /></Island></body>
     </html>
   );
 }

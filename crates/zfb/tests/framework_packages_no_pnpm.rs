@@ -1,10 +1,8 @@
-//! Sub #209 — Framework-packages no-pnpm integration test.
+//! Embedded-runtime no-pnpm integration test.
 //!
 //! Verifies that a consumer with NO `node_modules/` directory and NO `pnpm
-//! install` can still bundle a page that imports `preact`,
-//! `preact-render-to-string`, and `hono` — because the embedded extraction
-//! produced by [`zfb::render_pipeline::embedded_node_modules`] supplies all
-//! three.
+//! install` can still bundle the owned runtime and Hono from the embedded
+//! extraction produced by [`zfb::render_pipeline::embedded_node_modules`].
 //!
 //! ## Why this lives in `crates/zfb/tests/`
 //!
@@ -17,16 +15,11 @@
 //!
 //! ## What the assertion proves
 //!
-//! 1. The build script (`crates/zfb/build.rs::embed_framework_packages`)
-//!    successfully copied the three framework packages into the embedded
-//!    vendor tree.
-//! 2. The runtime extraction (`embedded_node_modules`) lays the packages out
-//!    as proper `node_modules/<pkg>/package.json` siblings esbuild can
-//!    resolve.
-//! 3. esbuild's bundler can resolve and bundle imports of `preact`,
-//!    `preact-render-to-string`, and `hono` against the extracted tree —
-//!    nothing is marked external, and there is no consumer `node_modules/`
-//!    on disk.
+//! 1. The build script embeds the owned `@takazudo/zfb` source and Hono.
+//! 2. The runtime extraction lays them out as `node_modules/<pkg>/` entries
+//!    that esbuild can resolve.
+//! 3. esbuild can bundle the owned runtime and Hono with nothing marked
+//!    external and no consumer `node_modules/` on disk.
 //!
 //! ## Skipping
 //!
@@ -41,7 +34,6 @@ use std::process::Command;
 
 use zfb::render_pipeline::embedded_node_modules;
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 #[path = "../src/embedded_node_modules_cache.rs"]
@@ -54,7 +46,53 @@ const WORKER_RESULT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_RESULT";
 const WORKER_PROJECT_PARENT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_PROJECT_PARENT";
 
 #[test]
-fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules() {
+fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[framework_packages_no_pnpm] no esbuild binary available; skipping owned subpaths"
+        );
+        return;
+    };
+    let project = tempfile::tempdir().unwrap();
+    let (lease, embedded) = embedded_node_modules().expect("extract embedded packages");
+    let source = r#"
+      import * as core from "@takazudo/zfb/zudo-react";
+      import * as jsx from "@takazudo/zfb/zudo-react/jsx-runtime";
+      import * as dev from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+      import * as server from "@takazudo/zfb/zudo-react/server";
+      import * as client from "@takazudo/zfb/zudo-react/client";
+      export const resolved = [core, jsx, dev, server, client];
+      export const transformed = <div>owned JSX</div>;
+    "#;
+    fs::write(project.path().join("entry.tsx"), source).unwrap();
+    for (mode, flags) in [
+        ("ssr", "--platform=neutral"),
+        ("islands", "--platform=browser"),
+    ] {
+        let output = Command::new(&esbuild)
+            .current_dir(project.path())
+            .env("NODE_PATH", &embedded)
+            .arg("entry.tsx")
+            .arg("--bundle")
+            .arg(flags)
+            .arg("--format=esm")
+            .arg("--jsx=automatic")
+            .arg("--jsx-import-source=@takazudo/zfb/zudo-react")
+            .arg("--outfile=out.js")
+            .output()
+            .expect("run esbuild");
+        assert!(
+            output.status.success(),
+            "{mode} embedded resolution failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(project.path().join("out.js").exists());
+    }
+    drop(lease);
+}
+
+#[test]
+fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_modules() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[framework_packages_no_pnpm] no esbuild binary available; \
@@ -66,10 +104,8 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     };
 
     // Step 1 — synthesize a minimal consumer project on disk with NO
-    // node_modules/ tree at all. The page imports `preact`,
-    // `preact-render-to-string`, and `hono` directly so esbuild MUST resolve
-    // them somewhere — and the only "somewhere" available is the embedded
-    // extraction we wire in below.
+    // node_modules/ tree at all. The page imports the owned runtime and Hono
+    // directly so esbuild MUST resolve them from the embedded extraction.
     let project = match std::env::var_os(WORKER_PROJECT_PARENT_ENV) {
         Some(parent) => tempfile::Builder::new()
             .prefix("project-")
@@ -89,28 +125,18 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
 
     fs::write(
         root.join("pages/index.tsx"),
-        // Touch every package the embedded extraction provides so the test
-        // fails if any one of them goes missing from the vendor tree.
-        // - `preact` (top-level): the `h` JSX runtime entry.
-        // - `preact-render-to-string` (top-level): the `renderToString` SSR
-        //   entry — the page reaches into it directly so esbuild has to
-        //   resolve `preact-render-to-string`'s `dist/` against the embedded
-        //   extraction.
-        // - `hono`: the consumer rarely imports hono directly, but pulling
-        //   it in here forces esbuild to resolve it from the same extraction
-        //   tree (it is a transitive dep of `@takazudo/zfb-runtime` in
-        //   the real consumer flow; importing it directly removes any
-        //   indirection from the test).
+        // Import the owned JSX runtime and SSR entry plus Hono. This makes
+        // esbuild resolve both embedded package roots directly.
         r#"
-            import { h } from "preact";
-            import { renderToString } from "preact-render-to-string";
+            import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
+            import { renderToString } from "@takazudo/zfb/zudo-react/server";
             import { Hono } from "hono";
 
             const app = new Hono();
             app.get("/", (c) => c.text("hello"));
 
             export default function Home() {
-              const tree = h("div", null, "hello world");
+              const tree = jsx("div", { children: "hello world" });
               return renderToString(tree) + " / app=" + (typeof app);
             }
         "#,
@@ -118,11 +144,8 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     .unwrap();
 
     // Step 2 — extract the embedded vendor tree into a fresh tempdir and
-    // confirm every framework package's `package.json` is present at the
-    // expected path. (The `embedded_node_modules` smoke test in the unit
-    // tests covers this too; we re-assert here so a failure points the
-    // operator at this file's exact import set rather than at a generic
-    // unit-test layout assertion.)
+    // confirm the owned package manifest and Hono's manifest are present at
+    // the expected paths. This ties failures to the smoke's import set.
     let nm_lease = embedded_node_modules_cache::acquire_embedded_node_modules_if_enabled(
         &root,
         &EMBEDDED_VENDOR,
@@ -130,7 +153,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     )
     .expect("embedded node_modules lease must succeed");
     let nm_path = nm_lease.node_modules().to_path_buf();
-    for pkg in ["preact", "preact-render-to-string", "hono"] {
+    for pkg in ["@takazudo/zfb", "hono"] {
         let pkg_json = nm_path.join(pkg).join("package.json");
         assert!(
             pkg_json.exists(),
@@ -155,7 +178,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
@@ -194,14 +217,14 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     };
 
     let out = bundle(input).expect(
-        "bundle must succeed against the embedded framework-packages extraction \
+        "bundle must succeed against the embedded runtime extraction \
          with no consumer-side node_modules — \
-         if it fails, check crates/zfb/build.rs::embed_framework_packages and \
+         if it fails, check crates/zfb/build.rs and \
          the embedded extraction in render_pipeline.rs",
     );
 
     // The bundle file must exist and must contain at least a hint of every
-    // framework module's runtime code, proving that esbuild really did
+    // imported package's runtime code, proving that esbuild really did
     // pull each module in from the embedded extraction (rather than, say,
     // tree-shaking everything away). We check for a couple of distinctive
     // identifiers from each module instead of insisting on exact strings —
@@ -212,7 +235,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
 
     assert!(
         body.contains("renderToString") || body.contains("render_to_string"),
-        "bundle should contain preact-render-to-string entry; \
+        "bundle should contain the owned renderToString entry; \
          excerpt: {}",
         &body[..body.len().min(800)]
     );
@@ -349,7 +372,7 @@ fn run_framework_worker(
     let mut command = Command::new(std::env::current_exe().expect("current test executable"));
     command
         .arg("--exact")
-        .arg("embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules")
+        .arg("embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_modules")
         .arg("--nocapture")
         .env(WORKER_RESULT_ENV, result_path)
         .env(WORKER_PROJECT_PARENT_ENV, project_parent)

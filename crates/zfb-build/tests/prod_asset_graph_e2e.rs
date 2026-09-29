@@ -24,18 +24,16 @@
 //! ## Subprocess vs. in-process
 //!
 //! Subprocess (`cargo run --bin zfb -- build`) is the most authentic
-//! e2e shape but compounds Rust + esbuild + node + embedded-V8 +
-//! Tailwind cost into a single test, which busts the ~30s budget for
+//! e2e shape but compounds Rust + esbuild + node + embedded-V8
+//! cost into a single test, which busts the ~30s budget for
 //! the day-to-day `cargo test` loop. We instead drive the
 //! orchestration entry point directly:
 //!
 //! - The **real** `CssPipeline::build_emitter` path runs (the orphan
 //!   bug ships from this exact slot when it is not invoked from the
-//!   build command). The Tailwind subprocess is mocked via
-//!   `TailwindSubprocessConfig::with_mock_output` so the test does
-//!   not need the v4 binary on disk; the synthesised entry CSS,
-//!   CSS-Modules processing, hashing, and bytes assembly are still
-//!   real code paths.
+//!   build command). `StubCssEngine` supplies canned CSS without
+//!   needing an external engine; CSS Modules processing, hashing, and bytes
+//!   assembly are still real code paths.
 //! - The renderer is **simulated** by writing HTML files that match
 //!   the byte shape `render_all` would produce when handed
 //!   `prod_head_assets: Some(...)` — i.e. a `<link>` and `<script>`
@@ -46,9 +44,7 @@
 //!   hashing, the URL rewrite contract, atomic writes, the
 //!   disk-existence post-condition.
 //!
-//! The gated `#[ignore]` test invokes the real Tailwind binary when
-//! the staged slot is populated, mirroring the existing pattern in
-//! `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`.
+//! A second test invokes the real wind engine in process.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,8 +57,8 @@ use zfb_build::pipeline::{
     ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_css::{
-    css_relative_path, scan_css_urls, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    bundle_authored_css_with_assets, css_relative_path, extract_candidates, scan_css_urls,
+    CssPipeline, CssPipelineConfig, SourceKind, StubCssEngine, WindConfig, WindEngine,
 };
 use zfb_types::{
     DIST_ASSETS_DIR, STABLE_CSS_FILENAME, STABLE_CSS_URL, STABLE_ISLANDS_FILENAME,
@@ -87,7 +83,7 @@ struct StagedFixture {
 /// Stage a tiny self-contained project under a tempdir. A real
 /// bundled-basic-blog-template project would also work but pulls in the full
 /// content/MDX surface (slow, and noisy for the purpose of this
-/// test); a minimal page with a Tailwind utility class is enough to
+/// test); a minimal page with a wind utility class is enough to
 /// drive `CssPipeline::build_emitter` through every stage.
 fn stage_minimal_fixture() -> StagedFixture {
     let project_root = tempfile::Builder::new()
@@ -99,19 +95,15 @@ fn stage_minimal_fixture() -> StagedFixture {
     fs::create_dir_all(&pages_dir).unwrap();
     fs::write(
         pages_dir.join("index.tsx"),
-        // The synthesised entry CSS feeds Tailwind v4 which scans this
-        // file for utility classes via `@source` directives. The class
-        // names are inert under `mock_subprocess` (the engine returns
-        // canned bytes), but the scan path still touches the file —
-        // exercising the real `discover_css_source_files` walk in the
-        // wider integration.
-        "export default function Home() {\n  return <div className=\"text-red-500 p-4\">hello</div>;\n}\n",
+        // The real-engine test extracts this page's utility candidate.
+        // The stub-engine tests use canned bytes from the same fixture.
+        "export default function Home() {\n  return <div className=\"bg-accent\">hello</div>;\n}\n",
     )
     .unwrap();
     fs::create_dir_all(root.join("styles")).unwrap();
     fs::write(
         root.join("styles/global.css"),
-        "/* global stylesheet — Tailwind v4 entry */\n@import \"tailwindcss\";\n",
+        "/* authored stylesheet for the wind fixture */\n",
     )
     .unwrap();
 
@@ -122,29 +114,15 @@ fn stage_minimal_fixture() -> StagedFixture {
 }
 
 /// Construct the same `CssPipeline` shape `zfb`'s `DefaultRunner`
-/// builds, except the subprocess is mocked. The mock output is a
+/// builds, except the engine output is canned. The output is a
 /// recognisable snippet (the `body{font-family:system-ui}` rule) so
 /// the test can later assert hashed bytes match.
 fn mock_css_pipeline(
     project_root: &Path,
     outdir: &Path,
     mock_css: &str,
-) -> CssPipeline<TailwindSubprocessEngine> {
-    // Match the bin's `build_default_css_payload` shape: globs rooted
-    // at the project, optional `styles/global.css` as input.
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
-        .iter()
-        .map(|root| project_root.join(root).to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let mut tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs)
-        .with_mock_output(mock_css.to_string());
-    let global_css = project_root.join("styles").join("global.css");
-    if global_css.is_file() {
-        tw_cfg = tw_cfg.with_input_css(global_css);
-    }
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
+) -> CssPipeline<StubCssEngine> {
+    let engine = StubCssEngine::new(mock_css);
     let pipe_cfg = CssPipelineConfig {
         sources: discover_css_source_files(project_root),
         class_map_dir: None,
@@ -252,7 +230,7 @@ fn first_module_script_src(html: &str) -> Option<String> {
 /// (name + version only — the minimum `package_identity` needs), one
 /// CSS file under the package root, and any additional package-local
 /// files (path relative to the package root -> bytes). Used to drive
-/// the real-Tailwind package `url()` rebase scenario (issue #2311)
+/// the real-wind package `url()` rebase scenario (issue #2311)
 /// through the SAME entry point (`CssPipeline::build_emitter`) the
 /// happy-path test above exercises, rather than unit-testing
 /// `zfb_css::url_attribution` in isolation.
@@ -281,10 +259,8 @@ fn stage_node_modules_package(
 }
 
 /// Append an `@import` line for a staged `node_modules` package to the
-/// fixture's `styles/global.css`, after the existing `@import
-/// "tailwindcss";` entry point line — mirroring the reporting issue's
-/// exact repro shape (`@import "@fontsource-variable/noto-sans/index.css";`
-/// placed right after the Tailwind import).
+/// fixture's `styles/global.css`, mirroring the reporting issue's package
+/// stylesheet import shape.
 fn append_package_import(project_root: &Path, pkg_name: &str, css_filename: &str) {
     let global_css = project_root.join("styles").join("global.css");
     let mut css = fs::read_to_string(&global_css).unwrap();
@@ -292,35 +268,38 @@ fn append_package_import(project_root: &Path, pkg_name: &str, css_filename: &str
     fs::write(&global_css, css).unwrap();
 }
 
-/// Build a `CssPipeline` driving the REAL (non-mocked) Tailwind v4
-/// subprocess against `project_root`, writing into `dist_dir`. Shared by
-/// every `#[ignore]`d real-binary scenario below so the subprocess
-/// wiring (working dir, content globs, `styles/global.css` as input)
-/// stays identical across the happy path, the package `url()` rebase
-/// case, and the negative case.
-fn build_real_tailwind_pipeline(
+/// Build a `CssPipeline` with the real in-process wind engine and bundled
+/// authored CSS. All three scenarios use this fixture path.
+fn build_real_wind_pipeline(
     project_root: &Path,
     dist_dir: &Path,
-) -> CssPipeline<TailwindSubprocessEngine> {
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
+) -> anyhow::Result<CssPipeline<WindEngine>> {
+    let sources = discover_css_source_files(project_root);
+    let candidates = sources
         .iter()
-        .map(|root| project_root.join(root).to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let mut tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs);
+        .flat_map(|source| {
+            extract_candidates(&fs::read(source).unwrap(), SourceKind::Tsx)
+                .candidates
+                .into_iter()
+                .map(|candidate| candidate.text)
+        })
+        .collect();
+    let mut wind_config = WindConfig::default();
+    wind_config
+        .tokens
+        .colors
+        .insert("accent".into(), "#b34a62".into());
     let global_css = project_root.join("styles").join("global.css");
-    if global_css.is_file() {
-        tw_cfg = tw_cfg.with_input_css(global_css);
-    }
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
+    let authored_css = fs::read_to_string(&global_css)?;
+    let authored = bundle_authored_css_with_assets(&global_css, project_root, &authored_css)?;
+    let engine = WindEngine::new(wind_config, candidates, authored);
     let pipe_cfg = CssPipelineConfig {
-        sources: discover_css_source_files(project_root),
+        sources,
         class_map_dir: None,
         output_root: dist_dir.to_path_buf(),
         ..CssPipelineConfig::default()
     };
-    CssPipeline::new(engine, pipe_cfg)
+    Ok(CssPipeline::new(engine, pipe_cfg))
 }
 
 /// Map a `/assets/styles-<hash>.css` style URL to the on-disk path
@@ -824,10 +803,10 @@ fn dev_mode_renderer_path_does_not_inject_head_assets() {
 /// constant rather than running esbuild end-to-end. The full
 /// fixture-based marker check (load a real built bundle, grep for
 /// `@import "tailwindcss"`) lives in
-/// `prod_asset_graph_with_real_tailwind_binary_against_fixture`,
+/// `prod_asset_graph_with_real_wind_engine_against_fixture`,
 /// gated under `#[ignore]` until the binary slot is staged.
 #[test]
-fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
+fn worker_bundle_does_not_inline_legacy_css_marker_after_s5() {
     use zfb_build::bundler::ESBUILD_LOADER_ARGS;
 
     assert!(
@@ -848,69 +827,32 @@ fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
 }
 
 // ---------------------------------------------------------------------------
-// Gated — real Tailwind binary
+// Real wind engine through the production asset pipeline
 // ---------------------------------------------------------------------------
 
-/// Real Tailwind v4 subprocess against the same minimal fixture. Mirrors
-/// the existing `#[ignore]` gate in
-/// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`.
-/// `crates/zfb/build.rs` downloads + stages the pinned tailwindcss-v4
-/// binary at `crates/zfb/binaries/tailwindcss-v4` as a side effect of
-/// building the `zfb` crate (same mechanism as the esbuild slot), so the
-/// binary IS present in CI once `cargo build --workspace --all-targets`
-/// has run — but no CI step currently passes `--ignored`/`--include-ignored`
-/// to actually run this test, so it stays env-gated. Run locally with
-/// `cargo test -- --include-ignored` (binary already staged by a prior
-/// build) or set `ZFB_TAILWIND_BIN` explicitly.
+/// Exercises the real wind compiler in process, then production hashing and
+/// HTML URL rewriting over the same fixture. The configured accent token
+/// produces `--zw-color-accent`, proving that the wind engine ran.
 ///
-/// When it runs, the assertions are exactly the happy-path test's
-/// assertions: hashed CSS on disk, HTML rewritten to the hashed URL,
-/// disk-existence holds, no unhashed leak.
-///
-/// ## Package `url()` rebase (issue #2318 — Confirm the repro end to end)
-///
-/// This test also owns the heavy-verification confirm pass for epic #2311
-/// (CSS Import URL Rebase — scanner #2314, attribution + hard-error floor
-/// #2315, emission + rewrite #2316). Two additional scenarios run after the
-/// original happy-path assertions, against fresh fixtures built from the
-/// SAME `stage_minimal_fixture` + `build_real_tailwind_pipeline` entry point
-/// so the confirm exercises the real orchestrator wiring, not
-/// `zfb_css::url_attribution` in isolation (that crate's own unit tests
-/// already cover the byte-level splice logic):
-///
-/// 1. `real_tailwind_binary_rebases_package_url_references_into_companions`:
-///    the reporting issue's shape — a `node_modules` stylesheet with
-///    relative `url()` references reachable only through Tailwind's own
-///    `@import` inlining. Asserts the emitted companions land on disk beside
-///    the hashed CSS, content-hashed and flat, and every `url()` byte span
-///    left in the final hashed CSS resolves to one of them.
-/// 2. `real_tailwind_binary_rejects_package_url_referencing_missing_file`:
-///    the negative case from the locked decisions in #2313 — a package
-///    stylesheet whose `url()` target does not exist on disk fails
-///    `build_emitter()` with the exact "cannot emit" error template,
-///    naming the package, stylesheet, reference, and reason.
-///
-/// Deliberately kept as scenarios inside this single `#[ignore]`d test
-/// rather than new `#[test]` functions in this file — per `crates/CLAUDE.md`
-/// (the manifest is keyed by path + test fn name), adding a new ignored fn
-/// would need a new manifest row and exam.yml filterset entry for no
-/// coverage benefit this env-gated binary doesn't already provide.
+/// The second scenario imports package CSS with two relative `url()` assets,
+/// then checks that both companions land beside the hashed stylesheet and
+/// every rewritten URL resolves to one of them. The third scenario preserves
+/// the missing package asset error template, including package, stylesheet,
+/// original reference, and resolved path.
 #[test]
-#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-build --test \
-            prod_asset_graph_e2e -- --include-ignored (ZFB_TAILWIND_BIN or the \
-            staged crates/zfb/binaries/tailwindcss-v4 slot)"]
-fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
+fn prod_asset_graph_with_real_wind_engine_against_fixture() {
     let fixture = stage_minimal_fixture();
     let dist_dir = fixture.project_root.path().join("dist");
     fs::create_dir_all(&dist_dir).unwrap();
 
-    // Build a real (non-mocked) TailwindSubprocessEngine. Honours
-    // ZFB_TAILWIND_BIN if set, else falls back to the workspace slot.
-    let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
+    // Build a real in-process WindEngine with explicit source candidates.
+    let pipeline = build_real_wind_pipeline(fixture.project_root.path(), &dist_dir)
+        .expect("construct wind pipeline");
     let emitter_out = pipeline
         .build_emitter()
-        .expect("real TailwindSubprocessEngine must produce CSS bytes");
+        .expect("real WindEngine must produce CSS bytes");
     assert!(!emitter_out.bytes.is_empty());
+    assert!(String::from_utf8_lossy(&emitter_out.bytes).contains("--zw-color-accent"));
     assert!(
         emitter_out.companions.is_empty(),
         "the plain fixture has no package url() references; companions must stay empty: {:?}",
@@ -924,7 +866,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
     let pages = vec![stage_html_with_head_inject(
         &dist_dir,
         "index.html",
-        "Home (real tailwind)",
+        "Home (real wind)",
         &head_assets,
     )];
 
@@ -947,16 +889,16 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
     let href = first_stylesheet_href(&html).expect("stylesheet href after rewrite");
     assert!(
         href.starts_with("/assets/") && href.contains("styles-") && href.ends_with(".css"),
-        "real-binary path produced a non-hashed href: {href}",
+        "real-engine path produced a non-hashed href: {href}",
     );
     assert!(
         url_to_disk_path(&dist_dir, &href).is_file(),
-        "static-fallback contract violated under real Tailwind binary",
+        "static-fallback contract violated under real wind engine",
     );
     assert!(!html.contains(&format!("\"{STABLE_CSS_URL}\"")));
 
     // -----------------------------------------------------------------
-    // Scenario: real Tailwind rebases package url() references (#2318).
+    // Scenario: real wind rebases package url() references (#2318).
     // -----------------------------------------------------------------
     {
         let fixture = stage_minimal_fixture();
@@ -966,7 +908,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         // A node_modules package shipping two relative url() references —
         // the same shape as the reporting issue's fontsource repro
         // (`@import`ed from `styles/global.css`, referenced only through
-        // Tailwind's own inlining, never authored by the project).
+        // wind's own inlining, never authored by the project).
         stage_node_modules_package(
             fixture.project_root.path(),
             "@acme/icons",
@@ -980,11 +922,13 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         );
         append_package_import(fixture.project_root.path(), "@acme/icons", "icons.css");
 
-        let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
+        let pipeline = build_real_wind_pipeline(fixture.project_root.path(), &dist_dir)
+            .expect("construct wind pipeline");
         let emitter_out = pipeline
             .build_emitter()
-            .expect("real tailwind must resolve and emit package url() companions");
+            .expect("real wind must resolve and emit package url() companions");
 
+        assert!(String::from_utf8_lossy(&emitter_out.bytes).contains("--zw-color-accent"));
         assert_eq!(
             emitter_out.companions.len(),
             2,
@@ -1052,7 +996,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         let pages = vec![stage_html_with_head_inject(
             &dist_dir,
             "index.html",
-            "Icons (real tailwind)",
+            "Icons (real wind)",
             &head_assets,
         )];
         let inputs = ProdAssetEmitterInputs {
@@ -1109,7 +1053,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
     }
 
     // -----------------------------------------------------------------
-    // Scenario: real Tailwind + a package url() target that does not
+    // Scenario: real wind + a package url() target that does not
     // exist on disk must fail the build with the locked error template
     // (#2318's negative case, decisions locked in #2313).
     // -----------------------------------------------------------------
@@ -1149,10 +1093,12 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
             .unwrap()
             .join("./nope/does-not-exist.png");
 
-        let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
-        let err = pipeline
-            .build_emitter()
-            .expect_err("a package url() referencing a missing file must fail the build");
+        let err = match build_real_wind_pipeline(fixture.project_root.path(), &dist_dir) {
+            Ok(pipeline) => pipeline
+                .build_emitter()
+                .expect_err("a package url() referencing a missing file must fail the build"),
+            Err(error) => error,
+        };
         // `build_emitter()` wraps the raw attribution error in
         // `.context("CSS engine stage failed")` — the locked template text
         // is the wrapped SOURCE, which only Debug's cause-chain rendering

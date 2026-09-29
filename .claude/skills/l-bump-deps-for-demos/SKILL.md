@@ -33,7 +33,8 @@ and wait for the user before the first push.
 - Operates **only** on the demo repos under `../../zfb-ex/*`. Never touches this
   (`zfb`) repo's own packages or version.
 - Bumps **only** `@takazudo/*`-scoped dependencies (in both `dependencies` and
-  `devDependencies`). Other deps (wrangler, tailwindcss, …) are left untouched.
+  `devDependencies`). Other demo-specific build and runtime dependencies are
+  left untouched.
 - Pushes to a demo's `main` **only after** its build verifies green. A bump that
   breaks the build never lands on `main` — it goes to a PR instead (see Step 6).
 - This repo's worktree-push policy does **not** apply to the demo repos — they
@@ -173,7 +174,9 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install 2>&1 | tail -8
   package itself declares (e.g. next.56 added an **optional** `react` peer:
   `react: ^19.2.3` with `peerDependenciesMeta.react.optional: true`). That flows
   from the package, not from repo churn, and is harmless for the Preact demos
-  (react stays uninstalled). Do **not** treat it as drift. Only surface
+  pinned to the 2.x package line (react stays uninstalled). The optional peer
+  remains part of that 2.x compatibility contract; the next major removes it.
+  Do **not** treat it as drift. Only surface
   genuinely unrelated changes (an unrelated dep version moving, structural
   reshuffles not tied to the `@takazudo/*` bump).
 

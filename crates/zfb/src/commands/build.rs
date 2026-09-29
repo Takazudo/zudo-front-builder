@@ -61,10 +61,7 @@ use zfb_build::pipeline::{
     AssetEmitterPayload, CompanionFile, ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
-use zfb_css::{
-    css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine,
-    TailwindSubprocessConfig, TailwindSubprocessEngine,
-};
+use zfb_css::{css_relative_path, AuthoredCssEngine, CssEngine};
 #[cfg(test)]
 use zfb_islands::scan_islands_with_meta;
 use zfb_islands::{
@@ -72,7 +69,7 @@ use zfb_islands::{
     discover_client_scripts, scan_islands_with_meta_and_first_party_root,
     scan_reachable_modules_with_meta, scan_reachable_modules_with_meta_and_first_party_root,
     BundleConfig, ClientScriptBundleOutput, ClientScriptEntry, ClientScriptWorkerEntry,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, StageAuditPolicy,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -82,7 +79,9 @@ use crate::cli::{
     BuildArgs, BuildEmitRenderArtifacts, BuildMinifyHtml, BuildStrictBrokenLinks,
     BuildStrictContentBridge, BuildStrictPlainCssImports,
 };
-use crate::commands::css_support::{resolve_framework_css, role_classes_inline_sources};
+use crate::commands::css_support::resolve_framework_css;
+#[cfg(test)]
+use crate::commands::css_support::role_classes_inline_sources;
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
@@ -400,10 +399,14 @@ fn build_phase_start(enabled: bool) -> Option<Instant> {
 fn emit_build_phase_timing(phase: &str, started: Option<Instant>) {
     if let Some(started) = started {
         eprintln!(
-            "[zfb-build-timing] phase={phase} elapsed_ms={}",
-            started.elapsed().as_millis()
+            "{}",
+            format_build_phase_timing_line(phase, started.elapsed().as_millis())
         );
     }
+}
+
+fn format_build_phase_timing_line(phase: &str, elapsed_ms: u128) -> String {
+    format!("[zfb-build-timing] phase={phase} elapsed_ms={elapsed_ms}")
 }
 
 /// V8-off stub for `zfb build` (issue #371, sub-task 4.1a).
@@ -741,11 +744,11 @@ trait BuildRunner {
     /// - [`DefaultRunner`] — runs `CssPipeline::build_emitter` and
     ///   `build_production_islands_asset` eagerly so head injection
     ///   knows which stable URLs are backed by bytes. Returns `None`
-    ///   for any slot the project does not exercise (e.g. Tailwind
+    ///   for any slot the project does not exercise (e.g. utility CSS
     ///   disabled, no `"use client"` components).
     /// - `FakeRunner` (test-only) — returns whatever bytes the test
     ///   set up so the rewrite path can be exercised without running
-    ///   Tailwind / esbuild subprocesses.
+    ///   wind compilation or spawning esbuild.
     ///
     /// Returns both the bytes-only emitter inputs (CSS / islands / client
     /// scripts) **and** the set of registered island marker names collected by
@@ -928,23 +931,32 @@ impl BuildRunner for DefaultRunner {
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
         // bytes. Either slot independently returns `None` when the
-        // project doesn't exercise it (Tailwind disabled, no
+        // project doesn't exercise it (wind disabled, no
         // `"use client"` components, etc.).
-        let css = build_default_css_payload(
+        let css_started = build_phase_start(build_timing_enabled());
+        let css_pass = build_default_css_payload_with_details(
             project_root,
             outdir,
             config,
             package_route_entrypoints,
             &self.islands_plugin_config.alias_entries,
             &self.islands_plugin_config.virtual_modules,
+            &|_roots| {},
         )
         .context("CSS emitter (DefaultRunner) failed")?;
+        emit_build_phase_timing("css", css_started);
+        for diagnostic in &css_pass.diagnostics {
+            if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+                output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+            }
+        }
+        let _css_input_dependencies = &css_pass.input_dependencies;
+        let css = css_pass.payload;
         let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
             project_root,
             user_pages_dir,
             package_route_entrypoints,
             outdir,
-            config.framework,
             config.bundle.as_ref(),
             zfb_islands::BundleMode::Production,
             &self.islands_plugin_config,
@@ -955,7 +967,6 @@ impl BuildRunner for DefaultRunner {
         let client_scripts = build_default_client_scripts_payloads_with_plugin_config(
             project_root,
             outdir,
-            config.framework,
             &self.registered_client_entries,
             config.bundle.as_ref(),
             &self.islands_plugin_config,
@@ -976,8 +987,8 @@ impl BuildRunner for DefaultRunner {
 
 /// Observer invoked with the CSS source-plan seam's computed sibling
 /// mirror roots (issue #1802, epic #1799 gap (a)) as soon as they are
-/// known — BEFORE the Tailwind subprocess runs and regardless of whether
-/// that subprocess later succeeds or fails. This is the seam the dev-watch
+/// known — BEFORE CSS compilation runs and regardless of whether
+/// compilation later succeeds or fails. This is the seam the dev-watch
 /// registration hooks into: a failed boot CSS build must still register
 /// sibling watches, or there is no filesystem event through which recovery
 /// could ever trigger. See
@@ -1001,6 +1012,7 @@ pub(crate) fn css_sibling_mirror_skip_dir_names() -> &'static [&'static str] {
 /// site (unit tests, `DefaultRunner::emit_prod_assets`) that has no use for
 /// the CSS source-plan seam (issue #1802) — byte-identical to the
 /// pre-#1802 behaviour, with a no-op observer.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
@@ -1020,139 +1032,346 @@ pub(crate) fn build_default_css_payload(
     )
 }
 
-/// Run the real `CssPipeline::build_emitter` for a project and return
-/// its bytes packaged for [`ProductionAssetPipeline`].
-///
-/// When the user disabled Tailwind via `zfb.config.{ts,json}`
-/// (`tailwind: { enabled: false }`), this skips the Tailwind layers
-/// (import / `@source` scan / preflight / subprocess) but still
-/// processes the authored global stylesheet and CSS Modules — see
-/// [`build_authored_only_css_payload`]. `enabled: false` means "no
-/// Tailwind", not "no CSS" (issue #824).
-///
-/// Returns `Ok(None)` when:
-///
-/// - no scannable source files were found under the conventional
-///   project roots (`pages/`, `components/`, `layouts/`, `content/`)
-///   AND no authored global stylesheet exists. In that case the
-///   project carries no CSS authoring surface and emitting an empty
-///   stylesheet would just leave a broken `<link>` tag in HTML.
-///
-/// On `Ok(Some(_))` the orchestrator hashes the bytes and writes
-/// `dist/assets/styles-<hash>.css`. The `relative_path` /
-/// `stable_url` come from the bytes-only emitter contract
-/// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
-/// the renderer's head injector and the prod pipeline's URL rewriter
-/// agree on the same key without a separate string channel.
-///
-/// `on_source_plan` (issue #1802) is called EXACTLY ONCE with the computed
-/// sibling mirror roots, on BOTH the Tailwind-enabled and the
-/// `tailwind.enabled = false` paths. It is deliberately NOT empty when
-/// Tailwind is disabled: `build_authored_only_css_payload` still discovers
-/// a claimed sibling's `.module.css` files through the same claim plan
-/// (issue #824 — disabling Tailwind opts out of the Tailwind layers, not
-/// CSS Modules), so dev-watch registration needs the roots on that path
-/// too. On the Tailwind path it is the same slice
-/// [`assemble_css_content_globs`] folds into the content-glob list.
-///
-/// The call happens strictly BEFORE the Tailwind subprocess is invoked, so
-/// it fires even when that subprocess later fails — the seam dev-watch
-/// registration needs (see the type's own doc comment). The one path that
-/// does NOT publish is a `discover_css_plugin_virtual_files` failure, where
-/// publishing the narrower alias-only set would retire live roots under
-/// replace semantics; see the comment at that call site.
+/// Build a project stylesheet with zudo-wind defaults or an explicit wind config.
+/// `wind: false` emits authored CSS and CSS Modules only. Empty projects
+/// produce no stylesheet. The source-plan observer receives mirror roots
+/// before compilation so dev can keep their watches on a CSS error.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_default_css_payload_with_source_plan(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
-    // fix-A [5] (#1191): absolute paths of materialized package-route
-    // entrypoints. Their parent dirs are appended to the Tailwind `@source`
-    // content globs so utility classes used ONLY in a package-route page
-    // (whose entrypoint lives in node_modules / outside the globbed project
-    // dirs) are scanned and not silently pruned from the emitted stylesheet.
-    // Empty on the no-package-route path (byte-identical parity).
     package_route_entrypoints: &[PathBuf],
-    // Sibling Mirror (issue #1691/#1696): tsconfig/plugin alias targets
-    // (claim source b), forwarded to `discover_css_source_files` so a
-    // claimed workspace-sibling package's own source files join the CSS
-    // Modules scan. Empty on the no-workspace / no-alias path (byte-identical
-    // parity).
     plugin_alias_entries: &[(String, String)],
-    // Virtual-module claim sources a+c (issue #1775): registered plugin
-    // virtual modules (`IslandsPluginConfig::virtual_modules`). A registered
-    // virtual module's own sibling closure is discovered via
-    // `discover_css_plugin_virtual_files` below and folded into the same
-    // `SiblingMirrorPlan` claim `discover_css_source_files` /
-    // `compute_css_module_class_maps` already consult for claim source b, so
-    // a sibling `.module.css` reached ONLY through a virtual module (no
-    // direct alias) is scanned and shipped too. Empty on the no-virtual-
-    // module path (byte-identical parity).
     plugin_virtual_modules: &[(String, String)],
     on_source_plan: CssSourcePlanObserver<'_>,
 ) -> Result<Option<AssetEmitterPayload>> {
-    // Build the same `ModuleWorkerBuildContext` shape esbuild will see for
-    // this project's plugin registrations, then discover the file set behind
-    // any registered virtual module (issue #1775). `production`/`sourcemap`
-    // semantics don't affect which files this discovery reaches (they only
-    // shape emitted worker bytes elsewhere), so `true` is fine for both the
-    // build and dev callers of this function.
+    Ok(build_default_css_payload_with_details(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+    )?
+    .payload)
+}
+
+/// Payload plus the engine inputs needed by future dev invalidation.
+#[derive(Debug)]
+pub(crate) struct CssPayloadPass {
+    pub payload: Option<AssetEmitterPayload>,
+    pub input_dependencies: Vec<zfb_css::CssInputDependency>,
+    pub diagnostics: Vec<zfb_css::CssDiagnostic>,
+    pub timings: CssPhaseTimings,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CssPhaseTimings {
+    pub source_plan_ms: u128,
+    pub index_update_ms: u128,
+    pub index_upserted: usize,
+    pub index_removed: usize,
+    pub authored_bundle_ms: u128,
+    pub emit_ms: u128,
+}
+
+/// File-backed portion of the wind candidate index, retained for one dev
+/// session. Manifest, generated-source and safelist owners are replaced from
+/// the current plan when each pass constructs the engine.
+#[derive(Debug)]
+pub(crate) struct WindSessionIndex {
+    plan: zfb_css::SourcePlan,
+    index: zfb_css::CandidateIndex,
+    files: std::collections::BTreeMap<zfb_css::SourceId, PathBuf>,
+    origins: std::collections::BTreeMap<zfb_css::SourceId, Vec<zfb_css::OriginCandidate>>,
+    diagnostics: Vec<zfb_css::CssDiagnostic>,
+}
+
+impl WindSessionIndex {
+    fn canonical_event_path(path: &Path) -> PathBuf {
+        let mut cursor = path;
+        let mut suffix = Vec::new();
+        loop {
+            if let Ok(mut real) = cursor.canonicalize() {
+                for part in suffix.iter().rev() {
+                    real.push(part);
+                }
+                return real;
+            }
+            let Some(name) = cursor.file_name() else {
+                return path.to_path_buf();
+            };
+            suffix.push(name.to_os_string());
+            let Some(parent) = cursor.parent() else {
+                return path.to_path_buf();
+            };
+            cursor = parent;
+        }
+    }
+
+    pub(crate) fn fresh(plan: zfb_css::SourcePlan) -> Self {
+        let mut state = Self {
+            plan,
+            index: zfb_css::CandidateIndex::default(),
+            files: Default::default(),
+            origins: Default::default(),
+            diagnostics: Vec::new(),
+        };
+        let expanded = zfb_css::expand_file_set(&state.plan);
+        state.record_walk_diagnostics(expanded.diagnostics);
+        for file in expanded.files {
+            state.index_file(file);
+        }
+        state
+    }
+
+    fn record_walk_diagnostics(&mut self, diagnostics: Vec<zfb_css::WalkDiagnostic>) {
+        for diagnostic in diagnostics {
+            let required = diagnostic.message.starts_with("required source missing");
+            let diagnostic = zfb_css::CssDiagnostic {
+                severity: if required {
+                    zfb_css::CssDiagnosticSeverity::Error
+                } else {
+                    zfb_css::CssDiagnosticSeverity::Warning
+                },
+                code: if required { "ZW010" } else { "ZW011" }.into(),
+                message: format!("{}: {}", diagnostic.root_label, diagnostic.message),
+                origin: Default::default(),
+                candidate: None,
+            };
+            if !self.diagnostics.contains(&diagnostic) {
+                self.diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    fn remove_path(&mut self, path: &Path, real: &Path) -> usize {
+        self.diagnostics.retain(|diagnostic| {
+            diagnostic
+                .origin
+                .path
+                .as_ref()
+                .is_none_or(|source| !source.starts_with(real))
+        });
+        let source_prefixes: Vec<_> = self
+            .plan
+            .roots
+            .iter()
+            .chain(self.plan.package_sources.values())
+            .filter_map(|root| {
+                let declared = root.resolved_path();
+                if declared.starts_with(path) {
+                    zfb_css::SourceId::new(&root.label, Path::new("")).ok()
+                } else {
+                    path.strip_prefix(&declared)
+                        .ok()
+                        .and_then(|relative| zfb_css::SourceId::new(&root.label, relative).ok())
+                }
+            })
+            .collect();
+        let ids: Vec<_> = self
+            .files
+            .iter()
+            .filter(|(id, file)| {
+                file.starts_with(real) || source_prefixes.iter().any(|prefix| id.is_under(prefix))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let removed = ids.len();
+        for id in ids {
+            self.index.remove(&id);
+            self.files.remove(&id);
+            self.origins.remove(&id);
+        }
+        removed
+    }
+
+    fn index_file(&mut self, file: zfb_css::ExpandedFile) {
+        let id = file.id.clone();
+        match self.index.index_file(&file) {
+            Ok(extracted) => {
+                if extracted
+                    .notes
+                    .iter()
+                    .any(|note| note.kind == zfb_css::NoteKind::InvalidUtf8)
+                {
+                    self.diagnostics.push(zfb_css::CssDiagnostic {
+                        severity: zfb_css::CssDiagnosticSeverity::Warning,
+                        code: "ZW011".into(),
+                        message: format!("skipped non-UTF-8 source {}", file.path.display()),
+                        origin: zfb_css::CssDiagnosticOrigin {
+                            path: Some(file.path.clone()),
+                            ..Default::default()
+                        },
+                        candidate: None,
+                    });
+                }
+                let origins = extracted
+                    .candidates
+                    .into_iter()
+                    .flat_map(|candidate| {
+                        let source_id = id.render();
+                        candidate.occurrences.into_iter().map(move |occurrence| {
+                            zfb_css::OriginCandidate {
+                                text: candidate.text.clone(),
+                                origin: zfb_css::Origin::Source {
+                                    source_id: source_id.clone(),
+                                    byte_offset: occurrence.byte_offset,
+                                    byte_length: occurrence.byte_length,
+                                    line: occurrence.line,
+                                    byte_column: occurrence.byte_column,
+                                    literal_byte_offset: occurrence.literal_byte_offset,
+                                    literal_byte_length: occurrence.literal_byte_length,
+                                    position_kind: match occurrence.position_kind {
+                                        zfb_css::PositionKind::Class => {
+                                            zfb_css::SourcePositionKind::Class
+                                        }
+                                        zfb_css::PositionKind::Literal => {
+                                            zfb_css::SourcePositionKind::Literal
+                                        }
+                                    },
+                                },
+                            }
+                        })
+                    })
+                    .collect();
+                self.origins.insert(file.id.clone(), origins);
+                self.files.insert(file.id, file.path);
+            }
+            Err(error) => self.diagnostics.push(zfb_css::CssDiagnostic {
+                severity: zfb_css::CssDiagnosticSeverity::Warning,
+                code: "ZW011".into(),
+                message: format!("skipped source {}: {error}", file.path.display()),
+                origin: zfb_css::CssDiagnosticOrigin {
+                    path: Some(file.path),
+                    ..Default::default()
+                },
+                candidate: None,
+            }),
+        }
+    }
+
+    pub(crate) fn apply(&mut self, changes: &zfb_build::CssChangeSet) -> (usize, usize) {
+        let mut removed = 0;
+        let mut upserted = 0;
+        for path in &changes.removed {
+            let real = Self::canonical_event_path(path);
+            removed += self.remove_path(path, &real);
+        }
+        for path in &changes.upserted {
+            let real = Self::canonical_event_path(path);
+            // Existence, not the watcher's Created/Modified spelling, decides
+            // the update. Removing first also handles directory replacements.
+            removed += self.remove_path(path, &real);
+            if path.exists() {
+                let touched_labels: Vec<_> = self
+                    .plan
+                    .roots
+                    .iter()
+                    .chain(self.plan.package_sources.values())
+                    .filter(|root| {
+                        root.resolved_path().starts_with(path)
+                            || Self::canonical_event_path(&root.resolved_path()).starts_with(&real)
+                    })
+                    .map(|root| root.label.clone())
+                    .collect();
+                self.diagnostics.retain(|diagnostic| {
+                    diagnostic.origin.path.is_some()
+                        || !touched_labels
+                            .iter()
+                            .any(|label| diagnostic.message.starts_with(&format!("{label}: ")))
+                });
+                let expanded = zfb_css::expand_changed_path(&self.plan, path);
+                self.record_walk_diagnostics(expanded.diagnostics);
+                for file in expanded.files {
+                    self.index_file(file);
+                    upserted += 1;
+                }
+            }
+        }
+        (upserted, removed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_set(&self) -> std::collections::BTreeSet<String> {
+        self.index.live_set()
+    }
+}
+
+// Keep the existing CSS source-plan call shape; the final two arguments are
+// dev-only state and watcher hints.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_dev_css_payload_with_index(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+    session: &mut Option<WindSessionIndex>,
+    changes: Option<&zfb_build::CssChangeSet>,
+) -> Result<CssPayloadPass> {
+    build_css_payload_with_index(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+        Some(session),
+        changes,
+    )
+}
+
+pub(crate) fn build_default_css_payload_with_details(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+) -> Result<CssPayloadPass> {
+    build_css_payload_with_index(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        on_source_plan,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_css_payload_with_index(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
+    session: Option<&mut Option<WindSessionIndex>>,
+    changes: Option<&zfb_build::CssChangeSet>,
+) -> Result<CssPayloadPass> {
+    let mut timings = CssPhaseTimings::default();
+    let wind = config.wind.as_ref();
     let virtual_worker_context = module_worker_build_context(
         true,
-        config.framework,
         config.bundle.as_ref(),
         plugin_alias_entries,
         plugin_virtual_modules,
     );
     let discovered_graph_files =
-        match discover_css_plugin_virtual_files(project_root, &virtual_worker_context) {
-            Ok(files) => files,
-            Err(err) => {
-                // Deliberately publish NOTHING here (issue #1799 review).
-                //
-                // An earlier revision published an alias/tsconfig-derived
-                // fallback claim on this path, reasoning that "a failed boot
-                // CSS build must still register sibling watches". That is
-                // actively harmful: the fallback is a strict SUBSET of the
-                // real root set (empty `discovered_graph_files` yields claim
-                // source b only, dropping the virtual-module sources a+c),
-                // and the whole chain is replace-semantics
-                // (`replace_css_mirror_roots` -> `sync_recursive_dir_watches`).
-                // Publishing the subset therefore UNWATCHES every root reached
-                // only through the virtual-module graph — so if the edit that
-                // would fix `err` lives in one of those siblings, no
-                // filesystem event can ever arrive to retry. That is exactly
-                // the recovery lock this seam exists to prevent.
-                //
-                // Skipping publication instead preserves the last successful
-                // set, which is the documented orchestrator contract: "the
-                // registry exposes the last successful closures, so a
-                // transient failed rebuild never drops recovery watches"
-                // (`zfb-build/src/orchestrator.rs`, boot registration). On a
-                // FIRST-boot failure nothing was registered yet, so nothing is
-                // lost either — and recovery still arrives through the boot
-                // watcher on the project root, whose next in-project edit
-                // re-runs discovery.
-                return Err(err);
-            }
-        };
-
-    // `.module.css` files a virtual module imports DIRECTLY (issue #1775
-    // follow-up): fed into CSS emission's explicit module slot so a direct
-    // virtual→sibling-CSS import ships its rules, matching the class map
-    // `compute_css_module_class_maps` produces for the same set. Empty on the
-    // no-virtual-module path.
+        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
     let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
-
-    // Sibling Mirror (issue #1691/#1776): computed here, BEFORE the
-    // Tailwind-enabled branch below, and published unconditionally (issue
-    // #1802) — `build_authored_only_css_payload` on the `tailwind.enabled =
-    // false` path ALSO discovers sibling `.module.css` files through this
-    // same claim plan (issue #824: disabling Tailwind opts out of the
-    // Tailwind layers, not CSS Modules), so the dev-watch registration
-    // needs this set on BOTH paths, not just the Tailwind-scan one. A
-    // review finding caught an earlier version of this seam publishing an
-    // empty set whenever Tailwind was disabled, which would have left a
-    // claimed sibling's CSS Modules unwatched.
     let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
         project_root,
         &zfb_types::first_party_root_for(project_root),
@@ -1163,117 +1382,183 @@ pub(crate) fn build_default_css_payload_with_source_plan(
     .mirror_roots()
     .map(Path::to_path_buf)
     .collect();
-
-    // Issue #1802 (epic #1799 gap (a)): publish the mirror roots NOW —
-    // before the Tailwind subprocess below ever runs (on the Tailwind-
-    // enabled path), and therefore even if that subprocess later fails. A
-    // failed boot CSS build must still register sibling watches, or there
-    // is no filesystem event through which recovery could ever trigger.
     on_source_plan(&sibling_mirror_roots);
 
-    // `tailwind: { enabled: false }` disables only the Tailwind layers,
-    // not the authored-CSS pipeline. Route to the Tailwind-free path so
-    // global CSS + CSS Modules still ship (issue #824). Falling back to
-    // the Tailwind subprocess path here would re-add the preflight the
-    // user opted out of and incur subprocess cost.
-    // #1533: the default hi token stylesheet is class-mode-only and
-    // classPrefix-aware. Resolve it once here and thread the plain
-    // `Option<String>` down — both the authored-only and Tailwind paths
-    // funnel through `run_css_emitter`, so neither helper needs the whole
-    // `&Config`.
     let framework_css = resolve_framework_css(config);
-
-    let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
-    if !tailwind_enabled {
-        return build_authored_only_css_payload(
-            project_root,
-            outdir,
-            framework_css,
-            plugin_alias_entries,
-            &discovered_graph_files,
-            direct_css_modules,
-        );
-    }
-
     let sources =
         discover_css_source_files(project_root, plugin_alias_entries, &discovered_graph_files);
-    if sources.is_empty() {
-        // No scannable surface — Tailwind would emit only its
-        // preflight + reset bytes, which still yields a non-empty
-        // stylesheet. The current shape ships those preflight bytes
-        // by design (project might author globals via `input_css`),
-        // so we proceed even with empty `sources`.
-    }
-
-    // Tailwind config: working_dir at project root so `@source`
-    // directives resolve user paths correctly. Default content globs
-    // come from `zfb_css::DEFAULT_CONTENT_ROOTS`; we rebase them
-    // onto the project root absolute path so the synthesised entry
-    // CSS picks up sources regardless of where the user invoked
-    // `zfb build`.
-    let default_content_globs = crate::commands::css_support::default_content_globs(project_root);
-
-    // `sibling_mirror_roots` is computed once above, BEFORE the
-    // Tailwind-enabled branch, so the issue #1802 seam can publish it on
-    // both paths. It extends Tailwind's own `@source` scan here: without
-    // it, a utility class used ONLY inside a claimed sibling file is
-    // scanned for CSS Modules discovery but never reaches Tailwind's
-    // content scan, so the class would silently never be emitted (green
-    // build, unstyled page — the same failure shape fix-A [5] closed for
-    // package routes below).
-    //
-    // Issue #1803 (epic #1799 gap b): `discover_css_source_files` already
-    // skips `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs when it wholesale-walks
-    // a mirror root, but the Tailwind `@source` scan fed by `content_globs`
-    // has no equivalent exclusion — an ungitignored generated subtree inside
-    // a mirror root (e.g. a stale `dist/`) can leak stale class strings into
-    // the emitted stylesheet. Mirror that exclusion onto the engine via
-    // `negative_source_globs`.
-    let (content_globs, negative_source_globs) = assemble_css_content_globs(
-        &default_content_globs,
-        package_route_entrypoints,
-        &sibling_mirror_roots,
-    );
-
-    let tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs)
-        .with_negative_source_globs(negative_source_globs)
-        .with_inline_sources(role_classes_inline_sources(config));
-
-    // Sub #212 — wire in the embedded-binary extraction tier so consumers
-    // running `zfb build` from a project that doesn't ship the
-    // `crates/zfb/binaries/` workspace dir still resolve a working tailwind
-    // CLI. The TempDir handle rides on the config (and hence the engine)
-    // so the extracted file outlives every `produce_utility_css` call.
-    let mut tw_cfg = crate::commands::css_support::with_embedded_tailwind_binary(tw_cfg);
-
-    // Honour an authored global stylesheet at the conventional
-    // location. Tailwind v4's entry CSS prepends our `@source`
-    // directives to whatever the user wrote there, so the user's
-    // `@theme`, `@import` of vendor CSS, etc. continue to work.
-    //
-    // Probe two layouts in order, first match wins:
-    //   1. `<root>/styles/global.css`     — zfb's original convention
-    //   2. `<root>/src/styles/global.css` — Vite/Astro/Next-style src/ layout
-    //
-    // The two-path probe matters because real-world consumers
-    // (e.g. zudo-doc, see zudolab/zudo-doc#1355 wave 13) keep their
-    // authored `@theme` tokens under `src/styles/` to share the src
-    // tree with components and TS sources. Without this fallback the
-    // Tailwind run misses the host's `@theme` block entirely and
-    // utility classes like `bg-zd-bg` plus host-defined custom
-    // properties go unstyled.
-    if let Some(path) = resolve_input_global_css(project_root) {
-        tw_cfg = tw_cfg.with_input_css(path);
-    }
-
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
-
-    // Tailwind path always ships a payload — its preflight bytes are never
-    // empty, so there is no whitespace-only guard here (unlike the
-    // authored-only path).
-    let payload = run_css_emitter(
+    let authored_started = Instant::now();
+    let authored = if let Some(path) = resolve_input_global_css(project_root) {
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
+        let mut stylesheets = vec![path.clone()];
+        stylesheets.extend(zfb_css::resolve_css_imports(&path, project_root));
+        const FORBIDDEN: &[&str] = &[
+            "import",
+            "tailwind",
+            "theme",
+            "source",
+            "custom-variant",
+            "apply",
+            "utility",
+            "variant",
+            "plugin",
+            "config",
+            "reference",
+            "--spacing",
+            "--alpha",
+            "--value",
+        ];
+        for stylesheet in stylesheets {
+            let css = if stylesheet == path {
+                raw.clone()
+            } else {
+                std::fs::read_to_string(&stylesheet)
+                    .with_context(|| format!("failed to read {}", stylesheet.display()))?
+            };
+            if let Some(directive) = zfb_css::scan_leftover_directives(&css, FORBIDDEN)
+                .into_iter()
+                .next()
+            {
+                anyhow::bail!("ZW009: forbidden Tailwind {} at {}:{}:{}; see /docs/zudo-wind/coming-from-tailwind/",
+                    directive.name, stylesheet.display(), directive.line, directive.column);
+            }
+        }
+        zfb_css::bundle_authored_css_with_assets(&path, project_root, &raw)?
+    } else {
+        zfb_css::AuthoredCssBundle {
+            css: String::new(),
+            companions: Vec::new(),
+            input_dependencies: Vec::new(),
+        }
+    };
+    timings.authored_bundle_ms = authored_started.elapsed().as_millis();
+    let engine = match wind {
+        Some(crate::config::WindSetting::Disabled) => {
+            SelectedWindEngine::Authored(AuthoredCssEngine::with_bundle(authored))
+        }
+        None | Some(crate::config::WindSetting::Enabled(_)) => {
+            let default_settings = crate::config::WindConfig::default();
+            let settings = match wind {
+                Some(crate::config::WindSetting::Enabled(settings)) => settings.as_ref(),
+                _ => &default_settings,
+            };
+            let source_started = Instant::now();
+            let inputs = crate::commands::css_source_plan::gather_css_source_plan_inputs(
+                project_root,
+                outdir,
+                config,
+                package_route_entrypoints,
+                &sibling_mirror_roots,
+                plugin_virtual_modules,
+            )?;
+            let plan = crate::commands::css_source_plan::build_css_source_plan(&inputs);
+            timings.source_plan_ms = source_started.elapsed().as_millis();
+            let index_started = Instant::now();
+            let owned_state;
+            let state = if let Some(session) = session {
+                if session.as_ref().is_none_or(|current| current.plan != plan) {
+                    *session = Some(WindSessionIndex::fresh(plan.clone()));
+                    timings.index_upserted = session.as_ref().expect("fresh index").files.len();
+                } else if let Some(changes) = changes {
+                    (timings.index_upserted, timings.index_removed) = session
+                        .as_mut()
+                        .expect("session initialized")
+                        .apply(changes);
+                }
+                session.as_ref().expect("session initialized")
+            } else {
+                owned_state = WindSessionIndex::fresh(plan.clone());
+                &owned_state
+            };
+            timings.index_update_ms = index_started.elapsed().as_millis();
+            let mut index = state.index.clone();
+            let diagnostics = state.diagnostics.clone();
+            let mut origins: Vec<_> = state.origins.values().flatten().cloned().collect();
+            for (producer, path) in &plan.manifests {
+                let bytes = std::fs::read(path)?;
+                let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let entries = manifest["candidates"]
+                    .as_array()
+                    .ok_or_else(|| anyhow!("manifest {producer} candidates missing"))?;
+                let candidates: Vec<String> = entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(str::to_owned))
+                    .collect();
+                for (position, text) in candidates.iter().enumerate() {
+                    origins.push(zfb_css::OriginCandidate {
+                        text: text.clone(),
+                        origin: zfb_css::Origin::Manifest {
+                            producer: producer.clone(),
+                            path: path.display().to_string(),
+                            index: position,
+                        },
+                    });
+                }
+                index.replace_manifest(producer.clone(), candidates);
+            }
+            for (source, candidates) in &plan.generated_sources {
+                if source == "code-highlight/role-classes" {
+                    for text in candidates {
+                        origins.push(zfb_css::OriginCandidate {
+                            text: text.clone(),
+                            origin: zfb_css::Origin::RoleClass {
+                                role_key: text.clone(),
+                            },
+                        });
+                    }
+                } else if let Some(specifier) = source.strip_prefix("plugin/") {
+                    if let Some((_, code)) = plugin_virtual_modules
+                        .iter()
+                        .find(|(name, _)| name == specifier)
+                    {
+                        for candidate in
+                            zfb_css::extract_candidates(code.as_bytes(), zfb_css::SourceKind::Tsx)
+                                .candidates
+                        {
+                            if !candidates.contains(&candidate.text) {
+                                continue;
+                            }
+                            for occurrence in candidate.occurrences {
+                                origins.push(zfb_css::OriginCandidate {
+                                    text: candidate.text.clone(),
+                                    origin: zfb_css::Origin::Source {
+                                        source_id: source.clone(),
+                                        byte_offset: occurrence.byte_offset,
+                                        byte_length: occurrence.byte_length,
+                                        line: occurrence.line,
+                                        byte_column: occurrence.byte_column,
+                                        literal_byte_offset: occurrence.literal_byte_offset,
+                                        literal_byte_length: occurrence.literal_byte_length,
+                                        position_kind: match occurrence.position_kind {
+                                            zfb_css::PositionKind::Class => {
+                                                zfb_css::SourcePositionKind::Class
+                                            }
+                                            zfb_css::PositionKind::Literal => {
+                                                zfb_css::SourcePositionKind::Literal
+                                            }
+                                        },
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                index.replace_manifest(source.clone(), candidates.iter().cloned());
+            }
+            for (owner, candidates) in &plan.safelist {
+                index.replace_safelist(owner.clone(), candidates.iter().cloned());
+            }
+            let config = map_wind_config(settings);
+            SelectedWindEngine::Wind(Box::new(
+                zfb_css::WindEngine::new(config, index.live_set(), authored)
+                    .with_diagnostics(diagnostics)
+                    .with_origins(origins),
+            ))
+        }
+    };
+    let emit_started = Instant::now();
+    let emitted = crate::commands::css_support::run_css_emitter(
         engine,
         project_root,
         outdir,
@@ -1281,67 +1566,109 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         direct_css_modules,
         framework_css,
     )?;
-    Ok(Some(payload))
+    timings.emit_ms = emit_started.elapsed().as_millis();
+    let dependencies = emitted.input_dependencies;
+    let diagnostics = emitted.diagnostics;
+    let payload = if emitted.bytes.iter().all(u8::is_ascii_whitespace) {
+        None
+    } else {
+        Some(AssetEmitterPayload {
+            bytes: emitted.bytes,
+            relative_path: css_relative_path(),
+            stable_url: emitted.stable_url,
+            companions: emitted
+                .companions
+                .into_iter()
+                .map(|c| CompanionFile {
+                    filename: c.filename,
+                    bytes: c.bytes,
+                })
+                .collect(),
+        })
+    };
+    Ok(CssPayloadPass {
+        payload,
+        input_dependencies: dependencies,
+        diagnostics,
+        timings,
+    })
 }
 
-/// Assemble the Tailwind `@source` content-glob list for a project:
-/// `defaults` (the rebased [`zfb_css::engine::DEFAULT_CONTENT_ROOTS`])
-/// extended with each package-route entrypoint's parent directory
-/// (fix-A [5], #1191) and each Sibling Mirror
-/// [`zfb_build::SiblingMirrorPlan`] mirror root (issue #1776), in that
-/// order, de-duped. Package-route dirs and mirror roots share one `seen`
-/// set so a mirror root that happens to coincide with a package-route dir
-/// (or a default root) is not emitted twice. Extracted as a standalone
-/// function so this wiring — as opposed to "does `@source` become CSS
-/// output" (covered by `zfb-css`'s own tests) — is unit-testable without a
-/// real project tree.
-///
-/// Issue #1803 (epic #1799 gap b): also returns the `@source not`
-/// exclusion globs for [`TailwindSubprocessConfig::negative_source_globs`]
-/// — one `<root>/**/<skip_dir>/**` glob per (mirror root, skip dir) pair
-/// for every entry in [`CSS_SIBLING_MIRROR_SKIP_DIRS`], matching the
-/// infra-dir exclusion `discover_css_source_files`'s `filter_entry`
-/// already applies when it wholesale-walks the same mirror root. Emitted
-/// *only* for mirror roots that are freshly appended above (the same
-/// `seen`-gated branch) — a mirror root that dedupes away against a
-/// default root or a package-route dir carries no exclusions either,
-/// keeping "scope: mirror roots only" exact: package-route dirs (and any
-/// root coinciding with one) keep their pre-#1803 behavior untouched.
-fn assemble_css_content_globs(
-    defaults: &[String],
-    package_route_entrypoints: &[PathBuf],
-    sibling_mirror_roots: &[PathBuf],
-) -> (Vec<String>, Vec<String>) {
-    let mut content_globs = defaults.to_vec();
-    let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
-    for entry in package_route_entrypoints {
-        if let Some(dir) = entry.parent() {
-            let glob = dir.to_string_lossy().into_owned();
-            if seen.insert(glob.clone()) {
-                content_globs.push(glob);
-            }
-        }
-    }
-    let mut negative_source_globs = Vec::new();
-    for root in sibling_mirror_roots {
-        let glob = root.to_string_lossy().into_owned();
-        if seen.insert(glob.clone()) {
-            for skip_dir in CSS_SIBLING_MIRROR_SKIP_DIRS.iter() {
-                negative_source_globs.push(format!("{glob}/**/{skip_dir}/**"));
-            }
-            content_globs.push(glob);
-        }
-    }
-    (content_globs, negative_source_globs)
+enum SelectedWindEngine {
+    Authored(AuthoredCssEngine),
+    Wind(Box<zfb_css::WindEngine>),
 }
 
-/// Build-only adapter around the shared CSS emitter core.
-///
-/// [`crate::commands::css_support::run_css_emitter`] returns the
-/// engine-agnostic [`zfb_css::CssEmitterOutput`] so the standalone `zfb css`
-/// command can consume it without depending on production asset-graph types.
-/// `zfb build` adapts that output here into its [`AssetEmitterPayload`], at the
-/// boundary where CSS companions become `zfb-build` companion files.
+impl CssEngine for SelectedWindEngine {
+    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<zfb_css::CssEngineOutput> {
+        match self {
+            Self::Authored(engine) => engine.produce_utility_css(sources),
+            Self::Wind(engine) => engine.produce_utility_css(sources),
+        }
+    }
+}
+
+fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
+    let mut output = zfb_css::WindConfig {
+        spec: input.spec,
+        reset: match input.reset.as_str() {
+            "minimal-v1" => zfb_css::ResetMode::MinimalV1,
+            "owned-v1" => zfb_css::ResetMode::OwnedV1,
+            _ => zfb_css::ResetMode::None,
+        },
+        dark: match &input.dark {
+            crate::config::WindDarkSetting::Enabled(dark) => Some(zfb_css::DarkModeConfig {
+                attribute: dark.attribute.clone(),
+                value: dark.value.clone(),
+            }),
+            crate::config::WindDarkSetting::Disabled => None,
+        },
+        breakpoints: input
+            .breakpoints
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    zfb_css::BreakpointConfig {
+                        min_width_px: value.min_width_px as i64,
+                    },
+                )
+            })
+            .collect(),
+        safelist: input.safelist.clone(),
+        authored_classes: input.authored_classes.clone(),
+        ..Default::default()
+    };
+    output.tokens.spacing_unit = input.tokens.spacing_unit.clone();
+    output.tokens.colors = input.tokens.colors.clone();
+    output.tokens.spacing = input.tokens.spacing.clone();
+    output.tokens.sizes = input.tokens.sizes.clone();
+    output.tokens.font_sizes = input
+        .tokens
+        .font_sizes
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                zfb_css::FontSizeToken {
+                    size: value.size.clone(),
+                    line_height: value.line_height.clone(),
+                },
+            )
+        })
+        .collect();
+    output.tokens.font_families = input.tokens.font_families.clone();
+    output.tokens.font_weights = input.tokens.font_weights.clone();
+    output.tokens.line_heights = input.tokens.line_heights.clone();
+    output.tokens.letter_spacings = input.tokens.letter_spacings.clone();
+    output.tokens.radii = input.tokens.radii.clone();
+    output.tokens.shadows = input.tokens.shadows.clone();
+    output.tokens.z_indices = input.tokens.z_indices.clone();
+    output.tokens.easings = input.tokens.easings.clone();
+    output
+}
+
+#[cfg(test)]
 fn run_css_emitter<E: CssEngine>(
     engine: E,
     project_root: &Path,
@@ -1389,149 +1716,6 @@ fn run_css_emitter<E: CssEngine>(
     })
 }
 
-/// CSS payload for the `tailwind: { enabled: false }` path: authored
-/// global stylesheet + CSS Modules, with the Tailwind layers
-/// (import / `@source` scan / preflight / subprocess) skipped entirely.
-///
-/// `enabled: false` opts out of Tailwind, not out of CSS (issue #824).
-/// The authored global stylesheet currently rides *inside* the Tailwind
-/// engine via its `input_css` slot, so simply skipping the engine would
-/// drop the user's globals too. Instead we read the authored global CSS
-/// independently (same probe order as the Tailwind path,
-/// [`resolve_input_global_css`]) and feed it through an
-/// [`AuthoredCssEngine`] — a no-subprocess engine that returns the
-/// authored bytes verbatim as the "engine half" of the combined
-/// stylesheet. CSS Modules processing, concatenation, hashing, and
-/// asset emission are engine-agnostic and run unchanged via
-/// [`zfb_css::CssPipeline::build_emitter`].
-///
-/// Returns `Ok(None)` when the project has neither an authored global
-/// stylesheet nor any CSS Modules — the combined output would be
-/// whitespace only, and emitting it would leave a broken `<link>` tag
-/// in HTML. This mirrors the empty-stylesheet guard on the Tailwind
-/// path.
-fn build_authored_only_css_payload(
-    project_root: &Path,
-    outdir: &Path,
-    framework_css: Option<String>,
-    plugin_alias_entries: &[(String, String)],
-    // Virtual-module claim sources a+c (issue #1775) — see
-    // `build_default_css_payload`'s parameter doc. The Tailwind-disabled
-    // path needs the same threading: `enabled: false` opts out of Tailwind,
-    // not out of CSS (issue #824), so a virtual-only sibling CSS Module must
-    // still be discovered here.
-    discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
-    // Direct virtual→`.module.css` imports (issue #1775 follow-up) — see
-    // `run_css_emitter`'s `explicit_css_modules` doc. The Tailwind-disabled
-    // path needs the same wiring: `enabled: false` opts out of Tailwind, not
-    // out of CSS (issue #824), so a directly-imported virtual-only sibling
-    // CSS Module must still be compiled and emitted here.
-    direct_css_modules: Vec<PathBuf>,
-) -> Result<Option<AssetEmitterPayload>> {
-    let authored_css = match resolve_input_global_css(project_root) {
-        Some(path) => {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
-            // Skip the Tailwind import layer: the default zfb template's
-            // `styles/global.css` ships `@import "tailwindcss";` (or the
-            // split `tailwindcss/preflight` / `utilities` forms). With no
-            // Tailwind subprocess to resolve them, emitting those lines
-            // verbatim would make the browser request a non-existent
-            // stylesheet, so we drop them here (issue #824).
-            let stripped = strip_tailwind_imports(&raw);
-            zfb_css::bundle_authored_css(&path, project_root, &stripped)?
-        }
-        None => String::new(),
-    };
-
-    let sources =
-        discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
-    let engine = AuthoredCssEngine::new(authored_css);
-
-    let payload = run_css_emitter(
-        engine,
-        project_root,
-        outdir,
-        sources,
-        direct_css_modules,
-        framework_css,
-    )?;
-
-    // Skip the link when there is nothing to ship. With Tailwind off and
-    // no authored globals + no modules, `combine` yields only its `"\n"`
-    // separator; emitting that would inject a `<link>` to an effectively
-    // empty stylesheet. The Tailwind path never hits this because its
-    // preflight bytes are always non-empty.
-    if payload.bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(None);
-    }
-
-    Ok(Some(payload))
-}
-
-/// Drop `@import "tailwindcss"` directives from authored global CSS for
-/// the Tailwind-disabled path.
-///
-/// Removes whole physical lines whose trimmed form starts with the
-/// Tailwind import, covering both the umbrella import and the v4 split
-/// sub-imports (`tailwindcss/preflight`, `tailwindcss/utilities`, …), in
-/// either quote style. The per-line test is the shared
-/// [`zfb_css::is_tailwind_import_line`] predicate — the same one
-/// `build_synthesised_entry_css`'s `user_has_import` detection uses — so
-/// the enabled and disabled paths agree byte-for-byte on what counts as
-/// "the Tailwind import".
-///
-/// Scope: this strips the `@import` layer only. Other Tailwind-v4-only
-/// at-rules (`@theme`, `@apply`, `@source`, `@utility`) are left as-is —
-/// a zero-Tailwind project (the `enabled: false` scenario, issue #824)
-/// does not author them, and sanitising the full Tailwind syntax is out
-/// of scope.
-///
-/// Known limitations (intentional — this is a line filter, not a CSS
-/// parser, and unlike the Tailwind path it does **not** strip comments
-/// before scanning):
-///
-/// - An `@import "tailwindcss";` line *inside* a multi-line
-///   `/* … */` block comment is dropped even though it is already inert.
-///   Harmless: the surrounding comment delimiters stay, the output is
-///   still valid CSS, and the browser requests nothing. (A single-line
-///   `/* @import "tailwindcss"; */` is untouched — its trimmed line starts
-///   with `/*`, not `@import`.)
-/// - A same-line trailing rule (`@import "tailwindcss"; .real{…}`) is lost
-///   along with the import, because whole physical lines are dropped. The
-///   default zfb template puts the import on its own line, so this does not
-///   bite real projects.
-fn strip_tailwind_imports(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    for line in css.split_inclusive('\n') {
-        if is_tailwind_import_line(line) {
-            continue;
-        }
-        out.push_str(line);
-    }
-    out
-}
-
-/// Locate the project's authored global Tailwind input CSS file.
-///
-/// Probes the two conventional layouts in order and returns the first
-/// match. Returns `None` when neither file exists, in which case the
-/// CSS pipeline emits Tailwind preflight + scanned utilities only
-/// (no `@theme` tokens, no user `@import` of vendor CSS).
-///
-/// Probe order:
-///
-/// 1. `<root>/styles/global.css`     — zfb's original convention.
-/// 2. `<root>/src/styles/global.css` — Vite/Astro/Next-style `src/`
-///    layout used by real-world consumers (e.g. zudo-doc; see
-///    zudolab/zudo-doc#1355 wave 13). The `src/styles` fallback
-///    closes the upstream gap that previously dropped the host's
-///    authored `@theme` block on the floor whenever the project
-///    organised its sources under `src/`.
-///
-/// Order is deterministic. If both files exist the legacy
-/// `<root>/styles/global.css` wins so existing projects on the
-/// original convention see no behaviour change.
 pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
     const CANDIDATES: &[&[&str]] = &[&["styles", "global.css"], &["src", "styles", "global.css"]];
     for parts in CANDIDATES {
@@ -1554,10 +1738,9 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
 ///
 /// Deliberately has NO manifest-declared carve-out, unlike the bundler's
 /// sibling mirror and runtime alias claim (issue #3176): this list is the
-/// Tailwind `@source not` / CSS-Modules scan exclusion, not an esbuild
+/// wind candidate-discovery / CSS-Modules scan exclusion, not an esbuild
 /// resolution surface, so a sibling's declared `dist/` still stays out of the
-/// class scan — pinned by the `sibling_css_module_command_layer_build` test
-/// `sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan`.
+/// class scan — pinned by the ignored sibling CSS-module regression test.
 const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "dist",
@@ -1584,7 +1767,10 @@ fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<
     }
 }
 
-fn root_package_css_excluded_dirs(project_root: &Path, first_party_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn root_package_css_excluded_dirs(
+    project_root: &Path,
+    first_party_root: &Path,
+) -> Vec<PathBuf> {
     let first_party_root = zfb_types::normalize_path_lexical(first_party_root);
     let mut excluded = zfb_types::first_party::claimed_workspace_member_names(&first_party_root)
         .into_values()
@@ -1621,9 +1807,9 @@ fn is_root_package_css_path(
 /// `layouts/`, `content/`) and return every TSX/TS/JSX/JS/MDX/MD
 /// source file beneath them. Used as the `sources` field for the
 /// CSS pipeline so the CSS Modules import-scanner can resolve
-/// `import "...module.css"` statements; Tailwind's own utility-class
-/// scan is driven by the synthesised `@source` directives, not this
-/// list, so missing a file here does not silently strip utilities.
+/// `import "...module.css"` statements. Wind candidate extraction also
+/// uses this explicit source list, so a missing file can omit a utility
+/// candidate or imported CSS Module.
 ///
 /// Order is filesystem walk order — the CSS pipeline's discovery
 /// step de-dupes against an internal HashSet, so determinism is the
@@ -1662,7 +1848,7 @@ fn discover_css_source_files(
     discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
-    // page-extension-drift-guard: allow — the CSS/Tailwind source-scan
+    // page-extension-drift-guard: allow — the CSS/wind source discovery
     // extension set (any file that may contain class names, at any depth,
     // page or not), not the routable page allowlist.
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
@@ -1806,9 +1992,8 @@ fn discovered_direct_css_modules(
 /// Returns an empty map when no `.module.css` files are reachable — the
 /// build then behaves exactly as before.
 ///
-/// CSS Modules are processed regardless of `tailwind.enabled`: the
-/// authored-CSS pipeline (and hence the emitted `styles-<hash>.css`)
-/// ships the scoped module CSS even when Tailwind is off (issue #824),
+/// CSS Modules are processed on both enabled and authored-only paths; the
+/// emitted stylesheet ships the scoped module CSS with `wind: false`,
 /// so the class-map rewrite must run in lockstep or the HTML `class`
 /// attributes would reference classes that never appear in the
 /// stylesheet.
@@ -2042,36 +2227,25 @@ impl PluginPreprocessingMeta {
 
 /// Construct the [`zfb_build::ModuleWorkerBuildContext`] shape esbuild will
 /// actually see, from the same bundle options and plugin registrations every
-/// caller already threads (mode, loaders, defines, framework JSX source,
+/// caller already threads (mode, loaders, defines,
 /// plugin aliases/virtual modules, output semantics). Shared by the islands
 /// bundler wiring and the command-layer CSS discovery pass (issue #1775) so
 /// the two flows cannot silently drift on what "the bundler's context"
 /// means — this is the ONE place that shape is assembled.
 pub(crate) fn module_worker_build_context(
     production: bool,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     plugin_alias_entries: &[(String, String)],
     plugin_virtual_modules: &[(String, String)],
 ) -> zfb_build::ModuleWorkerBuildContext {
-    let jsx_import_source = match framework {
-        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    zfb_build::ModuleWorkerBuildContext::new(
-        production,
-        &bundle_loaders,
-        &bundle_define,
-        jsx_import_source,
-    )
-    .with_plugins(
-        plugin_alias_entries.to_vec(),
-        plugin_virtual_modules.to_vec(),
-    )
-    .with_output_semantics(production, !production)
+    zfb_build::ModuleWorkerBuildContext::new(production, &bundle_loaders, &bundle_define)
+        .with_plugins(
+            plugin_alias_entries.to_vec(),
+            plugin_virtual_modules.to_vec(),
+        )
+        .with_output_semantics(production, !production)
 }
 
 /// Discover the file-reachability set behind registered plugin virtual
@@ -3548,8 +3722,9 @@ fn materialise_islands_shadow_with_worker_context(
     materialise_shadow_typescript_configs(root, shadow_root, &shadow_configs)?;
 
     // Symlink node_modules as a whole so shadow files' bare imports
-    // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
-    // each shadow file to the nearest mirrored `node_modules`. In a widened
+    // (`@takazudo/zfb/zudo-react/jsx-runtime`, `@takazudo/zfb/runtime`, …)
+    // resolve — esbuild walks up from each shadow file to the nearest mirrored
+    // `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
     //
@@ -3674,7 +3849,6 @@ pub(crate) fn build_default_islands_payload(
     user_pages_dir: &Path,
     package_route_entrypoints: &[PathBuf],
     outdir: &Path,
-    framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
     islands_glob_policy: IslandsGlobPolicy,
     raw_invalidation: Option<&zfb_build::RawImportInvalidation>,
@@ -3687,7 +3861,6 @@ pub(crate) fn build_default_islands_payload(
         user_pages_dir,
         package_route_entrypoints,
         outdir,
-        framework,
         None,
         zfb_islands::BundleMode::Production,
         plugin_config,
@@ -4193,7 +4366,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // while the user-page seed uses the real pages tree.
     package_route_entrypoints: &[PathBuf],
     outdir: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     bundle_mode: zfb_islands::BundleMode,
     plugin_config: &IslandsPluginConfig,
@@ -4330,16 +4502,10 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // applied ONLY to the bundle's island slice (built just before the
     // bundle call), NOT to `islands_set` itself, so the marker-name and
     // collision passes below keep seeing the real project paths.
-    let islands_jsx_import_source = match framework {
-        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
     let worker_build_context = module_worker_build_context(
         matches!(bundle_mode, zfb_islands::BundleMode::Production),
-        framework,
         bundle_config,
         &plugin_config.alias_entries,
         &plugin_config.virtual_modules,
@@ -4481,6 +4647,20 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // no bundle is needed (client-router-only projects).
     let registered_marker_names: std::collections::BTreeSet<String> =
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
+    {
+        for island in &islands_set {
+            if island.marker_name.is_empty()
+                || island.marker_name == "default"
+                || island.marker_name == "Anonymous"
+            {
+                anyhow::bail!(
+                    "owned island in {} has no stable scanner component identity ({:?})",
+                    island.source_path.display(),
+                    island.marker_name
+                );
+            }
+        }
+    }
 
     // #999: scanning `node_modules` for dist-shipped islands makes
     // duplicate marker names far more likely — e.g. a local
@@ -4506,14 +4686,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         if zfb_islands::is_same_package_duplicate(collision) {
             continue;
         }
-        output::warn(format!(
-            "island marker name collision: \"{}\" is produced by two different source files — \
-             keeping {} and dropping {}. Only the kept island will hydrate; rename one component \
-             or give it a distinct `displayName` so both register under unique marker names.",
+        anyhow::bail!(
+            "ambiguous owned island marker {:?}: {} and {}",
             collision.name,
             collision.kept_path.display(),
-            collision.dropped_path.display(),
-        ));
+            collision.dropped_path.display()
+        );
     }
 
     // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
@@ -4532,9 +4710,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // 2. node_modules resolution: esbuild walks UP from each importing
     //    file's directory looking for `node_modules`. When the consumer
     //    project has no on-disk `node_modules`, every bare import in
-    //    user-authored components (`preact/hooks`, `preact/jsx-runtime`,
-    //    etc.) and in the synthesised entry (`@takazudo/zfb/runtime`,
-    //    `preact`) fails. The main bundler addresses this via a "shadow
+    //    user-authored components and in the synthesised entry
+    //    (`@takazudo/zfb/runtime`, owned JSX modules) fails. The main bundler
+    //    addresses this via a "shadow
     //    tree" with a `node_modules` symlink (see
     //    `crates/zfb-build/src/bundler.rs:751`); the islands bundler runs
     //    esbuild directly against the user's source tree so a shadow tree
@@ -4663,12 +4841,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // bundler so the synthetic islands entry picks up the client-router
     // runtime's side-effect import. When false the generated entry is
     // byte-identical to a pre-#289 build.
-    // Thread the configured framework's JSX import source into the
-    // islands BundleConfig (gap: previously hardcoded to Preact via the
-    // `BundleConfig::production()` default). This drives BOTH esbuild's
-    // `--jsx-import-source` AND — because `produce_bundle_js` derives the
-    // mount-glue framework back from this same field — the React vs
-    // Preact hydration glue emitted into the shared bundle.
+    // The islands bundler uses the owned JSX source and mount glue directly.
     // Issue #1501: turn the scanner's direct + nested worker edges into one
     // deterministic entry per logical source. Worker code is read from the
     // preprocessing shadow (where `?raw` and nested worker URLs have already
@@ -4713,7 +4886,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
     }
     .with_outdir(outdir.to_path_buf())
-    .with_jsx_import_source(islands_jsx_import_source)
+    .with_zudo_react_build(Some(
+        zfb_build::bundler::zudo_react_build_token_with_inputs_and_output(
+            project_root,
+            &plugin_config.alias_entries,
+            &plugin_config.virtual_modules,
+            outdir,
+        )?,
+    ))
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(bundle_loaders)
     .with_define(bundle_define)
@@ -5695,14 +5875,12 @@ fn stage_client_script_preprocessing_with_worker_context(
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
-    framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
     bundle_config: Option<&crate::config::BundleConfig>,
 ) -> Result<Vec<AssetEmitterPayload>> {
     build_default_client_scripts_payloads_with_plugin_config(
         project_root,
         outdir,
-        framework,
         registered,
         bundle_config,
         &IslandsPluginConfig::default(),
@@ -5712,7 +5890,6 @@ pub(crate) fn build_default_client_scripts_payloads(
 pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     project_root: &Path,
     outdir: &Path,
-    framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
     bundle_config: Option<&crate::config::BundleConfig>,
     plugin_config: &IslandsPluginConfig,
@@ -5763,25 +5940,15 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     if entries.is_empty() {
         return Ok(Vec::new());
     }
-
-    let client_scripts_jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
-        true,
-        &bundle_loaders,
-        &bundle_define,
-        client_scripts_jsx_import_source,
-    )
-    .with_plugins(
-        plugin_config.alias_entries.clone(),
-        plugin_config.virtual_modules.clone(),
-    )
-    .with_output_semantics(true, false);
+    let worker_build_context =
+        zfb_build::ModuleWorkerBuildContext::new(true, &bundle_loaders, &bundle_define)
+            .with_plugins(
+                plugin_config.alias_entries.clone(),
+                plugin_config.virtual_modules.clone(),
+            )
+            .with_output_semantics(true, false);
     let preprocess_stage = stage_client_script_preprocessing_with_worker_context(
         project_root,
         &entries,
@@ -5891,11 +6058,10 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     // JSX is harmless for plain .ts files; reuse the islands JSX import
-    // source so Preact/React aliases apply consistently to any .tsx
+    // source so the owned JSX import source applies consistently to any .tsx
     // client scripts.
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
-        .with_jsx_import_source(client_scripts_jsx_import_source)
         .with_loaders(bundle_loaders)
         .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
@@ -6355,7 +6521,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     // Where dev client scripts are written + served from (issue #1189: the
     // isolated `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
@@ -6363,7 +6528,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     build_dev_client_scripts_to_disk_with_plugin_config(
         project_root,
         assets_root,
-        framework,
         bundle_config,
         prev_output_filenames,
         registered,
@@ -6374,7 +6538,6 @@ pub(crate) fn build_dev_client_scripts_to_disk(
 pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     project_root: &Path,
     assets_root: &Path,
-    framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
@@ -6419,25 +6582,15 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let client_dir = assets_root
         .join(zfb_types::DIST_ASSETS_DIR)
         .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
-
-    let jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
-        false,
-        &bundle_loaders,
-        &bundle_define,
-        jsx_import_source,
-    )
-    .with_plugins(
-        plugin_config.alias_entries.clone(),
-        plugin_config.virtual_modules.clone(),
-    )
-    .with_output_semantics(false, true);
+    let worker_build_context =
+        zfb_build::ModuleWorkerBuildContext::new(false, &bundle_loaders, &bundle_define)
+            .with_plugins(
+                plugin_config.alias_entries.clone(),
+                plugin_config.virtual_modules.clone(),
+            )
+            .with_output_semantics(false, true);
     let preprocess_stage = if entries.is_empty() {
         None
     } else {
@@ -6586,7 +6739,6 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
-        .with_jsx_import_source(jsx_import_source)
         .with_loaders(bundle_loaders)
         .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
@@ -7184,6 +7336,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the build succeeds; the warning is the signal.  Runs even when
     // `registered_marker_names` is empty (zero registered islands + a
     // rendered marker is exactly the scenario this check targets).
+    {
+        for page in &post_processable_pages {
+            let html = std::fs::read_to_string(page)?;
+            for name in crate::commands::island_marker_check::collect_marker_names_in_page(&html) {
+                if !registered_marker_names.contains(&name) {
+                    anyhow::bail!(
+                        "owned island marker {name:?} in {} has no scanner registration",
+                        page.display()
+                    );
+                }
+            }
+        }
+    }
     crate::commands::island_marker_check::check_island_markers(
         &post_processable_pages,
         &registered_marker_names,
@@ -8126,16 +8291,19 @@ fn copy_redirects_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn css_build_timing_line_format_is_stable() {
+        assert_eq!(
+            format_build_phase_timing_line("css", 17),
+            "[zfb-build-timing] phase=css elapsed_ms=17"
+        );
+    }
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    /// Shared with `css_support`'s tests, which also mutate
-    /// `ZFB_TAILWIND_BIN`: one test here `set_var`s a deliberately bogus path
-    /// to force a hermetic Tailwind failure, another is env-gated ON that
-    /// variable pointing at a real binary (issue #1799 review finding).
-    use crate::commands::css_support::TAILWIND_BIN_ENV_LOCK;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
@@ -8262,27 +8430,6 @@ mod tests {
         );
     }
 
-    /// Stub [`CssEngine`] that returns canned utility CSS and a canned
-    /// package-`url()` companion set on demand — lets a test exercise
-    /// `run_css_emitter`'s companion conversion without a real Tailwind
-    /// subprocess (companions only ever come from
-    /// `TailwindSubprocessEngine`'s real-binary path, never its mock path;
-    /// see [`zfb_css::engine::TailwindSubprocessConfig::with_mock_output`]).
-    struct CompanionStubCssEngine {
-        css: String,
-        companions: RefCell<Vec<zfb_css::url_attribution::PackageUrlAsset>>,
-    }
-
-    impl CssEngine for CompanionStubCssEngine {
-        fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
-            Ok(self.css.clone())
-        }
-
-        fn take_package_url_companions(&self) -> Vec<zfb_css::url_attribution::PackageUrlAsset> {
-            std::mem::take(&mut *self.companions.borrow_mut())
-        }
-    }
-
     /// Companion boundary crossing for CSS (issue #2318 review finding):
     /// `run_css_emitter` — the real CLI-layer function every `zfb build`
     /// invocation calls — must thread `CssEmitterOutput::companions`
@@ -8292,28 +8439,30 @@ mod tests {
     /// `production_islands_payload_keeps_resource_companions_verbatim` above.
     ///
     /// `prod_asset_graph_e2e.rs` (in `zfb-build`, which cannot depend on the
-    /// `zfb` bin crate) proves the real Tailwind binary produces companions
+    /// `zfb` bin crate) proves utility CSS emits package companions
     /// and that the real `apply_prod_asset_pipeline` ships them correctly —
     /// but it reimplements this exact conversion by hand rather than calling
-    /// `run_css_emitter` (a deliberate, documented choice in that file: no
-    /// real Tailwind subprocess is needed to prove wiring, and this crate is
-    /// the one place the real function lives). This test closes that gap
-    /// cheaply — no real Tailwind, no `#[ignore]` — by driving
-    /// `run_css_emitter` itself through the [`CompanionStubCssEngine`]: if a
+    /// `run_css_emitter` (a deliberate, documented choice in that file: the
+    /// test uses a stub engine to prove wiring, and this crate is the one
+    /// place the real function lives). This test closes that gap without an
+    /// external binary or `#[ignore]` by driving
+    /// `run_css_emitter` itself through the [`zfb_css::StubCssEngine`]: if a
     /// future edit ever drops or mangles the `.companions` mapping at
     /// `run_css_emitter`'s call site, this test fails without needing the
-    /// tailwindcss-v4 binary staged.
+    /// external CSS compiler binary staged.
     #[test]
     fn run_css_emitter_threads_package_url_companions_into_asset_payload() {
         let project_root = tempdir().unwrap();
         let outdir = tempdir().unwrap();
-        let engine = CompanionStubCssEngine {
-            css: ".icon{background:url(./icon-abc12345.svg)}".to_string(),
-            companions: RefCell::new(vec![zfb_css::url_attribution::PackageUrlAsset {
-                filename: "icon-abc12345.svg".to_string(),
-                bytes: b"<svg>icon</svg>".to_vec(),
-            }]),
-        };
+        let mut result = zfb_css::CssEngineOutput::new(
+            ".icon{background:url(./icon-abc12345.svg)}",
+            zfb_css::CssEngineId::new("stub", None),
+        );
+        result.companions.push(zfb_css::PackageUrlAsset {
+            filename: "icon-abc12345.svg".to_string(),
+            bytes: b"<svg>icon</svg>".to_vec(),
+        });
+        let engine = zfb_css::StubCssEngine::with_output(result);
 
         let payload = run_css_emitter(
             engine,
@@ -8463,9 +8612,6 @@ mod tests {
                 bundle_path: self.mock_bundle_path.clone(),
                 sourcemap_path: self.mock_bundle_path.with_extension("mjs.map"),
                 manifest: BundleManifest {
-                    framework: "preact".into(),
-                    jsx_import_source: "preact".into(),
-                    hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
                     bundle_basename: "bundle.mjs".into(),
                     routes: vec![RouteEntry {
                         route: "/".into(),
@@ -9671,9 +9817,6 @@ mod tests {
                     bundle_path: PathBuf::from("/dev/null"),
                     sourcemap_path: PathBuf::from("/dev/null"),
                     manifest: BundleManifest {
-                        framework: "preact".into(),
-                        jsx_import_source: "preact".into(),
-                        hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
                         bundle_basename: "bundle.mjs".into(),
                         routes: vec![],
                     },
@@ -10859,8 +11002,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // zfb#1534 — `role_classes_inline_sources` (the `@source inline(...)`
-    // safelist feeding `build_default_css_payload`'s `tw_cfg`)
+    // zfb#1534 — `role_classes_inline_sources` (role-class candidates feeding
+    // wind candidate discovery)
     // -----------------------------------------------------------------------
 
     /// Build a `CodeHighlightConfig` in class mode with the given
@@ -10999,102 +11142,15 @@ mod tests {
         );
     }
 
-    /// Issue #1776: `assemble_css_content_globs` folds package-route
-    /// entrypoint parent dirs AND Sibling Mirror mirror roots into the
-    /// content-glob list, in that order, and de-dupes against the
-    /// defaults (and against each other). Pure logic — no project tree,
-    /// no Tailwind binary.
-    ///
-    /// Issue #1803: also asserts the companion `@source not` exclusion
-    /// globs — one per `CSS_SIBLING_MIRROR_SKIP_DIRS` entry for the
-    /// freshly appended mirror root (`/workspace/lib/shared`) only. The
-    /// mirror root that dedupes away as a duplicate of a default
-    /// (`/proj/pages`) never reaches the fresh-append branch, so it
-    /// contributes none.
-    #[test]
-    fn assemble_css_content_globs_appends_mirror_roots_deduped_after_defaults() {
-        let defaults = vec!["/proj/pages".to_string(), "/proj/components".to_string()];
-        let package_route_entrypoints = vec![PathBuf::from("/proj/.zfb-package-routes/blog/page")];
-        let sibling_mirror_roots = vec![
-            // Duplicate of a default root — must not be re-added.
-            PathBuf::from("/proj/pages"),
-            PathBuf::from("/workspace/lib/shared"),
-        ];
-
-        let (globs, negative_globs) = assemble_css_content_globs(
-            &defaults,
-            &package_route_entrypoints,
-            &sibling_mirror_roots,
-        );
-
-        assert_eq!(
-            globs,
-            vec![
-                "/proj/pages".to_string(),
-                "/proj/components".to_string(),
-                "/proj/.zfb-package-routes/blog".to_string(),
-                "/workspace/lib/shared".to_string(),
-            ],
-            "expected defaults, then the package-route entrypoint's parent dir, \
-             then the sibling mirror root (dup of a default dropped): {globs:?}"
-        );
-        assert_eq!(
-            negative_globs,
-            CSS_SIBLING_MIRROR_SKIP_DIRS
-                .iter()
-                .map(|skip_dir| format!("/workspace/lib/shared/**/{skip_dir}/**"))
-                .collect::<Vec<_>>(),
-            "expected one @source not exclusion glob per CSS_SIBLING_MIRROR_SKIP_DIRS \
-             entry for the freshly appended mirror root only: {negative_globs:?}"
-        );
-    }
-
-    /// A mirror root that happens to coincide with a package-route
-    /// entrypoint's parent dir is de-duped too — the `seen` set is shared
-    /// across both extension passes, not reset between them.
-    ///
-    /// Issue #1803: since this mirror root dedupes away (it was already
-    /// seen via the package-route entrypoint's parent dir), it never
-    /// reaches the fresh-append branch either, so it carries no skip-dir
-    /// exclusions — "scope: mirror roots only" leaves package-route dirs
-    /// (and anything deduped against one) on their pre-#1803 behavior.
-    #[test]
-    fn assemble_css_content_globs_dedupes_mirror_root_against_package_route_dir() {
-        let defaults = vec!["/proj/pages".to_string()];
-        let package_route_entrypoints = vec![PathBuf::from("/workspace/lib/shared/page.tsx")];
-        let sibling_mirror_roots = vec![PathBuf::from("/workspace/lib/shared")];
-
-        let (globs, negative_globs) = assemble_css_content_globs(
-            &defaults,
-            &package_route_entrypoints,
-            &sibling_mirror_roots,
-        );
-
-        assert_eq!(
-            globs,
-            vec![
-                "/proj/pages".to_string(),
-                "/workspace/lib/shared".to_string(),
-            ],
-            "the mirror root duplicating the package-route parent dir must \
-             appear exactly once: {globs:?}"
-        );
-        assert!(
-            negative_globs.is_empty(),
-            "a mirror root deduped against a package-route dir must not gain \
-             skip-dir exclusions: {negative_globs:?}"
-        );
-    }
-
-    /// Regression (issue #824): `tailwind.enabled = false` disables only
-    /// the Tailwind layers, NOT the authored-CSS pipeline. With an
+    /// Regression (issue #824): `wind: false` disables only
+    /// the wind layers, NOT the authored-CSS pipeline. With an
     /// authored global stylesheet and a CSS Module present, the emitter
     /// must still ship a stylesheet containing both — and crucially WITHOUT
-    /// the Tailwind preflight (no `@import "tailwindcss"`, no subprocess).
+    /// the wind reset (no legacy `@import "tailwindcss"`, no subprocess).
     /// This path runs `AuthoredCssEngine`, so the test is hermetic (no
-    /// tailwind binary required).
+    /// external binary required).
     #[test]
-    fn css_payload_ships_authored_css_when_tailwind_disabled() {
+    fn css_payload_ships_authored_css_when_wind_disabled() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
 
@@ -11120,7 +11176,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11132,26 +11188,26 @@ mod tests {
             &[],
         )
         .expect("should not error")
-        .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
+        .expect("expected Some payload: authored CSS + module must ship with wind disabled");
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
             css.contains(".authored-global"),
-            "authored global CSS must survive tailwind.enabled=false; got:\n{css}",
+            "authored global CSS must survive wind=false; got:\n{css}",
         );
         assert!(
             css.contains("display: grid") || css.contains("display:grid"),
             "CSS Module rule must be emitted; got:\n{css}",
         );
-        // The Tailwind layers must be skipped entirely — no preflight, no
+        // The wind layers must be skipped entirely — no preflight, no
         // synthesised import.
         assert!(
             !css.contains("@import \"tailwindcss\""),
-            "tailwind import must NOT be synthesised when disabled; got:\n{css}",
+            "legacy Tailwind import must not be synthesised with wind disabled; got:\n{css}",
         );
         assert!(
             !css.contains("tailwindcss v4"),
-            "tailwind preflight banner must NOT appear when disabled; got:\n{css}",
+            "legacy preflight banner must not appear with wind disabled; got:\n{css}",
         );
 
         // And the class-map producer must run in lockstep so the HTML
@@ -11161,7 +11217,7 @@ mod tests {
                 .expect("class maps");
         assert!(
             !maps.is_empty(),
-            "CSS Modules class maps must be non-empty when tailwind is disabled",
+            "CSS Modules class maps must be non-empty when wind is disabled",
         );
         let scoped = maps
             .values()
@@ -11173,11 +11229,11 @@ mod tests {
         );
     }
 
-    /// Locked authored-import contract (#2721): the real Tailwind-disabled
+    /// Locked authored-import contract (#2721): the real wind-disabled
     /// build seam bundles local imports and leaves external imports for the
     /// pipeline's final hoist.
     #[test]
-    fn css_payload_bundles_authored_imports_when_tailwind_disabled() {
+    fn css_payload_bundles_authored_imports_when_wind_disabled() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("styles")).unwrap();
@@ -11197,7 +11253,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11230,11 +11286,11 @@ mod tests {
         );
     }
 
-    /// `tailwind.enabled = false` AND no authored CSS AND no CSS Modules
+    /// `wind: false` AND no authored CSS AND no CSS Modules
     /// => no stylesheet to ship, so the emitter slot stays `None` (avoids
     /// a `<link>` to an empty stylesheet).
     #[test]
-    fn css_payload_none_when_tailwind_disabled_and_no_css() {
+    fn css_payload_none_when_wind_disabled_and_no_css() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         // A page with no module import and no global stylesheet.
@@ -11245,7 +11301,7 @@ mod tests {
         )
         .unwrap();
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11259,46 +11315,7 @@ mod tests {
         .expect("should not error");
         assert!(
             payload.is_none(),
-            "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
-        );
-    }
-
-    /// Regression (issue #824): with Tailwind disabled, a `@import
-    /// "tailwindcss"` in the authored global stylesheet must be stripped
-    /// (no subprocess resolves it, so emitting it would 404 in the
-    /// browser) while the rest of the authored CSS survives.
-    #[test]
-    fn css_payload_strips_tailwind_import_when_disabled() {
-        let tmp = tempdir().unwrap();
-        let project_root = tmp.path();
-        std::fs::create_dir_all(project_root.join("styles")).unwrap();
-        std::fs::write(
-            project_root.join("styles/global.css"),
-            "@import \"tailwindcss\";\n.real-rule { color: red; }\n",
-        )
-        .unwrap();
-        let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
-            ..Config::default()
-        };
-        let payload = build_default_css_payload(
-            project_root,
-            &project_root.join("dist"),
-            &cfg,
-            &[],
-            &[],
-            &[],
-        )
-        .expect("should not error")
-        .expect("authored CSS must still ship");
-        let css = String::from_utf8(payload.bytes).unwrap();
-        assert!(
-            !css.contains("@import \"tailwindcss\""),
-            "tailwind import must be stripped from authored CSS when disabled; got:\n{css}",
-        );
-        assert!(
-            css.contains(".real-rule"),
-            "non-import authored rules must survive the strip; got:\n{css}",
+            "expected None when wind is disabled and no authored CSS/modules; got {payload:?}",
         );
     }
 
@@ -11325,19 +11342,14 @@ mod tests {
         }
     }
 
-    /// Highlight Tokens epic sub #1533: class mode + `defaultStylesheet`
-    /// true (the default) ships `zfb_css::default_hi_css()` ahead of the
-    /// authored CSS, even on the Tailwind-disabled (`build_authored_only_
-    /// css_payload`) path — proving the wiring shared with the Tailwind
-    /// path via `run_css_emitter`. Hermetic: runs through
-    /// `AuthoredCssEngine`, no tailwind binary required.
+    /// Class mode includes the default highlight stylesheet in authored-only output.
     #[test]
     fn css_payload_ships_default_hi_stylesheet_in_class_mode() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
             ..Config::default()
         };
@@ -11375,7 +11387,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             code_highlight: Some(code_highlight_config(
                 CodeHighlightMode::Class,
                 false,
@@ -11417,7 +11429,7 @@ mod tests {
         .unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             // code_highlight: None => mode defaults to Inline.
             ..Config::default()
         };
@@ -11524,7 +11536,7 @@ mod tests {
         );
     }
 
-    /// Acceptance: with Tailwind disabled (hermetic — no tailwind binary
+    /// Acceptance: with wind disabled (hermetic — no external binary
     /// required), the emitted stylesheet contains the scoped sibling class
     /// AND its name matches the one `compute_css_module_class_maps`
     /// (the bundler's JSX-rewrite producer) computed — proving the CSS
@@ -11537,7 +11549,7 @@ mod tests {
         let ws = project.parent().unwrap().parent().unwrap();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload =
@@ -11676,13 +11688,8 @@ mod tests {
         let ws = project.parent().unwrap().parent().unwrap();
         let sibling_tsx = zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.tsx"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::Preact,
-            None,
-            &[],
-            &virtual_panel_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_panel_module(ws));
         let discovered = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         assert!(
@@ -11705,13 +11712,8 @@ mod tests {
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.module.css"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::Preact,
-            None,
-            &[],
-            &virtual_panel_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_panel_module(ws));
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
 
@@ -11734,21 +11736,21 @@ mod tests {
         );
     }
 
-    /// Acceptance (issue #1775): the Tailwind-DISABLED path
+    /// Acceptance (issue #1775): the wind-DISABLED path
     /// (`build_authored_only_css_payload`) must also discover a
-    /// virtual-only sibling CSS Module — `enabled: false` opts out of
-    /// Tailwind, not out of CSS (issue #824), and that invariant must hold
+    /// virtual-only sibling CSS Module — `wind: false` opts out of
+    /// wind utilities, not out of CSS (issue #824), and that invariant must hold
     /// for claim source c too, not just the alias claim path
     /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`
     /// already covers.
     #[test]
-    fn css_payload_emits_virtual_only_sibling_module_css_with_tailwind_disabled() {
+    fn css_payload_emits_virtual_only_sibling_module_css_with_wind_disabled() {
         let (_tmp, project) = sibling_css_virtual_module_workspace_fixture();
         let ws = project.parent().unwrap().parent().unwrap();
         let plugin_virtual_modules = virtual_panel_module(ws);
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11763,13 +11765,7 @@ mod tests {
         .expect("virtual-only sibling module must ship a non-empty payload");
         let css = String::from_utf8(payload.bytes).unwrap();
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::Preact,
-            None,
-            &[],
-            &plugin_virtual_modules,
-        );
+        let worker_context = module_worker_build_context(false, None, &[], &plugin_virtual_modules);
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
@@ -11784,7 +11780,7 @@ mod tests {
 
         assert!(
             css.contains(&format!(".{scoped}")),
-            "emitted CSS (Tailwind disabled) must contain the scoped virtual-only sibling class \
+            "emitted CSS (wind disabled) must contain the scoped virtual-only sibling class \
              `.{scoped}`; got:\n{css}",
         );
     }
@@ -11849,13 +11845,8 @@ mod tests {
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/vdirect/styles.module.css"));
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::Preact,
-            None,
-            &[],
-            &virtual_direct_css_module(ws),
-        );
+        let worker_context =
+            module_worker_build_context(false, None, &[], &virtual_direct_css_module(ws));
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         assert!(
@@ -11882,21 +11873,21 @@ mod tests {
         );
     }
 
-    /// Regression (issue #1775 follow-up), Tailwind-DISABLED variant: the
+    /// Regression (issue #1775 follow-up), wind-DISABLED variant: the
     /// authored-only path (`build_authored_only_css_payload`) must also
     /// compile and emit a directly-imported virtual-only CSS Module —
-    /// `enabled: false` opts out of Tailwind, not out of CSS (issue #824). The
+    /// `enabled: false` opts out of wind, not out of CSS (issue #824). The
     /// emitted scoped class must match the one `compute_css_module_class_maps`
     /// produces, proving the emission and class-map paths agree on the direct
     /// virtual CSS import.
     #[test]
-    fn css_payload_emits_direct_virtual_css_module_with_tailwind_disabled() {
+    fn css_payload_emits_direct_virtual_css_module_with_wind_disabled() {
         let (_tmp, project) = direct_virtual_css_module_workspace_fixture();
         let ws = project.parent().unwrap().parent().unwrap();
         let plugin_virtual_modules = virtual_direct_css_module(ws);
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let payload = build_default_css_payload(
@@ -11911,13 +11902,7 @@ mod tests {
         .expect("direct virtual CSS module must ship a non-empty payload");
         let css = String::from_utf8(payload.bytes).unwrap();
 
-        let worker_context = module_worker_build_context(
-            false,
-            crate::config::Framework::Preact,
-            None,
-            &[],
-            &plugin_virtual_modules,
-        );
+        let worker_context = module_worker_build_context(false, None, &[], &plugin_virtual_modules);
         let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
             .expect("virtual discovery should not fail");
         let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
@@ -11934,7 +11919,7 @@ mod tests {
 
         assert!(
             css.contains(&format!(".{scoped}")),
-            "emitted CSS (Tailwind disabled) must contain the scoped direct virtual CSS module \
+            "emitted CSS (wind disabled) must contain the scoped direct virtual CSS module \
              class `.{scoped}`; got:\n{css}",
         );
     }
@@ -11950,7 +11935,6 @@ mod tests {
         let (_tmp, project) = sibling_css_workspace_fixture();
         let worker_context = module_worker_build_context(
             true,
-            crate::config::Framework::Preact,
             None,
             &[("@shared/*".to_string(), "unused".to_string())],
             &[],
@@ -12280,36 +12264,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn strip_tailwind_imports_drops_only_tailwind_imports() {
-        let input = concat!(
-            "@import \"tailwindcss\";\n",
-            "@import 'tailwindcss/preflight';\n",
-            "@import \"tailwindcss/utilities\";\n",
-            "@import \"./vendor.css\";\n",
-            ".keep { color: blue; }\n",
-        );
-        let out = strip_tailwind_imports(input);
-        assert!(
-            !out.contains("tailwindcss"),
-            "all tailwind imports gone; got:\n{out}"
-        );
-        assert!(out.contains(".keep"), "authored rule kept");
-    }
-
-    #[test]
-    fn strip_tailwind_imports_keeps_commented_import() {
-        let input = "/* @import \"tailwindcss\"; */\n.keep { color: green; }\n";
-        let out = strip_tailwind_imports(input);
-        // A commented-out import is inert; leaving it is harmless and the
-        // trimmed line starts with `/*`, not `@import`.
-        assert!(
-            out.contains("/* @import \"tailwindcss\"; */"),
-            "commented import kept"
-        );
-        assert!(out.contains(".keep"), "authored rule kept");
-    }
-
     /// No `pages/` directory => islands emitter slot is `None`.
     /// Mirror of the CSS-disabled coverage point for the islands
     /// branch — no subprocess required.
@@ -12324,7 +12278,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12359,7 +12312,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12398,7 +12350,7 @@ mod tests {
         // so it is rejected and no island is registered.
         std::fs::write(
             project_root.join("components/counter.tsx"),
-            "import { useState } from \"preact/hooks\";\n\
+            "import { signal } from \"@takazudo/zfb/zudo-react\";\n\
              \"use client\";\n\
              export function Counter() { return null; }\n",
         )
@@ -12408,7 +12360,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12461,7 +12412,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -12509,7 +12459,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -13604,7 +13553,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
             None,
             zfb_islands::BundleMode::Development,
             &plugin_config,
@@ -13659,7 +13607,6 @@ mod tests {
         let client_payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &outdir,
-            crate::config::Framework::Preact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -13707,7 +13654,6 @@ mod tests {
         let dev_outcome = build_dev_client_scripts_to_disk_with_plugin_config(
             root,
             &dev_assets_root,
-            crate::config::Framework::Preact,
             None,
             &std::collections::HashSet::new(),
             &zfb_build::ClientEntryList::new(),
@@ -13854,7 +13800,7 @@ mod tests {
         std::fs::create_dir_all(&zfb_runtime).unwrap();
         std::fs::write(
             zfb_runtime.join("package.json"),
-            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -13862,16 +13808,14 @@ mod tests {
             "export function mountIslands() {}\n",
         )
         .unwrap();
-        let preact = nm.join("preact");
-        std::fs::create_dir_all(&preact).unwrap();
         std::fs::write(
-            preact.join("package.json"),
-            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+            zfb_runtime.join("zudo-react.js"),
+            "export function h() {}\n",
         )
         .unwrap();
         std::fs::write(
-            preact.join("index.js"),
-            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+            zfb_runtime.join("zudo-react-client.js"),
+            "export function hydrate() {} export function mount() {}\n",
         )
         .unwrap();
         // The genuine pnpm-style symlink into the first-party child package.
@@ -13947,7 +13891,6 @@ mod tests {
             &root.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14139,7 +14082,7 @@ mod tests {
         std::fs::create_dir_all(&zfb_runtime).unwrap();
         std::fs::write(
             zfb_runtime.join("package.json"),
-            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js","./zudo-react":"./zudo-react.js","./zudo-react/client":"./zudo-react-client.js"}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -14147,16 +14090,14 @@ mod tests {
             "export function mountIslands() {}\n",
         )
         .unwrap();
-        let preact = nm.join("preact");
-        std::fs::create_dir_all(&preact).unwrap();
         std::fs::write(
-            preact.join("package.json"),
-            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+            zfb_runtime.join("zudo-react.js"),
+            "export function h() {}\n",
         )
         .unwrap();
         std::fs::write(
-            preact.join("index.js"),
-            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+            zfb_runtime.join("zudo-react-client.js"),
+            "export function hydrate() {} export function mount() {}\n",
         )
         .unwrap();
         // The genuine pnpm-style symlink into the first-party
@@ -14202,7 +14143,6 @@ mod tests {
             &project.join("pages"),
             &[],
             &outdir,
-            crate::config::Framework::Preact,
             None,
             zfb_islands::BundleMode::Production,
             &plugin_config,
@@ -14250,7 +14190,6 @@ mod tests {
         let error = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::Preact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -14306,7 +14245,6 @@ mod tests {
         let payloads = build_default_client_scripts_payloads_with_plugin_config(
             root,
             &root.join("dist"),
-            crate::config::Framework::Preact,
             &zfb_build::ClientEntryList::new(),
             None,
             &plugin_config,
@@ -15394,7 +15332,6 @@ mod tests {
         let first = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15411,7 +15348,6 @@ mod tests {
         let second = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &first.output_filenames,
             &registered,
@@ -15429,7 +15365,6 @@ mod tests {
         let third = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &second.output_filenames,
             &registered,
@@ -15483,7 +15418,6 @@ mod tests {
         let first_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -15530,15 +15464,9 @@ mod tests {
             "constructor importer must remain an invalidation target until the next build"
         );
 
-        let second_outcome = build_dev_client_scripts_to_disk(
-            root,
-            &assets_root,
-            crate::config::Framework::Preact,
-            None,
-            &first_outputs,
-            &registered,
-        )
-        .unwrap();
+        let second_outcome =
+            build_dev_client_scripts_to_disk(root, &assets_root, None, &first_outputs, &registered)
+                .unwrap();
         let second_changed = second_outcome.changed;
         let second_outputs = second_outcome.output_filenames;
         let second_raw = second_outcome.raw_targets;
@@ -15564,7 +15492,6 @@ mod tests {
         let third_outcome = build_dev_client_scripts_to_disk(
             root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &second_outputs,
             &registered,
@@ -15999,7 +15926,6 @@ mod tests {
         let outcome = build_dev_client_scripts_to_disk(
             &project_root,
             &assets_root,
-            crate::config::Framework::Preact,
             None,
             &std::collections::HashSet::new(),
             &registered,
@@ -17039,7 +16965,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
             None,
@@ -17072,7 +16997,6 @@ mod tests {
             &project_root.join("pages"),
             &[],
             &project_root.join("dist"),
-            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::WarnAndSkip,
             None,
@@ -17331,42 +17255,29 @@ mod tests {
     // module's other non-`#[ignore]`d tests do — see the doc comments on
     // the three tests above ("esbuild is never invoked").
 
-    /// End-to-end check that `DefaultRunner::emit_prod_assets`
-    /// invokes the real Tailwind v4 CLI and returns non-empty CSS
-    /// bytes for a fixture project with a single page. Mirrors the
-    /// `#[ignore]` gate already used by
-    /// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`
-    /// — both depend on the Tailwind binary slot at
-    /// `crates/zfb/binaries/tailwindcss-v4`, which `crates/zfb/build.rs`
-    /// DOES stage in CI as a side effect of building the `zfb` crate, but
-    /// no CI step runs with `--ignored`/`--include-ignored` yet. Run
-    /// locally with `--include-ignored` once a build has staged the slot.
+    /// End-to-end check that `DefaultRunner::emit_prod_assets` invokes
+    /// the in-process wind engine and returns non-empty CSS for a page
+    /// using an explicitly configured color token.
     // Requires `DefaultRunner` which carries `PluginRegistryHooks` and
     // constructs `Backend::EmbeddedV8` — only available when the
     // `embed_v8` feature is on (issue #371, sub-task 4.1a).
     #[cfg(feature = "embed_v8")]
     #[test]
-    #[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --lib \
-                commands::build:: -- --include-ignored (ZFB_TAILWIND_BIN or the \
-                staged crates/zfb/binaries/tailwindcss-v4 slot)"]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
-        // Serialise against the `..._even_on_tailwind_failure` test above,
-        // which `set_var`s `ZFB_TAILWIND_BIN` process-wide. Both run in this
-        // binary under the `--include-ignored` command in this test's own
-        // `#[ignore]` reason (issue #1799 review finding).
-        let _env_lock = TAILWIND_BIN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("pages")).unwrap();
         std::fs::write(
             project_root.join("pages/index.tsx"),
-            "export default function Index() { return <div className=\"text-red-500\">hi</div>; }\n",
+            "export default function Index() { return <div className=\"bg-brand\">hi</div>; }\n",
         )
         .unwrap();
-        let cfg = Config::default(); // tailwind defaults to enabled
+        let mut wind = crate::config::WindConfig::default();
+        wind.tokens.colors.insert("brand".into(), "#123456".into());
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Config::default()
+        };
         let outdir = project_root.join("dist");
         let runner = DefaultRunner {
             timing_enabled: false,
@@ -17385,12 +17296,13 @@ mod tests {
             .expect("emit_prod_assets must succeed");
         let css = inputs
             .css
-            .expect("css slot must be Some when tailwind is enabled and a page exists");
+            .expect("css slot must be Some when wind is enabled and a page exists");
         assert!(
             !css.bytes.is_empty(),
-            "CSS bytes must be non-empty when Tailwind ran against a TSX source"
+            "CSS bytes must be non-empty when wind ran against a TSX source"
         );
         assert_eq!(css.stable_url, "/assets/styles.css");
+        assert!(String::from_utf8_lossy(&css.bytes).contains("--zw-color-brand"));
         // The pipeline writes its hashed asset elsewhere, but the
         // bytes-only `build_emitter` path must NOT have written the
         // stable filename to disk on its own — that's the prod
@@ -18715,112 +18627,23 @@ mod tests {
         );
     }
 
-    /// Issue #1802 (epic #1799, gap (a)): the CSS source-plan seam must
-    /// publish its computed sibling mirror roots to the caller-supplied
-    /// observer BEFORE the Tailwind subprocess ever runs — and therefore
-    /// even when that subprocess later fails. Without this, a failed boot
-    /// CSS build in dev would leave the dev-watch reconciliation with no
-    /// root to register, and there would be no filesystem event through
-    /// which recovery could ever trigger.
-    ///
-    /// Forces the Tailwind engine to fail deterministically WITHOUT
-    /// spawning a real subprocess: `TailwindSubprocessEngine::produce_utility_css`
-    /// (crates/zfb-css/src/engine.rs) checks `binary_path.exists()` before
-    /// ever exec'ing, so pointing `ZFB_TAILWIND_BIN` at a path that is
-    /// guaranteed not to exist is a fast, hermetic, deterministic failure —
-    /// no real tailwind binary is spawned.
-    ///
-    /// `set_var` is PROCESS-wide, and `ZFB_TAILWIND_BIN` is genuinely read
-    /// elsewhere in this same binary — by production code (the
-    /// `with_embedded_binary` skip above) and by the env-gated
-    /// `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
-    /// below, which crates/CLAUDE.md documents running in this very process via
-    /// `cargo test -p zfb --lib commands::build:: -- --include-ignored`.
-    /// `EnvGuard` bounds the mutation in TIME but not across THREADS, so
-    /// both tests take [`TAILWIND_BIN_ENV_LOCK`] to serialise against each
-    /// other; without it this test can point that one at a bogus path
-    /// mid-run and flake it (issue #1799 review finding).
-    #[test]
-    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_even_on_tailwind_failure()
-    {
-        let _env_lock = TAILWIND_BIN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        struct EnvGuard {
-            prev: Option<std::ffi::OsString>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.prev {
-                    Some(v) => std::env::set_var("ZFB_TAILWIND_BIN", v),
-                    None => std::env::remove_var("ZFB_TAILWIND_BIN"),
-                }
-            }
-        }
-        let prev = std::env::var_os("ZFB_TAILWIND_BIN");
-        std::env::set_var(
-            "ZFB_TAILWIND_BIN",
-            "/nonexistent/zfb-test-tailwind-missing-binary",
-        );
-        let _guard = EnvGuard { prev };
-
-        let (_tmp, project) = sibling_css_workspace_fixture();
-
-        // `Config::default()` leaves Tailwind ENABLED (the default) — the
-        // `tailwind.enabled = false` path never computes mirror roots at
-        // all (there is no `@source` scan to feed), so this must exercise
-        // the Tailwind-enabled branch to reach the seam under test.
-        let cfg = Config::default();
-        let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
-
-        let result = build_default_css_payload_with_source_plan(
-            &project,
-            &project.join("dist"),
-            &cfg,
-            &[],
-            &[],
-            &[],
-            &|roots| {
-                *observed.borrow_mut() = Some(roots.to_vec());
-            },
-        );
-
-        assert!(
-            result.is_err(),
-            "expected the Tailwind engine to fail deterministically (missing binary); \
-             got {result:?}"
-        );
-        let observed = observed.borrow();
-        assert!(
-            observed.is_some(),
-            "the mirror-root observer must fire even though the Tailwind subprocess \
-             later fails — otherwise a failed boot CSS build never registers sibling \
-             watches"
-        );
-        assert!(
-            !observed.as_ref().unwrap().is_empty(),
-            "this fixture claims a workspace sibling via a tsconfig alias, so the \
-             published set must be non-empty: {observed:?}"
-        );
-    }
-
-    /// Review finding (issue #1802): `tailwind.enabled = false` opts out of
-    /// the Tailwind `@source` scan, NOT out of CSS Modules discovery — see
+    /// Review finding (issue #1802): `wind: false` opts out of
+    /// utility candidate discovery, NOT out of CSS Modules discovery — see
     /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`,
     /// which proves `build_authored_only_css_payload` still ships a claimed
     /// sibling's `.module.css` bytes on this exact path. An earlier version
-    /// of this seam published an EMPTY mirror-root set whenever Tailwind was
+    /// of this seam published an EMPTY mirror-root set whenever wind was
     /// disabled, which would have left that same sibling directory
     /// unwatched in dev — a claimed sibling's CSS Module edit would go
-    /// stale until restart even though Tailwind was never involved. The
-    /// observer must fire with the SAME non-empty set regardless of
-    /// `tailwind.enabled`.
+    /// stale until restart even though wind was never involved. The
+    /// observer must fire with the SAME non-empty set on the
+    /// `wind: false` path.
     #[test]
-    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled() {
+    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_wind_disabled() {
         let (_tmp, project) = sibling_css_workspace_fixture();
 
         let cfg = Config {
-            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            wind: Some(crate::config::WindSetting::Disabled),
             ..Config::default()
         };
         let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
@@ -18836,17 +18659,454 @@ mod tests {
                 *observed.borrow_mut() = Some(roots.to_vec());
             },
         )
-        .expect("authored-only path must not error (hermetic, no tailwind binary required)");
+        .expect("authored-only path must not error (hermetic, wind needs no external binary)");
         assert!(payload.is_some());
 
         let observed = observed.borrow();
         let roots = observed
             .as_ref()
-            .expect("the observer must fire on the tailwind-disabled path too");
+            .expect("the observer must fire when wind is disabled too");
         assert!(
             !roots.is_empty(),
-            "mirror roots must still be published with tailwind.enabled = false, since \
+            "mirror roots must still be published with wind=false, since \
              CSS Modules discovery still scans them: {roots:?}"
         );
+    }
+    #[test]
+    fn wind_object_emits_plan_candidates_and_authored_css() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = write_css_root_claim_workspace(temp.path(), "  - '.'\n  - 'styleguide'\n");
+        let output_dir = temp.path().join("custom-output");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::write(output_dir.join("stale.tsx"), "<div className=\"hidden\" />").unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "<div className=\"block\" />",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let pass = build_default_css_payload_with_details(
+            &project,
+            &output_dir,
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap();
+        let css = String::from_utf8(pass.payload.unwrap().bytes).unwrap();
+        assert!(css.contains(".block"), "{css}");
+        assert!(css.contains(".authored"), "{css}");
+        assert!(!css.contains(".hidden"), "{css}");
+        assert!(css.find("@layer zw-reset").unwrap() < css.find(".authored").unwrap());
+    }
+
+    #[test]
+    fn absent_wind_key_compiles_with_default_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        assert!(build_default_css_payload(
+            project,
+            &project.join("dist"),
+            &Config::default(),
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap()
+        .is_none());
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "<div className=\"block\" />",
+        )
+        .unwrap();
+        let payload = build_default_css_payload(
+            project,
+            &project.join("dist"),
+            &Config::default(),
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap()
+        .expect("default wind should emit the block utility");
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".block"), "{css}");
+    }
+
+    #[test]
+    fn wind_false_emits_authored_only_and_empty_project_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Disabled),
+            ..Default::default()
+        };
+        assert!(
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .is_none()
+        );
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".authored"));
+        assert!(!css.contains("zw-reset"));
+    }
+
+    #[test]
+    fn wind_leftover_directive_entry_and_import_fail_with_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        let settings = [
+            crate::config::WindSetting::Disabled,
+            crate::config::WindSetting::Enabled(Box::default()),
+        ];
+        let entry = project.join("styles/global.css");
+        for wind in settings {
+            let cfg = Config {
+                wind: Some(wind),
+                ..Default::default()
+            };
+            std::fs::write(&entry, "@import 'tailwindcss';").unwrap();
+            let error =
+                build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                    .unwrap_err()
+                    .to_string();
+            assert!(
+                error.contains("ZW009") && error.contains("global.css"),
+                "{error}"
+            );
+            std::fs::write(&entry, "@import './other.css';").unwrap();
+            std::fs::write(project.join("styles/other.css"), "@apply block;").unwrap();
+            let error =
+                build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                    .unwrap_err()
+                    .to_string();
+            assert!(
+                error.contains("@apply") && error.contains("other.css"),
+                "{error}"
+            );
+        }
+    }
+    #[test]
+    fn wind_package_urls_emit_companions_on_both_new_arms() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        let package = project.join("node_modules/acme-font");
+        std::fs::create_dir_all(package.join("files")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"acme-font","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("style.css"),
+            ".font { src: url('./files/a.woff2'); }",
+        )
+        .unwrap();
+        std::fs::write(package.join("files/a.woff2"), b"font-bytes").unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import '../node_modules/acme-font/style.css';",
+        )
+        .unwrap();
+        for wind in [
+            crate::config::WindSetting::Disabled,
+            crate::config::WindSetting::Enabled(Box::default()),
+        ] {
+            let cfg = Config {
+                wind: Some(wind),
+                ..Default::default()
+            };
+            let pass = build_default_css_payload_with_details(
+                project,
+                &project.join("dist"),
+                &cfg,
+                &[],
+                &[],
+                &[],
+                &|_| {},
+            )
+            .unwrap();
+            let payload = pass.payload.unwrap();
+            let css = String::from_utf8(payload.bytes).unwrap();
+            assert!(css.contains(".font"));
+            assert!(css.contains("./a-"), "{css}");
+            assert_eq!(payload.companions.len(), 1);
+            assert!(pass
+                .input_dependencies
+                .iter()
+                .any(|dep| dep.path.ends_with("style.css")));
+        }
+    }
+    #[test]
+    fn wind_publishes_mirror_roots_before_bundle_failure() {
+        use std::cell::RefCell;
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import './missing.css';",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let seen = RefCell::new(None);
+        let result = build_default_css_payload_with_source_plan(
+            project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| *seen.borrow_mut() = Some(roots.to_vec()),
+        );
+        assert!(result.is_err());
+        assert!(seen.borrow().is_some());
+    }
+
+    #[test]
+    fn wind_invalid_token_fails_with_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let mut wind = crate::config::WindConfig::default();
+        wind.tokens.colors.insert("bad".into(), "url(evil)".into());
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let error = build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("bad"), "{message}");
+    }
+    #[test]
+    fn wind_package_route_and_safelist_are_in_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let route = project.join("node_modules/example/dist/page.tsx");
+        std::fs::create_dir_all(route.parent().unwrap()).unwrap();
+        std::fs::write(&route, "<div className=\"flex\" />").unwrap();
+        let mut wind = crate::config::WindConfig::default();
+        wind.safelist.insert("test".into(), vec!["hidden".into()]);
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[route], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".flex"), "{css}");
+        assert!(css.contains(".hidden"), "{css}");
+    }
+    #[test]
+    fn wind_order_layers_import_highlight_reset_authored_utilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "<div className=\"block\" />",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            "@import url('https://example.com/font.css'); .authored { color: red; }",
+        )
+        .unwrap();
+        let wind = crate::config::WindConfig {
+            reset: "minimal-v1".into(),
+            ..Default::default()
+        };
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            code_highlight: Some(code_highlight_with_role_classes(Default::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        let indexes = [
+            "@layer zw-reset, zw-tokens, zfb-hi",
+            "@import",
+            "@layer zfb-hi",
+            "@layer zw-reset {",
+            ".authored",
+            ".block",
+        ]
+        .map(|marker| {
+            css.find(marker)
+                .unwrap_or_else(|| panic!("missing {marker}: {css}"))
+        });
+        assert!(indexes.windows(2).all(|pair| pair[0] < pair[1]), "{css}");
+    }
+    #[test]
+    fn wind_global_and_css_module_share_stylesheet() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(project.join("pages/index.tsx"),
+            "import styles from '../styles/card.module.css'; export default () => <div className={styles.card} />;").unwrap();
+        std::fs::write(
+            project.join("styles/card.module.css"),
+            ".card { background: rgb(1, 2, 3); }",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("styles/global.css"),
+            ".authored { color: red; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".authored"), "{css}");
+        assert!(
+            css.contains("rgb(1, 2, 3)") || css.contains("#010203"),
+            "{css}"
+        );
+    }
+    #[test]
+    fn wind_role_classes_emit_valid_utility_and_leave_authored_class_ordinary() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let roles = [
+            ("keyword".to_string(), "block".to_string()),
+            ("plain".to_string(), "custom-authored".to_string()),
+        ]
+        .into();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            code_highlight: Some(code_highlight_with_role_classes(roles)),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".block"), "{css}");
+        assert!(!css.contains(".custom-authored"), "{css}");
+    }
+    #[test]
+    fn wind_pass_reports_stylesheet_dependency_and_skipped_source_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(project.join("pages/bad.tsx"), [0xff, 0xfe]).unwrap();
+        let entry = project.join("styles/global.css");
+        std::fs::write(&entry, ".authored { color: red; }").unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let pass = build_default_css_payload_with_details(
+            project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|_| {},
+        )
+        .unwrap();
+        assert!(pass.payload.is_some());
+        assert!(pass
+            .input_dependencies
+            .iter()
+            .any(|dep| dep.path.ends_with("global.css")
+                && dep.kind == zfb_css::CssInputDependencyKind::Stylesheet));
+        assert!(pass
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "ZW011"
+                && diag.severity == zfb_css::CssDiagnosticSeverity::Warning));
+    }
+    #[test]
+    fn wind_claimed_sibling_root_reaches_payload() {
+        let (_temp, project) = sibling_css_workspace_fixture();
+        let sibling = project
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("lib/shared/Button.tsx");
+        std::fs::write(
+            &sibling,
+            "export default function Button() { return <div className=\"flex\" />; }",
+        )
+        .unwrap();
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload =
+            build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[], &[])
+                .unwrap()
+                .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".flex"), "{css}");
+    }
+    #[test]
+    fn wind_virtual_module_candidate_reaches_payload() {
+        let (_temp, project) = direct_virtual_css_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let mut virtual_modules = virtual_direct_css_module(ws);
+        virtual_modules[0].1.push_str("const utility = 'grid';\n");
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::default())),
+            ..Default::default()
+        };
+        let payload = build_default_css_payload(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &virtual_modules,
+        )
+        .unwrap()
+        .unwrap();
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(css.contains(".grid"), "{css}");
     }
 }

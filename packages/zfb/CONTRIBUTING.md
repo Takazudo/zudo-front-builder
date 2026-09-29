@@ -98,10 +98,10 @@ unit tests, dev sandboxes, and any non-renderer evaluation context) —
 marker line. The marker survives unstyled environments and doubles as a
 grep target for "production renderer didn't run" diagnostics.
 
-**Why a bridge.** Keeps `packages/zfb` runtime-agnostic: the SDK never
-imports preact or react, and never has to know which JSX runtime the user
-chose. The Rust renderer owns module evaluation, so it owns the namespace
-that hands compiled-MDX components back to user code at the call site.
+**Why a bridge.** The SDK uses the owned zudo-react runtime for page and
+island rendering. The Rust renderer owns module evaluation, so it owns the
+namespace that hands compiled-MDX components back to user code at the call
+site.
 
 The contract is mirrored in JSDoc on `CollectionEntry.Content`
 (`packages/zfb/src/content.ts`) and cross-referenced from

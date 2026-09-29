@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 /// The detailed version report shown by `zfb --version`.
 ///
@@ -26,9 +26,7 @@ fn long_version() -> &'static str {
         .get_or_init(|| {
             let release_version =
                 option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-            format!(
-                "{release_version}\nembedded Tailwind CSS: {EXPECTED_TAILWIND_VERSION}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}"
-            )
+            format!("{release_version}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}")
         })
         .as_str()
 }
@@ -59,6 +57,8 @@ pub enum Command {
     Build(BuildArgs),
     /// Compile a CSS entrypoint without building or rendering the site.
     Css(CssArgs),
+    /// Inspect and audit zudo-wind candidates.
+    Wind(WindArgs),
     /// Preview a previously built project.
     Preview(PreviewArgs),
     /// Typecheck the project and validate content collections against
@@ -66,10 +66,45 @@ pub enum Command {
     Check(CheckArgs),
 }
 
+/// Arguments for the nested `zfb wind` command family.
+#[derive(Debug, Args)]
+pub struct WindArgs {
+    #[command(subcommand)]
+    pub command: WindCommand,
+}
+
+/// Nested zudo-wind commands.
+#[derive(Debug, Subcommand)]
+pub enum WindCommand {
+    /// Explain how one candidate is interpreted.
+    Explain(WindExplainArgs),
+    /// Audit candidate sources and utility conflicts.
+    Audit(WindAuditArgs),
+}
+
+/// Arguments for `zfb wind explain`.
+#[derive(Debug, Args)]
+pub struct WindExplainArgs {
+    /// Candidate class to explain.
+    pub candidate: String,
+
+    /// Project root used for config loading. Defaults to the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+}
+
+/// Arguments for `zfb wind audit`.
+#[derive(Debug, Args)]
+pub struct WindAuditArgs {
+    /// Project root used for config loading. Defaults to the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+}
+
 /// Arguments for `zfb css`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "The CSS command always runs Tailwind, even when zfb.config sets tailwind.enabled=false.\nAutomatic sources are limited to pages, components, layouts, content, and src under --project-root."
+    after_help = "The CSS command uses zudo-wind. A project with wind: false emits authored CSS and highlight styles only.\nAutomatic sources are limited to pages, components, layouts, content, and src under --project-root."
 )]
 pub struct CssArgs {
     /// CSS entrypoint. Relative paths are resolved from the current directory.
@@ -85,7 +120,7 @@ pub struct CssArgs {
     #[arg(long)]
     pub project_root: Option<PathBuf>,
 
-    /// Explicit Tailwind content glob, relative to the project root. Repeatable.
+    /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
     #[arg(long)]
     pub source: Vec<String>,
 
@@ -93,7 +128,7 @@ pub struct CssArgs {
     #[arg(long)]
     pub no_auto_source: bool,
 
-    /// Override zfb.config's codeHighlight.mode for framework CSS emission.
+    /// Override zfb.config's codeHighlight.mode for highlight CSS emission.
     #[arg(long, value_enum)]
     pub code_highlight_mode: Option<CssCodeHighlightMode>,
 
@@ -1070,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn css_help_documents_tailwind_and_source_scope() {
+    fn css_help_documents_wind_and_source_scope() {
         use clap::CommandFactory;
         let mut command = Cli::command();
         let css = command.find_subcommand_mut("css").expect("css exists");
@@ -1083,7 +1118,8 @@ mod tests {
             "--no-auto-source",
             "--code-highlight-mode",
             "--no-default-highlight-styles",
-            "tailwind.enabled=false",
+            "zudo-wind",
+            "wind: false",
             "pages, components, layouts, content, and src",
         ] {
             assert!(
@@ -1091,5 +1127,65 @@ mod tests {
                 "missing {expected:?} from:\n{help}"
             );
         }
+    }
+
+    #[test]
+    fn wind_explain_and_audit_parse() {
+        match Cli::try_parse_from([
+            "zfb",
+            "wind",
+            "explain",
+            "sm:hover:bg-panel",
+            "--project-root",
+            "project",
+        ])
+        .expect("wind explain parses")
+        .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Explain(explain) => {
+                    assert_eq!(explain.candidate, "sm:hover:bg-panel");
+                    assert_eq!(explain.project_root, Some(PathBuf::from("project")));
+                }
+                other => panic!("expected wind explain, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+
+        match Cli::try_parse_from(["zfb", "wind", "audit", "--project-root", "project"])
+            .expect("wind audit parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Audit(audit) => {
+                    assert_eq!(audit.project_root, Some(PathBuf::from("project")));
+                }
+                other => panic!("expected wind audit, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wind_explain_requires_candidate() {
+        let error = Cli::try_parse_from(["zfb", "wind", "explain"])
+            .expect_err("wind explain requires a candidate");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn wind_help_lists_nested_commands() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let wind = command
+            .find_subcommand_mut("wind")
+            .expect("wind subcommand exists");
+        let help = wind.render_long_help().to_string();
+        assert!(help.contains("explain"), "wind help omits explain:\n{help}");
+        assert!(help.contains("audit"), "wind help omits audit:\n{help}");
     }
 }

@@ -14,7 +14,7 @@
 //!
 //! Fixture source lives at
 //! `crates/zfb-render/tests/fixtures/routing-rendering/`. The test bundles
-//! it with Preact via real esbuild, renders every concrete URL through an
+//! it with the owned runtime via real esbuild, renders every concrete URL through an
 //! in-process `Backend::EmbeddedV8` host, and compares (or, under
 //! `INSANE_UPDATE_SNAPSHOTS=1`, rewrites) HTML snapshots under
 //! `tests/snapshots/e2e_routing_rendering/`. All routes are SSG.
@@ -29,7 +29,7 @@
 //! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
 //!   `crates/zfb/binaries/esbuild/esbuild`, or the pnpm store).
 //! - The pnpm store is missing the runtime deps the bundle needs
-//!   (`preact`, `preact-render-to-string`, `hono`) — run `pnpm install`
+//!   (`hono`) — run `pnpm install`
 //!   at the repo root.
 //!
 //! ## Snapshot bootstrap
@@ -48,7 +48,6 @@ use zfb_build::{
     bundle, render_all, Backend, BundleMode, BundlerInput, BundlerOutput, RendererInput,
     RouteUniverseEntry,
 };
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -240,7 +239,7 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
 // ---------------------------------------------------------------------------
 
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
-/// runtime deps (`preact`, `hono`, …) the bundle needs.
+/// runtime deps (`hono`) the bundle needs.
 ///
 /// First tries the worktree root (where `pnpm install` drops it). If that
 /// path is missing — common in a fresh `/x-wt-teams` worktree that has not
@@ -287,7 +286,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     let nm = tmp.path();
 
     // Packages we need from the pnpm virtual store.
-    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    let from_store: &[&str] = &["hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
         if !src.exists() {
@@ -326,7 +325,6 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
 
 fn build_bundle(
     fixture_root: &Path,
-    framework: Framework,
     esbuild: &Path,
     dist: &Path,
     node_modules: &Path,
@@ -342,7 +340,7 @@ fn build_bundle(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: Default::default(),
         tsconfig_paths: BTreeMap::new(),
@@ -380,7 +378,7 @@ fn build_bundle(
 
 /// End-to-end routing + rendering test using the in-process embedded V8 host.
 ///
-/// Bundles the routing-rendering fixture with Preact (real esbuild) and
+/// Bundles the routing-rendering fixture with the owned runtime (real esbuild) and
 /// renders every route through an in-process `Backend::EmbeddedV8` host,
 /// constructed by the thread-pinned `TestThreadedHost` adapter below. All
 /// routes are SSG. Kick with:
@@ -410,8 +408,8 @@ fn e2e_routing_rendering_with_embedded_host() {
 
     let universe = route_universe();
 
-    // --- Preact pass ---
-    eprintln!("[e2e_routing_rendering] bundling with Preact…");
+    // --- Owned runtime pass ---
+    eprintln!("[e2e_routing_rendering] bundling with zudo-react…");
     let Some(node_modules) = make_test_node_modules() else {
         eprintln!(
             "[e2e_routing_rendering] missing runtime deps in pnpm store; \
@@ -419,21 +417,15 @@ fn e2e_routing_rendering_with_embedded_host() {
         );
         return;
     };
-    let dist_preact = tempfile::tempdir().expect("tempdir");
-    let bundle_preact = build_bundle(
-        &fixture,
-        Framework::Preact,
-        &esbuild,
-        dist_preact.path(),
-        node_modules.path(),
-    );
+    let dist_owned = tempfile::tempdir().expect("tempdir");
+    let bundle_owned = build_bundle(&fixture, &esbuild, dist_owned.path(), node_modules.path());
 
     eprintln!("[e2e_routing_rendering] rendering all routes with the embedded V8 host…");
     let renderer_out = render_all(RendererInput {
-        bundle_path: bundle_preact.bundle_path.clone(),
-        sourcemap_path: bundle_preact.sourcemap_path.clone(),
-        manifest: bundle_preact.manifest.clone(),
-        dist_dir: dist_preact.path().join("html"),
+        bundle_path: bundle_owned.bundle_path.clone(),
+        sourcemap_path: bundle_owned.sourcemap_path.clone(),
+        manifest: bundle_owned.manifest.clone(),
+        dist_dir: dist_owned.path().join("html"),
         route_universe: universe.clone(),
         prerender_map: BTreeMap::new(), // all SSG
         backend: Backend::EmbeddedV8 {
@@ -458,17 +450,17 @@ fn e2e_routing_rendering_with_embedded_host() {
     );
 
     // Collect rendered HTML bytes, keyed by url_path, for snapshot comparison.
-    let mut preact_html: Vec<(String, Vec<u8>)> = Vec::new();
-    let dist_html = dist_preact.path().join("html");
+    let mut owned_html: Vec<(String, Vec<u8>)> = Vec::new();
+    let dist_html = dist_owned.path().join("html");
     for entry in &universe {
         let dest = dist_html.join(&entry.output_path);
         let body = fs::read(&dest).unwrap_or_else(|e| panic!("reading {}: {e}", dest.display()));
-        preact_html.push((entry.url_path.clone(), body));
+        owned_html.push((entry.url_path.clone(), body));
     }
 
     // --- Snapshot assertions ---
     eprintln!("[e2e_routing_rendering] asserting snapshots…");
-    for (url_path, html) in &preact_html {
+    for (url_path, html) in &owned_html {
         let snap_name = if url_path == "/" {
             "index.html".to_string()
         } else {
@@ -481,7 +473,7 @@ fn e2e_routing_rendering_with_embedded_host() {
     }
 
     // --- Content assertions: spot-check a few rendered pages ---
-    check_rendered_html(&preact_html);
+    check_rendered_html(&owned_html);
 
     eprintln!("[e2e_routing_rendering] PASS");
 }

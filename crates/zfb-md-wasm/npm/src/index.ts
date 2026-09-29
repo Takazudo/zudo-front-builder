@@ -66,7 +66,6 @@ export type {
   CodeHighlightMode,
   CodeHighlightOptions,
   MarkdownFeaturesConfig,
-  JsxRuntime,
   HighlightRole,
   HighlightCodeOptions,
   HighlightCodeResult,

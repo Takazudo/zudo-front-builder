@@ -99,10 +99,10 @@
 //! ## Tiering
 //!
 //! Level 4 (real `zfb build` process e2e). No external binary is required —
-//! the fixture has no Tailwind config and no "use client" islands, so the
-//! build never invokes esbuild or tailwindcss-v4 (confirmed empirically: a
-//! local run with neither `ZFB_ESBUILD_BIN` nor `ZFB_TAILWIND_BIN` set
-//! succeeds and logs "no islands found; skipping islands bundle"). Not
+//! the fixture has no utility CSS config and no "use client" islands, so the
+//! build never invokes esbuild (confirmed empirically: a local run with
+//! no `ZFB_ESBUILD_BIN` set succeeds and logs "no islands found; skipping
+//! islands bundle"). Not
 //! `#[ignore]`d, matching `end_to_end_basic_blog_build.rs`'s own
 //! no-external-binary tier. Added to `.config/nextest.toml`'s `e2e-heavy`
 //! test-group as a build-only member (spawns a real `zfb build` process;
@@ -115,20 +115,16 @@ use std::process::Command;
 use zfb_test_utils::zfb_binary;
 
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
-/// esbuild / no tailwindcss-v4 binary), matching the skip pattern used
+/// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn write_fixture(root: &Path) {
     fs::write(
         root.join("zfb.config.json"),
         r#"{
-  "framework": "preact",
   "markdown": { "gfm": true },
   "collections": [{ "name": "notes", "path": "content/notes" }]
 }
@@ -180,18 +176,18 @@ fn write_fixture(root: &Path) {
 
     fs::write(
         root.join("components/note.tsx"),
-        r#"import type { ComponentChildren } from "preact";
+        r#"import type { Child } from "@takazudo/zfb/zudo-react";
 
 type Props = {
   title?: string;
-  children: ComponentChildren;
+  children: Child;
 };
 
 export default function Note({ title, children }: Props) {
   return (
     <aside class="admonition" data-component="note">
       {title ? <strong>{title}</strong> : null}
-      <div class="admonition__body">{children}</div>
+      <div class="admonition-body">{children}</div>
     </aside>
   );
 }
@@ -294,10 +290,10 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
         tasklist_md,
         "<main data-slug=\"tasklist-md\">\
          <ul>\
-         <li><p><input type=\"checkbox\" disabled/> Buy milk</p></li>\
-         <li><p><input type=\"checkbox\" disabled checked/> Walk the dog</p></li>\
-         <li><p><input type=\"checkbox\" disabled/> Nested parent</p>\
-         <ul><li><p><input type=\"checkbox\" disabled checked/> Nested child</p></li></ul>\
+         <li><p><input type=\"checkbox\" disabled> Buy milk</p></li>\
+         <li><p><input type=\"checkbox\" disabled checked> Walk the dog</p></li>\
+         <li><p><input type=\"checkbox\" disabled> Nested parent</p>\
+         <ul><li><p><input type=\"checkbox\" disabled checked> Nested child</p></li></ul>\
          </li>\
          <li><p>Plain non-task item</p></li>\
          </ul>\
@@ -321,7 +317,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "First footnote<sup><a href=\"#user-content-fn-a\" \
-             id=\"user-content-fnref-a\" data-footnote-ref \
+             id=\"user-content-fnref-a\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "footnote `a`'s FIRST occurrence must be numbered 1: {footnotes_md}"
@@ -329,7 +325,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "a second<sup><a href=\"#user-content-fn-b\" \
-             id=\"user-content-fnref-b\" data-footnote-ref \
+             id=\"user-content-fnref-b\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">2</a></sup>"
         ),
         "footnote `b`, first referenced second, must be numbered 2 \
@@ -338,7 +334,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         footnotes_md.contains(
             "the first<sup><a href=\"#user-content-fn-a\" \
-             id=\"user-content-fnref-a-1\" data-footnote-ref \
+             id=\"user-content-fnref-a-1\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "footnote `a`'s REPEATED occurrence must share number 1 but mint a \
@@ -360,14 +356,14 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     // pointing back at `a`'s definition list item.
     assert!(
         footnotes_md.contains(
-            "<a href=\"#user-content-fnref-a\" data-footnote-backref \
+            "<a href=\"#user-content-fnref-a\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1\">"
         ),
         "expected a backref for `a`'s first occurrence: {footnotes_md}"
     );
     assert!(
         footnotes_md.contains(
-            "<a href=\"#user-content-fnref-a-1\" data-footnote-backref \
+            "<a href=\"#user-content-fnref-a-1\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1-2\">"
         ),
         "expected a distinct backref for `a`'s repeated occurrence: {footnotes_md}"
@@ -389,23 +385,23 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     // checkbox and its label, and the checkbox opening the item's own
     // paragraph rather than sitting as a sibling above it.
     assert!(
-        nested.contains("<p><input type=\"checkbox\" disabled/> Nested task unchecked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled> Nested task unchecked</p>"),
         "expected the unchecked nested task-list item: {nested}"
     );
     assert!(
-        nested.contains("<p><input type=\"checkbox\" disabled checked/> Nested task checked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled checked> Nested task checked</p>"),
         "expected the checked nested task-list item: {nested}"
     );
 
     // Footnote reference nested inside <Note>'s children resolves to number
     // 1 and the SAME `user-content-fn-n` / `user-content-fnref-n` id
     // contract as the top-level path — and now the same MARKER SPELLING
-    // too: both emit sites write `data-footnote-ref=""`, which serializes
-    // as the bare attribute here.
+    // too: both emit sites write `data-footnote-ref=""`, which the owned
+    // serializer retains as an empty string attribute.
     assert!(
         nested.contains(
             "Ref inside note<sup><a href=\"#user-content-fn-n\" \
-             id=\"user-content-fnref-n\" data-footnote-ref \
+             id=\"user-content-fnref-n\" data-footnote-ref=\"\" \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "expected the nested footnote reference marker: {nested}"
@@ -436,7 +432,7 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
     assert!(
         nested.contains(
             "<li id=\"user-content-fn-n\"><p>Nested footnote body.</p>\
-             <a href=\"#user-content-fnref-n\" data-footnote-backref \
+             <a href=\"#user-content-fnref-n\" data-footnote-backref=\"\" \
              aria-label=\"Back to reference 1\">"
         ),
         "expected the nested footnote's definition + backref: {nested}"

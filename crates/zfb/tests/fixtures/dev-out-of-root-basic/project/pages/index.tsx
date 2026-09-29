@@ -9,7 +9,7 @@ export default function Index() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>dev-out-of-root-basic fixture</title>
       </head>
       <body>

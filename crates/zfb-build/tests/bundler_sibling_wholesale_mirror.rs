@@ -26,7 +26,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_render::adapters::Framework;
 
 fn write(path: &Path, source: &str) {
     if let Some(parent) = path.parent() {
@@ -99,13 +98,12 @@ fn make_bundle_input(
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths,
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: project.join(outdir_name),

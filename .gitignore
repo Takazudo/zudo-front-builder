@@ -50,9 +50,6 @@ node_modules/
 worktrees/
 
 # Bundled third-party binaries (populated by release engineering, never committed)
-crates/zfb/binaries/tailwindcss-v4
-crates/zfb/binaries/tailwindcss-v4.exe
-crates/zfb/binaries/tailwindcss-v4.tmp
 crates/zfb/binaries/esbuild/esbuild
 
 # Ephemeral / temp files (e.g. agent prompts, review diffs)

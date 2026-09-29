@@ -3,8 +3,8 @@
 //! ## Stable contract
 //!
 //! The manifest is the data structure the **islands-bundling-shim** topic
-//! consumes when generating the per-island esbuild entry points and the
-//! browser-side hydration shim. Its on-disk format is a JSON object:
+//! consumes when generating the shared esbuild entry point and the
+//! browser runtime. Its on-disk format is a JSON object:
 //!
 //! ```json
 //! {
@@ -15,7 +15,7 @@
 //!
 //! - **Keys** are marker-name identities exactly as the scanner emits
 //!   them: the value of [`crate::Island::marker_name`]. This is the same
-//!   identity the runtime/bundling path keys on — the per-island marker
+//!   identity the runtime/bundling path keys on — the island marker
 //!   the SSR side writes into `data-zfb-island`. A default-export island
 //!   carries the identifier name as its `marker_name` (e.g. `"Foo"` for
 //!   `export default function Foo`), so two distinct default exports do
@@ -52,7 +52,7 @@
 //! The bundling-shim topic relies on:
 //!
 //! - JSON object shape (no nesting, string values).
-//! - The hydration shim emitted alongside the bundle does
+//! - The browser runtime bundled with the islands does
 //!   `querySelectorAll('[data-zfb-island]')` and
 //!   `querySelectorAll('[data-zfb-island-skip-ssr]')` and looks up each
 //!   element's marker attribute value as a key in this manifest, so the

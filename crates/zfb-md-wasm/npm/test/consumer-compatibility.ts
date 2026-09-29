@@ -15,7 +15,6 @@ import {
 async function consumeExistingRootApi(): Promise<void> {
   const options: ZfbMdWasmOptions = {
     filename: "post.mdx",
-    jsxRuntime: "preact",
     development: false,
     pipeline: { gfm: { table: true } },
   };

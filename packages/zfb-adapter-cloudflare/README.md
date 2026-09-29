@@ -29,7 +29,6 @@ In `zfb.config.json`:
 
 ```json
 {
-  "framework": "preact",
   "adapter": "@takazudo/zfb-adapter-cloudflare"
 }
 ```

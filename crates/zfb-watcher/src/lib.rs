@@ -135,6 +135,10 @@ pub struct WatchOptions {
     pub debounce: Duration,
     /// Which OS-facing notify backend to drive.
     pub backend: WatchBackend,
+    /// Absolute file paths watched through non-recursive parents, even when
+    /// absent. Only these files are delivered unless another watch claims a
+    /// sibling. Matching static file roots are replaced, never duplicated.
+    pub exact_files: Vec<PathBuf>,
 }
 
 impl Default for WatchOptions {
@@ -142,6 +146,7 @@ impl Default for WatchOptions {
         Self {
             debounce: DEFAULT_DEBOUNCE,
             backend: WatchBackend::Native,
+            exact_files: Vec::new(),
         }
     }
 }
@@ -150,6 +155,12 @@ impl WatchOptions {
     /// Override the debounce window.
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = debounce;
+        self
+    }
+
+    /// Watch exact files through their parents, preserving create/recreate events.
+    pub fn with_exact_files(mut self, files: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.exact_files = files.into_iter().collect();
         self
     }
 
@@ -307,6 +318,17 @@ pub struct Watcher {
     /// `watched_recursive_roots`: boot roots are permanent and unfiltered,
     /// these are reconcilable (replace semantics) and skip-dir-filtered.
     synced_recursive_dirs: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+}
+
+fn file_watch_aliases(path: &Path) -> BTreeSet<PathBuf> {
+    let mut aliases = BTreeSet::from([path.to_path_buf()]);
+    // Resolve the parent so absent/deleted files have stable aliases too.
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(parent) = parent.canonicalize() {
+            aliases.insert(parent.join(name));
+        }
+    }
+    aliases
 }
 
 fn watch_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
@@ -474,6 +496,10 @@ struct RecursiveDirFilterCore {
     skip_names: BTreeSet<OsString>,
     /// Boot recursive roots (static after start) — exempt from suppression.
     boot_roots: BTreeSet<PathBuf>,
+    /// Dependency parents whose delivery is restricted to exact file names.
+    /// A broad dependency registration removes its parent from this set.
+    exact_file_parents: BTreeSet<PathBuf>,
+    exact_files: BTreeSet<PathBuf>,
 }
 
 impl RecursiveDirFilterCore {
@@ -481,8 +507,34 @@ impl RecursiveDirFilterCore {
     /// directory somewhere BELOW an active synced root (any depth, exact
     /// component equality — the root's own name never counts), and no
     /// pre-existing watch consumer (boot root / dependency dir) has a claim
-    /// on it. See the type docs for the superset invariant.
+    /// on it. Also drops unclaimed siblings of exact-file parent watches.
+    /// See the type docs for the superset invariant.
     fn suppresses(&self, path: &Path, dependency_dirs: &SharedPathSet) -> bool {
+        if self.exact_file_parents.is_empty()
+            && (self.active_roots.is_empty() || self.skip_names.is_empty())
+        {
+            return false;
+        }
+        let boot_claim = self.boot_roots.iter().any(|root| path.starts_with(root));
+        let recursive_claim = self.active_roots.iter().any(|root| path.starts_with(root));
+        let dependency_claim = (dependency_dirs.contains(path)
+            && !self.exact_file_parents.contains(path))
+            || path.parent().is_some_and(|parent| {
+                dependency_dirs.contains(parent) && !self.exact_file_parents.contains(parent)
+            });
+        let exact_claim = self.exact_files.contains(path);
+        let exact_parent_event = self.exact_file_parents.contains(path)
+            || path
+                .parent()
+                .is_some_and(|parent| self.exact_file_parents.contains(parent));
+        if exact_parent_event
+            && !exact_claim
+            && !boot_claim
+            && !recursive_claim
+            && !dependency_claim
+        {
+            return true;
+        }
         if self.active_roots.is_empty() || self.skip_names.is_empty() {
             return false;
         }
@@ -493,22 +545,7 @@ impl RecursiveDirFilterCore {
                 })
             })
         });
-        if !inside_skip_dir {
-            return false;
-        }
-        if self.boot_roots.iter().any(|root| path.starts_with(root)) {
-            return false;
-        }
-        if dependency_dirs.contains(path) {
-            return false;
-        }
-        if path
-            .parent()
-            .is_some_and(|parent| dependency_dirs.contains(parent))
-        {
-            return false;
-        }
-        true
+        inside_skip_dir && !boot_claim && !dependency_claim && !exact_claim
     }
 }
 
@@ -668,11 +705,19 @@ impl Watcher {
                 notify::Config::default().with_poll_interval(interval),
             )?),
         };
+        let exact_files: BTreeSet<PathBuf> = options
+            .exact_files
+            .iter()
+            .flat_map(|path| file_watch_aliases(path))
+            .collect();
         let mut watched_recursive_roots = BTreeSet::new();
         let mut boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
 
         for rel in relative_paths {
             let full = root.join(rel.as_ref());
+            if !file_watch_aliases(&full).is_disjoint(&exact_files) {
+                continue;
+            }
             if !full.exists() {
                 warn!(path = %full.display(), "watch target missing; skipping");
                 continue;
@@ -693,6 +738,9 @@ impl Watcher {
         // same form across boot + every later event.
         for extra in extra_absolute_paths {
             let extra = extra.as_ref();
+            if !file_watch_aliases(extra).is_disjoint(&exact_files) {
+                continue;
+            }
             if !extra.exists() {
                 warn!(
                     path = %extra.display(),
@@ -729,25 +777,24 @@ impl Watcher {
             shutdown_rx,
         ));
 
-        Ok((
-            Self {
-                _notify: GuardedNotifyWatcher {
-                    inner: notify_watcher,
-                    poll_backend: matches!(options.backend, WatchBackend::Poll { .. }),
-                    filter: Arc::clone(&recursive_dir_filter),
-                    watch_call_log: None,
-                },
-                shutdown: Some(shutdown_tx),
-                debouncer: Some(debouncer),
-                watched_recursive_roots,
-                boot_root_registrations,
-                watched_dependency_dirs,
-                dependency_dir_registrations: BTreeMap::new(),
-                recursive_dir_filter,
-                synced_recursive_dirs: BTreeMap::new(),
+        let mut watcher = Self {
+            _notify: GuardedNotifyWatcher {
+                inner: notify_watcher,
+                poll_backend: matches!(options.backend, WatchBackend::Poll { .. }),
+                filter: Arc::clone(&recursive_dir_filter),
+                watch_call_log: None,
             },
-            out_rx,
-        ))
+            shutdown: Some(shutdown_tx),
+            debouncer: Some(debouncer),
+            watched_recursive_roots,
+            boot_root_registrations,
+            watched_dependency_dirs,
+            dependency_dir_registrations: BTreeMap::new(),
+            recursive_dir_filter,
+            synced_recursive_dirs: BTreeMap::new(),
+        };
+        watcher.watch_exact_files(options.exact_files);
+        Ok((watcher, out_rx))
     }
 
     /// Add non-recursive watches for the parent directories of absolute
@@ -772,6 +819,25 @@ impl Watcher {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
+        self.watch_file_parents(paths, false)
+    }
+
+    /// Add exact-file watches using the existing deduplicated parent channel.
+    /// Files may be absent; their parents must exist. Other recursive and broad
+    /// dependency claims retain their delivery, including through retirement.
+    pub fn watch_exact_files<I, P>(&mut self, paths: I) -> Vec<PathBuf>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.watch_file_parents(paths, true)
+    }
+
+    fn watch_file_parents<I, P>(&mut self, paths: I, exact: bool) -> Vec<PathBuf>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
         let mut newly_watched = Vec::new();
         for path in paths {
             let path = path.as_ref();
@@ -787,7 +853,31 @@ impl Watcher {
                 continue;
             }
 
-            let aliases: Vec<PathBuf> = watch_aliases(parent).collect();
+            let mut aliases: BTreeSet<PathBuf> = watch_aliases(parent).collect();
+            for registered in self.dependency_dir_registrations.values() {
+                if !registered.is_disjoint(&aliases) {
+                    aliases.extend(registered.iter().cloned());
+                }
+            }
+            // Publish filtering before arming the OS watch. Registration and
+            // retirement bookkeeping stays shared with broad dependencies.
+            {
+                let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+                if exact {
+                    let already_broad = aliases.iter().any(|alias| {
+                        self.watched_dependency_dirs.contains(alias)
+                            && !filter.exact_file_parents.contains(alias)
+                    });
+                    if !already_broad {
+                        filter.exact_file_parents.extend(aliases.iter().cloned());
+                    }
+                    filter.exact_files.extend(file_watch_aliases(path));
+                } else {
+                    for alias in &aliases {
+                        filter.exact_file_parents.remove(alias);
+                    }
+                }
+            }
             let recursively_covered = aliases.iter().any(|alias| {
                 self.watched_recursive_roots
                     .iter()
@@ -3076,7 +3166,116 @@ mod tests {
             active_roots: roots.iter().map(|r| PathBuf::from(*r)).collect(),
             skip_names: skips.iter().map(|s| OsString::from(*s)).collect(),
             boot_roots: BTreeSet::new(),
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn exact_file_filter_preserves_other_watch_claims() {
+        let deps = SharedPathSet::default();
+        deps.extend([PathBuf::from("/proj")]);
+        let mut filter = RecursiveDirFilterCore {
+            exact_file_parents: BTreeSet::from([PathBuf::from("/proj")]),
+            exact_files: BTreeSet::from([PathBuf::from("/proj/config.json")]),
+            ..Default::default()
+        };
+        assert!(!filter.suppresses(Path::new("/proj/config.json"), &deps));
+        assert!(filter.suppresses(Path::new("/proj/unrelated.json"), &deps));
+        assert!(filter.suppresses(Path::new("/proj"), &deps));
+        filter.boot_roots.insert(PathBuf::from("/proj/src"));
+        assert!(!filter.suppresses(Path::new("/proj/src"), &deps));
+        filter.active_roots.insert(PathBuf::from("/proj"));
+        filter.skip_names.insert(OsString::from("dist"));
+        assert!(!filter.suppresses(Path::new("/proj/unrelated.json"), &deps));
+        assert!(filter.suppresses(Path::new("/proj/dist"), &deps));
+        filter.active_roots.clear();
+        assert!(filter.suppresses(Path::new("/proj/unrelated.json"), &deps));
+        // A later broad dependency registration must retain its old delivery.
+        filter.exact_file_parents.clear();
+        assert!(!filter.suppresses(Path::new("/proj/unrelated.json"), &deps));
+    }
+
+    #[tokio::test]
+    async fn exact_file_options_replace_inode_watch_and_dedupe_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let existing = root.join("config.json");
+        let missing = root.join("config.ts");
+        std::fs::write(&existing, "one").unwrap();
+        let (mut watcher, mut rx) = Watcher::start_with_options(
+            &root,
+            ["config.json", "config.ts"],
+            [&existing],
+            WatchOptions::default().with_exact_files([existing.clone(), missing.clone()]),
+        )
+        .unwrap();
+        assert!(
+            watcher.watched_recursive_roots.is_empty(),
+            "exact file must not keep an inode watch"
+        );
+        assert_eq!(watcher.dependency_dir_registrations.len(), 1);
+        assert!(watcher.watch_exact_files([&existing, &missing]).is_empty());
+        let marker = existing.clone();
+        let live = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            move |i| std::fs::write(&marker, format!("ready-{i}")).unwrap(),
+            || loop {
+                match rx.try_recv() {
+                    Ok(event) if event.path == existing => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            },
+        )
+        .await;
+        assert!(live.live);
+        std::fs::write(root.join("unrelated.json"), "noise").unwrap();
+        std::fs::write(&existing, "final").unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            observed.path, existing,
+            "unrelated root event must be filtered"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err(),
+            "one existing-file write must not create duplicate or unrelated events"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_file_parent_survives_recursive_retirement_and_broad_claims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let exact = root.join("config.json");
+        let (mut watcher, _rx) = Watcher::start_with_options(
+            &root,
+            std::iter::empty::<&str>(),
+            std::iter::empty::<&Path>(),
+            WatchOptions::default().with_exact_files([exact.clone()]),
+        )
+        .unwrap();
+        assert_eq!(watcher.dependency_dir_registrations.len(), 1);
+        watcher.sync_recursive_dir_watches([root.clone()], std::iter::empty::<&str>());
+        watcher
+            .sync_recursive_dir_watches(std::iter::empty::<PathBuf>(), std::iter::empty::<&str>());
+        assert!(watcher.watched_dependency_dirs.contains(&root));
+        assert!(lock_ignoring_poison(&watcher.recursive_dir_filter)
+            .suppresses(&root.join("other.json"), &watcher.watched_dependency_dirs));
+        assert!(watcher
+            .watch_additional_files([root.join("other.json")])
+            .is_empty());
+        assert!(!lock_ignoring_poison(&watcher.recursive_dir_filter)
+            .suppresses(&root.join("other.json"), &watcher.watched_dependency_dirs));
+        assert!(watcher.watch_exact_files([exact]).is_empty());
+        assert!(!lock_ignoring_poison(&watcher.recursive_dir_filter)
+            .suppresses(&root.join("other.json"), &watcher.watched_dependency_dirs));
+        watcher.shutdown().await;
     }
 
     #[test]

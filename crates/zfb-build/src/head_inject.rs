@@ -152,7 +152,7 @@ pub const HTML5_DOCTYPE_PREFIX: &str = "<!doctype html>\n";
 /// `true` when `html` is an HTML document that should have
 /// [`HTML5_DOCTYPE_PREFIX`] prepended.
 ///
-/// `preact-render-to-string` renders the page's `<html>…</html>` shell
+/// The owned server renderer renders the page's `<html>…</html>` shell
 /// verbatim and (correctly) does not emit a doctype — a doctype is not a
 /// valid JSX node. Without `<!doctype html>` browsers fall back to quirks
 /// mode, which silently changes the box model and CSS the template relies
@@ -199,8 +199,7 @@ pub fn island_module_script_tag(src: &str) -> String {
     )
 }
 
-/// HTML-attribute escape — same character set as
-/// `zfb_islands::hydration::escape_attr`. Kept local rather than
+/// HTML-attribute escape — the standard HTML attribute escape set. Kept local rather than
 /// re-exported across the crate boundary because it is a five-line
 /// helper and the prod-pipeline contract for islands hashing already
 /// avoided introducing such a re-export between `zfb-islands` and
@@ -230,10 +229,7 @@ fn escape_attr(value: &str) -> String {
 /// renderer feeds us the raw HTML the page handler returned, and
 /// in the prod pipeline a stray `</head>` literal inside body
 /// content would be an authoring bug we want to surface, not
-/// silently mask. The `lol_html`-based helper in
-/// `zfb_islands::hydration` makes the opposite trade-off because it
-/// is parsing user-authored island content at runtime; here we
-/// inject deterministic SSG output where that contention does not
+/// silently mask. This injects deterministic SSG output where that contention does not
 /// arise in practice.
 fn find_close_head(html: &str) -> Option<usize> {
     // Hot path: most pages spell the tag in lowercase.
@@ -413,7 +409,7 @@ mod tests {
 
     #[test]
     fn needs_doctype_for_bare_html_document() {
-        // The preact-render-to-string shell: starts with `<html …>`, no doctype.
+        // The owned renderer's shell starts with `<html …>`, without a doctype.
         assert!(needs_html5_doctype(
             "<html lang=\"en\"><head></head><body></body></html>"
         ));

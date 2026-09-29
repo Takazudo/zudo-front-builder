@@ -14,8 +14,6 @@
 // The shape mirrors the Rust `Config` struct one-for-one. Keep them in
 // sync; the `defineConfig` identity helper is the single anchor point.
 
-export type Framework = "preact" | "react";
-
 export type CollectionDef = {
   /** Identifier used at the call site (e.g. `"blog"`). */
   name: string;
@@ -62,9 +60,42 @@ export type CollectionDef = {
   allowOutsideRoot?: boolean;
 };
 
-export type TailwindConfig = {
-  /** Whether Tailwind is enabled. Default: `true`. */
-  enabled?: boolean;
+/**
+ * zudo-wind v1 configuration data. Absent fields use the version 1 defaults;
+ * no palette, named spacing scale, or breakpoint is implicit.
+ */
+export type WindConfig = {
+  /** Configuration contract version. Only version `1` is supported. */
+  spec?: 1;
+  /** Reset policy. Defaults to `none`. */
+  reset?: "none" | "minimal-v1" | "owned-v1";
+  /** Explicit design tokens. Every category defaults to an empty map. */
+  tokens?: {
+    /** Base unit used by numeric spacing utilities. */
+    spacingUnit?: string;
+    colors?: Record<string, string>;
+    spacing?: Record<string, string>;
+    sizes?: Record<string, string>;
+    fontSizes?: Record<string, { size: string; lineHeight?: string }>;
+    fontFamilies?: Record<string, string>;
+    fontWeights?: Record<string, string>;
+    lineHeights?: Record<string, string>;
+    letterSpacings?: Record<string, string>;
+    radii?: Record<string, string>;
+    shadows?: Record<string, string>;
+    zIndices?: Record<string, string>;
+    easings?: Record<string, string>;
+  };
+  /** Named responsive breakpoints with positive integer CSS-pixel widths. */
+  breakpoints?: Record<string, { minWidthPx: number }>;
+  /** Optional dark selector. Defaults to `false`. */
+  dark?: { attribute: string; value: string } | false;
+  /** Complete utility candidates keyed by safelist owner id. */
+  safelist?: Record<string, string[]>;
+  /** Authored class tokens that should bypass utility interpretation. */
+  authoredClasses?: Record<string, true>;
+  /** File-backed utility manifests keyed by producer id. */
+  manifests?: Record<string, { path: string }>;
 };
 
 /**
@@ -125,9 +156,8 @@ export type BundleConfig = {
    * is rejected ("The "main" field here was ignored. Main fields must be
    * configured explicitly when using the neutral platform."). Set e.g.
    * `["main", "module"]` to let such CJS-main-only deps resolve (#676 —
-   * `msw` → `path-to-regexp@6`). Applies to every framework; unset/empty →
-   * byte-identical to a build without the knob (the React-only `main,module`
-   * shim still applies).
+   * `msw` → `path-to-regexp@6`). When unset or empty, no
+   * `--main-fields` argument is emitted.
    *
    * Mirrors `BundleConfig::main_fields` in `crates/zfb/src/config.rs`.
    */
@@ -137,7 +167,7 @@ export type BundleConfig = {
    * Bare specifiers to mark external in the `--platform=neutral` page/SSR
    * pass, so esbuild leaves them unbundled instead of resolving them (the
    * other #676 escape hatch — externalize a CJS-only dep rather than
-   * resolving it). Appended to the framework-provided externals. Unset/empty
+   * resolving it). Appended to the bundler's required imports. Unset/empty
    * → no extra externals.
    *
    * Mirrors `BundleConfig::external` in `crates/zfb/src/config.rs`.
@@ -223,12 +253,10 @@ export type ZfbConfig = {
    * Mirrors `Config::allowed_hosts` in `crates/zfb/src/config.rs`.
    */
   allowedHosts?: string[];
-  /** JSX framework runtime. Default: `preact`. */
-  framework?: Framework;
   /** Content collections. Mirrors the JSON form one-for-one. */
   collections?: CollectionDef[];
-  /** Tailwind options; absent = defaults. */
-  tailwind?: TailwindConfig;
+  /** zudo-wind v1 configuration; absent enables the default empty configuration. */
+  wind?: WindConfig | false;
   /**
    * Prefetch options. When `disabled: true`, the build emits a meta tag
    * that the runtime's prefetch-core module reads at init time to skip
@@ -778,17 +806,15 @@ export type CodeHighlightConfig = {
   /**
    * Per-role class overrides for class mode, e.g.
    * `{ keyword: "text-violet-600 dark:text-violet-400" }` to map a role
-   * onto Tailwind utilities instead of the default `{classPrefix}{role}`
+   * onto zudo-wind utilities or authored classes instead of the default `{classPrefix}{role}`
    * class. Keys must be one of the 18 fixed role names (see
    * {@link CodeHighlightRole}); a value may hold multiple
    * space-separated classes and must not contain the bare token `"line"`
    * (collides with the code-enrichment line wrapper class). Absent uses
    * `{classPrefix}{role}` for every role.
    *
-   * Setting this while `tailwind.enabled` is `false` (the authored-CSS
-   * path) is allowed but emits a build warning — no Tailwind safelist can
-   * be generated on that path, so the mapped utilities must already exist
-   * in your own CSS.
+   * Setting this with `wind: false` is allowed but emits a build warning: the
+   * mapped classes must exist in authored CSS.
    */
   roleClasses?: Partial<Record<CodeHighlightRole, string>>;
   /**
@@ -1379,6 +1405,9 @@ export function defineConfig(config: ZfbConfig): ZfbConfig {
  * Preset authoring helper: stamps each object entry in `config.plugins`
  * with `source_package: sourcePackage` so the Rust loader can attribute
  * plugin contributions back to the preset package that provided them.
+ * Wind manifest declarations receive an internal `__zfb_source_package`
+ * marker for the same reason; the Rust config model strips it, leaving the
+ * public manifest shape as `{ path }`.
  *
  * - Only plain-object plugin entries are stamped; non-object entries pass
  *   through unchanged (defensive — the current schema requires objects,
@@ -1387,8 +1416,11 @@ export function defineConfig(config: ZfbConfig): ZfbConfig {
  *   preset composing another `definePreset`-returned preset (by spreading its
  *   `plugins`) keeps the inner preset's provenance instead of clobbering it
  *   with the outer package name (the spread below lets the existing marker win).
- * - When `config.plugins` is absent, the config is returned as-is.
- * - All other fields of `config` pass through unchanged.
+ * - When neither plugins nor wind manifests are present, the config is
+ *   returned as-is.
+ * - Wind manifests keep the public `{ path }` shape; their source package is
+ *   carried in an internal marker for Rust to strip before config validation.
+ * - All other public fields of `config` pass through unchanged.
  *
  * The key `source_package` (snake_case) mirrors the Rust `PluginConfig`
  * serde field added in T4. `PluginConfig` has no `#[serde(rename_all)]`
@@ -1403,12 +1435,30 @@ export function definePreset(
   sourcePackage: string,
   config: Partial<ZfbConfig>,
 ): Partial<ZfbConfig> {
-  if (!config.plugins) {
-    return config;
+  let sourceStampedConfig = config;
+  const wind = config.wind;
+  if (wind && wind.manifests) {
+    const manifests = Object.fromEntries(
+      Object.entries(wind.manifests).map(([producer, manifest]) => {
+        if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
+          // Default first so a composed inner preset's source marker wins.
+          return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
+        }
+        return [producer, manifest];
+      }),
+    ) as NonNullable<WindConfig["manifests"]>;
+    sourceStampedConfig = {
+      ...config,
+      wind: { ...wind, manifests },
+    };
+  }
+
+  if (!sourceStampedConfig.plugins) {
+    return sourceStampedConfig;
   }
   return {
-    ...config,
-    plugins: config.plugins.map((plugin) => {
+    ...sourceStampedConfig,
+    plugins: sourceStampedConfig.plugins.map((plugin) => {
       if (plugin !== null && typeof plugin === "object" && !Array.isArray(plugin)) {
         // Default first, then spread the plugin so an existing `source_package`
         // (from a composed inner preset) wins over the outer package name.

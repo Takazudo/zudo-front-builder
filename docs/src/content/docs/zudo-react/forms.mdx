@@ -1,0 +1,98 @@
+---
+title: Forms
+description: Keep controls uncontrolled by default and opt into the five writable signal adapters.
+sidebar_position: 7
+---
+
+## Uncontrolled by default
+
+Controls use native browser state unless you provide an explicit model. Static value and checked props set initial defaults. Reactive value and checked props are rejected; use a model prop when the control should stay connected to a signal.
+
+The reserved props are **defaultValue**, **defaultChecked**, **modelValue**, and **modelChecked**. They do not become HTML attributes. Supplying a model together with its default is an error, as is supplying both value and defaultValue or both checked and defaultChecked.
+
+## Bind a writable signal
+
+Text inputs, textarea, checkbox, single select, and radio groups are the supported models:
+
+| Control | Model | Initial server/default form |
+| --- | --- | --- |
+| Text input (including omitted type), search, email, URL, tel, or password input | modelValue with a writable string signal | Escaped value attribute |
+| textarea | modelValue with a writable string signal | Escaped text content |
+| checkbox input | modelChecked with a writable boolean signal | Boolean checked attribute |
+| single select | modelValue with a writable string signal | selected on the matching static option |
+| radio group | shared modelValue with a writable string-or-null signal | checked on the matching static option; null checks none |
+
+The corresponding live events are input for text inputs and textarea, and change for checkbox, select, and radio controls. Radio models are shared across each group. A leading line feed in textarea default content is preserved through HTML parsing.
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Preferences() {
+  const displayName = signal("Ada");
+  const updatesEnabled = signal(true);
+  const delivery = signal<string | null>("email");
+
+  return (
+    <form>
+      <label>
+        Display name
+        <input modelValue={displayName} />
+      </label>
+      <label>
+        <input type="checkbox" modelChecked={updatesEnabled} />
+        Email me updates
+      </label>
+      <label>
+        <input type="radio" name="delivery" value="email" modelValue={delivery} />
+        Email
+      </label>
+      <label>
+        <input type="radio" name="delivery" value="post" modelValue={delivery} />
+        Post
+      </label>
+    </form>
+  );
+}
+~~~
+
+Each radio in a group needs a static value and the same nonempty name, form association, and root. Radio option values and select option values must be unique strings. A null radio model means no option is checked. A single-select model must match a static option, except that hydration may record the browser's no-selection state without forcing a choice.
+
+## Models must be writable
+
+Every model requires a `Signal<T>` from signal(). A `ReadonlySignal<T>` or computed value is not a model, even though both have the shared reactive brand. Signal also carries the required writable brand. This is checked by TypeScript and by server and client runtime validation, including dynamic descriptions created with h.
+
+~~~tsx
+import type { ReadonlySignal, Signal } from "@takazudo/zfb/zudo-react";
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+const name = signal("Ada");
+const view: ReadonlySignal<string> = name;
+const writable: Signal<string> = name;
+const label = computed(() => name.value.toUpperCase());
+
+<input modelValue={name} />;
+<p>{label}</p>;
+~~~
+
+Use computed and readonly signals for text or other readable bindings. They remain valid inputs when a child only reads a signal. A readonly type annotation does not erase the writable brand at runtime, but the TypeScript type itself cannot be supplied as a model. Runtime validation rejects models without that writable brand before any model write.
+
+Multiple selection is unsupported in v1. Multiple selects are rejected in island mode and cannot use model or defaultValue. File, contenteditable, numeric, date, and range models are also unsupported. Select, optgroup, and option structure must be static; option labels and option lists are not reactive. A programmatic model or default with no matching option reports ZR_MODEL_VALUE without a partial update.
+
+## Hydration preserves what the user entered
+
+At hydration, the runtime reads and validates every live control value before writing any model. The current DOM wins in one root-wide batch, so typing that happened before activation is preserved. Multiple non-radio controls bound to the same signal must agree. Radio groups reconcile as a group rather than depending on traversal order.
+
+mount creates new controls, so it initializes them from their models or defaults. After activation, adapters skip equal property assignments to preserve caret and selection. A native form reset updates affected models after the browser applies its default action; reset defaults remain the original defaults, not later signal values.
+
+## Composition and Japanese input
+
+Text adapters observe compositionstart, compositionend, input.isComposing, and blur. During composition, live input may update the model, but signal notifications do not write back into the composing control. External writes are buffered; when composition ends or the control blurs, the final DOM edit is read as authoritative.
+
+The shared zfb boot path installs capture listeners before island scheduling so the adapter can identify active composition across bundles. A focused control with unknown composition state postpones writes until compositionend or blur; nonfocused controls are safe to update. Synthetic composition events can exercise this state protocol in automation. They do not verify behavior with a real Japanese IME. Real IME behavior remains deferred human verification under DD17.
+
+## See also
+
+- [Reactivity](./reactivity.mdx)
+- [Hydration](./hydration.mdx)
+- [Components and JSX](./components-and-jsx.mdx)
+- [API reference](./api-reference.mdx)

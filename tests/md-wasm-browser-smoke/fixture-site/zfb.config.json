@@ -1,7 +1,4 @@
 {
-  "framework": "preact",
   "outDir": "dist",
-  "tailwind": {
-    "enabled": false
-  }
+  "wind": false
 }

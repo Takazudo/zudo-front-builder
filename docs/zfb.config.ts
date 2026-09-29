@@ -91,6 +91,8 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
       { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
       { label: "Install", path: "/docs/install", categoryMatch: "install" },
       { label: "Concepts", path: "/docs/concepts", categoryMatch: "concepts" },
+      { label: "zudo-wind", path: "/docs/zudo-wind", categoryMatch: "zudo-wind" },
+      { label: "zudo-react", path: "/docs/zudo-react", categoryMatch: "zudo-react" },
       { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
       { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
       { label: "Reference", path: "/docs/api", categoryMatch: "api" },

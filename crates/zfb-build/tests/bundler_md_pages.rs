@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal `BundlerInput` for an isolated test project.
@@ -32,15 +31,14 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
-        framework: Framework::Preact,
+        zudo_react_island_names: Some(vec![]),
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         // Mark all bare imports external so this test doesn't need a
         // full node_modules tree next to the shadow root.
         external: vec![
-            "preact".into(),
-            "preact-render-to-string".into(),
+            "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
         outdir: root.join("dist"),

@@ -1,4 +1,4 @@
-import type { ComponentChildren } from "preact";
+import type { Child } from "@takazudo/zfb/zudo-react";
 
 import DefaultLayout from "~/layouts/default";
 
@@ -7,7 +7,7 @@ import DefaultLayout from "~/layouts/default";
  * component under `pages/` is all a page needs — this file becomes
  * `/about/index.html`.
  */
-const STRUCTURE: { path: string; what: ComponentChildren }[] = [
+const STRUCTURE: { path: string; what: Child }[] = [
   {
     path: "pages/",
     what: (
@@ -38,7 +38,7 @@ const STRUCTURE: { path: string; what: ComponentChildren }[] = [
     path: "styles/",
     what: (
       <>
-        Tailwind entry, theme tokens, and the <code>.prose</code> markdown styles.
+        Authored CSS and the <code>.prose</code> markdown styles.
       </>
     ),
   },

@@ -1,0 +1,82 @@
+---
+title: 移動
+description: 余白、full、分数、負の値を使い、軸に沿って要素を移動します。
+sidebar_position: 58
+generated: true
+---
+
+余白、full、分数、負の値を使い、軸に沿って要素を移動します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## translate-x
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.translate.x` |
+| クラスパターン | `translate-x-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `translate` (`38`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `--zw-translate-x`, `translate` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"full"` | `"100%"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `--zw-translate-x` | `resolved` | `null` |
+| `translate` | `fixed` | `"var(--zw-translate-x) var(--zw-translate-y)"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `translate-x-0` | `--zw-translate-x: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+
+## translate-y
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.translate.y` |
+| クラスパターン | `translate-y-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `spacing` |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `translate` (`38`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `--zw-translate-y`, `translate` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"full"` | `"100%"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `--zw-translate-y` | `resolved` | `null` |
+| `translate` | `fixed` | `"var(--zw-translate-x) var(--zw-translate-y)"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `translate-y-0` | `--zw-translate-y: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |

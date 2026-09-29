@@ -2,13 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 
 import {
   __hasPendingCancelForTests,
-  __setIslandImporterForTests,
   ISLAND_MOUNTED_ATTR,
-  mountIslands,
-  mountNewIslands,
+  mountIslands as mountOwnedIslands,
   scheduleHydrate,
   unmountIslands,
 } from "../runtime.js";
+import {
+  mountTestIslands as mountIslands,
+  mountNewTestIslands as mountNewIslands,
+} from "./owned-manifest-fixture.js";
 
 type IntersectionCallback = (
   entries: Array<{ isIntersecting: boolean; target: Element }>,
@@ -403,7 +405,7 @@ describe("scheduleHydrate", () => {
       expect(fire).toHaveBeenCalledTimes(1);
     });
 
-    it("mountIslands-level: data-when=media island hydrates on first match", async () => {
+    it("mountIslands-level: data-when=media island hydrates on first match", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-when="media" data-media="(max-width: 768px)"></div>
       `;
@@ -414,23 +416,13 @@ describe("scheduleHydrate", () => {
       );
 
       const mount = vi.fn();
-      const restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
-      try {
-        mountIslands({ Counter: "/islands/Counter-abc.js" });
 
-        // Before the query matches: import must not have started.
-        expect(mount).not.toHaveBeenCalled();
+      mountIslands({ Counter: { mount } });
 
-        // Simulate query match.
-        mql.dispatchChange(true);
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(mount).toHaveBeenCalledTimes(1);
-        expect(mount.mock.calls[0]![2]).toBe("hydrate");
-      } finally {
-        __setIslandImporterForTests(restoreImporter);
-      }
+      expect(mount).not.toHaveBeenCalled();
+      mql.dispatchChange(true);
+      expect(mount).toHaveBeenCalledTimes(1);
+      expect(mount.mock.calls[0]![2]).toBe("hydrate");
     });
 
     it("lazy props: data-props is NOT parsed until the media query matches", () => {
@@ -447,41 +439,15 @@ describe("scheduleHydrate", () => {
       );
 
       const mount = vi.fn();
-      const restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
-      try {
-        // Boot time: scheduleMount should set up the listener but NOT parse props.
-        mountIslands({ Counter: { mount } });
 
-        // The island should not have mounted yet (query doesn't match).
-        expect(mount).not.toHaveBeenCalled();
-        // Props are not parsed until fire — no crash here.
-      } finally {
-        __setIslandImporterForTests(restoreImporter);
-      }
+      // Boot time schedules the listener without parsing malformed props.
+      mountIslands({ Counter: { mount } });
+      expect(mount).not.toHaveBeenCalled();
     });
   });
 
   describe("mountIslands", () => {
-    type FakeMount = (
-      props: Record<string, unknown>,
-      element: Element,
-      mode: "hydrate" | "render",
-    ) => void;
-    type FakeModule = { mount?: FakeMount; default?: FakeMount };
-    let restoreImporter: (url: string) => Promise<FakeModule>;
-
-    beforeEach(() => {
-      // Default: a fresh load=immediate scheduler with no IO observers.
-      // Individual tests stub the importer below.
-    });
-
-    afterEach(() => {
-      if (typeof restoreImporter === "function") {
-        __setIslandImporterForTests(restoreImporter);
-      }
-    });
-
-    it("hydrates SSR islands with parsed data-props and the right mode", async () => {
+    it("hydrates SSR islands with parsed data-props and the right mode", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{"start":3}' data-when="load">
           <button>3</button>
@@ -489,14 +455,8 @@ describe("scheduleHydrate", () => {
       `;
 
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async (_url) => ({
-        mount,
-      }));
 
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      // Allow microtasks queued by the dynamic import promise.
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Counter: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
       const args = mount.mock.calls[0]!;
@@ -507,111 +467,72 @@ describe("scheduleHydrate", () => {
       expect(args[2]).toBe("hydrate");
     });
 
-    it("renders SSR-skip islands (mode=render) immediately, ignoring data-when", async () => {
+    it("renders SSR-skip islands (mode=render) immediately, ignoring data-when", () => {
       document.body.innerHTML = `
         <div data-zfb-island-skip-ssr="Modal" data-props='{"open":true}' data-when="visible"></div>
       `;
 
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
 
-      mountIslands({ Modal: "/islands/Modal-def.js" });
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Modal: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
-      // SSR-skip mounts via render, not hydrate, so React/Preact won't
+      // SSR-skip mounts via render, not hydrate, so the client runtime will not
       // emit hydration-mismatch warnings against an empty container.
       expect(mount.mock.calls[0]![2]).toBe("render");
     });
 
-    it("does not mount the same element twice across repeat calls", async () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
-
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(mount).toHaveBeenCalledTimes(1);
-    });
-
-    it("does not double-mount when concurrent invocations race the dynamic import", async () => {
-      // Round 2 regression: before the `pending` guard, two concurrent
-      // `mountIslands` calls would both pass the `mounted` check
-      // (synchronous) and both spawn `importIsland(url) -> fn(...)`.
+    it("does not mount the same element twice across repeat calls", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
       `;
       const mount = vi.fn();
 
-      // A deferred importer: its Promise only resolves once we explicitly
-      // flush. That gives us a window during which BOTH `mountIslands`
-      // calls are simultaneously waiting on the import.
-      let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
-      const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
-        resolveImport = resolve;
-      });
-      restoreImporter = __setIslandImporterForTests(() => importPromise);
-
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-
-      // Now resolve the import — only ONE `mount(...)` call should fire.
-      resolveImport!({ mount });
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Counter: { mount } });
+      mountIslands({ Counter: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to {} props when data-props is missing or invalid", async () => {
+    it("uses empty props for an omitted bag and rejects malformed transport", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-when="load"></div>
         <div data-zfb-island-skip-ssr="Modal" data-props="not json"></div>
       `;
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
       mountIslands({
-        Counter: "/islands/Counter-abc.js",
-        Modal: "/islands/Modal-def.js",
+        Counter: { mount },
+        Modal: { mount },
       });
-      await Promise.resolve();
-      await Promise.resolve();
 
-      expect(mount).toHaveBeenCalledTimes(2);
+      expect(mount).toHaveBeenCalledTimes(1);
       expect(mount.mock.calls[0]![0]).toEqual({});
-      expect(mount.mock.calls[1]![0]).toEqual({});
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('island "Modal" mount failed'),
+        expect.any(Error),
+      );
     });
 
-    it("falls back to {} props when data-props is a JSON array (not a record)", async () => {
-      // `typeof [] === "object"` so the old guard let arrays through.
-      // Arrays are not a valid props bag — we must reject them and
-      // hand the component an empty record instead.
+    it("rejects a JSON array props bag before mounting", () => {
       const arrayProps = JSON.stringify([1, 2, 3]);
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='${arrayProps}' data-when="load"></div>
       `;
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Counter: { mount } });
 
-      expect(mount).toHaveBeenCalledTimes(1);
-      expect(mount.mock.calls[0]![0]).toEqual({});
+      expect(mount).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('island "Counter" mount failed'),
+        expect.any(Error),
+      );
     });
 
-    it("warns and skips elements whose component is missing from the manifest", async () => {
+    it("warns and skips elements whose component is missing from the manifest", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Mystery" data-props='{}' data-when="load"></div>
       `;
@@ -619,11 +540,9 @@ describe("scheduleHydrate", () => {
       process.env["NODE_ENV"] = "development";
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
       try {
-        mountIslands({ Counter: "/islands/Counter-abc.js" });
-        await Promise.resolve();
-        await Promise.resolve();
+        mountIslands({ Counter: { mount } });
         expect(mount).not.toHaveBeenCalled();
         expect(warnSpy).toHaveBeenCalledTimes(1);
       } finally {
@@ -636,41 +555,18 @@ describe("scheduleHydrate", () => {
       }
     });
 
-    it("uses the bundle's default export when mount is not present", async () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const def = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ default: def }));
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(def).toHaveBeenCalledTimes(1);
-    });
-
     // ---------------------------------------------------------------------
-    // Inline-module manifest shape (issue #146 / zudolab/zudo-doc#1355
-    // wave 6). The shared-bundle production path imports every island's
-    // source code into one bundle and hands `mountIslands` an object
-    // whose values are `IslandModule` descriptors instead of URL
-    // strings. The runtime must call those mount functions directly,
-    // skipping the dynamic import entirely.
+    // The shared bundle supplies inline IslandModule descriptors.
     // ---------------------------------------------------------------------
-    it("calls inline-module mount synchronously without dynamic import (SSR path)", () => {
+    it("calls inline-module mount synchronously (SSR path)", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{"start":7}' data-when="load"></div>
       `;
       const mount = vi.fn();
-      // The importer must NOT be invoked when the manifest value is an
-      // inline module — the test fails the importer to make that loud.
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
 
       mountIslands({ Counter: { mount } });
 
-      // Synchronous: no microtask flush required because we never went
-      // through `import()` for this entry.
+      // Synchronous mount: no microtask flush required.
       expect(mount).toHaveBeenCalledTimes(1);
       const args = mount.mock.calls[0]!;
       expect(args[0]).toEqual({ start: 7 });
@@ -683,9 +579,6 @@ describe("scheduleHydrate", () => {
         <div data-zfb-island-skip-ssr="Modal" data-props='{"open":true}' data-when="visible"></div>
       `;
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
 
       mountIslands({ Modal: { mount } });
 
@@ -694,28 +587,11 @@ describe("scheduleHydrate", () => {
       expect(mount.mock.calls[0]![2]).toBe("render");
     });
 
-    it("falls back to default export on inline-module entry when mount is absent", () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const def = vi.fn();
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
-
-      mountIslands({ Counter: { default: def } });
-
-      expect(def).toHaveBeenCalledTimes(1);
-    });
-
     it("does not double-mount inline-module entries on repeat calls", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
       `;
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
 
       mountIslands({ Counter: { mount } });
       mountIslands({ Counter: { mount } });
@@ -727,17 +603,14 @@ describe("scheduleHydrate", () => {
     // unmountIslands() test cases (#274)
     // -----------------------------------------------------------------------
 
-    it("unmountIslands(root) calls the bundle's unmount with the correct element", async () => {
+    it("unmountIslands(root) calls the module's unmount with the correct element", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{"start":1}' data-when="load"></div>
       `;
       const mount = vi.fn();
       const unmount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount, unmount }));
 
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Counter: { mount, dispose: unmount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
 
@@ -750,17 +623,14 @@ describe("scheduleHydrate", () => {
       expect(unmount).toHaveBeenCalledWith(el);
     });
 
-    it("unmountIslands does not throw when bundle exposes no unmount", async () => {
+    it("unmountIslands does not throw when module exposes no unmount", () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
       `;
       const mount = vi.fn();
-      // Bundle has no unmount export — the runtime stores a noop thunk.
-      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      // Module has no unmount export — the runtime stores a noop thunk.
 
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-      await Promise.resolve();
-      await Promise.resolve();
+      mountIslands({ Counter: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
       // Must not throw even though no unmount was exposed by the bundle.
@@ -773,12 +643,9 @@ describe("scheduleHydrate", () => {
       `;
       const mount = vi.fn();
       const unmount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
 
       // Inline IslandModule shape (shared-bundle path) with unmount.
-      mountIslands({ Counter: { mount, unmount } });
+      mountIslands({ Counter: { mount, dispose: unmount } });
 
       // Inline mount is synchronous.
       expect(mount).toHaveBeenCalledTimes(1);
@@ -818,8 +685,8 @@ describe("scheduleHydrate", () => {
         const sidebarUnmount = vi.fn();
         const tocUnmount = vi.fn();
         mountIslands({
-          Sidebar: { mount: vi.fn(), unmount: sidebarUnmount },
-          Toc: { mount: vi.fn(), unmount: tocUnmount },
+          Sidebar: { mount: vi.fn(), dispose: sidebarUnmount },
+          Toc: { mount: vi.fn(), dispose: tocUnmount },
         });
 
         unmountIslands(
@@ -844,8 +711,8 @@ describe("scheduleHydrate", () => {
         const sidebarMount = vi.fn();
         const tocMount = vi.fn();
         mountIslands({
-          Sidebar: { mount: sidebarMount, unmount: vi.fn() },
-          Toc: { mount: tocMount, unmount: vi.fn() },
+          Sidebar: { mount: sidebarMount, dispose: vi.fn() },
+          Toc: { mount: tocMount, dispose: vi.fn() },
         });
         expect(sidebarMount).toHaveBeenCalledTimes(1);
         expect(tocMount).toHaveBeenCalledTimes(1);
@@ -871,7 +738,7 @@ describe("scheduleHydrate", () => {
           <div ${PERSIST}="gone" data-zfb-island="Orphan" data-props='{}' data-when="load"></div>
         `;
         const unmount = vi.fn();
-        mountIslands({ Orphan: { mount: vi.fn(), unmount } });
+        mountIslands({ Orphan: { mount: vi.fn(), dispose: unmount } });
 
         // Incoming body has no matching persist id → swapBodyElement would discard
         // it → it must be unmounted here.
@@ -885,7 +752,7 @@ describe("scheduleHydrate", () => {
           <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{}' data-when="load"></div>
         `;
         const unmount = vi.fn();
-        mountIslands({ Sidebar: { mount: vi.fn(), unmount } });
+        mountIslands({ Sidebar: { mount: vi.fn(), dispose: unmount } });
 
         // Single-arg call (no swap in flight) preserves nothing — identical to
         // the original walk.
@@ -901,7 +768,7 @@ describe("scheduleHydrate", () => {
         const el = document.querySelector(`[${PERSIST}="panel"]`)!;
         const mount = vi.fn();
         const unmount = vi.fn();
-        mountIslands({ Panel: { mount, unmount } });
+        mountIslands({ Panel: { mount, dispose: unmount } });
         expect(mount).toHaveBeenCalledTimes(1);
         expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
 
@@ -921,49 +788,6 @@ describe("scheduleHydrate", () => {
         expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
       });
 
-      it("pending URL remount keeps the flag until import resolves and mounts with refreshed props", async () => {
-        document.body.innerHTML = `
-          <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="load"></div>
-        `;
-        const el = document.querySelector(`[${PERSIST}="panel"]`)!;
-        const mount = vi.fn();
-
-        let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
-        const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
-          resolveImport = resolve;
-        });
-        restoreImporter = __setIslandImporterForTests(() => importPromise);
-
-        mountIslands({ Panel: "/islands/panel.js" });
-        expect(mount).not.toHaveBeenCalled();
-
-        // Simulate swapBodyElement refreshing props while the URL import is still pending.
-        el.setAttribute("data-props", '{"v":2}');
-        el.setAttribute("data-zfb-island-remount", "");
-
-        mountNewIslands();
-
-        // The pending import owns the eventual mount, so the flag must not be
-        // consumed before that import can re-read fresh data-props.
-        expect(el.hasAttribute("data-zfb-island-remount")).toBe(true);
-        expect(mount).not.toHaveBeenCalled();
-
-        resolveImport!({ mount });
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(mount).toHaveBeenCalledTimes(1);
-        expect(mount.mock.calls[0]![0]).toEqual({ v: 2 });
-        expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
-
-        mountNewIslands();
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(mount).toHaveBeenCalledTimes(1);
-      });
-
       it("mounted inline deferred remount bypasses the scheduler and runs synchronously", () => {
         vi.useFakeTimers();
         try {
@@ -975,7 +799,7 @@ describe("scheduleHydrate", () => {
           const mount = vi.fn();
           const unmount = vi.fn();
 
-          mountIslands({ Panel: { mount, unmount } });
+          mountIslands({ Panel: { mount, dispose: unmount } });
           expect(mount).not.toHaveBeenCalled();
 
           vi.advanceTimersByTime(0);
@@ -998,58 +822,13 @@ describe("scheduleHydrate", () => {
         }
       });
 
-      it("mounted URL deferred remount starts immediately instead of waiting for idle again", async () => {
-        vi.useFakeTimers();
-        try {
-          vi.stubGlobal("requestIdleCallback", undefined);
-          document.body.innerHTML = `
-            <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="idle"></div>
-          `;
-          const el = document.querySelector(`[${PERSIST}="panel"]`)!;
-          const mount = vi.fn();
-          const unmount = vi.fn();
-          const importer = vi.fn(async () => ({ mount, unmount }));
-          restoreImporter = __setIslandImporterForTests(importer);
-
-          mountIslands({ Panel: "/islands/panel.js" });
-          expect(importer).not.toHaveBeenCalled();
-
-          vi.advanceTimersByTime(0);
-          await Promise.resolve();
-          await Promise.resolve();
-
-          expect(importer).toHaveBeenCalledTimes(1);
-          expect(mount).toHaveBeenCalledTimes(1);
-          expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
-
-          el.setAttribute("data-props", '{"v":2}');
-          el.setAttribute("data-zfb-island-remount", "");
-
-          mountNewIslands();
-
-          // No second timer advance: the replacement URL import should start
-          // immediately even though the actual mount remains promise-timed.
-          expect(unmount).toHaveBeenCalledTimes(1);
-          expect(importer).toHaveBeenCalledTimes(2);
-
-          await Promise.resolve();
-          await Promise.resolve();
-
-          expect(mount).toHaveBeenCalledTimes(2);
-          expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
-          expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
-        } finally {
-          vi.useRealTimers();
-        }
-      });
-
       it("mountNewIslands leaves a persisted island with unchanged props (no remount flag) mounted — no unmount, no re-mount", () => {
         document.body.innerHTML = `
           <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
         `;
         const mount = vi.fn();
         const unmount = vi.fn();
-        mountIslands({ Sidebar: { mount, unmount } });
+        mountIslands({ Sidebar: { mount, dispose: unmount } });
         expect(mount).toHaveBeenCalledTimes(1);
 
         // No remount flag (props were identical) → mountNewIslands must not disturb it.
@@ -1060,37 +839,6 @@ describe("scheduleHydrate", () => {
       });
     });
 
-    it("stale-mount race: does not call mount when element is detached before import resolves", async () => {
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
-      `;
-      const mount = vi.fn();
-
-      // Deferred importer: only resolves after we explicitly flush.
-      let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
-      const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
-        resolveImport = resolve;
-      });
-      restoreImporter = __setIslandImporterForTests(() => importPromise);
-
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-
-      // Detach the element from the DOM to simulate a body swap while the
-      // import is still in-flight.
-      const el = document.querySelector("[data-zfb-island]")!;
-      el.remove();
-      expect(el.isConnected).toBe(false);
-
-      // Now resolve the import — the isConnected guard must prevent mount()
-      // from being called for the detached element.
-      resolveImport!({ mount });
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(mount).not.toHaveBeenCalled();
-    });
-
     // -----------------------------------------------------------------------
     // Stale-pendingCancels bug (#743): when IntersectionObserver is absent,
     // scheduleVisible fires synchronously and returns noop — but the old code
@@ -1098,27 +846,6 @@ describe("scheduleHydrate", () => {
     // leaving a permanent stale entry. The fix: only set pendingCancels when
     // the scheduler did NOT fire synchronously (!fired).
     // -----------------------------------------------------------------------
-
-    it("URL path: no stale pendingCancels entry when IO-less when=visible fires synchronously", () => {
-      // Remove IntersectionObserver so scheduleVisible fails open (sync fire).
-      vi.stubGlobal("IntersectionObserver", undefined);
-
-      document.body.innerHTML = `
-        <div data-zfb-island="Counter" data-props='{}' data-when="visible"></div>
-      `;
-
-      // Use an importer that resolves synchronously (via a resolved Promise)
-      // so console.error is not triggered. We just care about pendingCancels.
-      restoreImporter = __setIslandImporterForTests(() => Promise.resolve({ mount: vi.fn() }));
-
-      const el = document.querySelector("[data-zfb-island]")!;
-
-      mountIslands({ Counter: "/islands/Counter-abc.js" });
-
-      // The scheduler fired synchronously, so there must be NO stale entry
-      // in pendingCancels for this element. (#743)
-      expect(__hasPendingCancelForTests(el)).toBe(false);
-    });
 
     it("fireInlineMount path: no stale pendingCancels entry when IO-less when=visible fires synchronously", () => {
       // Remove IntersectionObserver so scheduleVisible fails open (sync fire).
@@ -1129,9 +856,6 @@ describe("scheduleHydrate", () => {
       `;
 
       const mount = vi.fn();
-      restoreImporter = __setIslandImporterForTests(() => {
-        throw new Error("dynamic import must not be used for inline-module manifest entries");
-      });
 
       const el = document.querySelector("[data-zfb-island]")!;
 
@@ -1308,54 +1032,6 @@ describe("scheduleHydrate", () => {
 });
 
 describe("island mounted marker state contract (#2541)", () => {
-  type Mount = (
-    props: Record<string, unknown>,
-    element: Element,
-    mode: "hydrate" | "render",
-  ) => void;
-  type Module = {
-    mount?: Mount;
-    default?: Mount;
-    unmount?: (element: Element) => void;
-  };
-  type Importer = (url: string) => Promise<Module>;
-
-  let restoreImporter: Importer | undefined;
-
-  function stubImporter(importer: Importer): void {
-    restoreImporter = __setIslandImporterForTests(importer);
-  }
-
-  async function flushImport(): Promise<void> {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-  }
-
-  // Deliberately controlled thenable: capturing the runtime's fulfillment
-  // callback lets the test observe a synchronous mount throw directly and
-  // retry without creating an unhandled child rejection.
-  function controlledImport(module: Module): {
-    promise: Promise<Module>;
-    fulfill: () => unknown;
-  } {
-    let onFulfilled: ((value: Module) => unknown) | undefined;
-    const promise = {
-      then(fulfillment: (value: Module) => unknown): Promise<void> {
-        onFulfilled = fulfillment;
-        return Promise.resolve();
-      },
-    } as unknown as Promise<Module>;
-
-    return {
-      promise,
-      fulfill: () => {
-        if (!onFulfilled) throw new Error("import fulfillment callback was not registered");
-        return onFulfilled(module);
-      },
-    };
-  }
-
   function island(selector = "[data-zfb-island]"): HTMLElement {
     const el = document.querySelector<HTMLElement>(selector);
     if (!el) throw new Error(`expected island ${selector}`);
@@ -1367,10 +1043,6 @@ describe("island mounted marker state contract (#2541)", () => {
   }
 
   afterEach(() => {
-    if (restoreImporter) {
-      __setIslandImporterForTests(restoreImporter);
-      restoreImporter = undefined;
-    }
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -1394,7 +1066,7 @@ describe("island mounted marker state contract (#2541)", () => {
     expect(probe.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
   });
 
-  it("keeps the marker absent while an idle URL island is deferred", async () => {
+  it("keeps the marker absent while an idle island is deferred", () => {
     vi.useFakeTimers();
     vi.stubGlobal("requestIdleCallback", undefined);
     document.body.innerHTML = `
@@ -1402,15 +1074,13 @@ describe("island mounted marker state contract (#2541)", () => {
     `;
     const el = island();
     const mount = vi.fn();
-    stubImporter(async () => ({ mount }));
 
-    mountIslands({ Idle: "/islands/Idle.js" });
+    mountIslands({ Idle: { mount } });
 
     expect(isMounted(el)).toBe(false);
     expect(mount).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(0);
-    await flushImport();
 
     expect(mount).toHaveBeenCalledTimes(1);
     expect(isMounted(el)).toBe(true);
@@ -1486,36 +1156,9 @@ describe("island mounted marker state contract (#2541)", () => {
     expect(isMounted(el)).toBe(true);
   });
 
-  it("writes the marker for a URL island only after mount returns", async () => {
-    document.body.innerHTML = `
-      <div data-zfb-island="Counter" data-when="load"></div>
-    `;
-    const el = island();
-    const mount = vi.fn(() => {
-      expect(isMounted(el)).toBe(false);
-    });
-    let resolveImport: ((module: Module) => void) | undefined;
-    stubImporter(
-      () =>
-        new Promise((resolve) => {
-          resolveImport = resolve;
-        }),
-    );
-
-    mountIslands({ Counter: "/islands/Counter.js" });
-    expect(isMounted(el)).toBe(false);
-    expect(mount).not.toHaveBeenCalled();
-
-    resolveImport!({ mount });
-    await flushImport();
-
-    expect(mount).toHaveBeenCalledTimes(1);
-    expect(isMounted(el)).toBe(true);
-  });
-
   it("writes the marker for an inline SSR-skip island after mount returns", () => {
     document.body.innerHTML = `
-      <div data-zfb-island-skip-ssr="Modal" data-when="visible"></div>
+      <div data-zfb-island-skip-ssr="Modal" data-when="load"></div>
     `;
     const el = island('[data-zfb-island-skip-ssr="Modal"]');
     const mount = vi.fn(() => {
@@ -1539,58 +1182,16 @@ describe("island mounted marker state contract (#2541)", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("leaves the marker absent when a URL module has no mount export", async () => {
-    document.body.innerHTML = `<div data-zfb-island="NoMount" data-when="load"></div>`;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    stubImporter(async () => ({}));
-
-    mountIslands({ NoMount: "/islands/NoMount.js" });
-    await flushImport();
-
-    expect(isMounted(island())).toBe(false);
-    expect(warnSpy).toHaveBeenCalled();
-  });
-
   it("leaves the marker absent when an inline module has no mount export", () => {
-    document.body.innerHTML = `<div data-zfb-island="NoMount" data-when="load"></div>`;
+    document.body.innerHTML = `<div data-zfb-island="NoMount" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="test" data-props="{}" data-when="load"></div>`;
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    mountIslands({ NoMount: {} });
+    mountOwnedIslands({
+      NoMount: { identity: { component: "NoMount", build: "test" }, mount: undefined as never },
+    });
 
     expect(isMounted(island())).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
-  });
-
-  it("clears the marker after a URL mount throws and allows a successful retry", async () => {
-    document.body.innerHTML = `<div data-zfb-island="Throws" data-when="load"></div>`;
-    const el = island();
-    const throwingMount = vi.fn(() => {
-      throw new Error("URL mount failed");
-    });
-    const successfulMount = vi.fn(() => {
-      expect(isMounted(el)).toBe(false);
-    });
-    const firstImport = controlledImport({ mount: throwingMount });
-    let importerCalls = 0;
-    stubImporter(() => {
-      importerCalls += 1;
-      return importerCalls === 1
-        ? firstImport.promise
-        : Promise.resolve({ mount: successfulMount });
-    });
-
-    mountIslands({ Throws: "/islands/Throws.js" });
-    expect(() => firstImport.fulfill()).toThrow("URL mount failed");
-
-    expect(throwingMount).toHaveBeenCalledTimes(1);
-    expect(isMounted(el)).toBe(false);
-
-    mountIslands({ Throws: "/islands/Throws.js" });
-    await flushImport();
-
-    expect(importerCalls).toBe(2);
-    expect(successfulMount).toHaveBeenCalledTimes(1);
-    expect(isMounted(el)).toBe(true);
   });
 
   it("clears the marker after an inline mount throws and allows a successful retry", () => {
@@ -1602,7 +1203,12 @@ describe("island mounted marker state contract (#2541)", () => {
       if (shouldThrow) throw new Error("inline mount failed");
     });
 
-    expect(() => mountIslands({ Throws: { mount } })).toThrow("inline mount failed");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => mountIslands({ Throws: { mount } })).not.toThrow();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('island "Throws" mount failed'),
+      expect.any(Error),
+    );
     expect(isMounted(el)).toBe(false);
 
     shouldThrow = false;
@@ -1612,49 +1218,12 @@ describe("island mounted marker state contract (#2541)", () => {
     expect(isMounted(el)).toBe(true);
   });
 
-  it("leaves the marker absent when a URL import is rejected", async () => {
-    document.body.innerHTML = `<div data-zfb-island="Rejected" data-when="load"></div>`;
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    stubImporter(async () => {
-      throw new Error("import failed");
-    });
-
-    mountIslands({ Rejected: "/islands/Rejected.js" });
-    await flushImport();
-
-    expect(isMounted(island())).toBe(false);
-    expect(errorSpy).toHaveBeenCalled();
-  });
-
-  it("leaves the marker absent when a URL island detaches during import", async () => {
-    document.body.innerHTML = `<div data-zfb-island="Detached" data-when="load"></div>`;
-    const el = island();
-    const mount = vi.fn();
-    let resolveImport: ((module: Module) => void) | undefined;
-    stubImporter(
-      () =>
-        new Promise((resolve) => {
-          resolveImport = resolve;
-        }),
-    );
-
-    mountIslands({ Detached: "/islands/Detached.js" });
-    el.remove();
-    expect(isMounted(el)).toBe(false);
-
-    resolveImport!({ mount });
-    await flushImport();
-
-    expect(mount).not.toHaveBeenCalled();
-    expect(isMounted(el)).toBe(false);
-  });
-
   it("clears the marker when an island is unmounted", () => {
     document.body.innerHTML = `<div data-zfb-island="Counter" data-when="load"></div>`;
     const el = island();
     const unmount = vi.fn();
 
-    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    mountIslands({ Counter: { mount: vi.fn(), dispose: unmount } });
     expect(isMounted(el)).toBe(true);
 
     unmountIslands(document.body);
@@ -1669,10 +1238,15 @@ describe("island mounted marker state contract (#2541)", () => {
     const unmount = vi.fn(() => {
       throw new Error("unmount failed");
     });
-    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    mountIslands({ Counter: { mount: vi.fn(), dispose: unmount } });
     expect(isMounted(el)).toBe(true);
 
-    expect(() => unmountIslands(document.body)).toThrow("unmount failed");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => unmountIslands(document.body)).not.toThrow();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('island "Counter" disposal failed'),
+      expect.any(Error),
+    );
     expect(isMounted(el)).toBe(false);
   });
 
@@ -1691,7 +1265,7 @@ describe("island mounted marker state contract (#2541)", () => {
       expect(isMounted(el)).toBe(false);
     });
 
-    freshRuntime.mountIslands({ Probe: { mount: freshMount } });
+    mountIslands({ Probe: { mount: freshMount } }, freshRuntime.mountIslands);
 
     expect(freshMount).toHaveBeenCalledTimes(1);
     expect(isMounted(el)).toBe(true);

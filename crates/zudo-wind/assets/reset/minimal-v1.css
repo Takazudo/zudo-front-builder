@@ -1,0 +1,15 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+}

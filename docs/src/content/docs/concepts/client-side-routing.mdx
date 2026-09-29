@@ -177,18 +177,24 @@ type SyncHistoryEntryOptions = {
 ### Example: a hash-based modal
 
 ```tsx
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
 import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
 
-function PhotoModal({ id, onClose }: { id: string; onClose: () => void }) {
-  useEffect(() => {
-    const onPopState = () => {
-      if (location.hash !== `#photo-${id}`) onClose();
+function PhotoModal({ id }: { id: string }) {
+  const open = signal(false);
+  const hidden = computed(() => !open.value);
+  getScope().onActivate(() => {
+    const syncFromUrl = () => { open.value = location.hash === `#photo-${id}`; };
+    window.addEventListener("popstate", syncFromUrl);
+    window.addEventListener("hashchange", syncFromUrl);
+    syncFromUrl();
+    return () => {
+      window.removeEventListener("popstate", syncFromUrl);
+      window.removeEventListener("hashchange", syncFromUrl);
     };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [id, onClose]);
+  });
 
-  return <div className="modal">{/* photo content */}</div>;
+  return <div class="modal" hidden={hidden}>{/* photo content */}</div>;
 }
 
 function openPhoto(id: string) {

@@ -62,10 +62,7 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 /// esbuild), matching the pattern used across sibling build-command tests
 /// (`html_minify_build.rs`, `end_to_end_basic_blog_build.rs`).
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8")
-        || combined.contains("no esbuild")
-        || combined.contains("no tailwind")
-        || (combined.contains("tailwindcss") && combined.contains("not found"))
+    combined.contains("embed_v8") || combined.contains("no esbuild")
 }
 
 fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
@@ -147,7 +144,6 @@ fn write_fixture(root: &Path, emit_render_artifacts: bool, minify_html: bool) {
         root.join("zfb.config.json"),
         format!(
             r#"{{
-  "framework": "preact",
   "minifyHtml": {minify_html},
   "emitRenderArtifacts": {emit_render_artifacts},
   "collections": [{{ "name": "docs", "path": "content/docs" }}],
@@ -175,7 +171,7 @@ fn write_fixture(root: &Path, emit_render_artifacts: bool, minify_html: bool) {
     )
     .unwrap();
 
-    // A plain (non-Tailwind) global stylesheet is enough to arm the CSS
+    // A plain authored global stylesheet is enough to arm the CSS
     // emitter slot — same fixture shape as `html_minify_build.rs`.
     fs::create_dir_all(root.join("styles")).unwrap();
     fs::write(root.join("styles/global.css"), "body { color: #1a2b3c; }\n").unwrap();

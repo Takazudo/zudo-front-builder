@@ -121,7 +121,6 @@
       "input": "input/mdx-components-expressions.mdx",
       "options": {
         "filename": "components.mdx",
-        "jsxRuntime": "react",
         "development": true,
         "pipeline": {}
       }

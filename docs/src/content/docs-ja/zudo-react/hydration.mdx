@@ -1,0 +1,79 @@
+---
+title: ハイドレーション
+description: 識別子の検査、事前検証、失敗時に閉じるコミットを経て、既存の島 DOM を引き継ぎます。
+sidebar_position: 6
+---
+
+## 島の内容をハイドレートする
+
+クライアントエントリは **@takazudo/zfb/zudo-react/client** です。**hydrate** は、渡された島のラッパー内にある既存の子 DOM を引き継ぎます。子の記述、ラッパー要素、クライアントバンドルが期待するコンポーネントとビルドの識別子を受け取ります。ラッパー自体は zfb が所有します。
+
+~~~tsx
+import { hydrate, parseProps } from "@takazudo/zfb/zudo-react/client";
+
+function Counter({ label }: { label: string }) {
+  return <p>{label}</p>;
+}
+
+const wrapper = document.querySelector("[data-zfb-island='Counter']");
+if (wrapper instanceof Element) {
+  const component = wrapper.getAttribute("data-zfb-island");
+  const build = wrapper.getAttribute("data-zfb-build");
+  const json = wrapper.getAttribute("data-props");
+  if (component === "Counter" && build && json !== null) {
+    const identity = { component, build };
+    const props = parseProps(json);
+    if (typeof props.label === "string") {
+      hydrate(<Counter label={props.label} />, wrapper, { identity });
+    }
+  }
+}
+~~~
+
+zfb と連携したアプリケーションでは、島の境界がこのメタデータを読み取って検証します。クライアント側の境界を自分で所有する場合に hydrate や mount を直接呼びます。スケジュールと永続化については [zfb の島のガイド](../concepts/islands.mdx)を参照してください。
+
+## 引き継ぎには事前検証がある
+
+ハイドレーションはコンポーネントのセットアップより前に、接続されたラッパー、識別子、転送形式、キャンセル状態、ルートの重複を検証します。仮のスコープツリーを一つ作り、各コンポーネントを一度呼びます。その後、DOM の変更、ref の設定、リスナーの追加をせずに既存ノードを検査します。
+
+事前検証に成功した後、ランタイムはキャンセルと接続を再確認し、既存ノードにバインディングを付け、ref を設定し、生きたフォーム値を同期してから有効化を始めます。更新を同期するためにコンポーネントを再実行しません。
+
+プロトコルは動的なテキスト、コンポーネントの範囲、Fragment、条件分岐、リスト、不透明な raw HTML に、対応するローカルのコメント領域を使います。マーカーが存在するのは島のサブツリー内だけです。ラッパー要素とその data-zfb-island 属性は引き続き zfb の境界です。サーバーレンダリングが出力したマーカーを保ってください。
+
+## 識別子と props を一致させる
+
+コンポーネント名、ビルドの識別子、転送形式のバージョン、ランタイムプロトコルはセットアップ前に検査されます。hydrate に渡す RootOptions の識別子はラッパーと一致しなければなりません。古いバンドルや一致しないラッパーでは、その島は有効化されません。
+
+島には data-props が必要で、その値は有効な JSON レコードでなければなりません。**parseProps** は不正な JSON、最上位の配列やスカラー、入れ子にある禁止キーを拒否します。転送によって記述、signal、クラスインスタンスが復元されることはありません。リアクティブな状態はコンポーネントのセットアップ内で作り直してください。
+
+zfb の島の境界には、登録済みの同期的な関数コンポーネントが一つ必要です。複数の子、ホスト要素の子、入れ子の島、空でない children prop は島の props として転送できないため拒否されます。再帰的に空の配列と空の値は許可され、省略されます。
+
+## 不一致なら有効化しない
+
+事前検証では、解析済みの構造、名前空間、範囲の識別子、期待するテキスト、フォームコントロールの形を比較します。生の HTML ソースは比較しないため、属性の順番、引用符の形式、同等の文字参照の表記は解析後には影響しません。通常の属性は引き継ぎ時に保持され、不一致の判定には使われません。その後のリアクティブな書き込みではバインディングが所有する値が適用されます。ラッパーの識別子とフォームの形は厳密に検査され、type、multiple、radio の name/value、option の value、フォームとの関連付けも対象です。
+
+通常のテキスト比較では HTML の改行を正規化し、比較時に限って ASCII の HTML 空白の連続を一つにまとめ、両端の ASCII スペースを除きます。NBSP やほかの Unicode 空白は保たれます。整形済みテキストは HTML の改行を正規化した後、厳密に比較します。動的テキスト領域の外にある空白だけのテキストノードは無視されます。raw HTML の内容は不透明です。表記を合わせるだけのために既存の要素や空でないテキストを作り直すことはありません。
+
+どのモデルにも書き込む前に、フォームコントロールを読み取ります。変更済みの値、checked 状態、選択範囲、フォーカスはハイドレーションの不一致になりません。有効化時にブラウザの現在値が優先される仕組みはフォームガイドで説明します。
+
+ZR_HYDRATION_MISMATCH、ZR_IDENTITY、ZR_PROPS、ZR_UNSUPPORTED_POSITION、ZR_DUPLICATE_ROOT、ZR_CANCELLED などの失敗では診断を報告して null を返します。事前検証の失敗時、サーバー DOM とユーザーの状態は変わりません。ハイドレーションが黙って mount に切り替わることはありません。該当する島は不活性のままで、分離されたほかのルートは続行できます。
+
+診断にはコンポーネント、DOM パス、段階、期待値と実際の値の要約、プロトコル、ビルドを含みます。デフォルトでは props 全体、raw HTML、入力値、秘密情報は含みません。
+
+## HTML パーサーの文脈を守る
+
+島のハイドレーションでコメント区切りの領域を使えるのは、HTML 解析後もその位置が保たれる場所だけです。table の構造には tbody を明示し、table、tbody、tr のような構造上の階層にスカラーテキスト、コンポーネント、動的領域を直接置かないでください。select、optgroup、option の内部でも動的領域は使えません。選択肢の構造とラベルは静的にしてください。
+
+title の内容は静的なスカラーテキストです。textarea の内容はフォームアダプターが扱います。島の中では template は使えません。script と style で使えるのは、[コンポーネントと JSX](./components-and-jsx.mdx)の制約に従う静的な rawHtml だけです。パーサーに依存する noscript、xmp、iframe、noembed、noframes、plaintext の文脈では、ハイドレートされる内容と rawHtml は拒否されます。未対応の構造はブラウザのパーサーによる修復に頼らず、要素、島、パスを示す診断で失敗します。
+
+## mount はクライアントレンダリング
+
+**mount** は同じ子の記述とラッパーの契約を使いますが、サーバーの子を引き継がず新しい DOM を作ります。これはクライアント専用の経路です。skip-SSR の島では、zfb が同じ load、idle、visible、media のスケジュールとキャンセル規則を適用します。その後ランタイムは DOM の外で新しいサブツリーを構築・検証し、有効化前に fallback を一度に置き換えます。セットアップや検証に失敗したら fallback は残ります。スケジュール用 API が使えない場合は即時の fallback を使います。
+
+## 関連ページ
+
+- [サーバーレンダリング](./server-rendering.mdx)
+- [スコープとライフサイクル](./scopes-and-lifecycle.mdx)
+- [フォーム](./forms.mdx)
+- [島](../concepts/islands.mdx)
+- [島 API](../api/island.mdx)

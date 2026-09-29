@@ -22,7 +22,7 @@ export function paths() {
 
 export default function ManualPage({ slug, body }: { slug: string[]; body: string }) {
   return (
-    <section className="page page-manual">
+    <section class="page page-manual">
       <h2>{slug.length === 0 ? "Manual" : slug.join(" / ")}</h2>
       <p>{body}</p>
     </section>

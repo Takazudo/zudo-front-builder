@@ -1,0 +1,46 @@
+---
+title: Aspect ratio
+description: Set an automatic, named, or arbitrary aspect ratio.
+sidebar_position: 62
+generated: true
+---
+
+Set an automatic, named, or arbitrary aspect ratio.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## aspect
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.aspect` |
+| Class pattern | `aspect-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `aspect` (`42`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `aspect-ratio` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"square"` | `"1 / 1"` |
+| `keyword` | `"video"` | `"16 / 9"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `aspect-ratio` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `aspect-[1200/630]` | `aspect-ratio: 1200 / 630` |

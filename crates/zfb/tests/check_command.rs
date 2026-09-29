@@ -321,7 +321,7 @@ fn pnpm_available() -> bool {
 /// Copy the named fixture into a fresh tempdir and wire it up to be a real,
 /// buildable project:
 ///
-/// - The embedded `node_modules` snapshot (`@takazudo/zfb-runtime`, `preact`,
+/// - The embedded `node_modules` snapshot (`@takazudo/zfb-runtime`, `@takazudo/zfb/zudo-react`,
 ///   …) is extracted and symlinked into the copy's root — a project-level
 ///   `node_modules` directory (needed below for `pnpm exec` resolution)
 ///   otherwise shadows zfb's embedded-vendor fallback and esbuild can no

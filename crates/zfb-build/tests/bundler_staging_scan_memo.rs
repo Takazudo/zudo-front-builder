@@ -18,7 +18,6 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, NodeModulesStagingStats};
-use zfb_render::adapters::Framework;
 
 const IMPORTERS: [&str; 3] = ["dep-a", "dep-b", "dep-c"];
 
@@ -85,7 +84,10 @@ fn write_fixture(root: &Path) {
 
 fn staging_stats(root: &Path, bundle_exclude: Vec<String>) -> NodeModulesStagingStats {
     let input = BundlerInput {
-        external: vec!["preact".into(), "@takazudo/zfb-runtime".into()],
+        external: vec![
+            "@takazudo/zfb/zudo-react".into(),
+            "@takazudo/zfb-runtime".into(),
+        ],
         mock_subprocess_output: Some("export default {};\n".to_string()),
         node_modules_dir: Some(root.join("node_modules")),
         // Any non-empty `paths` map makes esbuild resolve through canonical
@@ -98,9 +100,9 @@ fn staging_stats(root: &Path, bundle_exclude: Vec<String>) -> NodeModulesStaging
                 .into_owned()],
         )]),
         bundle_exclude,
+        zudo_react_island_names: Some(vec![]),
         ..BundlerInput::for_project(
             root.to_path_buf(),
-            Framework::Preact,
             BundleMode::Production,
             root.join("dist"),
             None,

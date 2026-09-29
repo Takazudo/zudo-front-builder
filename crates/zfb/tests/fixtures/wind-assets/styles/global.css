@@ -1,0 +1,23 @@
+@import "@fixture/wind-assets/styles/theme.css";
+
+@font-face {
+  font-family: "Wind Project Fixture";
+  src: url(/assets/project-font.woff2) format("woff2");
+}
+
+.asset-project {
+  font-family: "Wind Project Fixture", sans-serif;
+  background-image: url(/assets/project-image.svg);
+}
+
+.unused-external-asset {
+  background-image: url(https://assets.invalid/leave-unchanged.svg);
+}
+
+.unused-data-asset {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E");
+}
+
+.global-authored-marker {
+  --wind-global-marker: present;
+}

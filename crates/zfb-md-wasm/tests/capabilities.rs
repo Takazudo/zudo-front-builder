@@ -19,7 +19,7 @@ fn parse(result: String) -> Value {
 fn render_singleton_pins_result_diagnostic_and_shared_options() {
     let success = parse(zfb_md_wasm::render_html(
         "---\ntitle: Slim\n---\n# Hello\n",
-        r#"{"jsxRuntime":"react","development":true}"#,
+        r#"{"development":true}"#,
     ));
     assert_eq!(
         success,
