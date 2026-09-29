@@ -146,6 +146,7 @@ tar = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+cssparser = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 # Async client for the dev E2E harness (dev_serve_e2e.rs, #1018): HTTP
 # marker polling + SSE event-stream reads against a live `zfb dev`.

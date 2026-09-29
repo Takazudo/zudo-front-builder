@@ -395,9 +395,13 @@ fn assert_modules_and_global_css(dist: &Path, css: &str) {
         .split(|character: char| character.is_whitespace() || matches!(character, '\"' | '\''))
         .find(|class| class.ends_with("_moduleMarker"))
         .expect("emitted HTML should contain the scoped CSS Module class");
+    // lightningcss escapes a `-<digit>` scoped-name prefix in the selector (#3311).
+    let mut module_selector = String::from(".");
+    cssparser::serialize_identifier(module_class, &mut module_selector)
+        .expect("writing to a String cannot fail");
     assert!(
-        css.contains(&format!(".{module_class}")) && css.contains("--wind-module-marker"),
-        "published CSS must contain the selector used by HTML: {module_class}"
+        css.contains(&module_selector) && css.contains("--wind-module-marker"),
+        "published CSS must contain the selector used by HTML: {module_selector}"
     );
 
     // The package stylesheet imports a nested sheet before declaring its own

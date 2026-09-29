@@ -5962,6 +5962,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "cssparser 0.33.0",
  "flate2",
  "hex",
  "ignore",
@@ -6089,6 +6090,7 @@ name = "zfb-css"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cssparser 0.33.0",
  "hex",
  "lightningcss",
  "serde_json",
