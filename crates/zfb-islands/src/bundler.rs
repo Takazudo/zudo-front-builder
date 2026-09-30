@@ -216,6 +216,12 @@ pub struct BundleConfig {
     /// `<ClientRouter />` sees zero new bytes in its islands bundle.
     pub client_router: bool,
 
+    /// Stable, non-absolute labels used only in the generated registration
+    /// diagnostics. Keys are the bundled `Island::source_path`s, which may
+    /// point into an islands shadow; import specifiers continue to use those
+    /// physical paths so esbuild can resolve them.
+    pub module_labels: BTreeMap<PathBuf, String>,
+
     /// When `true`, esbuild is invoked with `--preserve-symlinks` so it
     /// keeps every importer anchored at its on-disk location instead of
     /// canonicalising symlinks back to their real target (issue #1404).
@@ -282,6 +288,7 @@ impl Default for BundleConfig {
             outdir: PathBuf::from("dist"),
             base_url: "/".to_string(),
             client_router: false,
+            module_labels: BTreeMap::new(),
             preserve_symlinks: false,
             loaders: BTreeMap::new(),
             define: BTreeMap::new(),
@@ -293,6 +300,12 @@ impl Default for BundleConfig {
 impl BundleConfig {
     pub fn with_zudo_react_build(mut self, build: Option<String>) -> Self {
         self.zudo_react_build = build;
+        self
+    }
+
+    /// Set stable module labels keyed by the bundled source paths.
+    pub fn with_module_labels(mut self, module_labels: BTreeMap<PathBuf, String>) -> Self {
+        self.module_labels = module_labels;
         self
     }
     /// Production preset: minify on, sourcemap off.
