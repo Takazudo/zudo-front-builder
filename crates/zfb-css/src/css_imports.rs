@@ -36,6 +36,9 @@
 //!   (e.g. `@import "tw-animate-css"` with no installed file is simply dropped).
 //! - Returns canonicalised real paths, de-duplicated and sorted for stable
 //!   downstream ordering. The entry itself is **not** included.
+//! - For package imports, the nearest installed package wins. An explicit
+//!   subpath follows its `exports` map when present; otherwise it uses the
+//!   physical path. Bare packages retain the CSS entry lookup below.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -44,6 +47,7 @@ use std::sync::Mutex;
 use lightningcss::bundler::{Bundler, ResolveResult, SourceProvider};
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
+use oxc_resolver::{ResolveOptions, Resolver};
 
 use crate::url_attribution::{rewrite_package_urls_for_source, PackageUrlResolver};
 use crate::{CssInputDependency, CssInputDependencyKind, PackageUrlAsset};
@@ -116,7 +120,7 @@ pub fn resolve_css_imports(entry: &Path, project_root: &Path) -> Vec<PathBuf> {
 /// Relative specifiers (`./`, `../`, or a bare-relative filename like
 /// `tokens.css`) resolve against the importer's directory. Package specifiers
 /// (`@scope/pkg`, `pkg/sub.css`) resolve against the nearest `node_modules`
-/// walking up from the importer; a directory target falls back to the package's
+/// walking up from the importer. Bare packages use the package's
 /// `package.json` `style`/`exports`/`main` CSS entry, then `index.css`.
 fn resolve_one(importer_real: &Path, spec: &str, project_root: &Path) -> Option<PathBuf> {
     let importer_dir = importer_real.parent().unwrap_or(Path::new("."));
@@ -503,7 +507,7 @@ fn is_relative_specifier(spec: &str) -> bool {
 }
 
 /// Resolve a package specifier (`@scope/pkg`, `pkg`, `pkg/sub.css`) against the
-/// nearest `node_modules` directory, walking up from `start_dir` and finally
+/// nearest installed package, walking up from `start_dir` and finally
 /// trying `project_root/node_modules`.
 fn resolve_package_specifier(start_dir: &Path, project_root: &Path, spec: &str) -> Option<PathBuf> {
     let (pkg_name, subpath) = split_package_specifier(spec)?;
@@ -521,19 +525,52 @@ fn resolve_package_specifier(start_dir: &Path, project_root: &Path, spec: &str) 
         if !pkg_root.is_dir() {
             continue;
         }
-        // Explicit subpath (`pkg/dist/tokens.css`) — resolve it directly.
+        // The first installed package owns this name, even when its requested
+        // subpath cannot be resolved. Never use another installed version.
         if let Some(sub) = &subpath {
-            if let Some(hit) = file_or_css_index(&pkg_root.join(sub)) {
-                return Some(hit);
+            if package_has_exports(&pkg_root) {
+                return resolve_exported_css_subpath(nm, &pkg_root, spec);
             }
-            continue;
+            return file_or_css_index(&pkg_root.join(sub));
         }
         // Bare package — consult package.json for a CSS entry, then index.css.
-        if let Some(hit) = package_css_entry(&pkg_root) {
-            return Some(hit);
-        }
-        if let Some(hit) = file_or_css_index(&pkg_root) {
-            return Some(hit);
+        return package_css_entry(&pkg_root).or_else(|| file_or_css_index(&pkg_root));
+    }
+    None
+}
+
+fn package_has_exports(pkg_root: &Path) -> bool {
+    std::fs::read_to_string(pkg_root.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|manifest| manifest.get("exports").is_some())
+}
+
+/// Let oxc apply Node's ordered conditions, patterns, null blocks, and array
+/// target validation. Constructing it here also avoids stale dev-server state
+/// after a package.json edit.
+fn resolve_exported_css_subpath(nm: &Path, pkg_root: &Path, spec: &str) -> Option<PathBuf> {
+    let anchor = nm.parent()?;
+    let resolver = Resolver::new(ResolveOptions {
+        condition_names: vec!["style".into(), "default".into()],
+        extensions: vec![],
+        main_fields: vec![],
+        main_files: vec![],
+        ..ResolveOptions::default()
+    });
+    let resolution = resolver.resolve(anchor, spec).ok()?;
+    let selected_root = std::fs::canonicalize(pkg_root).ok()?;
+    let resolved_root = std::fs::canonicalize(resolution.package_json()?.directory()).ok()?;
+    if resolved_root != selected_root {
+        return None;
+    }
+    let path = resolution.path();
+    if path.extension().is_some_and(|ext| ext == "css") && path.is_file() {
+        // An exported target may be a symlink. Its real path must remain
+        // inside the selected package's real directory.
+        let real = std::fs::canonicalize(path).ok()?;
+        if real.starts_with(&selected_root) {
+            return Some(path.to_path_buf());
         }
     }
     None
