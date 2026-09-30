@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::cli::{WindArgs, WindCommand, WindExplainArgs};
+use crate::cli::{WindArgs, WindAuditFailOn, WindCommand, WindExplainArgs};
 use crate::commands::css_support::{
     build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
 };
@@ -14,7 +14,7 @@ use crate::commands::css_support::{
 pub async fn run(args: &WindArgs) -> Result<()> {
     match &args.command {
         WindCommand::Explain(args) => explain(args).await,
-        WindCommand::Audit(args) => audit(args.project_root.as_deref()).await,
+        WindCommand::Audit(args) => audit(args.project_root.as_deref(), args.fail_on).await,
     }
 }
 
@@ -30,7 +30,7 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
     Ok(())
 }
 
-async fn audit(project_root_arg: Option<&Path>) -> Result<()> {
+async fn audit(project_root_arg: Option<&Path>, fail_on: Option<WindAuditFailOn>) -> Result<()> {
     let project_root = project_root(project_root_arg)?;
     let project_config = crate::config::load_from_dir(&project_root)
         .await
@@ -44,8 +44,7 @@ async fn audit(project_root_arg: Option<&Path>) -> Result<()> {
             },
             &wind_config,
         );
-        print!("{}", zfb_css::render_audit(&report));
-        return Ok(());
+        return print_audit_and_apply_exit_policy(&report, fail_on);
     }
 
     // This is the same default standalone plan as `zfb css` without explicit
@@ -65,8 +64,63 @@ async fn audit(project_root_arg: Option<&Path>) -> Result<()> {
     append_role_class_audit_source(&plan, &mut audit_sources);
     let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
-    print!("{}", zfb_css::render_audit(&report));
-    Ok(())
+    print_audit_and_apply_exit_policy(&report, fail_on)
+}
+
+fn print_audit_and_apply_exit_policy(
+    report: &zfb_css::AuditReport,
+    fail_on: Option<WindAuditFailOn>,
+) -> Result<()> {
+    print!("{}", zfb_css::render_audit(report));
+    match audit_exit(report, fail_on) {
+        Ok(Some(note)) => {
+            eprintln!("{note}");
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(summary) => Err(anyhow::Error::msg(summary)),
+    }
+}
+
+fn audit_exit(
+    report: &zfb_css::AuditReport,
+    fail_on: Option<WindAuditFailOn>,
+) -> std::result::Result<Option<String>, String> {
+    match report.outcome {
+        zfb_css::AuditOutcome::InvalidConfiguration => {
+            return Err("wind audit: invalid configuration".into());
+        }
+        zfb_css::AuditOutcome::GenerationDisabled => return Ok(None),
+        zfb_css::AuditOutcome::Complete => {}
+    }
+
+    let (errors, warnings) =
+        report
+            .diagnostics
+            .iter()
+            .fold(
+                (0usize, 0usize),
+                |(errors, warnings), diagnostic| match diagnostic.severity.as_str() {
+                    "error" => (errors + 1, warnings),
+                    "warning" => (errors, warnings + 1),
+                    "auditInfo" => (errors, warnings),
+                    _ => (errors, warnings),
+                },
+            );
+
+    match fail_on {
+        Some(WindAuditFailOn::Error) if errors > 0 => Err(format!(
+            "wind audit: {errors} error-severity diagnostics met --fail-on error"
+        )),
+        Some(WindAuditFailOn::Warning) if errors + warnings > 0 => Err(format!(
+            "wind audit: {} error- or warning-severity diagnostics met --fail-on warning",
+            errors + warnings
+        )),
+        None if errors > 0 => Ok(Some(format!(
+            "wind audit: scan complete with {errors} error-severity diagnostics (pass --fail-on error to fail on them)"
+        ))),
+        _ => Ok(None),
+    }
 }
 
 fn project_root(root: Option<&Path>) -> Result<PathBuf> {
@@ -265,6 +319,95 @@ fn rewrite_role_class_view(origin: &mut zfb_css::OriginView, candidate: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn audit_report(outcome: zfb_css::AuditOutcome, severities: &[&str]) -> zfb_css::AuditReport {
+        zfb_css::AuditReport {
+            outcome,
+            spec_version: 1,
+            spec_revision: 1,
+            diagnostics: severities
+                .iter()
+                .map(|severity| zfb_css::DiagnosticView {
+                    severity: (*severity).into(),
+                    code: "ZW001".into(),
+                    candidate: None,
+                    origin: None,
+                    message: "synthetic diagnostic".into(),
+                    suggestion: None,
+                    rejection_id: None,
+                })
+                .collect(),
+            unrecognized_classes: Vec::new(),
+            conflicts: Vec::new(),
+            dead_classes: Vec::new(),
+            dynamic_constructions: Vec::new(),
+            adjacent_interpolations: Vec::new(),
+            extraction_notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn audit_exit_applies_the_outcome_and_severity_policy() {
+        use zfb_css::AuditOutcome::{Complete, GenerationDisabled, InvalidConfiguration};
+
+        let thresholds = [
+            None,
+            Some(WindAuditFailOn::Error),
+            Some(WindAuditFailOn::Warning),
+        ];
+
+        let invalid = audit_report(InvalidConfiguration, &["error"]);
+        for threshold in thresholds {
+            assert_eq!(
+                audit_exit(&invalid, threshold),
+                Err("wind audit: invalid configuration".into())
+            );
+        }
+
+        let disabled = audit_report(GenerationDisabled, &["error", "warning"]);
+        for threshold in thresholds {
+            assert_eq!(audit_exit(&disabled, threshold), Ok(None));
+        }
+
+        let errors = audit_report(Complete, &["error", "error"]);
+        assert_eq!(
+            audit_exit(&errors, None),
+            Ok(Some("wind audit: scan complete with 2 error-severity diagnostics (pass --fail-on error to fail on them)".into()))
+        );
+        assert_eq!(
+            audit_exit(&errors, Some(WindAuditFailOn::Error)),
+            Err("wind audit: 2 error-severity diagnostics met --fail-on error".into())
+        );
+        assert_eq!(
+            audit_exit(&errors, Some(WindAuditFailOn::Warning)),
+            Err(
+                "wind audit: 2 error- or warning-severity diagnostics met --fail-on warning".into()
+            )
+        );
+
+        let warnings = audit_report(Complete, &["warning", "warning"]);
+        assert_eq!(audit_exit(&warnings, None), Ok(None));
+        assert_eq!(
+            audit_exit(&warnings, Some(WindAuditFailOn::Error)),
+            Ok(None)
+        );
+        assert_eq!(
+            audit_exit(&warnings, Some(WindAuditFailOn::Warning)),
+            Err(
+                "wind audit: 2 error- or warning-severity diagnostics met --fail-on warning".into()
+            )
+        );
+
+        let informational_and_unknown = audit_report(Complete, &["auditInfo", "futureSeverity"]);
+        for threshold in thresholds {
+            assert_eq!(audit_exit(&informational_and_unknown, threshold), Ok(None));
+        }
+
+        let empty = audit_report(Complete, &[]);
+        for threshold in thresholds {
+            assert_eq!(audit_exit(&empty, threshold), Ok(None));
+        }
+    }
 
     #[test]
     fn manifest_candidates_keep_manifest_origins_in_audit_report() {
