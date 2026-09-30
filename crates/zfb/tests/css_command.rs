@@ -839,6 +839,99 @@ fn wind_audit_clean_project_succeeds_with_complete_report() {
 }
 
 #[test]
+fn wind_cli_reports_authored_class_hint_and_reservation_controls_css() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "const unrelated = 'text-link';\nexport default ({ active }) => <div class=\"text-link border-t-soft flex-row-custom ordinary-class\" className={`hover:text-link ${active ? 'block' : ''}`} />;\n",
+    );
+    let default = run_wind_audit(temp.path(), &[]);
+    let stdout = process_stdout(&default);
+    assert!(
+        default.status.success(),
+        "{stdout}\n{}",
+        process_stderr(&default)
+    );
+    for candidate in ["text-link", "border-t-soft", "flex-row-custom"] {
+        assert!(
+            stdout.contains(&format!(
+                "wind.authoredClasses: {{ \"{candidate}\": true }}"
+            )),
+            "{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("wind.authoredClasses: { \"hover:text-link\": true }"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("ZW006 auditInfo"), "{stdout}");
+    assert!(
+        stdout.contains("No generated utility CSS is emitted"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("wind.authoredClasses: { \"ordinary-class\""),
+        "{stdout}"
+    );
+
+    let strict = run_wind_audit(temp.path(), &["--fail-on", "error"]);
+    assert!(!strict.status.success());
+    assert!(process_stderr(&strict).contains("--fail-on error"));
+
+    let explain = Command::new(zfb_binary!())
+        .args(["wind", "explain", "text-link", "--project-root"])
+        .arg(temp.path())
+        .current_dir(temp.path())
+        .output()
+        .expect("spawn `zfb wind explain`");
+    assert!(explain.status.success(), "{}", process_stderr(&explain));
+    assert!(process_stdout(&explain).contains("wind.authoredClasses: { \"text-link\": true }"));
+
+    fs::write(
+        temp.path().join("entry.css"),
+        ".text-link { color: red; }\n",
+    )
+    .unwrap();
+    let unreserved = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/a.tsx"],
+        &["--no-auto-source"],
+    );
+    assert!(
+        !unreserved.status.success(),
+        "{}",
+        process_stdout(&unreserved)
+    );
+    assert!(process_stderr(&unreserved).contains("wind.authoredClasses: { \"text-link\": true }"));
+    assert!(!temp.path().join("out.css").exists());
+
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"spec":1,"authoredClasses":{"text-link":true,"border-t-soft":true,"flex-row-custom":true,"hover:text-link":true}}}"#,
+    ).unwrap();
+    let reserved = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/a.tsx"],
+        &["--no-auto-source"],
+    );
+    assert!(reserved.status.success(), "{}", process_stderr(&reserved));
+    let css = fs::read_to_string(temp.path().join("out.css")).unwrap();
+    assert!(
+        css.contains(".text-link"),
+        "authored CSS should remain: {css}"
+    );
+    assert!(
+        !css.contains(".border-t-soft") && !css.contains(".flex-row-custom"),
+        "reserved utilities should not emit: {css}"
+    );
+}
+
+#[test]
 fn wind_audit_invalid_configuration_prints_report_and_fails() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1,"tokens":{"radii":{"full":"9999px"}}}}"#,

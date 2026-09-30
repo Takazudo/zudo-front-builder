@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use zudo_wind::{
-    parse_candidate, Catalog, DiagnosticCode, Origin, Resolution, Severity, SourcePositionKind,
-    TokenCategory, TokenConfig, ValueKind, ValueStatus, VariantVocabulary,
+    compile, explain, parse_candidate, render_explanation, Catalog, CompileInput, DiagnosticCode,
+    Origin, OriginCandidate, Resolution, Severity, SourcePositionKind, TokenCategory, TokenConfig,
+    ValueKind, ValueStatus, VariantVocabulary, WindConfig,
 };
 
 fn tokens() -> zudo_wind::ValidatedTokens {
@@ -200,6 +201,137 @@ fn origin_controls_failure_and_audit_severity() {
         ),
         Resolution::NotUtility
     ));
+}
+
+#[test]
+fn invalid_recognized_tokens_offer_origin_sensitive_reservation_guidance() {
+    for candidate in [
+        "text-link",
+        "border-t-soft",
+        "flex-row-custom",
+        "hover:text-link",
+        "p-misng",
+    ] {
+        let diagnostic = match resolve(candidate, &origin(SourcePositionKind::Class)) {
+            Resolution::Diagnostic(diagnostic) => diagnostic,
+            other => panic!("{candidate}: {other:?}"),
+        };
+        assert_eq!(diagnostic.code, DiagnosticCode::Zw006, "{candidate}");
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert!(
+            diagnostic.message.contains(&format!(
+                "wind.authoredClasses: {{ \"{candidate}\": true }}"
+            )),
+            "{candidate}: {}",
+            diagnostic.message
+        );
+        assert!(diagnostic
+            .message
+            .contains("correct or declare the intended token"));
+        assert!(diagnostic
+            .message
+            .contains("No generated utility CSS is emitted"));
+        assert_eq!(diagnostic.suggested_spelling, None);
+        for other_origin in [
+            origin(SourcePositionKind::Literal),
+            Origin::Safelist {
+                owner: "app".into(),
+                index: 0,
+            },
+            Origin::Manifest {
+                producer: "app".into(),
+                path: "manifest.json".into(),
+                index: 0,
+            },
+        ] {
+            let diagnostic = match resolve(candidate, &other_origin) {
+                Resolution::Diagnostic(diagnostic) | Resolution::Failure(diagnostic) => diagnostic,
+                other => panic!("{candidate}: {other:?}"),
+            };
+            assert!(
+                !diagnostic.message.contains("authoredClasses"),
+                "{candidate}: {other_origin:?}"
+            );
+        }
+        assert!(matches!(
+            resolve(
+                candidate,
+                &Origin::RoleClass {
+                    role_key: "heading".into()
+                }
+            ),
+            Resolution::NotUtility
+        ));
+    }
+    for candidate in [
+        "ordinary-class",
+        "textual-link",
+        "borderish-t-soft",
+        "flexible-row-custom",
+    ] {
+        assert!(matches!(
+            resolve(candidate, &origin(SourcePositionKind::Class)),
+            Resolution::NotUtility
+        ));
+    }
+}
+
+#[test]
+fn reservation_suppresses_generated_css_for_invalid_and_valid_utilities() {
+    let source = |text: &str| OriginCandidate {
+        text: text.into(),
+        origin: origin(SourcePositionKind::Class),
+    };
+    let candidates = ["text-link", "border-t-soft", "flex-row-custom", "p-4"];
+    let input = CompileInput {
+        candidates: candidates.into_iter().map(source).collect(),
+        config: WindConfig {
+            tokens: TokenConfig {
+                spacing_unit: Some("0.25rem".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    let compiled = compile(&input);
+    assert_eq!(compiled.diagnostics.len(), 3);
+    assert_eq!(compiled.rules.len(), 1);
+    assert!(compiled.parts.utilities.contains(".p-4"));
+    assert!(!compiled.parts.utilities.contains(".text-link"));
+    let strict = compile(&CompileInput {
+        candidates: vec![],
+        config: WindConfig {
+            safelist: std::collections::BTreeMap::from([("app".into(), vec!["text-link".into()])]),
+            ..Default::default()
+        },
+    });
+    assert!(strict.has_errors());
+    assert_eq!(strict.diagnostics[0].code, DiagnosticCode::Zw006);
+    assert!(!strict.diagnostics[0].message.contains("authoredClasses"));
+    let malformed = compile(&CompileInput {
+        candidates: vec![source("hover::text-link")],
+        config: WindConfig::default(),
+    });
+    assert!(malformed.has_errors());
+    assert_ne!(malformed.diagnostics[0].code, DiagnosticCode::Zw006);
+    assert!(!malformed.diagnostics[0].message.contains("authoredClasses"));
+    let mut reserved = input;
+    for candidate in candidates {
+        reserved
+            .config
+            .authored_classes
+            .insert(candidate.into(), true);
+    }
+    let compiled = compile(&reserved);
+    assert!(compiled.diagnostics.is_empty());
+    assert_eq!(compiled.authored_classes.len(), 4);
+    assert!(compiled.rules.is_empty());
+    assert!(compiled.parts.utilities.is_empty());
+    let explanation = explain("text-link", &WindConfig::default());
+    assert!(
+        render_explanation(&explanation).contains("wind.authoredClasses: { \"text-link\": true }")
+    );
+    assert_eq!(explanation.diagnostics[0].suggestion, None);
 }
 
 #[test]
