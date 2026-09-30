@@ -212,7 +212,9 @@ mod unix {
         };
         // Restore the terminal as soon as the direct child has been reaped.
         drop(tty);
-        sweep_group(pgid, opts.grace).await?;
+        // A forwarded signal owns one grace window across child wait and descendant sweep.
+        let sweep_deadline = deadline.unwrap_or_else(|| Instant::now() + opts.grace);
+        sweep_group(pgid, sweep_deadline).await?;
         group_guard.active = false;
         let exit = if let Some(code) = status.code() {
             ExitKind::Exited(code)
@@ -224,13 +226,12 @@ mod unix {
         Ok(SupervisedOutcome { exit, forwarded })
     }
 
-    async fn sweep_group(pgid: libc::pid_t, grace: Duration) -> Result<()> {
+    async fn sweep_group(pgid: libc::pid_t, deadline: Instant) -> Result<()> {
         // A reaped leader's pgid could theoretically be reused before this probe.
         if !group_signal(pgid, 0)? {
             return Ok(());
         }
         group_signal(pgid, libc::SIGTERM)?;
-        let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             if !group_signal(pgid, 0)? {
                 return Ok(());
@@ -299,6 +300,19 @@ mod unix {
             let Ok(info) = std::env::var("ZFB_SUPERVISOR_HELPER_INFO") else {
                 return;
             };
+            if std::env::var_os("ZFB_SUPERVISOR_IGNORE_TERM").is_some() {
+                // SAFETY: the helper is a dedicated child process; ignoring TERM only
+                // affects its own process and lets the test observe SIGKILL escalation.
+                unsafe {
+                    let mut ignore: libc::sigaction = std::mem::zeroed();
+                    ignore.sa_sigaction = libc::SIG_IGN;
+                    libc::sigemptyset(&mut ignore.sa_mask);
+                    assert_eq!(
+                        libc::sigaction(libc::SIGTERM, &ignore, std::ptr::null_mut()),
+                        0
+                    );
+                }
+            }
             let socket = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = socket.local_addr().unwrap().port();
             fs::write(info, format!("{} {port}", std::process::id())).unwrap();
@@ -360,11 +374,16 @@ mod unix {
                 "leave" => {
                     r#""$1" --exact process_supervisor::unix::tests::grandchild_helper & while [ ! -s "$ZFB_SUPERVISOR_HELPER_INFO" ]; do sleep .01; done; exit 0"#
                 }
+                "near_deadline" => {
+                    r#"trap 'printf ready > "$ZFB_SUPERVISOR_TERM_ACK"' TERM; "$1" --exact process_supervisor::unix::tests::grandchild_helper & while [ ! -s "$ZFB_SUPERVISOR_HELPER_INFO" ]; do sleep .01; done; while [ ! -e "$ZFB_SUPERVISOR_EXIT_MARKER" ]; do sleep .01; done; exit 0"#
+                }
                 _ => unreachable!(),
             };
             cmd.args(["-c", script, "sh"])
                 .arg(exe)
                 .env("ZFB_SUPERVISOR_HELPER_INFO", info)
+                .env("ZFB_SUPERVISOR_TERM_ACK", info.with_extension("ack"))
+                .env("ZFB_SUPERVISOR_EXIT_MARKER", info.with_extension("exit"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -454,6 +473,50 @@ mod unix {
             assert_eq!(result.exit, ExitKind::Signaled(libc::SIGKILL));
             assert!(start.elapsed() < Duration::from_secs(5));
         }
+        #[tokio::test]
+        async fn descendant_sweep_uses_remaining_signal_grace() {
+            let dir = tempfile::tempdir().unwrap();
+            let info = dir.path().join("helper.info");
+            let ack = info.with_extension("ack");
+            let exit_marker = info.with_extension("exit");
+            let mut unrelated = Unrelated::new();
+            let grace = Duration::from_secs(3);
+            let mut cmd = helper_command(&info, "near_deadline");
+            cmd.env("ZFB_SUPERVISOR_IGNORE_TERM", "1");
+            let (tx, rx) = mpsc::unbounded_channel();
+            let task = tokio::spawn(supervise_with(cmd, SuperviseOptions { grace }, rx));
+            until(|| info.exists()).await;
+            let data = fs::read_to_string(&info).unwrap();
+            let mut fields = data.split_whitespace();
+            let pid: i32 = fields.next().unwrap().parse().unwrap();
+            let port: u16 = fields.next().unwrap().parse().unwrap();
+
+            let started = Instant::now();
+            tx.send(libc::SIGTERM).unwrap();
+            until(|| ack.exists()).await;
+            assert!(
+                started.elapsed() < Duration::from_millis(1500),
+                "TERM acknowledgement was delayed"
+            );
+            time::sleep_until(started + Duration::from_millis(2400)).await;
+            fs::write(exit_marker, "exit").unwrap();
+            let result = time::timeout(Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.exit, ExitKind::Exited(0));
+            assert_eq!(result.forwarded, Some(libc::SIGTERM));
+            // The old behavior spent another full three seconds in the sweep.
+            assert!(
+                started.elapsed() < Duration::from_millis(4200),
+                "grace window restarted after child exit"
+            );
+            until(|| process_gone(pid)).await;
+            assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+            assert!(unrelated.alive());
+        }
+
         #[tokio::test]
         async fn queued_signal_is_forwarded() {
             let mut unrelated = Unrelated::new();
