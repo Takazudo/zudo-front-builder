@@ -150,10 +150,48 @@ fn scaffold_project(root: &Path) {
     )
     .expect("link local adapter executable");
 
-    // Keep a plainly resolvable package directory and regular entry file in
-    // node_modules. Its entry re-exports from this fixture's private package
-    // store, so the logical file is staged while esbuild still resolves the
-    // real store module outside the transient build shadow before #3434.
+    let adapter_preflight = Command::new("pnpm")
+        .args(["exec", "zfb-adapter-cloudflare", "--help"])
+        .current_dir(root)
+        .output()
+        .expect("spawn pnpm adapter CLI preflight");
+    assert!(
+        adapter_preflight.status.success(),
+        "fixture must resolve its declared Cloudflare adapter through pnpm exec\nstatus: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        adapter_preflight.status,
+        String::from_utf8_lossy(&adapter_preflight.stdout),
+        String::from_utf8_lossy(&adapter_preflight.stderr),
+    );
+    ensure_repro_dependency(root);
+    assert_repro_store_entry(root);
+}
+
+fn repro_store_entry(root: &Path) -> PathBuf {
+    root.join(
+        "node_modules/.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
+    )
+}
+
+fn assert_repro_store_entry(root: &Path) -> PathBuf {
+    let store_entry = repro_store_entry(root);
+    assert!(
+        store_entry.is_file(),
+        "synthetic pnpm store entry must exist at {}",
+        store_entry.display()
+    );
+    fs::canonicalize(&store_entry).unwrap_or_else(|error| {
+        panic!(
+            "canonicalize synthetic pnpm store entry {}: {error}",
+            store_entry.display()
+        )
+    })
+}
+
+fn ensure_repro_dependency(root: &Path) {
+    let node_modules = root.join("node_modules");
+    // The adapter runs through pnpm exec and may prune this synthetic entry.
+    // Recreate it before every build; its regular logical file is staged, but
+    // it re-exports from the root-specific store path to exercise realpath.
     let store_package = node_modules
         .join(".pnpm/repro-realpath-dep@1.0.0/node_modules")
         .join(ESCAPE_PACKAGE);
@@ -177,7 +215,8 @@ fn scaffold_project(root: &Path) {
         format!("export const marker = {REALPATH_EXPORT:?};\n"),
     )
     .expect("write pnpm store package entry");
-    let store_entry_realpath = fs::canonicalize(&store_entry).expect("resolve pnpm store entry");
+    let store_entry_realpath = assert_repro_store_entry(root);
+
     let logical_package = node_modules.join(ESCAPE_PACKAGE);
     fs::create_dir_all(&logical_package).expect("create logical dependency package directory");
     // The bundler uses esbuild's neutral platform, which ignores `main` unless
@@ -203,8 +242,9 @@ fn scaffold_project(root: &Path) {
     let store_entry_specifier = store_entry_realpath.to_string_lossy().into_owned();
     let quoted_store_entry_specifier = serde_json::to_string(&store_entry_specifier)
         .expect("encode pnpm store entry as a JavaScript string");
+    let logical_entry = logical_package.join("index.js");
     fs::write(
-        logical_package.join("index.js"),
+        &logical_entry,
         format!("export {{ marker }} from {quoted_store_entry_specifier};\n"),
     )
     .expect("write staged logical dependency re-export");
@@ -221,16 +261,12 @@ fn scaffold_project(root: &Path) {
         logical_package_realpath, store_package_realpath,
         "logical package directory must remain in node_modules"
     );
-    let logical_entry = logical_package.join("index.js");
     let logical_entry_metadata =
         fs::symlink_metadata(&logical_entry).expect("inspect logical dependency entry");
     assert!(
-        logical_entry_metadata.file_type().is_file(),
+        logical_entry_metadata.file_type().is_file()
+            && !logical_entry_metadata.file_type().is_symlink(),
         "logical dependency entry must be a regular file that staging can copy"
-    );
-    assert!(
-        !logical_entry_metadata.file_type().is_symlink(),
-        "logical dependency entry must not be a symlink"
     );
     let logical_entry_realpath = fs::canonicalize(&logical_entry).unwrap();
     assert_ne!(
@@ -242,22 +278,11 @@ fn scaffold_project(root: &Path) {
         logical_entry_source.contains(&quoted_store_entry_specifier),
         "logical dependency re-export must target its absolute private store entry"
     );
-
-    let adapter_preflight = Command::new("pnpm")
-        .args(["exec", "zfb-adapter-cloudflare", "--help"])
-        .current_dir(root)
-        .output()
-        .expect("spawn pnpm adapter CLI preflight");
-    assert!(
-        adapter_preflight.status.success(),
-        "fixture must resolve its declared Cloudflare adapter through pnpm exec\nstatus: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        adapter_preflight.status,
-        String::from_utf8_lossy(&adapter_preflight.stdout),
-        String::from_utf8_lossy(&adapter_preflight.stderr),
-    );
 }
 
 fn run_build(root: &Path, esbuild: &Path, scratch_dir: Option<&Path>, define_value: Option<&str>) {
+    ensure_repro_dependency(root);
+    assert_repro_store_entry(root);
     let mut command = Command::new(zfb_binary!());
     command
         .arg("build")
@@ -494,14 +519,8 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
         shallow_nm, deep_nm,
         "each root needs its own node_modules tree"
     );
-    let shallow_store_entry = fs::canonicalize(shallow.join(
-        "node_modules/.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
-    ))
-    .unwrap();
-    let deep_store_entry = fs::canonicalize(deep.join(
-        "node_modules/.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
-    ))
-    .unwrap();
+    let shallow_store_entry = assert_repro_store_entry(&shallow);
+    let deep_store_entry = assert_repro_store_entry(&deep);
     assert_ne!(
         shallow_store_entry, deep_store_entry,
         "private pnpm store entry realpaths must differ between roots"
