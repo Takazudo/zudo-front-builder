@@ -452,7 +452,11 @@ Accepting the flag on `check` lets one argument list serve `dev`, `build`, and `
 
 ### Defines are part of the build identity
 
-The effective define map is part of the build identity that zfb stamps into server-rendered island markup and into the island bundles. SSR output and islands built with different defines never hydrate each other: an island whose identity does not match fails with a `ZR_IDENTITY` error instead of hydrating silently with the wrong values. The scratch dir location does not affect this identity; only the define values do.
+The effective define map is part of the build identity that zfb stamps into server-rendered island markup and into the island bundles. SSR output and islands built with different defines never hydrate each other: an island whose identity does not match fails with a `ZR_IDENTITY` error instead of hydrating silently with the wrong values.
+
+The identity also includes project source files, excluding files matched by the project's own `.gitignore` files, hidden directories, and build or scratch output. zfb still includes its known first-party staging paths, such as `.zudo-doc/routes-src`, even when they are hidden or ignored. Linked local packages, plugin aliases, virtual modules, and the effective define map also feed the identity. This is a file-selection policy, not a calculation of the exact reachable module graph. A gitignored file imported directly by your code is outside the identity; remove such generated inputs from `.gitignore` and track them, or regenerate them deterministically.
+
+Neither the checkout path nor the scratch dir location affects the identity or the emitted bundles. With the same commit, lockfile, and build options, local and CI builds produce byte-identical `dist/` output. Leftover tool output such as `test-results/` changes neither the identity nor the bundle bytes when it is gitignored.
 
 <Tip>
 
