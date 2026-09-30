@@ -62,7 +62,7 @@ ZR_HYDRATION_MISMATCH、ZR_IDENTITY、ZR_PROPS、ZR_UNSUPPORTED_POSITION、ZR_DU
 
 ## HTML パーサーの文脈を守る
 
-島のハイドレーションでコメント区切りの領域を使えるのは、HTML 解析後もその位置が保たれる場所だけです。table の構造には tbody を明示し、table、tbody、tr のような構造上の階層にスカラーテキスト、コンポーネント、動的領域を直接置かないでください。select、optgroup、option の内部でも動的領域は使えません。選択肢の構造とラベルは静的にしてください。
+table と select の構造規則は、島のない静的サーバーレンダリングにも適用されます。パーサーが構造を決める要素には、許可された組み込み要素を直接置きます。たとえば tbody には tr、select には option または optgroup、optgroup には option を置きます。コンポーネントや Fragment をこれらの位置の代わりにはできません。table 構造には tbody を明示し、option のラベルは静的なスカラー文字列にしてください。島の中でコメント区切りの動的領域を使えるのも、HTML 解析後にその位置が保たれる場所だけです。そのため table、tbody、tr のようなテーブル構造上の階層や、select、optgroup、option の内部では使えません。
 
 title の内容は静的なスカラーテキストです。textarea の内容はフォームアダプターが扱います。島の中では template は使えません。script と style で使えるのは、[コンポーネントと JSX](./components-and-jsx.mdx)の制約に従う静的な rawHtml だけです。パーサーに依存する noscript、xmp、iframe、noembed、noframes、plaintext の文脈では、ハイドレートされる内容と rawHtml は拒否されます。未対応の構造はブラウザのパーサーによる修復に頼らず、要素、島、パスを示す診断で失敗します。
 
