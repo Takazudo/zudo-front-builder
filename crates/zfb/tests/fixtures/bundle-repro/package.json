@@ -1,5 +1,8 @@
 {
   "name": "bundle-repro-fixture",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "repro-realpath-dep": "1.0.0"
+  }
 }
