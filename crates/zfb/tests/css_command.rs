@@ -68,6 +68,35 @@ fn run_css(
     command.args(flags).output().expect("spawn `zfb css`")
 }
 
+fn wind_audit_fixture(config: &str, source: &str) -> TempDir {
+    let temp = tempfile::tempdir().expect("create wind audit fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("zfb.config.json"), config).expect("write zfb.config.json");
+    let source_path = temp.path().join("src/a.tsx");
+    fs::create_dir_all(source_path.parent().expect("source file parent"))
+        .expect("create source directory");
+    fs::write(source_path, source).expect("write wind audit source");
+    temp
+}
+
+fn run_wind_audit(project_root: &Path, flags: &[&str]) -> Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "audit", "--project-root"])
+        .arg(project_root)
+        .args(flags)
+        .current_dir(project_root)
+        .output()
+        .expect("spawn `zfb wind audit`")
+}
+
+fn process_stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn process_stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
 fn package_export_fixture(package_name: &str, package_json: &str, specifier: &str) -> TempDir {
     let temp = tempfile::tempdir().expect("create package-export CSS fixture tempdir");
     fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
@@ -782,5 +811,200 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
         standalone_css,
         "build stylesheet {} and equivalent standalone wind output must be byte-identical",
         build_css_path.display()
+    );
+}
+
+#[test]
+fn wind_audit_clean_project_succeeds_with_complete_report() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let output = run_wind_audit(temp.path(), &[]);
+    let stdout = process_stdout(&output);
+    let stderr = process_stderr(&output);
+
+    assert!(
+        output.status.success(),
+        "clean audit should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("outcome: complete"),
+        "unexpected stdout:\n{stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "clean audit should not write to stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_audit_invalid_configuration_prints_report_and_fails() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"tokens":{"radii":{"full":"9999px"}}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let output = run_wind_audit(temp.path(), &[]);
+    let stdout = process_stdout(&output);
+    let stderr = process_stderr(&output);
+
+    assert!(
+        !output.status.success(),
+        "invalid configuration should fail\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("outcome: invalid configuration"),
+        "unexpected stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ZW007"),
+        "invalid configuration report must contain ZW007:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("wind audit: invalid configuration"),
+        "stderr should summarize the failure:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_audit_error_threshold_is_opt_in_and_includes_complete_report() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "export default () => <div class=\"rounded-lg md:block\" />;\n",
+    );
+
+    let default_output = run_wind_audit(temp.path(), &[]);
+    let default_stdout = process_stdout(&default_output);
+    let default_stderr = process_stderr(&default_output);
+    assert!(
+        default_output.status.success(),
+        "default audit should succeed\nstdout:\n{default_stdout}\nstderr:\n{default_stderr}"
+    );
+    assert!(
+        default_stdout.contains("outcome: complete"),
+        "unexpected stdout:\n{default_stdout}"
+    );
+    assert!(
+        default_stdout.contains("ZW006"),
+        "missing-token finding must be reported:\n{default_stdout}"
+    );
+    assert!(
+        default_stdout.contains("ZW002"),
+        "unknown-variant finding must be reported:\n{default_stdout}"
+    );
+    assert!(
+        default_stderr.contains("--fail-on error"),
+        "stderr should explain the strict threshold:\n{default_stderr}"
+    );
+
+    let strict_output = run_wind_audit(temp.path(), &["--fail-on", "error"]);
+    let strict_stdout = process_stdout(&strict_output);
+    let strict_stderr = process_stderr(&strict_output);
+    assert!(
+        !strict_output.status.success(),
+        "strict audit should fail\nstdout:\n{strict_stdout}\nstderr:\n{strict_stderr}"
+    );
+    assert!(
+        strict_stdout.contains("outcome: complete"),
+        "strict failure should preserve the report:\n{strict_stdout}"
+    );
+    assert!(
+        strict_stdout.contains("ZW006"),
+        "strict report is missing ZW006:\n{strict_stdout}"
+    );
+    assert!(
+        strict_stdout.contains("ZW002"),
+        "strict report is missing ZW002:\n{strict_stdout}"
+    );
+    assert!(
+        strict_stderr.contains("wind audit:"),
+        "stderr should summarize the strict failure:\n{strict_stderr}"
+    );
+    assert!(
+        strict_stderr.contains("--fail-on error"),
+        "stderr should name the threshold:\n{strict_stderr}"
+    );
+}
+
+#[test]
+fn wind_audit_info_does_not_fail_warning_threshold() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "export default () => <div class=\"block flex\" />;\n",
+    );
+    let output = run_wind_audit(temp.path(), &["--fail-on", "warning"]);
+    let stdout = process_stdout(&output);
+    let stderr = process_stderr(&output);
+
+    assert!(
+        output.status.success(),
+        "auditInfo should not fail a warning threshold\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("outcome: complete"),
+        "unexpected stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ZW013 auditInfo"),
+        "property conflict should be auditInfo:\n{stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "auditInfo should not write a threshold summary:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_audit_disabled_generation_succeeds_even_with_error_threshold() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":false}"#,
+        "export default () => <div class=\"rounded-lg md:block\" />;\n",
+    );
+    let output = run_wind_audit(temp.path(), &["--fail-on", "error"]);
+    let stdout = process_stdout(&output);
+    let stderr = process_stderr(&output);
+
+    assert!(
+        output.status.success(),
+        "disabled audit should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("outcome: generation disabled"),
+        "unexpected stdout:\n{stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "disabled audit should not write to stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_audit_malformed_manifest_names_its_path_on_stderr() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"manifests":{"widgets":{"path":"./wind-manifest.json"}}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let manifest_path = temp.path().join("wind-manifest.json");
+    fs::write(&manifest_path, "{ malformed json\n").expect("write malformed wind manifest");
+
+    let output = run_wind_audit(temp.path(), &[]);
+    let stdout = process_stdout(&output);
+    let stderr = process_stderr(&output);
+
+    assert!(
+        !output.status.success(),
+        "malformed manifest should fail\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "manifest loading fails before a report is rendered:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("wind manifest widgets"),
+        "stderr should identify the producer:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&manifest_path.display().to_string()),
+        "stderr should name the malformed manifest path:\n{stderr}"
     );
 }

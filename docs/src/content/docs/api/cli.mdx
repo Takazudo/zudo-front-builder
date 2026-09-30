@@ -223,6 +223,12 @@ Use `zfb wind explain` to inspect how a candidate is parsed, resolved, and emitt
 
 Use `zfb wind audit` to review ordinary class-position names, missing or unused utilities, dynamic class fragments, and property conflicts within a single class-list literal. An exact `authoredClasses` match and `group`/`peer` markers are excluded. With `wind: false`, explain reports generation disabled and audit returns an empty candidate report.
 
+```sh
+zfb wind audit [--project-root <path>] [--fail-on error|warning]
+```
+
+A complete audit exits with status 0 by default, including when it reports error-severity findings; in that case stderr suggests `--fail-on error`. Invalid configuration or a source scan failure exits nonzero. Use `--fail-on error` to exit nonzero when the report contains error-severity diagnostics, or `--fail-on warning` to include warnings. `auditInfo` findings never trigger either threshold. With `wind: false`, the generation-disabled report exits with status 0.
+
 These commands inspect the configured project; they do not execute application code to discover class candidates. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx) for outcome and origin details.
 
 ## `zfb preview`

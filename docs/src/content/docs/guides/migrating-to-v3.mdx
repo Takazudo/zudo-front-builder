@@ -107,5 +107,5 @@ Ship package components using imports from `@takazudo/zfb/zudo-react` and the sa
 3. Remove Tailwind imports and directives, set tokens and a reset, then run `zfb css --input <entry.css> --output <output.css>` using your project's entry and output paths.
 4. Change the JSX import source, dependencies, components, islands, and form models; run `zfb check` and fix type errors.
 5. Remove `jsxRuntime` from md-wasm calls and update compiled-output consumers; run your package's TypeScript check.
-6. Replace finite dynamic classes with complete literals or a manifest; run `zfb wind audit` and `zfb wind explain <candidate>` on representative classes.
+6. Replace finite dynamic classes with complete literals or a manifest; use `zfb wind audit --fail-on error` as a CI or pre-push gate, and run `zfb wind explain <candidate>` on representative classes.
 7. Remove Tailwind environment overrides from build scripts; run `zfb build` and compare key pages, islands, controls, and styles in a browser.

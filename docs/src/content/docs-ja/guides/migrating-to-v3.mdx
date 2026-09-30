@@ -107,5 +107,5 @@ wind: {
 3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
 4. JSX import source、依存関係、コンポーネント、島、フォームモデルを変更します。`zfb check` を実行し、型エラーを修正します。
 5. md-wasm 呼び出しから `jsxRuntime` を削除し、コンパイル済み出力の利用側を更新します。パッケージの TypeScript チェックを実行します。
-6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。`zfb wind audit` と、代表的なクラスに対する `zfb wind explain <candidate>` を実行します。
+6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。
 7. ビルドスクリプトから Tailwind の環境変数を削除します。`zfb build` を実行し、主要ページ、島、フォーム、スタイルをブラウザーで比較します。
