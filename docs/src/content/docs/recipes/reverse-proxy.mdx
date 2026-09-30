@@ -19,12 +19,6 @@ oversight.
 
 </Info>
 
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
-
 **Live demo:** [zfb-example-reverse-proxy.takazudomodular.com](https://zfb-example-reverse-proxy.takazudomodular.com/)
 
 **Repository:** [github.com/Takazudo/zfb-example-reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)
@@ -41,8 +35,9 @@ This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migrati
   policy that drops `Set-Cookie`, CSP, and HSTS.
 - **Rewriting same-origin `Location` redirects** back under `/proxy/` so a redirect chain
   stays inside the proxy.
-- Cooperating with Workers Static Assets: `run_worker_first = false` still reaches the
-  Worker, because `/proxy/...` is never a built static asset.
+- Cooperating with Workers Static Assets: selective Worker-first routing sends only
+  `/proxy/*` through a route-aware entrypoint so encoded path segments reach zfb intact;
+  ordinary files remain asset-first.
 
 <Warning title="This is not an open proxy">
 
@@ -64,14 +59,14 @@ in intent:
 
 | Piece | What the repo uses |
 | --- | --- |
-| Framework | zfb + Preact — `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0**, set as `adapter` in `zfb.config.ts` |
-| Styling | Tailwind CSS v4 (`tailwind: { enabled: true }`), imported by `styles/global.css` |
+| Framework | `@takazudo/zfb` and `@takazudo/zfb-runtime` **3.0.0**, using zudo-react; no Preact or React dependency |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0**, set as `adapter` in `zfb.config.ts` |
+| Styling | Authored CSS in `styles/global.css`; zudo-wind supplies only the `owned-v1` reset, with no utility classes or tokens |
 | Rendering | SSG for `/` and `/404`; one SSR route — `pages/proxy/[...path].tsx` with `export const prerender = false` |
-| Cloudflare surface | Workers Static Assets (`main = "./dist/_worker.js"` + `[assets]`), served on a `custom_domain` route |
+| Cloudflare surface | Workers Static Assets and a custom domain. `main = "./cloudflare/worker-entry.mjs"` delegates to the adapter-generated `dist/_worker.js` |
 | Bindings | **None.** One public `[vars]` entry, `PROXY_ORIGIN = "https://httpbingo.org"` |
 | Compatibility | `compatibility_date = "2026-05-01"`, `compatibility_flags = ["nodejs_compat"]` |
-| Other deps | `preact`, `preact-render-to-string`, `wrangler` 4.85.0 |
+| Other deps | `@types/node`, TypeScript, and `wrangler` 4.85.0 (dev) |
 
 The upstream is [`httpbingo.org`](https://httpbingo.org), an httpbin-compatible echo
 service. It is deterministic, so each behavior above has an endpoint that proves it:
@@ -131,7 +126,11 @@ import { proxyRequest } from "../../lib/proxy";
 
 export const prerender = false;
 
-export default async function ProxyPage(_props: ProxyPageProps) {
+type Env = {
+  PROXY_ORIGIN?: string;
+};
+
+export default async function ProxyPage() {
   const { env, request } = getCloudflareContext<Env>();
   return proxyRequest({
     request,
@@ -141,16 +140,16 @@ export default async function ProxyPage(_props: ProxyPageProps) {
 }
 ```
 
-Two things are worth noticing. First, `prerender` is a **literal `export const`** — zfb
-detects it by static AST inspection at build time, so an indirect assignment would
-silently fall back to SSG. Second, the props are named `_props` and ignored: the route
-types `params.path` but deliberately never reads it, for the reason in the next section.
+`prerender` is a **literal `export const`** — zfb detects it by static AST inspection at
+build time, so an indirect assignment would silently fall back to SSG. The handler does
+not need route props because the next section shows how it derives the upstream path from
+the original request URL.
 
 ### The upstream URL is derived from the original request URL
 
-The obvious implementation joins the `params.path` segments back together. This one does
-not — it slices the prefix off the incoming URL's own `pathname` and copies `search`
-wholesale:
+The obvious implementation reads decoded `params.path` segments and joins them back
+together. This one does not — it slices the prefix off the incoming URL's own `pathname`
+and copies `search` wholesale:
 
 ```ts title="lib/proxy.ts"
 const pathRemainder = incomingUrl.pathname.slice(prefix.length);
@@ -244,13 +243,17 @@ buffered in the Worker; on the request side, `request.body` is forwarded for eve
 except GET and HEAD. The upstream fetch carries one Cloudflare hint:
 
 ```ts title="lib/proxy.ts"
-fetch(upstreamRequest, { cf: { cacheEverything: true } });
+const CLOUDFLARE_FETCH_HINTS: CloudflareFetchInit = {
+  cf: {
+    cacheEverything: true,
+  },
+};
 ```
 
-That asks the edge to treat cacheable GET and HEAD upstream responses as cacheable content
-beyond the default file types, while still respecting the origin's cache headers. It is
-also the reason the safety warning names personalized responses specifically — that cache
-is **shared**.
+`proxyRequest()` passes these hints to `fetch()`. They ask the edge to treat cacheable GET
+and HEAD upstream responses as cacheable content beyond the default file types, while still
+respecting the origin's cache headers. It is also the reason the safety warning names
+personalized responses specifically — that cache is **shared**.
 
 Two failure paths return a plain-text error with `cache-control: no-store` rather than
 falling through: **500** when `PROXY_ORIGIN` is missing or not a valid absolute
@@ -259,12 +262,41 @@ message attached.
 
 ### It coexists with the static asset layer
 
-`wrangler.toml` keeps zfb's default `run_worker_first = false`, so the edge asset router
-serves a matching static file before `_worker.js` ever runs. That is the right setting
-here: `/proxy/...` is never a built asset, so those requests miss the asset layer and reach
-the Worker anyway, while the prerendered `/` and `/404` are served straight off the edge
-for free. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx)
-for when you would want the opposite.
+Cloudflare Static Assets can canonicalize encoded slashes such as `%2F` before a dynamic
+route sees them. The repo uses selective Worker-first routing for `/proxy/*`, then a small
+entrypoint masks the `ASSETS` binding only on that route before delegating to zfb's generated
+Worker. That lets the proxy route inspect the original encoded URL; ordinary files stay
+asset-first, and unmatched non-proxy requests still use the adapter's styled 404 fallback.
+
+```toml title="wrangler.toml"
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "404-page"
+run_worker_first = ["/proxy/*"]
+```
+
+```js title="cloudflare/worker-entry.mjs"
+import generatedWorkerModule from "../dist/_worker.js";
+
+import { createRouteAwareWorker } from "./route-aware-dispatch.mjs";
+
+export default createRouteAwareWorker(generatedWorkerModule);
+```
+
+For `/proxy/*`, the route-aware wrapper removes the `ASSETS` binding before it calls the
+generated Worker, preventing that inner wrapper from probing assets and canonicalizing the
+path. Other requests pass through with the original bindings intact.
+
+```js title="cloudflare/route-aware-dispatch.mjs"
+const pathname = new URL(request.url).pathname;
+if (!pathname.startsWith(PROXY_ROUTE_PREFIX)) {
+  return generatedWorker.fetch(request, env, ctx);
+}
+
+const { ASSETS: _assets, ...envWithoutAssets } = env;
+return generatedWorker.fetch(request, envWithoutAssets, ctx);
+```
 
 ## Run it locally
 
@@ -292,11 +324,12 @@ pnpm build
 pnpm exec wrangler dev --port 8788
 ```
 
-Then, in another shell, the four checks the repo documents — each one maps to a link on the
-demo's index page:
+Then, in another shell, run the checks documented by the repo, including an encoded-slash
+path request:
 
 ```sh
 curl -i "http://127.0.0.1:8788/proxy/anything/reverse-proxy?via=zfb"
+curl --path-as-is -i "http://127.0.0.1:8788/proxy/anything/a%2Fb?via=encoded"
 curl -i "http://127.0.0.1:8788/proxy/redirect-to?url=/anything/redirect-target&status_code=302"
 curl -i "http://127.0.0.1:8788/proxy/cookies/set?zfb_proxy_cookie=demo"
 curl -i "http://127.0.0.1:8788/proxy/response-headers?Content-Security-Policy=default-src%20%27self%27&Strict-Transport-Security=max-age%3D31536000&X-Demo=kept"

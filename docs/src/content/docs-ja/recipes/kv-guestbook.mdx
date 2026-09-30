@@ -13,12 +13,6 @@ Cloudflare のバインディングに対する「読み取り」だけでなく
 
 </Info>
 
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 **ライブデモ:** [zfb-example-kv-guestbook.takazudomodular.com](https://zfb-example-kv-guestbook.takazudomodular.com/)
 
 **リポジトリ:** [Takazudo/zfb-example-kv-guestbook](https://github.com/Takazudo/zfb-example-kv-guestbook)
@@ -43,14 +37,14 @@ Cloudflare のバインディングに対する「読み取り」だけでなく
 
 | 項目 | リポジトリでの実際の値 |
 | --- | --- |
-| フレームワーク | zfb + Preact（`zfb.config.ts` の `framework: "preact"`） |
-| zfb のバージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みかつ必須 |
-| スタイリング | `tailwind: { enabled: true }` で、`styles/global.css` は `@import "tailwindcss";` の 1 行のみ。実際に見えている見た目は `layouts/default.tsx` がインラインで埋め込む手書きの CSS ブロックによるもので、マークアップはユーティリティクラスではなく意味のあるクラス名を使っています |
+| フレームワーク | zfb **3.0.0** の zudo-react JSX ランタイム。Preact / React への依存はありません |
+| zfb パッケージ | `@takazudo/zfb`、`@takazudo/zfb-runtime`、`@takazudo/zfb-adapter-cloudflare` はすべて **3.0.0** に固定 |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` — 導入済みかつ必須 |
+| スタイリング | `layouts/default.tsx` が手書きのクリティカル CSS をインライン化します。事前レンダリングされる `404.html` には `zudo-wind` の `owned-v1` リセットが適用され、ページは生成ユーティリティではなく手書きのクラス名を使います |
 | レンダリング方式 | 静的サイトではありません。`pages/index.tsx`、`pages/api/entries.tsx`、`pages/api/entries/[key].tsx` がいずれも `prerender = false` を export しています。事前レンダリングされるのは `pages/404.tsx` だけです |
 | Cloudflare 側の構成 | Workers Static Assets、`main = "./dist/_worker.js"` |
 | バインディング | `GUESTBOOK` としてバインドされた KV ネームスペース 1 つと、`ADMIN_TOKEN` シークレット |
-| 主な依存 | `preact-render-to-string`、`@cloudflare/workers-types`（dev）、`wrangler` 4.85.0（dev） |
+| 主な依存 | `@cloudflare/workers-types` `^5.20260828.1`、`wrangler` `4.127.0`（dev） |
 
 検索インデックスもデータベースもクライアントバンドルもありません。実行時に依存するのは KV だけです。
 
@@ -168,11 +162,11 @@ run_worker_first = ["/", "/api/*"]
 
 ```bash
 pnpm install
-pnpm dev        # zfb dev — 執筆用ループ。バインディング依存のルートはここでは 503
+pnpm dev        # zfb dev — authoring loop; binding routes answer 503 here
 pnpm build
-pnpm preview    # zfb preview。アダプターモードでは wrangler dev に処理を渡す
+pnpm preview    # zfb preview; in adapter mode this hands off to wrangler dev
 pnpm typecheck  # zfb check
-pnpm smoke      # 本番ドメインに対する読み取り専用チェック
+pnpm smoke      # read-only check against the live domain
 ```
 
 リポジトリはこの制限をそのまま述べています。`pnpm dev` は通常の zfb の執筆作業には有用だが、そこでは Cloudflare のバインディングは利用できず、バインディングに依存するルートはクラッシュせずに制御された `503` を返す。ローカルで Worker と KV のシミュレーションを使うには `pnpm build` の後に `pnpm preview` を使うこと、と。

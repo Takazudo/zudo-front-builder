@@ -17,12 +17,6 @@ binding, not just a read.
 
 </Info>
 
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
-
 **Live demo:** [zfb-example-kv-guestbook.takazudomodular.com](https://zfb-example-kv-guestbook.takazudomodular.com/)
 
 **Repository:** [Takazudo/zfb-example-kv-guestbook](https://github.com/Takazudo/zfb-example-kv-guestbook)
@@ -57,14 +51,14 @@ deliberately open too, so a visitor can exercise the whole post-and-delete loop.
 
 | Aspect | What the repo uses |
 | --- | --- |
-| Framework | zfb + Preact (`framework: "preact"` in `zfb.config.ts`) |
-| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present and required |
-| Styling | `tailwind: { enabled: true }`, with `styles/global.css` a bare `@import "tailwindcss";`. The visible chrome is a hand-written CSS block inlined by `layouts/default.tsx`, and the markup uses semantic class names rather than utilities |
+| Framework | zfb **3.0.0** with its zudo-react JSX runtime; no Preact or React dependency |
+| zfb packages | `@takazudo/zfb`, `@takazudo/zfb-runtime`, and `@takazudo/zfb-adapter-cloudflare` are all pinned to **3.0.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` — present and required |
+| Styling | Authored critical CSS is inlined by `layouts/default.tsx`. `zudo-wind` supplies the `owned-v1` reset for the prerendered `404.html`; the pages use authored class names, not generated utilities |
 | Rendering | Not a static site: `pages/index.tsx`, `pages/api/entries.tsx`, and `pages/api/entries/[key].tsx` all export `prerender = false`. Only `pages/404.tsx` is prerendered |
 | Cloudflare surface | Workers Static Assets, `main = "./dist/_worker.js"` |
 | Bindings | One KV namespace bound as `GUESTBOOK`, plus an `ADMIN_TOKEN` secret |
-| Notable deps | `preact-render-to-string`, `@cloudflare/workers-types` (dev), `wrangler` 4.85.0 (dev) |
+| Notable deps | `@cloudflare/workers-types` `^5.20260828.1` and `wrangler` `4.127.0` (dev) |
 
 No search index, no database, no client bundle — the runtime dependency surface is KV
 and nothing else.
