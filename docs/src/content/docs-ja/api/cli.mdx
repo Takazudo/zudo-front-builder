@@ -255,6 +255,14 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 
 </Caution>
 
+### アダプタモードの preview を停止する
+
+対話型ターミナルでは、zfb がターミナルの制御を `wrangler dev` に渡すため、Wrangler のホットキーや Ctrl+C は通常どおり使えます。zfb が SIGINT、SIGTERM、または SIGHUP を受け取ると、起動した `wrangler dev` のプロセスツリー全体（pnpm → node → wrangler → workerd）へそのシグナルを転送します。このツリーは独立したプロセスグループで動作します。zfb は停止を最大 5 秒待ち、まだ動いているプロセスを強制終了します。これにより preview の `--port` が解放されます。
+
+シグナルを受けた zfb はエラーバナーを出さずに `128 + シグナル番号` で終了します。SIGINT なら 130、SIGTERM なら 143、SIGHUP なら 129 です。一方、`wrangler dev` が自ら失敗した場合は `wrangler dev exited with status …` と報告し、終了ステータス 1 で終了します。
+
+zfb に送られた SIGKILL は捕捉できないため、その場合 zfb はプロセスツリーを後片付けできません。また、シグナルを転送しない外側のラッパー（例: `pnpm exec zfb preview …` の PID）だけを停止しても、シグナルは zfb に届きません。スクリプトからは zfb のプロセス自体を停止してください。Windows ではプロセスツリーの後片付けはまだ実装されていません。
+
 ### フラグ
 
 | フラグ | 型 | デフォルト | 説明 |
