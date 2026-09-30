@@ -68,6 +68,23 @@ fn run_css(
     command.args(flags).output().expect("spawn `zfb css`")
 }
 
+fn package_export_fixture(package_name: &str, package_json: &str, specifier: &str) -> TempDir {
+    let temp = tempfile::tempdir().expect("create package-export CSS fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    let package_dir = temp.path().join("node_modules").join(package_name);
+    fs::create_dir_all(package_dir.join("dist")).expect("create package CSS directory");
+    fs::write(package_dir.join("package.json"), package_json)
+        .expect("write package-export fixture package.json");
+    fs::write(package_dir.join("dist/widget.css"), ".widget{color:red}")
+        .expect("write package-export fixture CSS");
+    fs::write(
+        temp.path().join("entry.css"),
+        format!("@import \"{specifier}\";\n"),
+    )
+    .expect("write package-export CSS entry");
+    temp
+}
+
 fn combined_output(output: &Output) -> String {
     format!(
         "{}{}",
@@ -430,6 +447,76 @@ fn css_command_missing_relative_import_exits_nonzero() {
         "{diagnostics}"
     );
     assert!(!temp.path().join("compiled.css").exists());
+}
+
+#[test]
+fn css_command_resolves_unscoped_package_css_exports_subpath() {
+    let temp = package_export_fixture(
+        "widget-css",
+        r#"{"name":"widget-css","exports":{"./styles.css":"./dist/widget.css"}}"#,
+        "widget-css/styles.css",
+    );
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &[],
+        &["--no-auto-source"],
+    );
+    assert_success(&output, "unscoped package CSS exports subpath");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read output CSS");
+    assert!(
+        css.contains(".widget"),
+        "package CSS was not bundled:\n{css}"
+    );
+}
+
+#[test]
+fn css_command_resolves_scoped_package_css_exports_subpath() {
+    let temp = package_export_fixture(
+        "@scope/widget",
+        r#"{"name":"@scope/widget","exports":{"./styles.css":"./dist/widget.css"}}"#,
+        "@scope/widget/styles.css",
+    );
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &[],
+        &["--no-auto-source"],
+    );
+    assert_success(&output, "scoped package CSS exports subpath");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read output CSS");
+    assert!(
+        css.contains(".widget"),
+        "package CSS was not bundled:\n{css}"
+    );
+}
+
+#[test]
+fn css_command_rejects_null_package_css_exports_subpath() {
+    let temp = package_export_fixture(
+        "widget-css",
+        r#"{"name":"widget-css","exports":{"./styles.css":null}}"#,
+        "widget-css/styles.css",
+    );
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &[],
+        &["--no-auto-source"],
+    );
+    assert_failure(&output, "null package CSS exports subpath");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("null (blocked by the package)"),
+        "expected null-export reason in stderr:\n{stderr}"
+    );
+    assert!(!temp.path().join("out.css").exists());
 }
 
 #[test]
