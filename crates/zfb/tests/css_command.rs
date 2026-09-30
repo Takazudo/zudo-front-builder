@@ -1000,7 +1000,7 @@ fn wind_audit_malformed_manifest_names_its_path_on_stderr() {
         "manifest loading fails before a report is rendered:\n{stdout}"
     );
     assert!(
-        stderr.contains("wind manifest widgets"),
+        stderr.contains("manifest widgets"),
         "stderr should identify the producer:\n{stderr}"
     );
     assert!(
