@@ -9,6 +9,8 @@ sidebar_position: 2
 ルート設定の `wind` は `zfb.config.ts` と `zfb.config.json` の両方で使えます。切り替え後はキーを省略しても空のオブジェクトと同じです。生成が有効になり、リセットは `none`、トークンマップは空、ソースは zfb のソースプランから供給されます。
 
 ```ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,
@@ -33,6 +35,21 @@ export default defineConfig({
   }
 });
 ```
+
+### マニフェストパスの解決
+
+マニフェストのパスは基準ディレクトリから解決されます。`@example/widgets/wind.json` のような bare package specifier は Node の解決規則と producer パッケージの `exports` を使います。この表記は推奨形式で、pnpm のパッケージ配置でも動作します。producer パッケージからマニフェストをエクスポートしてください。
+
+```json
+{
+  "name": "@example/widgets",
+  "exports": {
+    "./wind.json": "./wind.json"
+  }
+}
+```
+
+`./` または `../` で始まるパスはプロジェクトルートを基準に解決されます。ここでいうプロジェクトルートは `zfb.config.ts` または `zfb.config.json` を含むディレクトリで、現在の作業ディレクトリには依存しません。`definePreset()` で作られたプリセット由来のマニフェスト宣言では、zfb がプリセットパッケージを出所として記録するため、相対パスと bare package specifier のどちらもプリセットパッケージのディレクトリを基準に解決されます。
 
 JSON でも同じオブジェクトを `wind` プロパティの値として指定できます。
 

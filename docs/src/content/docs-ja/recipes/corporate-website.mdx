@@ -1,21 +1,15 @@
 ---
 title: "サンプル: Corporate Website"
-description: CSS Modules だけでスタイリングした静的生成の Preact サイト。zfb のサンプル 9 つのうち唯一 Tailwind を無効にしている例
+description: CSS Modules と手書きのグローバル CSS でスタイリングした静的生成の zudo-react サイト。zudo-wind を無効にした例
 sidebar_position: 12
 category: Recipes
 ---
 
 <Info title="このページで扱うこと">
 
-ヒーロー・サービス・会社紹介・問い合わせのセクションを持つコーポレートサイトを、純粋な SSG として Preact で構築したサンプルです。CSS Modules のデモでもあり、`zfb.config.ts` で `tailwind: { enabled: false }` を指定し、各コンポーネントが自分専用の `*.module.css` を隣に持ちます。[スタイリング](/ja/docs/concepts/styling) の実例版として読んでください。
+ヒーロー・サービス・会社紹介・問い合わせのセクションを持つコーポレートサイトを、zudo-react で純粋な SSG として構築したサンプルです。CSS Modules のデモでもあり、`zfb.config.ts` で `wind: false` を指定し、各コンポーネントが自分専用の `*.module.css` を隣に持ちます。[スタイリング](/ja/docs/concepts/styling) の実例版として読んでください。
 
 </Info>
-
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Preact と CSS Modules を使い、Tailwind を無効にした zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
 
 **ライブデモ:** [zfb-example-corporate-website.takazudomodular.com](https://zfb-example-corporate-website.takazudomodular.com/)
 
@@ -23,8 +17,8 @@ category: Recipes
 
 ## 何を示すか
 
-- **CSS Modules だけで完結させる** — 6 つのコンポーネント、6 つの `*.module.css`、ソースに Tailwind のユーティリティクラスは一切なし。
-- **Tailwind を切る** — zfb のサンプルサイト 9 つのうち、`tailwind: { enabled: false }` を指定しているのはこれだけです。出力されるスタイルシートにはこのプロジェクトが書いた CSS しか含まれず、preflight もテーマレイヤーもユーティリティのスキャン結果も入りません。
+- **CSS Modules だけで完結させる** — 6 つのコンポーネント、6 つの `*.module.css` があり、ソースにユーティリティクラスはありません。
+- **zudo-wind を無効にする** — `wind: false` により、出力されるスタイルシートにはこのプロジェクトが書いた CSS だけが残ります。生成ユーティリティも生成リセットも追加されません。
 - **衝突しないスコープ付きクラス名** — `.card` は `hero.module.css` と `services.module.css` の両方で宣言されていますが、両者が干渉することはありません。
 - **グローバル CSS とスコープ付き CSS の同居** — 1 枚のプレーンな `global.css` がデザイントークンと軽いリセット、そして手書きの `.skip-link` を 1 つだけ担い、各コンポーネントのスタイルはすべて `*.module.css` が持ちます。
 - **JavaScript が 1 バイトも出ないページ** — アイランドを使っていないため、ビルド結果は HTML 1 枚とスタイルシート 1 枚だけで、`<script>` タグはどこにもありません。
@@ -34,14 +28,14 @@ category: Recipes
 
 | 項目 | このデモでの内容 |
 | --- | --- |
-| フレームワーク | zfb + Preact（`framework: "preact"`） |
-| zfb バージョン | `@takazudo/zfb` と `@takazudo/zfb-runtime` をどちらも **2.3.0** に固定 |
-| スタイリング | **CSS Modules** — `zfb.config.ts` で `tailwind: { enabled: false }` |
-| レンダリング | 純粋な SSG — `export const prerender = false` もサーバールートもなし |
+| フレームワーク | zfb 組み込みの zudo-react JSX ランタイム |
+| zfb バージョン | `@takazudo/zfb` と `@takazudo/zfb-runtime` をどちらも **3.0.0** に固定 |
+| スタイリング | **CSS Modules と手書きのグローバル CSS** — `zfb.config.ts` で `wind: false` |
+| レンダリング | 純粋な SSG — アイランド、サーバールート、クライアント JavaScript なし |
 | Cloudflare 側 | Workers Static Assets の **アセット専用**構成（`main` キーなし） |
 | バインディング | なし — AI・KV・D1・R2・Durable Objects いずれも未使用 |
 | アダプター | `@takazudo/zfb-adapter-cloudflare` は依存に **含まれていない** |
-| その他の依存 | `preact`、`preact-render-to-string`。devDependencies に `wrangler` と `typescript` |
+| その他の依存 | devDependencies に `@types/node`・`typescript`・`wrangler` |
 
 <Note title="Cloudflare Pages ではない">
 
@@ -70,25 +64,20 @@ not_found_handling = "404-page"
 
 ## 仕組み
 
-### Tailwind を切るのは設定 1 行
+### zudo-wind を無効にするのは設定 1 行
 
 ```ts title="zfb.config.ts"
-import { defineConfig } from "@takazudo/zfb/config";
+import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
   base: "/",
-  tailwind: { enabled: false },
+  wind: false,
 });
 ```
 
-このフラグを立てると、zfb は CSS エンジンを、書かれたままの `styles/global.css` をそのまま通すものへ差し替えます。Tailwind の `@import` もコンテンツスキャンも preflight もサブプロセスも走りません。一方で **CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はそのまま動き続けます**。このデモが成立するのはそのためです。Tailwind をやめることは、zfb の CSS パイプラインをやめることではありません。
+この例は zfb の bare `zfb/config` import を使います。[defineConfig](../api/define-config.mdx) では `zfb check` に必要な型シムを説明しています。
 
-<Warning title="必要な zfb バージョン">
-
-`tailwind: { enabled: false }` には zfb **`0.1.0-next.31` 以降**が必要です。それ以前のバージョンでは、このフラグを立てると書いた CSS がすべて捨てられていました（[zfb#824](https://github.com/Takazudo/zudo-front-builder/issues/824)）。ソースは正しいのにスタイルの当たらないサイトが出荷されてしまう挙動です。
-
-</Warning>
+`wind: false` では zudo-wind による生成、ユーティリティの検証、候補クラスのスキャンが無効になります。生成ユーティリティも生成リセットも追加されず、このサイトのトークンとリセットは `styles/global.css` が担います。一方で **CSS Modules のコンパイル、スコープ付きクラス名、アセットの出力はそのまま動き続けます**。zudo-wind を無効にしても、zfb の CSS パイプラインは停止しません。
 
 ### コンポーネントが自分のスタイルシートを読み込む
 
@@ -97,10 +86,24 @@ export default defineConfig({
 ```tsx title="components/hero/hero.tsx"
 import styles from "./hero.module.css";
 
+const STATS = [
+  { value: "120+", label: "Products shipped" },
+  { value: "9 yrs", label: "Average team tenure" },
+  { value: "4.9/5", label: "Client satisfaction" },
+];
+
 export default function Hero() {
   return (
     <section class={styles.hero}>
-      <div class={styles.inner}>{/* … */}</div>
+      <div class={styles.inner}>
+        <div class={styles.copy}>
+          <p class={styles.eyebrow}>Product engineering partner</p>
+          <h1 class={styles.title}>
+            We build digital products that <em class={styles.accent}>earn their keep</em>.
+          </h1>
+          {/* … */}
+        </div>
+      </div>
     </section>
   );
 }
@@ -113,8 +116,8 @@ export default function Hero() {
 `hero.module.css` と `services.module.css` はどちらもただの `.card` を宣言しています。ビルド後のスタイルシートでは、これは無関係な 2 つのセレクターになります。
 
 ```css
-.QAAyqq_card { /* components/hero/hero.module.css 由来 */ }
-.y8_AgG_card { /* components/services/services.module.css 由来 */ }
+.QAAyqq_card {}
+.y8_AgG_card {}
 ```
 
 接頭辞はファイルの内容でもマシン上の絶対パスでもなく、**プロジェクトからの相対パス**のハッシュです。ここから 2 つの帰結が生まれ、どちらも重要です。
@@ -127,8 +130,11 @@ export default function Hero() {
 スコープ化されるかどうかを決めるのは `.module.css` という接尾辞だけです。レイアウトはコンポーネントの import と並べて、プレーンなグローバルシートを読み込んでいます。
 
 ```tsx title="layouts/default.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 import "../styles/global.css";
 import SiteHeader from "../components/header/site-header";
+import SiteFooter from "../components/footer/site-footer";
 ```
 
 `styles/global.css` には、各モジュールが参照する `:root` のデザイントークン（`--color-brand`、`--space-5`、`--text-3xl` など）と軽いリセット、そして手書きのユーティリティが 1 つだけ入っています。`.skip-link` です。このクラスはハッシュ化されないままブラウザーへ届き、レイアウト側も `styles.*` の参照ではなく `class="skip-link"` という文字列リテラルで書いています。2 つの仕組みが同じファイルに同居していて、互いに干渉しません。
@@ -163,7 +169,7 @@ pnpm typecheck  # zfb check
 
 ## 関連ドキュメント
 
-- [スタイリング](/ja/docs/concepts/styling) — グローバル CSS・Tailwind v4・このデモが使っている CSS Modules のルール（`:export` や `composes` の非対応、ベア指定子の制限を含む）のリファレンスです。
+- [スタイリング](/ja/docs/concepts/styling) — zudo-wind、手書きのグローバル CSS、このデモが使っている CSS Modules のルール（`:export` や `composes` の非対応、ベア指定子の制限を含む）のリファレンスです。
 - [静的アセット](/ja/docs/concepts/static-assets) — 出力される `dist/assets/` がどう作られ、どう配信されるか。
 - [アイランド](/ja/docs/concepts/islands) — このサイトが意図的に使っていない機能です。
 - [サンプル集](/ja/docs/guides/examples) — 他の zfb サンプルサイト。

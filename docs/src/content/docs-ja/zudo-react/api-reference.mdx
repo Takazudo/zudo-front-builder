@@ -215,7 +215,7 @@ Style は CSS 文字列か CSS 表記のキーを持つ平坦なオブジェク�
 export type Listener<E extends Event = Event> = (event: E) => void | Promise<void>;
 ~~~
 
-Listener はネイティブイベントを受け取り、on:event の表記で登録します。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+Listener はネイティブイベントを受け取り、`on:<name>` の表記で登録します。組み込み要素の prop は DOM のイベントマップから `Listener<E>` の型を決めます。既知の名前には対応するイベント型を使い、`currentTarget` はその要素の型になります（例: form の `on:submit` は `SubmitEvent` と `HTMLFormElement`）。未知のイベント名やカスタムイベント名には、単一のイベントを受け取る任意のハンドラーを指定できます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
 
 ### IslandIdentity
 

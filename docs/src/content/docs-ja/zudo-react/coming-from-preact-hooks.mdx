@@ -108,6 +108,35 @@ function ItemList() {
 
 For はキー付き項目の移動や同じキーの別オブジェクトへの置き換えでも、DOM とスコープを保ちます。item 引数は読み取り専用の signal で、computed による label は変更されたオブジェクトのプロパティを更新されるスカラーバインディングにします。重複キーや未対応のキーでは元のリストが保たれます。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
 
+### キーで再マウント
+
+従来の Preact での書き方:
+
+~~~tsx
+<DiffViewer key={pairKey} />
+~~~
+
+zudo-react での書き方:
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function Comparison() {
+  const pairKey = signal("a:b");
+  const pairs = computed(() => [pairKey.value]);
+
+  return (
+    <section>
+      <For each={pairs} by={(key) => key}>
+        {(item) => <DiffViewer pairKey={item.value} />}
+      </For>
+    </section>
+  );
+}
+~~~
+
+`pairKey.value` を新しいキーに変更すると、古い項目のスコープを破棄して新しい `DiffViewer` を作ります。`Show` で囲んでも、真偽値の `when` が true のままなら選択中のファクトリは再実行されません。同じ `For` キーを使い続けてもスコープは維持されます。再マウントすると、ビューアー内のフォーカス、選択範囲、スクロール位置、コントロールの状態は失われます。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
 ### 制御される入力
 
 従来の Preact での書き方:
@@ -116,6 +145,8 @@ For はキー付き項目の移動や同じキーの別オブジェクトへの�
 const [name, setName] = useState("Ada");
 <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
 ~~~
+
+zudo-react の input ハンドラーでは `currentTarget` が `HTMLInputElement` 型になるため、`value` を読むための型アサーションは不要です。値を signal と連動させる場合は、次のように `modelValue` を使います。
 
 zudo-react での書き方:
 

@@ -3,6 +3,7 @@ import type { ReadonlySignal } from "./reactive-types.js";
 import type { RuntimeScope } from "./scope.js";
 import type { RootOptions } from "./root.js";
 import { diagnostic, report, rootPath } from "./root.js";
+import { booleanAttrs } from "./vocabulary.js";
 
 export function isReactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -30,11 +31,6 @@ export function styleText(value: unknown): string {
   }
   return result;
 }
-const booleanAttrs = new Set(
-  "hidden inert readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate allowfullscreen".split(
-    " ",
-  ),
-);
 export function setAttribute(element: Element, name: string, value: unknown): void {
   if (value == null || (booleanAttrs.has(name) && value === false)) {
     element.removeAttribute(name);

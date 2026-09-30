@@ -215,7 +215,7 @@ The directory is configurable. Add `publicDir` to `zfb.config.ts` to point somew
 
 ```ts
 // zfb.config.ts
-import { defineConfig } from "@takazudo/zfb/config";
+import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   publicDir: "static",
@@ -229,6 +229,8 @@ Default: `"public"`. The path is resolved relative to the project root. A missin
 When a deploy pipeline relocates the entire `dist/` tree into the base sub-path — for example, a workflow that runs `cp -a dist/. deploy-root/pj/site/` — placing public assets under `dist/<base>/...` would produce a double-nested path (`deploy-root/pj/site/pj/site/img/logo.svg`). Set `copyPublicWithBase: false` to copy public assets flat to `dist/` root instead:
 
 ```ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   base: "/pj/site/",
   copyPublicWithBase: false,

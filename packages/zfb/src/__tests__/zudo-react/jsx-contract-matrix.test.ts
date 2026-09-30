@@ -43,5 +43,6 @@ describe("zfb JSX producer contract matrix", () => {
     }
 
     expect(() => renderToString(node)).toThrow(row.expectation.code);
+    if (row.expectation.detail) expect(() => renderToString(node)).toThrow(row.expectation.detail);
   });
 });

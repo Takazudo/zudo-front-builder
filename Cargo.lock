@@ -6093,6 +6093,7 @@ dependencies = [
  "cssparser 0.33.0",
  "hex",
  "lightningcss",
+ "oxc_resolver",
  "serde_json",
  "sha2",
  "syntect",

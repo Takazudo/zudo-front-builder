@@ -36,6 +36,9 @@
 //!   (e.g. `@import "tw-animate-css"` with no installed file is simply dropped).
 //! - Returns canonicalised real paths, de-duplicated and sorted for stable
 //!   downstream ordering. The entry itself is **not** included.
+//! - For package imports, the nearest installed package wins. An explicit
+//!   subpath follows its `exports` map when present; otherwise it uses the
+//!   physical path. Bare packages retain the CSS entry lookup below.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -44,6 +47,7 @@ use std::sync::Mutex;
 use lightningcss::bundler::{Bundler, ResolveResult, SourceProvider};
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
+use oxc_resolver::{ResolveContext, ResolveError as OxcResolveError, ResolveOptions, Resolver};
 
 use crate::url_attribution::{rewrite_package_urls_for_source, PackageUrlResolver};
 use crate::{CssInputDependency, CssInputDependencyKind, PackageUrlAsset};
@@ -93,11 +97,12 @@ pub fn resolve_css_imports(entry: &Path, project_root: &Path) -> Vec<PathBuf> {
             if is_virtual_specifier(&spec) {
                 continue;
             }
-            let Some(resolved) = resolve_one(&importer_real, &spec, project_root) else {
-                // Unresolvable (virtual/builtin or not installed) — skip.
+            let Ok(resolved) = resolve_one(&importer_real, &spec, project_root) else {
+                // Watch discovery skips unresolved imports; authored bundling
+                // reports the reason through its source-provider error.
                 continue;
             };
-            let real = match std::fs::canonicalize(&resolved) {
+            let real = match std::fs::canonicalize(&resolved.path) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
@@ -116,18 +121,99 @@ pub fn resolve_css_imports(entry: &Path, project_root: &Path) -> Vec<PathBuf> {
 /// Relative specifiers (`./`, `../`, or a bare-relative filename like
 /// `tokens.css`) resolve against the importer's directory. Package specifiers
 /// (`@scope/pkg`, `pkg/sub.css`) resolve against the nearest `node_modules`
-/// walking up from the importer; a directory target falls back to the package's
+/// walking up from the importer. Bare packages use the package's
 /// `package.json` `style`/`exports`/`main` CSS entry, then `index.css`.
-fn resolve_one(importer_real: &Path, spec: &str, project_root: &Path) -> Option<PathBuf> {
+fn resolve_one(
+    importer_real: &Path,
+    spec: &str,
+    project_root: &Path,
+) -> Result<ResolvedCssImport, ImportResolutionError> {
     let importer_dir = importer_real.parent().unwrap_or(Path::new("."));
 
     if is_relative_specifier(spec) {
         let candidate = importer_dir.join(spec);
-        return file_or_css_index(&candidate);
+        let path = file_or_css_index(&candidate)
+            .ok_or(ImportResolutionError::RelativePathMissing(candidate))?;
+        return Ok(ResolvedCssImport {
+            path,
+            package_manifest: None,
+        });
     }
 
     // Bare package specifier — walk up looking for node_modules.
-    resolve_package_specifier(importer_dir, project_root, spec)
+    Ok(resolve_package_specifier(importer_dir, project_root, spec)?)
+}
+
+#[derive(Debug)]
+struct ResolvedCssImport {
+    path: PathBuf,
+    /// Manifest whose `exports` entry selected `path`, if any.
+    package_manifest: Option<PathBuf>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ImportResolutionError {
+    #[error("relative CSS file {0:?} does not exist")]
+    RelativePathMissing(PathBuf),
+    #[error(transparent)]
+    Package(#[from] PackageResolutionError),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PackageResolutionError {
+    #[error("package {0:?} is not installed")]
+    NotInstalled(String),
+    #[error("package {package:?} exports does not expose {subpath:?}")]
+    ExportNotExposed { package: String, subpath: String },
+    #[error("export {subpath:?} of package {package:?} is null (blocked by the package)")]
+    ExportBlocked { package: String, subpath: String },
+    #[error("export {subpath:?} of package {package:?} resolved to non-CSS target {target:?}")]
+    NonCssExport {
+        package: String,
+        subpath: String,
+        target: String,
+    },
+    #[error("export target escapes the package")]
+    ExportTargetEscapesPackage,
+    #[error("package.json of {0:?} is malformed")]
+    MalformedPackageJson(String),
+    #[error("export {subpath:?} of package {package:?} targets missing file {target:?}")]
+    MissingExportTarget {
+        package: String,
+        subpath: String,
+        target: String,
+    },
+    #[error(
+        "physical path {subpath:?} of package {package:?} is missing (package has no exports)"
+    )]
+    MissingPhysicalPath { package: String, subpath: String },
+    #[error("package {0:?} has no CSS entry point")]
+    MissingCssEntry(String),
+}
+
+fn read_package_manifest(
+    pkg_root: &Path,
+    package: &str,
+) -> Result<Option<serde_json::Value>, PackageResolutionError> {
+    let path = pkg_root.join("package.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(PackageResolutionError::MalformedPackageJson(
+                package.to_string(),
+            ))
+        }
+    };
+    let json_bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let json: serde_json::Value = serde_json::from_slice(json_bytes)
+        .map_err(|_| PackageResolutionError::MalformedPackageJson(package.to_string()))?;
+    if !json.is_object() {
+        return Err(PackageResolutionError::MalformedPackageJson(
+            package.to_string(),
+        ));
+    }
+    Ok(Some(json))
 }
 
 /// Bundle every resolvable local/package `@import` in authored CSS while
@@ -215,6 +301,15 @@ pub fn bundle_authored_css_with_assets(
                 kind: CssInputDependencyKind::Asset,
             }),
     );
+    input_dependencies.extend(
+        state
+            .package_manifests
+            .iter()
+            .map(|path| CssInputDependency {
+                path: path.clone(),
+                kind: CssInputDependencyKind::PackageManifest,
+            }),
+    );
     Ok(AuthoredCssBundle {
         css,
         companions: state.resolver.companions.clone(),
@@ -224,12 +319,26 @@ pub fn bundle_authored_css_with_assets(
 
 #[derive(Debug, thiserror::Error)]
 enum AuthoredCssSourceError {
-    #[error("failed to resolve authored CSS import {specifier:?} from {origin}")]
-    Resolve { origin: PathBuf, specifier: String },
+    #[error("failed to resolve authored CSS import {specifier:?} from {origin}: {reason}")]
+    Resolve {
+        origin: PathBuf,
+        specifier: String,
+        reason: String,
+    },
     #[error(
         "failed to canonicalize authored CSS import {specifier:?} from {origin} at {path}: {source}"
     )]
     Canonicalize {
+        origin: PathBuf,
+        specifier: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "failed to canonicalize package manifest for authored CSS import {specifier:?} from {origin} at {path}: {source}"
+    )]
+    ManifestCanonicalize {
         origin: PathBuf,
         specifier: String,
         path: PathBuf,
@@ -261,6 +370,7 @@ enum AuthoredCssSourceError {
 struct AssetAwareState {
     resolver: PackageUrlResolver,
     stylesheets: BTreeSet<PathBuf>,
+    package_manifests: BTreeSet<PathBuf>,
 }
 
 struct AuthoredCssSourceProvider<'a> {
@@ -375,20 +485,36 @@ impl SourceProvider for AuthoredCssSourceProvider<'_> {
         }
 
         let resolved =
-            resolve_one(originating_file, specifier, self.project_root).ok_or_else(|| {
+            resolve_one(originating_file, specifier, self.project_root).map_err(|error| {
                 AuthoredCssSourceError::Resolve {
                     origin: originating_file.to_path_buf(),
                     specifier: specifier.to_string(),
+                    reason: error.to_string(),
                 }
             })?;
-        let real = std::fs::canonicalize(&resolved).map_err(|source| {
+        let ResolvedCssImport {
+            path: resolved_path,
+            package_manifest,
+        } = resolved;
+        let real = std::fs::canonicalize(&resolved_path).map_err(|source| {
             AuthoredCssSourceError::Canonicalize {
                 origin: originating_file.to_path_buf(),
                 specifier: specifier.to_string(),
-                path: resolved,
+                path: resolved_path,
                 source,
             }
         })?;
+        if let (Some(assets), Some(manifest)) = (&self.assets, package_manifest) {
+            let manifest = std::fs::canonicalize(&manifest).map_err(|source| {
+                AuthoredCssSourceError::ManifestCanonicalize {
+                    origin: originating_file.to_path_buf(),
+                    specifier: specifier.to_string(),
+                    path: manifest,
+                    source,
+                }
+            })?;
+            assets.lock().unwrap().package_manifests.insert(manifest);
+        }
         self.import_contexts.lock().unwrap().insert(
             real.clone(),
             (originating_file.to_path_buf(), specifier.to_string()),
@@ -503,10 +629,15 @@ fn is_relative_specifier(spec: &str) -> bool {
 }
 
 /// Resolve a package specifier (`@scope/pkg`, `pkg`, `pkg/sub.css`) against the
-/// nearest `node_modules` directory, walking up from `start_dir` and finally
+/// nearest installed package, walking up from `start_dir` and finally
 /// trying `project_root/node_modules`.
-fn resolve_package_specifier(start_dir: &Path, project_root: &Path, spec: &str) -> Option<PathBuf> {
-    let (pkg_name, subpath) = split_package_specifier(spec)?;
+fn resolve_package_specifier(
+    start_dir: &Path,
+    project_root: &Path,
+    spec: &str,
+) -> Result<ResolvedCssImport, PackageResolutionError> {
+    let (pkg_name, subpath) = split_package_specifier(spec)
+        .ok_or_else(|| PackageResolutionError::NotInstalled(spec.to_string()))?;
 
     let mut search_dirs: Vec<PathBuf> = Vec::new();
     let mut dir = Some(start_dir);
@@ -521,22 +652,252 @@ fn resolve_package_specifier(start_dir: &Path, project_root: &Path, spec: &str) 
         if !pkg_root.is_dir() {
             continue;
         }
-        // Explicit subpath (`pkg/dist/tokens.css`) — resolve it directly.
+        let manifest = read_package_manifest(&pkg_root, &pkg_name)?;
+        // The first installed package owns this name, even when its requested
+        // subpath cannot be resolved. Never use another installed version.
         if let Some(sub) = &subpath {
-            if let Some(hit) = file_or_css_index(&pkg_root.join(sub)) {
-                return Some(hit);
+            let exported_subpath = format!("./{sub}");
+            if let Some(json) = manifest
+                .as_ref()
+                .filter(|json| json.get("exports").is_some())
+            {
+                let path = resolve_exported_css_subpath(
+                    nm,
+                    &pkg_root,
+                    &pkg_name,
+                    &exported_subpath,
+                    spec,
+                    json,
+                )?;
+                return Ok(ResolvedCssImport {
+                    path,
+                    package_manifest: Some(pkg_root.join("package.json")),
+                });
             }
-            continue;
+            let path = file_or_css_index(&pkg_root.join(sub)).ok_or({
+                PackageResolutionError::MissingPhysicalPath {
+                    package: pkg_name,
+                    subpath: exported_subpath,
+                }
+            })?;
+            return Ok(ResolvedCssImport {
+                path,
+                package_manifest: None,
+            });
         }
         // Bare package — consult package.json for a CSS entry, then index.css.
-        if let Some(hit) = package_css_entry(&pkg_root) {
-            return Some(hit);
+        if let Some(entry) = manifest
+            .as_ref()
+            .and_then(|json| package_css_entry(&pkg_root, json))
+        {
+            return Ok(ResolvedCssImport {
+                path: entry.path,
+                package_manifest: entry.uses_exports.then(|| pkg_root.join("package.json")),
+            });
         }
-        if let Some(hit) = file_or_css_index(&pkg_root) {
-            return Some(hit);
+        let path = file_or_css_index(&pkg_root)
+            .ok_or(PackageResolutionError::MissingCssEntry(pkg_name))?;
+        return Ok(ResolvedCssImport {
+            path,
+            package_manifest: None,
+        });
+    }
+    Err(PackageResolutionError::NotInstalled(pkg_name))
+}
+
+/// Let oxc apply Node's ordered conditions, patterns, null blocks, and array
+/// target validation. Constructing it here also avoids stale dev-server state
+/// after a package.json edit.
+fn resolve_exported_css_subpath(
+    nm: &Path,
+    pkg_root: &Path,
+    package: &str,
+    subpath: &str,
+    spec: &str,
+    manifest: &serde_json::Value,
+) -> Result<PathBuf, PackageResolutionError> {
+    let anchor = nm
+        .parent()
+        .ok_or_else(|| PackageResolutionError::ExportNotExposed {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+        })?;
+    let resolver = Resolver::new(ResolveOptions {
+        condition_names: vec!["style".into(), "default".into()],
+        extensions: vec![],
+        main_fields: vec![],
+        main_files: vec![],
+        ..ResolveOptions::default()
+    });
+    let selected_root = std::fs::canonicalize(pkg_root).unwrap_or_else(|_| pkg_root.to_path_buf());
+    let mut context = ResolveContext::default();
+    let resolution = resolver
+        .resolve_with_context(anchor, spec, None, &mut context)
+        .map_err(|error| {
+            classify_export_resolution_error(error, &context, pkg_root, package, subpath, manifest)
+        })?;
+    let path = resolution.path();
+    // Check the resolved real path before consulting its package.json. An
+    // exported symlink can point outside the selected package, where the
+    // resolver may report the symlink target's nearest manifest instead.
+    let real =
+        std::fs::canonicalize(path).map_err(|_| PackageResolutionError::MissingExportTarget {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+            target: export_target_for_path(path, &selected_root),
+        })?;
+    if !real.starts_with(&selected_root) {
+        return Err(PackageResolutionError::ExportTargetEscapesPackage);
+    }
+    let Some(package_json) = resolution.package_json() else {
+        return Err(PackageResolutionError::ExportNotExposed {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+        });
+    };
+    let resolved_root = std::fs::canonicalize(package_json.directory())
+        .unwrap_or_else(|_| package_json.directory().to_path_buf());
+    if resolved_root != selected_root {
+        return Err(PackageResolutionError::ExportNotExposed {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+        });
+    }
+    if !real.is_file() {
+        return Err(PackageResolutionError::MissingExportTarget {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+            target: export_target_for_path(path, &selected_root),
+        });
+    }
+    if path.extension().is_none_or(|ext| ext != "css") {
+        return Err(PackageResolutionError::NonCssExport {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+            target: export_target_for_path(path, &selected_root),
+        });
+    }
+    Ok(path.to_path_buf())
+}
+
+fn classify_export_resolution_error(
+    error: OxcResolveError,
+    context: &ResolveContext,
+    package_root: &Path,
+    package: &str,
+    subpath: &str,
+    manifest: &serde_json::Value,
+) -> PackageResolutionError {
+    match error {
+        OxcResolveError::PackagePathNotExported { .. } => {
+            if selected_export_is_null(manifest, subpath) {
+                PackageResolutionError::ExportBlocked {
+                    package: package.to_string(),
+                    subpath: subpath.to_string(),
+                }
+            } else {
+                PackageResolutionError::ExportNotExposed {
+                    package: package.to_string(),
+                    subpath: subpath.to_string(),
+                }
+            }
+        }
+        OxcResolveError::InvalidPackageTarget(target, _, _) => {
+            if export_target_escapes_package(&target) {
+                PackageResolutionError::ExportTargetEscapesPackage
+            } else {
+                PackageResolutionError::ExportNotExposed {
+                    package: package.to_string(),
+                    subpath: subpath.to_string(),
+                }
+            }
+        }
+        OxcResolveError::InvalidPackageConfig(_)
+        | OxcResolveError::InvalidPackageConfigDefault(_)
+        | OxcResolveError::InvalidPackageConfigDirectory(_) => {
+            PackageResolutionError::MalformedPackageJson(package.to_string())
+        }
+        OxcResolveError::Json(_) => {
+            PackageResolutionError::MalformedPackageJson(package.to_string())
+        }
+        OxcResolveError::NotFound(_) => {
+            if let Some(target) = missing_export_target(context, package_root) {
+                PackageResolutionError::MissingExportTarget {
+                    package: package.to_string(),
+                    subpath: subpath.to_string(),
+                    target,
+                }
+            } else {
+                PackageResolutionError::ExportNotExposed {
+                    package: package.to_string(),
+                    subpath: subpath.to_string(),
+                }
+            }
+        }
+        _ => PackageResolutionError::ExportNotExposed {
+            package: package.to_string(),
+            subpath: subpath.to_string(),
+        },
+    }
+}
+
+fn missing_export_target(context: &ResolveContext, package_root: &Path) -> Option<String> {
+    let canonical_root = std::fs::canonicalize(package_root).ok();
+    let mut targets: Vec<_> = context
+        .missing_dependencies
+        .iter()
+        .filter_map(|path| {
+            let relative = path.strip_prefix(package_root).ok().or_else(|| {
+                canonical_root
+                    .as_deref()
+                    .and_then(|root| path.strip_prefix(root).ok())
+            })?;
+            Some(format!(
+                "./{}",
+                relative.to_string_lossy().replace('\\', "/")
+            ))
+        })
+        .collect();
+    targets.sort_by_key(String::len);
+    targets.into_iter().next()
+}
+
+fn export_target_for_path(path: &Path, package_root: &Path) -> String {
+    let target = path
+        .strip_prefix(package_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf());
+    let target = target.to_string_lossy().replace('\\', "/");
+    if target.starts_with('/') || target.contains(":/") {
+        target
+    } else {
+        format!("./{target}")
+    }
+}
+
+fn export_target_escapes_package(target: &str) -> bool {
+    let target = target.replace('\\', "/");
+    let Some(relative) = target.strip_prefix("./") else {
+        return target.starts_with("../") || target.starts_with('/');
+    };
+    let mut depth = 0usize;
+    for component in relative.split('/') {
+        match component {
+            "" | "." => {}
+            ".." if depth == 0 => return true,
+            ".." => depth -= 1,
+            _ => depth += 1,
         }
     }
-    None
+    false
+}
+
+fn selected_export_is_null(manifest: &serde_json::Value, subpath: &str) -> bool {
+    manifest
+        .get("exports")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|exports| exports.get(subpath))
+        .is_some_and(serde_json::Value::is_null)
 }
 
 /// Split a package specifier into `(package_name, optional_subpath)`.
@@ -564,28 +925,40 @@ fn split_package_specifier(spec: &str) -> Option<(String, Option<String>)> {
     }
 }
 
+/// Resolved CSS entry and whether the `exports` field selected it.
+struct PackageCssEntry {
+    path: PathBuf,
+    uses_exports: bool,
+}
+
 /// Read a package's `package.json` and return the CSS entry it advertises, in
 /// precedence order: `style`, an `exports` map's `"."` → `style`/`default` CSS
-/// value, then `main` when it points at a `.css` file. Returns the resolved
-/// on-disk path (un-canonicalised; the caller canonicalises).
-fn package_css_entry(pkg_root: &Path) -> Option<PathBuf> {
-    let manifest = std::fs::read_to_string(pkg_root.join("package.json")).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&manifest).ok()?;
-
+/// value, then `main` when it points at a `.css` file. The caller canonicalises
+/// the selected stylesheet and any manifest used by `exports`.
+fn package_css_entry(pkg_root: &Path, json: &serde_json::Value) -> Option<PackageCssEntry> {
     if let Some(style) = json.get("style").and_then(|v| v.as_str()) {
         if let Some(hit) = file_or_css_index(&pkg_root.join(style)) {
-            return Some(hit);
+            return Some(PackageCssEntry {
+                path: hit,
+                uses_exports: false,
+            });
         }
     }
     if let Some(entry) = exports_css_entry(json.get("exports")) {
         if let Some(hit) = file_or_css_index(&pkg_root.join(entry)) {
-            return Some(hit);
+            return Some(PackageCssEntry {
+                path: hit,
+                uses_exports: true,
+            });
         }
     }
     if let Some(main) = json.get("main").and_then(|v| v.as_str()) {
         if main.ends_with(".css") {
             if let Some(hit) = file_or_css_index(&pkg_root.join(main)) {
-                return Some(hit);
+                return Some(PackageCssEntry {
+                    path: hit,
+                    uses_exports: false,
+                });
             }
         }
     }
@@ -946,6 +1319,99 @@ mod tests {
 
         assert_eq!(bundled.matches(".package-token").count(), 1);
         assert!(!bundled.contains("@scope/design-system"));
+    }
+
+    #[test]
+    fn reports_only_canonical_manifests_used_by_css_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let styles = root.join("styles");
+        let installed_theme = root.join("node_modules/@fixture/theme");
+        #[cfg(unix)]
+        let theme = root.join("packages/theme");
+        #[cfg(not(unix))]
+        let theme = installed_theme.clone();
+        fs::create_dir_all(&styles).unwrap();
+        fs::create_dir_all(theme.join("dist")).unwrap();
+        fs::create_dir_all(installed_theme.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&theme, &installed_theme).unwrap();
+        fs::write(
+            theme.join("package.json"),
+            r#"{"name":"@fixture/theme","exports":{"./a.css":"./dist/a.css","./b.css":"./dist/b.css"}}"#,
+        )
+        .unwrap();
+        fs::write(theme.join("dist/a.css"), ".a { color: red; }\n").unwrap();
+        fs::write(theme.join("dist/b.css"), ".b { color: blue; }\n").unwrap();
+
+        let other_package = root.join("node_modules/@fixture/other");
+        fs::create_dir_all(other_package.join("dist")).unwrap();
+        fs::write(
+            other_package.join("package.json"),
+            r#"{"name":"@fixture/other","exports":{"./theme.css":"./dist/theme.css"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            other_package.join("dist/theme.css"),
+            ".other { color: orange; }\n",
+        )
+        .unwrap();
+
+        let legacy_package = root.join("node_modules/@fixture/legacy");
+        fs::create_dir_all(&legacy_package).unwrap();
+        fs::write(
+            legacy_package.join("package.json"),
+            r#"{"name":"@fixture/legacy"}"#,
+        )
+        .unwrap();
+        fs::write(
+            legacy_package.join("physical.css"),
+            ".physical { color: green; }\n",
+        )
+        .unwrap();
+        fs::write(styles.join("relative.css"), ".relative { color: black; }\n").unwrap();
+
+        let exported_entry = styles.join("exported.css");
+        let exported_css = concat!(
+            "@import '@fixture/other/theme.css';\n",
+            "@import '@fixture/theme/a.css';\n",
+            "@import '@fixture/theme/b.css';\n",
+        );
+        fs::write(&exported_entry, exported_css).unwrap();
+        let exported =
+            bundle_authored_css_with_assets(&exported_entry, root, exported_css).unwrap();
+        let manifest_dependencies: Vec<_> = exported
+            .input_dependencies
+            .iter()
+            .filter(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest)
+            .map(|dependency| dependency.path.clone())
+            .collect();
+        let mut expected_manifests = vec![
+            fs::canonicalize(installed_theme.join("package.json")).unwrap(),
+            fs::canonicalize(other_package.join("package.json")).unwrap(),
+        ];
+        expected_manifests.sort();
+        assert_eq!(manifest_dependencies, expected_manifests);
+
+        let relative_entry = styles.join("relative-entry.css");
+        let relative_css = "@import './relative.css';\n";
+        fs::write(&relative_entry, relative_css).unwrap();
+        let relative =
+            bundle_authored_css_with_assets(&relative_entry, root, relative_css).unwrap();
+        assert!(!relative
+            .input_dependencies
+            .iter()
+            .any(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest));
+
+        let physical_entry = styles.join("physical-entry.css");
+        let physical_css = "@import '@fixture/legacy/physical.css';\n";
+        fs::write(&physical_entry, physical_css).unwrap();
+        let physical =
+            bundle_authored_css_with_assets(&physical_entry, root, physical_css).unwrap();
+        assert!(!physical
+            .input_dependencies
+            .iter()
+            .any(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest));
     }
 
     #[test]

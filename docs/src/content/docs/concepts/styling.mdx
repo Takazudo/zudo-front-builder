@@ -29,6 +29,8 @@ body {
 
 Imports inside CSS work as you would expect — split your styles across files and pull them together from `global.css`.
 
+Package CSS imports such as `@import "@scope/pkg/theme.css"` resolve through the nearest installed package's `package.json` `exports` map. For conditional exports, zfb checks the `style` and `default` conditions in the order they appear in that package's map. A subpath that `exports` does not expose, or maps to `null`, cannot be reached through its physical file path; this follows Node's package-encapsulation rule. Packages without `exports` resolve subpaths by their physical paths. For a bare import such as `@import "pkg"`, zfb checks the package's `style` field, then `exports["."]`, then a CSS `main`.
+
 ## zudo-wind
 
 zudo-wind is the utility CSS language built into zfb. Utilities use the `wind` configuration key; an omitted key behaves like `{}`: generation is enabled, the reset is `none`, and no tokens or breakpoints are supplied implicitly. Configure only the values your project uses. The [zudo-wind overview](../zudo-wind/overview.mdx) and its [configuration](../zudo-wind/configuration.mdx), [source](../zudo-wind/sources-and-candidates.mdx), and [utility](../zudo-wind/utilities/index.mdx) guides cover the language.

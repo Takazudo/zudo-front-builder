@@ -14,6 +14,8 @@ External URLs (`http://`, `https://`, `mailto:`, etc.) are silently skipped by d
 
 ```ts
 // zfb.config.ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
@@ -53,6 +55,8 @@ Heading IDs come from [`HeadingLinksPlugin`](./heading-links.mdx), which runs ea
 
 ```ts
 // zfb.config.ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   strictBrokenLinks: true,
 });

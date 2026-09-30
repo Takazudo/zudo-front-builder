@@ -41,6 +41,8 @@ conservative default shown above.
 ### Boolean shorthand
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     gfm: true, // every GFM construct on
@@ -55,6 +57,8 @@ off — including strikethrough and tables.
 ### Per-construct object
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     gfm: {

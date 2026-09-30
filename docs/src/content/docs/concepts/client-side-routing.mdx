@@ -544,6 +544,14 @@ Use this for chrome-zone islands whose props are effectively invariant across pa
 
 </Note>
 
+#### Islands inside a persisted element
+
+An island nested anywhere inside a `data-zfb-transition-persist` element keeps its live component instance and internal state across a navigation when the incoming page has the same island under that element. The islands must have the same component, root kind, transport, protocol, and build. Their `data-props` must also be identical unless `data-zfb-transition-persist-props` opts out of the props refresh.
+
+If any of those values differ, the old island is cleaned up and a fresh instance is created in `render` mode. It uses the incoming props when props refresh is enabled; with `data-zfb-transition-persist-props` opting out, it keeps the old props. Its internal state is lost. If the incoming page has no matching island under the persisted element, the old island is cleaned up and removed. An island present only on the incoming page is not added: the persisted element keeps its existing DOM rather than adopting the incoming markup.
+
+When several islands of the same component sit under one persisted element, they are matched in document order, so changing their order can associate an old instance with a different incoming island. A persisted element nested inside another persisted element travels with its parent.
+
 ## `<ViewTransitions />` — deprecated
 
 `@takazudo/zfb-runtime` also exports `<ViewTransitions />`. **This component is a typed no-op** kept for backward compatibility only; it renders nothing and registers nothing.

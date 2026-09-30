@@ -51,7 +51,7 @@ Breakpoints are configured separately as positive integer pixel widths. For exam
 
 ## Validating values
 
-Each token value is checked with the CSS parser for the property that consumes it. Examples include color for `colors`, padding length for `spacing`, width for `sizes`, font size for `fontSizes`, and border radius for `radii`. Radius entries must be a single nonnegative length-percentage. Z-index entries must be integers. Easing entries must be a single timing function or keyword.
+Each token value is checked with the CSS parser for the property that consumes it. Examples include color for `colors`, padding length for `spacing`, width for `sizes`, font size for `fontSizes`, and border radius for `radii`. Radius entries must be a single nonnegative length-percentage. Z-index entries are integer strings or `var()` references: for example, use `zIndices: { content: "10" }`; a JSON or TypeScript number such as `zIndices: { content: 10 }` is rejected with `invalid type: integer ..., expected a string`. Easing entries must be a single timing function or keyword.
 
 External custom properties may appear in values for categories other than `spacingUnit`. If the CSS parser cannot prove the property's type because the value references `var()`, the binding is marked category-unverified and exposed by `zfb wind explain`. The whole value must still parse; semicolons, braces, `!important`, URL functions, and keywords such as `inherit` or `revert` are rejected. Token values cannot reference the reserved `--zw-` namespace. Point a token at a project property and override that project property in authored CSS instead.
 

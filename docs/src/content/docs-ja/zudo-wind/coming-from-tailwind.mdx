@@ -43,6 +43,8 @@ wind の設定と候補の発見は CSS の外で行います。スタイルシ�
 旧式のトップレベルの `tailwind` キーは zudo-wind では意味を持ちません。残っていれば、移行方法を示す設定エラーになります。`wind` に置き換えてください。切り替え後に `wind` キーを省略すると、空の v1 設定が有効になります。つまり生成は有効、リセットは `none`、トークンマップは空です。
 
 ~~~ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,
@@ -101,6 +103,71 @@ v1 は色パレットや余白スケールを同梱しません。名前付き�
 | `owned-v1` | border-box に設定し、margin、padding、ボーダーの初期幅を消去してボーダーを実線にします。リストマーカーを削除し、見出しにサイズとウェイトを継承させ、フォーム部品のフォントとボタン背景を正規化します。 |
 
 `owned-v1` では、デザインに必要なリストマーカーを戻してください。スキャフォールドの `.prose` ルールは disc と decimal のリストを明示的に復元します。見出しはブラウザ標準のサイズを保持しないため、手書きの CSS または設定済みの文字サイズユーティリティで指定します。接尾辞のない border ユーティリティは、どのリセットでも自身で実線のボーダーを設定します。フォーム部品はフォントスタイルを継承し、リセットはブラウザ標準のフォーカスアウトラインと appearance を維持します。wind のユーティリティはレイヤーを持たず、手書きのグローバル CSS の後に続きます。名前付きレイヤーの通常の宣言より優先されますが、レイヤーのない手書きのルールは詳細度や後続順によって優先されます。リセットは明示的な zudo-wind の選択であり、別の preflight とバイト単位で一致する保証ではありません。宣言とレイヤー順は[カスケードとリセット](./cascade-and-reset.mdx)を参照してください。
+
+### Tailwind preflight との違い
+
+比較の基準は **Tailwind CSS 4.2.0 の preflight と `owned-v1`** です。先行するレシピ移行では Chromium 147・151 と WebKit 26.4 で測定しました。追加の #3451 フィクスチャは Chromium 151 と WebKit 26.5 で、375px と 1280px の幅を使って確認しました。いずれも網羅的なマトリクスではありません。測定したプロジェクトでは、Tailwind のテーマは `--default-font-family` を `--font-sans` から、`--default-mono-font-family` を `--font-mono` から解決します。
+
+| セレクタ | Tailwind 4.2.0 preflight | `owned-v1` と影響 |
+| --- | --- | --- |
+| `html` のフォント | テーマの `--default-font-family` / `--font-sans` | 固定の `ui-sans-serif, system-ui, sans-serif`。子孫が継承するフォントが変わることがあります。 |
+| `html` のタップ時の色 | `-webkit-tap-highlight-color: transparent` | ルールなし。ブラウザーのタップ時の色がすべての要素に継承されます。 |
+| `code, kbd, samp, pre` のフォント | テーマの `--default-mono-font-family` / `--font-mono` | 固定の `ui-monospace, SFMono-Regular, Menlo, monospace`。両方が Menlo に解決される macOS ではスクリーンショットで差が見えないことがあります。 |
+| `small` | `font-size: 80%` | ルールなし。ブラウザー標準のサイズになります。 |
+| `sub, sup` | `font-size: 75%; line-height: 0; position: relative; vertical-align: baseline`、さらに `sub { bottom: -0.25em }` と `sup { top: -0.5em }` | ルールなし。行ボックスが広がり、レイアウトがずれることがあります。 |
+| `hr` | `color: inherit` | 色のルールなし。ブラウザー標準色が境界線に影響することがあります。 |
+| `button` と button/reset/submit 型の `input` | `appearance: button` | appearance のルールなし。ネイティブの表示が異なることがあります。 |
+| `button, input, select, optgroup, textarea` | `border-radius: 0; background-color: transparent; opacity: 1` | `owned-v1` は button と button 型 input の背景を透明にしますが、Chromium で測定した text input はブラウザー標準の白い背景を保ちます。この宣言を揃えるには、下記の共通フォーム部品ルールを追加します。 |
+| `::placeholder` | `opacity: 1` と、対応ブラウザーでは `color: color-mix(in oklab, currentcolor 50%, transparent)` | ルールなし。ブラウザー標準の色と不透明度になります（測定した Chromium では灰色）。 |
+| `::file-selector-button` | 境界線と背景のない、文字のスタイルを継承する表示。右方向に 4px の余白があり、`appearance: button` | 疑似要素のルールなし。ネイティブの立体的なファイル選択ボタンが残ります。 |
+| `[hidden]:where(:not([hidden="until-found"]))` | `display: none !important` | ブラウザー標準の hidden ルールのみ。`hidden` 属性の付いた要素が display ユーティリティで意図せず表示されることがあります。 |
+
+元の **差分 0 要素** という結果は、そのフィクスチャの範囲内でした。元のフィクスチャには単独の text input がなく、`abbr[title]`、`progress`、`:-moz-focusring` も調べていません。#3451 のフィクスチャでは、下記の共通フォーム部品ルールを追加する前に、`owned-v1` の text input がブラウザー標準の白い背景を保ち、Tailwind では透明になる差が見つかりました。ルール追加後は Chromium 151 と WebKit 26.5 の両方で、両方の幅における全要素の標準 computed style と2つの疑似要素が一致しました。4組のスクリーンショットもピクセル単位で同一でした。Chromium ではリンクまで Tab キーで移動した後も、キーボードフォーカスリングが表示されました。この測定範囲はすべてのフォーム部品、フォント、プラットフォームを網羅するものではありません。要素ごとの `getComputedStyle` の差分には `::placeholder` と `::file-selector-button` は現れないため、疑似要素を明示して取得し、見た目が重要ならピクセルも比較してください。
+
+測定された preflight の振る舞いを戻したい場合は、次の CSS を手書きのスタイルシートに追加します。プロジェクトのフォントが異なる場合、例のスタックを置き換えてください。v3 に暗黙のテーマはありません。したがって、この例のように `--font-sans` と `--font-mono` を手書き CSS で宣言するか、両方の `font-family` にリテラルのスタックを指定する必要があります。
+
+~~~css
+@layer base {
+  :root {
+    --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+  html { font-family: var(--font-sans); -webkit-tap-highlight-color: transparent; }
+  code, kbd, samp, pre { font-family: var(--font-mono); }
+  small { font-size: 80%; }
+  sub, sup { font-size: 75%; line-height: 0; position: relative; vertical-align: baseline; }
+  sub { bottom: -0.25em; }
+  sup { top: -0.5em; }
+  hr { color: inherit; }
+  button, input:where([type="button"], [type="reset"], [type="submit"]) { appearance: button; }
+  button, input, select, optgroup, textarea {
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    margin-inline-end: 4px;
+    padding: 0;
+    border: 0 solid;
+    border-radius: 0;
+    background-color: transparent;
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    opacity: 1;
+    appearance: button;
+  }
+  /* 任意指定。display ユーティリティがあっても hidden 要素を非表示に保つ。 */
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+~~~
+
+共通フォーム部品のルールでは、Tailwind が設定する border radius、背景色、不透明度を戻します。`button` のルールはファイル選択ボタンの疑似要素には適用されないため、独立したルールが必要です。Chromium 151 の画像ギャラリーのレシピでは、測定に基づくファイルボタンのルールを追加すると、テストした 2 ページの明暗両テーマでピクセルと疑似要素の差分が 0 になりました。`[hidden]` のルールは任意です。`!important` は Tailwind preflight と同様に display ユーティリティより優先させるためです。[レイヤーの前置き](./cascade-and-reset.mdx)では `zw-reset` が手書きの `base` より前にあるため、この補完ルールでリセットを上書きできます。キーボード操作時のフォーカス表示を残し、広範なリセットを無条件に貼り付けず、採用するルールを確認してください。リセット宣言を戻しても、ユーティリティの配置や関係セレクタの詳細度は戻りません。この差分は #3386 で追跡しています。
 
 ## バリアントと文法
 
@@ -167,6 +234,8 @@ accent: "text-sky-700 dark:text-sky-300",
 2 つの Tailwind ディレクティブを削除します。ユーティリティの値を設定に移し、CSS 専用のテーマプロパティは手書きのままにします。
 
 ~~~ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,

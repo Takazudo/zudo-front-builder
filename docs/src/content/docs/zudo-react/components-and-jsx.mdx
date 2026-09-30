@@ -20,13 +20,35 @@ A component may return one description, an array, a string or number, or an empt
 
 Fragments and arrays returned by components preserve sibling groups without adding a visible element. Plain intrinsic child arrays are just traversal lists. Copying a description does not create a new component instance by itself.
 
+## Table and select children
+
+Table and select structure follows HTML parser rules in every render, including static pages with no islands. Structural parents require allowed intrinsic element children: table sections such as tbody, thead, and tfoot require tr; tr requires td or th; select requires option or optgroup; and optgroup requires option. A component such as `<Row />`, a Fragment, or a `For` region cannot be a direct child in those positions. An option can contain only static scalar text. Invalid children fail with `ZR_PARSER_CONTEXT`.
+
+Build structural children by calling a plain helper that returns intrinsic element descriptions. Calling `rowElement(row)` works when it returns a tr; rendering `<Row />` as a tbody child does not. Use the same pattern for helpers returning option or optgroup elements directly under select. For reactive table rows, see [Conditionals and lists](./conditionals-and-lists.mdx).
+
+~~~tsx
+function rowElement(row: { name: string }) {
+  return <tr><td>{row.name}</td></tr>;
+}
+
+function ResultsTable({ rows }: { rows: { name: string }[] }) {
+  return (
+    <table>
+      <tbody>{rows.map((row) => rowElement(row))}</tbody>
+    </table>
+  );
+}
+~~~
+
 ## Use HTML and SVG names
 
-Intrinsic attributes follow HTML and SVG spelling. Use class, for, readonly, tabindex, and viewBox. React spellings such as className, htmlFor, readOnly, tabIndex, strokeWidth, and dangerouslySetInnerHTML fail validation; they are not rewritten or emitted as-is. Unknown HTML attributes also fail. Data and ARIA attributes accept scalar string, number, or boolean values; a boolean ARIA value is serialized as the corresponding string, including false.
+Intrinsic attributes follow HTML and SVG spelling. Use class, for, readonly, tabindex, and viewBox. React spellings such as className, htmlFor, charSet, autoComplete, readOnly, tabIndex, onClick, strokeWidth, and dangerouslySetInnerHTML fail validation; they are not rewritten or emitted as-is. When an HTML or SVG spelling is supported, the error names it (for example, ``use `charset` instead of `charSet` ``); `onClick` suggests `on:click`. Unsupported standard attributes fail without a suggested replacement. Data and ARIA attributes accept scalar string, number, or boolean values; a boolean ARIA value is serialized as the corresponding string, including false.
 
 Boolean HTML attributes use presence for true and absence for false. Enumerated attributes such as contenteditable are strings. Null and undefined omit ordinary attributes. A reactive value is allowed for a supported scalar attribute, subject to the form-control rules in the [forms guide](./forms.mdx).
 
 The hidden attribute accepts booleans only, not until-found, and inert is boolean. The runtime does not add hiding CSS, so the page's authored styles remain responsible for display behavior.
+
+An `ol` accepts a numeric or string `start` value and a boolean `reversed` attribute.
 
 SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, and foreignObject. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
 
@@ -40,7 +62,7 @@ Function listeners use a native, case-sensitive event name after on:, with an op
 <button on:click={save} on:keydown:capture={handleKey}>Save</button>
 ~~~
 
-Listeners receive the browser's native event and currentTarget. There is no synthetic event system or event delegation. The runtime removes listeners with their owning scope. A rejected promise returned by a listener is reported, including if the scope is later disposed.
+For a known `on:<name>` prop, the handler receives that name's native event type: `on:submit` receives `SubmitEvent`, and `on:keydown` receives `KeyboardEvent`. Its `currentTarget` is typed as the element carrying the prop; `target` is not refined. Unknown or custom event names accept any single-event handler. `currentTarget` is available only while the event is being dispatched, so capture the element before an `await` if the handler needs it afterward. There is no synthetic event system or event delegation. The runtime removes listeners with their owning scope. A rejected promise returned by a listener is reported, including if the scope is later disposed.
 
 Lowercase string event attributes such as onload are a separate, static inline-handler form. The runtime escapes them as ordinary HTML attributes and never evaluates them. Do not supply both an inline attribute and a function listener for the same event. The React-style onClick spelling and function-valued onclick are rejected.
 
@@ -62,6 +84,8 @@ return <section rawHtml={markup} />;
 ~~~
 
 In an island, raw HTML occupies one opaque region. Hydration checks its boundaries but does not inspect or bind the contents. A changed string replaces only the contents of that region. The caller is responsible for valid markup, trust, and any external resources it adds. Reserved zudo-react comment shapes and nested island wrappers are rejected. Scripts inserted by a client rawHtml update are inert.
+
+For a `pre` whose rendered children begin with a newline, the renderer adds a compensating newline so HTML parsing preserves the intended first newline. A `rawHtml` payload is emitted as-is, without that compensation.
 
 Inside script and style elements, only static string rawHtml is allowed; no children, reactive payload, or internal comment markers are supported. A case-insensitive closing script or style sequence for the current element is rejected. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
 

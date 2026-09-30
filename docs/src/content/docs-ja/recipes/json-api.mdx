@@ -7,15 +7,9 @@ category: Recipes
 
 <Info title="このページで扱うこと">
 
-`zfb-example-json-api` は、サンプル群のなかで最も小さい完結した SSR スターターです。静的なホームページ、Preact アイランド 1 つ、そして生成された Worker から JSON を返す `prerender = false` の API ルート 2 本で構成されています。zfb の SSR コントラクト — リテラルな `prerender` エクスポート、`getCloudflareContext()` 経由で受け取るリクエスト、isolate と同じ寿命を持つモジュールスコープの状態 — を、**プロビジョニングすべき Cloudflare のバインディングなし**で体験できます。
+`zfb-example-json-api` は、サンプル群のなかで最も小さい完結した SSR スターターです。静的なホームページ、zudo-react アイランド 1 つ、そして生成された Worker から JSON を返す `prerender = false` の API ルート 2 本で構成されています。zfb の SSR コントラクト — リテラルな `prerender` エクスポート、`getCloudflareContext()` 経由で受け取るリクエスト、isolate と同じ寿命を持つモジュールスコープの状態 — を、**プロビジョニングすべき Cloudflare のバインディングなし**で体験できます。
 
 </Info>
-
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
 
 - **ライブデモ** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
 - **リポジトリ** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
@@ -28,21 +22,23 @@ category: Recipes
 - **isolate の寿命だけ生きるキャッシュとしてのモジュールスコープ**。`/api/search` は初回利用時に MiniSearch インデックスを構築し、`indexBuiltAt` と `indexBuildCount` を返すので、ウォームな isolate がインデックスを再利用する様子を観察できます。
 - **クエリによる絞り込みとページネーション**。`/api/items` は `q`・`page`・`per` を受け取ります。`page` と `per` はデータ層に届く前に上下限へクランプされ、要求されたページ番号は実在する最終ページまでに切り詰められます。
 - **CORS とメソッド処理を自前で書く**。共有モジュール `lib/cors.ts` が `OPTIONS` プリフライトに `204` を返し、`GET` 以外を JSON の `405` で弾き、すべてのボディに `content-type: application/json` を付けます。
-- **自分の API を叩くアイランド**。`"use client"` のコンポーネントが両エンドポイントを並行に fetch し、結果とインデックスのメトリクスを描画します。
+- **自分の API を叩く zudo-react アイランド。** `"use client"` なコンポーネントがシグナル、
+  `<Show>`、`<For>` を使い、両エンドポイントを並行に fetch して結果とインデックスの
+  メトリクスを描画します。
 
 ## 使用技術
 
 | 項目 | リポジトリでの内容 |
 |---|---|
-| フレームワーク | zfb + Preact（`zfb.config.ts` の `framework: "preact"`） |
-| zfb のバージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みで、かつ本質的に必要 |
-| スタイリング | Tailwind v4（`tailwind: { enabled: true }`）。`styles/global.css` は `@import "tailwindcss"` で始まり、その後はこのサイト独自のセマンティックなクラスを定義しています。マークアップで使われているのは `item-card`・`metric-strip`・`toolbar` などで、ユーティリティクラスではありません |
+| フレームワーク | zfb 組み込みの zudo-react JSX ランタイム |
+| zfb のバージョン | `@takazudo/zfb` **3.0.0**、`@takazudo/zfb-runtime` **3.0.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — 導入済みで、Worker ルートに必要 |
+| スタイリング | `reset: "owned-v1"` の zudo-wind。`styles/global.css` に手書きのセマンティッククラスを定義し、`item-card__meta` と `text-link` は `authoredClasses` に登録 |
 | レンダリング | 混在。`/` と `/404` はプリレンダリング、`/api/items` と `/api/search` は `prerender = false` |
 | Cloudflare 側の形態 | Workers Static Assets。`main = "./dist/_worker.js"`、`[assets]` に `binding = "ASSETS"`、`not_found_handling = "404-page"`、`run_worker_first = false` |
 | バインディング | **なし**。D1・KV・R2・キュー・シークレットはいずれも未使用で、`wrangler.toml` にあるバインディングは `ASSETS` だけです |
-| 互換性設定 | `compatibility_date = "2024-12-01"`、`compatibility_flags = ["nodejs_compat"]`（アダプターの `AsyncLocalStorage` に必要） |
-| 主な依存 | `minisearch` ^7.2.0、`preact` ^10.29.0、`preact-render-to-string` ^6.6.7。devDependencies に `wrangler` 4.85.0 と `tailwindcss` 4.2.4 |
+| 互換性設定 | `compatibility_date = "2026-05-01"`、`compatibility_flags = ["nodejs_compat"]`（アダプターの `AsyncLocalStorage` に必要） |
+| 主な依存 | `minisearch` ^7.2.0。devDependencies に `wrangler` 4.127.0 と `typescript` |
 | データ | `lib/data.ts` に手書きされた架空のレコード 30 件。データベースも、読み込むべきフィクスチャもありません |
 
 ## 必要なものと設定
@@ -69,7 +65,13 @@ export const prerender = false;
 
 interface Env {}
 
-// ...範囲を制限する整数ヘルパーは省略
+function readBoundedInteger(value: string | null, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
 
 export default async function ItemsApi() {
   const { request } = getCloudflareContext<Env>();
@@ -104,7 +106,17 @@ let indexBuildCount = 0;
 function getSearchIndex() {
   if (!searchIndex) {
     searchIndex = new MiniSearch<SearchDocument>({
-      // fields, storeFields, boosts, fuzzy: 0.2, prefix: true
+      fields: ["name", "category", "owner", "summary", "tagsText"],
+      storeFields: ["id"],
+      searchOptions: {
+        boost: {
+          name: 3,
+          tagsText: 2,
+          category: 1.5,
+        },
+        fuzzy: 0.2,
+        prefix: true,
+      },
     });
     searchIndex.addAll(
       ITEMS.map((item) => ({
@@ -163,9 +175,9 @@ export function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
 
 ```sh
 pnpm install
-pnpm dev       # 静的なシェルとアイランドの反復開発
+pnpm dev       # static shell + island iteration
 pnpm build
-pnpm preview   # Worker と同じ形での API の挙動
+pnpm preview   # Worker-shaped API behavior
 ```
 
 `pnpm typecheck` は `zfb check` を実行し、`pnpm smoke` はデプロイ済みのドメインに対して `scripts/smoke.mjs` を実行します（別のベース URL を引数で渡せば向き先を変えられます）。`predev` は `pnpm dev` のたびに `build dist .zfb output worker` を削除するので、開発サーバーが以前のビルド成果物を配信してしまうことはありません。

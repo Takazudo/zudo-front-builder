@@ -20,13 +20,35 @@ h では可変長引数の子が props.children より優先されます。可�
 
 コンポーネントが返す Fragment と配列は、可視の要素を増やさずに兄弟のまとまりを保持します。通常の組み込み要素の子配列は単なる走査リストです。記述をコピーするだけで新しいコンポーネントインスタンスが作られることはありません。
 
+## テーブルと select の子要素
+
+table と select の構造規則は、島のない静的サーバーレンダリングにも適用されます。構造を決める親要素には、HTML パーサーが許可する組み込み要素を直接置きます。たとえば tbody、thead、tfoot には tr、tr には td または th、select には option または optgroup、optgroup には option が必要です。`<Row />` のようなコンポーネント、Fragment、`For` の領域は、これらの位置の直接の子にはできません。option の内容には静的なスカラー文字列だけを使えます。不正な子は `ZR_PARSER_CONTEXT` で失敗します。
+
+構造上の子は、組み込み要素の記述を返す通常の関数を呼び出して作ります。`rowElement(row)` が tr を返す形は使えますが、`<Row />` を tbody の子にする形は使えません。select の直下に置く option や optgroup にも同じ方法を使います。リアクティブなテーブル行については[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+~~~tsx
+function rowElement(row: { name: string }) {
+  return <tr><td>{row.name}</td></tr>;
+}
+
+function ResultsTable({ rows }: { rows: { name: string }[] }) {
+  return (
+    <table>
+      <tbody>{rows.map((row) => rowElement(row))}</tbody>
+    </table>
+  );
+}
+~~~
+
 ## HTML と SVG の名前を使う
 
-組み込み属性は HTML と SVG の表記に従います。class、for、readonly、tabindex、viewBox を使います。className、htmlFor、readOnly、tabIndex、strokeWidth、dangerouslySetInnerHTML などの React 式の表記は検証に失敗し、書き換えもそのままの出力もされません。未知の HTML 属性もエラーです。data 属性と ARIA 属性には文字列、数値、真偽値のスカラー値を使えます。ARIA の真偽値は false を含め、対応する文字列として出力されます。
+組み込み属性は HTML と SVG の表記に従います。class、for、readonly、tabindex、viewBox を使います。className、htmlFor、charSet、autoComplete、readOnly、tabIndex、onClick、strokeWidth、dangerouslySetInnerHTML などの React 式の表記は検証に失敗し、書き換えもそのままの出力もされません。対応する HTML または SVG の表記がサポートされていれば、エラーにはその名前が示されます（例: ``use `charset` instead of `charSet` ``）。`onClick` には `on:click` が提示されます。未対応の標準属性は、代替案を示さずにエラーになります。data 属性と ARIA 属性には文字列、数値、真偽値のスカラー値を使えます。ARIA の真偽値は false を含め、対応する文字列として出力されます。
 
 真偽値の HTML 属性は true なら存在し、false なら省略されます。contenteditable などの列挙属性は文字列です。通常の属性では null と undefined は省略されます。サポートされるスカラー属性にはリアクティブな値を使えますが、[フォームガイド](./forms.mdx)のフォーム制御の規則に従います。
 
 hidden 属性は真偽値だけを受け付け、until-found は使えません。inert も真偽値です。ランタイムは非表示用の CSS を追加しないため、表示の挙動はページ側のスタイルで指定します。
+
+`ol` の `start` には数値または文字列を指定でき、`reversed` は真偽値の属性です。
 
 SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
 
@@ -40,7 +62,7 @@ style prop には CSS 文字列か、CSS の表記でキーを書いた平坦な
 <button on:click={save} on:keydown:capture={handleKey}>Save</button>
 ~~~
 
-リスナーにはブラウザのネイティブイベントと currentTarget が渡されます。合成イベントやイベント委譲はありません。ランタイムは所有スコープとともにリスナーを削除します。リスナーが返した Promise が reject された場合、後でスコープが破棄されても報告されます。
+既知の `on:<name>` prop では、ハンドラーのイベント型は名前に応じたネイティブ型になります。たとえば `on:submit` は `SubmitEvent`、`on:keydown` は `KeyboardEvent` です。`currentTarget` はその prop を持つ要素の型になりますが、`target` の型は絞り込まれません。未知のイベント名やカスタムイベント名には、単一のイベントを受け取る任意のハンドラーを指定できます。`currentTarget` が設定されるのはイベント処理中だけです。`await` の後でも要素が必要なら、その前に保存してください。合成イベントやイベント委譲はありません。ランタイムは所有スコープとともにリスナーを削除します。リスナーが返した Promise が reject された場合、後でスコープが破棄されても報告されます。
 
 onload など小文字の文字列イベント属性は、別形式の静的なインラインハンドラーです。ランタイムは通常の HTML 属性としてエスケープし、評価はしません。同じイベントにインライン属性と関数リスナーを両方指定しないでください。React 式の onClick と、関数値の onclick は拒否されます。
 
@@ -62,6 +84,8 @@ return <section rawHtml={markup} />;
 ~~~
 
 島の中では raw HTML が一つの不透明な領域を占めます。ハイドレーションは境界を確認しますが、内容の検査やバインドはしません。文字列が変わるとその領域の内容だけが置き換わります。マークアップの妥当性、信頼性、追加する外部リソースは呼び出し元の責任です。予約済みの zudo-react コメント形式と入れ子の島ラッパーは拒否されます。クライアントの rawHtml 更新で挿入された script は実行されません。
+
+`pre` の子をレンダリングした内容が改行で始まる場合、HTML パーサーが先頭の改行を取り除く分を補うため、レンダラーが改行を一つ追加します。`rawHtml` の内容にはこの補正を行わず、そのまま出力します。
 
 script と style 要素の内部では、静的な文字列の rawHtml だけを使えます。子、リアクティブな内容、内部コメントマーカーには対応しません。現在の要素を閉じる script または style の並びは、大文字小文字を区別せずに拒否されます。ランタイムは任意の JavaScript や CSS をエスケープしません。島の props は実行可能な script ブロックではなく属性で運ばれます。
 

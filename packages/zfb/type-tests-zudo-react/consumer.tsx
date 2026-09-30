@@ -45,6 +45,15 @@ const view = (
     <input type="text" readonly={true} defaultValue="start" />
   </>
 );
+const orderedLists = (
+  <>
+    <ol start={3} reversed />
+    <ol start="2" />
+  </>
+);
+// @ts-expect-error Ordered list start does not accept booleans.
+const badOrderedListStart = <ol start={true} />;
+void [orderedLists, badOrderedListStart];
 isDescription(view);
 const island = (
   <Island>

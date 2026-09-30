@@ -699,12 +699,14 @@ pub struct Config {
     ///   is `[first preset…, second preset…, user…]` — earlier-declared
     ///   presets come first, the user's entries last. (Nested arrays like
     ///   `bundle.exclude` are NOT additive — user-wins-if-present.)
-    /// - **Scalars / objects**: a key the user PROVIDED wins (even when the
-    ///   value equals the type default — #1199); a key the user omitted is
-    ///   filled from the first preset that supplies it. Objects recurse to
-    ///   arbitrary depth (#1202), so a preset's nested sibling survives a
-    ///   user value set elsewhere in the same nested object. An explicit
-    ///   `null` (e.g. `adapter: null`) blocks the preset value (opt-out).
+    /// - **Nested objects**: merge recursively to arbitrary depth (#1202), so
+    ///   preset sibling keys survive when the user supplies a different key
+    ///   in the same nested object.
+    /// - **Other leaf fields**: when a key is present in the user config, its
+    ///   value wins as a whole leaf, even when it equals the type default
+    ///   (#1199) or is `null` (e.g. `adapter: null`, an opt-out). When omitted,
+    ///   the first preset that supplies the key wins. Nested arrays are leaves
+    ///   and are replaced as a whole when supplied by the user.
     ///
     /// `presets` is stripped before the final deserialize (and any nested
     /// `presets` key inside a preset is dropped — no recursive expansion),

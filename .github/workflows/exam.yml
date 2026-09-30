@@ -210,7 +210,7 @@ jobs:
           "$ESBUILD_SLOT" --version
 
       # The reconciled manifest, env-gate + heavy tags only (55 exact-name
-      # entries after issue #2600 — see crates/CLAUDE.md's manifest table for
+      # entries after issue #3412 — see crates/CLAUDE.md's manifest table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
       # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
@@ -264,6 +264,7 @@ jobs:
               | test(=version_stamp_from_env)
               | test(=e2e_src_component_edit_rerenders_route)
               | test(=e2e_transitive_css_import_refreshes_stylesheet)
+              | test(=e2e_package_css_export_remap_refreshes_stylesheet)
               | test(=e2e_new_utility_class_in_component_is_emitted)
               | test(=e2e_dev_watches_workspace_sibling_raw_and_worker_sources)
               | test(=e2e_dev_sibling_wind_utility_class_refreshes_served_css)

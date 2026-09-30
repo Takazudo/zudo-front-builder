@@ -2482,6 +2482,56 @@ impl<'a> IslandsShadowPaths<'a> {
     }
 }
 
+fn island_module_label(source_path: &Path, shadow_paths: &IslandsShadowPaths<'_>) -> String {
+    if let Some(relative) = shadow_paths.project_local_rel(source_path) {
+        return relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+    }
+
+    let components = source_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if let Some(node_modules) = components.iter().rposition(|part| part == "node_modules") {
+        let tail = components
+            .iter()
+            .skip(node_modules + 1)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !tail.is_empty() {
+            return format!("node_modules/{}", tail.join("/"));
+        }
+    }
+
+    source_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn island_module_labels(
+    islands: &[zfb_islands::Island],
+    shadow_paths: &IslandsShadowPaths<'_>,
+    remap: Option<&std::collections::HashMap<PathBuf, PathBuf>>,
+) -> std::collections::BTreeMap<PathBuf, String> {
+    islands
+        .iter()
+        .map(|island| {
+            let bundled_path = remap
+                .and_then(|paths| paths.get(&island.source_path))
+                .unwrap_or(&island.source_path)
+                .clone();
+            (
+                bundled_path,
+                island_module_label(&island.source_path, shadow_paths),
+            )
+        })
+        .collect()
+}
+
 fn dedup_shadow_paths(
     paths: &IslandsShadowPaths<'_>,
     values: impl IntoIterator<Item = PathBuf>,
@@ -4876,6 +4926,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         )?);
     }
 
+    // Derive diagnostics labels from the scanner's original project paths,
+    // while keying them by the paths the bundle renderer will actually see.
+    let module_labels = island_module_labels(
+        &islands_set,
+        &shadow_paths,
+        _islands_shadow.as_ref().map(|shadow| &shadow.remap),
+    );
     let bundle_cfg = match bundle_mode {
         zfb_islands::BundleMode::Production => BundleConfig::production(),
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
@@ -4890,6 +4947,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             &bundle_define,
         )?,
     ))
+    .with_module_labels(module_labels)
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(bundle_loaders)
     .with_define(bundle_define)
@@ -8307,6 +8365,46 @@ mod tests {
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
+
+    #[test]
+    fn island_module_labels_are_relative_and_follow_shadow_remaps() {
+        let temp = tempdir().unwrap();
+        let project = temp.path().join("project");
+        let project_source = project.join("components/Counter.tsx");
+        let node_modules_source =
+            project.join("node_modules/.pnpm/widget/node_modules/@scope/widget/Widget.tsx");
+        let shadow_source = temp.path().join("shadow/components/Counter.tsx");
+        std::fs::create_dir_all(project.join("components")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::fs::create_dir_all(shadow_source.parent().unwrap()).unwrap();
+
+        let shadow_paths = IslandsShadowPaths::new(&project);
+        let islands = [
+            zfb_islands::Island::new("Counter", project_source.clone()),
+            zfb_islands::Island::new("Widget", node_modules_source.clone()),
+        ];
+
+        let original_labels = island_module_labels(&islands, &shadow_paths, None);
+        assert_eq!(
+            original_labels.get(&project_source).map(String::as_str),
+            Some("components/Counter.tsx")
+        );
+        assert_eq!(
+            original_labels
+                .get(&node_modules_source)
+                .map(String::as_str),
+            Some("node_modules/@scope/widget/Widget.tsx")
+        );
+
+        let remap =
+            std::collections::HashMap::from([(project_source.clone(), shadow_source.clone())]);
+        let shadow_labels = island_module_labels(&islands, &shadow_paths, Some(&remap));
+        assert_eq!(
+            shadow_labels.get(&shadow_source).map(String::as_str),
+            Some("components/Counter.tsx")
+        );
+        assert!(!shadow_labels.contains_key(&project_source));
+    }
 
     /// Serialized `.class` selector for a CSS Modules class-map value, matching
     /// lightningcss's printer for the default `[hash]_[local]` pattern: a scoped

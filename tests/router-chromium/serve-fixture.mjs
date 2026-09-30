@@ -1,9 +1,10 @@
 /**
  * Minimal static file server for the router-chromium Playwright fixture.
  *
- * Serves two roots under a single origin:
+ * Serves three roots under a single origin:
  *   /           -> tests/router-chromium/fixture/   (HTML pages + island-stubs.js)
  *   /dist/      -> packages/zfb-runtime/dist/        (built ESM client-router)
+ *   /zfb-dist/  -> packages/zfb/dist/                (built real islands runtime)
  *
  * The /dist/ mapping means relative imports inside the built dist tree resolve
  * correctly (e.g. dist/client-router/router.js imports ./events.js →
@@ -30,6 +31,7 @@ const REPO_ROOT = join(__dirname, "..", "..");
 
 const FIXTURE_DIR = join(__dirname, "fixture");
 const DIST_DIR = join(REPO_ROOT, "packages", "zfb-runtime", "dist");
+const ZFB_DIST_DIR = join(REPO_ROOT, "packages", "zfb", "dist");
 
 const PORT = parseInt(process.argv[2] ?? "4322", 10);
 
@@ -74,6 +76,10 @@ const server = createServer((req, res) => {
   // /dist/* -> packages/zfb-runtime/dist/*
   if (pathname.startsWith("/dist/")) {
     const target = safeJoin(DIST_DIR, pathname.slice("/dist/".length));
+    if (target && tryServe(res, target)) return;
+  }
+  if (pathname.startsWith("/zfb-dist/")) {
+    const target = safeJoin(ZFB_DIST_DIR, pathname.slice("/zfb-dist/".length));
     if (target && tryServe(res, target)) return;
   }
 

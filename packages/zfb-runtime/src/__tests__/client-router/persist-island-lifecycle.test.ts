@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // client-router mutates in production.
 import {
   ISLAND_MOUNTED_ATTR,
+  cancelPendingIslands,
   mountIslands,
   mountNewIslands,
   unmountIslands,
@@ -33,7 +34,7 @@ import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js
 
 installHappyDomShim();
 
-import { swapBodyElement } from "../../client-router/swap-functions.js";
+import { saveFocus, swapBodyElement } from "../../client-router/swap-functions.js";
 
 const PERSIST = "data-zfb-transition-persist";
 const BUILD = "0123456789abcdef";
@@ -308,3 +309,350 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     expect(freshEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
   });
 });
+
+// These tests exercise islands riding inside retained non-island chrome. Keep
+// both DOM move implementations in the matrix: moveBefore is optional in browsers.
+for (const moveMode of ["moveBefore", "fallback"] as const) {
+  describe(`descendant island lifecycle (${moveMode})`, () => {
+    const originalMoveBefore = Object.getOwnPropertyDescriptor(Element.prototype, "moveBefore");
+    beforeEach(() => {
+      if (moveMode === "moveBefore") {
+        Object.defineProperty(Element.prototype, "moveBefore", {
+          configurable: true,
+          value(this: Element, node: Node, child: Node | null) {
+            this.insertBefore(node, child);
+          },
+        });
+      } else {
+        Object.defineProperty(Element.prototype, "moveBefore", {
+          configurable: true,
+          value: undefined,
+        });
+      }
+    });
+    afterEach(() => {
+      if (originalMoveBefore)
+        Object.defineProperty(Element.prototype, "moveBefore", originalMoveBefore);
+      else delete (Element.prototype as Element & { moveBefore?: unknown }).moveBefore;
+      vi.unstubAllGlobals();
+    });
+
+    const island = (name: string, props = 1, extra = "") => {
+      const when = extra.includes("data-when=") ? "" : 'data-when="load"';
+      return `<div data-zfb-island="${name}" ${ownedAttrs()} data-props='{"v":${props}}' ${when} ${extra}></div>`;
+    };
+    const header = (contents: string) => `<header ${PERSIST}="h">${contents}</header>`;
+    const handleOf = (el: Element): RootHandle | undefined =>
+      (el as unknown as Record<symbol, RootHandle | undefined>)[
+        Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+      ];
+    function ledger(...names: string[]) {
+      const mounts = new Map<string, ReturnType<typeof vi.fn>>();
+      const disposes = new Map<string, ReturnType<typeof vi.fn>>();
+      const manifest: Record<string, IslandManifestValue> = {};
+      for (const name of names) {
+        const dispose = vi.fn();
+        const mount = vi.fn((..._args: Parameters<IslandManifestValue["mount"]>) =>
+          rootHandle(name, BUILD, dispose),
+        );
+        disposes.set(name, dispose);
+        mounts.set(name, mount);
+        manifest[name] = ownedEntry(name, mount);
+      }
+      return {
+        manifest,
+        mount: (name: string) => mounts.get(name)!,
+        dispose: (name: string) => disposes.get(name)!,
+      };
+    }
+    function navigate(markup: string) {
+      const next = incomingBody(markup);
+      cancelPendingIslands();
+      unmountIslands(document.body, next);
+      swapBodyElement(next, document.body);
+      mountNewIslands();
+    }
+
+    it("keeps the node and handle through A→B→A", () => {
+      document.body.innerHTML = header(island("A")) + "<main>page A</main>";
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      const handle = handleOf(el);
+      navigate(header(island("A")) + "<main>page B</main>");
+      expect(document.querySelector("main")?.textContent).toBe("page B");
+      navigate(header(island("A")) + "<main>page A</main>");
+      expect(document.querySelector("main")?.textContent).toBe("page A");
+      expect(document.querySelector('[data-zfb-island="A"]')).toBe(el);
+      expect(handleOf(el)).toBe(handle);
+      expect(el.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+      expect(l.mount("A")).toHaveBeenCalledTimes(1);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+    });
+
+    it("copies changed props and remounts once in render mode", () => {
+      document.body.innerHTML = header(island("A"));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      navigate(header(island("A", 2)));
+      expect(document.querySelector('[data-zfb-island="A"]')).toBe(el);
+      expect(el.getAttribute("data-props")).toBe('{"v":2}');
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("A")).toHaveBeenCalledTimes(2);
+      expect(l.mount("A").mock.calls[1]?.[0]).toEqual({ v: 2 });
+      expect(l.mount("A").mock.calls[1]?.[2]).toBe("render");
+      expect(handleOf(el)).not.toBe(l.mount("A").mock.results[0]?.value);
+    });
+
+    it("copies a changed build and mounts against the new manifest identity", () => {
+      document.body.innerHTML = header(island("A"));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      const next = incomingBody(header(island("A").replace(BUILD, NEW_BUILD)));
+      cancelPendingIslands();
+      unmountIslands(document.body, next);
+      swapBodyElement(next, document.body);
+      const newMount = vi.fn((..._args: Parameters<IslandManifestValue["mount"]>) =>
+        rootHandle("A", NEW_BUILD),
+      );
+      mountIslands({ A: ownedEntry("A", newMount, NEW_BUILD) });
+      mountNewIslands();
+      expect(el.getAttribute("data-zfb-build")).toBe(NEW_BUILD);
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(newMount).toHaveBeenCalledTimes(1);
+      expect(newMount.mock.calls[0]?.[2]).toBe("render");
+    });
+
+    it("disposes and detaches a removed descendant", () => {
+      document.body.innerHTML = header(island("A"));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      navigate(header("<p>empty</p>"));
+      expect(el.isConnected).toBe(false);
+      expect(handleOf(el)).toBeUndefined();
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("A")).toHaveBeenCalledTimes(1);
+    });
+
+    it("pairs same-component siblings by order and remounts only the changed one", () => {
+      document.body.innerHTML = header(island("A", 1) + island("A", 2));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const [first, second] = [...document.querySelectorAll('[data-zfb-island="A"]')];
+      const firstHandle = handleOf(first!);
+      navigate(header(island("A", 1) + island("A", 3)));
+      expect([...document.querySelectorAll('[data-zfb-island="A"]')]).toEqual([first, second]);
+      expect(handleOf(first!)).toBe(firstHandle);
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("A")).toHaveBeenCalledTimes(3);
+      expect(l.mount("A").mock.calls[2]?.[0]).toEqual({ v: 3 });
+      expect(l.mount("A").mock.calls[2]?.[2]).toBe("render");
+    });
+
+    it("ignores an inserted same-component sibling inside retained chrome", () => {
+      document.body.innerHTML = header(island("A", 1) + island("A", 2));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const original = [...document.querySelectorAll('[data-zfb-island="A"]')];
+      const handles = original.map(handleOf);
+      navigate(header(island("A", 1) + island("A", 2) + island("A", 3)));
+      expect([...document.querySelectorAll('[data-zfb-island="A"]')]).toEqual(original);
+      expect(original.map(handleOf)).toEqual(handles);
+      expect(l.mount("A")).toHaveBeenCalledTimes(2);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+    });
+
+    it("removes only the unmatched same-component sibling", () => {
+      document.body.innerHTML = header(island("A", 1) + island("A", 2));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const [first, second] = [...document.querySelectorAll('[data-zfb-island="A"]')];
+      const handle = handleOf(first!);
+      navigate(header(island("A", 1)));
+      expect(document.querySelectorAll('[data-zfb-island="A"]')).toHaveLength(1);
+      expect(document.querySelector('[data-zfb-island="A"]')).toBe(first);
+      expect(handleOf(first!)).toBe(handle);
+      expect(second!.isConnected).toBe(false);
+      expect(handleOf(second!)).toBeUndefined();
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("A")).toHaveBeenCalledTimes(2);
+    });
+
+    it("replaces a component at the same slot in render mode", () => {
+      document.body.innerHTML = header(island("A"));
+      const l = ledger("A", "B");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      navigate(header(island("B")));
+      expect(document.querySelector('[data-zfb-island="B"]')).toBe(el);
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("B")).toHaveBeenCalledTimes(1);
+      expect(l.mount("B").mock.calls[0]?.[2]).toBe("render");
+    });
+
+    for (const variant of ["unchanged", "changed", "removed"] as const) {
+      it(`cancels stale idle callbacks for a ${variant} descendant`, () => {
+        const callbacks = new Map<number, IdleRequestCallback>();
+        let id = 0;
+        const cancelled = vi.fn((handle: number) => {
+          callbacks.delete(handle);
+        });
+        vi.stubGlobal("requestIdleCallback", (cb: IdleRequestCallback) => {
+          callbacks.set(++id, cb);
+          return id;
+        });
+        vi.stubGlobal("cancelIdleCallback", cancelled);
+        document.body.innerHTML = header(island("A", 1, 'data-when="idle"'));
+        const l = ledger("A");
+        mountIslands(l.manifest);
+        expect(l.mount("A")).not.toHaveBeenCalled();
+        const stale = [...callbacks.values()][0]!;
+        const next =
+          variant === "removed"
+            ? header("<p>gone</p>")
+            : header(island("A", variant === "changed" ? 2 : 1, 'data-when="idle"'));
+        navigate(next);
+        expect(cancelled).toHaveBeenCalledTimes(1);
+        // A changed descendant forces an immediate render mount. The cancelled
+        // pre-swap callback must never add a second mount.
+        const mountsAfterSwap = l.mount("A").mock.calls.length;
+        stale({ didTimeout: false, timeRemaining: () => 50 });
+        expect(l.mount("A")).toHaveBeenCalledTimes(mountsAfterSwap);
+        for (const cb of callbacks.values()) cb({ didTimeout: false, timeRemaining: () => 50 });
+        expect(l.mount("A")).toHaveBeenCalledTimes(variant === "removed" ? 0 : 1);
+        if (variant !== "removed") {
+          expect(l.mount("A").mock.calls[0]?.[2]).toBe(
+            variant === "changed" ? "render" : "hydrate",
+          );
+          expect(l.mount("A").mock.calls[0]?.[0]).toEqual({ v: variant === "changed" ? 2 : 1 });
+        }
+      });
+    }
+
+    it("retains islands in both nested persist boundaries without double disposal", () => {
+      const markup = header(island("A") + `<aside ${PERSIST}="inner">${island("B")}</aside>`);
+      document.body.innerHTML = markup;
+      const l = ledger("A", "B");
+      mountIslands(l.manifest);
+      const nodes = [...document.querySelectorAll("[data-zfb-island]")];
+      const handles = nodes.map(handleOf);
+      navigate(markup);
+      expect([...document.querySelectorAll("[data-zfb-island]")]).toEqual(nodes);
+      expect(nodes.map(handleOf)).toEqual(handles);
+      expect(nodes.every((node) => node.isConnected)).toBe(true);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+      expect(l.dispose("B")).not.toHaveBeenCalled();
+    });
+
+    it("retains C inside P when the incoming C target moves under Q", () => {
+      document.body.innerHTML = header(
+        `<div ${PERSIST}="P"><aside ${PERSIST}="C">${island("A")}</aside></div><div ${PERSIST}="Q"></div>`,
+      );
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      const handle = handleOf(el);
+      navigate(
+        header(
+          `<div ${PERSIST}="P"></div><div ${PERSIST}="Q"><aside ${PERSIST}="C">${island("A")}</aside></div>`,
+        ),
+      );
+      expect(el.isConnected).toBe(true);
+      expect(handleOf(el)).toBe(handle);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+      expect(l.mount("A")).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes an island in a nested persist node that is not retained", () => {
+      document.body.innerHTML = header(`<aside ${PERSIST}="lost">${island("A")}</aside>`);
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      navigate(header("<p>lost aside absent</p>"));
+      expect(el.isConnected).toBe(false);
+      expect(handleOf(el)).toBeUndefined();
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+    });
+
+    it("restores focus and selection inside a kept descendant", () => {
+      document.body.innerHTML = header(
+        island("A").replace("</div>", '<input value="abcdef"></div>'),
+      );
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const input = document.querySelector("input")!;
+      input.focus();
+      input.setSelectionRange(2, 4);
+      const next = incomingBody(
+        header(island("A").replace("</div>", '<input value="abcdef"></div>')),
+      );
+      cancelPendingIslands();
+      unmountIslands(document.body, next);
+      const restore = saveFocus();
+      swapBodyElement(next, document.body);
+      restore();
+      mountNewIslands();
+      expect(document.activeElement).toBe(input);
+      expect([input.selectionStart, input.selectionEnd]).toEqual([2, 4]);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+    });
+
+    it("honours a consumer-set remount flag before unmount", () => {
+      document.body.innerHTML = header(island("A"));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      el.setAttribute("data-zfb-island-remount", "");
+      navigate(header(island("A")));
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(l.mount("A")).toHaveBeenCalledTimes(2);
+      expect(l.mount("A").mock.calls[1]?.[2]).toBe("render");
+      expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
+    });
+
+    it("remounts a changed identity while persist-props=true retains old props", () => {
+      document.body.innerHTML = header(island("A", 1, 'data-zfb-transition-persist-props="true"'));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      const oldHandle = handleOf(el);
+      const next = incomingBody(
+        header(
+          island("A", 2, 'data-zfb-transition-persist-props="true"').replace(BUILD, NEW_BUILD),
+        ),
+      );
+      cancelPendingIslands();
+      unmountIslands(document.body, next);
+      swapBodyElement(next, document.body);
+      const newMount = vi.fn((..._args: Parameters<IslandManifestValue["mount"]>) =>
+        rootHandle("A", NEW_BUILD),
+      );
+      mountIslands({ A: ownedEntry("A", newMount, NEW_BUILD) });
+      mountNewIslands();
+      expect(document.querySelector('[data-zfb-island="A"]')).toBe(el);
+      expect(el.getAttribute("data-zfb-build")).toBe(NEW_BUILD);
+      expect(el.getAttribute("data-props")).toBe('{"v":1}');
+      expect(l.dispose("A")).toHaveBeenCalledTimes(1);
+      expect(newMount).toHaveBeenCalledTimes(1);
+      expect(newMount.mock.calls[0]?.[0]).toEqual({ v: 1 });
+      expect(newMount.mock.calls[0]?.[2]).toBe("render");
+      expect(handleOf(el)).not.toBe(oldHandle);
+    });
+
+    it("keeps old props and handle with persist-props=true on a nested island", () => {
+      document.body.innerHTML = header(island("A", 1, 'data-zfb-transition-persist-props="true"'));
+      const l = ledger("A");
+      mountIslands(l.manifest);
+      const el = document.querySelector('[data-zfb-island="A"]')!;
+      const handle = handleOf(el);
+      navigate(header(island("A", 2, 'data-zfb-transition-persist-props="true"')));
+      expect(el.getAttribute("data-props")).toBe('{"v":1}');
+      expect(handleOf(el)).toBe(handle);
+      expect(l.dispose("A")).not.toHaveBeenCalled();
+      expect(l.mount("A")).toHaveBeenCalledTimes(1);
+    });
+  });
+}

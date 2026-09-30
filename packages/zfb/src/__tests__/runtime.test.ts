@@ -692,7 +692,8 @@ describe("scheduleHydrate", () => {
         unmountIslands(
           document.body,
           incomingBody(`
-            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+            <!-- mountTestIslands stamps these identity attributes on the old element. -->
+            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="test" data-props='{"open":true}' data-when="load"></div>
             <div data-zfb-island="Toc" data-props='{"page":2}' data-when="load"></div>
           `),
         );
@@ -720,7 +721,8 @@ describe("scheduleHydrate", () => {
         unmountIslands(
           document.body,
           incomingBody(`
-            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+            <!-- mountTestIslands stamps these identity attributes on the old element. -->
+            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="test" data-props='{"open":true}' data-when="load"></div>
             <div data-zfb-island="Toc" data-props='{"page":2}' data-when="load"></div>
           `),
         );

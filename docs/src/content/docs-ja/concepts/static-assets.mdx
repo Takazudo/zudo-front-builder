@@ -207,7 +207,7 @@ dev サーバーの `serve_page` フォールバックも、ビルド時の `cop
 
 ```ts
 // zfb.config.ts
-import { defineConfig } from "@takazudo/zfb/config";
+import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   publicDir: "static",
@@ -221,6 +221,8 @@ export default defineConfig({
 デプロイパイプラインが `dist/` ツリー全体を base のサブパス配下に再配置する場合 — 例えば `cp -a dist/. deploy-root/pj/site/` を実行するようなワークフロー — public アセットを `dist/<base>/...` の下に置いてしまうと、二重にネストしたパス（`deploy-root/pj/site/pj/site/img/logo.svg`）ができてしまいます。`copyPublicWithBase: false` を設定すると、public アセットは代わりに `dist/` のルートへフラットにコピーされます。
 
 ```ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   base: "/pj/site/",
   copyPublicWithBase: false,

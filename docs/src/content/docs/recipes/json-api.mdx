@@ -8,18 +8,12 @@ category: Recipes
 <Info title="What this page covers">
 
 `zfb-example-json-api` is the smallest complete SSR starter in the example family: a static
-home page, one Preact island, and two `prerender = false` API routes that return JSON from
+home page, one zudo-react island, and two `prerender = false` API routes that return JSON from
 the emitted Worker. It exercises zfb's SSR contract — the literal `prerender` export, reading
 the incoming `Request` through `getCloudflareContext()`, and module-scope state that lives as
 long as the isolate does — with **no Cloudflare bindings to provision**.
 
 </Info>
-
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
 
 - **Live demo** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
 - **Repository** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
@@ -43,22 +37,23 @@ This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migrati
 - **CORS and method handling by hand.** A shared `lib/cors.ts` answers `OPTIONS` preflights
   with `204`, rejects non-`GET` with a JSON `405`, and stamps
   `content-type: application/json` on every body.
-- **An island that consumes its own API.** A `"use client"` component fetches both endpoints in
-  parallel and renders results plus the index metrics.
+- **A zudo-react island that consumes its own API.** A `"use client"` component uses signals,
+  `<Show>`, and `<For>` while it fetches both endpoints in parallel and renders the results plus
+  index metrics.
 
 ## Tech used
 
 | Area | What the repo uses |
-|---|---|
-| Framework | zfb + Preact (`framework: "preact"` in `zfb.config.ts`) |
-| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present, and load-bearing |
-| Styling | Tailwind v4 (`tailwind: { enabled: true }`). `styles/global.css` opens with `@import "tailwindcss"`, then defines the site's own semantic classes — the markup uses `item-card`, `metric-strip`, `toolbar`, not utility classes |
+| --- | --- |
+| Framework | zfb with its built-in zudo-react JSX runtime |
+| zfb version | `@takazudo/zfb` **3.0.0**, `@takazudo/zfb-runtime` **3.0.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — present and required for Worker routes |
+| Styling | zudo-wind with `reset: "owned-v1"`; authored semantic classes in `styles/global.css`, with `authoredClasses` entries for `item-card__meta` and `text-link` |
 | Rendering | Mixed. `/` and `/404` prerender; `/api/items` and `/api/search` are `prerender = false` |
 | Cloudflare surface | Workers Static Assets. `main = "./dist/_worker.js"`, `[assets]` with `binding = "ASSETS"`, `not_found_handling = "404-page"`, `run_worker_first = false` |
 | Bindings | **None.** No D1, KV, R2, queues, or secrets — `ASSETS` is the only binding in `wrangler.toml` |
-| Compatibility | `compatibility_date = "2024-12-01"`, `compatibility_flags = ["nodejs_compat"]` (the adapter's `AsyncLocalStorage` needs it) |
-| Notable deps | `minisearch` ^7.2.0, `preact` ^10.29.0, `preact-render-to-string` ^6.6.7; `wrangler` 4.85.0 and `tailwindcss` 4.2.4 as devDependencies |
+| Compatibility | `compatibility_date = "2026-05-01"`, `compatibility_flags = ["nodejs_compat"]` (the adapter's `AsyncLocalStorage` needs it) |
+| Notable deps | `minisearch` ^7.2.0; `wrangler` 4.127.0 and `typescript` as devDependencies |
 | Data | 30 hand-written fictional records in `lib/data.ts`. No database, no fixtures to load |
 
 ## Requirements and configuration
@@ -96,7 +91,13 @@ export const prerender = false;
 
 interface Env {}
 
-// ...bounded integer helper elided
+function readBoundedInteger(value: string | null, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
 
 export default async function ItemsApi() {
   const { request } = getCloudflareContext<Env>();
@@ -146,7 +147,17 @@ let indexBuildCount = 0;
 function getSearchIndex() {
   if (!searchIndex) {
     searchIndex = new MiniSearch<SearchDocument>({
-      // fields, storeFields, boosts, fuzzy: 0.2, prefix: true
+      fields: ["name", "category", "owner", "summary", "tagsText"],
+      storeFields: ["id"],
+      searchOptions: {
+        boost: {
+          name: 3,
+          tagsText: 2,
+          category: 1.5,
+        },
+        fuzzy: 0.2,
+        prefix: true,
+      },
     });
     searchIndex.addAll(
       ITEMS.map((item) => ({

@@ -9,6 +9,8 @@ sidebar_position: 2
 The root configuration accepts `wind` in both `zfb.config.ts` and `zfb.config.json`. After the cutover, an absent key has the same behavior as an empty object: generation is enabled with reset `none`, empty token maps, and sources supplied by zfb's source planner.
 
 ```ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,
@@ -33,6 +35,21 @@ export default defineConfig({
   }
 });
 ```
+
+### Manifest path resolution
+
+Manifest paths are resolved from a base directory. A bare package specifier such as `@example/widgets/wind.json` uses Node resolution and the producer package's `exports`; this is the recommended spelling and works with pnpm's package layout. Export the manifest from the producer package:
+
+```json
+{
+  "name": "@example/widgets",
+  "exports": {
+    "./wind.json": "./wind.json"
+  }
+}
+```
+
+Paths beginning with `./` or `../` resolve from the project root, meaning the directory that contains `zfb.config.ts` or `zfb.config.json`, regardless of the current working directory. When a manifest declaration comes from a preset built with `definePreset()`, zfb records the preset package as its source, so both relative paths and bare package specifiers resolve from that preset package's directory instead.
 
 The same object is valid as the value of the `wind` property in JSON:
 

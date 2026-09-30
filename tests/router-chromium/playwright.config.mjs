@@ -7,7 +7,9 @@
  *
  * Prerequisites:
  *   1. Build the runtime ESM:      pnpm -C packages/zfb-runtime build
- *   2. Install Chromium once:      pnpm exec playwright install chromium
+ *   2. Build the islands runtime:  pnpm -C packages/zfb build
+ *   3. Generate real SSR pages:    node tests/router-chromium/build-real-islands-fixture.mjs
+ *   4. Install Chromium once:      pnpm exec playwright install chromium
  *
  * Run via the workspace script (handles build + serve + test):
  *   pnpm test:router-chromium

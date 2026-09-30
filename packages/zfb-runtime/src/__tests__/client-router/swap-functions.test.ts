@@ -325,6 +325,122 @@ describe("swapBodyElement — persist lift", () => {
   });
 });
 
+describe.each(["moveBefore", "fallback"])("nested persist snapshot (%s)", (mode) => {
+  const originalMoveBefore = Object.getOwnPropertyDescriptor(Element.prototype, "moveBefore");
+  let moves: Element[];
+
+  beforeEach(() => {
+    moves = [];
+    if (mode === "moveBefore") {
+      Object.defineProperty(Element.prototype, "moveBefore", {
+        configurable: true,
+        value(this: Element, node: Element, child: Node | null) {
+          moves.push(node);
+          this.insertBefore(node, child);
+        },
+      });
+    } else {
+      // Exercise the fallback even on DOM implementations with native moveBefore.
+      Object.defineProperty(Element.prototype, "moveBefore", {
+        configurable: true,
+        value: undefined,
+      });
+    }
+  });
+
+  afterEach(() => {
+    if (originalMoveBefore)
+      Object.defineProperty(Element.prototype, "moveBefore", originalMoveBefore);
+    else delete (Element.prototype as Element & { moveBefore?: unknown }).moveBefore;
+  });
+
+  function run(oldMarkup: string, newMarkup: string) {
+    document.body.innerHTML = oldMarkup;
+    const originals = new Map(
+      Array.from(document.body.querySelectorAll(`[${PERSIST_ATTR}]`)).map((el) => [
+        el.getAttribute(PERSIST_ATTR)!,
+        el,
+      ]),
+    );
+    const incoming = htmlDoc(`<!doctype html><html><head></head><body>${newMarkup}</body></html>`);
+    swapBodyElement(incoming.body, document.body);
+    const ids = Array.from(document.querySelectorAll(`[${PERSIST_ATTR}]`)).map((el) =>
+      el.getAttribute(PERSIST_ATTR),
+    );
+    expect(new Set(ids).size).toBe(ids.length);
+    return originals;
+  }
+
+  it("keeps matched parent and child nested at the same position", () => {
+    const old = run(
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C">state</div></div>`,
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C">fresh</div></div>`,
+    );
+    expect(document.querySelector(`[${PERSIST_ATTR}="P"]`)).toBe(old.get("P"));
+    expect(document.querySelector(`[${PERSIST_ATTR}="C"]`)).toBe(old.get("C"));
+    expect(old.get("P")!.contains(old.get("C")!)).toBe(true);
+    expect(old.get("C")!.isConnected).toBe(true);
+    if (mode === "moveBefore") expect(moves).toEqual([old.get("P"), old.get("P")]);
+  });
+
+  it("lifts a child whose incoming target is outside its parent", () => {
+    const old = run(
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C">state</div></div>`,
+      `<div ${PERSIST_ATTR}="P"></div><section id="fresh"><div ${PERSIST_ATTR}="C"></div></section>`,
+    );
+    expect(document.querySelector(`[${PERSIST_ATTR}="P"]`)).toBe(old.get("P"));
+    expect(document.querySelector(`[${PERSIST_ATTR}="C"]`)).toBe(old.get("C"));
+    expect(old.get("C")!.parentElement?.id).toBe("fresh");
+    if (mode === "moveBefore") expect(moves.filter((el) => el === old.get("C"))).toHaveLength(2);
+  });
+
+  it("keeps a child inside P when its incoming target is inside matched Q", () => {
+    const old = run(
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C">state</div></div><div ${PERSIST_ATTR}="Q">old Q</div>`,
+      `<div ${PERSIST_ATTR}="P"></div><div ${PERSIST_ATTR}="Q"><div ${PERSIST_ATTR}="C">fresh</div></div>`,
+    );
+    expect(document.querySelector(`[${PERSIST_ATTR}="C"]`)).toBe(old.get("C"));
+    expect(old.get("P")!.contains(old.get("C")!)).toBe(true);
+    expect(document.querySelector(`[${PERSIST_ATTR}="Q"]`)).toBe(old.get("Q"));
+    expect(old.get("Q")!.isConnected).toBe(true);
+    if (mode === "moveBefore") expect(moves).not.toContain(old.get("C"));
+  });
+
+  it("retains three nested levels without moving descendants twice", () => {
+    const markup = `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C"><div ${PERSIST_ATTR}="G">state</div></div></div>`;
+    const old = run(markup, markup);
+    for (const id of ["P", "C", "G"]) {
+      expect(document.querySelector(`[${PERSIST_ATTR}="${id}"]`)).toBe(old.get(id));
+      expect(old.get(id)!.isConnected).toBe(true);
+    }
+    expect(old.get("P")!.contains(old.get("G")!)).toBe(true);
+    if (mode === "moveBefore") expect(moves).toEqual([old.get("P"), old.get("P")]);
+  });
+
+  it("lifts a matched child when its parent has no incoming match", () => {
+    const old = run(
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C">state</div></div>`,
+      `<section><div ${PERSIST_ATTR}="C"></div></section>`,
+    );
+    expect(document.querySelector(`[${PERSIST_ATTR}="P"]`)).toBeNull();
+    expect(document.querySelector(`[${PERSIST_ATTR}="C"]`)).toBe(old.get("C"));
+    expect(old.get("C")!.isConnected).toBe(true);
+    if (mode === "moveBefore") expect(moves).toEqual([old.get("C"), old.get("C")]);
+  });
+
+  it("flags a riding persisted island when its props change", () => {
+    const old = run(
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C" data-zfb-island data-props='{"count":1}'>state</div></div>`,
+      `<div ${PERSIST_ATTR}="P"><div ${PERSIST_ATTR}="C" data-zfb-island data-props='{"count":2}'></div></div>`,
+    );
+    const child = old.get("C")!;
+    expect(document.querySelector(`[${PERSIST_ATTR}="C"]`)).toBe(child);
+    expect(child.getAttribute("data-props")).toBe('{"count":2}');
+    expect(child.hasAttribute("data-zfb-island-remount")).toBe(true);
+    if (mode === "moveBefore") expect(moves).not.toContain(child);
+  });
+});
+
 describe("saveFocus / restoreFocus", () => {
   it("restores caret position on a persisted <input>", () => {
     document.body.innerHTML = `<form ${PERSIST_ATTR}="form"><input id="i" value="hello"></form>`;

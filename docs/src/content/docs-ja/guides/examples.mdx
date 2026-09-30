@@ -11,9 +11,11 @@ zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属�
 コピーするのではなく、いずれか 1 つをクローンして全体が組み上がった様子を確認して
 ください。
 
-このページは比較表です。各行は [レシピ](/ja/docs/recipes/) にある詳しい解説ページに
-リンクしています。そのサンプルが何を示しているか、どう動くか、ローカルでどう実行するかは
-そちらを参照してください。
+このページは比較表です。掲載しているリポジトリはすべて zfb 3.0.0 を固定し、zfb の
+`zudo-react` JSX ランタイムを使っています。スタイリング欄には zudo-wind のユーティリティを
+使うか、リセットだけを使うか、CSS を自分で記述するかを示しています。各行から [レシピ](/ja/docs/recipes/)
+にある詳しい解説ページへ移動でき、そのサンプルが何を示しているか、どう動くか、ローカルで
+どう実行するかを確認できます。
 
 9 つとも **Cloudflare Workers** として `takazudomodular.com` のサブドメインに
 デプロイされています。7 つはサーバーコードを持ち、残り 2 つは Worker スクリプトを
@@ -36,21 +38,15 @@ zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属�
 で扱っているパターンです。残る 1 つの `password-gate` はアダプタを一切インストールせず、
 静的ビルドの前段に自分で書いた Worker を置いています。
 
-<Note title="このデモは zfb 2.x 向けです">
-
-これらの外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](./migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 | サンプル | レンダリング | バインディングとシークレット | スタイリング | リンク |
 | --- | --- | --- | --- | --- |
-| [AI Summarizer](/ja/docs/recipes/ai-summarizer) | SSG と `prerender = false` の API ルート 1 つ（アダプタ） | Workers AI `AI`、名前付き環境 `ai` にのみ宣言 | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-ai-summarizer) · [デモ](https://zfb-example-ai-summarizer.takazudomodular.com/) |
-| [JSON API](/ja/docs/recipes/json-api) | SSG と `prerender = false` の API ルート 2 つ（アダプタ） | なし | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-json-api) · [デモ](https://zfb-example-json-api.takazudomodular.com/) |
-| [KV Guestbook](/ja/docs/recipes/kv-guestbook) | `/404` を除く全ルートが SSR（アダプタ） | Workers KV `GUESTBOOK`、`ADMIN_TOKEN` シークレット | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-kv-guestbook) · [デモ](https://zfb-example-kv-guestbook.takazudomodular.com/) |
-| [Password Gate](/ja/docs/recipes/password-gate) | 純粋 SSG を手書き Worker の後ろに配置、`run_worker_first = true`、アダプタなし | `SITE_PASSWORD` シークレット | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-password-gate) · [デモ](https://zfb-example-password-gate.takazudomodular.com/) |
-| [Reverse Proxy](/ja/docs/recipes/reverse-proxy) | SSG とキャッチオールの `prerender = false` ルート 1 つ（アダプタ） | なし、公開の `PROXY_ORIGIN` 変数が 1 つ | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-reverse-proxy) · [デモ](https://zfb-example-reverse-proxy.takazudomodular.com/) |
-| [Webshop](/ja/docs/recipes/webshop) | 全ルート SSR、HTML は出力されない（アダプタ） | D1 `DB` | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-webshop) · [デモ](https://zfb-example-webshop.takazudomodular.com/) |
-| [Workers Cache](/ja/docs/recipes/workers-cache) | 全ルート SSR、HTML は出力されない（アダプタ） | `PURGE_TOKEN` シークレット | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-workers-cache) · [デモ](https://zfb-example-workers-cache.takazudomodular.com/) |
+| [AI Summarizer](/ja/docs/recipes/ai-summarizer) | SSG と `prerender = false` の API ルート 1 つ（アダプタ） | Workers AI `AI`、名前付き環境 `ai` にのみ宣言 | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-ai-summarizer) · [デモ](https://zfb-example-ai-summarizer.takazudomodular.com/) |
+| [JSON API](/ja/docs/recipes/json-api) | SSG と `prerender = false` の API ルート 2 つ（アダプタ） | なし | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-json-api) · [デモ](https://zfb-example-json-api.takazudomodular.com/) |
+| [KV Guestbook](/ja/docs/recipes/kv-guestbook) | `/404` を除く全ルートが SSR（アダプタ） | Workers KV `GUESTBOOK`、`ADMIN_TOKEN` シークレット | インライン CSS、zudo-wind のリセットは `/404` のみ | [リポジトリ](https://github.com/Takazudo/zfb-example-kv-guestbook) · [デモ](https://zfb-example-kv-guestbook.takazudomodular.com/) |
+| [Password Gate](/ja/docs/recipes/password-gate) | 純粋 SSG を手書き Worker の後ろに配置、`run_worker_first = true`、アダプタなし | `SITE_PASSWORD` シークレット | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-password-gate) · [デモ](https://zfb-example-password-gate.takazudomodular.com/) |
+| [Reverse Proxy](/ja/docs/recipes/reverse-proxy) | SSG とキャッチオールの `prerender = false` ルート 1 つ（アダプタ） | なし、公開の `PROXY_ORIGIN` 変数が 1 つ | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-reverse-proxy) · [デモ](https://zfb-example-reverse-proxy.takazudomodular.com/) |
+| [Webshop](/ja/docs/recipes/webshop) | 全ルート SSR、HTML は出力されない（アダプタ） | D1 `DB` | zudo-wind のユーティリティと明示的なトークン | [リポジトリ](https://github.com/Takazudo/zfb-example-webshop) · [デモ](https://zfb-example-webshop.takazudomodular.com/) |
+| [Workers Cache](/ja/docs/recipes/workers-cache) | 全ルート SSR、HTML は出力されない（アダプタ） | `PURGE_TOKEN` シークレット | インラインの CSS を記述、zudo-wind は無効 | [リポジトリ](https://github.com/Takazudo/zfb-example-workers-cache) · [デモ](https://zfb-example-workers-cache.takazudomodular.com/) |
 
 ## 静的なサンプル
 
@@ -61,5 +57,5 @@ zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属�
 
 | サンプル | レンダリング | バインディングとシークレット | スタイリング | リンク |
 | --- | --- | --- | --- | --- |
-| [Blog](/ja/docs/recipes/blog) | 純粋 SSG、アセットのみの Worker | なし | Tailwind v4 | [リポジトリ](https://github.com/Takazudo/zfb-example-blog) · [デモ](https://zfb-example-blog.takazudomodular.com/) |
-| [Corporate Website](/ja/docs/recipes/corporate-website) | 純粋 SSG、アセットのみの Worker | なし | CSS Modules、`tailwind: { enabled: false }` | [リポジトリ](https://github.com/Takazudo/zfb-example-corporate-website) · [デモ](https://zfb-example-corporate-website.takazudomodular.com/) |
+| [Blog](/ja/docs/recipes/blog) | 純粋 SSG、アセットのみの Worker | なし | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-blog) · [デモ](https://zfb-example-blog.takazudomodular.com/) |
+| [Corporate Website](/ja/docs/recipes/corporate-website) | 純粋 SSG、アセットのみの Worker | なし | CSS Modules、zudo-wind は無効 | [リポジトリ](https://github.com/Takazudo/zfb-example-corporate-website) · [デモ](https://zfb-example-corporate-website.takazudomodular.com/) |

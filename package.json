@@ -42,7 +42,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "//// === CLIENT-ROUTER L4 (Chromium, runs in CI) ===": "",
-    "test:router-chromium": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/router-chromium/playwright.config.mjs",
+    "test:router-chromium": "pnpm -C packages/zfb-runtime build && pnpm -C packages/zfb build && node tests/router-chromium/build-real-islands-fixture.mjs && pnpm exec playwright test --config tests/router-chromium/playwright.config.mjs",
     "//// === ZUDO-WIND COMPUTED STYLE L5 (Chromium) ===": "",
     "test:wind-computed-style": "cargo run -p zudo-wind --example wind_fixture_css -- tests/wind-computed-style/fixtures tests/wind-computed-style/dist && pnpm exec playwright test --config tests/wind-computed-style/playwright.config.mjs",
     "test:wind-real-build": "pnpm exec playwright test --config tests/wind-real-build/playwright.config.mjs",

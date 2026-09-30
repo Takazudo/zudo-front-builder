@@ -57,6 +57,10 @@ Most preset bare-specifier dependencies (`@scope/zfb-plugin-toc`, etc.) are hois
 
 If all of a preset's plugins are hoisted bare specifiers and no relative paths are involved, `definePreset` is technically optional — but calling it is always safe, costs nothing, and makes the config more future-proof.
 
+## zudo-wind manifests in presets
+
+`definePreset` also stamps preset-contributed `wind.manifests` entries with the internal `__zfb_source_package` marker. zfb uses that provenance as the base for both relative manifest paths and bare package specifiers, so a preset can keep its manifest beside its package and export it through `package.json` when using a bare specifier. Manifest declarations with distinct producer IDs survive preset and consumer merging. A manifest contributes candidate names; configure the token values those candidates need in the consumer's `wind.tokens`.
+
 ## Graceful degradation
 
 | Path / case | Behavior |

@@ -168,42 +168,84 @@ zfb css --input <entry.css> --output <compiled.css>
 | `--input` | path | 必須 | CSS エントリポイント。相対パスは現在の作業ディレクトリを基準に解決されます。 |
 | `--output` | path | 必須 | CSS の出力先。相対パスは現在の作業ディレクトリを基準に解決されます。入力と同じファイルに解決されるパスは指定できません。 |
 | `--project-root` | path | 現在の作業ディレクトリ | `zfb.config` の読み込みと `--source` glob の解決に使うルート。このパス自体が相対パスの場合は、現在の作業ディレクトリを基準に解決されます。 |
-| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
+| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。設定済みの `outDir` 内、`--output` のパス上、zfb のスクラッチルート内にある一致ファイルは除外されます。すべての一致が除外される指定は `ZW010` エラーで失敗し、一部だけが除外される指定は `ZW010` 警告を出して残りの一致を使います。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
 | `--no-auto-source` | boolean flag | `false` | コマンドの慣例的なソースプランのルートを除外します。明示した `--source` と設定済みのシンタックスハイライトのロールクラスは引き続き有効です。 |
 | `--code-highlight-mode` | `class` または `inline` | config/default | zfb のシンタックスハイライト用フレームワーク CSS を含めるかどうかを決める際に、`codeHighlight.mode` を上書きします。`classPrefix` や `roleClasses` など、その他の `codeHighlight` 設定は引き続き config から読み込まれます。 |
 | `--no-default-highlight-styles` | boolean flag | `false` | class モード用の組み込み `zfb-hi.css` スタイルシートを出力しません。`codeHighlight.defaultStylesheet: true` よりも優先されます。 |
 
 ### 例
 
-ライブラリパッケージでは、たとえば `packages/zudo-doc/src/compiled.entry.css` に次のような順序付きエントリを用意できます。
+ユーティリティの値はプロジェクトの config で指定し、ソース glob でプロジェクト内の候補を見つけます。この例では、インストール済みパッケージの `exports` map が公開する CSS サブパス（`@example/design-system`）も読み込みます。
 
-```css
-@layer zd-preflight, zd-flow;
+```ts
+import { defineConfig } from "zfb/config";
 
-@import "@takazudo/zudo-doc/theme.css";
-@import "@takazudo/zudo-doc/safelist.css";
-@import "@takazudo/zudo-doc/content.css";
-@import "@takazudo/zudo-doc/page-loading.css";
-@import "@takazudo/zudo-doc/features.css";
+export default defineConfig({
+  wind: {
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: {
+        brand: "oklch(0.65 0.2 250)",
+      },
+      radii: {
+        card: "0.5rem",
+      },
+    },
+    authoredClasses: {
+      example: true,
+    },
+    manifests: {
+      "design-system": { path: "@example/design-system/wind.json" },
+    },
+  },
+});
 ```
 
-リポジトリのルートから実行し、パッケージ自身が持つソースだけをコンパイル対象にします。
+インストール済みパッケージは `./base.css` と `./wind.json` を公開します。`dist/wind.json` の内容は次のとおりです。
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "design-system",
+  "candidates": ["bg-brand", "p-4", "rounded-card"]
+}
+```
+
+パッケージの候補が使うトークンはプロジェクト側で設定します。
+
+```tsx
+export function ExampleCard() {
+  return <article className="example flex p-4 bg-brand rounded-card">Example</article>;
+}
+```
+
+このエントリには手書き CSS と `@import` だけを記述し、Tailwind ディレクティブは含めません。
+
+```css
+@import "@example/design-system/base.css";
+
+.example {
+  border: 1px solid var(--zw-color-brand);
+}
+```
+
+プロジェクトのルートから実行します。glob でプロジェクト自身のソースを走査し、設定済み manifest から design-system パッケージの候補を追加します。
 
 ```sh
 zfb css \
-  --input packages/zudo-doc/src/compiled.entry.css \
-  --output packages/zudo-doc/dist/compiled.css \
-  --project-root packages/zudo-doc \
+  --input src/styles/entry.css \
+  --output dist/app.css \
+  --project-root . \
   --source 'src/**/*.{tsx,ts,jsx,js}' \
-  --source 'dist/**/*.{tsx,ts,jsx,js}' \
   --no-auto-source
 ```
 
-この例では、`--input`、`--output`、`--project-root` は作業ディレクトリであるリポジトリルートを基準に解決されます。一方、2 つの `--source` glob は `packages/zudo-doc` を基準に解決されます。
+`@import` のパスは手書き CSS として解決・結合されます。zudo-wind は `zfb.config.ts` から utility の値を読み、`--source` でローカル候補を探し、`wind.manifests` からパッケージ候補を読みます。
 
 ### 補足
 
-- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。慣例的な走査では `node_modules`、`dist`、`build`、`target`、`.git`、`.cache`、`.turbo`、`.next`、`.vercel`、`.zfb-build`、`.zfb` を除外します。パッケージのソースルートは `--source` で明示するか、パッケージ側で `wind.manifests` を使って候補を公開できます。プロジェクトの設定済み `outDir`、`--output` のパス、zfb のスクラッチルートは引き続き除外されます。明示した `--source` の一致がすべてこれらの出力ルート内にある場合、`zfb css` は `ZW010` エラーを報告します。一部だけが除外される場合は `ZW010` 警告を報告し、残りのファイルを走査します。たとえば、`dist` が設定済み `outDir` の場合、`--source 'dist/**/*.tsx'` はエラーを報告します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
 - **出力は決定的で、アトミックに置き換えられます。** エントリ、config、ソース一式とその指定順が同じなら、タイムスタンプ、ソースマップ、一時パスを含まない同一のバイト列が生成されます。コンパイルに成功したときだけ `--output` がアトミックに置き換えられ、失敗時には既存の出力がそのまま保たれます。
 - **グローバル CSS のみが対象です。** CSS Modules の探索や処理は行いません。パッケージ由来の `url()` によって別ファイルの出力が必要になる場合、v1 では付随アセット（companion asset）をスタイルシートの隣に書き出さず、非ゼロ終了で拒否します。
 - **config の利用範囲は限定的です。** `zfb.config.json` または `zfb.config.ts` があれば、wind のトークン、リセット、ソース、および `classPrefix` や `roleClasses` などのハイライト設定を読み込みます。CLI のハイライトフラグは対応するモードとスタイルシートの選択を上書きします。`wind: false` は wind の生成を無効にしますが、手書き CSS とハイライトの処理は続きます。キーを省略すると空の有効な wind 設定になります。
@@ -214,6 +256,12 @@ zfb css \
 `zfb wind explain` は候補の解析、解決、出力を調べます。カタログ項目、トークンとの結び付き、宣言、セレクタ、条件、順序の情報を表示します。
 
 `zfb wind audit` は通常のクラス位置の名前、存在しない・使われていないユーティリティ、動的なクラス断片、単一のクラスリストリテラル内のプロパティ衝突を調べます。完全一致の `authoredClasses` と `group`/`peer` マーカーは除外されます。`wind: false` の場合、explain は生成が無効であることを報告し、audit は空の候補レポートを返します。
+
+```sh
+zfb wind audit [--project-root <path>] [--fail-on error|warning]
+```
+
+監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
 これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
 
@@ -247,6 +295,14 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 アダプタモードでは `wrangler dev` がサイト全体を配信します — zfb は自身のルーターを一切起動せず、`previewMiddleware` の有無を確認するためのプラグインホストも起動しません。`_redirects` はそこでも機能しますが、それは zfb の `_redirects` エンジンではなく `wrangler`/Workers Static Assets がネイティブにファイルを尊重しているだけです。`previewMiddleware` の登録には wrangler 側に対応する仕組みがなく、アダプタモードの preview では単に実行されません — プロジェクトにプラグインが設定されている場合、`zfb preview` は処理を引き渡す前にその旨を一度だけ警告として出力します。
 
 </Caution>
+
+### アダプタモードの preview を停止する
+
+対話型ターミナルでは、zfb がターミナルの制御を `wrangler dev` に渡すため、Wrangler のホットキーや Ctrl+C は通常どおり使えます。zfb が SIGINT、SIGTERM、または SIGHUP を受け取ると、起動した `wrangler dev` のプロセスツリー全体（pnpm → node → wrangler → workerd）へそのシグナルを転送します。このツリーは独立したプロセスグループで動作します。zfb は停止を最大 5 秒待ち、まだ動いているプロセスを強制終了します。これにより preview の `--port` が解放されます。
+
+シグナルを受けた zfb はエラーバナーを出さずに `128 + シグナル番号` で終了します。SIGINT なら 130、SIGTERM なら 143、SIGHUP なら 129 です。一方、`wrangler dev` が自ら失敗した場合は `wrangler dev exited with status …` と報告し、終了ステータス 1 で終了します。
+
+zfb に送られた SIGKILL は捕捉できないため、その場合 zfb はプロセスツリーを後片付けできません。また、シグナルを転送しない外側のラッパー（例: `pnpm exec zfb preview …` の PID）だけを停止しても、シグナルは zfb に届きません。スクリプトからは zfb のプロセス自体を停止してください。Windows ではプロセスツリーの後片付けはまだ実装されていません。
 
 ### フラグ
 
@@ -432,7 +488,11 @@ declare const __ORIGIN__: string;
 
 ### define はビルドの同一性の一部
 
-有効な define のマップは、zfb がサーバーレンダリングした island のマークアップと island のバンドルに刻み込む、ビルドの同一性の一部です。異なる define でビルドされた SSR 出力と island が互いにハイドレーションすることはありません。同一性が一致しない island は、誤った値のまま黙ってハイドレーションするのではなく、`ZR_IDENTITY` エラーで失敗します。この同一性にスクラッチディレクトリの場所は影響せず、影響するのは define の値だけです。
+有効な define のマップは、zfb がサーバーレンダリングした island のマークアップと island のバンドルに刻み込む、ビルドの同一性の一部です。異なる define でビルドされた SSR 出力と island が互いにハイドレーションすることはありません。同一性が一致しない island は、誤った値のまま黙ってハイドレーションするのではなく、`ZR_IDENTITY` エラーで失敗します。
+
+この同一性にはプロジェクトのソースファイルも含まれます。ただし、プロジェクト自身の `.gitignore` に一致するファイル、隠しディレクトリ、ビルドやスクラッチの出力は除外されます。`.zudo-doc/routes-src` など、zfb が使う既知の内部ステージングパスは、隠されていたり gitignore されていたりしても含まれます。リンクされたローカルパッケージ、プラグインのエイリアス、仮想モジュール、有効な define のマップも同一性に反映されます。これは対象ファイルを選ぶ規則であり、実際に到達可能なモジュールグラフを厳密に求めるものではありません。コードが直接 import するファイルでも、gitignore されていれば同一性には含まれません。そのような生成入力は `.gitignore` の対象から外して Git で管理するか、決定的に再生成してください。
+
+チェックアウト先のパスとスクラッチディレクトリの場所は、同一性にも出力されるバンドルにも影響しません。同じコミット、ロックファイル、ビルドオプションなら、ローカルと CI の `dist/` はバイト単位で一致します。`test-results/` のように残ったツールの出力も、gitignore されていれば同一性とバンドルのバイト列を変えません。
 
 <Tip>
 

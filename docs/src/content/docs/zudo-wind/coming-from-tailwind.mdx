@@ -43,6 +43,8 @@ The scanner also rejects the legacy declaration-value functions `theme()`, `--sp
 The old top-level `tailwind` key has no zudo-wind meaning. A leftover key is a hard configuration error with a named migration message. Replace it with `wind`. A missing `wind` key enables the empty v1 configuration after cutover; that means generation is enabled, reset is `none`, and the token maps start empty.
 
 ~~~ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,
@@ -101,6 +103,71 @@ The default `reset` is `none`, which emits no reset declarations. Select a reset
 | `owned-v1` | Sets border-box sizing and clears margins, padding, and default border width while making borders solid. It removes list markers, gives headings inherited size and weight, and normalizes control fonts and button backgrounds. |
 
 With `owned-v1`, add list markers back where the design calls for them; the scaffold's `.prose` rules explicitly restore disc and decimal lists. Headings do not retain browser heading sizes, so set them in authored CSS or with configured font-size utilities. Bare border utilities set their own solid border under every reset choice. Controls inherit font styling, and the reset leaves native focus outlines and appearance alone. Wind utilities are unlayered and follow authored global CSS: they beat normal declarations in named layers, while an unlayered authored rule can still win by specificity or later order. The reset is an explicit zudo-wind choice, not a promise to reproduce another preflight byte for byte. See [Cascade and reset](./cascade-and-reset.mdx) for the complete declarations and layer order.
+
+### Differences from Tailwind preflight
+
+The baseline is **Tailwind CSS 4.2.0 preflight vs `owned-v1`**. The earlier recipe migrations were measured in Chromium 147 and 151 and WebKit 26.4. The supplemental #3451 fixture ran in Chromium 151 and WebKit 26.5 at 375px and 1280px; neither matrix is exhaustive. In the measured projects, Tailwind's theme resolves `--default-font-family` from `--font-sans` and `--default-mono-font-family` from `--font-mono`.
+
+| Selector | Tailwind 4.2.0 preflight | `owned-v1` and effect |
+| --- | --- | --- |
+| `html` font family | Theme `--default-font-family` / `--font-sans` | Fixed `ui-sans-serif, system-ui, sans-serif`; descendants can inherit another face. |
+| `html` tap highlight | `-webkit-tap-highlight-color: transparent` | No rule; the browser's tap color is inherited by everything. |
+| `code, kbd, samp, pre` font family | Theme `--default-mono-font-family` / `--font-mono` | Fixed `ui-monospace, SFMono-Regular, Menlo, monospace`; macOS screenshots can hide a change when both stacks resolve to Menlo. |
+| `small` | `font-size: 80%` | No rule; the UA size applies. |
+| `sub, sup` | `font-size: 75%; line-height: 0; position: relative; vertical-align: baseline`, with `sub { bottom: -0.25em }` and `sup { top: -0.5em }` | No rules; the line box can grow and shift layout. |
+| `hr` | `color: inherit` | No color rule; the UA color can affect the border. |
+| `button`, button/reset/submit inputs | `appearance: button` | No appearance rule; native appearance can differ. |
+| `button, input, select, optgroup, textarea` | `border-radius: 0; background-color: transparent; opacity: 1` | `owned-v1` already uses transparent backgrounds for buttons and button-type inputs; a text input keeps its UA white background in Chromium. Add the common-control rule below to match these declarations. |
+| `::placeholder` | `opacity: 1` and, in supported browsers, `color: color-mix(in oklab, currentcolor 50%, transparent)` | No rule; UA placeholder color and opacity apply (grey in measured Chromium). |
+| `::file-selector-button` | Borderless, transparent, inherited text styling, 4px end margin, `appearance: button` | No pseudo-element rule; the native bevelled file button remains. |
+| `[hidden]:where(:not([hidden="until-found"]))` | `display: none !important` | Only the UA hidden rule applies; a display utility can make an element with `hidden` visible silently. |
+
+The original **0 differing elements** result was limited to its fixture: it omitted a standalone text input, `abbr[title]`, `progress`, and `:-moz-focusring`. The #3451 fixture found one difference before the common-control rule below: the text input had the UA white background under `owned-v1` and a transparent background under Tailwind. After adding the rule, every standard computed-style property on the fixture elements and both pseudo-elements matched in Chromium 151 and WebKit 26.5 at both widths; all four screenshot pairs were pixel-identical. Chromium also retained a visible keyboard focus ring on the link after tabbing to it. This matrix still does not cover every control, font installation, or platform. A per-element `getComputedStyle` diff does not inspect `::placeholder` or `::file-selector-button`; query each explicitly and compare pixels where appearance matters.
+
+For projects that want these measured preflight behaviors, add the following to authored CSS. Replace the sample font stacks with your project's stacks if they differ. The project must declare `--font-sans` and `--font-mono` in authored CSS, as this block does, or substitute literal stacks at both `font-family` declarations: v3 supplies no implicit theme.
+
+~~~css
+@layer base {
+  :root {
+    --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+  html { font-family: var(--font-sans); -webkit-tap-highlight-color: transparent; }
+  code, kbd, samp, pre { font-family: var(--font-mono); }
+  small { font-size: 80%; }
+  sub, sup { font-size: 75%; line-height: 0; position: relative; vertical-align: baseline; }
+  sub { bottom: -0.25em; }
+  sup { top: -0.5em; }
+  hr { color: inherit; }
+  button, input:where([type="button"], [type="reset"], [type="submit"]) { appearance: button; }
+  button, input, select, optgroup, textarea {
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    margin-inline-end: 4px;
+    padding: 0;
+    border: 0 solid;
+    border-radius: 0;
+    background-color: transparent;
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    opacity: 1;
+    appearance: button;
+  }
+  /* Optional: keep hidden elements hidden even when a display utility is present. */
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+~~~
+
+The common-control rule restores Tailwind's border radius, background, and opacity declarations. The file-selector rule is separate because the `button` rule does not style that pseudo-element. In the Chromium 151 image-gallery recipe, adding the measured file-selector rule removed the pixel and pseudo-element differences on both tested pages in light and dark themes. The `[hidden]` rule is optional; its `!important` overrides display utilities, as Tailwind preflight does. The [layer prelude](./cascade-and-reset.mdx) orders `zw-reset` before authored `base`, so these declarations can override the reset. Keep keyboard focus indicators and review each rule you adopt rather than pasting a broader reset blindly. Restoring reset declarations does not restore utility placement or relation-selector specificity; that migration difference is tracked in #3386.
 
 ## Variants and grammar
 
@@ -167,6 +234,8 @@ accent: "text-sky-700 dark:text-sky-300",
 Remove the two Tailwind directives. Move utility values to config and keep the CSS-only theme properties authored:
 
 ~~~ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   wind: {
     spec: 1,

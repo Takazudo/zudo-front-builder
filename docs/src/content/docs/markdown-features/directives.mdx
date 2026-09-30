@@ -33,6 +33,8 @@ The value is a map from directive name → component. Each entry can be a short-
 The simplest entry maps a directive name to a component identifier string. The directive is registered as a **container** with `titleFromLabel: true` — the bracketed `[label]` becomes a `title="…"` attribute on the emitted JSX element.
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
@@ -67,6 +69,8 @@ Pipeline emits:
 Use the full form to control the directive shape (`container`, `leaf`, or `text`) and whether the bracketed label becomes a `title` attribute.
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {

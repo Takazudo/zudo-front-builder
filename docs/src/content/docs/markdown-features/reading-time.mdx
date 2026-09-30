@@ -14,6 +14,8 @@ Enable with the boolean shorthand (uses the default 200 WPM rate):
 
 ```ts
 // zfb.config.ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
@@ -27,6 +29,8 @@ Or pass `{ wpm: N }` to use a custom words-per-minute rate:
 
 ```ts
 // zfb.config.ts
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
