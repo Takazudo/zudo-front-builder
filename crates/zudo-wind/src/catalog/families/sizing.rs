@@ -51,7 +51,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             ],
             &keywords,
             &[TokenCategory::Size, TokenCategory::Spacing],
-            Some("width"),
+            Some(properties[0]),
             true,
             false,
             OWN,
