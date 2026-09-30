@@ -1070,7 +1070,7 @@ async fn e2e_package_css_export_remap_refreshes_stylesheet() {
             &client,
             &css_url,
             "marker-b2",
-            "marker-b",
+            ".marker-b {",
             SCENARIO_DEADLINE,
             "new package CSS target edit: served CSS must switch to marker-b2",
             &session,
