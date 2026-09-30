@@ -6,7 +6,7 @@ sidebar_position: 7
 
 ## デフォルトでは非制御
 
-明示的なモデルを渡さない限り、コントロールはブラウザのネイティブな状態を使います。静的な value と checked の props は初期値を設定します。リアクティブな value と checked は拒否されるため、コントロールを signal に接続し続けたい場合は model prop を使います。
+明示的なモデルを渡さない限り、コントロールはブラウザのネイティブな状態を使います。静的な value と checked の props は初期値を設定します。リアクティブな value と checked は TypeScript（`zfb check`）でもレンダリング時にも拒否されます。コントロールを signal に接続し続けたい場合は model prop を使います。
 
 予約済みの props は **defaultValue**、**defaultChecked**、**modelValue**、**modelChecked** です。HTML 属性にはなりません。モデルと対応する default、value と defaultValue、checked と defaultChecked を同時に指定するとエラーになります。
 
@@ -55,7 +55,7 @@ function Preferences() {
 }
 ~~~
 
-グループ内の各 radio には静的な value と、同じ空でない name、フォームとの関連付け、ルートが必要です。radio と select の選択肢の値は一意の文字列にします。radio モデルが null ならどれも選択されません。単一選択の select モデルは静的な選択肢に一致する必要がありますが、ハイドレーション時にはブラウザの未選択状態を選択を強制せずに記録できます。
+グループ内の各 radio には静的な value と、同じ空でない name、フォームとの関連付け、ルート、共有する `modelValue` が必要です。radio グループを `checked` でバインドせず、`modelValue` で一致する選択肢を選びます。radio と select の選択肢の値は一意の文字列にします。radio モデルが null ならどれも選択されません。単一選択の select モデルは静的な選択肢に一致する必要がありますが、ハイドレーション時にはブラウザの未選択状態を選択を強制せずに記録できます。
 
 ## モデルには書き込み可能な signal が必要
 

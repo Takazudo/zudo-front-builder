@@ -117,6 +117,8 @@ const [name, setName] = useState("Ada");
 <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
 ~~~
 
+zudo-react の input ハンドラーでは `currentTarget` が `HTMLInputElement` 型になるため、`value` を読むための型アサーションは不要です。値を signal と連動させる場合は、次のように `modelValue` を使います。
+
 zudo-react での書き方:
 
 ~~~tsx
