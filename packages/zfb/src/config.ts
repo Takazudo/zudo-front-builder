@@ -683,12 +683,16 @@ export type ZfbConfig = {
    * BEFORE field validation and folds preset contributions using additive
    * semantics:
    *
-   * - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
-   *   `allowedHosts`): preset values are prepended so the main config's
-   *   entries retain their relative position after the preset's.
-   * - **Scalar / optional fields**: a preset value fills in only when the
-   *   main config leaves the field at its default — the main config is
-   *   authoritative; presets act as defaults.
+   * - **The four additive top-level arrays** (`plugins`, `collections`,
+   *   `extraWatchPaths`, `allowedHosts`): concatenate in declaration order —
+   *   first preset, later presets, then the main config.
+   * - **Nested objects**: merge recursively, so preset sibling keys remain
+   *   when the main config supplies a different key in the same object.
+   * - **Other leaf fields**: when a key is present in the main config, its
+   *   value wins as a whole leaf, even when it is `null` or equals the type
+   *   default. When omitted, the first preset that supplies the key wins.
+   *   Nested arrays are leaves and are replaced as a whole when supplied by
+   *   the main config.
    *
    * Nested `presets` inside a preset are NOT recursively expanded.
    *

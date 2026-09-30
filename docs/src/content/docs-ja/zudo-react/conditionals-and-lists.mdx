@@ -63,6 +63,46 @@ item と index の引数は読み取り専用の signal です。JSX に渡す�
 
 古い領域を置き換える前に、新しい項目を仮に構築します。セットアップに失敗したら仮のスコープを破棄し、元のリストを有効なまま残します。キーを削除するとそのスコープを一度だけ破棄し、後で同じキーを追加すると新しい項目を作ります。維持されたキーを移動する場合は既存の DOM を移動し、可能な限りフォーカスと選択範囲を保ちます。
 
+## 動的なテーブル行
+
+`For` は `tbody` の内部には置けません。コメントで区切られる領域は、そのテーブル構造上の位置では有効ではありません。行をまとめて入れ替えるには、1 要素だけを持つ `For` をテーブルの外側に置き、item のスナップショットから直接 `tr` 要素を作ります。
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function ResultsTable() {
+  const data = signal({
+    rev: 0,
+    rows: [{ id: "a", name: "First" }]
+  });
+  const table = computed(() => {
+    const { rev, rows } = data.value;
+    return [{ rev, rows }];
+  });
+  // To replace the rows:
+  // data.value = { rev: data.value.rev + 1, rows: nextRows };
+
+  return (
+    <section>
+      <For each={table} by={(item) => item.rev}>
+        {(item) => {
+          const { rows } = item.value;
+          return (
+            <table>
+              <tbody>
+                {rows.map((row) => <tr><td>{row.name}</td><td><input aria-label={row.name} /></td></tr>)}
+              </tbody>
+            </table>
+          );
+        }}
+      </For>
+    </section>
+  );
+}
+~~~
+
+revision が変わるたびに古いテーブルとそのスコープを破棄し、新しいテーブルを作ります。古いテーブル内のフォーカス、選択範囲、スクロール位置、フォームコントロールの状態は失われます。セルの値だけが変わる場合は、テーブルを入れ替えずにセルへ signal のライブバインディングを使えます。
+
 ## パーサー上の位置と変換中の入力
 
 For と Show の領域は、コメントで区切った範囲が有効な位置に置く必要があります。table の構造上の階層や select の選択肢の内部では使えません。特殊な HTML の中に動的領域を置く前に、[パーサーの文脈に関する規則](./hydration.mdx)を確認してください。

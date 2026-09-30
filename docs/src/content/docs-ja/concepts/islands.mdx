@@ -190,6 +190,91 @@ export default function Header() {
 
 サーバーとクライアントの境界については [zudo-react ランタイム](../architecture/framework-adapters.mdx)を参照してください。
 
+## サードパーティウィジェットの埋め込み
+
+自分でマウントするウィジェットには、zudo-react の島の中に空の専用要素を渡せます。ウィジェットが使う Preact や React を含むフレームワークは、`node_modules` からそのままウィジェットのバンドルに入ります。そのライブラリが要求する peer dependency としてフレームワークをインストールしてください。v3 の「Preact/React の JSX ランタイムをインポートしない」という規則は、zudo-react が描画するコンポーネントに適用され、専用ホストにマウントする不透明なウィジェットのバンドルには適用されません。ウィジェットの VNode を zudo-react に渡したり、zudo-react の子要素がある領域をウィジェットに変更させたりしないでください。
+
+以下は**仮の**アダプターモジュールを使う例です。`mount(host)` が同期的な `destroy()` メソッドを持つインスタンスを返す形にしています。実際にはライブラリのマウント API と破棄 API に置き換えてください。マウントがインスタンスを返す前に例外を投げた場合、アダプターは途中で確保したリスナーやタイマーなどを自ら元に戻す必要があります。ホストを空にするだけでは DOM ノード以外の資源は解放できません。
+
+```tsx
+"use client";
+
+import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+
+type WidgetInstance = { destroy(): void };
+type WidgetModule = { mount(host: Element): WidgetInstance };
+type WidgetLoader = () => Promise<WidgetModule>;
+
+const loadWidget: WidgetLoader = () => import("./widget-adapter");
+
+export function ThirdPartyWidget() {
+  const host: Ref<Element> = { current: null };
+  const status = signal("Loading widget…");
+  const scope = getScope();
+  const abortSignal = scope.abortSignal;
+
+  scope.onActivate(() => {
+    let instance: WidgetInstance | undefined;
+    void loadWidget().then((widget) => {
+      if (abortSignal.aborted) return;
+      const element = host.current;
+      if (!element) return;
+      try {
+        instance = widget.mount(element);
+        status.value = "";
+      } catch {
+        element.replaceChildren();
+        status.value = "Widget unavailable.";
+      }
+    }).catch(() => {
+      if (!abortSignal.aborted) status.value = "Widget unavailable.";
+    });
+
+    return () => {
+      const mounted = instance;
+      instance = undefined;
+      try {
+        mounted?.destroy();
+      } finally {
+        host.current?.replaceChildren();
+      }
+    };
+  });
+
+  return h("section", null,
+    h("div", { ref: host }),
+    h("p", { role: "status", children: status }),
+  );
+}
+```
+
+```ts
+// widget-adapter.ts — illustrative library-specific adapter
+import * as thirdParty from "some-widget";
+
+export function mount(host: Element) {
+  const onResize = () => { /* update adapter-owned measurements */ };
+  window.addEventListener("resize", onResize);
+  const timer = window.setInterval(() => { /* adapter-owned polling */ }, 1000);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    window.removeEventListener("resize", onResize);
+    window.clearInterval(timer);
+  };
+  try {
+    const widget = thirdParty.mount(host); // The library must roll back its own partial work on failure.
+    return { destroy() { try { widget.destroy(); } finally { release(); } } };
+  } catch (error) {
+    release(); // Roll back allocations made before mount returned.
+    throw error;
+  }
+}
+```
+
+`onActivate` 自体は同期的に保ちます。`onActivate(async () => ...)` が返す Promise はアクティベーション時に拒否されます。`import()` はコールバックの中で開始し、SSR 中にも実行されうるモジュールのトップレベルでは開始しません。インポート待ちの間にナビゲーションでスコープが破棄される場合に備え、マウント前に中断シグナルを確認します。クリーンアップはアクティベーションから同期的に返すか、セットアップ中に登録します。`await` の後にセットアップ専用の `onCleanup` を呼ぶと失敗します。アダプターの `mount` は完全なインスタンスを返すか、例外を投げる前に途中の確保を自分で元に戻す必要があります。返されたインスタンスは島の破棄時に一度だけ破棄されます。
+
 ## ブラウザバンドルのモードと設定
 
 island のコードは、クライアントスクリプト、module worker、ページ / SSR バンドルと同じコンパイル時モード値を使います。

@@ -20,6 +20,26 @@ h では可変長引数の子が props.children より優先されます。可�
 
 コンポーネントが返す Fragment と配列は、可視の要素を増やさずに兄弟のまとまりを保持します。通常の組み込み要素の子配列は単なる走査リストです。記述をコピーするだけで新しいコンポーネントインスタンスが作られることはありません。
 
+## テーブルと select の子要素
+
+table と select の構造規則は、島のない静的サーバーレンダリングにも適用されます。構造を決める親要素には、HTML パーサーが許可する組み込み要素を直接置きます。たとえば tbody、thead、tfoot には tr、tr には td または th、select には option または optgroup、optgroup には option が必要です。`<Row />` のようなコンポーネント、Fragment、`For` の領域は、これらの位置の直接の子にはできません。option の内容には静的なスカラー文字列だけを使えます。不正な子は `ZR_PARSER_CONTEXT` で失敗します。
+
+構造上の子は、組み込み要素の記述を返す通常の関数を呼び出して作ります。`rowElement(row)` が tr を返す形は使えますが、`<Row />` を tbody の子にする形は使えません。select の直下に置く option や optgroup にも同じ方法を使います。リアクティブなテーブル行については[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
+
+~~~tsx
+function rowElement(row: { name: string }) {
+  return <tr><td>{row.name}</td></tr>;
+}
+
+function ResultsTable({ rows }: { rows: { name: string }[] }) {
+  return (
+    <table>
+      <tbody>{rows.map((row) => rowElement(row))}</tbody>
+    </table>
+  );
+}
+~~~
+
 ## HTML と SVG の名前を使う
 
 組み込み属性は HTML と SVG の表記に従います。class、for、readonly、tabindex、viewBox を使います。className、htmlFor、charSet、autoComplete、readOnly、tabIndex、onClick、strokeWidth、dangerouslySetInnerHTML などの React 式の表記は検証に失敗し、書き換えもそのままの出力もされません。対応する HTML または SVG の表記がサポートされていれば、エラーにはその名前が示されます（例: ``use `charset` instead of `charSet` ``）。`onClick` には `on:click` が提示されます。未対応の標準属性は、代替案を示さずにエラーになります。data 属性と ARIA 属性には文字列、数値、真偽値のスカラー値を使えます。ARIA の真偽値は false を含め、対応する文字列として出力されます。

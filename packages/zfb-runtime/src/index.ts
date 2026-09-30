@@ -18,7 +18,7 @@
 //   const router = createPageRouter({
 //     pages: [...],
 //     contentSnapshot: __ZFB_CONTENT_SNAPSHOT__, // embedded by the bundler
-////   });
+//   });
 //
 //   export default { fetch: router };
 //

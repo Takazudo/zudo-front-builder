@@ -29,6 +29,8 @@ mdast フェーズで、HTML が生成される前に、プラグインはすべ
 指定してオプトインしない限り、何も行いません:
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   resolveMarkdownLinks: {
     enabled: true,
@@ -48,6 +50,8 @@ EN・JA のように複数のドキュメントコレクションを持つプロ
 それぞれのルートプレフィックスにマッピングするため `dirs` を使用します:
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   resolveMarkdownLinks: {
     enabled: true,

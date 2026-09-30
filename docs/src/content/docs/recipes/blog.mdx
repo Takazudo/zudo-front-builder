@@ -1,6 +1,6 @@
 ---
 title: "Example: Blog"
-description: A pure-SSG Markdown/MDX blog with three dynamic-route shapes, one theme-toggle island, and a Tailwind v4 token system, deployed as an assets-only Cloudflare Worker
+description: A pure-SSG Markdown/MDX blog with three dynamic-route shapes, a zudo-react theme-toggle island, and a fully authored CSS theme, deployed as an assets-only Cloudflare Worker
 sidebar_position: 11
 category: Recipes
 ---
@@ -8,17 +8,12 @@ category: Recipes
 <Info title="What this page covers">
 
 A complete, deployed zfb blog: a `blog` content collection of Markdown and MDX posts, three
-different dynamic-route shapes, a single `"use client"` island, and a Tailwind v4 design system.
+different dynamic-route shapes, one zudo-react `"use client"` island, and a theme written in
+authored CSS.
 It is a **pure static build** — no SSR, no Cloudflare bindings, no adapter — which makes it the
 smallest realistic shape of a content-driven zfb site.
 
 </Info>
-
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
 
 **Live demo:** [zfb-example-blog.takazudomodular.com](https://zfb-example-blog.takazudomodular.com/)
 
@@ -34,25 +29,25 @@ This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migrati
 - [`paginate()`](../api/paginate.mdx) turning a sorted array into the `paths()` return value directly.
 - A custom MDX component (`<Note>`) reaching the page through the `components` prop on
   `entry.Content` — see [MDX components](../concepts/mdx-components.mdx).
-- One [island](../concepts/islands.mdx) (`ThemeToggle`) whose first render is SSR-safe, paired with
+- One zudo-react [island](../concepts/islands.mdx) (`ThemeToggle`) whose first render is SSR-safe, paired with
   an inline pre-hydration script so the page never paints in the wrong theme.
-- A [Tailwind v4](../concepts/styling.mdx) `@theme` block layered over raw CSS custom properties,
-  with `dark:` re-pointed at a `data-theme` attribute instead of `prefers-color-scheme`.
+- A theme authored entirely in `styles/global.css`, with light and dark CSS custom properties
+  selected by `data-theme` rather than `prefers-color-scheme`.
 
 ## Tech used
 
 | Aspect | zfb-example-blog |
 | --- | --- |
-| Framework | zfb **2.3.0** + Preact (`framework: "preact"` in `zfb.config.ts`) |
-| Runtime | `@takazudo/zfb-runtime` **2.3.0** |
-| Styling | Tailwind CSS v4 (`tailwind: { enabled: true }`), one `styles/global.css` |
+| Framework | zfb **3.0.0** with zudo-react; the theme toggle uses the zudo-react island runtime |
+| Runtime | `@takazudo/zfb-runtime` **3.0.0** |
+| Styling | Authored CSS in `styles/global.css`; `wind.reset: "owned-v1"` plus an authored preflight-parity `@layer base` block |
 | Rendering | **Pure SSG.** No route sets `export const prerender = false` |
 | Content | one collection — `blog` → `content/blog` (4 `.md` + 1 `.mdx`) |
 | Interactivity | one `"use client"` island, mounted with `<Island when="idle">` |
 | Cloudflare surface | Workers Static Assets, **assets-only** — `wrangler.toml` has no `main` key |
 | Bindings | none |
 | Adapter | `@takazudo/zfb-adapter-cloudflare` is **not** a dependency |
-| Other deps | `preact`, `preact-render-to-string`; `wrangler` 4.85.0 as a devDependency |
+| Other deps | `wrangler` 4.85.0 as a devDependency; no other runtime dependencies |
 
 `zfb build` emits **14 HTML pages**: 1 homepage, 5 posts, 2 paginated index pages, and 6 tag pages.
 "How it works" below traces where each of those numbers comes from.
@@ -99,10 +94,12 @@ The remaining 2 come from the paginated index, where [`paginate()`](../api/pagin
 arithmetic for you. Its return value *is* the `paths()` return value — no adapter step in between:
 
 ```tsx title="pages/blog/page/[page].tsx"
+import type { BlogEntry, BlogFrontmatter } from "../../../lib/types";
+
 export async function paths() {
   const { getCollection } = await import("@takazudo/zfb/content");
   const { paginate } = await import("@takazudo/zfb/paginate");
-  const posts = (await getCollection("blog")) as BlogEntry[];
+  const posts = await getCollection<BlogFrontmatter>("blog");
   const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
   return paginate(sorted, { pageSize: 3, param: "page" });
 }
@@ -120,15 +117,15 @@ The theme toggle is the one interactive thing on the site, and it is the part of
 worth reading, because a naive implementation breaks in two different ways at once.
 
 An island's **first** render must produce identical HTML on the server and during client hydration.
-Reading `localStorage` from a `useState` initialiser violates that: the server has no `localStorage`,
-so it defaults to `"light"`, while the client reads a saved `"dark"` and renders the opposite label —
-a hydration mismatch. So `ThemeToggle` renders a deterministic `"light"` first, then syncs to the
-persisted or system preference inside `useEffect`.
+`ThemeToggle` starts a `signal<Theme>` at the deterministic value `"light"` and derives its button
+text and ARIA labels with `computed`, so it does not read browser state during setup. After the
+island adopts its server HTML, `scope.onActivate` reads the saved or system preference; `scope.effect`
+then mirrors changes to the document and storage. The button changes the signal through
+`on:click`.
 
-That fixes hydration but not appearance. If nothing else ran, the *page* would still paint in the
-default palette until the island's effect fired. The fix is to separate the two concerns: an inline
-script in `<head>` sets the theme attribute synchronously, before the stylesheet is parsed, so the
-first painted frame is already correct no matter which label the island happens to render.
+The inline script solves the separate first-paint problem. It sets the theme attribute synchronously
+in `<head>`, before the stylesheet is parsed, so the first painted frame already uses the chosen
+palette regardless of when the island activates.
 
 ```tsx title="layouts/default.tsx"
 const THEME_BOOTSTRAP_SCRIPT = `(() => {
@@ -145,12 +142,12 @@ const THEME_BOOTSTRAP_SCRIPT = `(() => {
 })();`;
 ```
 
-The stylesheet is wired to the same attribute rather than to the media query — `styles/global.css`
-re-points Tailwind's variant with
-`@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *))`, and declares the raw
-`--blog-*` tokens on `:root` with dark overrides under `[data-theme="dark"]`. The `@theme` block then
-re-exports the subset that should generate utilities (`--color-bg: var(--blog-bg)`, and so on). One
-attribute drives the bootstrap script, the island, and every utility class.
+The stylesheet reads that same attribute. `styles/global.css` declares the light `--blog-*` custom
+properties on `:root` and overrides them under `[data-theme="dark"]`; all layout, component, and
+prose styling is authored CSS, with no utility classes. `zfb.config.ts` sets zudo-wind's
+`reset: "owned-v1"`. An additional authored `@layer base` block restores selected preflight-parity
+rules that the reset does not include. See [Coming from Tailwind](../zudo-wind/coming-from-tailwind.mdx)
+for the measured preflight comparison.
 
 The layout itself stays a plain server component; only the toggle ships JavaScript, and
 [`<Island when="idle">`](../api/island.mdx) keeps even that until the browser has spare cycles.
@@ -193,5 +190,5 @@ collection in addition to running `tsc`.
 - [Dynamic routes](../concepts/dynamic-routes.mdx) and [Routing](../concepts/routing.mdx) — the `paths()` contract behind all three route shapes.
 - [`paginate()`](../api/paginate.mdx) — the pagination helper used verbatim above.
 - [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the hydration boundary and its scheduling strategies.
-- [Styling](../concepts/styling.mdx) — how Tailwind v4 is compiled by the zfb binary, with no per-project install.
+- [Coming from Tailwind](../zudo-wind/coming-from-tailwind.mdx) — the measured preflight comparison and authored CSS guidance.
 - [Static assets](../concepts/static-assets.mdx) — what ends up in `dist/` next to the HTML.

@@ -16,12 +16,6 @@ database, no bucket. The only thing to provision is one Worker secret.
 
 </Info>
 
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
-
 **Live demo:** [zfb-example-workers-cache.takazudomodular.com](https://zfb-example-workers-cache.takazudomodular.com/)
 
 **Repository:** [Takazudo/zfb-example-workers-cache](https://github.com/Takazudo/zfb-example-workers-cache)
@@ -57,10 +51,10 @@ the route answers `501` with `cache_context_unavailable` rather than pretending 
 
 | Area | Choice |
 | --- | --- |
-| Framework | zfb + Preact (`framework: "preact"`), HTML via `preact-render-to-string` |
-| zfb version | `@takazudo/zfb` 2.3.0, `@takazudo/zfb-runtime` 2.3.0 |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` 2.3.0 — present and required |
-| Styling | `tailwind: { enabled: true }`; the page chrome itself is hand-written CSS inlined by `components/recipe-page.tsx`, so there is very little Tailwind markup to look at |
+| Framework | zfb **3.0.0** with zudo-react; `lib/http.tsx` renders HTML with `renderToString` |
+| zfb version | `@takazudo/zfb` 3.0.0, `@takazudo/zfb-runtime` 3.0.0 |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` 3.0.0 — present and required |
+| Styling | `wind: false`; `components/recipe-page.tsx` inlines authored CSS, with no utility generation |
 | Rendering | Pure SSR — all four routes are `prerender = false`; the build emits the Worker bundle and one stylesheet — no HTML pages |
 | Cloudflare surface | Workers Static Assets (`[assets]`) plus Workers Cache (`[cache] enabled = true`) |
 | Bindings | `ASSETS` only — no KV, D1, R2, or AI |
@@ -103,18 +97,46 @@ Worker successfully and then fails at the route step — the Worker is live on
 
 ### Cache policy is just a header the route returns
 
-There is no cache configuration layer and no framework cache. `lib/http.tsx` wraps
-`preact-render-to-string` in a `Response` and copies three optional values straight onto the
-headers:
+There is no cache configuration layer and no framework cache. `lib/http.tsx` renders a
+zudo-react tree with the named `renderToString` import from
+`@takazudo/zfb/zudo-react/server`, wraps it in a `Response`, and copies three optional values
+straight onto the headers:
 
 ```tsx title="lib/http.tsx"
-const headers = new Headers({
-  "content-type": "text/html; charset=utf-8",
-  "cache-control": cacheControl,
-});
+import type { Child } from "@takazudo/zfb/zudo-react";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { RecipeDocument } from "../components/recipe-page";
 
-if (cacheTag) headers.set("cache-tag", cacheTag);
-if (vary) headers.set("vary", vary);
+  const headers = new Headers({
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": cacheControl,
+  });
+
+  if (cacheTag) headers.set("cache-tag", cacheTag);
+  if (vary) headers.set("vary", vary);
+
+  const html = renderToString(
+    <RecipeDocument
+      title={title}
+      eyebrow={eyebrow}
+      heading={heading}
+      summary={summary}
+      nav={navItems.map((item) => ({
+        ...item,
+        active:
+          (active === "overview" && item.href === "/") ||
+          (active === "products" && item.href === "/products") ||
+          (active === "catalog" && item.href === "/catalog"),
+      }))}
+    >
+      {children}
+    </RecipeDocument>,
+  );
+
+  return new Response(`<!doctype html>${html}`, {
+    status,
+    headers,
+  });
 ```
 
 Each page then declares its own policy as a constant. `/products` asks for a one-minute
@@ -174,7 +196,14 @@ but the adapter's `ctx` type does not yet include it:
 ```tsx title="pages/api/purge.tsx"
 const cache = (ctx as CacheAwareExecutionContext).cache;
 if (!cache) {
-  return jsonResponse({ ok: false, error: "cache_context_unavailable", /* … */ }, { status: 501 });
+  return jsonResponse(
+    {
+      ok: false,
+      error: "cache_context_unavailable",
+      detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
+    },
+    { status: 501 },
+  );
 }
 
 const result = await cache.purge({ tags: ["products"] });

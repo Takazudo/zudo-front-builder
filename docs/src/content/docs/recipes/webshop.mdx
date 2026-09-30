@@ -17,12 +17,6 @@ The demo ships **zero client-side JavaScript**. Every button is a `<form method=
 
 </Info>
 
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
-
 **Live demo:** [zfb-example-webshop.takazudomodular.com](https://zfb-example-webshop.takazudomodular.com/)
 
 **Repository:** [Takazudo/zfb-example-webshop](https://github.com/Takazudo/zfb-example-webshop)
@@ -34,22 +28,24 @@ This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migrati
 - **Reading a D1 binding from a page.** `getCloudflareContext<Env>()` hands the route the Worker
   `env` and the raw `Request`; the catalogue, cart, and orders are plain SQL against `env.DB`.
 - **Returning a `Response` instead of a VNode.** Routes that set cookies, branch on
-  `request.method`, and issue 303 redirects need the full response object, so they render their
-  Preact tree to a string themselves.
+  `request.method`, and issue 303 redirects need the full response object, so `lib/render.ts`
+  renders their zudo-react tree with the named `renderToString` import from
+  `@takazudo/zfb/zudo-react/server`.
 - **Auth with nothing but Web Crypto.** PBKDF2 password hashing and an opaque server-side session
   cookie — no auth library, no client JavaScript.
 - **A deliberate URL shape.** The order confirmation page is `/order?id=<n>`, a query string rather
   than a path parameter — and the reason the repo gives for it no longer holds.
-- **Tailwind v4 with a semantic token set** registered through an `@theme` block.
+- **zudo-wind with a semantic token set** in `zfb.config.ts`; its colour values point to authored
+  CSS custom properties in `styles/global.css`.
 
 ## Tech used
 
 | Piece | What the repo actually uses |
 | --- | --- |
-| Framework | zfb with `framework: "preact"` (`zfb.config.ts`), plus `preact-render-to-string` |
-| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present, and load-bearing |
-| Styling | Tailwind v4 (`tailwind: { enabled: true }`); `styles/global.css` declares oklch colour tokens and two spacing axes in an `@theme` block |
+| Framework | zfb **3.0.0** with its zudo-react JSX runtime; `lib/render.ts` uses `renderToString` for HTML responses |
+| zfb version | `@takazudo/zfb` **3.0.0**, `@takazudo/zfb-runtime` **3.0.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — present, and load-bearing |
+| Styling | zudo-wind tokens in `zfb.config.ts`; `styles/global.css` authors oklch colour custom properties and component rules |
 | Rendering mode | `export const prerender = false` on **every** route — no SSG pages exist |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"` plus an `[assets]` block in `wrangler.toml` |
 | Bindings | One D1 binding, `DB` (`webshop` in production, `webshop-preview` for pull requests) |
@@ -109,7 +105,7 @@ With no SSG route left, the build output contains no pages:
 dist/_worker.js              # the SSR Worker the adapter emits
 dist/_zfb_inner.mjs          # the inner bundle it calls
 dist/.assetsignore           # keeps the two files above off the public asset path
-dist/assets/styles-*.css     # the compiled Tailwind stylesheet
+dist/assets/styles-*.css     # the compiled zudo-wind stylesheet
 dist/assets/app.css
 dist/__zfb/routes.json
 ```
@@ -133,7 +129,8 @@ stylesheet gets there in the first place.
 
 zfb will render a returned VNode to HTML for you. These routes cannot use that path: they need to
 branch on `request.method`, attach `Set-Cookie`, and answer with a 303. So they return a `Response`
-and render the Preact tree themselves through a tiny helper in `lib/render.ts`.
+and render the zudo-react tree themselves through `lib/render.ts`, which imports
+`renderToString` from `@takazudo/zfb/zudo-react/server`.
 
 ```tsx title="pages/checkout.tsx"
 export const prerender = false;
@@ -177,7 +174,10 @@ There is no cart JavaScript, no fetch, no optimistic update. "Add to cart" is a 
 ```tsx title="components/product-card.tsx"
 <form method="post" action="/cart">
   <input type="hidden" name="product_id" value={product.id} />
-  <button type="submit" class="...">
+  <button
+    type="submit"
+    class="cursor-pointer rounded-md bg-brand px-hsp-md py-vsp-xs text-small font-semibold text-white transition-colors hover:bg-brand-strong"
+  >
     Add to cart
   </button>
 </form>
@@ -275,4 +275,4 @@ rebuilds, so it checks a finished `dist/` rather than tracking your edits.)
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — reading D1 and KV from an SSR handler, and wiring the bindings up
 - [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract, and how a `prerender = false` dynamic route is matched at request time
 - [Routing](../concepts/routing.mdx) — how `pages/*.tsx` becomes a URL
-- [Styling](../concepts/styling.mdx) — Tailwind v4 in zfb
+- [zudo-wind configuration](../zudo-wind/configuration.mdx) — configuring tokens and resets
