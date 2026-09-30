@@ -1,11 +1,5 @@
 {
   "name": "bundle-repro-fixture",
   "private": true,
-  "type": "module",
-  "dependencies": {
-    "@takazudo/zfb": "3.0.0",
-    "@takazudo/zfb-adapter-cloudflare": "3.0.0",
-    "@takazudo/zfb-runtime": "3.0.0",
-    "repro-realpath-dep": "1.0.0"
-  }
+  "type": "module"
 }
