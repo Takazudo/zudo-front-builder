@@ -29,6 +29,18 @@ pub(crate) mod v8_host_adapter;
 // build on them without pulling in the `render_pipeline` module directly.
 pub use render_pipeline::{DeferredDynamicRoute, PendingDynamicRoute};
 
+/// An intentional CLI exit that should not be rendered as an error.
+#[derive(Debug)]
+pub struct SilentExit(pub i32);
+
+impl std::fmt::Display for SilentExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit with status {}", self.0)
+    }
+}
+
+impl std::error::Error for SilentExit {}
+
 /// Render and print an [`anyhow::Error`] to stderr, prefixed with a red `✗`.
 ///
 /// Used by the `zfb` binary entry point to report top-level command failures.
