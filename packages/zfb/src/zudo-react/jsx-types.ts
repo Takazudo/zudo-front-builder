@@ -33,8 +33,14 @@ type CssProperty =
   | "grid"
   | "gap";
 type CssStyle = Readonly<Partial<Record<CssProperty, string | number | null | undefined>>>;
-type EventProps = {
-  [name: `on:${string}`]: Listener | undefined;
+// The custom-name index must also accept every mapped listener under strict function variance.
+type AnyListener = Listener<any>;
+type EventProps<TEl extends Element, TMap extends Record<keyof TMap, Event>> = {
+  [K in keyof TMap & string as `on:${K}` | `on:${K}:capture`]?: Listener<
+    TMap[K] & { currentTarget: TEl }
+  >;
+} & {
+  [name: `on:${string}`]: AnyListener | undefined;
 };
 type DataAria = {
   [name: `data-${string}`]: ScalarAttribute;
@@ -136,39 +142,46 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   allowfullscreen?: BooleanAttribute;
 }
 
-type HtmlProps<T extends Element = HTMLElement> = HtmlAttributes<T> & DataAria & EventProps;
-type InputBase = Omit<HtmlProps<HTMLInputElement>, "type"> & {
-  defaultValue?: string | undefined;
-  defaultChecked?: boolean | undefined;
-};
-type InputProps =
-  | (InputBase & {
-      type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
-      modelValue?: Signal<string> | undefined;
-      modelChecked?: never;
-    })
-  | (InputBase & {
-      type: "checkbox";
-      modelChecked?: Signal<boolean> | undefined;
-      modelValue?: never;
-    })
-  | (InputBase & {
-      type: "radio";
-      name: string;
-      value: string;
-      modelValue?: Signal<string | null> | undefined;
-      modelChecked?: never;
-    })
-  | (InputBase & {
-      type: string;
-      modelValue?: never;
-      modelChecked?: never;
-    });
-type TextareaProps = HtmlProps<HTMLTextAreaElement> & {
+type HtmlProps<
+  TRef extends Element = HTMLElement,
+  TEvent extends HTMLElement = HTMLElement,
+> = HtmlAttributes<TRef> & DataAria & EventProps<TEvent, HTMLElementEventMap>;
+type InputBase = Omit<HtmlAttributes<HTMLInputElement>, "type"> &
+  DataAria &
+  EventProps<HTMLInputElement, HTMLElementEventMap> & {
+    defaultValue?: string | undefined;
+    defaultChecked?: boolean | undefined;
+  };
+type InputProps = InputBase &
+  (
+    | {
+        type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
+        modelValue?: Signal<string> | undefined;
+        modelChecked?: never;
+      }
+    | {
+        type: "checkbox";
+        modelChecked?: Signal<boolean> | undefined;
+        modelValue?: never;
+      }
+    | {
+        type: "radio";
+        name: string;
+        value: string;
+        modelValue?: Signal<string | null> | undefined;
+        modelChecked?: never;
+      }
+    | {
+        type: string;
+        modelValue?: never;
+        modelChecked?: never;
+      }
+  );
+type TextareaProps = HtmlProps<HTMLTextAreaElement, HTMLTextAreaElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;
 };
-type SelectProps = HtmlProps<HTMLSelectElement> & {
+type SelectProps = HtmlProps<HTMLSelectElement, HTMLSelectElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;
 };
@@ -214,12 +227,14 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   id?: StringAttribute;
 }
 
-type SvgProps = SvgAttributes & DataAria & EventProps;
+type SvgProps<TEvent extends SVGElement = SVGElement> = SvgAttributes &
+  DataAria &
+  EventProps<TEvent, SVGElementEventMap>;
 type CustomProps = ReservedProps &
-  EventProps & {
+  EventProps<HTMLElement, GlobalEventHandlersEventMap> & {
     value?: string | null | undefined;
     checked?: null | undefined;
-    [attribute: string]: StringAttribute | Child | Ref<Element> | Listener | undefined;
+    [attribute: string]: StringAttribute | Child | Ref<Element> | AnyListener | undefined;
   };
 
 type HtmlTag =
@@ -371,8 +386,15 @@ export namespace JSX {
         ? TextareaProps
         : K extends "select"
           ? SelectProps
-          : HtmlProps;
-  } & { [K in SvgTag]: SvgProps } & {
+          : HtmlProps<
+              HTMLElement,
+              K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
+            >;
+  } & {
+    [K in SvgTag]: SvgProps<
+      K extends keyof SVGElementTagNameMap ? SVGElementTagNameMap[K] : SVGElement
+    >;
+  } & {
     [K in `${string}-${string}`]: CustomProps;
   };
   export interface IntrinsicAttributes {
