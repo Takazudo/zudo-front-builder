@@ -155,6 +155,30 @@ describe("router top-level state", () => {
 });
 
 describe("navigate() — happy path with mocked fetch", () => {
+  it("passes a before-swap replacement document to island teardown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("Fetched", "fetched"))),
+    );
+    vi.mocked(unmountIslands).mockClear();
+    document.body.innerHTML = `<main>old</main>`;
+
+    const replacement = document.implementation.createHTMLDocument("Replacement");
+    replacement.head.innerHTML = `<meta name="zfb-view-transitions-enabled" content="true"><title>Replacement</title>`;
+    replacement.body.innerHTML = `<main>replacement</main>`;
+    const replacementBody = replacement.body;
+    const onBeforeSwap = (event: Event) => {
+      (event as Event & { newDocument: Document }).newDocument = replacement;
+    };
+    document.addEventListener("zfb:before-swap", onBeforeSwap, { once: true });
+
+    await navigate("/replacement");
+
+    expect(unmountIslands).toHaveBeenCalledOnce();
+    expect(vi.mocked(unmountIslands).mock.calls[0]?.[1]).toBe(replacementBody);
+    expect(document.querySelector("main")?.textContent).toBe("replacement");
+  });
+
   it("fetches the target URL and swaps in the new <main>", async () => {
     const fetchMock = vi.fn(async (url: RequestInfo) => {
       const u = String(url);

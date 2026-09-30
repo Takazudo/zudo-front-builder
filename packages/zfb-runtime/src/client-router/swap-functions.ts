@@ -161,7 +161,7 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
   // throughout replaceWith(). This prevents Safari from losing WebGL context on
   // <canvas> elements due to brief DOM detachment. Uses moveBefore() where available
   // (Chrome 133+) for zero-detachment atomic moves.
-  const persistPairs: { old: Element; newTarget: Element }[] = [];
+  const persistPairs: { old: Element; newTarget: Element; oldAncestors: Element[] }[] = [];
   const docEl = oldElement.ownerDocument.documentElement;
 
   // moveBefore() is not yet in TypeScript's DOM lib, feature-detect and wrap.
@@ -170,11 +170,38 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
       ? (parent, node, child) => (parent as any).moveBefore(node, child)
       : null;
 
+  // Snapshot matches and ancestry before moving anything. A nested old node can
+  // have an incoming target outside its old parent (or inside another matched
+  // target), so neither tree can be inspected reliably once lifting begins.
   for (const el of oldElement.querySelectorAll(`[${PERSIST_ATTR}]`)) {
     const id = el.getAttribute(PERSIST_ATTR);
     const newEl = id !== null ? querySelectorWithAttrValue(newElement, "", PERSIST_ATTR, id) : null;
     if (!newEl) continue; // no matching target — leave in old body to be discarded
-    persistPairs.push({ old: el, newTarget: newEl });
+    const oldAncestors: Element[] = [];
+    for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      oldAncestors.push(ancestor);
+    }
+    persistPairs.push({ old: el, newTarget: newEl, oldAncestors });
+  }
+
+  const matchedTargets = new Set(persistPairs.map(({ newTarget }) => newTarget));
+  const liftedPairs = persistPairs.filter(({ newTarget }) => {
+    for (
+      let ancestor = newTarget.parentElement;
+      ancestor && ancestor !== newElement;
+      ancestor = ancestor.parentElement
+    ) {
+      if (matchedTargets.has(ancestor)) return false;
+    }
+    return true;
+  });
+  const liftedNodes = new Set(liftedPairs.map(({ old }) => old));
+  const retainedPairs = persistPairs.filter(
+    ({ old, oldAncestors }) =>
+      liftedNodes.has(old) || oldAncestors.some((ancestor) => liftedNodes.has(ancestor)),
+  );
+
+  for (const { old: el } of liftedPairs) {
     if (moveBefore) {
       moveBefore(docEl, el, null);
     } else {
@@ -186,15 +213,18 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
   oldElement.replaceWith(newElement);
 
   // Move persist elements into the new body at the position of their targets
-  for (const { old: el, newTarget } of persistPairs) {
+  for (const { old: el, newTarget } of liftedPairs) {
     if (moveBefore) {
       moveBefore(newTarget.parentNode!, el, newTarget);
       newTarget.remove();
     } else {
       newTarget.replaceWith(el);
     }
-    // Compare effective identity and props on the lifted wrapper. The surviving
-    // node carries incoming metadata before the runtime recreates its root.
+  }
+
+  // Riding children are retained too: compare their incoming island metadata
+  // even though their DOM nodes were not moved independently.
+  for (const { old: el, newTarget } of retainedPairs) {
     const islandAttrs = [
       "data-zfb-island",
       "data-zfb-island-skip-ssr",
