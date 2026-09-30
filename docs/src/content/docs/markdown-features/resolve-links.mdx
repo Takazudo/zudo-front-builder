@@ -30,6 +30,8 @@ Link resolution does nothing unless you opt in with
 `resolveMarkdownLinks: { enabled: true }` in `zfb.config.ts`:
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   resolveMarkdownLinks: {
     enabled: true,
@@ -49,6 +51,8 @@ For a project with more than one docs collection (e.g. EN + JA), use `dirs`
 so each collection maps to its own route prefix:
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   resolveMarkdownLinks: {
     enabled: true,
