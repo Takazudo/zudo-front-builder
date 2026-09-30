@@ -431,9 +431,7 @@ fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     );
     // The module label is threaded through as the 4th register arg.
     assert!(
-        src.contains(
-            "__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"/abs/components/Counter.tsx\");"
-        ),
+        src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\", \"Counter.tsx\");"),
         "expected module label passed as the 4th __zfb_register arg:\n{src}"
     );
 }
