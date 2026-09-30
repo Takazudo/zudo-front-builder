@@ -34,10 +34,11 @@ pub struct CssInputDependency {
     pub kind: CssInputDependencyKind,
 }
 
-/// Only stylesheets are watched by the later dev integration.
+/// Classifies authored CSS inputs for later dev invalidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CssInputDependencyKind {
     Stylesheet,
+    PackageManifest,
     Asset,
 }
 

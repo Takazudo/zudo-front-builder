@@ -102,7 +102,7 @@ pub fn resolve_css_imports(entry: &Path, project_root: &Path) -> Vec<PathBuf> {
                 // reports the reason through its source-provider error.
                 continue;
             };
-            let real = match std::fs::canonicalize(&resolved) {
+            let real = match std::fs::canonicalize(&resolved.path) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
@@ -127,17 +127,28 @@ fn resolve_one(
     importer_real: &Path,
     spec: &str,
     project_root: &Path,
-) -> Result<PathBuf, ImportResolutionError> {
+) -> Result<ResolvedCssImport, ImportResolutionError> {
     let importer_dir = importer_real.parent().unwrap_or(Path::new("."));
 
     if is_relative_specifier(spec) {
         let candidate = importer_dir.join(spec);
-        return file_or_css_index(&candidate)
-            .ok_or(ImportResolutionError::RelativePathMissing(candidate));
+        let path = file_or_css_index(&candidate)
+            .ok_or(ImportResolutionError::RelativePathMissing(candidate))?;
+        return Ok(ResolvedCssImport {
+            path,
+            package_manifest: None,
+        });
     }
 
     // Bare package specifier — walk up looking for node_modules.
     Ok(resolve_package_specifier(importer_dir, project_root, spec)?)
+}
+
+#[derive(Debug)]
+struct ResolvedCssImport {
+    path: PathBuf,
+    /// Manifest whose `exports` entry selected `path`, if any.
+    package_manifest: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -290,6 +301,15 @@ pub fn bundle_authored_css_with_assets(
                 kind: CssInputDependencyKind::Asset,
             }),
     );
+    input_dependencies.extend(
+        state
+            .package_manifests
+            .iter()
+            .map(|path| CssInputDependency {
+                path: path.clone(),
+                kind: CssInputDependencyKind::PackageManifest,
+            }),
+    );
     Ok(AuthoredCssBundle {
         css,
         companions: state.resolver.companions.clone(),
@@ -309,6 +329,16 @@ enum AuthoredCssSourceError {
         "failed to canonicalize authored CSS import {specifier:?} from {origin} at {path}: {source}"
     )]
     Canonicalize {
+        origin: PathBuf,
+        specifier: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "failed to canonicalize package manifest for authored CSS import {specifier:?} from {origin} at {path}: {source}"
+    )]
+    ManifestCanonicalize {
         origin: PathBuf,
         specifier: String,
         path: PathBuf,
@@ -340,6 +370,7 @@ enum AuthoredCssSourceError {
 struct AssetAwareState {
     resolver: PackageUrlResolver,
     stylesheets: BTreeSet<PathBuf>,
+    package_manifests: BTreeSet<PathBuf>,
 }
 
 struct AuthoredCssSourceProvider<'a> {
@@ -461,14 +492,29 @@ impl SourceProvider for AuthoredCssSourceProvider<'_> {
                     reason: error.to_string(),
                 }
             })?;
-        let real = std::fs::canonicalize(&resolved).map_err(|source| {
+        let ResolvedCssImport {
+            path: resolved_path,
+            package_manifest,
+        } = resolved;
+        let real = std::fs::canonicalize(&resolved_path).map_err(|source| {
             AuthoredCssSourceError::Canonicalize {
                 origin: originating_file.to_path_buf(),
                 specifier: specifier.to_string(),
-                path: resolved,
+                path: resolved_path,
                 source,
             }
         })?;
+        if let (Some(assets), Some(manifest)) = (&self.assets, package_manifest) {
+            let manifest = std::fs::canonicalize(&manifest).map_err(|source| {
+                AuthoredCssSourceError::ManifestCanonicalize {
+                    origin: originating_file.to_path_buf(),
+                    specifier: specifier.to_string(),
+                    path: manifest,
+                    source,
+                }
+            })?;
+            assets.lock().unwrap().package_manifests.insert(manifest);
+        }
         self.import_contexts.lock().unwrap().insert(
             real.clone(),
             (originating_file.to_path_buf(), specifier.to_string()),
@@ -589,7 +635,7 @@ fn resolve_package_specifier(
     start_dir: &Path,
     project_root: &Path,
     spec: &str,
-) -> Result<PathBuf, PackageResolutionError> {
+) -> Result<ResolvedCssImport, PackageResolutionError> {
     let (pkg_name, subpath) = split_package_specifier(spec)
         .ok_or_else(|| PackageResolutionError::NotInstalled(spec.to_string()))?;
 
@@ -615,28 +661,46 @@ fn resolve_package_specifier(
                 .as_ref()
                 .filter(|json| json.get("exports").is_some())
             {
-                return resolve_exported_css_subpath(
+                let path = resolve_exported_css_subpath(
                     nm,
                     &pkg_root,
                     &pkg_name,
                     &exported_subpath,
                     spec,
                     json,
-                );
+                )?;
+                return Ok(ResolvedCssImport {
+                    path,
+                    package_manifest: Some(pkg_root.join("package.json")),
+                });
             }
-            return file_or_css_index(&pkg_root.join(sub)).ok_or({
+            let path = file_or_css_index(&pkg_root.join(sub)).ok_or({
                 PackageResolutionError::MissingPhysicalPath {
                     package: pkg_name,
                     subpath: exported_subpath,
                 }
+            })?;
+            return Ok(ResolvedCssImport {
+                path,
+                package_manifest: None,
             });
         }
         // Bare package — consult package.json for a CSS entry, then index.css.
-        return manifest
+        if let Some(entry) = manifest
             .as_ref()
             .and_then(|json| package_css_entry(&pkg_root, json))
-            .or_else(|| file_or_css_index(&pkg_root))
-            .ok_or(PackageResolutionError::MissingCssEntry(pkg_name));
+        {
+            return Ok(ResolvedCssImport {
+                path: entry.path,
+                package_manifest: entry.uses_exports.then(|| pkg_root.join("package.json")),
+            });
+        }
+        let path = file_or_css_index(&pkg_root)
+            .ok_or(PackageResolutionError::MissingCssEntry(pkg_name))?;
+        return Ok(ResolvedCssImport {
+            path,
+            package_manifest: None,
+        });
     }
     Err(PackageResolutionError::NotInstalled(pkg_name))
 }
@@ -861,25 +925,40 @@ fn split_package_specifier(spec: &str) -> Option<(String, Option<String>)> {
     }
 }
 
+/// Resolved CSS entry and whether the `exports` field selected it.
+struct PackageCssEntry {
+    path: PathBuf,
+    uses_exports: bool,
+}
+
 /// Read a package's `package.json` and return the CSS entry it advertises, in
 /// precedence order: `style`, an `exports` map's `"."` → `style`/`default` CSS
-/// value, then `main` when it points at a `.css` file. Returns the resolved
-/// on-disk path (un-canonicalised; the caller canonicalises).
-fn package_css_entry(pkg_root: &Path, json: &serde_json::Value) -> Option<PathBuf> {
+/// value, then `main` when it points at a `.css` file. The caller canonicalises
+/// the selected stylesheet and any manifest used by `exports`.
+fn package_css_entry(pkg_root: &Path, json: &serde_json::Value) -> Option<PackageCssEntry> {
     if let Some(style) = json.get("style").and_then(|v| v.as_str()) {
         if let Some(hit) = file_or_css_index(&pkg_root.join(style)) {
-            return Some(hit);
+            return Some(PackageCssEntry {
+                path: hit,
+                uses_exports: false,
+            });
         }
     }
     if let Some(entry) = exports_css_entry(json.get("exports")) {
         if let Some(hit) = file_or_css_index(&pkg_root.join(entry)) {
-            return Some(hit);
+            return Some(PackageCssEntry {
+                path: hit,
+                uses_exports: true,
+            });
         }
     }
     if let Some(main) = json.get("main").and_then(|v| v.as_str()) {
         if main.ends_with(".css") {
             if let Some(hit) = file_or_css_index(&pkg_root.join(main)) {
-                return Some(hit);
+                return Some(PackageCssEntry {
+                    path: hit,
+                    uses_exports: false,
+                });
             }
         }
     }
@@ -1240,6 +1319,99 @@ mod tests {
 
         assert_eq!(bundled.matches(".package-token").count(), 1);
         assert!(!bundled.contains("@scope/design-system"));
+    }
+
+    #[test]
+    fn reports_only_canonical_manifests_used_by_css_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let styles = root.join("styles");
+        let installed_theme = root.join("node_modules/@fixture/theme");
+        #[cfg(unix)]
+        let theme = root.join("packages/theme");
+        #[cfg(not(unix))]
+        let theme = installed_theme.clone();
+        fs::create_dir_all(&styles).unwrap();
+        fs::create_dir_all(theme.join("dist")).unwrap();
+        fs::create_dir_all(installed_theme.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&theme, &installed_theme).unwrap();
+        fs::write(
+            theme.join("package.json"),
+            r#"{"name":"@fixture/theme","exports":{"./a.css":"./dist/a.css","./b.css":"./dist/b.css"}}"#,
+        )
+        .unwrap();
+        fs::write(theme.join("dist/a.css"), ".a { color: red; }\n").unwrap();
+        fs::write(theme.join("dist/b.css"), ".b { color: blue; }\n").unwrap();
+
+        let other_package = root.join("node_modules/@fixture/other");
+        fs::create_dir_all(other_package.join("dist")).unwrap();
+        fs::write(
+            other_package.join("package.json"),
+            r#"{"name":"@fixture/other","exports":{"./theme.css":"./dist/theme.css"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            other_package.join("dist/theme.css"),
+            ".other { color: orange; }\n",
+        )
+        .unwrap();
+
+        let legacy_package = root.join("node_modules/@fixture/legacy");
+        fs::create_dir_all(&legacy_package).unwrap();
+        fs::write(
+            legacy_package.join("package.json"),
+            r#"{"name":"@fixture/legacy"}"#,
+        )
+        .unwrap();
+        fs::write(
+            legacy_package.join("physical.css"),
+            ".physical { color: green; }\n",
+        )
+        .unwrap();
+        fs::write(styles.join("relative.css"), ".relative { color: black; }\n").unwrap();
+
+        let exported_entry = styles.join("exported.css");
+        let exported_css = concat!(
+            "@import '@fixture/other/theme.css';\n",
+            "@import '@fixture/theme/a.css';\n",
+            "@import '@fixture/theme/b.css';\n",
+        );
+        fs::write(&exported_entry, exported_css).unwrap();
+        let exported =
+            bundle_authored_css_with_assets(&exported_entry, root, exported_css).unwrap();
+        let manifest_dependencies: Vec<_> = exported
+            .input_dependencies
+            .iter()
+            .filter(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest)
+            .map(|dependency| dependency.path.clone())
+            .collect();
+        let mut expected_manifests = vec![
+            fs::canonicalize(installed_theme.join("package.json")).unwrap(),
+            fs::canonicalize(other_package.join("package.json")).unwrap(),
+        ];
+        expected_manifests.sort();
+        assert_eq!(manifest_dependencies, expected_manifests);
+
+        let relative_entry = styles.join("relative-entry.css");
+        let relative_css = "@import './relative.css';\n";
+        fs::write(&relative_entry, relative_css).unwrap();
+        let relative =
+            bundle_authored_css_with_assets(&relative_entry, root, relative_css).unwrap();
+        assert!(!relative
+            .input_dependencies
+            .iter()
+            .any(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest));
+
+        let physical_entry = styles.join("physical-entry.css");
+        let physical_css = "@import '@fixture/legacy/physical.css';\n";
+        fs::write(&physical_entry, physical_css).unwrap();
+        let physical =
+            bundle_authored_css_with_assets(&physical_entry, root, physical_css).unwrap();
+        assert!(!physical
+            .input_dependencies
+            .iter()
+            .any(|dependency| dependency.kind == CssInputDependencyKind::PackageManifest));
     }
 
     #[test]
