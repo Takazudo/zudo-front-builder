@@ -30,7 +30,7 @@ the tailwind key was removed in zfb 3; utilities are compiled by the built-in zu
 
 エントリーとそのインポート先から、`@import "tailwindcss"`、preflight と utilities のインポート、および `@theme`、`@source`、`@apply`、`@utility`、`@plugin` などの Tailwind ディレクティブを削除します。`wind: false` でも、残ったディレクティブは診断 `ZW009` で失敗します。独自のセレクターと宣言は手書き CSS に、ユーティリティの値は `wind.tokens` に移します。
 
-v3 はパレット、間隔の単位、名前付きスケール、ブレークポイントを暗黙には提供しません。`wind.reset` に `none`、`minimal-v1`、`owned-v1` から選んでください。既定は `none` です。新しい basic-blog の雛形は `owned-v1` を選び、パレットと `spacingUnit` を宣言し、記事のリスト表示を手書き CSS で戻しています。リセットを選ぶ際は見出し、リスト、境界線、フォームを目視確認してください。
+v3 はパレット、間隔の単位、名前付きスケール、ブレークポイントを暗黙には提供しません。`wind.reset` に `none`、`minimal-v1`、`owned-v1` から選んでください。既定は `none` です。新しい basic-blog の雛形は `owned-v1` を選び、パレットと `spacingUnit` を宣言し、記事のリスト表示を手書き CSS で戻しています。リセットを選ぶ際は見出し、リスト、境界線、フォームに加え、`html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認してください。これらを含まないページのピクセル差分では差を検出できません。[Tailwind preflight との違い](../zudo-wind/coming-from-tailwind.mdx#リセット-tailwind-preflight-との違い)も参照してください。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -64,6 +64,8 @@ export default defineConfig({
 }
 ```
 
+`/** @jsxImportSource preact */` または `/** @jsxImportSource react */` というファイル単位の pragma が残っていないか、たとえば `grep -rln "@jsxImportSource" src pages components` で探し、zudo-react が描画するコンポーネントから削除します。ファイル単位の pragma は `tsconfig.json` より優先されます。Preact が未インストールなら、Preact の pragma によってビルドが `Could not resolve "preact/jsx-runtime"` で失敗します。Preact がウィジェットの peer dependency などとして残っている場合は、静的描画が `ZR_CHILD` 診断で失敗します。
+
 hook を使うコンポーネントは、セットアップ時に一度実行される zudo-react コンポーネントへ書き換えます。書き込み可能な状態とフォームのモデルには `signal()`、読み取り専用の派生値には `computed()`、ライフサイクルには `getScope()` と `scope.effect()`、条件付き領域とキー付き領域には `Show` と `For` を使います。読み取り専用または computed の signal は書き込み可能なモデルにできません。JSX では `class`、`for`、`style={{ "background-color": "red" }}` のような HTML/CSS の表記と、ネイティブの `on:click` リスナーを使います。React 式の props とブランドのない要素オブジェクトは、zudo-react の JSX または `h()` に置き換えます。`rawHtml` は信頼できる HTML に限り、children と併用できません。変換例は [Preact hooks からの移行表](../zudo-react/coming-from-preact-hooks.mdx)を参照してください。
 
 `<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../concepts/islands.mdx)も参照してください。
@@ -74,7 +76,7 @@ hook を使うコンポーネントは、セットアップ時に一度実行さ
 
 ## CLI と環境変数
 
-スクリプトと CI から `ZFB_TAILWIND_BIN` と `ZFB_TAILWIND_OXIDE_WARMUP` を削除します。Tailwind の同梱バイナリとピンは削除されました。`zfb css` は単独の CSS コマンドとして残り、zudo-wind でコンパイルします。明示的な `--source` 入力も引き続き使えます。`zfb wind explain <candidate>` は一つの候補を説明し、`zfb wind audit` はプロジェクト内の候補を調べます。build と dev は `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` をスキャンし、単独コマンドの明示的なソースには `.html` と `.mjs` も指定できます。
+スクリプトと CI から `ZFB_TAILWIND_BIN` と `ZFB_TAILWIND_OXIDE_WARMUP` を削除します。Tailwind の同梱バイナリとピンは削除されました。`zfb css` は単独の CSS コマンドとして残り、zudo-wind でコンパイルします。明示的な `--source` 入力も引き続き使えます。`node_modules` や `dist` 内のパッケージファイルも、プロジェクトの設定済み出力ディレクトリの外なら指定できます。ただし、設定済みの `outDir`、`--output` のパス、zfb のスクラッチルート内の一致ファイルは除外されます。すべて除外されると `zfb css` は `ZW010` エラーで失敗し、一部だけ除外されると `ZW010` 警告を出して残りを走査します。[CLI のソース規則](../api/cli.mdx#zfb-css)を参照してください。`zfb wind explain <candidate>` は一つの候補を説明し、`zfb wind audit` はプロジェクト内の候補を調べます。build と dev は `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` をスキャンし、単独コマンドの明示的なソースには `.html` と `.mjs` も指定できます。
 
 `zfb --version` はリリースバージョンと `embedded esbuild` のバージョンを表示し、Tailwind の行は表示しません。移行中のエラーの調査には [wind の診断ガイド](../zudo-wind/diagnostics-and-tools.mdx)を使ってください。
 
@@ -92,20 +94,26 @@ hook を使うコンポーネントは、セットアップ時に一度実行さ
 ```
 
 ```ts
-wind: {
-  manifests: { widgets: { path: "./node_modules/widgets/wind.json" } },
-  tokens: { colors: { accent: "#2563eb" } },
-}
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    manifests: { widgets: { path: "widgets/wind.json" } },
+    tokens: { colors: { accent: "#2563eb" } },
+  },
+});
 ```
 
-配布するコンポーネントは `@takazudo/zfb/zudo-react` からインポートし、同じ JSX import source を使ってください。zfb 利用者向けに Preact や React の JSX runtime import を配布しないでください。マニフェストの検証と探索ルートは [ソースと候補](../zudo-wind/sources-and-candidates.mdx)を参照してください。
+`widgets` パッケージは `./wind.json` を export する必要があります。bare specifier はパッケージの exports から解決され、`./` で始まるパスはプロジェクトルート（プリセット由来ならそのプリセットパッケージ）を基準に解決されます。[マニフェストパスの解決](../zudo-wind/configuration.mdx#wind-キー-マニフェストパスの解決)を参照してください。
+
+配布するコンポーネントは `@takazudo/zfb/zudo-react` からインポートし、同じ JSX import source を使ってください。zudo-react が描画するコンポーネントには Preact や React の JSX runtime import を含めないでください。独自フレームワークを持つ不透明な自己マウント型ウィジェットは、島から遅延読み込みできます。[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)を参照してください。マニフェストの検証と探索ルートは [ソースと候補](../zudo-wind/sources-and-candidates.mdx)を参照してください。
 
 ## チェックリスト
 
 1. 設定プリセットを先に更新し、対応する v3 パッケージとバイナリを導入します。`zfb --version` と `package.json` を確認します。
 2. `framework` を削除し、`tailwind` を `wind` または `wind: false` に置き換えます。`zfb check` で削除済みキーと無効な内部データを確認します。
-3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
-4. JSX import source、依存関係、コンポーネント、島、フォームモデルを変更します。`zfb check` を実行し、型エラーを修正します。
+3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定したうえで、代表的なページの `html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
+4. JSX import source を変更し、ファイル単位の `@jsxImportSource` pragma を削除して、依存関係、コンポーネント、島、フォームモデルを更新します。`zfb check` を実行し、型エラーを修正します。
 5. md-wasm 呼び出しから `jsxRuntime` を削除し、コンパイル済み出力の利用側を更新します。パッケージの TypeScript チェックを実行します。
 6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。
 7. ビルドスクリプトから Tailwind の環境変数を削除します。`zfb build` を実行し、主要ページ、島、フォーム、スタイルをブラウザーで比較します。
