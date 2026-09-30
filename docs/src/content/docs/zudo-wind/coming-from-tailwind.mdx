@@ -106,7 +106,7 @@ With `owned-v1`, add list markers back where the design calls for them; the scaf
 
 ### Differences from Tailwind preflight
 
-The baseline is **Tailwind CSS 4.2.0 preflight vs `owned-v1`**. These differences came from recipe migrations measured in Chromium 147 and 151 and WebKit 26.4; the fixture/configuration matrix was not exhaustive. In the measured projects, Tailwind's theme resolves `--default-font-family` from `--font-sans` and `--default-mono-font-family` from `--font-mono`.
+The baseline is **Tailwind CSS 4.2.0 preflight vs `owned-v1`**. The earlier recipe migrations were measured in Chromium 147 and 151 and WebKit 26.4. The supplemental #3451 fixture ran in Chromium 151 and WebKit 26.5 at 375px and 1280px; neither matrix is exhaustive. In the measured projects, Tailwind's theme resolves `--default-font-family` from `--font-sans` and `--default-mono-font-family` from `--font-mono`.
 
 | Selector | Tailwind 4.2.0 preflight | `owned-v1` and effect |
 | --- | --- | --- |
@@ -117,11 +117,12 @@ The baseline is **Tailwind CSS 4.2.0 preflight vs `owned-v1`**. These difference
 | `sub, sup` | `font-size: 75%; line-height: 0; position: relative; vertical-align: baseline`, with `sub { bottom: -0.25em }` and `sup { top: -0.5em }` | No rules; the line box can grow and shift layout. |
 | `hr` | `color: inherit` | No color rule; the UA color can affect the border. |
 | `button`, button/reset/submit inputs | `appearance: button` | No appearance rule; native appearance can differ. |
+| `button, input, select, optgroup, textarea` | `border-radius: 0; background-color: transparent; opacity: 1` | `owned-v1` already uses transparent backgrounds for buttons and button-type inputs; a text input keeps its UA white background in Chromium. Add the common-control rule below to match these declarations. |
 | `::placeholder` | `opacity: 1` and, in supported browsers, `color: color-mix(in oklab, currentcolor 50%, transparent)` | No rule; UA placeholder color and opacity apply (grey in measured Chromium). |
 | `::file-selector-button` | Borderless, transparent, inherited text styling, 4px end margin, `appearance: button` | No pseudo-element rule; the native bevelled file button remains. |
 | `[hidden]:where(:not([hidden="until-found"]))` | `display: none !important` | Only the UA hidden rule applies; a display utility can make an element with `hidden` visible silently. |
 
-The reported **0 differing elements** after the original authored parity rules applied only to the measured fixture/configuration matrix, not every control, pseudo-element, font installation, or platform. The first fixture did not probe `abbr[title]`, `progress`, or `:-moz-focusring`. Later recipe checks separately measured placeholders and file buttons. A per-element `getComputedStyle` diff does not inspect `::placeholder` or `::file-selector-button`; query each pseudo-element explicitly and check pixels where appearance matters.
+The original **0 differing elements** result was limited to its fixture: it omitted a standalone text input, `abbr[title]`, `progress`, and `:-moz-focusring`. The #3451 fixture found one difference before the common-control rule below: the text input had the UA white background under `owned-v1` and a transparent background under Tailwind. After adding the rule, every standard computed-style property on the fixture elements and both pseudo-elements matched in Chromium 151 and WebKit 26.5 at both widths; all four screenshot pairs were pixel-identical. Chromium also retained a visible keyboard focus ring on the link after tabbing to it. This matrix still does not cover every control, font installation, or platform. A per-element `getComputedStyle` diff does not inspect `::placeholder` or `::file-selector-button`; query each explicitly and compare pixels where appearance matters.
 
 For projects that want these measured preflight behaviors, add the following to authored CSS. Replace the sample font stacks with your project's stacks if they differ. The project must declare `--font-sans` and `--font-mono` in authored CSS, as this block does, or substitute literal stacks at both `font-family` declarations: v3 supplies no implicit theme.
 
@@ -139,6 +140,11 @@ For projects that want these measured preflight behaviors, add the following to 
   sup { top: -0.5em; }
   hr { color: inherit; }
   button, input:where([type="button"], [type="reset"], [type="submit"]) { appearance: button; }
+  button, input, select, optgroup, textarea {
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
   ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
   ::file-selector-button {
     box-sizing: border-box;
@@ -161,7 +167,7 @@ For projects that want these measured preflight behaviors, add the following to 
 }
 ~~~
 
-The file-selector rule is separate because the `button` rule does not style that pseudo-element. In the Chromium 151 image-gallery recipe, adding the measured file-selector rule removed the pixel and pseudo-element differences on both tested pages in light and dark themes. The `[hidden]` rule is optional; its `!important` overrides display utilities, as Tailwind preflight does. The [layer prelude](./cascade-and-reset.mdx) orders `zw-reset` before authored `base`, so these declarations can override the reset. Keep keyboard focus indicators and review each rule you adopt rather than pasting a broader reset blindly. Restoring reset declarations does not restore utility placement or relation-selector specificity; that migration difference is tracked in #3386.
+The common-control rule restores Tailwind's border radius, background, and opacity declarations. The file-selector rule is separate because the `button` rule does not style that pseudo-element. In the Chromium 151 image-gallery recipe, adding the measured file-selector rule removed the pixel and pseudo-element differences on both tested pages in light and dark themes. The `[hidden]` rule is optional; its `!important` overrides display utilities, as Tailwind preflight does. The [layer prelude](./cascade-and-reset.mdx) orders `zw-reset` before authored `base`, so these declarations can override the reset. Keep keyboard focus indicators and review each rule you adopt rather than pasting a broader reset blindly. Restoring reset declarations does not restore utility placement or relation-selector specificity; that migration difference is tracked in #3386.
 
 ## Variants and grammar
 
