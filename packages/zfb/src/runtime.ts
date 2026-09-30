@@ -295,8 +295,10 @@ const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
  * - initial/deferred/missing entry/failed mount: marker and handle absent;
  * - successful mount: both present;
  * - discarded root: disposal leaves DOM for the body swap, then clears both;
- * - unchanged persisted root: both survive with the same DOM node;
- * - changed persisted root: dispose, clear, then mount in render mode;
+ * - unchanged island inside a retained persist boundary: handle and marker survive;
+ * - changed island inside a retained boundary: metadata and remount flag are set,
+ *   then the post-swap scan disposes once and mounts in render mode;
+ * - removed island inside a retained boundary: dispose and detach before swap;
  * - bundle re-import: dispose the old symbol handle before render mode replaces it.
  */
 export const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
@@ -626,38 +628,169 @@ function fireInlineMount(
 }
 
 /**
- * Dispose roots that the incoming body will discard. Persisted roots keep their
- * handles and DOM until the post-swap scan determines whether to recreate them.
+ * Snapshot persistence and island pairings before changing any old-body node.
+ * The router lifts only matched persist nodes whose incoming targets are not
+ * nested inside another matched target. Their descendants survive that lift.
  */
 export function unmountIslands(
   root: ParentNode = document.body,
   incomingBody?: ParentNode | null,
 ): void {
-  const selector = "[data-zfb-island],[data-zfb-island-skip-ssr]";
-  // Persisted nodes are lifted by the router and retain their live resources.
-  const preservedPersistIds = collectPersistIds(incomingBody);
-  const elements = root.querySelectorAll<HTMLElement>(selector);
-  for (const el of Array.from(elements)) {
-    const persistId = el.getAttribute(PERSIST_ATTR);
-    if (persistId !== null && preservedPersistIds.has(persistId)) continue;
-    disposeIsland(el, "disposal");
+  const islandSelector = "[data-zfb-island],[data-zfb-island-skip-ssr]";
+  const oldIslands = Array.from(root.querySelectorAll<HTMLElement>(islandSelector));
+  if (!incomingBody) {
+    for (const island of oldIslands) disposeIsland(island, "disposal");
+    return;
+  }
+
+  const persistSelector = `[${PERSIST_ATTR}]`;
+  const oldPersist = Array.from(root.querySelectorAll(persistSelector));
+  const incomingPersist = Array.from(incomingBody.querySelectorAll(persistSelector));
+  const incomingById = new Map<string, Element>();
+  for (const element of incomingPersist) {
+    const id = element.getAttribute(PERSIST_ATTR);
+    if (id !== null && !incomingById.has(id)) incomingById.set(id, element);
+  }
+
+  const targets = new Map<Element, Element>();
+  for (const element of oldPersist) {
+    const id = element.getAttribute(PERSIST_ATTR);
+    const target = id === null ? undefined : incomingById.get(id);
+    if (target) targets.set(element, target);
+  }
+  const matchedTargets = new Set(targets.values());
+  const lifted = new Set<Element>();
+  for (const [element, target] of targets) {
+    let ancestor = target.parentElement;
+    while (ancestor && !matchedTargets.has(ancestor)) ancestor = ancestor.parentElement;
+    if (!ancestor) lifted.add(element);
+  }
+  const retained = new Set<Element>(lifted);
+  for (const element of oldPersist) {
+    if (!targets.has(element)) continue;
+    let ancestor = element.parentElement;
+    while (ancestor && !lifted.has(ancestor)) ancestor = ancestor.parentElement;
+    if (ancestor) retained.add(element);
+  }
+
+  const boundaryById = new Map<string, Element>();
+  for (const element of oldPersist) {
+    if (!retained.has(element)) continue;
+    const id = element.getAttribute(PERSIST_ATTR);
+    if (id !== null && !boundaryById.has(id)) boundaryById.set(id, element);
+  }
+  const oldByBoundary = new Map<Element, Element[]>();
+  const incomingByBoundary = new Map<Element, Element[]>();
+  const withoutBoundary: Element[] = [];
+  for (const island of oldIslands) {
+    let ancestor: Element | null = island;
+    while (ancestor && !retained.has(ancestor)) ancestor = ancestor.parentElement;
+    if (!ancestor) {
+      withoutBoundary.push(island);
+      continue;
+    }
+    const group = oldByBoundary.get(ancestor) ?? [];
+    group.push(island);
+    oldByBoundary.set(ancestor, group);
+  }
+  for (const island of incomingBody.querySelectorAll(islandSelector)) {
+    let ancestor: Element | null = island;
+    let boundary: Element | undefined;
+    while (ancestor && !boundary) {
+      const id = ancestor.getAttribute(PERSIST_ATTR);
+      if (id !== null) boundary = boundaryById.get(id);
+      ancestor = ancestor.parentElement;
+    }
+    if (!boundary) continue;
+    const group = incomingByBoundary.get(boundary) ?? [];
+    group.push(island);
+    incomingByBoundary.set(boundary, group);
+  }
+
+  const pairs: Array<{ old: Element; incoming: Element }> = [];
+  const removed: Element[] = [];
+  for (const [boundary, oldGroup] of oldByBoundary) {
+    const incomingGroup = incomingByBoundary.get(boundary) ?? [];
+    const pairedOld = new Set<Element>();
+    const pairedIncoming = new Set<Element>();
+    // A persisted island root always maps to its own target, even when the
+    // target changes component or ceases to be an island.
+    if (oldGroup.includes(boundary)) {
+      pairedOld.add(boundary);
+      const target = targets.get(boundary);
+      if (target && incomingGroup.includes(target)) {
+        pairs.push({ old: boundary, incoming: target });
+        pairedIncoming.add(target);
+      } else {
+        removed.push(boundary);
+      }
+    }
+    for (const old of oldGroup) {
+      if (pairedOld.has(old)) continue;
+      const name = islandName(old);
+      const incoming = incomingGroup.find(
+        (candidate) => !pairedIncoming.has(candidate) && islandName(candidate) === name,
+      );
+      if (!incoming) continue;
+      pairs.push({ old, incoming });
+      pairedOld.add(old);
+      pairedIncoming.add(incoming);
+    }
+    const remainingIncoming = incomingGroup.filter((island) => !pairedIncoming.has(island));
+    let next = 0;
+    for (const old of oldGroup) {
+      if (pairedOld.has(old)) continue;
+      const incoming = remainingIncoming[next++];
+      if (incoming) pairs.push({ old, incoming });
+      else removed.push(old);
+    }
+  }
+
+  // Apply only after all boundaries and pairings have been computed. An old
+  // descendant removed from a lifted wrapper must be detached as well as
+  // disposed, or the post-swap walk could hydrate its mutated DOM.
+  for (const island of withoutBoundary) disposeIsland(island, "disposal");
+  for (const { old, incoming } of pairs) {
+    const copyProps =
+      !old.hasAttribute("data-zfb-transition-persist-props") ||
+      old.getAttribute("data-zfb-transition-persist-props") === "false";
+    const identityChanged = ISLAND_IDENTITY_ATTRS.some(
+      (attribute) => old.getAttribute(attribute) !== incoming.getAttribute(attribute),
+    );
+    if (
+      !old.hasAttribute(ISLAND_REMOUNT_ATTR) &&
+      !identityChanged &&
+      (!copyProps || old.getAttribute("data-props") === incoming.getAttribute("data-props"))
+    )
+      continue;
+    for (const attribute of ISLAND_IDENTITY_ATTRS) copyAttribute(incoming, old, attribute);
+    if (copyProps) copyAttribute(incoming, old, "data-props");
+    old.setAttribute(ISLAND_REMOUNT_ATTR, "");
+  }
+  for (const island of removed) {
+    disposeIsland(island, "disposal");
+    island.remove();
   }
 }
 
-/**
- * Collect the `data-zfb-transition-persist` ids present in the incoming body so
- * `unmountIslands` can tell which old-body islands `swapBodyElement` will lift
- * (and therefore must be left mounted). Returns an empty set when no incoming
- * body is supplied.
- */
-function collectPersistIds(incomingBody?: ParentNode | null): Set<string> {
-  const ids = new Set<string>();
-  if (!incomingBody) return ids;
-  for (const el of incomingBody.querySelectorAll(`[${PERSIST_ATTR}]`)) {
-    const id = el.getAttribute(PERSIST_ATTR);
-    if (id !== null) ids.add(id);
-  }
-  return ids;
+const ISLAND_IDENTITY_ATTRS = [
+  "data-zfb-island",
+  "data-zfb-island-skip-ssr",
+  "data-zfb-transport",
+  "data-zfb-protocol",
+  "data-zfb-build",
+] as const;
+
+function islandName(element: Element): string | null {
+  return (
+    element.getAttribute("data-zfb-island") ?? element.getAttribute("data-zfb-island-skip-ssr")
+  );
+}
+
+function copyAttribute(from: Element, to: Element, attribute: string): void {
+  const value = from.getAttribute(attribute);
+  if (value === null) to.removeAttribute(attribute);
+  else to.setAttribute(attribute, value);
 }
 
 function readProps(
