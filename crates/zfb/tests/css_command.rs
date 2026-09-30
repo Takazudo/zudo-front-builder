@@ -85,6 +85,28 @@ fn package_export_fixture(package_name: &str, package_json: &str, specifier: &st
     temp
 }
 
+fn explicit_source_exclusion_fixture() -> TempDir {
+    let temp = tempfile::tempdir().expect("create explicit-source exclusion fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    for (relative, class_name) in [
+        ("src/a.tsx", "grid"),
+        ("dist/b.tsx", "flex"),
+        ("lib/c.tsx", "block"),
+        ("build/d.tsx", "hidden"),
+    ] {
+        let path = temp.path().join(relative);
+        fs::create_dir_all(path.parent().expect("source file parent"))
+            .expect("create source directory");
+        fs::write(
+            path,
+            format!("export default () => <div className=\"{class_name}\" />;\n"),
+        )
+        .expect("write source file");
+    }
+    temp
+}
+
 fn combined_output(output: &Output) -> String {
     format!(
         "{}{}",
@@ -284,6 +306,141 @@ fn css_command_explicit_sources_isolate_ambient_decoy() {
     assert!(
         !css.contains(".hidden") && !css.contains("#cc44dd"),
         "ambient utility outside the source plan leaked into CSS:\n{css}"
+    );
+}
+
+#[test]
+fn css_command_explicit_source_under_default_out_dir_fails() {
+    let temp = explicit_source_exclusion_fixture();
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["dist/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+
+    assert_failure(&output, "explicit source under the default outDir");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ZW010"), "{stderr}");
+    assert!(stderr.contains("configured outDir `dist`"), "{stderr}");
+    assert!(stderr.contains("dist/**/*.tsx"), "{stderr}");
+    assert!(!temp.path().join("out.css").exists());
+}
+
+#[test]
+fn css_command_each_explicit_source_declaration_must_keep_a_match() {
+    let temp = explicit_source_exclusion_fixture();
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &[
+            "src/**/*.tsx",
+            "dist/**/*.tsx",
+            "lib/**/*.tsx",
+            "build/**/*.tsx",
+        ],
+        &["--no-auto-source"],
+    );
+
+    assert_failure(&output, "four explicit source declarations including dist");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ZW010"), "{stderr}");
+    assert!(stderr.contains("configured outDir `dist`"), "{stderr}");
+    assert!(stderr.contains("dist/**/*.tsx"), "{stderr}");
+    assert!(!temp.path().join("out.css").exists());
+}
+
+#[test]
+fn css_command_partial_explicit_source_exclusion_warns_and_keeps_accepted_classes() {
+    let temp = explicit_source_exclusion_fixture();
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["**/*.tsx"],
+        &["--no-auto-source"],
+    );
+
+    assert_success(&output, "partially excluded explicit source glob");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    for selector in [".grid", ".block", ".hidden"] {
+        assert!(
+            css.contains(selector),
+            "accepted {selector} is missing:\n{css}"
+        );
+    }
+    assert!(!css.contains(".flex"), "excluded .flex was emitted:\n{css}");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let warnings = stderr
+        .lines()
+        .filter(|line| line.contains("ZW010"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one ZW010 warning:\n{stderr}"
+    );
+    assert!(warnings[0].contains("dist"), "{stderr}");
+}
+
+#[test]
+fn css_command_custom_out_dir_allows_dist_as_an_explicit_source() {
+    let temp = explicit_source_exclusion_fixture();
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        "{\"outDir\":\"out\"}\n",
+    )
+    .expect("write custom outDir config");
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "site.css",
+        Some("."),
+        &["dist/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+
+    assert_success(&output, "dist source with custom outDir");
+    let css = fs::read_to_string(temp.path().join("site.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "dist utility is missing:\n{css}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("ZW010"));
+}
+
+#[test]
+fn css_command_explicit_source_exclusion_runs_are_deterministic() {
+    let temp = explicit_source_exclusion_fixture();
+    let sources = ["src/**/*.tsx"];
+    let first = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &sources,
+        &["--no-auto-source"],
+    );
+    assert_success(&first, "first explicit-source exclusion run");
+    let first_bytes = fs::read(temp.path().join("out.css")).expect("read first CSS output");
+
+    let second = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &sources,
+        &["--no-auto-source"],
+    );
+    assert_success(&second, "second explicit-source exclusion run");
+    let second_bytes = fs::read(temp.path().join("out.css")).expect("read second CSS output");
+
+    assert_eq!(
+        first_bytes, second_bytes,
+        "identical runs must emit identical CSS bytes"
     );
 }
 
