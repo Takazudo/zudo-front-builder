@@ -15,7 +15,12 @@ export type JsxContractMatrixRow = {
   reuse?: boolean;
   expectation:
     | { kind: "accepted"; html: string }
-    | { kind: "rejected"; code: string; seam: "emitter" | "SDK" | "template" };
+    | {
+        kind: "rejected";
+        code: string;
+        seam: "emitter" | "SDK" | "template";
+        detail?: string;
+      };
 };
 
 const accepted = (
@@ -47,6 +52,7 @@ const rejected = (
   build: () => Child,
   code: string,
   seam: "emitter" | "SDK" | "template",
+  detail?: string,
 ): JsxContractMatrixRow => ({
   id,
   producerPath,
@@ -54,7 +60,7 @@ const rejected = (
   emitted,
   contract,
   build,
-  expectation: { kind: "rejected", code, seam },
+  expectation: { kind: "rejected", code, seam, ...(detail ? { detail } : {}) },
 });
 
 function Badge({ label }: { label: string }) {
@@ -197,30 +203,33 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     "crates/zfb-content/src/mdx_jsx_emit.rs",
     "emit_node",
     'span dangerouslySetInnerHTML={{__html: "<em>raw</em>"}}',
-    "The runtime reserves `rawHtml` for supported contexts; React's prop spelling is rejected.",
+    "React's prop spelling is rejected with the supported `rawHtml` spelling in the diagnostic.",
     () => h("span", { dangerouslySetInnerHTML: { __html: "<em>raw</em>" } }),
     "ZR_PROP_DIALECT",
     "emitter",
+    "span.dangerouslySetInnerHTML (use `rawHtml` instead of `dangerouslySetInnerHTML`)",
   ),
   rejected(
     "MDX block raw HTML wrapper",
     "crates/zfb-content/src/mdx_jsx_emit.rs",
     "emit_node",
     'div dangerouslySetInnerHTML={{__html: "<section>raw</section>"}}',
-    "The runtime reserves `rawHtml` for supported contexts; React's prop spelling is rejected.",
+    "React's prop spelling is rejected with the supported `rawHtml` spelling in the diagnostic.",
     () => h("div", { dangerouslySetInnerHTML: { __html: "<section>raw</section>" } }),
     "ZR_PROP_DIALECT",
     "emitter",
+    "div.dangerouslySetInnerHTML (use `rawHtml` instead of `dangerouslySetInnerHTML`)",
   ),
   rejected(
     "MDX expression React class prop",
     "crates/zfb-content/src/mdx_jsx_emit.rs",
     "render_jsx_attrs",
     'className="custom"',
-    "HTML `class` is accepted; React `className` is rejected.",
+    "HTML `class` is accepted; React `className` is rejected with the supported spelling in the diagnostic.",
     () => h("p", { className: "custom" }, "text"),
     "ZR_PROP_DIALECT",
     "emitter",
+    "p.className (use `class` instead of `className`)",
   ),
   rejected(
     "MDX CSS object conversion",
@@ -249,7 +258,7 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     "crates/zfb-build/src/bundler.rs",
     "render_md_page_shell",
     '<html><head><meta charSet="utf-8" /></head><body><template data-zfb-render-region="start" /></body></html>',
-    "The frozen dialect requires lowercase `charset`.",
+    "The frozen dialect requires lowercase `charset`, which the diagnostic names directly.",
     () =>
       h(
         "html",
@@ -259,6 +268,7 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
       ),
     "ZR_PROP_DIALECT",
     "emitter",
+    "meta.charSet (use `charset` instead of `charSet`)",
   ),
   accepted(
     "generated Markdown shell sentinel child shape",
@@ -316,7 +326,7 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     "packages/zfb/src/content.ts",
     "ContentParagraph",
     'ContentParagraph({ className: "custom" }) forwards className to <p>.',
-    "The owned dialect requires the HTML spelling `class`.",
+    "The owned dialect requires the HTML spelling `class`, which the diagnostic names directly.",
     () =>
       defaultComponents.p({
         className: "custom",
@@ -324,6 +334,7 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
       } as never) as unknown as Child,
     "ZR_PROP_DIALECT",
     "SDK",
+    "p.className (use `class` instead of `className`)",
   ),
   accepted(
     "Island data attributes and JSON props",
