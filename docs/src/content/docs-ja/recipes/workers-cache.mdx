@@ -13,12 +13,6 @@ Cloudflare 系サンプルの中でも最小構成で、KV 名前空間も D1 �
 
 </Info>
 
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 **ライブデモ:** [zfb-example-workers-cache.takazudomodular.com](https://zfb-example-workers-cache.takazudomodular.com/)
 
 **リポジトリ:** [Takazudo/zfb-example-workers-cache](https://github.com/Takazudo/zfb-example-workers-cache)
@@ -43,10 +37,10 @@ Cloudflare 系サンプルの中でも最小構成で、KV 名前空間も D1 �
 
 | 項目 | 内容 |
 | --- | --- |
-| フレームワーク | zfb + Preact（`framework: "preact"`）、HTML 生成は `preact-render-to-string` |
-| zfb バージョン | `@takazudo/zfb` 2.3.0、`@takazudo/zfb-runtime` 2.3.0 |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` 2.3.0 — 使用しており、必須 |
-| スタイリング | `tailwind: { enabled: true }`。ただしページの見た目そのものは `components/recipe-page.tsx` がインライン展開する手書き CSS なので、Tailwind のクラスはほとんど登場しません |
+| フレームワーク | zudo-react を使う zfb **3.0.0**。`lib/http.tsx` が `renderToString` で HTML を描画 |
+| zfb バージョン | `@takazudo/zfb` 3.0.0、`@takazudo/zfb-runtime` 3.0.0 |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` 3.0.0 — 使用しており、必須 |
+| スタイリング | `wind: false`。`components/recipe-page.tsx` に手書き CSS をインライン化し、ユーティリティは生成しません |
 | レンダリング | 完全な SSR。4 ルートすべてが `prerender = false` で、ビルド成果物は Worker バンドルとスタイルシート 1 本のみ、HTML ページは出力されません |
 | Cloudflare 面 | Workers Static Assets（`[assets]`）と Workers Cache（`[cache] enabled = true`） |
 | バインディング | `ASSETS` のみ。KV・D1・R2・AI は使いません |
@@ -77,16 +71,45 @@ pnpm exec wrangler secret put PURGE_TOKEN
 
 ### キャッシュ方針はルートが返すヘッダそのもの
 
-キャッシュ設定用のレイヤーもフレームワーク側のキャッシュも存在しません。`lib/http.tsx` は `preact-render-to-string` の結果を `Response` で包み、3 つのオプション値をそのままヘッダに写しているだけです。
+キャッシュ設定用のレイヤーもフレームワーク側のキャッシュも存在しません。`lib/http.tsx` は
+`@takazudo/zfb/zudo-react/server` から名前付きで import した `renderToString` で zudo-react のツリーを描画し、
+その結果を `Response` で包んで 3 つのオプション値をヘッダに写します。
 
 ```tsx title="lib/http.tsx"
-const headers = new Headers({
-  "content-type": "text/html; charset=utf-8",
-  "cache-control": cacheControl,
-});
+import type { Child } from "@takazudo/zfb/zudo-react";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { RecipeDocument } from "../components/recipe-page";
 
-if (cacheTag) headers.set("cache-tag", cacheTag);
-if (vary) headers.set("vary", vary);
+  const headers = new Headers({
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": cacheControl,
+  });
+
+  if (cacheTag) headers.set("cache-tag", cacheTag);
+  if (vary) headers.set("vary", vary);
+
+  const html = renderToString(
+    <RecipeDocument
+      title={title}
+      eyebrow={eyebrow}
+      heading={heading}
+      summary={summary}
+      nav={navItems.map((item) => ({
+        ...item,
+        active:
+          (active === "overview" && item.href === "/") ||
+          (active === "products" && item.href === "/products") ||
+          (active === "catalog" && item.href === "/catalog"),
+      }))}
+    >
+      {children}
+    </RecipeDocument>,
+  );
+
+  return new Response(`<!doctype html>${html}`, {
+    status,
+    headers,
+  });
 ```
 
 各ページは自分の方針を定数として宣言します。`/products` は 1 分の鮮度ウィンドウと 10 分の猶予期間を要求し、あとでパージできるようレスポンスにタグを付けます。
@@ -126,7 +149,14 @@ const market = normalizeMarket(request.headers.get(VARY_HEADER));
 ```tsx title="pages/api/purge.tsx"
 const cache = (ctx as CacheAwareExecutionContext).cache;
 if (!cache) {
-  return jsonResponse({ ok: false, error: "cache_context_unavailable", /* … */ }, { status: 501 });
+  return jsonResponse(
+    {
+      ok: false,
+      error: "cache_context_unavailable",
+      detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
+    },
+    { status: 501 },
+  );
 }
 
 const result = await cache.purge({ tags: ["products"] });
@@ -169,9 +199,9 @@ enabled = true
 
 ```sh
 pnpm install
-pnpm dev        # zfb dev — ページ執筆用のループ
+pnpm dev        # zfb dev — page-authoring loop
 pnpm build      # zfb build
-pnpm preview    # zfb preview → ビルド済み Worker に対して wrangler dev
+pnpm preview    # zfb preview → wrangler dev against the built Worker
 pnpm typecheck  # zfb check
 ```
 

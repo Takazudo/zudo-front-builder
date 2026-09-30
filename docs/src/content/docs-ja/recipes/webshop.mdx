@@ -17,12 +17,6 @@ category: Recipes
 
 </Info>
 
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 **ライブデモ:** [zfb-example-webshop.takazudomodular.com](https://zfb-example-webshop.takazudomodular.com/)
 
 **リポジトリ:** [Takazudo/zfb-example-webshop](https://github.com/Takazudo/zfb-example-webshop)
@@ -34,21 +28,24 @@ category: Recipes
 - **ページから D1 バインディングを読む**。`getCloudflareContext<Env>()` が Worker の `env` と生の
   `Request` をルートに渡し、カタログ・カート・注文はいずれも `env.DB` への素の SQL です。
 - **VNode ではなく `Response` を返す**。Cookie をセットし、`request.method` で分岐し、303 リダイレクトを
-  返すには Response オブジェクトそのものが必要なので、これらのルートは Preact ツリーを自分で文字列化します。
+  返すには Response オブジェクトそのものが必要なので、`lib/render.ts` が
+  `@takazudo/zfb/zudo-react/server` から名前付きで import した `renderToString` で
+  zudo-react のツリーを描画します。
 - **Web Crypto だけで組んだ認証**。PBKDF2 によるパスワードハッシュと、不透明なサーバー側セッション
   Cookie。認証ライブラリもクライアント JavaScript も使いません。
 - **意図して選ばれた URL の形**。注文確認ページはパスパラメータではなく `/order?id=<n>` という
   クエリ文字列です。リポジトリが挙げている理由は、今の zfb には当てはまりません。
-- **Tailwind v4 のセマンティックなトークン設計**。`@theme` ブロックで登録しています。
+- **zudo-wind のセマンティックなトークン設計**。`zfb.config.ts` に定義し、色の値は
+  `styles/global.css` の手書き CSS カスタムプロパティを参照します。
 
 ## 使用技術
 
 | 項目 | リポジトリでの実際の内容 |
 | --- | --- |
-| フレームワーク | `framework: "preact"`（`zfb.config.ts`）と `preact-render-to-string` |
-| zfb バージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みで、動作の要 |
-| スタイリング | Tailwind v4（`tailwind: { enabled: true }`）。`styles/global.css` の `@theme` ブロックで oklch のカラートークンと 2 軸のスペーシングを定義 |
+| フレームワーク | zfb **3.0.0** の zudo-react JSX ランタイム。`lib/render.ts` は `renderToString` で HTML レスポンスを描画 |
+| zfb バージョン | `@takazudo/zfb` **3.0.0**、`@takazudo/zfb-runtime` **3.0.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — 導入済みで、動作の要 |
+| スタイリング | `zfb.config.ts` の zudo-wind トークン。`styles/global.css` に oklch の色カスタムプロパティとコンポーネントのルールを記述 |
 | レンダリング方式 | **すべての** ルートが `export const prerender = false`。SSG ページは存在しない |
 | Cloudflare の形態 | Workers Static Assets。`wrangler.toml` の `main = "./dist/_worker.js"` と `[assets]` ブロック |
 | バインディング | D1 バインディング `DB` 1 つ（本番は `webshop`、プルリクエストは `webshop-preview`） |
@@ -105,10 +102,10 @@ export const prerender = false;
 SSG ルートが 1 つも残らないので、ビルド成果物にページは含まれません。
 
 ```text title="dist/"
-dist/_worker.js              # アダプターが出力する SSR Worker
-dist/_zfb_inner.mjs          # それが呼び出す内側のバンドル
-dist/.assetsignore           # 上の 2 ファイルを公開アセットから除外する
-dist/assets/styles-*.css     # コンパイル済みの Tailwind スタイルシート
+dist/_worker.js              # the SSR Worker the adapter emits
+dist/_zfb_inner.mjs          # the inner bundle it calls
+dist/.assetsignore           # keeps the two files above off the public asset path
+dist/assets/styles-*.css     # the compiled zudo-wind stylesheet
 dist/assets/app.css
 dist/__zfb/routes.json
 ```
@@ -131,7 +128,8 @@ dist/__zfb/routes.json
 
 zfb は返された VNode を HTML にレンダリングしてくれますが、これらのルートはその経路を使えません。
 `request.method` で分岐し、`Set-Cookie` を付け、303 で応答する必要があるからです。そこで `Response` を
-返し、Preact ツリーの文字列化は `lib/render.ts` の小さなヘルパーで自前で行います。
+返し、`lib/render.ts` で zudo-react のツリーを自前で描画します。このファイルは
+`@takazudo/zfb/zudo-react/server` から `renderToString` を import しています。
 
 ```tsx title="pages/checkout.tsx"
 export const prerender = false;
@@ -175,7 +173,10 @@ export async function listProducts(env: Env): Promise<Product[]> {
 ```tsx title="components/product-card.tsx"
 <form method="post" action="/cart">
   <input type="hidden" name="product_id" value={product.id} />
-  <button type="submit" class="...">
+  <button
+    type="submit"
+    class="cursor-pointer rounded-md bg-brand px-hsp-md py-vsp-xs text-small font-semibold text-white transition-colors hover:bg-brand-strong"
+  >
     Add to cart
   </button>
 </form>
@@ -242,7 +243,7 @@ pnpm typecheck    # zfb check
 使います。
 
 ```sh
-pnpm exec wrangler d1 migrations apply webshop --local   # 初回のみ
+pnpm exec wrangler d1 migrations apply webshop --local   # one-time
 pnpm dev:cf
 ```
 
@@ -273,4 +274,4 @@ pnpm dev:cf
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — SSR ハンドラーから D1 や KV を読む方法とバインディングの設定
 - [動的ルート](/ja/docs/concepts/dynamic-routes) — `paths()` の契約と、`prerender = false` の動的ルートがリクエスト時にマッチされる仕組み
 - [ルーティング](/ja/docs/concepts/routing) — `pages/*.tsx` が URL になるまで
-- [スタイリング](/ja/docs/concepts/styling) — zfb における Tailwind v4
+- [zudo-wind の設定](/ja/docs/zudo-wind/configuration) — トークンやリセットの設定

@@ -1,21 +1,15 @@
 ---
 title: "サンプル: Blog"
-description: Markdown/MDX の記事、3 種類の動的ルート、テーマ切り替えアイランド、Tailwind v4 のトークン設計を備えた純粋 SSG のブログ。アセットのみの Cloudflare Worker としてデプロイされています
+description: Markdown/MDX の記事、3 種類の動的ルート、zudo-react のテーマ切り替えアイランド、手書き CSS のテーマを備えた純粋 SSG のブログ。アセットのみの Cloudflare Worker としてデプロイされています
 sidebar_position: 11
 category: Recipes
 ---
 
 <Info title="このページで扱うこと">
 
-実際にデプロイされている zfb 製のブログです。Markdown と MDX の記事からなる `blog` コンテンツコレクション、3 種類の動的ルート、`"use client"` アイランド 1 つ、そして Tailwind v4 のデザインシステムで構成されています。**完全な静的ビルド**で、SSR も Cloudflare のバインディングもアダプタも使いません。コンテンツ駆動の zfb サイトとして、現実的な最小構成になっています。
+実際にデプロイされている zfb 製のブログです。Markdown と MDX の記事からなる `blog` コンテンツコレクション、3 種類の動的ルート、zudo-react の `"use client"` アイランド 1 つ、そして手書き CSS で作ったテーマで構成されています。**完全な静的ビルド**で、SSR も Cloudflare のバインディングもアダプタも使いません。コンテンツ駆動の zfb サイトとして、現実的な最小構成になっています。
 
 </Info>
-
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
 
 **ライブデモ:** [zfb-example-blog.takazudomodular.com](https://zfb-example-blog.takazudomodular.com/)
 
@@ -27,23 +21,23 @@ category: Recipes
 - 3 つのルートファイルによる 3 種類の[動的ルート](/ja/docs/concepts/dynamic-routes) — 記事個別ページ（`pages/blog/[slug].tsx`）、ページネーション付き一覧（`pages/blog/page/[page].tsx`）、タグ別ページ（`pages/tags/[tag].tsx`）。それぞれが独自の `paths()` を持ちます。
 - ソート済みの配列をそのまま `paths()` の戻り値に変換する [`paginate()`](/ja/docs/api/paginate)。
 - `entry.Content` の `components` プロパティ経由でページに届く独自の MDX コンポーネント（`<Note>`） — [MDX コンポーネント](/ja/docs/concepts/mdx-components)を参照。
-- 初回レンダリングが SSR セーフな[アイランド](/ja/docs/concepts/islands) 1 つ（`ThemeToggle`）と、誤ったテーマで描画されないようにするインラインの事前スクリプト。
-- 生の CSS カスタムプロパティの上に重ねた [Tailwind v4](/ja/docs/concepts/styling) の `@theme` ブロック。`dark:` バリアントは `prefers-color-scheme` ではなく `data-theme` 属性に向け直されています。
+- 初回レンダリングが SSR セーフな zudo-react の[アイランド](/ja/docs/concepts/islands) 1 つ（`ThemeToggle`）と、誤ったテーマで描画されないようにするインラインの事前スクリプト。
+- `prefers-color-scheme` ではなく `data-theme` 属性で切り替える、`styles/global.css` にすべて記述したテーマ。
 
 ## 使用技術
 
 | 項目 | zfb-example-blog |
 | --- | --- |
-| フレームワーク | zfb **2.3.0** + Preact（`zfb.config.ts` の `framework: "preact"`） |
-| ランタイム | `@takazudo/zfb-runtime` **2.3.0** |
-| スタイリング | Tailwind CSS v4（`tailwind: { enabled: true }`）、`styles/global.css` 1 枚 |
+| フレームワーク | zudo-react と zfb **3.0.0**。テーマ切り替えには zudo-react のアイランドランタイムを使用 |
+| ランタイム | `@takazudo/zfb-runtime` **3.0.0** |
+| スタイリング | `styles/global.css` の手書き CSS。`wind.reset: "owned-v1"` と preflight 互換の手書き `@layer base` ブロック |
 | レンダリング | **純粋な SSG**。`export const prerender = false` を持つルートはありません |
 | コンテンツ | コレクション 1 つ — `blog` → `content/blog`（`.md` 4 本 + `.mdx` 1 本） |
 | インタラクション | `"use client"` アイランド 1 つを `<Island when="idle">` でマウント |
 | Cloudflare | Workers Static Assets、**アセットのみ** — `wrangler.toml` に `main` キーはありません |
 | バインディング | なし |
 | アダプタ | `@takazudo/zfb-adapter-cloudflare` は依存関係に**含まれていません** |
-| その他の依存 | `preact`、`preact-render-to-string`。`wrangler` 4.85.0 は devDependency |
+| その他の依存 | `wrangler` 4.85.0 は devDependency。ほかにランタイム依存はありません |
 
 `zfb build` が出力する HTML は **14 ページ**です。内訳はトップ 1、記事 5、ページネーション一覧 2、タグページ 6。この数字の根拠は後述の「仕組み」で追いかけます。
 
@@ -72,10 +66,12 @@ category: Recipes
 残る 2 ページはページネーション付き一覧で、計算は [`paginate()`](/ja/docs/api/paginate) が引き受けます。その戻り値が**そのまま** `paths()` の戻り値になり、間に変換処理を挟む必要はありません。
 
 ```tsx title="pages/blog/page/[page].tsx"
+import type { BlogEntry, BlogFrontmatter } from "../../../lib/types";
+
 export async function paths() {
   const { getCollection } = await import("@takazudo/zfb/content");
   const { paginate } = await import("@takazudo/zfb/paginate");
-  const posts = (await getCollection("blog")) as BlogEntry[];
+  const posts = await getCollection<BlogFrontmatter>("blog");
   const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
   return paginate(sorted, { pageSize: 3, param: "page" });
 }
@@ -89,9 +85,9 @@ export async function paths() {
 
 テーマ切り替えはこのサイト唯一のインタラクティブな要素で、素直に実装すると 2 種類の問題が同時に起きるため、サンプルの中でもっとも読む価値のある部分です。
 
-アイランドの**初回**レンダリングは、サーバー側とクライアントのハイドレーション時とで同一の HTML を生成しなければなりません。`useState` の初期化関数で `localStorage` を読むとこの前提が崩れます。サーバーには `localStorage` がないので `"light"` になり、クライアントは保存された `"dark"` を読んで逆のラベルを描画する — ハイドレーションの不一致です。そこで `ThemeToggle` はまず決め打ちの `"light"` を描画し、保存済み設定やシステム設定への同期は `useEffect` の中で行います。
+アイランドの**初回**レンダリングは、サーバー側とクライアントのハイドレーション時とで同一の HTML でなければなりません。`ThemeToggle` は `signal<Theme>` を決定的な `"light"` で初期化し、`computed` でボタンのテキストと ARIA ラベルを作るため、セットアップ中にブラウザーの状態を読みません。アイランドがサーバー HTML を採用した後、`scope.onActivate` が保存済みまたはシステムのテーマを読み、`scope.effect` が変更をドキュメントとストレージに反映します。ボタンは `on:click` でシグナルを更新します。
 
-これでハイドレーションは直りますが、見た目は直りません。それだけでは、アイランドの副作用が走るまで**ページ全体**がデフォルトのパレットで描画されてしまいます。解決策は 2 つの関心事を分離することです。`<head>` に置いたインラインスクリプトが、スタイルシートが解析される前に同期的にテーマ属性を設定します。これにより、アイランドがどちらのラベルを描画するかに関係なく、最初に描画されるフレームがすでに正しいテーマになります。
+インラインスクリプトは、ページ全体の初回描画に関する問題を解決します。`<head>` でスタイルシートの解析前にテーマ属性を同期的に設定するため、アイランドの有効化を待たずに最初のフレームから選択した配色が使われます。
 
 ```tsx title="layouts/default.tsx"
 const THEME_BOOTSTRAP_SCRIPT = `(() => {
@@ -108,7 +104,7 @@ const THEME_BOOTSTRAP_SCRIPT = `(() => {
 })();`;
 ```
 
-スタイルシート側もメディアクエリではなく同じ属性に紐付いています。`styles/global.css` は `@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *))` で Tailwind のバリアントを向け直し、生の `--blog-*` トークンを `:root` に宣言して `[data-theme="dark"]` で上書きします。`@theme` ブロックはそのうちユーティリティを生成すべきものだけを再エクスポートします（`--color-bg: var(--blog-bg)` のように）。1 つの属性が、ブートストラップスクリプトとアイランドとすべてのユーティリティクラスを同時に駆動しているわけです。
+スタイルシートも同じ属性を読みます。`styles/global.css` は `:root` にライトテーマの `--blog-*` カスタムプロパティを宣言し、`[data-theme="dark"]` で上書きします。レイアウト、コンポーネント、記事本文のスタイルはすべて手書きで、ユーティリティクラスは使いません。`zfb.config.ts` は zudo-wind の `reset: "owned-v1"` を設定しています。さらに手書きの `@layer base` ブロックで、リセットに含まれない preflight 互換ルールの一部を戻します。測定済みの比較は[Coming from Tailwind](/ja/docs/zudo-wind/coming-from-tailwind)を参照してください。
 
 レイアウト自体は素のサーバーコンポーネントのままで、JavaScript を送るのはトグルだけです。しかも [`<Island when="idle">`](/ja/docs/api/island) によって、ブラウザに余裕ができるまでその実行も遅らせています。
 
@@ -128,10 +124,10 @@ Node.js >= 22.12.0 と pnpm 10.x が必要です。`pnpm install` だけで `zfb
 
 ```sh
 pnpm install
-pnpm dev        # ライブリロード付きの zfb 開発サーバー
-pnpm build      # dist/ への静的ビルド（14 ページ）
-pnpm preview    # ビルド済みの dist/ をローカルで配信
-pnpm typecheck  # zfb check — コレクション検証 + tsc --noEmit
+pnpm dev        # zfb dev server with live reload
+pnpm build      # static build into dist/ (14 pages)
+pnpm preview    # serve the built dist/ locally
+pnpm typecheck  # zfb check — collection validation + tsc --noEmit
 ```
 
 純粋な SSG なので、Worker のリクエストスコープにまつわる制約はありません。`zfb dev` が配信するものは本番と同じです。細かい点が 2 つあります。`predev` が `rm -rf dist .zfb .zfb-build` を実行するため `pnpm dev` は毎回コールドビルドから始まること、そして `pnpm typecheck` の実体は `zfb check` で、`tsc` に加えてコレクションの検証も行うことです。
@@ -142,5 +138,5 @@ pnpm typecheck  # zfb check — コレクション検証 + tsc --noEmit
 - [動的ルート](/ja/docs/concepts/dynamic-routes)と[ルーティング](/ja/docs/concepts/routing) — 3 種類のルートすべての背後にある `paths()` の契約。
 - [`paginate()`](/ja/docs/api/paginate) — 上で引用したページネーションヘルパー。
 - [アイランド](/ja/docs/concepts/islands)と [`<Island>`](/ja/docs/api/island) — ハイドレーション境界とそのスケジューリング戦略。
-- [スタイリング](/ja/docs/concepts/styling) — プロジェクト個別のインストールなしに zfb バイナリが Tailwind v4 をコンパイルする仕組み。
+- [Coming from Tailwind](/ja/docs/zudo-wind/coming-from-tailwind) — preflight の測定比較と手書き CSS の説明。
 - [静的アセット](/ja/docs/concepts/static-assets) — HTML と並んで `dist/` に出力されるもの。
