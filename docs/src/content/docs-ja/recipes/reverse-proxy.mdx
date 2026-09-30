@@ -19,12 +19,6 @@ SSR ルートで構成されています。`[...path]` ルートでの `export c
 
 </Info>
 
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 **ライブデモ:** [zfb-example-reverse-proxy.takazudomodular.com](https://zfb-example-reverse-proxy.takazudomodular.com/)
 
 **リポジトリ:** [github.com/Takazudo/zfb-example-reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)
@@ -41,8 +35,8 @@ SSR ルートで構成されています。`[...path]` ルートでの `export c
   明文化したレスポンス側のポリシー。
 - **同一オリジンの `Location` リダイレクトを `/proxy/` 配下に書き換える** ことで、
   リダイレクトの連鎖がプロキシの内側に留まるようにする。
-- Workers Static Assets との共存。`/proxy/...` はビルド済み静的アセットになることが
-  ないため、`run_worker_first = false` のままでもリクエストは Worker に到達する。
+- Workers Static Assets との共存。`/proxy/*` だけを Worker 優先でルート対応エントリポイントに
+  通し、エンコードされたパスを zfb まで保ちます。通常のファイルはアセット優先のままです。
 
 <Warning title="これはオープンプロキシではありません">
 
@@ -63,14 +57,14 @@ SSR ルートで構成されています。`[...path]` ルートでの `export c
 
 | 項目 | リポジトリでの内容 |
 | --- | --- |
-| フレームワーク | zfb + Preact — `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0**（`zfb.config.ts` の `adapter` に指定） |
-| スタイリング | Tailwind CSS v4（`tailwind: { enabled: true }`）を `styles/global.css` からインポート |
+| フレームワーク | zudo-react を使う `@takazudo/zfb` と `@takazudo/zfb-runtime` **3.0.0**。Preact / React への依存はありません |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0**（`zfb.config.ts` の `adapter` に指定） |
+| スタイリング | `styles/global.css` の手書き CSS。zudo-wind は `owned-v1` リセットだけを提供し、ユーティリティクラスやトークンは使いません |
 | レンダリング | `/` と `/404` は SSG。SSR ルートは 1 つだけで、`export const prerender = false` を持つ `pages/proxy/[...path].tsx` |
-| Cloudflare 面 | Workers Static Assets（`main = "./dist/_worker.js"` + `[assets]`）を `custom_domain` ルートで配信 |
+| Cloudflare 面 | Workers Static Assets とカスタムドメイン。`main = "./cloudflare/worker-entry.mjs"` がアダプター生成の `dist/_worker.js` に処理を渡します |
 | バインディング | **なし。** 公開の `[vars]` エントリが 1 つだけ（`PROXY_ORIGIN = "https://httpbingo.org"`） |
 | 互換性設定 | `compatibility_date = "2026-05-01"`、`compatibility_flags = ["nodejs_compat"]` |
-| その他の依存 | `preact`、`preact-render-to-string`、`wrangler` 4.85.0 |
+| その他の依存 | `@types/node`、TypeScript、`wrangler` 4.85.0（dev） |
 
 アップストリームは httpbin 互換のエコーサービス [`httpbingo.org`](https://httpbingo.org) です。
 挙動が決定的なので、上に挙げた各項目にそれを証明できるエンドポイントが対応します。
@@ -131,7 +125,11 @@ import { proxyRequest } from "../../lib/proxy";
 
 export const prerender = false;
 
-export default async function ProxyPage(_props: ProxyPageProps) {
+type Env = {
+  PROXY_ORIGIN?: string;
+};
+
+export default async function ProxyPage() {
   const { env, request } = getCloudflareContext<Env>();
   return proxyRequest({
     request,
@@ -141,14 +139,13 @@ export default async function ProxyPage(_props: ProxyPageProps) {
 }
 ```
 
-注目すべき点が 2 つあります。1 つ目は、`prerender` が **リテラルの `export const`** であること。
-zfb はビルド時の静的 AST 解析でこれを検出するため、間接的な代入にすると黙って SSG に
-フォールバックします。2 つ目は、props が `_props` と名付けられて無視されていること。ルートは
-`params.path` の型を宣言していますが、意図的に一度も読みません。その理由は次の節にあります。
+`prerender` が **リテラルの `export const`** である点に注目してください。zfb はビルド時の静的 AST
+解析でこれを検出するため、間接的な代入にすると黙って SSG にフォールバックします。このハンドラーは
+ルート props を必要としません。次の節で説明するように、元のリクエスト URL から上流のパスを導出します。
 
 ### アップストリーム URL は元のリクエスト URL から導出する
 
-素直に実装するなら `params.path` のセグメントを繋ぎ直すところですが、この実装はそうしません。
+素直に実装するならデコード済みの `params.path` セグメントをつなぎ直すところですが、この実装はそうしません。
 受け取った URL 自身の `pathname` からプレフィックスを切り落とし、`search` は丸ごとコピーします。
 
 ```ts title="lib/proxy.ts"
@@ -246,13 +243,17 @@ return `${prefix}${pathRemainder}${target.search}${target.hash}`;
 1 つだけ付きます。
 
 ```ts title="lib/proxy.ts"
-fetch(upstreamRequest, { cf: { cacheEverything: true } });
+const CLOUDFLARE_FETCH_HINTS: CloudflareFetchInit = {
+  cf: {
+    cacheEverything: true,
+  },
+};
 ```
 
-これは、キャッシュ可能な GET / HEAD のアップストリームレスポンスを、既定のファイル種別を超えて
-キャッシュ対象として扱うようエッジに依頼するものです。オリジンのキャッシュヘッダーは引き続き
-尊重されます。上の安全上の警告がパーソナライズされたレスポンスを名指ししているのも、この
-キャッシュが **共有** だからです。
+`proxyRequest()` はこのヒントを `fetch()` に渡します。キャッシュ可能な GET / HEAD の
+アップストリームレスポンスを、既定のファイル種別を超えてキャッシュ対象として扱うようエッジに
+依頼するもので、オリジンのキャッシュヘッダーは引き続き尊重されます。上の安全上の警告が
+パーソナライズされたレスポンスを名指ししているのも、このキャッシュが **共有** だからです。
 
 失敗経路は 2 つあり、いずれも素通しせずに `cache-control: no-store` 付きのプレーンテキストを
 返します。`PROXY_ORIGIN` が未設定、または絶対 `http:` / `https:` URL として不正な場合は
@@ -260,12 +261,41 @@ fetch(upstreamRequest, { cf: { cacheEverything: true } });
 
 ### 静的アセット層との共存
 
-`wrangler.toml` は zfb のデフォルトである `run_worker_first = false` を維持しているので、
-`_worker.js` が動く前にエッジのアセットルーターが一致する静的ファイルを返します。ここでは
-それが正しい設定です。`/proxy/...` はビルド済みアセットになることがないためアセット層では
-マッチせず、そのまま Worker に到達します。一方でプリレンダリングされた `/` と `/404` は
-エッジから直接、Worker を起動せずに配信されます。逆の設定が欲しくなる場面については
-[SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照してください。
+Cloudflare Static Assets は、動的ルートが見る前に `%2F` などのエンコードされたスラッシュを正規化する
+ことがあります。このリポジトリは `/proxy/*` のみを Worker 優先にし、小さなエントリポイントから
+アダプター生成 Worker に処理を渡す前に、そのルートに限って `ASSETS` バインディングを隠します。
+これでプロキシルートは元のエンコード済み URL を調べられます。通常のファイルは引き続きアセット優先で、
+プロキシ以外の未一致リクエストにはアダプターのスタイル付き 404 が使われます。
+
+```toml title="wrangler.toml"
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "404-page"
+run_worker_first = ["/proxy/*"]
+```
+
+```js title="cloudflare/worker-entry.mjs"
+import generatedWorkerModule from "../dist/_worker.js";
+
+import { createRouteAwareWorker } from "./route-aware-dispatch.mjs";
+
+export default createRouteAwareWorker(generatedWorkerModule);
+```
+
+`/proxy/*` ではルート対応ラッパーが `ASSETS` バインディングを外してから生成 Worker を呼びます。
+内側のラッパーがアセットを照会してパスを正規化するのを防ぐためです。それ以外のリクエストは、
+元のバインディングを保ったまま処理されます。
+
+```js title="cloudflare/route-aware-dispatch.mjs"
+const pathname = new URL(request.url).pathname;
+if (!pathname.startsWith(PROXY_ROUTE_PREFIX)) {
+  return generatedWorker.fetch(request, env, ctx);
+}
+
+const { ASSETS: _assets, ...envWithoutAssets } = env;
+return generatedWorker.fetch(request, envWithoutAssets, ctx);
+```
 
 ## ローカルで動かす
 
@@ -273,7 +303,7 @@ fetch(upstreamRequest, { cf: { cacheEverything: true } });
 pnpm install
 pnpm dev        # zfb dev
 pnpm build      # zfb build
-pnpm preview    # zfb preview（ビルド済み worker に対して wrangler dev を exec する）
+pnpm preview    # zfb preview (execs wrangler dev against the built worker)
 pnpm typecheck  # zfb check
 ```
 
@@ -294,11 +324,11 @@ pnpm build
 pnpm exec wrangler dev --port 8788
 ```
 
-別のシェルで、リポジトリが文書化している 4 つの確認を実行します。どれもデモのインデックス
-ページにあるリンクと 1 対 1 で対応しています。
+別のシェルで、エンコード済みスラッシュのパス確認を含む、リポジトリの確認を実行します。
 
 ```sh
 curl -i "http://127.0.0.1:8788/proxy/anything/reverse-proxy?via=zfb"
+curl --path-as-is -i "http://127.0.0.1:8788/proxy/anything/a%2Fb?via=encoded"
 curl -i "http://127.0.0.1:8788/proxy/redirect-to?url=/anything/redirect-target&status_code=302"
 curl -i "http://127.0.0.1:8788/proxy/cookies/set?zfb_proxy_cookie=demo"
 curl -i "http://127.0.0.1:8788/proxy/response-headers?Content-Security-Policy=default-src%20%27self%27&Strict-Transport-Security=max-age%3D31536000&X-Demo=kept"
