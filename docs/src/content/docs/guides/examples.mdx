@@ -10,9 +10,11 @@ independently `pnpm install`-able and includes its own README with local run
 steps and Cloudflare provisioning commands — clone one to see the whole thing
 assembled rather than copying snippets piecemeal.
 
-This page is the comparison matrix. Each row links to a full walkthrough under
-[Recipes](../recipes/index.mdx), which explains what that example demonstrates,
-how it works, and how to run it locally.
+This page is the comparison matrix. Each listed repository pins zfb 3.0.0 and
+uses zfb's `zudo-react` JSX runtime. The styling column shows whether it uses
+zudo-wind utilities, only its reset, or authored CSS. Each row links to a full
+walkthrough under [Recipes](../recipes/index.mdx), which explains what that
+example demonstrates, how it works, and how to run it locally.
 
 All nine deploy as **Cloudflare Workers** on `takazudomodular.com` subdomains.
 Seven ship server code; two are assets-only Workers that serve a static build
@@ -36,21 +38,15 @@ routes — the pattern covered in
 `password-gate`, installs no adapter and puts a Worker of its own in front of a
 static build.
 
-<Note title="These demos target zfb 2.x">
-
-These external demos target zfb 2.x with Tailwind and Preact. See the [v3 migration guide](./migrating-to-v3.mdx) before adapting them to v3.
-
-</Note>
-
 | Example | Rendering | Bindings and secrets | Styling | Links |
 | --- | --- | --- | --- | --- |
-| [AI Summarizer](../recipes/ai-summarizer.mdx) | SSG plus one `prerender = false` API route (adapter) | Workers AI `AI`, declared only in the named `ai` environment | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-ai-summarizer) · [demo](https://zfb-example-ai-summarizer.takazudomodular.com/) |
-| [JSON API](../recipes/json-api.mdx) | SSG plus two `prerender = false` API routes (adapter) | none | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-json-api) · [demo](https://zfb-example-json-api.takazudomodular.com/) |
-| [KV Guestbook](../recipes/kv-guestbook.mdx) | SSR for every route except `/404` (adapter) | Workers KV `GUESTBOOK`, `ADMIN_TOKEN` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-kv-guestbook) · [demo](https://zfb-example-kv-guestbook.takazudomodular.com/) |
-| [Password Gate](../recipes/password-gate.mdx) | Pure SSG behind a hand-written Worker, `run_worker_first = true`, no adapter | `SITE_PASSWORD` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-password-gate) · [demo](https://zfb-example-password-gate.takazudomodular.com/) |
-| [Reverse Proxy](../recipes/reverse-proxy.mdx) | SSG plus one catch-all `prerender = false` route (adapter) | none, one public `PROXY_ORIGIN` var | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-reverse-proxy) · [demo](https://zfb-example-reverse-proxy.takazudomodular.com/) |
-| [Webshop](../recipes/webshop.mdx) | SSR on every route, no HTML emitted (adapter) | D1 `DB` | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-webshop) · [demo](https://zfb-example-webshop.takazudomodular.com/) |
-| [Workers Cache](../recipes/workers-cache.mdx) | SSR on every route, no HTML emitted (adapter) | `PURGE_TOKEN` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-workers-cache) · [demo](https://zfb-example-workers-cache.takazudomodular.com/) |
+| [AI Summarizer](../recipes/ai-summarizer.mdx) | SSG plus one `prerender = false` API route (adapter) | Workers AI `AI`, declared only in the named `ai` environment | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-ai-summarizer) · [demo](https://zfb-example-ai-summarizer.takazudomodular.com/) |
+| [JSON API](../recipes/json-api.mdx) | SSG plus two `prerender = false` API routes (adapter) | none | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-json-api) · [demo](https://zfb-example-json-api.takazudomodular.com/) |
+| [KV Guestbook](../recipes/kv-guestbook.mdx) | SSR for every route except `/404` (adapter) | Workers KV `GUESTBOOK`, `ADMIN_TOKEN` secret | Inline CSS; zudo-wind reset for `/404` only | [repo](https://github.com/Takazudo/zfb-example-kv-guestbook) · [demo](https://zfb-example-kv-guestbook.takazudomodular.com/) |
+| [Password Gate](../recipes/password-gate.mdx) | Pure SSG behind a hand-written Worker, `run_worker_first = true`, no adapter | `SITE_PASSWORD` secret | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-password-gate) · [demo](https://zfb-example-password-gate.takazudomodular.com/) |
+| [Reverse Proxy](../recipes/reverse-proxy.mdx) | SSG plus one catch-all `prerender = false` route (adapter) | none, one public `PROXY_ORIGIN` var | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-reverse-proxy) · [demo](https://zfb-example-reverse-proxy.takazudomodular.com/) |
+| [Webshop](../recipes/webshop.mdx) | SSR on every route, no HTML emitted (adapter) | D1 `DB` | zudo-wind utility classes and explicit tokens | [repo](https://github.com/Takazudo/zfb-example-webshop) · [demo](https://zfb-example-webshop.takazudomodular.com/) |
+| [Workers Cache](../recipes/workers-cache.mdx) | SSR on every route, no HTML emitted (adapter) | `PURGE_TOKEN` secret | Inline authored CSS; zudo-wind disabled | [repo](https://github.com/Takazudo/zfb-example-workers-cache) · [demo](https://zfb-example-workers-cache.takazudomodular.com/) |
 
 ## Static examples
 
@@ -61,5 +57,5 @@ the shape to copy when a site needs no server code at all.
 
 | Example | Rendering | Bindings and secrets | Styling | Links |
 | --- | --- | --- | --- | --- |
-| [Blog](../recipes/blog.mdx) | Pure SSG, assets-only Worker | none | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-blog) · [demo](https://zfb-example-blog.takazudomodular.com/) |
-| [Corporate Website](../recipes/corporate-website.mdx) | Pure SSG, assets-only Worker | none | CSS Modules, `tailwind: { enabled: false }` | [repo](https://github.com/Takazudo/zfb-example-corporate-website) · [demo](https://zfb-example-corporate-website.takazudomodular.com/) |
+| [Blog](../recipes/blog.mdx) | Pure SSG, assets-only Worker | none | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-blog) · [demo](https://zfb-example-blog.takazudomodular.com/) |
+| [Corporate Website](../recipes/corporate-website.mdx) | Pure SSG, assets-only Worker | none | CSS Modules; zudo-wind disabled | [repo](https://github.com/Takazudo/zfb-example-corporate-website) · [demo](https://zfb-example-corporate-website.takazudomodular.com/) |

@@ -16,7 +16,7 @@ category: Recipes
 - コードの羅列ではなく解説として書かれる — _なぜ_ そうするのかは _どうやって_ と同じくらい重要です
 - 特定の zfb バージョン範囲に紐づく — どのエンジンの状態を前提としているかが分かります
 
-外部のデモサイトは Tailwind と Preact を使う zfb 2.x 向けです。v3 へ適用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
+外部のサンプルリポジトリは zfb 3.0.0 を固定して使い、zudo-react を採用しています。スタイリングでは設定に応じて zudo-wind のユーティリティを使い、CSS も自分で記述しています。
 
 ## レシピ
 
@@ -27,9 +27,9 @@ category: Recipes
 
 9 つのスタンドアロンなリポジトリで、それぞれが Cloudflare 上で実際に稼働している完全な zfb プロジェクトです。以下の各ページは、そのサンプルが何を示しているか、どのような技術構成か、どう動くか、ローカルでどう実行するかを解説し、クローンできるリポジトリへリンクしています。同じ 9 つを並べて見比べるには [サンプル](/ja/docs/guides/examples) の比較表を参照してください。
 
-- [AI Summarizer](/ja/docs/recipes/ai-summarizer) — 1 つの Preact アイランドが `prerender = false` のルートへ POST し、そのルートが Workers AI バインディングを呼びます。決定的なフォールバックがあるため、Cloudflare アカウントなしでもエンドポイントは応答します。
-- [Blog](/ja/docs/recipes/blog) — Markdown と MDX による純粋 SSG のブログ。3 種類の動的ルート、`paginate()`、テーマ切り替えアイランド 1 つ、Tailwind v4 のトークン設計を扱います。SSR もアダプタもありません。
-- [Corporate Website](/ja/docs/recipes/corporate-website) — CSS Modules だけでスタイリングした静的な Preact のマーケティングサイト。`tailwind: { enabled: false }` を設定している唯一のサンプルで、出力される CSS は自分で書いたものだけになります。
+- [AI Summarizer](/ja/docs/recipes/ai-summarizer) — zudo-react アイランド 1 つが `prerender = false` のルートへ POST し、そのルートが Workers AI バインディングを呼びます。決定的なフォールバックがあるため、Cloudflare アカウントなしでもエンドポイントは応答します。
+- [Blog](/ja/docs/recipes/blog) — Markdown と MDX による純粋 SSG のブログ。3 種類の動的ルート、`paginate()`、zudo-react のテーマ切り替えアイランド 1 つ、CSS を自分で書いたデザインシステムを扱います。zudo-wind は `owned-v1` リセットだけを提供します。SSR もアダプタもありません。
+- [Corporate Website](/ja/docs/recipes/corporate-website) — zudo-react で静的レンダリングするマーケティングサイトで、CSS Modules だけでスタイリングします。`wind: false` を設定して zudo-wind を無効にし、CSS を自分で記述しています。
 - [JSON API](/ja/docs/recipes/json-api) — もっとも小さく完結した SSR スターター。`prerender = false` の GET エンドポイントが 2 つあり、一方は MiniSearch のインデックスを遅延構築してウォームな isolate 間で使い回します。事前に用意するものはありません。
 - [KV Guestbook](/ja/docs/recipes/kv-guestbook) — Cloudflare バインディングへの書き込み経路。1 つのルートが投稿一覧のレンダリングと JavaScript なしのフォーム POST の両方を Workers KV に対して処理し、トークンで保護された管理用削除も備えます。
 - [Password Gate](/ja/docs/recipes/password-gate) — `run_worker_first = true` の手書き Worker を静的サイトの前段に置きます。zfb アダプタを使わずに Cloudflare とやり取りする唯一のサンプルで、ライブデモは意図的に `401` を返します。
