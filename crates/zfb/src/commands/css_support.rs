@@ -865,7 +865,7 @@ mod tests {
             &output,
             &config,
             false,
-            &[("src/generated.tsx".to_owned(), output)],
+            &[("src/generated.tsx".to_owned(), output.clone())],
         )
         .unwrap_err();
         let message = format!("{error:#}");
