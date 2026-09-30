@@ -108,13 +108,16 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
         }
         bail_collected(validation_errors)?;
         let authored = authored_css_bundle(&input, &project_root)?;
-        let plan = build_standalone_wind_source_plan(
+        let (plan, warnings) = build_standalone_wind_source_plan(
             &project_root,
             &output,
             &config,
             !args.no_auto_source,
             &explicit_sources,
         )?;
+        for warning in warnings {
+            crate::output::warn(warning);
+        }
         let indexed = index_standalone_wind_sources(&plan)?;
         let engine = WindEngine::new(wind_config, indexed.candidates, authored)
             .with_diagnostics(indexed.diagnostics)
