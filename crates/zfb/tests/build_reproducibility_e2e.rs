@@ -150,10 +150,10 @@ fn scaffold_project(root: &Path) {
     )
     .expect("link local adapter executable");
 
-    // Keep a plainly resolvable package directory in node_modules, but make
-    // its entry point a symlink into a package store under this fixture's
-    // node_modules. Esbuild resolves the bare import through package.json and
-    // realpaths the entry outside each transient build shadow before #3434.
+    // Keep a plainly resolvable package directory and regular entry file in
+    // node_modules. Its entry re-exports from this fixture's private package
+    // store, so the logical file is staged while esbuild still resolves the
+    // real store module outside the transient build shadow before #3434.
     let store_package = node_modules
         .join(".pnpm/repro-realpath-dep@1.0.0/node_modules")
         .join(ESCAPE_PACKAGE);
@@ -171,16 +171,18 @@ fn scaffold_project(root: &Path) {
     );
     fs::write(store_package.join("package.json"), &store_package_manifest)
         .expect("write pnpm store package manifest");
+    let store_entry = store_package.join("index.js");
     fs::write(
-        store_package.join("index.js"),
+        &store_entry,
         format!("export const marker = {REALPATH_EXPORT:?};\n"),
     )
     .expect("write pnpm store package entry");
+    let store_entry_realpath = fs::canonicalize(&store_entry).expect("resolve pnpm store entry");
     let logical_package = node_modules.join(ESCAPE_PACKAGE);
     fs::create_dir_all(&logical_package).expect("create logical dependency package directory");
     // The bundler uses esbuild's neutral platform, which ignores `main` unless
     // mainFields is configured. An explicit exports entry makes bare package
-    // resolution portable while the leaf symlink still exercises realpath.
+    // resolution portable while the re-export targets this root's real store.
     let logical_package_json = serde_json::json!({
         "name": ESCAPE_PACKAGE,
         "version": "1.0.0",
@@ -198,11 +200,14 @@ fn scaffold_project(root: &Path) {
         &logical_package_manifest,
     )
     .expect("write logical dependency package manifest");
-    std::os::unix::fs::symlink(
-        "../.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
+    let store_entry_specifier = store_entry_realpath.to_string_lossy().into_owned();
+    let quoted_store_entry_specifier = serde_json::to_string(&store_entry_specifier)
+        .expect("encode pnpm store entry as a JavaScript string");
+    fs::write(
         logical_package.join("index.js"),
+        format!("export {{ marker }} from {quoted_store_entry_specifier};\n"),
     )
-    .expect("link logical dependency entry to pnpm store");
+    .expect("write staged logical dependency re-export");
 
     assert!(node_modules.is_dir());
     assert!(!fs::symlink_metadata(&node_modules)
@@ -216,12 +221,26 @@ fn scaffold_project(root: &Path) {
         logical_package_realpath, store_package_realpath,
         "logical package directory must remain in node_modules"
     );
-    let logical_entry_realpath = fs::canonicalize(logical_package.join("index.js"))
-        .expect("resolve logical dependency entry symlink");
-    let store_entry_realpath = fs::canonicalize(store_package.join("index.js")).unwrap();
-    assert_eq!(
+    let logical_entry = logical_package.join("index.js");
+    let logical_entry_metadata =
+        fs::symlink_metadata(&logical_entry).expect("inspect logical dependency entry");
+    assert!(
+        logical_entry_metadata.file_type().is_file(),
+        "logical dependency entry must be a regular file that staging can copy"
+    );
+    assert!(
+        !logical_entry_metadata.file_type().is_symlink(),
+        "logical dependency entry must not be a symlink"
+    );
+    let logical_entry_realpath = fs::canonicalize(&logical_entry).unwrap();
+    assert_ne!(
         logical_entry_realpath, store_entry_realpath,
-        "logical package entry must resolve into its private pnpm store"
+        "logical entry stays in node_modules while its re-export targets the private store"
+    );
+    let logical_entry_source = fs::read_to_string(&logical_entry).unwrap();
+    assert!(
+        logical_entry_source.contains(&quoted_store_entry_specifier),
+        "logical dependency re-export must target its absolute private store entry"
     );
 
     let adapter_preflight = Command::new("pnpm")
@@ -487,16 +506,23 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
         shallow_store_entry, deep_store_entry,
         "private pnpm store entry realpaths must differ between roots"
     );
-    assert_eq!(
-        fs::canonicalize(shallow.join("node_modules/repro-realpath-dep/index.js")).unwrap(),
-        shallow_store_entry,
-        "shallow logical dependency entry must point into its private store"
-    );
-    assert_eq!(
-        fs::canonicalize(deep.join("node_modules/repro-realpath-dep/index.js")).unwrap(),
-        deep_store_entry,
-        "deep logical dependency entry must point into its private store"
-    );
+    for (root, store_entry) in [(&shallow, &shallow_store_entry), (&deep, &deep_store_entry)] {
+        let logical_entry = root.join("node_modules/repro-realpath-dep/index.js");
+        let metadata = fs::symlink_metadata(&logical_entry).unwrap();
+        assert!(metadata.file_type().is_file() && !metadata.file_type().is_symlink());
+        let logical_entry_realpath = fs::canonicalize(&logical_entry).unwrap();
+        assert_ne!(
+            logical_entry_realpath, *store_entry,
+            "logical entry must be a staged file separate from the private store entry"
+        );
+        let source = fs::read_to_string(logical_entry).unwrap();
+        assert!(
+            source.contains(
+                &serde_json::to_string(&store_entry.to_string_lossy().into_owned()).unwrap()
+            ),
+            "logical entry must re-export from this root's private store entry"
+        );
+    }
 
     let a = capture_build(&shallow, &esbuild, None, None);
     let b = capture_build(&deep, &esbuild, None, None);
