@@ -1,0 +1,5 @@
+{
+  "name": "bundle-repro-fixture",
+  "private": true,
+  "type": "module"
+}
