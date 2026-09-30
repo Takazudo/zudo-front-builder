@@ -51,7 +51,7 @@ v1 には、色パレット、余白単位、名前付きスケール、ブレ�
 
 ## 値の検証
 
-各トークン値は、それを使う CSS プロパティのパーサーで検査されます。たとえば `colors` には色、`spacing` には padding の長さ、`sizes` には width、`fontSizes` には font-size、`radii` には border-radius の規則を使います。角丸の項目は単一の非負の長さまたは割合でなければなりません。z-index の項目は整数、イージングの項目は単一のタイミング関数またはキーワードでなければなりません。
+各トークン値は、それを使う CSS プロパティのパーサーで検査されます。たとえば `colors` には色、`spacing` には padding の長さ、`sizes` には width、`fontSizes` には font-size、`radii` には border-radius の規則を使います。角丸の項目は単一の非負の長さまたは割合でなければなりません。z-index の項目は整数文字列または `var()` 参照です。たとえば `zIndices: { content: "10" }` と指定します。`zIndices: { content: 10 }` のような JSON/TypeScript の数値は、`invalid type: integer ..., expected a string` という設定エラーで拒否されます。イージングの項目は単一のタイミング関数またはキーワードでなければなりません。
 
 `spacingUnit` 以外のカテゴリの値には外部のカスタムプロパティを含められます。`var()` を参照しているためパーサーがプロパティの型を証明できない場合、結び付けはカテゴリ未検証と記録され、`zfb wind explain` で確認できます。それでも値全体が構文解析できる必要があります。セミコロン、波括弧、`!important`、URL 関数、`inherit` や `revert` などのキーワードは拒否されます。トークン値から予約済みの `--zw-` 名前空間は参照できません。代わりにプロジェクトのプロパティを参照し、手書きの CSS でそのプロパティを上書きしてください。
 
