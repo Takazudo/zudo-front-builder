@@ -1,33 +1,28 @@
 ---
 title: "サンプル: AI Summarizer"
-description: Preact アイランドから prerender = false のワーカールートへ POST し、Cloudflare Workers AI バインディングで要約する例。Cloudflare アカウントなしでも動く決定的なフォールバックつき
+description: zudo-react アイランドから prerender = false のワーカールートへ POST し、Cloudflare Workers AI バインディングで要約する例。Cloudflare アカウントなしでも動く決定的なフォールバックつき
 sidebar_position: 10
 category: Recipes
 ---
 
 <Info title="このページで扱うこと">
 
-インタラクティブな部分が Preact アイランド 1 つだけの小さな zfb サイトです。その裏側には
-**Cloudflare Workers AI** を呼ぶ `prerender = false` のルートが 1 本だけあります。アイランド、
+インタラクティブな部分が zudo-react アイランド 1 つだけの小さな zfb サイトです。その裏側には
+**Cloudflare Workers AI** を呼ぶ `prerender = false` のルートが 1 本だけあります。zudo-react のシグナル、
 Cloudflare アダプターのリクエストごとのコンテキスト、そして AI バインディングをあえてデフォルトの
 Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカウントがまったくなくても、アプリは
 動き、エンドポイントも応答します。
 
 </Info>
 
-<Note title="このデモは zfb 2.x 向けです">
-
-この外部デモは Tailwind と Preact を使う zfb 2.x 向けです。v3 に移行して利用する前に [v3 移行ガイド](../guides/migrating-to-v3.mdx) を参照してください。
-
-</Note>
-
 - **ライブデモ:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
 - **リポジトリ:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
 
 ## 何を示すか
 
-- **UI 全体が 1 つのアイランド。** `pages/index.tsx` は静的な HTML で、`"use client"` なコンポーネントを
-  `<Island>` ラッパーで包んでいるだけです。[アイランド](/ja/docs/concepts/islands) を参照してください。
+- **UI 全体が 1 つの zudo-react アイランド。** `pages/index.tsx` は静的な HTML で、
+  `"use client"` なコンポーネントを `<Island>` ラッパーで包みます。アイランドはシグナルと
+  `<Show>` でフォームの状態を描画します。[アイランド](/ja/docs/concepts/islands) を参照してください。
 - **`prerender = false` の API ルート。** `pages/api/summarize.tsx` は生成されたワーカー上で動き、
   `POST` のボディを読んで JSON を返します。
 - **Cloudflare バインディングの読み取り。** ルートはハンドラーの引数ではなく
@@ -44,15 +39,15 @@ Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカ�
 
 | 要素 | このリポジトリでの実際 |
 | --- | --- |
-| エンジンとフレームワーク | `@takazudo/zfb` **2.3.0** と `framework: "preact"`（`preact` 10.x、`preact-render-to-string` 6.x）、`@takazudo/zfb-runtime` **2.3.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** を `zfb.config.ts` の `adapter` に指定 |
-| スタイリング | Tailwind CSS v4 — `tailwind: { enabled: true }`。`styles/global.css` は `@import "tailwindcss"` で始まり、以降はコンポーネントのスタイルを手書き |
+| エンジンと UI | `@takazudo/zfb` **3.0.0** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **3.0.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0** を `zfb.config.ts` の `adapter` に指定 |
+| スタイリング | `reset: "owned-v1"` の zudo-wind。コンポーネントクラスとスタイルは `styles/global.css` に手書きし、ユーティリティクラスは使いません |
 | レンダリングモード | `pages/index.tsx` と `pages/404.tsx` は SSG。`prerender = false` を書き出すのは `pages/api/summarize.tsx` だけ |
 | Cloudflare 側の形 | Workers Static Assets — `main = "./dist/_worker.js"`、`./dist` に対する `[assets]` と `ASSETS` バインディング、`not_found_handling = "404-page"`、`run_worker_first = false` |
 | バインディング | Workers AI バインディング `AI` が 1 つ。宣言は **`[env.ai.ai]` の中だけ** |
 | 互換性 | `compatibility_date = "2026-05-01"`、`compatibility_flags = ["nodejs_compat"]` — アダプターのバンドルが `node:async_hooks` を import するため |
 | モデル呼び出し | `@cf/meta/llama-3.2-1b-instruct`、`temperature: 0`、`max_tokens: 220`、入力は空白を畳んで 6000 文字で切り詰め |
-| 主な devDependencies | `wrangler` 4.85.0、`@cloudflare/workers-types`、`dev:cf` の再ビルドループ用に `concurrently` と `chokidar-cli` |
+| 主な devDependencies | `wrangler` 4.127.0、`@cloudflare/workers-types`、`dev:cf` の再ビルドループ用に `concurrently` と `chokidar-cli` |
 
 ## 必要なものと設定
 
@@ -126,7 +121,7 @@ custom_domain = true
 
 ### ルートはアダプターのコンテキストからリクエストを読む
 
-zfb 2.x は `prerender = false` なルートのデフォルトエクスポートを、受信した `Request` ではなくページの
+zfb 3 では `prerender = false` なルートのデフォルトエクスポートを、受信した `Request` ではなくページの
 **props** で呼び出します。`Request`・ワーカーの `env`・`ExecutionContext` は、代わりにアダプターの
 リクエストごとのコンテキストにまとめて届きます。
 
@@ -144,7 +139,7 @@ export default async function SummarizeApi(): Promise<Response> {
   }
 
   const { request, env } = context;
-  // …メソッド判定、JSON ボディの読み取り、空テキストのガード…
+  // …method check, JSON body read, empty-text guard…
   const result = await summarizeText(text, env);
   return json<SummaryResult>(result);
 }
@@ -180,7 +175,15 @@ if (!env.AI) {
 
 try {
   const output = await env.AI.run(MODEL, {
-    /* system + user messages, temperature: 0, max_tokens: MAX_OUTPUT_TOKENS */
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Summarize the text between the delimiters in three short bullets and one takeaway.\n\n---\n${prepared}\n---`,
+      },
+    ],
+    temperature: 0,
+    max_tokens: MAX_OUTPUT_TOKENS,
   });
 
   const summary = parseAiText(output);
@@ -263,5 +266,5 @@ pnpm exec wrangler deploy --env ai
 - [ワーカー上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` が実際に何であるかのメンタルモデル
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — アダプターと `wrangler.toml` の実践的なセットアップ
 - [アイランド](/ja/docs/concepts/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルとハイドレーションのタイミング
-- [スタイリング](/ja/docs/concepts/styling) — 組み込みの Tailwind v4 の扱い
+- [スタイリング](/ja/docs/concepts/styling) — zudo-wind の設定と手書き CSS
 - [サンプル集](/ja/docs/guides/examples) — 他のサンプルサイト

@@ -1,21 +1,15 @@
 ---
 title: "Example: Corporate Website"
-description: A statically rendered Preact marketing site styled entirely with CSS Modules — the one zfb example that turns Tailwind off
+description: A statically rendered zudo-react marketing site styled with CSS Modules and authored global CSS; zudo-wind is disabled
 sidebar_position: 12
 category: Recipes
 ---
 
 <Info title="What this page covers">
 
-A polished corporate marketing site (hero, services, about, contact) built as pure SSG with Preact. It is the CSS Modules demo: `zfb.config.ts` sets `tailwind: { enabled: false }`, and every component owns a scoped `*.module.css` beside it. Read it as the worked companion to [Styling](../concepts/styling.mdx).
+A polished corporate marketing site (hero, services, about, contact) built as pure SSG with zudo-react. It is the CSS Modules demo: `zfb.config.ts` sets `wind: false`, and every component owns a scoped `*.module.css` beside it. Read it as the worked companion to [Styling](../concepts/styling.mdx).
 
 </Info>
-
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Preact and CSS Modules; it disables Tailwind. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
 
 **Live demo:** [zfb-example-corporate-website.takazudomodular.com](https://zfb-example-corporate-website.takazudomodular.com/)
 
@@ -23,8 +17,8 @@ This external demo targets zfb 2.x with Preact and CSS Modules; it disables Tail
 
 ## What it demonstrates
 
-- **CSS Modules end to end** — six components, six `*.module.css` files, zero Tailwind utility classes in the source.
-- **Turning Tailwind off** — the only one of the nine zfb example sites that sets `tailwind: { enabled: false }`. The emitted stylesheet contains this project's authored CSS and nothing else: no preflight, no theme layer, no utility scan.
+- **CSS Modules end to end** — six components, six `*.module.css` files, and no utility classes in the source.
+- **Disabling zudo-wind** — `wind: false` leaves the emitted stylesheet to this project's authored CSS: no generated utilities and no generated reset.
 - **Scoped class names that do not collide** — `.card` is declared in both `hero.module.css` and `services.module.css` and the two never meet.
 - **Global CSS and scoped CSS in the same project** — one plain `global.css` carries the design tokens, a light reset, and a single hand-written `.skip-link` helper; the `.module.css` files carry every component's styles.
 - **A zero-JavaScript page** — no islands, so the build emits one HTML file and one stylesheet, with no `<script>` tag anywhere.
@@ -34,14 +28,14 @@ This external demo targets zfb 2.x with Preact and CSS Modules; it disables Tail
 
 | Aspect | This demo |
 | --- | --- |
-| Framework | zfb + Preact (`framework: "preact"`) |
-| zfb version | `@takazudo/zfb` and `@takazudo/zfb-runtime` both pinned to **2.3.0** |
-| Styling | **CSS Modules** — `tailwind: { enabled: false }` in `zfb.config.ts` |
-| Rendering | pure SSG — no `export const prerender = false`, no server routes |
+| Framework | zfb with its built-in zudo-react JSX runtime |
+| zfb version | `@takazudo/zfb` and `@takazudo/zfb-runtime` both pinned to **3.0.0** |
+| Styling | **CSS Modules and authored global CSS** — `wind: false` in `zfb.config.ts` |
+| Rendering | pure SSG — no islands, server routes, or client JavaScript |
 | Cloudflare surface | Workers Static Assets, **assets-only** (no `main` key) |
 | Bindings | none — no AI, KV, D1, R2, or Durable Objects |
 | Adapter | `@takazudo/zfb-adapter-cloudflare` is **not** a dependency |
-| Other deps | `preact`, `preact-render-to-string`; `wrangler` and `typescript` as devDependencies |
+| Other deps | `@types/node`, `typescript`, and `wrangler` as devDependencies |
 
 <Note title="Not Cloudflare Pages">
 
@@ -70,25 +64,20 @@ No `main`, so no Worker code ever runs — Cloudflare serves `dist/` straight fr
 
 ## How it works
 
-### Turning Tailwind off is a one-line config change
+### Disabling zudo-wind is a one-line config change
 
 ```ts title="zfb.config.ts"
-import { defineConfig } from "@takazudo/zfb/config";
+import { defineConfig } from "zfb/config";
 
 export default defineConfig({
-  framework: "preact",
   base: "/",
-  tailwind: { enabled: false },
+  wind: false,
 });
 ```
 
-With that flag set, zfb uses an authored-CSS path with no Tailwind `@import`, content scan, preflight, or subprocess. It bundles resolvable local and package `@import`s with lightningcss, preserves and hoists external imports, and fails the build when a local or package import is missing. **CSS Modules compilation, class-name hashing, and asset emission all keep working unchanged** — only the Tailwind-specific steps are skipped. That is what makes this demo possible: opting out of Tailwind does not mean opting out of zfb's CSS pipeline.
+This uses zfb's bare `zfb/config` import convention; [defineConfig](../api/define-config.mdx) explains the type shim needed by `zfb check`.
 
-<Warning title="Version floor">
-
-`tailwind: { enabled: false }` requires zfb **`0.1.0-next.31` or newer**. Earlier versions dropped all authored CSS when the flag was set ([zfb#824](https://github.com/Takazudo/zudo-front-builder/issues/824)) — a site that looked correct in source and shipped unstyled.
-
-</Warning>
+With `wind: false`, zudo-wind generation, utility validation, and candidate scanning are disabled. No generated utilities or reset layer are added; `styles/global.css` supplies this site's tokens and reset. **CSS Modules compilation, scoped class names, and asset emission continue to work** — disabling zudo-wind does not disable zfb's CSS pipeline.
 
 ### Each component imports its own stylesheet
 
@@ -97,10 +86,24 @@ The pattern is the same in all six components — a default import, then static 
 ```tsx title="components/hero/hero.tsx"
 import styles from "./hero.module.css";
 
+const STATS = [
+  { value: "120+", label: "Products shipped" },
+  { value: "9 yrs", label: "Average team tenure" },
+  { value: "4.9/5", label: "Client satisfaction" },
+];
+
 export default function Hero() {
   return (
     <section class={styles.hero}>
-      <div class={styles.inner}>{/* … */}</div>
+      <div class={styles.inner}>
+        <div class={styles.copy}>
+          <p class={styles.eyebrow}>Product engineering partner</p>
+          <h1 class={styles.title}>
+            We build digital products that <em class={styles.accent}>earn their keep</em>.
+          </h1>
+          {/* … */}
+        </div>
+      </div>
     </section>
   );
 }
@@ -113,8 +116,8 @@ Because the rewrite happens at build time, `styles.hero` is resolved during the 
 `hero.module.css` and `services.module.css` both declare a plain `.card`. In the built stylesheet they are two unrelated selectors:
 
 ```css
-.QAAyqq_card { /* from components/hero/hero.module.css */ }
-.y8_AgG_card { /* from components/services/services.module.css */ }
+.QAAyqq_card {}
+.y8_AgG_card {}
 ```
 
 The prefix is a hash of the **project-relative module path**, not of the file's contents and not of the machine's absolute paths. Two consequences follow, and both matter:
@@ -127,8 +130,11 @@ The prefix is a hash of the **project-relative module path**, not of the file's 
 Only the `.module.css` suffix opts a file into scoping. The layout imports the plain global sheet next to the component imports:
 
 ```tsx title="layouts/default.tsx"
+import type { Child } from "@takazudo/zfb/zudo-react";
+
 import "../styles/global.css";
 import SiteHeader from "../components/header/site-header";
+import SiteFooter from "../components/footer/site-footer";
 ```
 
 `styles/global.css` holds the `:root` design tokens every module consumes (`--color-brand`, `--space-5`, `--text-3xl`, …), a light reset, and one hand-written utility: `.skip-link`. That class reaches the browser unhashed, and the layout writes it as a literal string — `class="skip-link"` — rather than through a `styles.*` lookup. Both mechanisms live in the same file and neither interferes with the other.
@@ -163,7 +169,7 @@ One local-only detail worth knowing: `predev` runs `rm -rf dist .zfb .zfb-build`
 
 ## See also
 
-- [Styling](../concepts/styling.mdx) — the reference for global CSS, Tailwind v4, and the CSS Modules rules this demo exercises, including the `:export` / `composes` and bare-specifier limitations.
+- [Styling](../concepts/styling.mdx) — the reference for zudo-wind, authored global CSS, and the CSS Modules rules this demo exercises, including the `:export` / `composes` and bare-specifier limitations.
 - [Static assets](../concepts/static-assets.mdx) — how the emitted `dist/assets/` tree is produced and served.
 - [Islands](../concepts/islands.mdx) — what this site deliberately does not use.
 - [Examples](../guides/examples.mdx) — the rest of the zfb example sites.

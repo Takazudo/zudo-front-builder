@@ -1,33 +1,28 @@
 ---
 title: "Example: AI Summarizer"
-description: A Preact island posting to a prerender = false Worker route backed by a Cloudflare Workers AI binding, with a deterministic fallback that needs no Cloudflare account
+description: A zudo-react island posting to a prerender = false Worker route backed by a Cloudflare Workers AI binding, with a deterministic fallback that needs no Cloudflare account
 sidebar_position: 10
 category: Recipes
 ---
 
 <Info title="What this page covers">
 
-A small zfb site whose whole interactive surface is one Preact island, backed by a single
-`prerender = false` route that calls **Cloudflare Workers AI**. It exercises islands, the
-Cloudflare adapter's per-request context, and a `wrangler.toml` layout that deliberately
-keeps the AI binding out of the default Wrangler environment — so the app still runs, and
-the endpoint still answers, with no Cloudflare account at all.
+A small zfb site whose whole interactive surface is one zudo-react island, backed by a single
+`prerender = false` route that calls **Cloudflare Workers AI**. It exercises zudo-react signals,
+the Cloudflare adapter's per-request context, and a `wrangler.toml` layout that deliberately
+keeps the AI binding out of the default Wrangler environment — so the app still runs, and the
+endpoint still answers, with no Cloudflare account at all.
 
 </Info>
-
-<Note title="This demo targets zfb 2.x">
-
-This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting it to v3.
-
-</Note>
 
 - **Live demo:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
 - **Repository:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
 
 ## What it demonstrates
 
-- **An island as the entire UI.** `pages/index.tsx` is static HTML that wraps one
-  `"use client"` component in the `<Island>` wrapper — see [Islands](../concepts/islands.mdx).
+- **A zudo-react island as the entire UI.** `pages/index.tsx` is static HTML that wraps one
+  `"use client"` component in the `<Island>` wrapper. The island uses signals and `<Show>` for
+  its live form state — see [Islands](../concepts/islands.mdx).
 - **A `prerender = false` API route.** `pages/api/summarize.tsx` runs on the emitted
   Worker, reads a `POST` body, and returns JSON.
 - **Reading a Cloudflare binding.** The route gets `request`, `env`, and `ctx` from
@@ -44,15 +39,15 @@ This external demo targets zfb 2.x with Tailwind and Preact. See the [v3 migrati
 
 | Piece | What the repo uses |
 | --- | --- |
-| Engine and framework | `@takazudo/zfb` **2.3.0** with `framework: "preact"` (`preact` 10.x, `preact-render-to-string` 6.x); `@takazudo/zfb-runtime` **2.3.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0**, set as `adapter` in `zfb.config.ts` |
-| Styling | Tailwind CSS v4 — `tailwind: { enabled: true }`; `styles/global.css` opens with `@import "tailwindcss"` and then hand-writes the component styles |
+| Engine and UI | `@takazudo/zfb` **3.0.0** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **3.0.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0**, set as `adapter` in `zfb.config.ts` |
+| Styling | zudo-wind with `reset: "owned-v1"`; component classes and styles are authored in `styles/global.css`, with no utility classes |
 | Rendering mode | SSG for `pages/index.tsx` and `pages/404.tsx`; only `pages/api/summarize.tsx` exports `prerender = false` |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"`, `[assets]` on `./dist` with the `ASSETS` binding, `not_found_handling = "404-page"`, `run_worker_first = false` |
 | Bindings | one Workers AI binding, `AI` — declared **only** under `[env.ai.ai]` |
 | Compatibility | `compatibility_date = "2026-05-01"`, `compatibility_flags = ["nodejs_compat"]` — the adapter bundle imports `node:async_hooks` |
 | Model call | `@cf/meta/llama-3.2-1b-instruct`, `temperature: 0`, `max_tokens: 220`, input collapsed and capped at 6000 characters |
-| Notable dev deps | `wrangler` 4.85.0, `@cloudflare/workers-types`, plus `concurrently` and `chokidar-cli` for the `dev:cf` rebuild loop |
+| Notable dev deps | `wrangler` 4.127.0, `@cloudflare/workers-types`, plus `concurrently` and `chokidar-cli` for the `dev:cf` rebuild loop |
 
 ## Requirements and configuration
 
@@ -129,7 +124,7 @@ serve nothing.
 
 ### The route reads the request from the adapter context
 
-zfb 2.x calls a `prerender = false` route's default export with the page's **props**, not
+In zfb 3, a `prerender = false` route's default export receives the page's **props**, not
 with the incoming `Request`. The `Request`, the Worker `env`, and the `ExecutionContext`
 arrive together on the adapter's per-request context instead:
 
@@ -184,7 +179,15 @@ if (!env.AI) {
 
 try {
   const output = await env.AI.run(MODEL, {
-    /* system + user messages, temperature: 0, max_tokens: MAX_OUTPUT_TOKENS */
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Summarize the text between the delimiters in three short bullets and one takeaway.\n\n---\n${prepared}\n---`,
+      },
+    ],
+    temperature: 0,
+    max_tokens: MAX_OUTPUT_TOKENS,
   });
 
   const summary = parseAiText(output);
@@ -270,5 +273,5 @@ pnpm exec wrangler deploy --env ai
 - [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the mental model for what `dist/_worker.js` actually is
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — hands-on adapter and `wrangler.toml` setup
 - [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the `"use client"` component model and hydration timing
-- [Styling](../concepts/styling.mdx) — how the built-in Tailwind v4 path works
+- [Styling](../concepts/styling.mdx) — zudo-wind configuration and authored CSS
 - [Examples](../guides/examples.mdx) — the rest of the example sites
