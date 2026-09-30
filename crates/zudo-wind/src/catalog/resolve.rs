@@ -896,12 +896,27 @@ fn diagnostic(
         } => Severity::AuditInfo,
         _ => Severity::Error,
     };
+    let message = if code == DiagnosticCode::Zw006
+        && matches!(
+            origin,
+            Origin::Source {
+                position_kind: SourcePositionKind::Class,
+                ..
+            }
+        ) {
+        format!(
+            "{message}. If this is a genuine authored class, reserve its complete name with wind.authoredClasses: {{ {}: true }}; otherwise correct or declare the intended token. No generated utility CSS is emitted for this candidate",
+            serde_json::to_string(&candidate.raw).expect("candidate is a string")
+        )
+    } else {
+        message.to_owned()
+    };
     Diagnostic {
         severity,
         code,
         candidate: Some(candidate.raw.clone()),
         origin: Some(Box::new(origin.clone())),
-        message: message.to_owned(),
+        message,
         suggested_spelling: None,
         rejection_id,
     }
