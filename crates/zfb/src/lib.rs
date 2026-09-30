@@ -9,6 +9,7 @@ pub mod commands;
 pub mod config;
 pub mod diagnostics;
 pub(crate) mod output;
+pub mod process_supervisor;
 pub mod render_pipeline;
 // V8-bearing adapters (issue #371, sub-task 4.1a). Compiled in only
 // when the `embed_v8` cargo feature is on; without the feature, the
