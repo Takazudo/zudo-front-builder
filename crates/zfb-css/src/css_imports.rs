@@ -137,7 +137,7 @@ fn resolve_one(
     }
 
     // Bare package specifier — walk up looking for node_modules.
-    resolve_package_specifier(importer_dir, project_root, spec)
+    Ok(resolve_package_specifier(importer_dir, project_root, spec)?)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -624,7 +624,7 @@ fn resolve_package_specifier(
                     json,
                 );
             }
-            return file_or_css_index(&pkg_root.join(sub)).ok_or_else(|| {
+            return file_or_css_index(&pkg_root.join(sub)).ok_or({
                 PackageResolutionError::MissingPhysicalPath {
                     package: pkg_name,
                     subpath: exported_subpath,
@@ -636,7 +636,7 @@ fn resolve_package_specifier(
             .as_ref()
             .and_then(|json| package_css_entry(&pkg_root, json))
             .or_else(|| file_or_css_index(&pkg_root))
-            .ok_or_else(|| PackageResolutionError::MissingCssEntry(pkg_name));
+            .ok_or(PackageResolutionError::MissingCssEntry(pkg_name));
     }
     Err(PackageResolutionError::NotInstalled(pkg_name))
 }
@@ -706,7 +706,7 @@ fn resolve_exported_css_subpath(
             target: export_target_for_path(path, &selected_root),
         });
     }
-    if !path.extension().is_some_and(|ext| ext == "css") {
+    if path.extension().is_none_or(|ext| ext != "css") {
         return Err(PackageResolutionError::NonCssExport {
             package: package.to_string(),
             subpath: subpath.to_string(),

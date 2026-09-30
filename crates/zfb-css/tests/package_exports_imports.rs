@@ -343,7 +343,7 @@ fn exported_stylesheet_urls_are_attributed_to_the_real_target_file() {
     let pkg = package(
         tmp.path(),
         "widget-css",
-        r#"{"exports":{"./styles.css":"./dist/pkg.css"}}"#,
+        r#"{"name":"widget-css","exports":{"./styles.css":"./dist/pkg.css"}}"#,
         &[("dist/pkg.css", "@font-face { src: url(./font.woff2); }")],
     );
     let asset = pkg.join("dist/font.woff2");
