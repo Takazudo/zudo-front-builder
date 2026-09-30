@@ -29,6 +29,8 @@ body {
 
 CSS 内の import も使えます。スタイルを複数のファイルに分割し、`global.css` からまとめて読み込めます。
 
+`@import "@scope/pkg/theme.css"` のようなパッケージ CSS import は、import 元から最も近い `node_modules` にあるパッケージの `package.json` の `exports` を通じて解決されます。条件付き export では、そのパッケージの `exports` 内に記述された順序で `style` と `default` を確認します。`exports` が公開していないサブパスや `null` に割り当てたサブパスは、物理ファイルが存在してもそのパスからアクセスできません。これは Node のパッケージカプセル化規則に沿った動作です。`exports` を持たないパッケージでは、サブパスを物理パスから解決します。`@import "pkg"` のようにサブパスを指定しない場合は、パッケージの `style` フィールド、`exports["."]`、CSS を指す `main` の順に確認します。
+
 ## zudo-wind
 
 zudo-wind は zfb に組み込まれたユーティリティ CSS 言語です。設定には `wind` キーを使います。省略すると `{}` と同じ扱いになり、生成は有効、リセットは `none`、トークンとブレークポイントは暗黙には用意されません。プロジェクトで使う値だけを設定してください。詳しくは [zudo-wind の概要](../zudo-wind/overview.mdx)、[設定](../zudo-wind/configuration.mdx)、[ソース](../zudo-wind/sources-and-candidates.mdx)、[ユーティリティ](../zudo-wind/utilities/index.mdx) を参照してください。
