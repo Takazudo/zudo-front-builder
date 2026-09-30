@@ -6,7 +6,7 @@ sidebar_position: 7
 
 ## Uncontrolled by default
 
-Controls use native browser state unless you provide an explicit model. Static value and checked props set initial defaults. Reactive value and checked props are rejected; use a model prop when the control should stay connected to a signal.
+Controls use native browser state unless you provide an explicit model. Static value and checked props set initial defaults. Reactive value and checked props are rejected by TypeScript (`zfb check`) and at render time; use a model prop when the control should stay connected to a signal.
 
 The reserved props are **defaultValue**, **defaultChecked**, **modelValue**, and **modelChecked**. They do not become HTML attributes. Supplying a model together with its default is an error, as is supplying both value and defaultValue or both checked and defaultChecked.
 
@@ -55,7 +55,7 @@ function Preferences() {
 }
 ~~~
 
-Each radio in a group needs a static value and the same nonempty name, form association, and root. Radio option values and select option values must be unique strings. A null radio model means no option is checked. A single-select model must match a static option, except that hydration may record the browser's no-selection state without forcing a choice.
+Each radio in a group needs a static value and the same nonempty name, form association, root, and shared `modelValue`. Do not bind a radio group through `checked`; `modelValue` selects the matching option. Radio option values and select option values must be unique strings. A null radio model means no option is checked. A single-select model must match a static option, except that hydration may record the browser's no-selection state without forcing a choice.
 
 ## Models must be writable
 

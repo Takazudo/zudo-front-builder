@@ -215,7 +215,7 @@ Style accepts a CSS string or a flat CSS-spelled object; see [Components and JSX
 export type Listener<E extends Event = Event> = (event: E) => void | Promise<void>;
 ~~~
 
-Listener receives a native event and is attached with the on:event spelling; see [Components and JSX](./components-and-jsx.mdx).
+Listener receives a native event and is attached with the `on:<name>` spelling. Intrinsic props instantiate `Listener<E>` from the DOM event maps: known names use their mapped event type with `currentTarget` typed as the element (for example, `on:submit` on a form uses `SubmitEvent` and `HTMLFormElement`). Unknown or custom names accept any single-event handler. See [Components and JSX](./components-and-jsx.mdx).
 
 ### IslandIdentity
 
