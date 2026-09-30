@@ -52,7 +52,7 @@ async fn audit(project_root_arg: Option<&Path>) -> Result<()> {
     // --source arguments. Neither command scans the build/dev package-route,
     // mirror, or plugin roots.
     let audit_output = project_root.join(".zfb-wind-audit-output.css");
-    let plan = build_standalone_wind_source_plan(
+    let (plan, _warnings) = build_standalone_wind_source_plan(
         &project_root,
         &audit_output,
         &project_config,
