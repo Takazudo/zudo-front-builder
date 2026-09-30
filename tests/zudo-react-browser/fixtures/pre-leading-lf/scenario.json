@@ -1,0 +1,73 @@
+{
+  "page": "pre-leading-lf",
+  "roots": [
+    {
+      "component": "component.tsx",
+      "props": { "variant": "leading-lf" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "leading-lf" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "leading-two-lf" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "leading-two-lf" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "plain" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "plain" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "crlf" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "crlf" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "empty-sibling" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "empty-sibling" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "nested-array" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "nested-array" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "component-fragment" },
+      "mode": "none",
+      "static": true
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "component-fragment" },
+      "mode": "hydrate"
+    },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "code-child" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "code-child" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "variant": "raw-html" },
+      "mode": "none",
+      "static": true
+    },
+    { "component": "component.tsx", "props": { "variant": "raw-html" }, "mode": "hydrate" },
+    { "component": "component.tsx", "props": { "variant": "signal-island" }, "mode": "hydrate" }
+  ]
+}
