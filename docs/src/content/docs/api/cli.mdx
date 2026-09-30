@@ -260,6 +260,14 @@ Under adapter mode, `wrangler dev` serves the whole site — zfb never boots its
 
 </Caution>
 
+### Stopping an adapter-mode preview
+
+In an interactive terminal, zfb hands the terminal to `wrangler dev`, so Wrangler's hotkeys and Ctrl+C work as usual. When zfb receives SIGINT, SIGTERM, or SIGHUP, it forwards that signal to the entire `wrangler dev` process tree it started (pnpm → node → wrangler → workerd), which runs in its own process group. zfb waits up to 5 seconds for the tree to stop, then force-kills anything still running. This frees the preview `--port`.
+
+After a signal, zfb exits without an error banner using `128 + signal`: 130 for SIGINT, 143 for SIGTERM, or 129 for SIGHUP. If `wrangler dev` fails on its own, zfb instead reports `wrangler dev exited with status …` and exits with status 1.
+
+SIGKILL sent to zfb cannot be intercepted, so zfb cannot clean up the process tree in that case. A signal sent only to an outer wrapper that does not forward it, such as the PID of `pnpm exec zfb preview …`, never reaches zfb; scripts should stop the zfb process itself. Process-tree cleanup is not yet implemented on Windows.
+
 ### Flags
 
 | Flag | Type | Default | Description |
