@@ -63,6 +63,46 @@ Keys are strings or finite numbers. Negative zero normalizes to zero, while the 
 
 New items are built provisionally before old ranges are replaced. If setup fails, provisional scopes are disposed and the prior list stays live. Removing a key disposes its scope exactly once; adding it later creates a new item. Moving a retained key moves its existing DOM, preserving focus and selection when possible.
 
+## Dynamic table rows
+
+`For` cannot sit inside `tbody`: its comment-delimited region is not valid at that table-structural position. To replace a set of rows, put a one-item `For` outside the table and build intrinsic `tr` children from the item's snapshot:
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function ResultsTable() {
+  const data = signal({
+    rev: 0,
+    rows: [{ id: "a", name: "First" }]
+  });
+  const table = computed(() => {
+    const { rev, rows } = data.value;
+    return [{ rev, rows }];
+  });
+  // To replace the rows:
+  // data.value = { rev: data.value.rev + 1, rows: nextRows };
+
+  return (
+    <section>
+      <For each={table} by={(item) => item.rev}>
+        {(item) => {
+          const { rows } = item.value;
+          return (
+            <table>
+              <tbody>
+                {rows.map((row) => <tr><td>{row.name}</td><td><input aria-label={row.name} /></td></tr>)}
+              </tbody>
+            </table>
+          );
+        }}
+      </For>
+    </section>
+  );
+}
+~~~
+
+Each new revision removes the old table and disposes its scope, then builds a new one. Focus, selection, scroll position, and control state inside the old table are lost. If only cell values change, use live signal bindings in the cells instead of replacing the table.
+
 ## Parser positions and composition
 
 For and Show regions need positions where comment-delimited ranges are valid. They are unsupported at table-structural levels and inside select option structure. Check the [parser context rules](./hydration.mdx) before placing a dynamic region in unusual HTML.
