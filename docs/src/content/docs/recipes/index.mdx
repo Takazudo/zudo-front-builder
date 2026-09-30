@@ -16,7 +16,7 @@ Either way, a page here is:
 - Written as an explanation, not a code dump — the _why_ matters as much as the _how_
 - Anchored to a specific zfb version range, so you know what state of the engine it assumes
 
-The external example repositories are pinned to zfb 2.x and use Tailwind and Preact; see the [v3 migration guide](../guides/migrating-to-v3.mdx) before adapting them to v3.
+The external example repositories now pin zfb 3.0.0 and use zudo-react; their styling uses zudo-wind utilities where configured and authored CSS throughout.
 
 ## Recipes
 
@@ -27,9 +27,9 @@ The external example repositories are pinned to zfb 2.x and use Tailwind and Pre
 
 Nine standalone repositories, each a complete zfb project deployed and running on Cloudflare. Every page below covers one of them — what it demonstrates, the exact stack it uses, how it works, and how to run it locally — and links to the repository so you can clone it. [Examples](../guides/examples.mdx) puts the same nine side by side as a comparison matrix.
 
-- [AI Summarizer](./ai-summarizer.mdx) — one Preact island posting to a `prerender = false` route backed by a Workers AI binding, with a deterministic fallback so the endpoint still answers with no Cloudflare account.
-- [Blog](./blog.mdx) — a pure-SSG Markdown and MDX blog: three dynamic-route shapes, `paginate()`, one theme-toggle island, and a Tailwind v4 token system. No SSR, no adapter.
-- [Corporate Website](./corporate-website.mdx) — a static Preact marketing site styled entirely with CSS Modules. The one example that sets `tailwind: { enabled: false }`, so the emitted stylesheet is its authored CSS and nothing else.
+- [AI Summarizer](./ai-summarizer.mdx) — one zudo-react island posting to a `prerender = false` route backed by a Workers AI binding, with a deterministic fallback so the endpoint still answers with no Cloudflare account.
+- [Blog](./blog.mdx) — a pure-SSG Markdown and MDX blog: three dynamic-route shapes, `paginate()`, one zudo-react theme-toggle island, and an authored CSS design system. zudo-wind supplies only its `owned-v1` reset. No SSR, no adapter.
+- [Corporate Website](./corporate-website.mdx) — a static zudo-react marketing site styled entirely with CSS Modules. It sets `wind: false`, so zudo-wind is disabled and the site uses only authored CSS.
 - [JSON API](./json-api.mdx) — the smallest complete SSR starter: two `prerender = false` GET endpoints, one of which builds a MiniSearch index lazily and reuses it across warm-isolate requests. Nothing to provision.
 - [KV Guestbook](./kv-guestbook.mdx) — a write path through a Cloudflare binding. One route both renders the entry list and handles a no-JavaScript form post against Workers KV, alongside a token-guarded admin delete.
 - [Password Gate](./password-gate.mdx) — a static site fronted by a hand-written Worker with `run_worker_first = true`, the one example that talks to Cloudflare without the zfb adapter. Its live demo answers `401` by design.
