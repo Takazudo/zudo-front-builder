@@ -4643,6 +4643,41 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
     resolved
 }
 
+fn css_dependency_watch_paths(dependencies: &[zfb_css::CssInputDependency]) -> Vec<PathBuf> {
+    dependencies
+        .iter()
+        .filter_map(|dependency| match dependency.kind {
+            zfb_css::CssInputDependencyKind::Stylesheet
+            | zfb_css::CssInputDependencyKind::PackageManifest => Some(dependency.path.clone()),
+            zfb_css::CssInputDependencyKind::Asset => None,
+        })
+        .collect()
+}
+
+fn publish_css_package_manifests_read_since(
+    raw_import_invalidation: &zfb_build::RawImportInvalidation,
+    dependencies: &[zfb_css::CssInputDependency],
+    read_start: std::time::SystemTime,
+) {
+    let package_manifests: BTreeSet<_> = dependencies
+        .iter()
+        .filter_map(|dependency| match dependency.kind {
+            zfb_css::CssInputDependencyKind::PackageManifest => Some(dependency.path.clone()),
+            zfb_css::CssInputDependencyKind::Stylesheet
+            | zfb_css::CssInputDependencyKind::Asset => None,
+        })
+        .collect();
+    if package_manifests.is_empty() {
+        return;
+    }
+
+    // Keep the declared manifests published before the CSS pass, including
+    // when a later build fails; successful export resolution adds its inputs.
+    let mut manifests = raw_import_invalidation.css_manifest_paths();
+    manifests.extend(package_manifests);
+    raw_import_invalidation.replace_css_manifests_read_since(manifests, read_start);
+}
+
 /// Resolve the project's CSS `@import` graph to canonicalised real paths the
 /// dev watcher should follow (D4 of #1288).
 ///
@@ -4790,18 +4825,20 @@ fn build_dev_css_and_publish_mirror_roots(
             output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
         }
     }
-    let stylesheet_paths = if cfg.wind.is_some() {
-        pass.input_dependencies
-            .iter()
-            .filter(|dependency| dependency.kind == zfb_css::CssInputDependencyKind::Stylesheet)
-            .map(|dependency| dependency.path.clone())
-            .collect()
+    if cfg.wind.is_some() {
+        publish_css_package_manifests_read_since(
+            raw_import_invalidation,
+            &pass.input_dependencies,
+            read_start,
+        );
+    }
+    let css_dependency_paths = if cfg.wind.is_some() {
+        css_dependency_watch_paths(&pass.input_dependencies)
     } else {
-        // Legacy engines do not report dependencies. Resolve the import
-        // graph on every successful pass, including boot.
+        // Legacy engines keep stylesheet-only watch discovery and do not publish manifest inputs.
         resolve_css_import_watch_targets(project_root)
     };
-    raw_import_invalidation.replace_css_stylesheets_read_since(stylesheet_paths, read_start);
+    raw_import_invalidation.replace_css_stylesheets_read_since(css_dependency_paths, read_start);
     Ok(pass.payload)
 }
 
@@ -11902,6 +11939,43 @@ mod tests {
             format_css_index_timing_line(6, 2, 1),
             "[zfb-timing] css phase=index-update elapsed_ms=6 upserted=2 removed=1"
         );
+    }
+
+    #[test]
+    fn css_dependency_watch_paths_include_manifests_and_exclude_assets() {
+        let stylesheet = PathBuf::from("/project/styles/imported.css");
+        let manifest = PathBuf::from("/workspace/theme/package.json");
+        let asset = PathBuf::from("/workspace/theme/icon.svg");
+        let declared_manifest = PathBuf::from("/project/node_modules/@fixture/widgets/wind.json");
+        let dependencies = [
+            zfb_css::CssInputDependency {
+                path: stylesheet.clone(),
+                kind: zfb_css::CssInputDependencyKind::Stylesheet,
+            },
+            zfb_css::CssInputDependency {
+                path: manifest.clone(),
+                kind: zfb_css::CssInputDependencyKind::PackageManifest,
+            },
+            zfb_css::CssInputDependency {
+                path: asset.clone(),
+                kind: zfb_css::CssInputDependencyKind::Asset,
+            },
+        ];
+
+        assert_eq!(
+            css_dependency_watch_paths(&dependencies),
+            vec![stylesheet, manifest.clone()]
+        );
+
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let read_start = zfb_build::ssr_read_start();
+        invalidation.replace_css_manifests_read_since([declared_manifest.clone()], read_start);
+        publish_css_package_manifests_read_since(&invalidation, &dependencies, read_start);
+        let policy = zfb_build::GranularityPolicy::default()
+            .with_raw_import_invalidation(invalidation.clone());
+        assert!(policy.is_css_manifest(&declared_manifest));
+        assert!(policy.is_css_manifest(&manifest));
+        assert!(!policy.is_css_manifest(&asset));
     }
 
     #[test]

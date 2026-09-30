@@ -264,19 +264,39 @@ mod tests {
     #[test]
     fn mixed_output_preserves_generated_and_authored_sources() {
         let authored = PathBuf::from("/project/styles/global.css");
+        let manifest = PathBuf::from("/workspace/theme/package.json");
         let engine = WindEngine::new(
             WindConfig::default(),
             ["block".to_string()].into(),
             AuthoredCssBundle {
                 css: ".authored { color: red; }".into(),
                 companions: vec![],
-                input_dependencies: vec![crate::CssInputDependency {
-                    path: authored.clone(),
-                    kind: CssInputDependencyKind::Stylesheet,
-                }],
+                input_dependencies: vec![
+                    crate::CssInputDependency {
+                        path: authored.clone(),
+                        kind: CssInputDependencyKind::Stylesheet,
+                    },
+                    crate::CssInputDependency {
+                        path: manifest.clone(),
+                        kind: CssInputDependencyKind::PackageManifest,
+                    },
+                ],
             },
         );
         let result = engine.produce_utility_css(&[]).unwrap();
+        assert_eq!(
+            result.input_dependencies,
+            vec![
+                crate::CssInputDependency {
+                    path: authored.clone(),
+                    kind: CssInputDependencyKind::Stylesheet,
+                },
+                crate::CssInputDependency {
+                    path: manifest,
+                    kind: CssInputDependencyKind::PackageManifest,
+                },
+            ]
+        );
         let provenance = result.provenance.unwrap();
         assert_eq!(provenance.source_id, "zudo-wind://spec/1");
         assert_eq!(provenance.authored_stylesheets, vec![authored]);
