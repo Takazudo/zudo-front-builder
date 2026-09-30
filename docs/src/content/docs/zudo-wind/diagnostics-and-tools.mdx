@@ -56,6 +56,8 @@ Run `zfb wind explain` to inspect how a candidate is parsed and resolved. Explai
 
 Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, and property conflicts within an enclosing class-list literal. It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
 
+By default, a completed audit exits with status 0 even when it reports error-severity findings; stderr then recommends `--fail-on error`. `--fail-on error` fails on error-severity diagnostics, while `--fail-on warning` also fails on warnings. `auditInfo` findings do not affect either threshold. Invalid configuration and source scan failures always exit nonzero.
+
 `codeHighlight.roleClasses` is deliberately tolerant: a valid utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. Audit may report that role as ignored. An exact match in `authoredClasses` suppresses utility validation, generation, and utility diagnostics at every candidate origin. It cannot suppress configuration errors or stylesheet checks.
 
 ## Leftover directives and CSS command
