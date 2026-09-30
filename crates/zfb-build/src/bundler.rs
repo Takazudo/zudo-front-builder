@@ -5602,6 +5602,17 @@ pub fn bundle_with_session(
     // remains best-effort for the dev invalidation graph, but is fail-closed
     // for an emitted bundle that references a copied Wasm module.
     let metafile_bytes = metafile_path.as_ref().and_then(|path| fs::read(path).ok());
+    if !(input.mode.is_prod() && input.minify) {
+        if let Some(bytes) = metafile_bytes.as_deref() {
+            rewrite_esbuild_module_labels_at_path(
+                &bundle_path,
+                bytes,
+                shadow,
+                &input.project_root,
+                work,
+            );
+        }
+    }
     let emitted_wasm_assets = match metafile_path.as_deref() {
         Some(meta_path) => emitted_wasm_assets_from_metafile(
             meta_path,
@@ -5786,6 +5797,229 @@ fn augment_route_deps_with_worker_targets(
                 route.module_deps.extend(path_aliases(&edge.dependency));
             }
         }
+    }
+}
+
+/// Replace only esbuild's actual module-label line comments. A JS string or
+/// template can contain the same bytes, so the lexer supplies the spans and
+/// the metafile supplies the exact spellings eligible for replacement.
+fn rewrite_esbuild_module_labels_at_path(
+    bundle_path: &Path,
+    metafile_bytes: &[u8],
+    shadow: &Path,
+    project_root: &Path,
+    work_root: &Path,
+) {
+    let Ok(bundle) = fs::read_to_string(bundle_path) else {
+        return;
+    };
+    let Some(rewritten) =
+        rewrite_esbuild_module_labels(&bundle, metafile_bytes, shadow, project_root, work_root)
+    else {
+        return;
+    };
+    if rewritten != bundle {
+        if let Err(error) = fs::write(bundle_path, rewritten) {
+            eprintln!("[zfb-debug] could not rewrite esbuild module labels: {error}");
+        }
+    }
+}
+
+fn rewrite_esbuild_module_labels(
+    bundle: &str,
+    metafile_bytes: &[u8],
+    shadow: &Path,
+    project_root: &Path,
+    work_root: &Path,
+) -> Option<String> {
+    use swc_core::common::comments::{CommentKind, SingleThreadedComments};
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax};
+
+    let metafile: serde_json::Value = serde_json::from_slice(metafile_bytes).ok()?;
+    let inputs = metafile.get("inputs")?.as_object()?;
+    let mut labels = HashMap::new();
+    for key in inputs.keys() {
+        if !key.starts_with("../") || key.contains(['\r', '\n', '\u{2028}', '\u{2029}']) {
+            continue;
+        }
+        let path = normalize_path_lexical(&shadow.join(key));
+        let components: Vec<_> = path.components().collect();
+        let label = if let Some(index) = components
+            .iter()
+            .rposition(|part| part.as_os_str() == "node_modules")
+        {
+            let tail = components[index + 1..].iter().collect::<PathBuf>();
+            format!("node_modules/{}", rel_to_forward_slash(&tail))
+        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(project_root)) {
+            rel_to_forward_slash(rel)
+        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(work_root)) {
+            rel_to_forward_slash(rel)
+        } else if let Some(name) = path.file_name() {
+            format!("external/{}", name.to_string_lossy())
+        } else {
+            continue;
+        };
+        labels.insert(format!(" {key}"), format!(" {label}"));
+    }
+    if labels.is_empty() {
+        return Some(bundle.to_string());
+    }
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let file = cm.new_source_file(FileName::Anon.into(), bundle.to_string());
+    let comments = SingleThreadedComments::default();
+    let lexer = Lexer::new(
+        Syntax::Es(Default::default()),
+        EsVersion::Es2022,
+        StringInput::from(&*file),
+        Some(&comments),
+    );
+    let mut parser = Parser::new_from(lexer);
+    if parser.parse_module().is_err() || !parser.take_errors().is_empty() {
+        eprintln!("[zfb-debug] esbuild bundle did not parse for module-label rewrite");
+        return None;
+    }
+
+    let (leading, trailing) = comments.borrow_all();
+    let mut edits = Vec::new();
+    for comment in leading.values().chain(trailing.values()).flatten() {
+        if comment.kind != CommentKind::Line {
+            continue;
+        }
+        let Some(replacement) = labels.get(comment.text.as_ref()) else {
+            continue;
+        };
+        let start = (comment.span.lo.0 - file.start_pos.0) as usize;
+        let end = (comment.span.hi.0 - file.start_pos.0) as usize;
+        // esbuild emits module labels at column zero. Check the original
+        // bytes too, so a matching inline user comment is never touched.
+        if start <= end
+            && end <= bundle.len()
+            && (start == 0 || matches!(bundle.as_bytes()[start - 1], b'\n' | b'\r'))
+            && bundle.get(start..end) == Some(format!("//{}", comment.text).as_str())
+        {
+            edits.push((start, end, format!("//{replacement}")));
+        }
+    }
+    edits.sort_unstable_by_key(|edit| edit.0);
+    let mut rewritten = bundle.to_string();
+    for (start, end, replacement) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end, &replacement);
+    }
+    Some(rewritten)
+}
+
+#[cfg(test)]
+mod esbuild_module_label_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_only_metafile_backed_js_comments() {
+        let key = "../../../../x/app/node_modules/.pnpm/node_modules/hono/dist/compose.js";
+        let bundle = format!(
+            "// {key}\nconst text = `\n// {key}\n`;\n// ../evil\n// node_modules/@takazudo/zfb/dist/content.js\n// pages/index.tsx\n"
+        );
+        let metafile = serde_json::json!({"inputs": {
+            key: {},
+            "node_modules/@takazudo/zfb/dist/content.js": {},
+            "pages/index.tsx": {}
+        }});
+        let bytes = serde_json::to_vec(&metafile).unwrap();
+        let rewritten = rewrite_esbuild_module_labels(
+            &bundle,
+            &bytes,
+            Path::new("/tmp/shadow"),
+            Path::new("/x/app"),
+            Path::new("/tmp/work"),
+        )
+        .unwrap();
+        assert!(rewritten.starts_with("// node_modules/hono/dist/compose.js\n"));
+        assert!(rewritten.contains(&format!("`\n// {key}\n`")));
+        assert!(rewritten.contains("// ../evil\n"));
+        assert!(rewritten.contains("// node_modules/@takazudo/zfb/dist/content.js\n"));
+        assert!(rewritten.contains("// pages/index.tsx\n"));
+        assert_eq!(rewritten.lines().count(), bundle.lines().count());
+        assert_eq!(
+            rewrite_esbuild_module_labels(
+                &rewritten,
+                &bytes,
+                Path::new("/tmp/shadow"),
+                Path::new("/x/app"),
+                Path::new("/tmp/work")
+            )
+            .unwrap(),
+            rewritten
+        );
+    }
+
+    #[test]
+    fn labels_project_work_and_external_inputs_without_changing_line_endings() {
+        let shadow = Path::new("/tmp/work/shadow");
+        let project = Path::new("/tmp/work/app");
+        let work = Path::new("/tmp/work");
+        let bundle =
+            "// ../app/pages/index.tsx\r\n// ../shared/util.js\r\n// ../../../vendor/tool.js\r\n";
+        let metafile = serde_json::json!({"inputs": {
+            "../app/pages/index.tsx": {},
+            "../shared/util.js": {},
+            "../../../vendor/tool.js": {}
+        }});
+        let rewritten = rewrite_esbuild_module_labels(
+            bundle,
+            &serde_json::to_vec(&metafile).unwrap(),
+            shadow,
+            project,
+            work,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten,
+            "// pages/index.tsx\r\n// shared/util.js\r\n// external/tool.js\r\n"
+        );
+    }
+
+    #[test]
+    fn real_esbuild_comment_spelling_matches_metafile_key() {
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let shadow = temp.path().join("shadow");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("dep.js"), "export const value = 1;\n").unwrap();
+        fs::write(
+            shadow.join("entry.js"),
+            "import { value } from '../outside/dep.js'; console.log(value);\n",
+        )
+        .unwrap();
+        let output = Command::new(esbuild)
+            .current_dir(&shadow)
+            .arg("entry.js")
+            .arg("--bundle")
+            .arg("--format=esm")
+            .arg("--outfile=bundle.mjs")
+            .arg("--metafile=meta.json")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bundle = fs::read_to_string(shadow.join("bundle.mjs")).unwrap();
+        let metafile: serde_json::Value =
+            serde_json::from_slice(&fs::read(shadow.join("meta.json")).unwrap()).unwrap();
+        let keys = metafile["inputs"].as_object().unwrap();
+        let key = keys
+            .keys()
+            .find(|key| key.starts_with("../"))
+            .expect("outside input key");
+        assert!(bundle.lines().any(|line| line == format!("// {key}")));
     }
 }
 
