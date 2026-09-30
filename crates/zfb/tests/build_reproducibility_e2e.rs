@@ -158,17 +158,18 @@ fn scaffold_project(root: &Path) {
         .join(".pnpm/repro-realpath-dep@1.0.0/node_modules")
         .join(ESCAPE_PACKAGE);
     fs::create_dir_all(&store_package).expect("create local pnpm store package");
-    let package_json = serde_json::json!({
+    let store_package_json = serde_json::json!({
         "name": ESCAPE_PACKAGE,
         "version": "1.0.0",
         "type": "module",
         "main": "index.js",
     });
-    let package_manifest = format!(
+    let store_package_manifest = format!(
         "{}\n",
-        serde_json::to_string_pretty(&package_json).expect("serialize pnpm store package manifest")
+        serde_json::to_string_pretty(&store_package_json)
+            .expect("serialize pnpm store package manifest")
     );
-    fs::write(store_package.join("package.json"), &package_manifest)
+    fs::write(store_package.join("package.json"), &store_package_manifest)
         .expect("write pnpm store package manifest");
     fs::write(
         store_package.join("index.js"),
@@ -177,8 +178,26 @@ fn scaffold_project(root: &Path) {
     .expect("write pnpm store package entry");
     let logical_package = node_modules.join(ESCAPE_PACKAGE);
     fs::create_dir_all(&logical_package).expect("create logical dependency package directory");
-    fs::write(logical_package.join("package.json"), &package_manifest)
-        .expect("write logical dependency package manifest");
+    // The bundler uses esbuild's neutral platform, which ignores `main` unless
+    // mainFields is configured. An explicit exports entry makes bare package
+    // resolution portable while the leaf symlink still exercises realpath.
+    let logical_package_json = serde_json::json!({
+        "name": ESCAPE_PACKAGE,
+        "version": "1.0.0",
+        "type": "module",
+        "main": "index.js",
+        "exports": "./index.js",
+    });
+    let logical_package_manifest = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&logical_package_json)
+            .expect("serialize logical dependency package manifest")
+    );
+    fs::write(
+        logical_package.join("package.json"),
+        &logical_package_manifest,
+    )
+    .expect("write logical dependency package manifest");
     std::os::unix::fs::symlink(
         "../.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
         logical_package.join("index.js"),
