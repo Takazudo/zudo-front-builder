@@ -208,6 +208,91 @@ component model.
 
 For the server/client boundary details, see [The zudo-react runtime](../architecture/framework-adapters.mdx).
 
+## Embedding a third-party widget
+
+A self-mounting widget can own an empty element inside a zudo-react island. Its own framework (including Preact or React) stays in the widget's bundle from `node_modules`; install the framework as the widget library's peer dependency. The v3 restriction on Preact/React JSX runtime imports applies to components rendered by zudo-react, not to an opaque widget mounted inside its own host. Do not pass the widget's VNodes to zudo-react or let it mutate a region containing zudo-react children.
+
+This example uses a **hypothetical** adapter module. Its `mount(host)` returns an instance with a synchronous `destroy()` method. Replace these names with the library's actual mount and teardown APIs. The adapter must roll back any listeners, timers, or other resources it allocates if mounting throws before it returns an instance; clearing the host only removes DOM nodes.
+
+```tsx
+"use client";
+
+import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+
+type WidgetInstance = { destroy(): void };
+type WidgetModule = { mount(host: Element): WidgetInstance };
+type WidgetLoader = () => Promise<WidgetModule>;
+
+const loadWidget: WidgetLoader = () => import("./widget-adapter");
+
+export function ThirdPartyWidget() {
+  const host: Ref<Element> = { current: null };
+  const status = signal("Loading widget…");
+  const scope = getScope();
+  const abortSignal = scope.abortSignal;
+
+  scope.onActivate(() => {
+    let instance: WidgetInstance | undefined;
+    void loadWidget().then((widget) => {
+      if (abortSignal.aborted) return;
+      const element = host.current;
+      if (!element) return;
+      try {
+        instance = widget.mount(element);
+        status.value = "";
+      } catch {
+        element.replaceChildren();
+        status.value = "Widget unavailable.";
+      }
+    }).catch(() => {
+      if (!abortSignal.aborted) status.value = "Widget unavailable.";
+    });
+
+    return () => {
+      const mounted = instance;
+      instance = undefined;
+      try {
+        mounted?.destroy();
+      } finally {
+        host.current?.replaceChildren();
+      }
+    };
+  });
+
+  return h("section", null,
+    h("div", { ref: host }),
+    h("p", { role: "status", children: status }),
+  );
+}
+```
+
+```ts
+// widget-adapter.ts — illustrative library-specific adapter
+import * as thirdParty from "some-widget";
+
+export function mount(host: Element) {
+  const onResize = () => { /* update adapter-owned measurements */ };
+  window.addEventListener("resize", onResize);
+  const timer = window.setInterval(() => { /* adapter-owned polling */ }, 1000);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    window.removeEventListener("resize", onResize);
+    window.clearInterval(timer);
+  };
+  try {
+    const widget = thirdParty.mount(host); // The library must roll back its own partial work on failure.
+    return { destroy() { try { widget.destroy(); } finally { release(); } } };
+  } catch (error) {
+    release(); // Roll back allocations made before mount returned.
+    throw error;
+  }
+}
+```
+
+`onActivate` itself must stay synchronous: `onActivate(async () => ...)` returns a promise and activation rejects it. Start `import()` inside the callback, never at module top level where SSR could execute it. The abort check handles navigation while the import is pending. Return cleanup synchronously from activation (or register it during setup); calling setup-only `onCleanup` after an `await` fails. The adapter's `mount` must either return a complete instance or undo its own partial work before throwing. The island destroys a returned instance exactly once on disposal.
+
 ## Browser bundle mode and configuration
 
 Island code uses the same compile-time mode values as client scripts, module
