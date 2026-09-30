@@ -157,6 +157,21 @@ fn scaffold_project(root: &Path) {
         .join(".pnpm/repro-realpath-dep@1.0.0/node_modules")
         .join(ESCAPE_PACKAGE);
     fs::create_dir_all(&store_package).expect("create local pnpm store package");
+    let package_json = serde_json::json!({
+        "name": ESCAPE_PACKAGE,
+        "version": "1.0.0",
+        "type": "module",
+        "main": "index.js",
+    });
+    fs::write(
+        store_package.join("package.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&package_json)
+                .expect("serialize pnpm store package manifest")
+        ),
+    )
+    .expect("write pnpm store package manifest");
     fs::write(
         store_package.join("index.js"),
         format!("export const marker = {REALPATH_EXPORT:?};\n"),
