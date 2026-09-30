@@ -191,6 +191,19 @@ fn scaffold_project(root: &Path) {
     let logical_package = fs::canonicalize(node_modules.join(ESCAPE_PACKAGE))
         .expect("resolve pnpm-style dependency symlink");
     assert_eq!(logical_package, fs::canonicalize(store_package).unwrap());
+
+    let adapter_preflight = Command::new("pnpm")
+        .args(["exec", "zfb-adapter-cloudflare", "--help"])
+        .current_dir(root)
+        .output()
+        .expect("spawn pnpm adapter CLI preflight");
+    assert!(
+        adapter_preflight.status.success(),
+        "fixture must resolve its declared Cloudflare adapter through pnpm exec\nstatus: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        adapter_preflight.status,
+        String::from_utf8_lossy(&adapter_preflight.stdout),
+        String::from_utf8_lossy(&adapter_preflight.stderr),
+    );
 }
 
 fn run_build(root: &Path, esbuild: &Path, scratch_dir: Option<&Path>, define_value: Option<&str>) {
