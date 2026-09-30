@@ -16,6 +16,9 @@ async fn main() {
         Command::Check(args) => commands::check::run(args).await,
     };
     if let Err(e) = result {
+        if let Some(exit) = e.downcast_ref::<zfb::SilentExit>() {
+            std::process::exit(exit.0);
+        }
         // Single, centralized error rendering so individual commands can
         // just `return Err(e)` without pre-printing — avoids the
         // double-print that would otherwise happen when a command both
