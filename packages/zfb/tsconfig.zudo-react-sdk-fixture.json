@@ -11,5 +11,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["type-tests-zudo-react/consumer.tsx"]
+  "include": ["type-tests-zudo-react/**/*.tsx"]
 }

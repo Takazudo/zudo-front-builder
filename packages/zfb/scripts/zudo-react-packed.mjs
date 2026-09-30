@@ -40,12 +40,16 @@ function stage(tarball, directory) {
 }
 
 function writeConsumer(directory) {
-  const source = join(packageDir, "type-tests-zudo-react", "consumer.tsx");
-  cpSync(source, join(directory, "consumer.tsx"));
+  const fixtures = readdirSync(join(packageDir, "type-tests-zudo-react")).filter((name) =>
+    name.endsWith(".tsx"),
+  );
+  for (const fixture of fixtures) {
+    cpSync(join(packageDir, "type-tests-zudo-react", fixture), join(directory, fixture));
+  }
   const config = JSON.parse(
     readFileSync(join(packageDir, "tsconfig.zudo-react-fixture.json"), "utf8"),
   );
-  config.include = ["consumer.tsx"];
+  config.include = fixtures;
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify(config));
   config.compilerOptions.jsx = "react-jsxdev";
   writeFileSync(join(directory, "tsconfig.dev.json"), JSON.stringify(config));

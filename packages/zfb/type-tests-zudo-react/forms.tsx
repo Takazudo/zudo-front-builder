@@ -1,4 +1,4 @@
-import { signal, computed, type ReadonlySignal } from "../src/zudo-react/index.js";
+import { signal, computed, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
 
 const text = signal("text");
 const checked = signal(false);
