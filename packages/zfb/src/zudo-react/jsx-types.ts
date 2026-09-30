@@ -82,7 +82,7 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   height?: Value<string | number | null>;
   type?: StringAttribute;
   name?: StringAttribute;
-  value?: ScalarAttribute;
+  value?: string | number | null | undefined;
   placeholder?: StringAttribute;
   for?: StringAttribute;
   charset?: StringAttribute;
@@ -91,7 +91,7 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   autofocus?: BooleanAttribute;
   required?: BooleanAttribute;
   disabled?: BooleanAttribute;
-  checked?: BooleanAttribute;
+  checked?: boolean | null | undefined;
   selected?: BooleanAttribute;
   multiple?: BooleanAttribute;
   reversed?: BooleanAttribute;
@@ -217,6 +217,8 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
 type SvgProps = SvgAttributes & DataAria & EventProps;
 type CustomProps = ReservedProps &
   EventProps & {
+    value?: string | null | undefined;
+    checked?: null | undefined;
     [attribute: string]: StringAttribute | Child | Ref<Element> | Listener | undefined;
   };
 
