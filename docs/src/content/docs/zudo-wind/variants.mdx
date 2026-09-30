@@ -52,7 +52,7 @@ The same selector is escaped from the original complete candidate. With dark con
 
 Responsive and hover conditions are combined with `and` in one media wrapper; the dark condition stays in the selector. `first` and `last` map to child positions, and `open` also recognizes popover-open elements.
 
-V1 rejects `aria-*` and `data-*` attribute variants, arbitrary-selector variants, and variants when dark mode is disabled with ZW004. Use authored CSS for those selectors. A candidate with a pseudo-element variant and child spacing or divide utilities is rejected as R23/ZW005 because the child selector would target children of the pseudo-element.
+V1 rejects `aria-*` and `data-*` attribute variants with ZW004, and arbitrary-selector variants with ZW004. When dark mode is disabled, `dark` is an unknown or unconfigured variant and returns ZW002. Use authored CSS for unsupported attribute and arbitrary selectors, or configure dark mode before using `dark`. A candidate with a pseudo-element variant and child spacing or divide utilities is rejected as R23/ZW005 because the child selector would target children of the pseudo-element.
 
 ## See also
 
