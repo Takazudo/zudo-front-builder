@@ -33,6 +33,8 @@ export default defineConfig({
 最も単純なエントリは、ディレクティブ名をコンポーネント識別子の文字列にマッピングするものです。このディレクティブは `titleFromLabel: true` の **コンテナ** として登録され、角括弧で囲んだ `[label]` が、出力される JSX 要素の `title="…"` 属性になります。
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
@@ -67,6 +69,8 @@ Body text.
 完全形を使うと、ディレクティブの形状（`container`、`leaf`、`text`）と、角括弧のラベルを `title` 属性にするかどうかを制御できます。
 
 ```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
 export default defineConfig({
   markdown: {
     features: {
