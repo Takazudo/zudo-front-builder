@@ -1,7 +1,7 @@
 //! Wave-3 ACCEPTANCE gate for bug #1284 (epic #1285), authored during the
 //! Wave-1 diagnosis (#1286). Level 4 — real `zfb dev` edit→serve loop.
 //!
-//! These scenarios reproduce the THREE symptoms that the existing
+//! The first three scenarios reproduce the THREE symptoms that the existing
 //! `dev_serve_e2e.rs` scenario 4 does NOT cover (that scenario edits a
 //! *directly-imported* `components/**` file, which already re-renders today via
 //! the orchestrator's blunt `PageSelection::All` fallback):
@@ -18,6 +18,9 @@
 //!   emitted into `/assets/styles.css` until the CSS entry is touched.
 //!   Acceptance: after the fix, the new class appears in `/assets/styles.css`
 //!   without touching the CSS entry.
+//! - **D** — changing a symlinked package's CSS `exports` target or editing the
+//!   newly-selected target does not refresh `/assets/styles.css`. Acceptance:
+//!   served CSS moves from `marker-a` to `marker-b`, then to `marker-b2`.
 //!
 //! ## D3 — the observable (locked by #1286)
 //!
@@ -30,7 +33,7 @@
 //!
 //! ## Status — fully implemented, gated `heavy:` (issue #1290 is closed)
 //!
-//! The Wave-3 author wired all three scenarios into a local copy of the
+//! The Wave-3 author wired the original three scenarios into a local copy of the
 //! `dev_serve_e2e` harness (`spawn_dev` / `boot_and_handshake` /
 //! `poll_until_contains` / `subscribe_sse`) — these are no longer stubs.
 //! They stay `#[ignore]`d (tagged `heavy:`, see crates/CLAUDE.md's taxonomy)
@@ -46,7 +49,7 @@
 
 // ---------------------------------------------------------------------------
 // Shared harness (local copy of the helpers from dev_serve_e2e.rs, adapted
-// for these three scenarios). The helpers are private to that file's binary;
+// for all scenarios). The helpers are private to that file's binary;
 // Rust integration tests are separate binaries and cannot import each other's
 // private items. zfb-test-utils (already a dev-dep) provides locate_esbuild,
 // next_sse_event_name, and the zfb_binary! macro.
@@ -64,7 +67,7 @@ use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
-// Serialise the three tests: each boots a full V8 + esbuild + wind dev
+// Serialise the four tests: each boots a full V8 + esbuild + wind dev
 // session; running them concurrently would double/triple memory and produce
 // flaky boot deadlines. Each test also acquires `CrossBinaryE2eLock` BEFORE
 // this mutex to serialize against sibling e2e binaries (issue #1339) — see
@@ -326,6 +329,45 @@ async fn poll_until_contains(
     panic!(
         "[{phase}] GET {url} did not serve a body containing {needle:?} within {}s.\n\
          Last observation: {last_observation}\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+/// Poll a served CSS asset until it contains one marker and excludes another.
+/// This ties each assertion to the served condition instead of sampling after
+/// a fixed delay.
+async fn poll_until_css_contains_and_not(
+    client: &reqwest::Client,
+    url: &str,
+    required_marker: &str,
+    forbidden_marker: &str,
+    deadline: Duration,
+    phase: &str,
+    session: &DevSession,
+) {
+    let start = Instant::now();
+    let mut last_observation = String::from("(no response yet)");
+    while start.elapsed() < deadline {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                if status == 200
+                    && body.contains(required_marker)
+                    && !body.contains(forbidden_marker)
+                {
+                    return;
+                }
+                last_observation = format!("status {status}, body:\n{body}");
+            }
+            Err(e) => last_observation = format!("request error: {e}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "[{phase}] GET {url} did not serve {required_marker:?} without {forbidden_marker:?} \
+         within {}s.\nLast observation: {last_observation}\n{}",
         deadline.as_secs(),
         session.logs(),
     );
@@ -895,6 +937,155 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         Err(_) => panic!(
             "[watchdog] symptom-B e2e did not finish within {}s — hang or \
              transitive CSS edit never refreshed /assets/styles.css. \
+             Process group {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PACKAGE CSS EXPORT REMAP
+// ---------------------------------------------------------------------------
+
+/// A workspace package's CSS `exports` remap and the new target's contents
+/// both refresh the served stylesheet. The package is reached through a
+/// `node_modules` symlink, and each edit is written once; the served CSS marker
+/// condition is the authoritative watcher/rebuild signal.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (wind selected in the fixture); too slow / port-bound for the T1 gate"]
+async fn e2e_package_css_export_remap_refreshes_stylesheet() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[dep_inval_e2e package-css-export] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("create tempdir for package CSS export fixture");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&base_fixture_dir(), &root).expect("copy dev-loop-basic fixture");
+    select_wind_for_fixture(&root);
+    provision_framework_node_modules(&root);
+
+    // `@scope/theme` lives outside the project and is reached only through its
+    // package symlink, matching a workspace dependency's real path.
+    let pkg_dir = tempfile::tempdir().expect("create tempdir for fake @scope/theme");
+    let pkg_real_path = pkg_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize theme package");
+    let dist_dir = pkg_real_path.join("dist");
+    fs::create_dir_all(&dist_dir).expect("create theme package dist/");
+    fs::write(dist_dir.join("a.css"), ".marker-a { color: #101010; }\n")
+        .expect("write initial theme CSS target a.css");
+    fs::write(dist_dir.join("b.css"), ".marker-b { color: #202020; }\n")
+        .expect("write initial theme CSS target b.css");
+
+    let package_json = pkg_real_path.join("package.json");
+    let write_export_target = |target: &str| {
+        let contents = format!(
+            r#"{{"name":"@scope/theme","version":"1.0.0","exports":{{"./theme.css":"./dist/{target}.css"}}}}"#
+        );
+        fs::write(&package_json, format!("{contents}\n"))
+            .expect("write @scope/theme package exports");
+    };
+    write_export_target("a");
+
+    let nm_scope_dir = root.join("node_modules").join("@scope");
+    fs::create_dir_all(&nm_scope_dir).expect("create node_modules/@scope/");
+    std::os::unix::fs::symlink(&pkg_real_path, nm_scope_dir.join("theme"))
+        .expect("symlink node_modules/@scope/theme");
+
+    fs::create_dir_all(root.join("styles")).expect("create styles/");
+    fs::write(
+        root.join("styles/global.css"),
+        "@import '@scope/theme/theme.css';\n\
+         body { font-family: sans-serif; }\n",
+    )
+    .expect("write styles/global.css");
+
+    let mut session = spawn_dev(root, &esbuild, &[]);
+    let pgid = session.guard.pgid;
+    // Keep the canonical package target alive while the server watches it.
+    let _pkg_dir = pkg_dir;
+    let css_url_fn = |base: &str| format!("{base}/assets/styles.css");
+
+    let body = async {
+        let Some((base, client)) = boot_and_handshake(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let css_url = css_url_fn(&base);
+
+        poll_until_contains(
+            &client,
+            &css_url,
+            "--zw-color-marker",
+            SCENARIO_DEADLINE,
+            "wind engine marker in served CSS",
+            &session,
+        )
+        .await;
+        poll_until_css_contains_and_not(
+            &client,
+            &css_url,
+            "marker-a",
+            "marker-b",
+            SCENARIO_DEADLINE,
+            "package CSS export baseline: served stylesheet must resolve dist/a.css only",
+            &session,
+        )
+        .await;
+
+        // Drain only observed watcher activity before each single write. The
+        // condition polls below remain the pass/fail oracle for each edit.
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
+        write_export_target("b");
+        poll_until_css_contains_and_not(
+            &client,
+            &css_url,
+            "marker-b",
+            "marker-a",
+            SCENARIO_DEADLINE,
+            "package exports remap: served CSS must switch from dist/a.css to dist/b.css",
+            &session,
+        )
+        .await;
+
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
+        fs::write(
+            pkg_real_path.join("dist/b.css"),
+            ".marker-b2 { color: #303030; }\n",
+        )
+        .expect("edit new theme CSS target b.css");
+        poll_until_css_contains_and_not(
+            &client,
+            &css_url,
+            "marker-b2",
+            ".marker-b {",
+            SCENARIO_DEADLINE,
+            "new package CSS target edit: served CSS must switch to marker-b2",
+            &session,
+        )
+        .await;
+
+        ScenarioOutcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] package CSS export remap e2e did not finish within {}s — \
+             an export or target edit failed to refresh /assets/styles.css. \
              Process group {pgid} will be killed.\n{}",
             OVERALL_DEADLINE.as_secs(),
             session.logs(),

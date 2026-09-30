@@ -175,7 +175,7 @@ zfb css --input <entry.css> --output <compiled.css>
 | `--input` | path | required | CSS entrypoint. Relative paths resolve from the current working directory. |
 | `--output` | path | required | Destination CSS file. Relative paths resolve from the current working directory. It must not resolve to the same file as the input. |
 | `--project-root` | path | current working directory | Root used to load `zfb.config` and resolve `--source` globs. A relative path itself resolves from the current working directory. |
-| `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
+| `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Matches under the configured `outDir`, at the `--output` path, or under zfb scratch roots are excluded. A declaration whose matches are all excluded fails with `ZW010`; a partially excluded declaration warns and keeps its accepted matches. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
 | `--no-auto-source` | boolean flag | `false` | Omit the command's conventional source-plan roots. Explicit `--source` values and the configured syntax-highlight role classes remain active. |
 | `--code-highlight-mode` | `class` or `inline` | config/default | Override `codeHighlight.mode` when deciding whether to include zfb's framework syntax-highlight CSS. Other `codeHighlight` settings, including `classPrefix` and `roleClasses`, still come from config. |
 | `--no-default-highlight-styles` | boolean flag | `false` | Suppress zfb's built-in class-mode `zfb-hi.css` stylesheet. This also overrides `codeHighlight.defaultStylesheet: true`. |
@@ -202,11 +202,12 @@ zfb css \
   --output packages/zudo-doc/dist/compiled.css \
   --project-root packages/zudo-doc \
   --source 'src/**/*.{tsx,ts,jsx,js}' \
-  --source 'dist/**/*.{tsx,ts,jsx,js}' \
   --no-auto-source
 ```
 
-Here, `--input`, `--output`, and `--project-root` are anchored to the repository-root working directory. Both `--source` globs are instead anchored to `packages/zudo-doc`.
+Here, `--input`, `--output`, and `--project-root` are anchored to the repository-root working directory. The `--source` glob is instead anchored to `packages/zudo-doc`.
+
+The package's `dist/` tree is excluded by its default configured `outDir`, so the example scans `src/` only.
 
 ### Notes
 
@@ -221,6 +222,12 @@ Here, `--input`, `--output`, and `--project-root` are anchored to the repository
 Use `zfb wind explain` to inspect how a candidate is parsed, resolved, and emitted. The explanation includes its catalog entry, token bindings, declarations, selector, conditions, and ordering data.
 
 Use `zfb wind audit` to review ordinary class-position names, missing or unused utilities, dynamic class fragments, and property conflicts within a single class-list literal. An exact `authoredClasses` match and `group`/`peer` markers are excluded. With `wind: false`, explain reports generation disabled and audit returns an empty candidate report.
+
+```sh
+zfb wind audit [--project-root <path>] [--fail-on error|warning]
+```
+
+A complete audit exits with status 0 by default, including when it reports error-severity findings; in that case stderr suggests `--fail-on error`. Invalid configuration or a source scan failure exits nonzero. Use `--fail-on error` to exit nonzero when the report contains error-severity diagnostics, or `--fail-on warning` to include warnings. `auditInfo` findings never trigger either threshold. With `wind: false`, the generation-disabled report exits with status 0.
 
 These commands inspect the configured project; they do not execute application code to discover class candidates. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx) for outcome and origin details.
 

@@ -8,7 +8,7 @@
 
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -98,7 +98,7 @@ pub(crate) fn build_standalone_wind_source_plan(
     config: &Config,
     include_default_roots: bool,
     explicit_sources: &[(String, PathBuf)],
-) -> Result<SourcePlan> {
+) -> Result<(SourcePlan, Vec<String>)> {
     let gathered = crate::commands::css_source_plan::gather_css_source_plan_inputs(
         project_root,
         output_path,
@@ -108,6 +108,7 @@ pub(crate) fn build_standalone_wind_source_plan(
         &[],
         &zfb_types::ScratchLayout::default_for(project_root).written_roots(),
     )?;
+    let exclusion_reasons = explicit_source_exclusion_reasons(&gathered);
     let build_plan = crate::commands::css_source_plan::build_css_source_plan(&gathered);
     let mut plan = SourcePlan {
         exclusions: build_plan.exclusions,
@@ -133,12 +134,98 @@ pub(crate) fn build_standalone_wind_source_plan(
         }
     }
 
+    let mut warnings = Vec::new();
     for (index, (authored, pattern)) in explicit_sources.iter().enumerate() {
-        let roots = explicit_source_roots(project_root, authored, pattern, index)?;
+        let (roots, warning) =
+            explicit_source_roots(project_root, authored, pattern, index, &exclusion_reasons)?;
         plan.roots.extend(roots);
+        if let Some(warning) = warning {
+            warnings.push(warning);
+        }
     }
     plan.roots.sort();
-    Ok(plan)
+    Ok((plan, warnings))
+}
+
+#[derive(Clone, Debug)]
+struct ExplicitSourceExclusion {
+    canonical_path: PathBuf,
+    description: String,
+}
+
+fn explicit_source_exclusion_reasons(
+    inputs: &crate::commands::css_source_plan::CssSourcePlanInputs,
+) -> Vec<ExplicitSourceExclusion> {
+    let mut reasons = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_reason = |path: &Path, description: String| {
+        let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if seen.insert(canonical_path.clone()) {
+            reasons.push(ExplicitSourceExclusion {
+                canonical_path,
+                description,
+            });
+        }
+    };
+
+    push_reason(
+        &inputs.configured_output_dir,
+        format!(
+            "under the configured outDir `{}`",
+            project_relative_display(&inputs.project_root, &inputs.configured_output_dir)
+        ),
+    );
+    push_reason(
+        &inputs.pass_output_dir,
+        format!(
+            "at the --output path `{}`",
+            project_relative_display(&inputs.project_root, &inputs.pass_output_dir)
+        ),
+    );
+    let mut scratch_roots = inputs.zfb_written_roots.clone();
+    scratch_roots.sort();
+    for path in scratch_roots {
+        push_reason(
+            &path,
+            format!(
+                "under a zfb scratch root `{}`",
+                project_relative_display(&inputs.project_root, &path)
+            ),
+        );
+    }
+    reasons
+}
+
+fn project_relative_display(project_root: &Path, path: &Path) -> String {
+    path.strip_prefix(project_root)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn canonical_or_raw(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn matching_exclusion<'a>(
+    path: &Path,
+    reasons: &'a [ExplicitSourceExclusion],
+) -> Option<(usize, &'a ExplicitSourceExclusion)> {
+    let canonical_path = canonical_or_raw(path);
+    reasons
+        .iter()
+        .enumerate()
+        .find(|(_, reason)| canonical_path.starts_with(&reason.canonical_path))
+}
+
+fn render_exclusion_counts(
+    counts: &BTreeMap<usize, usize>,
+    reasons: &[ExplicitSourceExclusion],
+) -> String {
+    counts
+        .iter()
+        .map(|(index, count)| format!("{count} {}", reasons[*index].description))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn explicit_source_roots(
@@ -146,19 +233,31 @@ fn explicit_source_roots(
     authored: &str,
     pattern: &Path,
     source_index: usize,
-) -> Result<Vec<PositiveRoot>> {
+    exclusion_reasons: &[ExplicitSourceExclusion],
+) -> Result<(Vec<PositiveRoot>, Option<String>)> {
     let matches = if path_has_glob(pattern) {
         glob_source_files(pattern)?
     } else if pattern.is_file() {
         vec![pattern.to_path_buf()]
     } else if pattern.is_dir() {
-        return Ok(vec![PositiveRoot {
-            label: format!("cli/source-{source_index:04}"),
-            declaring_dir: pattern.to_path_buf(),
-            path: PathBuf::from("."),
-            required: true,
-            exclusions: BTreeSet::new(),
-        }]);
+        // Directory declarations are classified by their root only. Descendant
+        // files filtered by exclusions during the walk are out of scope here.
+        if let Some((_, reason)) = matching_exclusion(pattern, exclusion_reasons) {
+            bail!(
+                "ZW010: --source {authored:?} matched 1 directory root, all excluded: 1 {}",
+                reason.description
+            );
+        }
+        return Ok((
+            vec![PositiveRoot {
+                label: format!("cli/source-{source_index:04}"),
+                declaring_dir: pattern.to_path_buf(),
+                path: PathBuf::from("."),
+                required: true,
+                exclusions: BTreeSet::new(),
+            }],
+            None,
+        ));
     } else {
         Vec::new()
     };
@@ -170,8 +269,7 @@ fn explicit_source_roots(
         );
     }
     let supported = ["tsx", "ts", "jsx", "js", "mdx", "md", "html", "mjs"];
-    let mut roots = Vec::with_capacity(matches.len());
-    for (match_index, path) in matches.into_iter().enumerate() {
+    for path in &matches {
         let extension = path.extension().and_then(|part| part.to_str());
         if !extension.is_some_and(|extension| supported.contains(&extension)) {
             bail!(
@@ -179,6 +277,44 @@ fn explicit_source_roots(
                 path.display()
             );
         }
+    }
+
+    // Match the walker identity: aliases and symlinks to the same file count
+    // once, with the canonical path used when it is available.
+    let mut seen = BTreeSet::new();
+    let matches = matches
+        .into_iter()
+        .filter(|path| seen.insert(canonical_or_raw(path)))
+        .collect::<Vec<_>>();
+    let mut accepted = Vec::with_capacity(matches.len());
+    let mut excluded_counts = BTreeMap::<usize, usize>::new();
+    for (match_index, path) in matches.iter().enumerate() {
+        if let Some((reason_index, _)) = matching_exclusion(path, exclusion_reasons) {
+            *excluded_counts.entry(reason_index).or_default() += 1;
+        } else {
+            accepted.push((match_index, path));
+        }
+    }
+    if accepted.is_empty() {
+        bail!(
+            "ZW010: --source {authored:?} matched {} files, all excluded: {}",
+            matches.len(),
+            render_exclusion_counts(&excluded_counts, exclusion_reasons)
+        );
+    }
+
+    let excluded_count: usize = excluded_counts.values().sum();
+    let warning = (excluded_count > 0).then(|| {
+        format!(
+            "ZW010: --source {authored:?} matched {} files; accepted {}; excluded: {}",
+            matches.len(),
+            accepted.len(),
+            render_exclusion_counts(&excluded_counts, exclusion_reasons)
+        )
+    });
+
+    let mut roots = Vec::with_capacity(accepted.len());
+    for (match_index, path) in accepted {
         let parent = path.parent().unwrap_or(project_root);
         let name = path
             .file_name()
@@ -196,7 +332,7 @@ fn explicit_source_roots(
             exclusions: BTreeSet::new(),
         });
     }
-    Ok(roots)
+    Ok((roots, warning))
 }
 
 fn path_has_glob(path: &Path) -> bool {
@@ -557,4 +693,185 @@ fn run_css_emitter_with_module_policy<E: CssEngine>(
     };
 
     CssPipeline::new(engine, pipe_cfg).build_emitter()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project() -> (tempfile::TempDir, PathBuf, Config) {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        (temp, project, Config::default())
+    }
+
+    fn write_file(project: &Path, relative: &str) -> PathBuf {
+        let path = project.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "<div class=\"block\" />").unwrap();
+        path
+    }
+
+    fn build_plan(
+        project: &Path,
+        config: &Config,
+        authored: &str,
+    ) -> Result<(SourcePlan, Vec<String>)> {
+        build_standalone_wind_source_plan(
+            project,
+            &project.join("dist/out.css"),
+            config,
+            false,
+            &[(authored.to_owned(), project.join(authored))],
+        )
+    }
+
+    #[test]
+    fn default_out_dir_explicit_match_fails_with_exclusion_count() {
+        let (_temp, project, config) = project();
+        write_file(&project, "dist/app.tsx");
+
+        let error = build_plan(&project, &config, "dist/**/*.tsx").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("ZW010"), "{message}");
+        assert!(message.contains("matched 1 files"), "{message}");
+        assert!(
+            message.contains("1 under the configured outDir `dist`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn mixed_explicit_matches_keep_sources_and_return_one_warning() {
+        let (_temp, project, config) = project();
+        write_file(&project, "src/a.tsx");
+        write_file(&project, "dist/b.tsx");
+
+        let (plan, warnings) = build_plan(&project, &config, "**/*.tsx").unwrap();
+        assert_eq!(plan.roots.len(), 1);
+        assert_eq!(plan.roots[0].resolved_path(), project.join("src/a.tsx"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("matched 2 files"), "{}", warnings[0]);
+        assert!(warnings[0].contains("accepted 1"), "{}", warnings[0]);
+        assert!(warnings[0].contains("dist"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn custom_out_dir_does_not_exclude_the_default_dist_directory() {
+        let (_temp, project, mut config) = project();
+        config.out_dir = PathBuf::from("out");
+        write_file(&project, "dist/app.tsx");
+
+        let (plan, warnings) = build_plan(&project, &config, "dist/**/*.tsx").unwrap();
+        assert_eq!(plan.roots.len(), 1);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn package_dist_and_build_directories_remain_valid_sources() {
+        let (_temp, project, config) = project();
+        write_file(&project, "node_modules/pkg/dist/index.js");
+        write_file(&project, "build/page.tsx");
+
+        let (package_plan, package_warnings) =
+            build_plan(&project, &config, "node_modules/pkg/dist/*.js").unwrap();
+        let (build_plan, build_warnings) = build_plan(&project, &config, "build/**/*.tsx").unwrap();
+        assert_eq!(package_plan.roots.len(), 1);
+        assert_eq!(build_plan.roots.len(), 1);
+        assert!(package_warnings.is_empty());
+        assert!(build_warnings.is_empty());
+    }
+
+    #[test]
+    fn scratch_root_match_reports_its_reason() {
+        let (_temp, project, config) = project();
+        let source = write_file(&project, ".zfb/cache.tsx");
+        let error = build_standalone_wind_source_plan(
+            &project,
+            &project.join("dist/out.css"),
+            &config,
+            false,
+            &[(".zfb/cache.tsx".to_owned(), source)],
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("under a zfb scratch root `.zfb`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn explicit_directory_root_is_classified_without_scanning_descendants() {
+        let (_temp, project, config) = project();
+        write_file(&project, "dist/app.tsx");
+
+        let error = build_plan(&project, &config, "dist").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("matched 1 directory root"), "{message}");
+        assert!(message.contains("all excluded"), "{message}");
+        assert!(message.contains("configured outDir `dist`"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_symlink_match_is_classified_by_its_canonical_target() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, project, config) = project();
+        let target = write_file(&project, "dist/target.tsx");
+        let link = project.join("src/link.tsx");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(target, &link).unwrap();
+
+        let error = build_standalone_wind_source_plan(
+            &project,
+            &project.join("dist/out.css"),
+            &config,
+            false,
+            &[("src/link.tsx".to_owned(), link)],
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("configured outDir `dist`"), "{message}");
+        assert!(message.contains("all excluded"), "{message}");
+    }
+
+    #[test]
+    fn unsupported_extension_error_precedes_exclusion_classification() {
+        let (_temp, project, config) = project();
+        let source = write_file(&project, "dist/notes.txt");
+
+        let error = build_standalone_wind_source_plan(
+            &project,
+            &project.join("dist/out.css"),
+            &config,
+            false,
+            &[("dist/notes.txt".to_owned(), source)],
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("unsupported extension"), "{message}");
+        assert!(!message.contains("all excluded"), "{message}");
+    }
+
+    #[test]
+    fn output_path_match_is_grouped_under_the_output_reason() {
+        let (_temp, project, config) = project();
+        let output = write_file(&project, "src/generated.tsx");
+        let error = build_standalone_wind_source_plan(
+            &project,
+            &output,
+            &config,
+            false,
+            &[("src/generated.tsx".to_owned(), output.clone())],
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("at the --output path `src/generated.tsx`"),
+            "{message}"
+        );
+    }
 }

@@ -99,6 +99,16 @@ pub struct WindAuditArgs {
     /// Project root used for config loading. Defaults to the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// Fail when diagnostics meet this severity threshold.
+    #[arg(long, value_enum)]
+    pub fail_on: Option<WindAuditFailOn>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WindAuditFailOn {
+    Error,
+    Warning,
 }
 
 /// Arguments for `zfb css`.
@@ -1272,10 +1282,27 @@ mod tests {
             Command::Wind(args) => match args.command {
                 WindCommand::Audit(audit) => {
                     assert_eq!(audit.project_root, Some(PathBuf::from("project")));
+                    assert_eq!(audit.fail_on, None);
                 }
                 other => panic!("expected wind audit, got {other:?}"),
             },
             other => panic!("expected wind command, got {other:?}"),
+        }
+
+        for (value, expected) in [
+            ("error", WindAuditFailOn::Error),
+            ("warning", WindAuditFailOn::Warning),
+        ] {
+            match Cli::try_parse_from(["zfb", "wind", "audit", "--fail-on", value])
+                .expect("wind audit fail threshold parses")
+                .command
+            {
+                Command::Wind(args) => match args.command {
+                    WindCommand::Audit(audit) => assert_eq!(audit.fail_on, Some(expected)),
+                    other => panic!("expected wind audit, got {other:?}"),
+                },
+                other => panic!("expected wind command, got {other:?}"),
+            }
         }
     }
 
