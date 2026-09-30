@@ -431,6 +431,8 @@ function element(
       }
     } else content = restricted(props.children, context, childNamespace, tag);
   } else content = children(props.children, context, childNamespace, tag);
+  if (tag === "pre" && raw === undefined && (content.startsWith("\n") || content.startsWith("\r")))
+    content = `\n${content}`;
   context.formId = previousFormId;
   return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
 }
