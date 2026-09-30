@@ -191,8 +191,10 @@ mounts both hydrated markers (`data-zfb-island`) and SSR-skip markers
 document after a client-router body swap using that captured manifest.
 `cancelPendingIslands()` cancels deferred `idle` / `visible` / `media`
 schedules before a swap, and `unmountIslands(root, incomingBody)` runs
-framework cleanup for discarded islands while preserving matching
-`data-zfb-transition-persist` islands.
+framework cleanup using a snapshot of matched persist boundaries. Islands inside a
+retained boundary keep their handles when their identity and props match. Changed
+islands receive incoming metadata and remount in render mode after the swap;
+removed descendants are disposed and detached before the swap.
 
 ### Post-mount marker
 
@@ -213,11 +215,10 @@ that does not hydrate, so the attribute is a lifecycle signal rather than proof 
 interaction is ready.
 
 The marker is removed when an island is unmounted. During a body swap, an unchanged
-`data-zfb-transition-persist` island keeps its mounted instance and marker when the
-same id exists in the incoming body; a discarded island has its marker cleared and is
-mounted again from the incoming markup. A props-changed persisted island loses the
-marker while its old instance is torn down and receives it again after the forced
-remount returns. A fresh runtime module strips stale markers from elements it has not
+island inside a retained persist boundary keeps its mounted instance and marker;
+a discarded island has its marker cleared and is mounted again from incoming markup.
+A changed retained island loses the marker while its old instance is torn down and
+receives it again after the forced render-mode remount returns. A fresh runtime module strips stale markers from elements it has not
 mounted before, then writes its own marker after mounting.
 
 ## Markdown / GFM config
