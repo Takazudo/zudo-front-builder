@@ -175,43 +175,84 @@ zfb css --input <entry.css> --output <compiled.css>
 | `--input` | path | required | CSS entrypoint. Relative paths resolve from the current working directory. |
 | `--output` | path | required | Destination CSS file. Relative paths resolve from the current working directory. It must not resolve to the same file as the input. |
 | `--project-root` | path | current working directory | Root used to load `zfb.config` and resolve `--source` globs. A relative path itself resolves from the current working directory. |
-| `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Matches under the configured `outDir`, at the `--output` path, or under zfb scratch roots are excluded. A declaration whose matches are all excluded fails with `ZW010`; a partially excluded declaration warns and keeps its accepted matches. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
+| `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Matches under the configured `outDir`, at the `--output` path, or under zfb scratch roots are excluded. A declaration whose matches are all excluded fails with a `ZW010` error; a partially excluded declaration reports a `ZW010` warning and keeps its accepted matches. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
 | `--no-auto-source` | boolean flag | `false` | Omit the command's conventional source-plan roots. Explicit `--source` values and the configured syntax-highlight role classes remain active. |
 | `--code-highlight-mode` | `class` or `inline` | config/default | Override `codeHighlight.mode` when deciding whether to include zfb's framework syntax-highlight CSS. Other `codeHighlight` settings, including `classPrefix` and `roleClasses`, still come from config. |
 | `--no-default-highlight-styles` | boolean flag | `false` | Suppress zfb's built-in class-mode `zfb-hi.css` stylesheet. This also overrides `codeHighlight.defaultStylesheet: true`. |
 
 ### Example
 
-A library package can keep an ordered entry such as `packages/zudo-doc/src/compiled.entry.css`:
+A project config supplies the utility values, and a source glob finds candidates in the project tree. This example also imports a CSS subpath exposed by an installed package's `exports` map (`@example/design-system`):
 
-```css
-@layer zd-preflight, zd-flow;
+```ts
+import { defineConfig } from "zfb/config";
 
-@import "@takazudo/zudo-doc/theme.css";
-@import "@takazudo/zudo-doc/safelist.css";
-@import "@takazudo/zudo-doc/content.css";
-@import "@takazudo/zudo-doc/page-loading.css";
-@import "@takazudo/zudo-doc/features.css";
+export default defineConfig({
+  wind: {
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: {
+        brand: "oklch(0.65 0.2 250)",
+      },
+      radii: {
+        card: "0.5rem",
+      },
+    },
+    authoredClasses: {
+      example: true,
+    },
+    manifests: {
+      "design-system": { path: "@example/design-system/wind.json" },
+    },
+  },
+});
 ```
 
-From the repository root, compile only against the package-owned sources:
+The installed package exposes `./base.css` and `./wind.json`. Its `dist/wind.json` contains:
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "design-system",
+  "candidates": ["bg-brand", "p-4", "rounded-card"]
+}
+```
+
+Those package candidates use tokens configured by the project.
+
+```tsx
+export function ExampleCard() {
+  return <article className="example flex p-4 bg-brand rounded-card">Example</article>;
+}
+```
+
+The entry uses only authored CSS and `@import`; it has no Tailwind directives:
+
+```css
+@import "@example/design-system/base.css";
+
+.example {
+  border: 1px solid var(--zw-color-brand);
+}
+```
+
+Run the command from the project root. The glob scans this project's source files; the configured manifest adds the design-system package's candidates:
 
 ```sh
 zfb css \
-  --input packages/zudo-doc/src/compiled.entry.css \
-  --output packages/zudo-doc/dist/compiled.css \
-  --project-root packages/zudo-doc \
+  --input src/styles/entry.css \
+  --output dist/app.css \
+  --project-root . \
   --source 'src/**/*.{tsx,ts,jsx,js}' \
   --no-auto-source
 ```
 
-Here, `--input`, `--output`, and `--project-root` are anchored to the repository-root working directory. The `--source` glob is instead anchored to `packages/zudo-doc`.
-
-The package's `dist/` tree is excluded by its default configured `outDir`, so the example scans `src/` only.
+The `@import` paths resolve as authored CSS. zudo-wind gets utility values from `zfb.config.ts`, local candidates from `--source`, and package candidates from `wind.manifests`.
 
 ### Notes
 
-- **Sources follow the configured source plan.** `--source` supplies explicit inputs; `--no-auto-source` omits the command's conventional roots while preserving explicit inputs and the classes configured in `codeHighlight.roleClasses`. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md` by default; standalone explicit inputs can also use `.html` and `.mjs`. See [Sources and candidates](../zudo-wind/sources-and-candidates.mdx) for source-plan details.
+- **Sources follow the configured source plan.** `--source` supplies explicit inputs; `--no-auto-source` omits the command's conventional roots while preserving explicit inputs and the classes configured in `codeHighlight.roleClasses`. Conventional discovery skips `node_modules`, `dist`, `build`, `target`, `.git`, `.cache`, `.turbo`, `.next`, `.vercel`, `.zfb-build`, and `.zfb`; declare a package source root explicitly with `--source`, or publish its candidates through `wind.manifests`. The consuming project's configured `outDir`, the `--output` path, and zfb scratch roots stay excluded. If every match from an explicit `--source` is under one of those output roots, `zfb css` reports a `ZW010` error; if only some matches are excluded, it reports a `ZW010` warning and scans the accepted files. For example, `--source 'dist/**/*.tsx'` reports an error when `dist` is the configured `outDir`. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md` by default; standalone explicit inputs can also use `.html` and `.mjs`. See [Sources and candidates](../zudo-wind/sources-and-candidates.mdx) for source-plan details.
 - **Output is deterministic and replaced atomically.** The same entry, config, and ordered source set produce timestamp-, sourcemap-, and temporary-path-free bytes. A successful compile atomically replaces `--output`; a failed compile leaves any existing output untouched.
 - **This is a global-CSS-only command.** CSS Modules are not discovered or processed. Package-attributed `url()` assets that would require companion files are rejected in v1 with a non-zero exit instead of being emitted beside the stylesheet.
 - **Config use is narrow.** When present, `zfb.config.json` or `zfb.config.ts` supplies wind tokens, reset, sources, and syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. `wind: false` disables wind generation while authored CSS and highlight processing continue. An omitted key uses the empty enabled wind config.
