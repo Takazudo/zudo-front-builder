@@ -38,6 +38,7 @@ on:
       - "crates/zfb-server/src/livereload.js"
       - "packages/zfb-runtime/**"
       - "packages/zfb/src/runtime.ts"
+      - "packages/zfb/src/zudo-react/**"
       - "tests/router-chromium/**"
       - ".github/workflows/router-chromium.yml"
       - "pnpm-lock.yaml"
@@ -50,6 +51,7 @@ on:
       - "crates/zfb-server/src/livereload.js"
       - "packages/zfb-runtime/**"
       - "packages/zfb/src/runtime.ts"
+      - "packages/zfb/src/zudo-react/**"
       - "tests/router-chromium/**"
       - ".github/workflows/router-chromium.yml"
       - "pnpm-lock.yaml"
@@ -91,8 +93,8 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      # `pnpm test:router-chromium` builds the zfb-runtime ESM (the artifact the
-      # suite drives) and then runs Playwright. GitHub sets CI=true, so the
+      # `pnpm test:router-chromium` builds both runtime ESM trees, generates the
+      # real zudo-react SSR fixture, and runs Playwright. GitHub sets CI=true, so the
       # config uses retries: 1 + trace-on-first-retry.
       - name: Run router-chromium suite
         run: pnpm test:router-chromium
