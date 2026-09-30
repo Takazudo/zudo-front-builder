@@ -491,6 +491,10 @@ fn resolve_value(
                 arbitrary::validate(property, bracket)
             }
             .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            if entry.root == "size" {
+                let _height_validation = arbitrary::validate("height", bracket)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
             if entry.root == "opacity" {
                 validate_opacity_arbitrary(&value, status)
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
