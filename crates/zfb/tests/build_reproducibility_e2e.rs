@@ -150,9 +150,10 @@ fn scaffold_project(root: &Path) {
     )
     .expect("link local adapter executable");
 
-    // Model pnpm's logical package symlink into a package store under the
-    // fixture's own node_modules. The target is outside each transient build
-    // shadow, so esbuild emits a traversal-style module comment before #3434.
+    // Keep a plainly resolvable package directory in node_modules, but make
+    // its entry point a symlink into a package store under this fixture's
+    // node_modules. Esbuild resolves the bare import through package.json and
+    // realpaths the entry outside each transient build shadow before #3434.
     let store_package = node_modules
         .join(".pnpm/repro-realpath-dep@1.0.0/node_modules")
         .join(ESCAPE_PACKAGE);
@@ -163,34 +164,46 @@ fn scaffold_project(root: &Path) {
         "type": "module",
         "main": "index.js",
     });
-    fs::write(
-        store_package.join("package.json"),
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&package_json)
-                .expect("serialize pnpm store package manifest")
-        ),
-    )
-    .expect("write pnpm store package manifest");
+    let package_manifest = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&package_json).expect("serialize pnpm store package manifest")
+    );
+    fs::write(store_package.join("package.json"), &package_manifest)
+        .expect("write pnpm store package manifest");
     fs::write(
         store_package.join("index.js"),
         format!("export const marker = {REALPATH_EXPORT:?};\n"),
     )
     .expect("write pnpm store package entry");
+    let logical_package = node_modules.join(ESCAPE_PACKAGE);
+    fs::create_dir_all(&logical_package).expect("create logical dependency package directory");
+    fs::write(logical_package.join("package.json"), &package_manifest)
+        .expect("write logical dependency package manifest");
     std::os::unix::fs::symlink(
-        ".pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep",
-        node_modules.join(ESCAPE_PACKAGE),
+        "../.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
+        logical_package.join("index.js"),
     )
-    .expect("link logical dependency to pnpm store");
+    .expect("link logical dependency entry to pnpm store");
 
     assert!(node_modules.is_dir());
     assert!(!fs::symlink_metadata(&node_modules)
         .expect("node_modules metadata")
         .file_type()
         .is_symlink());
-    let logical_package = fs::canonicalize(node_modules.join(ESCAPE_PACKAGE))
-        .expect("resolve pnpm-style dependency symlink");
-    assert_eq!(logical_package, fs::canonicalize(store_package).unwrap());
+    let logical_package_realpath =
+        fs::canonicalize(&logical_package).expect("resolve logical dependency package directory");
+    let store_package_realpath = fs::canonicalize(&store_package).unwrap();
+    assert_ne!(
+        logical_package_realpath, store_package_realpath,
+        "logical package directory must remain in node_modules"
+    );
+    let logical_entry_realpath = fs::canonicalize(logical_package.join("index.js"))
+        .expect("resolve logical dependency entry symlink");
+    let store_entry_realpath = fs::canonicalize(store_package.join("index.js")).unwrap();
+    assert_eq!(
+        logical_entry_realpath, store_entry_realpath,
+        "logical package entry must resolve into its private pnpm store"
+    );
 
     let adapter_preflight = Command::new("pnpm")
         .args(["exec", "zfb-adapter-cloudflare", "--help"])
@@ -443,10 +456,27 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
         shallow_nm, deep_nm,
         "each root needs its own node_modules tree"
     );
+    let shallow_store_entry = fs::canonicalize(shallow.join(
+        "node_modules/.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
+    ))
+    .unwrap();
+    let deep_store_entry = fs::canonicalize(deep.join(
+        "node_modules/.pnpm/repro-realpath-dep@1.0.0/node_modules/repro-realpath-dep/index.js",
+    ))
+    .unwrap();
     assert_ne!(
-        fs::canonicalize(shallow.join("node_modules").join(ESCAPE_PACKAGE)).unwrap(),
-        fs::canonicalize(deep.join("node_modules").join(ESCAPE_PACKAGE)).unwrap(),
-        "pnpm-style package realpaths must differ between roots"
+        shallow_store_entry, deep_store_entry,
+        "private pnpm store entry realpaths must differ between roots"
+    );
+    assert_eq!(
+        fs::canonicalize(shallow.join("node_modules/repro-realpath-dep/index.js")).unwrap(),
+        shallow_store_entry,
+        "shallow logical dependency entry must point into its private store"
+    );
+    assert_eq!(
+        fs::canonicalize(deep.join("node_modules/repro-realpath-dep/index.js")).unwrap(),
+        deep_store_entry,
+        "deep logical dependency entry must point into its private store"
     );
 
     let a = capture_build(&shallow, &esbuild, None, None);
