@@ -94,6 +94,7 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   checked?: BooleanAttribute;
   selected?: BooleanAttribute;
   multiple?: BooleanAttribute;
+  reversed?: BooleanAttribute;
   open?: BooleanAttribute;
   controls?: BooleanAttribute;
   muted?: BooleanAttribute;
@@ -106,6 +107,7 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   min?: StringAttribute;
   max?: StringAttribute;
   step?: StringAttribute;
+  start?: Value<string | number | null>;
   pattern?: StringAttribute;
   autocomplete?: StringAttribute;
   accept?: StringAttribute;
