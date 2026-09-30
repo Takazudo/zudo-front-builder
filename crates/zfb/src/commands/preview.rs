@@ -72,6 +72,7 @@ use crate::commands::resolve::{
 };
 use crate::config;
 use crate::output;
+use crate::process_supervisor::{supervise, ExitKind, SuperviseOptions, SupervisedOutcome};
 
 // Re-export from the canonical source so callers that already reference
 // `zfb::commands::preview::EXPECTED_WRANGLER_VERSION` keep compiling.
@@ -746,19 +747,47 @@ async fn run_via_wrangler(project_root: &Path, host: &str, port: u16) -> Result<
         "preview: adapter mode — handing off to wrangler dev (host {host}, port {port})"
     ));
 
-    let mut cmd = build_wrangler_command(project_root, host, port);
-    let mut child = cmd
-        .spawn()
-        .context("failed to spawn wrangler — make sure it is installed in this project (pnpm add -D wrangler)")?;
+    let outcome = supervise(
+        build_wrangler_command(project_root, host, port),
+        SuperviseOptions::default(),
+    )
+    .await
+    .map_err(|error| {
+        if error.to_string() == "spawn supervised process" {
+            error.context("failed to spawn wrangler — make sure it is installed in this project (pnpm add -D wrangler)")
+        } else {
+            error
+        }
+    })?;
+    wrangler_result(outcome)
+}
 
-    let status = child
-        .wait()
-        .await
-        .context("failed to await wrangler subprocess")?;
-    if !status.success() {
-        anyhow::bail!("wrangler dev exited with status {status}");
+fn wrangler_result(outcome: SupervisedOutcome) -> Result<()> {
+    if let Some(signal) = outcome.forwarded {
+        return Err(crate::SilentExit(128 + signal).into());
     }
-    Ok(())
+    match outcome.exit {
+        ExitKind::Exited(0) => Ok(()),
+        ExitKind::Exited(code) => {
+            anyhow::bail!("wrangler dev exited with status exit status: {code}")
+        }
+        ExitKind::Signaled(signal) if is_shutdown_signal(signal) => {
+            Err(crate::SilentExit(128 + signal).into())
+        }
+        ExitKind::Signaled(signal) => {
+            anyhow::bail!("wrangler dev exited with status signal: {signal}")
+        }
+    }
+}
+
+#[cfg(unix)]
+fn is_shutdown_signal(signal: i32) -> bool {
+    matches!(signal, libc::SIGINT | libc::SIGTERM | libc::SIGHUP)
+}
+
+#[cfg(not(unix))]
+fn is_shutdown_signal(_signal: i32) -> bool {
+    false
 }
 
 /// Verify a wrangler config file exists at `project_root` before handing
@@ -1113,6 +1142,44 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn wrangler_outcome_maps_exits_and_signals() {
+        let outcome = |exit, forwarded| SupervisedOutcome { exit, forwarded };
+        assert!(wrangler_result(outcome(ExitKind::Exited(0), None)).is_ok());
+        let error = wrangler_result(outcome(ExitKind::Exited(7), None)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("wrangler dev exited with status"));
+        assert!(error.downcast_ref::<crate::SilentExit>().is_none());
+
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            for exit in [
+                ExitKind::Exited(0),
+                ExitKind::Exited(7),
+                ExitKind::Signaled(signal),
+            ] {
+                let error = wrangler_result(outcome(exit, Some(signal))).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<crate::SilentExit>().unwrap().0,
+                    128 + signal
+                );
+            }
+            let error = wrangler_result(outcome(ExitKind::Signaled(signal), None)).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::SilentExit>().unwrap().0,
+                128 + signal
+            );
+        }
+        for signal in [libc::SIGKILL, libc::SIGSEGV] {
+            let error = wrangler_result(outcome(ExitKind::Signaled(signal), None)).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("wrangler dev exited with status"));
+            assert!(error.downcast_ref::<crate::SilentExit>().is_none());
+        }
+    }
     use tower::ServiceExt;
 
     // ---- path safety ---------------------------------------------------
