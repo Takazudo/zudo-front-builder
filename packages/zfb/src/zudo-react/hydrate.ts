@@ -19,10 +19,12 @@ import type { Key } from "./description.js";
 import {
   booleanAttrs,
   commonAttrs,
-  dialect,
+  dialectSuggestion,
   formProps,
   htmlAttrs,
   htmlTags,
+  isDialectProp,
+  reactiveModelSuggestion,
   svgAttrs,
   svgTags,
   voidTags,
@@ -310,8 +312,15 @@ function element(
         setAttribute(element, "checked", read(original));
       continue;
     }
-    if (dialect.has(name) || /^on[A-Z]/.test(name))
-      fail("ZR_PROP_DIALECT", "setup", "HTML-spelled prop", name, path);
+    if (isDialectProp(name, ownNamespace === SVG ? "svg" : "html", custom))
+      fail(
+        "ZR_PROP_DIALECT",
+        "setup",
+        dialectSuggestion(name, ownNamespace === SVG ? "svg" : "html", custom) ??
+          "HTML-spelled prop",
+        name,
+        path,
+      );
     if (name === "ref") {
       if (!original || typeof original !== "object" || !("current" in original))
         fail("ZR_REF", "setup", "object ref", typeof original, path);
@@ -368,8 +377,15 @@ function element(
       continue;
     }
     if (name === "value" || name === "checked") {
-      if (isReactive(original))
-        fail("ZR_MODEL_UNSUPPORTED", "preflight", "modelValue/modelChecked", name, path);
+      if (isReactive(original)) {
+        const suggestion = reactiveModelSuggestion(
+          tag,
+          name,
+          String(read(props.type) ?? "text"),
+          custom,
+        );
+        fail("ZR_MODEL_UNSUPPORTED", "preflight", suggestion ?? "static value", name, path);
+      }
     }
     if (
       !/^[A-Za-z_:][A-Za-z0-9_:.-]*$/.test(name) ||

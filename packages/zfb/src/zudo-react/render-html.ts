@@ -11,12 +11,15 @@ import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./struc
 import {
   booleanAttrs,
   commonAttrs,
-  dialect,
+  dialectSuggestion,
   formProps,
   htmlAttrs,
   htmlTags,
+  isDialectProp,
+  reactiveModelSuggestion,
   svgAttrs,
   svgTags,
+  type Namespace,
   voidTags,
 } from "./vocabulary.js";
 
@@ -31,7 +34,6 @@ const tableChildren: Record<string, Set<string>> = {
   tr: words("td th"),
   colgroup: words("col"),
 };
-type Namespace = "html" | "svg";
 interface Context {
   identity: IslandIdentity | undefined;
   boundary: boolean;
@@ -126,8 +128,14 @@ function attributes(
   for (const [name, original] of Object.entries(props)) {
     if (reserved.has(name)) continue;
     if (formProps.has(name)) continue;
-    if (dialect.has(name) || /^on[A-Z]/.test(name))
-      fail("ZR_PROP_DIALECT", context, `${tag}.${name}`);
+    if (isDialectProp(name, namespace, custom)) {
+      const suggestion = dialectSuggestion(name, namespace, custom);
+      fail(
+        "ZR_PROP_DIALECT",
+        context,
+        `${tag}.${name}${suggestion ? ` (use \`${suggestion}\` instead of \`${name}\`)` : ""}`,
+      );
+    }
     if (name.startsWith("on:")) {
       if (!/^on:[A-Za-z][A-Za-z0-9_-]*(?::capture)?$/.test(name))
         fail("ZR_LISTENER", context, `${tag}.${name}`);
@@ -147,8 +155,19 @@ function attributes(
     )
       fail("ZR_ATTRIBUTE", context, `${tag}.${name}`);
     const value = read(original);
-    if ((name === "value" || name === "checked") && reactive(original))
-      fail("ZR_MODEL_UNSUPPORTED", context, `${tag}.${name} requires modelValue/modelChecked`);
+    if ((name === "value" || name === "checked") && reactive(original)) {
+      const suggestion = reactiveModelSuggestion(
+        tag,
+        name,
+        String(read(props.type) ?? "text"),
+        custom,
+      );
+      fail(
+        "ZR_MODEL_UNSUPPORTED",
+        context,
+        `${tag}.${name} requires ${suggestion ?? "a static value"}`,
+      );
+    }
     if (value == null) continue;
     if (/^on[a-z]/.test(name) && typeof value === "function")
       fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
