@@ -1,4 +1,4 @@
-import { marker } from "repro-realpath-dep";
+import { marker } from "../node_modules/repro-realpath-dep/index.js";
 import { LOCAL_ALIAS_VALUE } from "@fixture/alias";
 
 export const prerender = false;
