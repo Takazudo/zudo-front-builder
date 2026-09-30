@@ -10,6 +10,7 @@
     "__inbox/**",
     "**/.playwright-cli/**",
     "docs/src/content/docs/claude*/**",
+    "packages/zfb/src/__tests__/zudo-react/fixtures/md-roundtrip/**",
     "_temp-resource/**"
   ],
   "addEmptyLinesInBlockJsx": {

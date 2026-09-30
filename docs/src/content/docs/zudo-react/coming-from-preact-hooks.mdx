@@ -117,6 +117,8 @@ const [name, setName] = useState("Ada");
 <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
 ~~~
 
+In zudo-react, an input handler's `currentTarget` is typed as `HTMLInputElement`, so reading its `value` needs no cast. For a controlled value, use `modelValue` as shown below.
+
 After:
 
 ~~~tsx

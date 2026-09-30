@@ -16,12 +16,22 @@ import { subscribe } from "./reactive.js";
 import { batch } from "./scheduler.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
+import {
+  booleanAttrs,
+  commonAttrs,
+  dialectSuggestion,
+  formProps,
+  htmlAttrs,
+  htmlTags,
+  isDialectProp,
+  reactiveModelSuggestion,
+  svgAttrs,
+  svgTags,
+  voidTags,
+} from "./vocabulary.js";
 
 const HTML = "http://www.w3.org/1999/xhtml";
 const SVG = "http://www.w3.org/2000/svg";
-const voidTags = new Set(
-  "area base br col embed hr img input link meta param source track wbr".split(" "),
-);
 const sensitive = new Set("template noscript xmp iframe noembed noframes plaintext".split(" "));
 const tableChildren: Record<string, Set<string>> = {
   table: new Set("caption colgroup thead tbody tfoot".split(" ")),
@@ -34,17 +44,6 @@ const tableChildren: Record<string, Set<string>> = {
 const restricted = new Set(
   "title select optgroup option table thead tbody tfoot tr colgroup".split(" "),
 );
-const booleanAttrs = new Set(
-  "hidden inert readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate allowfullscreen".split(
-    " ",
-  ),
-);
-const dialect = new Set(
-  "className htmlFor charSet dateTime tabIndex readOnly strokeWidth dangerouslySetInnerHTML".split(
-    " ",
-  ),
-);
-const formProps = new Set("modelValue modelChecked defaultValue defaultChecked".split(" "));
 const shapeAttrs: Record<string, string[]> = {
   input: ["type", "form"],
   select: ["multiple", "form"],
@@ -52,22 +51,6 @@ const shapeAttrs: Record<string, string[]> = {
   textarea: ["form"],
 };
 const protocol = "zudo-react/1";
-const words = (value: string) => new Set(value.split(" "));
-const htmlTags = words(
-  "html head body title base link meta style script div span p a br hr main header footer nav section article aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd blockquote pre code strong em b i small mark time figure figcaption img picture source video audio track canvas form label input button textarea select option optgroup fieldset legend output progress meter datalist table caption thead tbody tfoot tr th td col colgroup details summary dialog template slot iframe noscript address abbr bdi bdo cite data del dfn ins kbd map area object param q rp rt ruby s samp sub sup u var wbr embed xmp noembed noframes plaintext",
-);
-const svgTags = words(
-  "svg g path circle ellipse rect line polyline polygon text tspan defs symbol use clipPath mask linearGradient radialGradient stop title desc foreignObject",
-);
-const commonAttrs = words(
-  "id class title lang dir slot role style hidden inert contenteditable draggable spellcheck tabindex accesskey translate onclick onload onerror",
-);
-const htmlAttrs = words(
-  "href target rel download src alt width height type name value placeholder for charset datetime readonly autofocus required disabled checked selected multiple open controls muted loop autoplay novalidate formnovalidate maxlength minlength min max step pattern autocomplete accept accept-charset http-equiv content media method action enctype rows cols colspan rowspan scope cite poster loading decoding sizes srcset crossorigin referrerpolicy sandbox allow allowfullscreen",
-);
-const svgAttrs = words(
-  "width height viewBox preserveAspectRatio gradientUnits gradientTransform markerWidth markerHeight refX refY xlink:href xml:lang stroke-width fill-rule clip-rule stroke-linecap stroke-linejoin stop-color stop-opacity fill stroke d x y x1 x2 y1 y2 cx cy r rx ry points transform opacity offset",
-);
 
 type Operation = (map: Map<Node, Node>, cleanups: Array<() => void>) => void;
 interface BuildContext {
@@ -329,8 +312,15 @@ function element(
         setAttribute(element, "checked", read(original));
       continue;
     }
-    if (dialect.has(name) || /^on[A-Z]/.test(name))
-      fail("ZR_PROP_DIALECT", "setup", "HTML-spelled prop", name, path);
+    if (isDialectProp(name, ownNamespace === SVG ? "svg" : "html", custom))
+      fail(
+        "ZR_PROP_DIALECT",
+        "setup",
+        dialectSuggestion(name, ownNamespace === SVG ? "svg" : "html", custom) ??
+          "HTML-spelled prop",
+        name,
+        path,
+      );
     if (name === "ref") {
       if (!original || typeof original !== "object" || !("current" in original))
         fail("ZR_REF", "setup", "object ref", typeof original, path);
@@ -387,8 +377,15 @@ function element(
       continue;
     }
     if (name === "value" || name === "checked") {
-      if (isReactive(original))
-        fail("ZR_MODEL_UNSUPPORTED", "preflight", "modelValue/modelChecked", name, path);
+      if (isReactive(original)) {
+        const suggestion = reactiveModelSuggestion(
+          tag,
+          name,
+          String(read(props.type) ?? "text"),
+          custom,
+        );
+        fail("ZR_MODEL_UNSUPPORTED", "preflight", suggestion ?? "static value", name, path);
+      }
     }
     if (
       !/^[A-Za-z_:][A-Za-z0-9_:.-]*$/.test(name) ||
@@ -407,6 +404,12 @@ function element(
       fail("ZR_PROP_DIALECT", "setup", "on:event", name, path);
     if (initial != null) {
       if (
+        name === "start" &&
+        typeof initial !== "string" &&
+        !(typeof initial === "number" && Number.isFinite(initial))
+      )
+        fail("ZR_ATTRIBUTE", "setup", "string or finite number", typeof initial, path);
+      else if (
         ownNamespace === SVG &&
         (name === "width" || name === "height") &&
         typeof initial !== "string" &&
@@ -435,6 +438,13 @@ function element(
           context.container,
           path,
           (value) => {
+            if (
+              name === "start" &&
+              value != null &&
+              typeof value !== "string" &&
+              !(typeof value === "number" && Number.isFinite(value))
+            )
+              throw new TypeError("ZR_ATTRIBUTE: start requires a string or finite number");
             if (
               ownNamespace === SVG &&
               (name === "width" || name === "height") &&

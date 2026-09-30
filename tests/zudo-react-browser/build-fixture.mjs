@@ -5,8 +5,12 @@
  * scenario.json with `page` and either the legacy single-root fields
  * (`component`, `props`, `mode`) or a `roots` array. Root entries may point at
  * different TSX modules and may request a pre-commit abort or a deliberate
- * post-SSR mutation. An optional fixture `page.css` can be loaded with the
- * scenario's `stylesheet` field. The generated bootstrap stores `{ roots,
+ * post-SSR mutation. Set a root's `static` flag to true with `mode: "none"` to
+ * render its component directly, without an island boundary; the harness adds
+ * a plain container around that output for root lookup. `mode: "none"` without
+ * `static: true` keeps the usual island SSR markup while disabling activation.
+ * An optional fixture `page.css` can be loaded with the scenario's
+ * `stylesheet` field. The generated bootstrap stores `{ roots,
  * root, flush, result, mode, identity, client, h }` on
  * `globalThis.__zudoReactBrowser`; its URL under /generated/ can be held with
  * `page.route` to inspect SSR DOM before the module executes.
@@ -80,6 +84,14 @@ function readScenarios() {
         if (!MODES.has(root.mode)) {
           throw new Error(
             `Scenario ${config.page} root ${index} has unsupported mode: ${root.mode}`,
+          );
+        }
+        if (root.static !== undefined && typeof root.static !== "boolean") {
+          throw new Error(`Scenario ${config.page} root ${index} static must be a boolean`);
+        }
+        if (root.static === true && root.mode !== "none") {
+          throw new Error(
+            `Scenario ${config.page} root ${index} may use static rendering only with mode: "none"`,
           );
         }
         if (root.props === null || typeof root.props !== "object" || Array.isArray(root.props)) {
@@ -244,9 +256,15 @@ async function main() {
       }
 
       const identity = { component: component.name, build: BUILD_ID };
-      const serverTree = islandRoot(h(component, root.props), { identity });
+      const serverTree = root.static
+        ? h(component, root.props)
+        : islandRoot(h(component, root.props), { identity });
       let html = renderToString(serverTree);
-      html = html.replace(/^<div /, `<div data-zudo-browser-root="root-${root.index}" `);
+      if (root.static) {
+        html = `<div data-zudo-browser-root="root-${root.index}">${html}</div>`;
+      } else {
+        html = html.replace(/^<div /, `<div data-zudo-browser-root="root-${root.index}" `);
+      }
       html = mutateServerHtml(html, root.mutate);
       const componentUrl = `/compiled/${compiledRelative
         .split(sep)
