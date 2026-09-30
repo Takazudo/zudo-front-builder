@@ -108,6 +108,35 @@ function ItemList() {
 
 For retains a keyed item's DOM and scope when it moves or its object is replaced with the same key. Its item argument is a readonly signal; the computed label makes the changed object property a live scalar binding. Duplicate or unsupported keys leave the previous list intact. See [Conditionals and lists](./conditionals-and-lists.mdx).
 
+### Remount with key
+
+Old Preact way:
+
+~~~tsx
+<DiffViewer key={pairKey} />
+~~~
+
+After:
+
+~~~tsx
+import { computed, For, signal } from "@takazudo/zfb/zudo-react";
+
+function Comparison() {
+  const pairKey = signal("a:b");
+  const pairs = computed(() => [pairKey.value]);
+
+  return (
+    <section>
+      <For each={pairs} by={(key) => key}>
+        {(item) => <DiffViewer pairKey={item.value} />}
+      </For>
+    </section>
+  );
+}
+~~~
+
+Changing `pairKey.value` to a new key disposes the old item's scope and creates a new `DiffViewer`. A `Show` around the viewer does not have this effect while its boolean `when` stays true: its selected factory is not rerun. Reusing the same `For` key also retains the existing scope. Remounting loses focus, selection, scroll position, and control state inside the viewer. See [Conditionals and lists](./conditionals-and-lists.mdx).
+
 ### Controlled inputs
 
 Old Preact way:
