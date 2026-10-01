@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "inlineSources": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@takazudo/zfb-adapter-cloudflare": ["./src/index.ts"]
+    }
+  },
+  "include": ["src/__tests__/types/consumer.ts"],
+  "exclude": []
+}

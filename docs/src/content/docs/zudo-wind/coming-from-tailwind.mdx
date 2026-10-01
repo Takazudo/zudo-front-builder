@@ -9,9 +9,9 @@ sidebar_position: 9
 - zudo-wind is a versioned utility language. V1 is identified by `spec: 1`; familiar spellings do not promise compatibility with another engine.
 - There are no utility plugins. The accepted catalog is closed for each language version.
 - Configuration is data in the top-level `wind` key of `zfb.config.ts` or `zfb.config.json`. CSS directives do not configure the engine.
-- No palette, spacing unit, named scale, breakpoint, font, radius, shadow, or easing is supplied implicitly. Configure every project value you use.
+- No palette, spacing unit, named scale, breakpoint, font, radius, shadow, or named easing token is supplied implicitly. Transition utilities use `ease` by default; set `wind.defaultTransitionTimingFunction` to choose another project default.
 - The source scanner needs complete class candidates. A prefix joined to a runtime value does not become a utility.
-- An unrecognized project class stays ordinary class text and emits no utility rule. A recognized utility with a missing token is diagnosed instead of receiving an invented default.
+- A project class with no matching utility root stays ordinary class text. A name that starts with a catalog root is resolved against the longest matching root and validated as a utility, so missing tokens receive diagnostics. Reserve a complete authored candidate with `wind.authoredClasses` when CSS owns a name that overlaps a utility root.
 - Keep declarations and selectors outside the catalog in authored CSS or CSS Modules.
 
 ## Directives
@@ -30,7 +30,7 @@ Wind configuration and candidate discovery live outside CSS. Remove Tailwind-onl
 | `@source not(...)` | There is no CSS negation directive. Use the source plan's root and exclusion rules; see [Sources and candidates](./sources-and-candidates.mdx). |
 | `@custom-variant` | Only the built-in `dark` variant is configurable. Set its attribute and value under `wind.dark`; write other selector conditions in authored CSS. |
 | `@apply` | There is no directive that expands utility names into declarations. Put declarations in the authored selector that needs them. |
-| `@utility` | Custom utilities do not extend the language. Define a class in authored CSS and, if its exact token appears in markup, reserve that token with `wind.authoredClasses`. |
+| `@utility` | Custom utilities do not extend the language. Define a class in authored CSS and, if its exact complete candidate appears in markup, reserve that spelling with `wind.authoredClasses`. |
 | `@variant` | There is no stylesheet variant-expansion directive. Use a supported complete candidate in markup or write the selector and condition in authored CSS. |
 | `@plugin` | Plugins are not loaded. Use the built-in catalog or authored CSS. |
 | `@config` | Move configuration data to the project's `wind` key; CSS does not load a utility config file. |
@@ -49,6 +49,7 @@ export default defineConfig({
   wind: {
     spec: 1,
     reset: "owned-v1",
+    defaultTransitionTimingFunction: "cubic-bezier(0.4, 0, 0.2, 1)",
     tokens: {
       spacingUnit: "0.25rem",
       colors: { panel: "var(--app-panel)" }
@@ -185,7 +186,8 @@ The table names the v1 disposition for each construct. Supported chains use the 
 | Arbitrary-selector variants | **Reject with diagnostic (W07).** A selector such as `[&_a]:underline` is ZW004. Write the selector in authored CSS. |
 | Stacked variants | **Adopt changed (W08).** Use at most one responsive, dark, relation, state, and pseudo-element variant, in that order. For example, `sm:dark:hover:bg-panel` is canonical when each feature and token is configured. Duplicate or out-of-order chains are diagnosed. |
 | Color opacity modifier | **Adopt (W10).** A color suffix is an integer from 0 to 100 and mixes the configured color in oklab against transparent; `bg-panel/40` is valid. This modifier does not apply to spacing or sizing utilities. |
-| Fractions | **Adopt changed (W11).** Positive integer ratios are accepted only by eligible sizing and translate roots. `w-1/2` means half the available sizing basis; a sizing slash never means color opacity. |
+| Fractions | **Adopt changed (W11).** Positive integer ratios are accepted by eligible sizing and translate roots, and as aspect ratios. `w-1/2` means half the available sizing basis; `aspect-4/3` emits `aspect-ratio: 4 / 3`. Aspect numerator and denominator must each be 1–1,000,000; use an arbitrary value such as `aspect-[1.5/2.5]` for decimal parts. A sizing slash never means color opacity. |
+| Transitions | **Current v1 behavior.** `transition-shadow` sets `box-shadow`, and `transition-colors` includes `outline-color`. Transition utilities except `transition-none` set a 150ms duration and use `wind.defaultTransitionTimingFunction`, which defaults to `ease`. Set it to `cubic-bezier(0.4, 0, 0.2, 1)` to keep Tailwind 4's default timing. Explicit `ease-*` utilities take precedence in the same variant bucket. |
 | Arbitrary values | **Adopt changed (W12).** A supported utility root may carry a balanced bracket value that passes CSS property validation. Write spaces as underscores; an escaped underscore stays literal. `url()` is rejected, as are values that inject declarations or other syntax. |
 | Arbitrary properties | **Reject with diagnostic (W13).** A token such as `[overflow-wrap:anywhere]` is ZW004. Write the declaration in authored CSS or a CSS Module. |
 | `!important` spellings | **Reject with diagnostic (W14).** Leading and trailing forms are both rejected with ZW004. Put an intentional important declaration in authored CSS. |
@@ -196,16 +198,16 @@ The candidate grammar balances brackets, parentheses, and quotes before splittin
 
 ## Classes that used to emit nothing
 
-Not every class-shaped string is meant to create a utility rule. A project name such as `site-header` remains an ordinary class; it is emitted in markup as authored but wind emits no rule for it. A standalone `group` or `peer` marker also emits no rule, while still supplying relation metadata to matching candidates.
+Not every class-shaped string is meant to create a utility rule. A project name such as `site-header` has no matching utility root, so it remains ordinary class text in markup and wind emits no rule for it. A name such as `text-link` does match the `text` root and is validated as a utility; if its required token is missing, it receives ZW006. This strict classification preserves typo detection instead of treating every unresolved name as ordinary. A standalone `group` or `peer` marker also emits no rule, while still supplying relation metadata to matching candidates.
 
 | Candidate outcome | What happens |
 | --- | --- |
 | Resolved utility | Wind emits its rule. |
-| Ordinary class or marker | No utility rule is emitted. The class can still be styled in authored CSS. |
+| Ordinary class or marker | A class-position name with no matching utility root remains in markup and produces no utility rule. The class can still be styled in authored CSS. |
 | Recognized but invalid utility | A strict class, safelist, or manifest origin receives a diagnostic; lower-confidence source text is audit information. A missing token is not filled in automatically. |
-| Malformed, unsupported, or unknown explicit utility input | The pass fails with a diagnostic. Unknown ordinary source classes remain ordinary class text. |
+| Malformed, unsupported, or unknown explicit utility input | The pass fails with a diagnostic. Unknown explicit safelist or manifest entries fail; unrelated class-position names remain ordinary. |
 
-Run `zfb wind audit` to list ordinary class-position names, missing or dead utility candidates, dynamic fragments, and property conflicts within a class-list literal. Audit helps distinguish an intentionally authored class from a misspelled utility; it does not invent a replacement. For a class owned entirely by CSS, an exact `wind.authoredClasses` entry suppresses utility validation and generation for that full token. See [Diagnostics and tools](./diagnostics-and-tools.mdx).
+Run `zfb wind audit` to list ordinary class-position names, missing or dead utility candidates, dynamic fragments, and property conflicts within a class-list literal. Audit helps distinguish an intentionally authored class from a misspelled utility; it does not invent a replacement. To use an authored class whose name starts with a utility root, reserve the exact complete candidate spelling in `wind.authoredClasses`, for example `{ "text-link": true }`. Include the variant chain when reserving a candidate such as `hover:text-link`. A match suppresses utility validation, diagnostics, and generated CSS for that candidate at every origin. Otherwise, correct the utility spelling or declare its missing token. See [Diagnostics and tools](./diagnostics-and-tools.mdx).
 
 ## A worked migration
 

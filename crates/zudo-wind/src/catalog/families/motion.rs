@@ -18,9 +18,10 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             ("none", "none"),
             (
                 "colors",
-                "color,background-color,border-color,text-decoration-color,fill,stroke",
+                "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke",
             ),
             ("opacity", "opacity"),
+            ("shadow", "box-shadow"),
             ("transform", "transform,translate,rotate,scale"),
         ],
         &[],
@@ -29,7 +30,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         false,
         OWN,
         Some("colors"),
-        "color,background-color,border-color,text-decoration-color,fill,stroke",
+        "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke",
     );
     set_id(&mut transition, "v1.transition");
     set_templates(
@@ -48,7 +49,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         &[
             (
                 "transition-property",
-                "color,background-color,border-color,text-decoration-color,fill,stroke",
+                "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke",
             ),
             ("transition-duration", "150ms"),
             ("transition-timing-function", "ease"),

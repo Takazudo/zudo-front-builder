@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "decisionIssue": 3469,
+  "outcome": "no-product-code-change",
+  "selectedOptimizations": [],
+  "baselineSourceSha": "897f288c013e24ff4fde01483a55d8a1945fc964",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64"
+  },
+  "fixtureVersion": "v3-islands-1",
+  "fixtureSha256": {
+    "event-only": "2264320634b4c896cd5ad62d3a7cfcd12691d6744226183a6756e262e5045eeb",
+    "scalar-signal": "1f69011b37ca925b4ed9a2868592d150efcf9450f220c7c3fc7d0bd491cdd364",
+    "show-for": "a2288f1a3bf185f9191309ef08dfb768cda0c62f2f56fb66d7d1b0bc97b29c38",
+    "model": "1273665b15a9f7ff0adefb301961f1484690fe95f8c79450fa5387079ed4995c",
+    "blog-menu": "f901991768adc5146562429544de9b1f23f843862efe8f0401e46c297969166a",
+    "theme-toggle": "206d45d5289464398e93943c78e9efb97267eaca7c3314ad9c9877057aeb4af0",
+    "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
+  },
+  "runnerSha256": {
+    "measure-real.mjs": "f12881c67b1295904ada30bc923b7fe137e849e880ad37829d58dc833cf41564",
+    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+  },
+  "toolchain": {
+    "packageVersion": "3.0.0",
+    "honoVersion": "4.12.25",
+    "esbuildVersion": "0.25.12",
+    "nodeVersion": "v24.14.0",
+    "zlibVersion": "1.3.1-e00f703",
+    "pnpmLockSha256": "69f78b69412b6aaff5dfffa53c37fa15fe54e24da713f583f0ecdd0dabdddbfc",
+    "cargoLockSha256": "43326bc0848833aef50bc2df736f502a1052798bca5e199bc5758e7aaef5b60a"
+  },
+  "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
+  "allowance": {
+    "raw": 0,
+    "gzip": 0
+  },
+  "ceilings": {
+    "workspace": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 49830,
+        "gzip": 17004
+      },
+      "scalar-signal": {
+        "raw": 49838,
+        "gzip": 17009
+      },
+      "show-for": {
+        "raw": 49985,
+        "gzip": 17082
+      },
+      "model": {
+        "raw": 49829,
+        "gzip": 17012
+      },
+      "blog-theme": {
+        "raw": 50180,
+        "gzip": 17138
+      },
+      "json-api": {
+        "raw": 49984,
+        "gzip": 17096
+      },
+      "multi-island": {
+        "raw": 50106,
+        "gzip": 17103
+      }
+    },
+    "packed": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 49892,
+        "gzip": 17027
+      },
+      "scalar-signal": {
+        "raw": 49900,
+        "gzip": 17037
+      },
+      "show-for": {
+        "raw": 50047,
+        "gzip": 17111
+      },
+      "model": {
+        "raw": 49891,
+        "gzip": 17045
+      },
+      "blog-theme": {
+        "raw": 50242,
+        "gzip": 17166
+      },
+      "json-api": {
+        "raw": 50046,
+        "gzip": 17127
+      },
+      "multi-island": {
+        "raw": 50168,
+        "gzip": 17132
+      }
+    }
+  },
+  "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
+  "platformStatus": "Darwin arm64 has its own exact contract; Linux x64 uses the separately reviewed measured contract"
+}

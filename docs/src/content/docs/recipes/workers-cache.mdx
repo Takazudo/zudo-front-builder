@@ -190,25 +190,40 @@ with three markets; on a real site it is how a `Vary` header quietly shreds your
 
 `POST /api/purge` is the write side of the same contract. It compares the `X-Purge-Token`
 header against the `PURGE_TOKEN` secret with a constant-time comparison, then calls the
-cache API through a narrow local type widening — Cloudflare's runtime exposes `ctx.cache`,
-but the adapter's `ctx` type does not yet include it:
+cache API through the adapter's second context generic. This caller-supplied optional type
+describes the expected shape to TypeScript; it does not add `ctx.cache` to a runtime, so the
+route still checks that the capability exists:
 
 ```tsx title="pages/api/purge.tsx"
-const cache = (ctx as CacheAwareExecutionContext).cache;
-if (!cache) {
-  return jsonResponse(
-    {
-      ok: false,
-      error: "cache_context_unavailable",
-      detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
-    },
-    { status: 501 },
-  );
-}
+import {
+  getCloudflareContext,
+  type CloudflareExecutionContext,
+} from "@takazudo/zfb-adapter-cloudflare";
 
-const result = await cache.purge({ tags: ["products"] });
-if (!result.success) {
-  return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+type CacheAwareContext = CloudflareExecutionContext & {
+  cache?: {
+    purge(options: { tags: string[] }): Promise<{ success: boolean }>;
+  };
+};
+
+async function purgeProducts() {
+  const { ctx } = getCloudflareContext<unknown, CacheAwareContext>();
+  const cache = ctx.cache;
+  if (!cache) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "cache_context_unavailable",
+        detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
+      },
+      { status: 501 },
+    );
+  }
+
+  const result = await cache.purge({ tags: ["products"] });
+  if (!result.success) {
+    return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+  }
 }
 ```
 

@@ -222,6 +222,13 @@ fn ssg_fixture_dir() -> PathBuf {
         .join("embedded-host-request-time-ssg")
 }
 
+fn raw_html_invalid_runtime_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wind-raw-invalid-runtime")
+}
+
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -423,12 +430,54 @@ async fn poll_for_marker(
     }
 }
 
+/// Poll an SSR route expected to fail during server rendering. Requiring both
+/// the HTTP 500 and the renderer's structured error code in the response
+/// prevents a missing route or generic request failure from standing in for
+/// the runtime guard.
+async fn poll_for_runtime_rejection(
+    client: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    error_marker: &str,
+    session: &DevSession,
+) -> String {
+    let url = format!("{base_url}{path}");
+    let start = Instant::now();
+    loop {
+        let observation = match client.get(&url).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                let logs = session.logs();
+                if status == 500 && body.contains(error_marker) {
+                    return body;
+                }
+                format!("status {status}, body:\n{body}\nlogs:\n{logs}")
+            }
+            Err(error) => format!("request error: {error}"),
+        };
+        assert!(
+            start.elapsed() < RESPONSE_DEADLINE,
+            "GET {url} did not respond with HTTP 500 and {error_marker:?} within {}s. \
+             Last observation: {observation}",
+            RESPONSE_DEADLINE.as_secs(),
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+fn contains_verbatim_bytes(body: &str, expected: &str) -> bool {
+    body.as_bytes()
+        .windows(expected.len())
+        .any(|window| window == expected.as_bytes())
+}
+
 // ---------------------------------------------------------------------------
 // Cases 1-4: a real `zfb dev` session
 // ---------------------------------------------------------------------------
 
-/// Cases 1-4 of issue #2019's acceptance criteria — all through one real
-/// `zfb dev --port 0` session, each hitting a distinct SSR route.
+/// Cases 1-4 of issue #2019 plus Wave 7's successful rawHtml page — all
+/// through one real `zfb dev --port 0` session, each hitting a distinct route.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_serves_request_time_fetch_and_web_crypto() {
     // Acquired before any other synchronization, per
@@ -597,6 +646,87 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
         "an unsupported-capability failure at REQUEST TIME leaked the build-time-only \
          \"fetch() called from SSG runtime\" wording — this is precisely the defect \
          epic #2012 exists to fix.\nbody:\n{unsupported_body}",
+    );
+
+    // ---- Wave 7: real prerender=false route with trusted raw-text layout ----
+    // The URL and response marker together prove this is the SSR route itself,
+    // not a prerendered 404 or a static fallback.
+    let raw_body = poll_for_marker(
+        &client,
+        &base_url,
+        "/wind-raw",
+        "WIND_RAW_ROUTE_OK",
+        &session,
+    )
+    .await;
+    let expected_css = r#"body[data-zfb-wind="raw"] { font-family: "Wind & Raw"; --quoted-css: "<raw & trusted>"; }"#;
+    let expected_script = r#"window.__zfbWindRaw = "quoted <& trusted";"#;
+    let expected_style_element = format!("<style>{expected_css}</style>");
+    let expected_script_element = format!("<script>{expected_script}</script>");
+    assert!(
+        contains_verbatim_bytes(&raw_body, &expected_style_element),
+        "the quoted inline CSS must reach the response verbatim inside a live style element:\n{raw_body}"
+    );
+    assert!(
+        contains_verbatim_bytes(&raw_body, &expected_script_element),
+        "the quoted inline script must reach the response verbatim inside a live script element:\n{raw_body}"
+    );
+    assert!(
+        raw_body.contains("font-family: \"Wind & Raw\""),
+        "the inline font declaration must retain its quoted family:\n{raw_body}"
+    );
+    assert!(
+        raw_body.contains("<script src=\"/wind-layout.js\"></script>"),
+        "a childless external script must retain its src and empty body:\n{raw_body}"
+    );
+
+    let external_script = poll_for_marker(
+        &client,
+        &base_url,
+        "/wind-layout.js",
+        "served external script",
+        &session,
+    )
+    .await;
+    assert!(external_script.contains("window.__zfbWindExternal"));
+}
+
+/// The runtime guard remains active when untyped JavaScript bypasses
+/// `zfb check`'s compile-time rejection. This negative fixture is isolated
+/// from the successful Wave 7 route and other dev fixtures.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_rejects_untyped_raw_html_children_at_runtime() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[embedded_host_request_time_e2e] no esbuild binary available; skipping the rawHtml runtime-negative case."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("create untyped rawHtml fixture tempdir");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize untyped rawHtml fixture root");
+    copy_dir(&raw_html_invalid_runtime_fixture_dir(), &root)
+        .expect("copy untyped rawHtml runtime-negative fixture");
+
+    let mut session = spawn_dev(&root, &esbuild);
+    let Some(port) = boot_dev_or_skip(&mut session).await else {
+        return;
+    };
+    let base_url = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+    let invalid_body =
+        poll_for_runtime_rejection(&client, &base_url, "/", "ZR_RAW_HTML", &session).await;
+    assert!(
+        !invalid_body.contains("WIND_INVALID_ROUTE"),
+        "untyped rawHtml plus children must be rejected before its route body renders:\n{invalid_body}"
     );
 }
 

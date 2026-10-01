@@ -146,6 +146,15 @@ type HtmlProps<
   TRef extends Element = HTMLElement,
   TEvent extends HTMLElement = HTMLElement,
 > = HtmlAttributes<TRef> & DataAria & EventProps<TEvent, HTMLElementEventMap>;
+type RawTextProps<TEvent extends HTMLElement = HTMLElement> = Omit<
+  HtmlAttributes<HTMLElement>,
+  "children" | "rawHtml"
+> &
+  DataAria &
+  EventProps<TEvent, HTMLElementEventMap> & {
+    children?: never;
+    rawHtml?: string | undefined;
+  };
 type InputBase = Omit<HtmlAttributes<HTMLInputElement>, "type"> &
   DataAria &
   EventProps<HTMLInputElement, HTMLElementEventMap> & {
@@ -386,10 +395,14 @@ export namespace JSX {
         ? TextareaProps
         : K extends "select"
           ? SelectProps
-          : HtmlProps<
-              HTMLElement,
-              K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
-            >;
+          : K extends "script" | "style"
+            ? RawTextProps<
+                K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
+              >
+            : HtmlProps<
+                HTMLElement,
+                K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
+              >;
   } & {
     [K in SvgTag]: SvgProps<
       K extends keyof SVGElementTagNameMap ? SVGElementTagNameMap[K] : SVGElement

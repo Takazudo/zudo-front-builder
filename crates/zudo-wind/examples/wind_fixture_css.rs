@@ -21,7 +21,13 @@ struct CaseDefinition {
     #[serde(default)]
     spacing_unit: Option<String>,
     #[serde(default)]
+    default_transition_timing_function: Option<String>,
+    #[serde(default)]
     colors: BTreeMap<String, String>,
+    #[serde(default)]
+    shadows: BTreeMap<String, String>,
+    #[serde(default)]
+    easings: BTreeMap<String, String>,
     #[serde(default)]
     breakpoints: BTreeMap<String, i64>,
     #[serde(default)]
@@ -219,9 +225,12 @@ fn make_config(definition: &CaseDefinition) -> WindConfig {
 
     WindConfig {
         reset: definition.reset.into(),
+        default_transition_timing_function: definition.default_transition_timing_function.clone(),
         tokens: TokenConfig {
             spacing_unit: definition.spacing_unit.clone(),
             colors: definition.colors.clone(),
+            shadows: definition.shadows.clone(),
+            easings: definition.easings.clone(),
             ..TokenConfig::default()
         },
         breakpoints,

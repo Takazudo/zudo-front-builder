@@ -15,7 +15,7 @@ A candidate has one of four results:
 | Ordinary class or marker | Emit no utility rule. An accepted `group` or `peer` marker carries metadata but has no CSS. |
 | Malformed, unsupported, or unknown explicit utility input | Fail the pass with a diagnostic. |
 
-An unknown name such as `site-header` in a class attribute remains ordinary CSS-class text. A recognized prefix with a missing token, such as `text-missing`, is diagnosed. Low-confidence complete literals can contribute valid rules, but invalid ones do not fail a build. Explicit safelist and manifest entries are strict.
+An unrelated name such as `site-header` in a class attribute remains ordinary CSS-class text because it has no utility root. When a name starts with a catalog root, resolution chooses the longest matching root before checking its suffix. For example, `text-link` is checked as a `text` utility and receives ZW006 when neither a matching color nor font-size token is configured; similarly, authored names such as `bg-panel`, `border-soft`, or `font-title` need to be reserved if CSS owns them. This strict classification keeps misspelled or unconfigured utilities visible instead of guessing that every unknown name is an ordinary class. Low-confidence complete literals can contribute valid rules, but invalid ones do not fail a build. Explicit safelist and manifest entries are strict.
 
 ## Diagnostic codes
 
@@ -48,7 +48,7 @@ Diagnostic records retain the candidate where available, severity, code, origin,
 
 Occurrences are retained and ordered by origin, offset or key/index, code, and candidate bytes.
 
-ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. Unknown ordinary names remain ordinary, while a recognized utility with an unresolved token receives ZW006.
+ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. If a utility-root name is intended as an authored class, add its exact complete spelling to `wind.authoredClasses`, for example `authoredClasses: { "text-link": true }`. This reservation suppresses utility validation, candidate diagnostics, and generated CSS for that full candidate. Otherwise, correct the utility spelling or declare the missing token. A name with no matching utility root, such as `site-header`, remains ordinary class text.
 
 ## Explain and audit
 
@@ -70,7 +70,7 @@ The standalone `zfb css` command remains the wind compiler. When generation is e
 
 ## Generated identity
 
-Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 2. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
+Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 3. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
 
 ## See also
 

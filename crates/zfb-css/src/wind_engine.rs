@@ -105,7 +105,12 @@ impl CssEngine for WindEngine {
                             CssDiagnosticSeverity::Warning
                         },
                         code: format!("{:?}", diagnostic.code).to_ascii_uppercase(),
-                        message: diagnostic.message.clone(),
+                        message: match diagnostic.suggested_spelling.as_deref() {
+                            Some(spelling) => {
+                                format!("{}; suggested spelling: {spelling}", diagnostic.message)
+                            }
+                            None => diagnostic.message.clone(),
+                        },
                         origin,
                         candidate: diagnostic.candidate.clone(),
                     }
@@ -204,7 +209,10 @@ mod tests {
             CssProvenanceKind::Generated
         );
         assert_eq!(result.provenance.as_ref().unwrap().spec_version, 1);
-        assert_eq!(result.provenance.as_ref().unwrap().spec_revision, 2);
+        assert_eq!(
+            result.provenance.as_ref().unwrap().spec_revision,
+            zudo_wind::SPEC_REVISION
+        );
         assert!(result.provenance.as_ref().unwrap().map.is_none());
     }
     #[test]

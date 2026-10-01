@@ -1666,6 +1666,7 @@ fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
             .collect(),
         safelist: input.safelist.clone(),
         authored_classes: input.authored_classes.clone(),
+        default_transition_timing_function: input.default_transition_timing_function.clone(),
         ..Default::default()
     };
     output.tokens.spacing_unit = input.tokens.spacing_unit.clone();
@@ -8349,6 +8350,24 @@ fn copy_redirects_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_and_standalone_css_map_transition_timing_identically() {
+        let input = crate::config::WindConfig {
+            default_transition_timing_function: Some("steps(3, end)".to_owned()),
+            ..Default::default()
+        };
+        let build_config = map_wind_config(&input);
+        let css_config = crate::commands::css_support::map_wind_config(&input);
+        assert_eq!(build_config, css_config);
+        assert_eq!(
+            build_config
+                .validate()
+                .unwrap()
+                .default_transition_timing_function,
+            "steps(3, end)"
+        );
+    }
 
     #[test]
     fn css_build_timing_line_format_is_stable() {

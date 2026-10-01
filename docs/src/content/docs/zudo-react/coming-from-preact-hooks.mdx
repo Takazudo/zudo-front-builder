@@ -340,6 +340,21 @@ function TrustedFragment({ markup }: { markup: string }) {
 
 rawHtml is a trusted-content hatch, not a general sanitizer. Its payload is opaque to hydration, mutually exclusive with children, and must be valid for its parent element. Do not pass user-controlled markup without an application-owned trust and sanitization decision. See [Components and JSX](./components-and-jsx.mdx).
 
+Text children of `<style>` and `<script>` are rejected during render in zudo-react. Rewrite an inline critical stylesheet as a static string passed through `rawHtml`:
+
+~~~tsx
+function CriticalStyles() {
+  const CRITICAL_CSS = `body { font-family: "Atkinson", sans-serif; }`;
+  return <style rawHtml={CRITICAL_CSS} />;
+}
+
+function ExternalScript() {
+  return <script src="/assets/app.js" />;
+}
+~~~
+
+The raw-text string is emitted verbatim, without escaping or sanitization, so use trusted content and omit the closing `</style>` or `</script>` sequence. An external script is still valid without children: `<script src="/assets/app.js" />`. This rule is specific to `script` and `style`; `title` and `textarea` keep ordinary escaped text children. See [Components and JSX](./components-and-jsx.mdx).
+
 ## Custom hooks become functions
 
 A helper can take the current scope and the signals it uses as ordinary arguments. Call it during component setup; no call-order registry or hook ordering rules exist.
@@ -599,3 +614,7 @@ export function Profile({ initialName }: ProfileProps) {
 ~~~
 
 Keep server-to-browser props as data; construct live state and event handlers inside the component. The [Server rendering](./server-rendering.mdx) and [Hydration](./hydration.mdx) guides explain the boundary and its checks. For JSX, reactive values, and component behavior, continue to [Overview](./overview.mdx) and the [API reference](./api-reference.mdx).
+
+## Client bundle size
+
+The zudo-react client runtime has no promise to match Preact's bundle size, and no fixed byte budget has been selected. A separate follow-up will measure production island output, evaluate safe optimizations, and set any regression budget from those results. That work does not block the v3 migration. This guide makes no size claim for a project or island.

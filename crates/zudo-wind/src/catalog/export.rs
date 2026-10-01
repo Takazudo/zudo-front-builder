@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use super::{Catalog, EmissionValue, ValueKind};
-use crate::{TokenCategory, SPEC_VERSION};
+use crate::{TokenCategory, SPEC_REVISION, SPEC_VERSION};
 
 pub const CATALOG_SCHEMA_VERSION: u32 = 1;
 
@@ -12,6 +12,7 @@ pub const CATALOG_SCHEMA_VERSION: u32 = 1;
 pub struct CatalogExport {
     pub schema_version: u32,
     pub spec_version: u32,
+    pub spec_revision: u32,
     pub entries: Vec<CatalogEntryExport>,
 }
 
@@ -91,6 +92,7 @@ impl CatalogExport {
         Self {
             schema_version: CATALOG_SCHEMA_VERSION,
             spec_version: SPEC_VERSION,
+            spec_revision: SPEC_REVISION,
             entries: catalog.entries().iter().map(export_entry).collect(),
         }
     }

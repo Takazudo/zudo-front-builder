@@ -1,0 +1,17 @@
+{
+  "outDir": "dist",
+  "wind": {
+    "spec": 1,
+    "tokens": {
+      "shadows": {
+        "card": "0 8px 16px rgba(18, 52, 86, 0.25)"
+      },
+      "easings": {
+        "gentle": "ease-in-out"
+      }
+    },
+    "authoredClasses": {
+      "p-4": true
+    }
+  }
+}

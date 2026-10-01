@@ -11,6 +11,23 @@ export function For<T>(props: ForProps<T>): Description {
   return createDescription(For, props as unknown as Record<string, unknown>);
 }
 
+// The renderer and an island component can resolve separate copies of this
+// module when a package manager preserves dependency symlinks. Recognize the
+// component by a shared marker so rendering does not recursively call Show/For
+// as ordinary function components.
+const showMarker = Symbol.for("@takazudo/zfb/zudo-react/Show");
+const forMarker = Symbol.for("@takazudo/zfb/zudo-react/For");
+Object.defineProperty(Show, showMarker, { value: true });
+Object.defineProperty(For, forMarker, { value: true });
+
+export function isShowType(type: unknown): type is typeof Show {
+  return typeof type === "function" && showMarker in type;
+}
+
+export function isForType(type: unknown): type is typeof For {
+  return typeof type === "function" && forMarker in type;
+}
+
 export function showProps(description: Description): ShowProps {
   return description.props as unknown as ShowProps;
 }

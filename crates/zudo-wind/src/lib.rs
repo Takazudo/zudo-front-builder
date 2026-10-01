@@ -63,7 +63,7 @@ pub use walk::{expand_changed_path, expand_file_set, ExpandedFile, FileSet, Walk
 
 pub const SPEC_VERSION: u32 = 1;
 
-pub const SPEC_REVISION: u32 = 2;
+pub const SPEC_REVISION: u32 = 3;
 
 pub mod extract;
 pub use extract::{

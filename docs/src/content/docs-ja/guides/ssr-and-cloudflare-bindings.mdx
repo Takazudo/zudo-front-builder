@@ -317,6 +317,32 @@ export default async function WhoAmI() {
 
 `Env` ジェネリックがバインディングの形を絞り込むため、TypeScript は `env.ANTRHOPIC_KEY` のようなタイプミスを捕捉します。
 
+デフォルトの `ctx` はアダプターの最小型 `CloudflareExecutionContext` のままです。この型には `waitUntil()` と `passThroughOnException()` があります。既存の `getCloudflareContext()` と `getCloudflareContext<Env>()` はこのデフォルトを保ちます。追加の任意機能が必要なルートでは、公開されている型を拡張する第 2 ジェネリックを渡し、使う前にプロパティを確認します。
+
+```tsx
+import {
+  getCloudflareContext,
+  type CloudflareExecutionContext,
+} from "@takazudo/zfb-adapter-cloudflare";
+
+type CacheAwareContext = CloudflareExecutionContext & {
+  cache?: {
+    purge(options: { tags: string[] }): Promise<{ success: boolean }>;
+  };
+};
+
+async function purgeProducts() {
+  const { ctx } = getCloudflareContext<unknown, CacheAwareContext>();
+  const cache = ctx.cache;
+  if (!cache) return new Response("Cache API unavailable", { status: 501 });
+
+  const result = await cache.purge({ tags: ["products"] });
+  return new Response(JSON.stringify(result));
+}
+```
+
+第 2 ジェネリックが TypeScript に伝えるのは呼び出し側の想定だけで、Worker API を追加したり実行時に検出したりはしません。機能は引き続き任意で、実行時の確認が必要です。`@cloudflare/workers-types` を必須にせず、アダプターは最小のデフォルト型を保ちます。アプリケーションは独自の構造型を使うか、その宣言が必要な場合に Workers の型パッケージを追加できます。このジェネリックでリクエストごとのコンテキスト分離が変わることはありません。
+
 <Warning title="SSR リクエストの内部でのみ呼び出すこと">
 
 `getCloudflareContext()` は Worker のリクエストスコープの外で呼ばれると例外を投げます。たとえばビルド時 SSG 中、そして **`zfb dev` 下**です。`zfb dev` は SSR のレンダリングコードそのものは実行しますが、Cloudflare のリクエストスコープを確立することはないため、この呼び出しはそこでも例外になります。実際に機能するリクエストスコープが得られるループについては、後述の [ローカル開発](#ローカル開発) を参照してください。これは設計どおりです。バインディングを必要とするルートは**必ず** `prerender = false` をエクスポートし、そのバインディングに実際に到達するには `wrangler dev` / `zfb preview` の下で動かす必要があります。ルートを両方のモードで動かしたい場合は、エラーをキャッチして分岐してください。
