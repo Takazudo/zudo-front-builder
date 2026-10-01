@@ -61,6 +61,25 @@ The measured sidecar metafiles are generated without changing the bundler's priv
 
 Decision source: `e82190e04021b37f663c32d39fc7ddbfe9a5314e`. Product TS sources, islands bundler sources, and both lockfiles have no diff from measured source `897f288c013e24ff4fde01483a55d8a1945fc964`. Review read all four prerequisite JSON reports, production source, and the packed sidecar attribution. A lightweight artifact audit recomputed raw/gzip/SHA-256 for 56 emitted JS artifacts (seven nonempty fixtures × two passes × four modes) and checked 28 sidecar metafile output totals. All matched. This audit reused saved artifacts; it did not claim a new CLI build or browser run.
 
+### Verification on unchanged product source (#3470)
+
+The guarded real and modeled workspace/packed matrices were replayed at `d2edf94000d4700742aa56ef21f75904e23344f0`, after the #3469 decision. Relative to baseline source `897f288c013e24ff4fde01483a55d8a1945fc964`, the product TS sources, islands esbuild invocations, fixtures, runners, and lockfiles are unchanged. Each real consumer mode built all eight fixtures twice and produced the same full-`dist` inventories as its baseline run. The matrix below gives **all shipped raw / gzip bytes**; `before` is the baseline and `after` is this verification replay.
+
+| Case | Workspace before | Workspace after | Packed before | Packed after |
+| --- | ---: | ---: | ---: | ---: |
+| no-island | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| event-only | 49,830 / 17,004 | 49,830 / 17,004 | 49,892 / 17,027 | 49,892 / 17,027 |
+| scalar-signal | 49,838 / 17,009 | 49,838 / 17,009 | 49,900 / 17,037 | 49,900 / 17,037 |
+| show-for | 49,985 / 17,082 | 49,985 / 17,082 | 50,047 / 17,111 | 50,047 / 17,111 |
+| model | 49,829 / 17,012 | 49,829 / 17,012 | 49,891 / 17,045 | 49,891 / 17,045 |
+| blog-theme | 50,180 / 17,138 | 50,180 / 17,138 | 50,242 / 17,166 | 50,242 / 17,166 |
+| json-api | 49,984 / 17,096 | 49,984 / 17,096 | 50,046 / 17,127 | 50,046 / 17,127 |
+| multi-island | 50,106 / 17,103 | 50,106 / 17,103 | 50,168 / 17,132 | 50,168 / 17,132 |
+
+Every nonempty real build still has one initial entry and no later chunk, so initial equals all shipped and later remains 0 / 0. No-island still emits no JS. The fresh replay's 28 emitted JS artifacts (seven nonempty fixtures × two passes × two modes) match their recorded raw, gzip, and SHA-256 values. Both modeled result sets, including the scalar `--keep-names` probe, are identical to baseline. In event-only, scalar, Show/For, and model, both modeled modes still retain hydrate, forms, runtime, vocabulary, and structure; the packed event-only attribution remains 19,403, 7,402, 4,955, 4,463, and 939 bytes respectively. This is retained-byte attribution, not removable savings.
+
+The replay used `@takazudo/zfb@3.0.0` and `@takazudo/zfb-runtime@3.0.0` tarballs with SHA-256 `85a92e2958d538d5831348e58094f1319740dbfcd826a3ee58c6a35ef6c8f93d` and `5d8cb3fec9990118a6d69a32f2c38a6719fc83c40318f31f7e674776848a3acd`. The fresh CLI digest was `87e048cc0925adc9718b44803a7a524a933e5c4d3e71e29b952cbbb9c3a21e93`, esbuild `0.25.12` digest `3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5`, with Node `v24.14.0`, zlib `1.3.1-e00f703`, Hono `4.12.25`, and unchanged recorded fixture/runner/lockfile hashes. Ignored replay artifacts are in `results/verification-3470-{real,modeled}-{workspace,packed}/`. The seven focused test files passed (163 tests). No product code change or byte reduction was selected; the zero-growth ceilings remain those in `decision.json`.
+
 ### Ranked options and rejection evidence
 
 These are retained-byte rankings, not additive removable-byte estimates. The event-only packed sidecar is the reference. Inspecting event, scalar, Show/For, and model graphs confirms the same core module set.
