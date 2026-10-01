@@ -70,6 +70,16 @@ Lowercase string event attributes such as onload are a separate, static inline-h
 
 Refs are simple objects with a current field, initially null. The runtime assigns all refs before activation callbacks. There are no callback refs or ref factories.
 
+## Iframe shells
+
+Inside an island, zudo-react owns a childless `<iframe>` element, its supported attributes, refs, and native listeners. The browser owns the foreign document loaded through `src` or `srcdoc`; zudo-react does not reconcile that document. Keep the shell childless: JSX children and `rawHtml` are rejected, and hydration fails if nonempty fallback DOM appears in the iframe element. An unchanged hydrate adopts the existing iframe and document. Updating `src` or `srcdoc` asks the browser to navigate that document.
+
+`srcdoc` is trusted application input. zudo-react escapes it for the outer HTML attribute but does not sanitize the document. Keep it under application control, and choose `sandbox` and `allow` for the embedded content.
+
+~~~tsx
+<iframe title="HTML preview" srcdoc={trustedDocument} sandbox="" allow="fullscreen" />
+~~~
+
 ## Custom elements
 
 A custom element name must be lowercase and contain a hyphen. Its attributes must be strings, with reactive strings or nullish values also allowed. Native listeners and reserved runtime props are supported. The runtime does not assign arbitrary objects to element properties or infer property types.
