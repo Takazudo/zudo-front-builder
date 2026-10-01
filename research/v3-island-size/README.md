@@ -39,7 +39,7 @@ After both complete real runs, enforce the committed contract:
 node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" --contract research/v3-island-size/decision.json
 ```
 
-The guard requires the full eight-case matrix in both modes, the requested checkout SHA, the pinned versions and fixture/runner/lockfile hashes, two identical saved passes, and matching full-`dist` inventories. It recomputes each emitted JavaScript file's SHA-256, raw length, and gzip-9 length from the saved bytes, then sums all entry, shared, and lazy chunks. A `--case` smoke run is useful for diagnosis but cannot satisfy the full gate.
+The guard requires the full eight-case matrix in both modes, the requested checkout SHA, the pinned versions and fixture/runner/lockfile hashes, two identical saved passes, and matching full-`dist` inventories. It verifies each mode's recorded package manifest and tarball digests against the files that mode used, then checks the packed manifest inside each tarball. It recomputes each emitted JavaScript file's SHA-256, raw length, and gzip-9 length from the saved bytes, then sums all entry, shared, and lazy chunks. A `--case` smoke run is useful for diagnosis but cannot satisfy the full gate.
 
 The `--case event-only` smoke executes only two real consumer builds before the full matrix. It has a separate output directory and reports no multi-island delta. Any of the eight case names may be selected this way.
 

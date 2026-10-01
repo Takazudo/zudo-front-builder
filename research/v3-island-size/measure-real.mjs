@@ -232,6 +232,8 @@ const report = {
       "measure-real.mjs": sha(readFileSync(scriptPath)),
       "measure.mjs": sha(readFileSync(join(root, "measure.mjs"))),
     },
+    zfbTarballPath: zfbTarball,
+    runtimeTarballPath: runtimeTarball,
     packageVersion: packageJson.version,
     packageJsonSha256: sha(readFileSync(join(packageDir, "package.json"))),
     packagePath: packageDir,

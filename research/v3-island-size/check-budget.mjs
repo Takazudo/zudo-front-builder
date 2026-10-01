@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = dirname(scriptPath);
@@ -461,13 +461,69 @@ function validateProvenance(run, mode, contract, expectedSourceSha, errors) {
   ]) {
     if (!shaPattern.test(provenance[key] ?? "")) errors.push(label + ": invalid " + key);
   }
+  const actualInputs = run.actualInputs;
+  if (!isRecord(actualInputs)) {
+    errors.push(label + ": actual package and tarball inputs are unavailable");
+  } else {
+    for (const key of [
+      "packageJsonSha256",
+      "runtimePackageJsonSha256",
+      "honoPackageJsonSha256",
+      "zfbTarballSha256",
+      "runtimeTarballSha256",
+    ]) {
+      if (provenance[key] !== actualInputs[key]) {
+        errors.push(label + ": " + key + " differs from the actual package or tarball");
+      }
+    }
+    for (const [name, manifest, expectedName] of [
+      ["zfb package", actualInputs.packageManifest, "@takazudo/zfb"],
+      ["runtime package", actualInputs.runtimePackageManifest, "@takazudo/zfb-runtime"],
+      ["Hono package", actualInputs.honoPackageManifest, "hono"],
+    ]) {
+      if (manifest?.name !== expectedName) errors.push(label + ": wrong actual " + name);
+    }
+    if (actualInputs.packageManifest?.version !== expectedToolchain.packageVersion) {
+      errors.push(label + ": actual @takazudo/zfb manifest has an unsupported version");
+    }
+    if (actualInputs.runtimePackageManifest?.version !== expectedToolchain.packageVersion) {
+      errors.push(label + ": actual @takazudo/zfb-runtime manifest has an unsupported version");
+    }
+    if (actualInputs.honoPackageManifest?.version !== expectedToolchain.honoVersion) {
+      errors.push(label + ": actual Hono manifest has an unsupported version");
+    }
+    if (
+      actualInputs.runtimePackageManifest?.dependencies?.hono !==
+      "^" + expectedToolchain.honoVersion
+    ) {
+      errors.push(label + ": actual runtime manifest does not declare pinned Hono");
+    }
+    if (
+      mode === "packed" &&
+      actualInputs.zfbTarballPackageJsonSha256 !== actualInputs.packageJsonSha256
+    ) {
+      errors.push(label + ": zfb package manifest differs from its packed tarball");
+    }
+    if (
+      mode === "packed" &&
+      actualInputs.runtimeTarballPackageJsonSha256 !== actualInputs.runtimePackageJsonSha256
+    ) {
+      errors.push(label + ": runtime package manifest differs from its packed tarball");
+    }
+  }
   if (provenance.pnpmLockSha256 !== contract.toolchain?.pnpmLockSha256) {
     errors.push(label + ": pnpm lockfile differs from the contract");
   }
   if (provenance.cargoLockSha256 !== contract.toolchain?.cargoLockSha256) {
     errors.push(label + ": Cargo lockfile differs from the contract");
   }
-  for (const key of ["packagePath", "runtimePackagePath", "honoPackagePath"]) {
+  for (const key of [
+    "packagePath",
+    "runtimePackagePath",
+    "honoPackagePath",
+    "zfbTarballPath",
+    "runtimeTarballPath",
+  ]) {
     if (typeof provenance[key] !== "string" || provenance[key].length === 0) {
       errors.push(label + ": missing " + key);
     }
@@ -644,8 +700,6 @@ function compareMatchingProvenance(workspace, packed, errors) {
     "fixtureVersion",
     "packageVersion",
     "runtimePackageVersion",
-    "packageJsonSha256",
-    "runtimePackageJsonSha256",
     "honoPackageVersion",
     "honoPackageJsonSha256",
     "zfbBinarySha256",
@@ -669,6 +723,17 @@ function compareMatchingProvenance(workspace, packed, errors) {
     if (!sameHashMaps(workspace[field], packed[field])) {
       errors.push("workspace and packed runs have mismatched " + field);
     }
+  }
+  if (
+    workspace.actualInputs?.zfbTarballPackageJsonSha256 !== packed.actualInputs?.packageJsonSha256
+  ) {
+    errors.push("packed zfb package manifest does not match the workspace run's tarball");
+  }
+  if (
+    workspace.actualInputs?.runtimeTarballPackageJsonSha256 !==
+    packed.actualInputs?.runtimePackageJsonSha256
+  ) {
+    errors.push("packed runtime manifest does not match the workspace run's tarball");
   }
 }
 
@@ -761,12 +826,85 @@ function readDirectoryFiles(directory) {
   return files;
 }
 
+function readPackageManifest(packagePath) {
+  const bytes = readFileSync(resolve(packagePath, "package.json"));
+  return {
+    sha256: sha256(bytes),
+    manifest: JSON.parse(bytes.toString("utf8")),
+  };
+}
+
+function tarOctal(header, start, length) {
+  const text = header
+    .subarray(start, start + length)
+    .toString("ascii")
+    .replace(/\0.*$/, "")
+    .trim();
+  const value = text ? Number.parseInt(text, 8) : 0;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("invalid tar numeric field");
+  }
+  return value;
+}
+
+function readArchivePackageManifest(tarballPath) {
+  const archive = gunzipSync(readFileSync(tarballPath));
+  let found = null;
+  for (let offset = 0; offset + 512 <= archive.length; ) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const storedChecksum = tarOctal(header, 148, 8);
+    const checksum = header.reduce(
+      (total, byte, index) => total + (index >= 148 && index < 156 ? 0x20 : byte),
+      0,
+    );
+    if (storedChecksum !== checksum) throw new Error("tar header checksum mismatch");
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
+    const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/, "");
+    const path = prefix ? prefix + "/" + name : name;
+    const size = tarOctal(header, 124, 12);
+    const typeFlag = header[156];
+    const dataStart = offset + 512;
+    const dataEnd = dataStart + size;
+    if (dataEnd > archive.length) throw new Error("truncated tar entry");
+    if (path === "package/package.json") {
+      if (found) throw new Error("duplicate package/package.json tar entry");
+      if (typeFlag !== 0 && typeFlag !== 48) {
+        throw new Error("package/package.json tar entry is not a regular file");
+      }
+      found = archive.subarray(dataStart, dataEnd);
+    }
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+  if (!found) throw new Error("tarball is missing package/package.json");
+  return sha256(found);
+}
+
+function loadPackageInputs(provenance) {
+  const zfbManifest = readPackageManifest(provenance.packagePath);
+  const runtimeManifest = readPackageManifest(provenance.runtimePackagePath);
+  const honoManifest = readPackageManifest(provenance.honoPackagePath);
+  return {
+    packageJsonSha256: zfbManifest.sha256,
+    runtimePackageJsonSha256: runtimeManifest.sha256,
+    honoPackageJsonSha256: honoManifest.sha256,
+    packageManifest: zfbManifest.manifest,
+    runtimePackageManifest: runtimeManifest.manifest,
+    honoPackageManifest: honoManifest.manifest,
+    zfbTarballSha256: sha256(readFileSync(provenance.zfbTarballPath)),
+    runtimeTarballSha256: sha256(readFileSync(provenance.runtimeTarballPath)),
+    zfbTarballPackageJsonSha256: readArchivePackageManifest(provenance.zfbTarballPath),
+    runtimeTarballPackageJsonSha256: readArchivePackageManifest(provenance.runtimeTarballPath),
+  };
+}
+
 export function loadRun(jsonPath) {
   const absoluteJson = resolve(jsonPath);
   const outDir = dirname(absoluteJson);
   const measurementText = readFileSync(absoluteJson, "utf8");
   const duplicates = duplicateJsonKeys(measurementText);
   const measurement = JSON.parse(measurementText);
+  const actualInputs = loadPackageInputs(measurement.provenance ?? {});
   const rootEntries = readdirSync(outDir, { withFileTypes: true }).map((entry) => {
     if (entry.isDirectory()) return entry.name;
     if (!entry.isFile()) throw new Error("unexpected measurement output path: " + entry.name);
@@ -793,7 +931,7 @@ export function loadRun(jsonPath) {
     }
     artifacts[caseDir] = { passDirectories: caseEntries, passes };
   }
-  return { measurement, artifacts, rootEntries, duplicateKeys: duplicates };
+  return { measurement, artifacts, rootEntries, duplicateKeys: duplicates, actualInputs };
 }
 
 function currentLocalInputs() {

@@ -161,7 +161,103 @@ function writePass(directory, files) {
   }
 }
 
-function provenance(mode, sourceSha, localInputs) {
+function writeManifest(directory, manifest) {
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+}
+
+function packageTarball(manifestBytes) {
+  const header = Buffer.alloc(512);
+  const writeOctal = (offset, length, value) => {
+    header.write(value.toString(8).padStart(length - 1, "0") + "\0", offset, length, "ascii");
+  };
+  header.write("package/package.json", 0, 100, "utf8");
+  writeOctal(100, 8, 0o644);
+  writeOctal(108, 8, 0);
+  writeOctal(116, 8, 0);
+  writeOctal(124, 12, manifestBytes.length);
+  writeOctal(136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header[156] = 0;
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  const checksum = header.reduce((total, value) => total + value, 0);
+  header.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
+  header[154] = 0;
+  header[155] = 0x20;
+  const dataLength = Math.ceil(manifestBytes.length / 512) * 512;
+  const archive = Buffer.alloc(512 + dataLength + 1024);
+  header.copy(archive, 0);
+  manifestBytes.copy(archive, 512);
+  return gzipSync(archive, { level: 9, mtime: 0 });
+}
+
+function makePackageInputs(root) {
+  const packageDirectories = {
+    workspace: {
+      packagePath: join(root, "packages/workspace/zfb"),
+      runtimePackagePath: join(root, "packages/workspace/zfb-runtime"),
+    },
+    packed: {
+      packagePath: join(root, "packages/packed/zfb"),
+      runtimePackagePath: join(root, "packages/packed/zfb-runtime"),
+    },
+  };
+  const workspaceZfb = {
+    name: "@takazudo/zfb",
+    version: "3.0.0",
+    main: "./src/index.ts",
+    publishConfig: { main: "./dist/index.js" },
+  };
+  const packedZfb = {
+    name: "@takazudo/zfb",
+    version: "3.0.0",
+    main: "./dist/index.js",
+  };
+  const workspaceRuntime = {
+    name: "@takazudo/zfb-runtime",
+    version: "3.0.0",
+    main: "./src/index.ts",
+    dependencies: { hono: "^4.12.25" },
+    publishConfig: { main: "./dist/index.js" },
+  };
+  const packedRuntime = {
+    name: "@takazudo/zfb-runtime",
+    version: "3.0.0",
+    main: "./dist/index.js",
+    dependencies: { hono: "^4.12.25" },
+  };
+  writeManifest(packageDirectories.workspace.packagePath, workspaceZfb);
+  writeManifest(packageDirectories.packed.packagePath, packedZfb);
+  writeManifest(packageDirectories.workspace.runtimePackagePath, workspaceRuntime);
+  writeManifest(packageDirectories.packed.runtimePackagePath, packedRuntime);
+  const honoPackagePath = join(root, "node_modules/hono");
+  writeManifest(honoPackagePath, { name: "hono", version: "4.12.25" });
+  const zfbTarballPath = join(root, "pack/takazudo-zfb-3.0.0.tgz");
+  const runtimeTarballPath = join(root, "pack/takazudo-zfb-runtime-3.0.0.tgz");
+  mkdirSync(dirname(zfbTarballPath), { recursive: true });
+  writeFileSync(
+    zfbTarballPath,
+    packageTarball(readFileSync(join(packageDirectories.packed.packagePath, "package.json"))),
+  );
+  writeFileSync(
+    runtimeTarballPath,
+    packageTarball(
+      readFileSync(join(packageDirectories.packed.runtimePackagePath, "package.json")),
+    ),
+  );
+  return {
+    workspace: {
+      ...packageDirectories.workspace,
+      honoPackagePath,
+      zfbTarballPath,
+      runtimeTarballPath,
+    },
+    packed: { ...packageDirectories.packed, honoPackagePath, zfbTarballPath, runtimeTarballPath },
+  };
+}
+
+function provenance(mode, sourceSha, localInputs, packageInputs) {
   return {
     sourceSha,
     mode,
@@ -169,17 +265,21 @@ function provenance(mode, sourceSha, localInputs) {
     fixtureSha256: localInputs.fixtureSha256,
     runnerSha256: localInputs.runnerSha256,
     packageVersion: baseContract.toolchain.packageVersion,
-    packageJsonSha256: "a".repeat(64),
-    packagePath: "/temporary/package",
+    packageJsonSha256: sha(readFileSync(join(packageInputs.packagePath, "package.json"))),
+    packagePath: packageInputs.packagePath,
     runtimePackageVersion: baseContract.toolchain.packageVersion,
-    runtimePackageJsonSha256: "b".repeat(64),
-    runtimePackagePath: "/temporary/runtime-package",
+    runtimePackageJsonSha256: sha(
+      readFileSync(join(packageInputs.runtimePackagePath, "package.json")),
+    ),
+    runtimePackagePath: packageInputs.runtimePackagePath,
     honoPackageVersion: "4.12.25",
-    honoPackageJsonSha256: "c".repeat(64),
-    honoPackagePath: "/temporary/hono",
+    honoPackageJsonSha256: sha(readFileSync(join(packageInputs.honoPackagePath, "package.json"))),
+    honoPackagePath: packageInputs.honoPackagePath,
     zfbBinarySha256: "d".repeat(64),
-    zfbTarballSha256: "f".repeat(64),
-    runtimeTarballSha256: "0".repeat(64),
+    zfbTarballSha256: sha(readFileSync(packageInputs.zfbTarballPath)),
+    runtimeTarballSha256: sha(readFileSync(packageInputs.runtimeTarballPath)),
+    zfbTarballPath: packageInputs.zfbTarballPath,
+    runtimeTarballPath: packageInputs.runtimeTarballPath,
     esbuildVersion: baseContract.toolchain.esbuildVersion,
     esbuildBinarySha256: "e".repeat(64),
     nodeVersion: baseContract.toolchain.nodeVersion,
@@ -191,11 +291,11 @@ function provenance(mode, sourceSha, localInputs) {
   };
 }
 
-function buildMode(root, mode, sourceSha, localInputs) {
+function buildMode(root, mode, sourceSha, localInputs, packageInputs) {
   const outDir = join(root, mode);
   mkdirSync(outDir, { recursive: true });
   const measurement = {
-    provenance: provenance(mode, sourceSha, localInputs),
+    provenance: provenance(mode, sourceSha, localInputs, packageInputs[mode]),
     results: {},
   };
   for (const fixture of fixtures) {
@@ -217,8 +317,9 @@ function makeState() {
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
   const localInputs = currentLocalInputs();
-  const workspace = buildMode(root, "workspace", sourceSha, localInputs);
-  const packed = buildMode(root, "packed", sourceSha, localInputs);
+  const packageInputs = makePackageInputs(root);
+  const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs);
+  const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs);
   const contract = structuredClone(baseContract);
   for (const mode of ["workspace", "packed"]) {
     const run = mode === "workspace" ? workspace.run : packed.run;
@@ -232,6 +333,7 @@ function makeState() {
     root,
     sourceSha,
     localInputs,
+    packageInputs,
     contract,
     workspacePath: workspace.jsonPath,
     packedPath: packed.jsonPath,
@@ -288,6 +390,12 @@ describe("island shipped-size budget", () => {
     const state = makeState();
     const result = validate(state);
     expect(result).toEqual({ errors: [], passed: true });
+    expect(state.workspace.measurement.provenance.packageJsonSha256).not.toBe(
+      state.packed.measurement.provenance.packageJsonSha256,
+    );
+    expect(state.workspace.measurement.provenance.runtimePackageJsonSha256).not.toBe(
+      state.packed.measurement.provenance.runtimePackageJsonSha256,
+    );
     expect(state.workspace.measurement.results["event-only"].later.raw).toBeGreaterThan(0);
     expect(
       state.workspace.measurement.results["multi-island"].chunks.map(({ role }) => role),
@@ -392,6 +500,39 @@ describe("island shipped-size budget", () => {
     mismatchedTarball.packed.measurement.provenance.zfbTarballSha256 = "9".repeat(64);
     expect(validate(mismatchedTarball).errors.join("\n")).toContain(
       "workspace and packed runs have mismatched zfbTarballSha256",
+    );
+  });
+
+  it("checks each mode's actual package manifests and tarball files", () => {
+    const staleManifest = makeState();
+    const workspaceManifestPath = join(
+      staleManifest.packageInputs.workspace.packagePath,
+      "package.json",
+    );
+    const workspaceManifest = JSON.parse(readFileSync(workspaceManifestPath, "utf8"));
+    workspaceManifest.main = "./src/changed-after-measurement.ts";
+    writeFileSync(workspaceManifestPath, JSON.stringify(workspaceManifest, null, 2) + "\n");
+    reload(staleManifest, "workspace");
+    expect(validate(staleManifest).errors.join("\n")).toContain(
+      "workspace provenance: packageJsonSha256 differs from the actual package or tarball",
+    );
+
+    const staleTarball = makeState();
+    writeFileSync(
+      staleTarball.packageInputs.packed.zfbTarballPath,
+      packageTarball(
+        Buffer.from(
+          JSON.stringify({
+            name: "@takazudo/zfb",
+            version: "3.0.0",
+            main: "./dist/changed.js",
+          }),
+        ),
+      ),
+    );
+    reload(staleTarball, "packed");
+    expect(validate(staleTarball).errors.join("\n")).toContain(
+      "packed provenance: zfbTarballSha256 differs from the actual package or tarball",
     );
   });
 
