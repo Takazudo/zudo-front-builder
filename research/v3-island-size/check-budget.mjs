@@ -52,6 +52,15 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+// A lockstep release changes workspace specifiers without changing the pinned
+// dependency graph used for the reviewed size measurement. Rebase only those
+// exact specifier values before comparing the current lockfile to its snapshot.
+export function pnpmLockHashForContract(lockText, currentVersion, contractVersion) {
+  const currentSpecifier = `specifier: workspace:${currentVersion}`;
+  const contractSpecifier = `specifier: workspace:${contractVersion}`;
+  return sha256(lockText.replaceAll(currentSpecifier, contractSpecifier));
+}
+
 function duplicateJsonKeys(text) {
   const duplicates = [];
   let index = 0;
@@ -1012,8 +1021,11 @@ export function loadRun(jsonPath) {
   return { measurement, artifacts, rootEntries, duplicateKeys: duplicates, actualInputs };
 }
 
-function currentLocalInputs() {
+function currentLocalInputs(contract) {
   const hashFile = (path) => sha256(readFileSync(path));
+  const currentVersion = JSON.parse(
+    readFileSync(resolve(repoRoot, "packages/zfb/package.json")),
+  ).version;
   return {
     fixtureSha256: Object.fromEntries(
       fixtureFiles.map((name) => [name, hashFile(resolve(scriptDir, "fixtures", name + ".tsx"))]),
@@ -1021,7 +1033,11 @@ function currentLocalInputs() {
     runnerSha256: Object.fromEntries(
       runnerFiles.map((name) => [name, hashFile(resolve(scriptDir, name))]),
     ),
-    pnpmLockSha256: hashFile(resolve(repoRoot, "pnpm-lock.yaml")),
+    pnpmLockSha256: pnpmLockHashForContract(
+      readFileSync(resolve(repoRoot, "pnpm-lock.yaml"), "utf8"),
+      currentVersion,
+      contract.toolchain.packageVersion,
+    ),
     cargoLockSha256: hashFile(resolve(repoRoot, "Cargo.lock")),
   };
 }
@@ -1069,7 +1085,7 @@ function main() {
     packed: loadRun(args.packedPath),
     contract,
     expectedSourceSha: currentSourceSha(),
-    localInputs: currentLocalInputs(),
+    localInputs: currentLocalInputs(contract),
     platform: args.platform,
   });
   if (!result.passed) {

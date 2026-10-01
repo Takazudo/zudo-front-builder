@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import {
   contractPathForPlatform,
   loadRun,
+  pnpmLockHashForContract,
   validateIslandSizeBudget,
 } from "../../research/v3-island-size/check-budget.mjs";
 
@@ -53,7 +54,11 @@ function currentLocalInputs() {
     runnerSha256: Object.fromEntries(
       runnerFiles.map((name) => [name, sha(readFileSync(join(sizeDir, name)))]),
     ),
-    pnpmLockSha256: sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+    pnpmLockSha256: pnpmLockHashForContract(
+      readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8"),
+      JSON.parse(readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8")).version,
+      baseContract.toolchain.packageVersion,
+    ),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
   };
 }
@@ -393,6 +398,26 @@ afterEach(() => {
 });
 
 describe("island shipped-size budget", () => {
+  it("allows lockstep release specifiers but still detects other lockfile drift", () => {
+    const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+    const currentVersion = JSON.parse(
+      readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
+    ).version;
+    const contractHash = pnpmLockHashForContract(
+      lockText,
+      currentVersion,
+      baseContract.toolchain.packageVersion,
+    );
+    expect(contractHash).toBe(baseContract.toolchain.pnpmLockSha256);
+    expect(
+      pnpmLockHashForContract(
+        lockText.replace("lockfileVersion:", "unexpectedLockfileVersion:"),
+        currentVersion,
+        baseContract.toolchain.packageVersion,
+      ),
+    ).not.toBe(contractHash);
+  });
+
   it("selects only reviewed Darwin arm64 and Linux x64 contracts", () => {
     expect(contractPathForPlatform({ os: "darwin", arch: "arm64" })).toBe(
       join(sizeDir, "decision.json"),
