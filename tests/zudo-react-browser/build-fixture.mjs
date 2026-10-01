@@ -113,7 +113,20 @@ function readScenarios() {
         if (!statSync(stylesheetPath).isFile())
           throw new Error(`Scenario ${config.page} stylesheet is not a file: ${stylesheetPath}`);
       }
-      return { config, directory, roots: normalizedRoots, stylesheetPath };
+      let headComponentPath;
+      if (config.headComponent !== undefined) {
+        if (typeof config.headComponent !== "string" || extname(config.headComponent) !== ".tsx") {
+          throw new Error(`Scenario ${config.page} headComponent must name a .tsx component`);
+        }
+        headComponentPath = resolve(directory, config.headComponent);
+        assertInside(directory, headComponentPath, `Scenario ${config.page} head component`);
+        if (!statSync(headComponentPath).isFile()) {
+          throw new Error(
+            `Scenario ${config.page} head component is not a file: ${headComponentPath}`,
+          );
+        }
+      }
+      return { config, directory, roots: normalizedRoots, stylesheetPath, headComponentPath };
     });
 }
 
@@ -235,11 +248,15 @@ async function main() {
   const importMap = createImportMap(stagedPackage);
   const { h } = await import("@takazudo/zfb/zudo-react");
   const { islandRoot, renderToString } = await import("@takazudo/zfb/zudo-react/server");
+  writeFileSync(
+    join(GENERATED_DIR, "standard-head.js"),
+    "globalThis.__standardHeadDeferredLoaded = true;\n",
+  );
   const scenarios = readScenarios();
   if (scenarios.length === 0) throw new Error("No scenario directories found");
   const pageNames = new Set();
 
-  for (const { config, roots, stylesheetPath } of scenarios) {
+  for (const { config, roots, stylesheetPath, headComponentPath } of scenarios) {
     if (pageNames.has(config.page)) throw new Error(`Duplicate scenario page name: ${config.page}`);
     pageNames.add(config.page);
 
@@ -282,6 +299,21 @@ async function main() {
       return html;
     });
     const renderedRootHtml = (await Promise.all(serverHtml)).join("");
+    let headComponentHtml = "";
+    if (headComponentPath) {
+      if (/\brawHtml\b/.test(readFileSync(headComponentPath, "utf8"))) {
+        throw new Error(
+          `Scenario ${config.page} head component must render standard markup directly`,
+        );
+      }
+      const compiledRelative = relative(FIXTURES_DIR, headComponentPath).replace(/\.tsx$/, ".js");
+      const compiledPath = join(GENERATED_DIR, "compiled", compiledRelative);
+      const headModule = await import(pathToFileURL(compiledPath).href);
+      if (typeof headModule.default !== "function") {
+        throw new Error(`Scenario ${config.page} head component must default-export a function`);
+      }
+      headComponentHtml = renderToString(h(headModule.default, config.headProps ?? {}));
+    }
     const bootstrapPath = join(GENERATED_DIR, "generated", `${config.page}.js`);
     mkdirSync(dirname(bootstrapPath), { recursive: true });
     writeFileSync(bootstrapPath, createBootstrap(generatedRoots));
@@ -295,6 +327,7 @@ async function main() {
   <head>
     <meta charset="utf-8">
     <title>${escapeHtml(config.page)}</title>
+    ${headComponentHtml}
     ${style}
     <script type="importmap">${inlineJson({ imports: importMap })}</script>
   </head>

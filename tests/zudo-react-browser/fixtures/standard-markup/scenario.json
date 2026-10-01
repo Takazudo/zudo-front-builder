@@ -1,0 +1,16 @@
+{
+  "page": "standard-markup",
+  "headComponent": "./head.tsx",
+  "roots": [
+    {
+      "component": "./component.tsx",
+      "props": {},
+      "mode": "hydrate"
+    },
+    {
+      "component": "./component.tsx",
+      "props": {},
+      "mode": "mount"
+    }
+  ]
+}

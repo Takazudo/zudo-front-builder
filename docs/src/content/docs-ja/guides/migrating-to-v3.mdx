@@ -68,6 +68,8 @@ export default defineConfig({
 
 hook を使うコンポーネントは、セットアップ時に一度実行される zudo-react コンポーネントへ書き換えます。書き込み可能な状態とフォームのモデルには `signal()`、読み取り専用の派生値には `computed()`、ライフサイクルには `getScope()` と `scope.effect()`、条件付き領域とキー付き領域には `Show` と `For` を使います。読み取り専用または computed の signal は書き込み可能なモデルにできません。JSX では `class`、`for`、`style={{ "background-color": "red" }}` のような HTML/CSS の表記と、ネイティブの `on:click` リスナーを使います。React 式の props とブランドのない要素オブジェクトは、zudo-react の JSX または `h()` に置き換えます。`rawHtml` は信頼できる内容に限り、children と併用できません。`<script>` と `<style>` のテキストの子は拒否されるため、信頼できる静的文字列を `<style rawHtml={CSS} />` または `<script rawHtml={JS} />` に渡すか、子を持たない外部 `<script src="/assets/app.js" />` を使います。この raw-text の文字列はそのまま出力され、エスケープもサニタイズもされません。この規則は `<title>` と `<textarea>` には当てはまらず、通常のテキストの子を受け取ります。変換例は [Preact hooks からの移行表](../zudo-react/coming-from-preact-hooks.mdx)を参照してください。
 
+標準的な HTML/SVG マークアップは、TypeScript、サーバーレンダリング、ハイドレーション、新規マウントで共有する有限の語彙に従います。`<meta property="og:title">` の Open Graph メタデータ、`<link rel="preload" as="font">` の preload リンク、外部の `<script defer>`、SVG の `use`/`href` は通常の JSX で直接記述できます。これらの対応属性に `rawHtml` の回避策は不要です。未知の属性名と React 式の表記は引き続きエラーになり、カスタム要素の属性は文字列のみです。値の分類と SVG 名前空間の詳細は[コンポーネントと JSX](../zudo-react/components-and-jsx.mdx)を参照してください。
+
 `<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../concepts/islands.mdx)も参照してください。
 
 zudo-react のクライアントランタイムについて、Preact と同じバンドルサイズになる保証はなく、固定のバイト数予算もまだ決まっていません。別のフォローアップで、本番用アイランドの出力を測定し、安全に測定できる最適化を評価したうえで、その結果から回帰予算を決めます。この作業は v3 への移行を妨げません。このガイドではプロジェクト固有のサイズを保証しません。
