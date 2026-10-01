@@ -21,6 +21,11 @@
 #     │                                   registry), scaffolds + builds a
 #     │                                   site, and asserts dist/ content.
 #     │                                   See scripts/smoke-packed-clean-room.sh.
+#     │                                   It separately installs packed zfb +
+#     │                                   zfb-runtime in a strict-pnpm consumer
+#     │                                   and confirms runtime-owned Hono
+#     │                                   resolution; see issue #3484 and
+#     │                                   scripts/smoke-packed-runtime-consumer.sh.
 #     │                                   ALSO exports that built dist/ (opt-in
 #     │                                   ZFB_SMOKE_DIST_OUT) and uploads it as
 #     │                                   the create-zfb-showcase-dist artifact,
@@ -346,7 +351,7 @@ jobs:
     name: Scaffold E2E (packed tarballs, pre-publish)
     needs: build-binary
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -376,6 +381,40 @@ jobs:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
           ZFB_SMOKE_DIST_OUT: ${{ github.workspace }}/showcase-dist
         run: bash scripts/smoke-packed-clean-room.sh
+
+      # Separate package-boundary confirmation for #3484. The zfb-runtime
+      # tarball declares Hono; a strict pnpm consumer must resolve it from that
+      # package's own graph with no root hono link. This runs the exact binary
+      # produced by build-binary against an external install and retains its
+      # package/version/binary hashes plus command logs as a small artifact.
+      - name: Confirm packed runtime dependency in strict pnpm consumer (issue 3484)
+        env:
+          ZFB_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
+          ZFB_BINARY_SOURCE_SHA: ${{ github.sha }}
+          ZFB_BINARY_PROVENANCE: build-binary workflow artifact
+          ZFB_PACKED_RUNTIME_ARTIFACT_DIR: ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}
+        run: bash scripts/smoke-packed-runtime-consumer.sh
+
+      - name: Upload strict pnpm consumer evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zfb-packed-runtime-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/run.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pnpm-install.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-build.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/metadata.txt
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pack-zfb.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pack-zfb-runtime.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-package.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-runtime-package.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/runtime-resolution.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/node_modules-before.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/node_modules-after.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/node_modules-diff.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Shares this job's already-built site with the showcase deploy
       # workflow (issue #2280) instead of making it scaffold+build again.
