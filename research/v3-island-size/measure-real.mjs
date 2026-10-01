@@ -224,6 +224,7 @@ const report = {
   provenance: {
     sourceSha,
     mode,
+    platform: { os: process.platform, arch: process.arch },
     fixtureVersion,
     fixtureSha256: Object.fromEntries(
       Object.keys(names).map((name) => [name, sha(readFileSync(join(fixtures, `${name}.tsx`)))]),
@@ -268,7 +269,7 @@ const report = {
       : null,
 };
 writeFileSync(join(out, "measurement.json"), JSON.stringify(report, null, 2) + "\n");
-let markdown = `# Real zfb build: ${mode}\n\nSource ${sourceSha}; package ${packageJson.version}; esbuild ${version}; Node ${process.version}; zlib ${process.versions.zlib}; gzipSync level 9, mtime 0. Two byte-identical dist inventories per case: **PASS**.\n\n| Case | Initial raw | Initial gzip | Later raw | Later gzip | All shipped raw | All shipped gzip |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n`;
+let markdown = `# Real zfb build: ${mode}\n\nSource ${sourceSha}; platform ${process.platform}/${process.arch}; package ${packageJson.version}; esbuild ${version}; Node ${process.version}; zlib ${process.versions.zlib}; gzipSync level 9, mtime 0. Two byte-identical dist inventories per case: **PASS**.\n\n| Case | Initial raw | Initial gzip | Later raw | Later gzip | All shipped raw | All shipped gzip |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n`;
 for (const [label, value] of Object.entries(results))
   markdown += `| ${label} | ${value.initial.raw} | ${value.initial.gzip} | ${value.later.raw} | ${value.later.gzip} | ${value.shipped.raw} | ${value.shipped.gzip} |\n`;
 markdown +=

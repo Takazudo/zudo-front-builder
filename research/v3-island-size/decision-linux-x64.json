@@ -3,10 +3,10 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "897f288c013e24ff4fde01483a55d8a1945fc964",
+  "baselineSourceSha": "afa523768b3de897859521e1bf940179191f50ab",
   "platform": {
-    "os": "darwin",
-    "arch": "arm64"
+    "os": "linux",
+    "arch": "x64"
   },
   "fixtureVersion": "v3-islands-1",
   "fixtureSha256": {
@@ -44,31 +44,31 @@
       },
       "event-only": {
         "raw": 49830,
-        "gzip": 17004
+        "gzip": 17003
       },
       "scalar-signal": {
         "raw": 49838,
-        "gzip": 17009
+        "gzip": 17005
       },
       "show-for": {
         "raw": 49985,
-        "gzip": 17082
+        "gzip": 17081
       },
       "model": {
         "raw": 49829,
-        "gzip": 17012
+        "gzip": 17014
       },
       "blog-theme": {
         "raw": 50180,
-        "gzip": 17138
+        "gzip": 17137
       },
       "json-api": {
         "raw": 49984,
-        "gzip": 17096
+        "gzip": 17098
       },
       "multi-island": {
         "raw": 50106,
-        "gzip": 17103
+        "gzip": 17098
       }
     },
     "packed": {
@@ -78,11 +78,11 @@
       },
       "event-only": {
         "raw": 49892,
-        "gzip": 17027
+        "gzip": 17030
       },
       "scalar-signal": {
         "raw": 49900,
-        "gzip": 17037
+        "gzip": 17036
       },
       "show-for": {
         "raw": 50047,
@@ -90,22 +90,29 @@
       },
       "model": {
         "raw": 49891,
-        "gzip": 17045
+        "gzip": 17046
       },
       "blog-theme": {
         "raw": 50242,
-        "gzip": 17166
+        "gzip": 17167
       },
       "json-api": {
         "raw": 50046,
-        "gzip": 17127
+        "gzip": 17123
       },
       "multi-island": {
         "raw": 50168,
-        "gzip": 17132
+        "gzip": 17134
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has its own exact contract; Linux x64 uses the separately reviewed measured contract"
+  "platformStatus": "Linux x64 has an exact zero-allowance contract measured on the pinned CI toolchain; gzip bytes differ from Darwin arm64.",
+  "baselineEvidence": {
+    "workflowRun": "https://github.com/Takazudo/zudo-front-builder/actions/runs/36831966429",
+    "event": "pull_request",
+    "pullRequestHeadSha": "99726c74a48df1a0658cd6d9f5c494d06d4f2d40",
+    "mergeRefSha": "afa523768b3de897859521e1bf940179191f50ab",
+    "note": "Actions measured the PR merge ref; this was not a literal replay at the historical Darwin baseline commit."
+  }
 }
