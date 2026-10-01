@@ -100,6 +100,7 @@ doc-history-out/
 # router-chromium suite (outputDir = repo-root/test-results) and the WebKit T4
 # harness (default outputDir).
 /test-results/
+/research/v3-island-size/results/
 /tests/router-chromium/fixture/real-islands-*.html
 /playwright-report/
 
