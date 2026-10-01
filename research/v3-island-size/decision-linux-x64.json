@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "fe43a043ca48108250f6734f5840973fd6e86adb",
+  "baselineSourceSha": "62763adaaebe13576b06f1fac0ba205d974c79ab",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 49830,
-        "gzip": 17003
+        "raw": 50887,
+        "gzip": 17381
       },
       "scalar-signal": {
-        "raw": 49838,
-        "gzip": 17005
+        "raw": 50895,
+        "gzip": 17384
       },
       "show-for": {
-        "raw": 49985,
-        "gzip": 17081
+        "raw": 51042,
+        "gzip": 17461
       },
       "model": {
-        "raw": 49829,
-        "gzip": 17014
+        "raw": 50886,
+        "gzip": 17391
       },
       "blog-theme": {
-        "raw": 50180,
-        "gzip": 17138
+        "raw": 51237,
+        "gzip": 17531
       },
       "json-api": {
-        "raw": 49984,
-        "gzip": 17100
+        "raw": 51041,
+        "gzip": 17479
       },
       "multi-island": {
-        "raw": 50106,
-        "gzip": 17100
+        "raw": 51163,
+        "gzip": 17488
       }
     },
     "packed": {
@@ -77,41 +77,41 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 49892,
-        "gzip": 17030
+        "raw": 50949,
+        "gzip": 17410
       },
       "scalar-signal": {
-        "raw": 49900,
-        "gzip": 17036
+        "raw": 50957,
+        "gzip": 17413
       },
       "show-for": {
-        "raw": 50047,
-        "gzip": 17114
+        "raw": 51104,
+        "gzip": 17494
       },
       "model": {
-        "raw": 49891,
-        "gzip": 17046
+        "raw": 50948,
+        "gzip": 17420
       },
       "blog-theme": {
-        "raw": 50242,
-        "gzip": 17169
+        "raw": 51299,
+        "gzip": 17559
       },
       "json-api": {
-        "raw": 50046,
-        "gzip": 17126
+        "raw": 51103,
+        "gzip": 17506
       },
       "multi-island": {
-        "raw": 50168,
-        "gzip": 17136
+        "raw": 51225,
+        "gzip": 17520
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has an exact zero-allowance v3.1.0 contract measured on the pinned CI toolchain; gzip bytes differ from the v3.0.0 Linux and Darwin arm64 baselines.",
+  "platformStatus": "Linux x64 has exact zero-allowance v3.1.0 ceilings measured after the owned HTML/SVG vocabulary addition on the pinned CI toolchain; gzip bytes are platform-specific.",
   "baselineEvidence": {
-    "workflowRun": "https://github.com/Takazudo/zudo-front-builder/actions/runs/36851258920",
-    "event": "push",
-    "sourceSha": "fe43a043ca48108250f6734f5840973fd6e86adb",
-    "note": "The v3.1.0 release changed seven per-file gzip totals by 1–3 bytes; raw totals stayed equal to the reviewed v3.0.0 Linux baseline. Prior ceilings and evidence remain in git history."
+    "workflowRun": "https://github.com/Takazudo/zudo-front-builder/actions/runs/36909233135",
+    "event": "pull_request",
+    "sourceSha": "62763adaaebe13576b06f1fac0ba205d974c79ab",
+    "note": "The owned HTML/SVG vocabulary increased every nonempty fixture by 1,057 raw bytes and 374–393 gzip bytes in both workspace and packed modes. All 14 exact totals came from the failed health budget step; all earlier health steps passed. Prior ceilings and evidence remain in git history."
   }
 }
