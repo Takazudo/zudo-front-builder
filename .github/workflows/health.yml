@@ -714,7 +714,10 @@ jobs:
           tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-package"
           tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
 
-      - name: Measure and enforce real island JavaScript budgets
+      # Temporary PR-only evidence collection. The baseline was measured on
+      # Darwin; review Linux totals and retained modules before enabling the
+      # strict budget below on the terminal epic PR.
+      - name: Probe Linux island JavaScript baseline
         run: |
           ZFB_SIZE_SHA="$(git rev-parse HEAD)"
           ZFB_SIZE_BIN="$GITHUB_WORKSPACE/target/debug/zfb"
@@ -743,10 +746,33 @@ jobs:
             --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-packed"
-          node research/v3-island-size/check-budget.mjs \
-            --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" \
-            --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
-            --contract "$GITHUB_WORKSPACE/research/v3-island-size/decision.json"
+          node research/v3-island-size/measure.mjs \
+            --mode workspace \
+            --package "$GITHUB_WORKSPACE/packages/zfb" \
+            --esbuild "$ZFB_SIZE_ESBUILD" \
+            --source-sha "$ZFB_SIZE_SHA" \
+            --out "$ZFB_SIZE_OUT/modeled-workspace"
+          node research/v3-island-size/measure.mjs \
+            --mode packed \
+            --package "$ZFB_SIZE_OUT/packed-package/package" \
+            --esbuild "$ZFB_SIZE_ESBUILD" \
+            --source-sha "$ZFB_SIZE_SHA" \
+            --out "$ZFB_SIZE_OUT/modeled-packed"
+          cat "$ZFB_SIZE_OUT/real-workspace/report.md"
+          cat "$ZFB_SIZE_OUT/real-packed/report.md"
+          cat "$ZFB_SIZE_OUT/modeled-workspace/report.md"
+          cat "$ZFB_SIZE_OUT/modeled-packed/report.md"
+
+      - name: Upload Linux island-size probe
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: island-size-linux-probe
+          path: |
+            target/island-size/**/measurement.json
+            target/island-size/**/metafile.json
+            target/island-size/**/report.md
+          if-no-files-found: error
+          retention-days: 1
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
