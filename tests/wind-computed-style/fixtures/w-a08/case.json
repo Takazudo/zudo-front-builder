@@ -1,0 +1,11 @@
+{
+  "caseId": "W-A08",
+  "defaultTransitionTimingFunction": "linear",
+  "shadows": {
+    "card": "0 8px 16px rgba(18, 52, 86, 0.25)"
+  },
+  "easings": {
+    "gentle": "ease-in-out"
+  },
+  "explicitCandidates": ["aspect-1.5"]
+}

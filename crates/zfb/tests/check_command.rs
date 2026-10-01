@@ -5,9 +5,9 @@
 //! asserts the expected statuses and diagnostics.
 //!
 //! Most fixtures pass `--skip-tsc` so schema validation can run without a
-//! TypeScript installation. The deterministic failure fixture and the Wasm
-//! fixture exercise the tsc subprocess directly; the latter uses the real
-//! compiler.
+//! TypeScript installation. The deterministic failure fixture, rawHtml
+//! consumer fixture, and Wasm fixture exercise the tsc subprocess directly;
+//! the latter two use the real compiler.
 
 use std::env;
 use std::path::PathBuf;
@@ -150,6 +150,52 @@ fn check_fails_when_tsc_exits_nonzero() {
     assert!(
         combined.contains("type errors") || combined.contains("check failed"),
         "expected 'type errors' or 'check failed' in output:\n{combined}",
+    );
+}
+
+/// The command-level typecheck must reject raw-text children in a real
+/// consumer project, not only in the package's direct type-test fixtures.
+#[test]
+#[cfg(unix)]
+fn raw_text_children_are_rejected_by_zfb_check() {
+    let (_scaffold, _node_modules, root) = scaffold_build_fixture("raw-html-invalid-check");
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/zfb must have a repository root")
+        .to_path_buf();
+    let typescript_bin_dir = repo_root.join("packages/zfb/node_modules/.bin");
+    let tsc = typescript_bin_dir.join("tsc");
+    assert!(
+        tsc.is_file(),
+        "TypeScript must be installed at {}; run pnpm install first",
+        tsc.display(),
+    );
+    let mut path_entries = vec![typescript_bin_dir];
+    if let Some(existing) = env::var_os("PATH") {
+        path_entries.extend(env::split_paths(&existing));
+    }
+    let path = env::join_paths(path_entries)
+        .expect("TypeScript bin directory and inherited PATH entries must be valid");
+
+    let output = Command::new(zfb_binary!())
+        .arg("check")
+        .current_dir(&root)
+        .env("PATH", path)
+        .output()
+        .expect("spawn zfb check for invalid raw-text children");
+    let combined = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "zfb check must fail when a script has both rawHtml and children:\n{combined}"
+    );
+    assert!(
+        combined.contains("pages/index.tsx") && combined.contains("children"),
+        "the TypeScript diagnostic must identify the offending source and child prop:\n{combined}"
+    );
+    assert!(
+        combined.contains("type error"),
+        "zfb check must fold the finding into its type-error summary:\n{combined}"
     );
 }
 

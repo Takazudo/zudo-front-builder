@@ -17,6 +17,7 @@ export default defineConfig({
   outputDir: join(REPO_ROOT, "test-results"),
   use: {
     baseURL: `http://localhost:${PORT}`,
+    reducedMotion: "no-preference",
     trace: "on-first-retry",
   },
   projects: [
