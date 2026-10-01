@@ -18,6 +18,7 @@ on:
       - reopened
     paths:
       - "crates/**"
+      - "!crates/zfb-md-wasm/**"
       - "packages/zfb/**"
       - "packages/zfb-runtime/**"
       - "tests/wind-computed-style/**"
@@ -33,6 +34,7 @@ on:
       - "base/**"
     paths:
       - "crates/**"
+      - "!crates/zfb-md-wasm/**"
       - "packages/zfb/**"
       - "packages/zfb-runtime/**"
       - "tests/wind-computed-style/**"
