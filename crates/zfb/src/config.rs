@@ -947,6 +947,10 @@ pub struct WindConfig {
     /// Optional dark selector; false is the default.
     #[serde(default)]
     pub dark: WindDarkSetting,
+    /// One raw CSS timing function for transition utilities, not an easing token name.
+    /// Defaults to `ease`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_transition_timing_function: Option<String>,
     /// Complete utility candidates keyed by their safelist owner.
     #[serde(default)]
     pub safelist: BTreeMap<String, Vec<String>>,
@@ -966,6 +970,7 @@ impl Default for WindConfig {
             tokens: WindTokens::default(),
             breakpoints: BTreeMap::new(),
             dark: WindDarkSetting::Disabled,
+            default_transition_timing_function: None,
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
             manifests: BTreeMap::new(),
@@ -2709,6 +2714,16 @@ fn merge_user_over_presets(
 /// - duplicate `collections[].name`.
 /// - `collections[].path` that is absolute or escapes `dir` via `..`.
 fn validate_wind_config(wind: &WindConfig) -> Result<()> {
+    if let Some(value) = &wind.default_transition_timing_function {
+        let engine_config = zfb_css::WindConfig {
+            default_transition_timing_function: Some(value.clone()),
+            ..Default::default()
+        };
+        if let Err(diagnostics) = engine_config.validate() {
+            let diagnostic = &diagnostics[0];
+            bail!("wind.{}", diagnostic.message);
+        }
+    }
     if wind.spec != 1 {
         bail!(
             "wind.spec must be the supported version 1, got {}",
@@ -3209,6 +3224,7 @@ mod tests {
         let config = config_with_wind(serde_json::json!({
             "spec": 1,
             "reset": "owned-v1",
+            "defaultTransitionTimingFunction": "steps(4, end)",
             "tokens": {
                 "spacingUnit": "0.25rem",
                 "colors": { "panel": "var(--project-panel)" },
@@ -3235,12 +3251,59 @@ mod tests {
         };
         assert_eq!(wind.reset, "owned-v1");
         assert_eq!(
+            wind.default_transition_timing_function.as_deref(),
+            Some("steps(4, end)")
+        );
+        assert_eq!(
             wind.tokens.font_sizes["small"].line_height.as_deref(),
             Some("1.25rem")
         );
         assert_eq!(wind.breakpoints["sm"].min_width_px, 640.0);
         assert_eq!(wind.safelist["app"].len(), 2);
         assert_eq!(wind.manifests["widgets"].path, "@example/widgets/wind.json");
+    }
+
+    #[test]
+    fn wind_default_transition_timing_round_trips_and_rejects_invalid_values() {
+        let absent = config_with_wind(serde_json::json!({}));
+        let Some(WindSetting::Enabled(absent_wind)) = absent.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert!(serde_json::to_value(&absent_wind)
+            .unwrap()
+            .get("defaultTransitionTimingFunction")
+            .is_none());
+
+        let configured = config_with_wind(serde_json::json!({
+            "defaultTransitionTimingFunction": "cubic-bezier(0.2, 0, 0, 1)"
+        }));
+        let Some(WindSetting::Enabled(wind)) = configured.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert_eq!(
+            serde_json::to_value(&wind).unwrap()["defaultTransitionTimingFunction"],
+            "cubic-bezier(0.2, 0, 0, 1)"
+        );
+        validate_wind_config(&wind).unwrap();
+
+        for invalid in [
+            "",
+            "ease, linear",
+            "initial",
+            "ease; color:red",
+            "var(--zw-internal)",
+        ] {
+            let config =
+                config_with_wind(serde_json::json!({"defaultTransitionTimingFunction": invalid}));
+            let Some(WindSetting::Enabled(wind)) = config.wind else {
+                unreachable!()
+            };
+            let error = validate_wind_config(&wind).unwrap_err().to_string();
+            assert!(
+                error.contains("wind.defaultTransitionTimingFunction"),
+                "{invalid}: {error}"
+            );
+        }
     }
 
     #[test]

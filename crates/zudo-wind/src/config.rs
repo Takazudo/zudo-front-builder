@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::breakpoints::{BreakpointConfig, ValidatedBreakpoints};
 use crate::tokens::TokenConfig;
+use crate::value_check::{validate_value, ValueCategory};
 use crate::{
     parse_candidate, Candidate, Diagnostic, DiagnosticCode, Origin, Severity, ValidatedTokens,
-    VariantVocabulary,
+    ValueStatus, VariantVocabulary,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -29,6 +30,8 @@ pub struct WindConfig {
     pub tokens: TokenConfig,
     pub breakpoints: BTreeMap<String, BreakpointConfig>,
     pub dark: Option<DarkModeConfig>,
+    /// One raw CSS timing function used by transition utilities. Defaults to `ease`.
+    pub default_transition_timing_function: Option<String>,
     pub safelist: BTreeMap<String, Vec<String>>,
     /// Authored class keys map to `true`; false values are invalid configuration.
     pub authored_classes: BTreeMap<String, bool>,
@@ -41,6 +44,8 @@ pub struct ValidatedWindConfig {
     pub tokens: ValidatedTokens,
     pub breakpoints: ValidatedBreakpoints,
     pub dark: Option<DarkModeConfig>,
+    pub default_transition_timing_function: String,
+    pub default_transition_timing_function_status: ValueStatus,
     pub safelist: BTreeMap<String, Vec<Candidate>>,
     pub authored_classes: BTreeSet<String>,
     pub vocabulary: VariantVocabulary,
@@ -54,6 +59,7 @@ impl Default for WindConfig {
             tokens: TokenConfig::default(),
             breakpoints: BTreeMap::new(),
             dark: None,
+            default_transition_timing_function: None,
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
         }
@@ -80,6 +86,23 @@ impl WindConfig {
             validate_dark(dark, &mut diagnostics);
         }
 
+        let transition_timing = self
+            .default_transition_timing_function
+            .as_deref()
+            .unwrap_or("ease");
+        let transition_timing_status =
+            match validate_value(ValueCategory::Easing, transition_timing) {
+                Ok(status) => Some(status),
+                Err(message) => {
+                    diagnostics.push(configuration_diagnostic(
+                        "defaultTransitionTimingFunction",
+                        &message,
+                        "R19",
+                    ));
+                    None
+                }
+            };
+
         let tokens = match self.tokens.validate() {
             Ok(tokens) => Some(tokens),
             Err(mut token_diagnostics) => {
@@ -102,6 +125,9 @@ impl WindConfig {
             tokens: tokens.expect("valid configuration has validated tokens"),
             breakpoints,
             dark: self.dark.clone(),
+            default_transition_timing_function: transition_timing.to_owned(),
+            default_transition_timing_function_status: transition_timing_status
+                .expect("valid configuration has validated transition timing"),
             safelist,
             authored_classes,
             vocabulary,

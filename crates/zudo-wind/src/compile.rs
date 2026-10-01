@@ -204,7 +204,21 @@ pub fn compile_validated(
             &input.origin,
             &config.authored_classes,
         ) {
-            Resolution::Rule(rule) => {
+            Resolution::Rule(mut rule) => {
+                if rule.root == "transition" {
+                    if let Some(declaration) = rule
+                        .declarations
+                        .iter_mut()
+                        .find(|declaration| declaration.property == "transition-timing-function")
+                    {
+                        declaration.value = config.default_transition_timing_function.clone();
+                        if config.default_transition_timing_function_status
+                            == crate::ValueStatus::CategoryUnverified
+                        {
+                            rule.value_status = crate::ValueStatus::CategoryUnverified;
+                        }
+                    }
+                }
                 let selector = crate::selector::build(&candidate, rule.selector_shape, config);
                 metadata.kind = RuleKind::Utility;
                 metadata.selector = Some(selector.text);

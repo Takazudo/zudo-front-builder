@@ -37,6 +37,7 @@ export const windAcceptsFullConfiguration = defineConfig({
   wind: {
     spec: 1,
     reset: "none",
+    defaultTransitionTimingFunction: "cubic-bezier(0.2, 0, 0, 1)",
     tokens: {
       spacingUnit: "0.25rem",
       colors: { panel: "var(--project-panel)" },
