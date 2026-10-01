@@ -3896,7 +3896,10 @@ pub fn bundle_with_session(
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
         bundle_exclude.is_empty() && !input.node_modules_preserve_symlinks,
-        !input.node_modules_preserve_symlinks,
+        // Canonical esbuild resolution already sees pnpm's physical sibling
+        // links. Only the automatic preserve-symlinks path needs an owned
+        // staged view; explicit vendored preserve-symlinks keeps its contract.
+        esbuild_will_preserve_symlinks(&input) && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
         &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
@@ -14947,6 +14950,49 @@ mod tests {
         );
 
         let matcher = BundleExcludeMatcher::new(&[]).unwrap();
+        // With tsconfig paths, esbuild canonicalises the runtime symlink and
+        // reaches Hono beside the physical package itself. Keep the existing
+        // zero-scan contract instead of staging every pnpm package eagerly.
+        let canonical_input = BundlerInput {
+            node_modules_dir: Some(project.join("node_modules")),
+            tsconfig_paths: BTreeMap::from([(
+                "@/unused".to_string(),
+                vec!["./unused".to_string()],
+            )]),
+            ..BundlerInput::for_project(
+                project.clone(),
+                BundleMode::Production,
+                project.join("dist"),
+                None,
+            )
+        };
+        assert!(!esbuild_will_preserve_symlinks(&canonical_input));
+        let mut canonical_dirs = BTreeSet::new();
+        let mut canonical_alias_dirs = BTreeMap::new();
+        let mut canonical_pnpm_staging = false;
+        let canonical_stats = extend_node_modules_dependency_staging(
+            None,
+            &project,
+            canonical_input.node_modules_dir.as_deref(),
+            &matcher,
+            !esbuild_will_preserve_symlinks(&canonical_input),
+            true,
+            esbuild_will_preserve_symlinks(&canonical_input)
+                && !canonical_input.node_modules_preserve_symlinks,
+            &BTreeSet::from([project.join("pages/index.tsx")]),
+            &BTreeMap::new(),
+            &BTreeSet::from(["@takazudo/zfb-runtime/server".to_string()]),
+            &BTreeSet::new(),
+            &[],
+            &mut canonical_dirs,
+            &mut canonical_alias_dirs,
+            &mut canonical_pnpm_staging,
+        );
+        assert_eq!(canonical_stats, NodeModulesStagingStats::default());
+        assert!(canonical_dirs.is_empty());
+        assert!(canonical_alias_dirs.is_empty());
+        assert!(!canonical_pnpm_staging);
+
         let mut staging_dirs = BTreeSet::new();
         let mut staging_alias_dirs = BTreeMap::new();
         let mut pnpm_owner_staging_active = false;
