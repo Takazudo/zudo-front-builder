@@ -87,7 +87,31 @@ return <section rawHtml={markup} />;
 
 `pre` の子をレンダリングした内容が改行で始まる場合、HTML パーサーが先頭の改行を取り除く分を補うため、レンダラーが改行を一つ追加します。`rawHtml` の内容にはこの補正を行わず、そのまま出力します。
 
-script と style 要素の内部では、静的な文字列の rawHtml だけを使えます。子、リアクティブな内容、内部コメントマーカーには対応しません。現在の要素を閉じる script または style の並びは、大文字小文字を区別せずに拒否されます。ランタイムは任意の JavaScript や CSS をエスケープしません。島の props は実行可能な script ブロックではなく属性で運ばれます。
+`script` と `style` では子を拒否します。インラインの raw-text には `rawHtml` で静的な文字列を指定し、外部 script は子なしで `src` を指定できます。リアクティブな内容や内部コメントマーカーには対応しません。現在の要素を閉じる script または style の並びは、大文字小文字を区別せずに拒否されます。ランタイムは任意の JavaScript や CSS をエスケープしません。島の props は実行可能な script ブロックではなく属性で運ばれます。
+
+style 要素のテキストの子は `rawHtml` に移します。
+
+~~~tsx
+export function CriticalStyles() {
+  const criticalCss = `body { font-family: "Atkinson", sans-serif; }`;
+  return <style rawHtml={criticalCss} />;
+}
+~~~
+
+インライン script も同じ形式を使います。外部 script は子を持たない要素として使えます。
+
+~~~tsx
+export function InlineBootstrap() {
+  const bootstrap = "window.appReady = true;";
+  return <script rawHtml={bootstrap} />;
+}
+
+export function ExternalScript() {
+  return <script src="/assets/app.js" />;
+}
+~~~
+
+`script` と `style` では、引用符、アンパサンド、`<` を含め、文字列をそのまま出力します。`rawHtml` は JavaScript や CSS をエスケープもサニタイズもしません。文字列を信頼し、現在の要素を閉じるタグを含めないでください。この子を持たない規則は `script` と `style` に限られます。`title` と `textarea` は通常のテキストの子を描画し、一般の要素も子（または子と併用しない `rawHtml`）を引き続き受け取ります。
 
 ## 関連ページ
 

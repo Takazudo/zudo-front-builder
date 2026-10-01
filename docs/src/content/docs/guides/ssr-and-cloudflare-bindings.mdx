@@ -466,6 +466,32 @@ export default async function WhoAmI() {
 The `Env` generic narrows the bindings shape so TypeScript catches a
 typo like `env.ANTRHOPIC_KEY`.
 
+By default, `ctx` keeps the adapter's minimal `CloudflareExecutionContext` shape: `waitUntil()` and `passThroughOnException()`. Existing `getCloudflareContext()` and `getCloudflareContext<Env>()` calls keep that default. If a route needs an additional optional capability, pass a second generic that extends the exported shape and check the property before using it:
+
+```tsx
+import {
+  getCloudflareContext,
+  type CloudflareExecutionContext,
+} from "@takazudo/zfb-adapter-cloudflare";
+
+type CacheAwareContext = CloudflareExecutionContext & {
+  cache?: {
+    purge(options: { tags: string[] }): Promise<{ success: boolean }>;
+  };
+};
+
+async function purgeProducts() {
+  const { ctx } = getCloudflareContext<unknown, CacheAwareContext>();
+  const cache = ctx.cache;
+  if (!cache) return new Response("Cache API unavailable", { status: 501 });
+
+  const result = await cache.purge({ tags: ["products"] });
+  return new Response(JSON.stringify(result));
+}
+```
+
+The second generic only tells TypeScript what the caller expects; it does not add or detect a Worker API. The capability stays optional, and the runtime check is still required. The adapter keeps its minimal default without requiring `@cloudflare/workers-types`; applications can use their own structural type or install Workers types when they need those declarations. The generic does not change the per-request context isolation.
+
 <Warning title="Call it only inside an SSR request">
 
 `getCloudflareContext()` throws if called outside a Worker request

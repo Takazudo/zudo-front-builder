@@ -15,6 +15,7 @@ export default defineConfig({
   wind: {
     spec: 1,
     reset: "none",
+    defaultTransitionTimingFunction: "cubic-bezier(0.4, 0, 0.2, 1)",
     tokens: {
       spacingUnit: "0.25rem",
       colors: { panel: "var(--app-panel)" }
@@ -81,14 +82,17 @@ The same object is valid as the value of the `wind` property in JSON:
 | --- | --- |
 | `spec` | Optional language version. The only accepted value is `1`; the default is `1`. |
 | `reset` | One of `none`, `minimal-v1`, or `owned-v1`. The default is `none`. |
+| `defaultTransitionTimingFunction` | One CSS timing function or keyword used by transition utilities. It defaults to `ease`; an explicit `ease-*` utility takes precedence in the same variant bucket. |
 | `tokens` | Project supplied values. All maps default to empty; see [Tokens](./tokens.mdx) for names, value validation, and emitted variables. |
 | `breakpoints` | Names mapped to objects containing a positive integer `minWidthPx`. Equal widths are a configuration error. |
 | `dark` | Either `false` (the default) or an object with required `attribute` and `value` strings. |
 | `safelist` | Owner IDs mapped to arrays of complete candidates. Each owner supplies its full set. |
-| `authoredClasses` | Complete class tokens mapped to `true`; exact matches stay authored and are suppressed from utility validation and generation. |
+| `authoredClasses` | Complete candidate spellings mapped to `true`; exact matches stay authored and suppress utility validation, diagnostics, and generated CSS. Include variants when reserving a variant-bearing candidate. |
 | `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
 
 The dark attribute must be a lowercase HTML attribute identifier. Its value must be nonempty and contain no control characters. Owner and producer IDs use nonempty ASCII letters, digits, dots, underscores, slashes, or hyphens, and start with a letter or digit. Authored class keys must be complete, nonempty tokens without whitespace or control characters.
+
+`defaultTransitionTimingFunction` takes a CSS timing function value, not a name from `tokens.easings`. Configure `tokens.easings` for explicit `ease-*` utilities; those utilities sort after transition defaults and override them in the same variant bucket. The configured value is validated as one timing function or keyword. `transition-none` emits no default duration or timing function.
 
 ## Strict validation and merging
 

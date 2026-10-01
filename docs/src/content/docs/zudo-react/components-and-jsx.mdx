@@ -87,7 +87,31 @@ In an island, raw HTML occupies one opaque region. Hydration checks its boundari
 
 For a `pre` whose rendered children begin with a newline, the renderer adds a compensating newline so HTML parsing preserves the intended first newline. A `rawHtml` payload is emitted as-is, without that compensation.
 
-Inside script and style elements, only static string rawHtml is allowed; no children, reactive payload, or internal comment markers are supported. A case-insensitive closing script or style sequence for the current element is rejected. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
+Inside `script` and `style`, children are rejected. Inline raw text requires a static string in `rawHtml`; a childless external script may instead use `src`. Reactive payloads and internal comment markers are not supported. A case-insensitive closing script or style sequence for the current element is rejected. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
+
+Move text children from an inline style element into `rawHtml`:
+
+~~~tsx
+export function CriticalStyles() {
+  const criticalCss = `body { font-family: "Atkinson", sans-serif; }`;
+  return <style rawHtml={criticalCss} />;
+}
+~~~
+
+An inline script uses the same form, while an external script remains a childless element:
+
+~~~tsx
+export function InlineBootstrap() {
+  const bootstrap = "window.appReady = true;";
+  return <script rawHtml={bootstrap} />;
+}
+
+export function ExternalScript() {
+  return <script src="/assets/app.js" />;
+}
+~~~
+
+For `script` and `style`, the string is emitted verbatim, including quotes, ampersands, and `<` characters; `rawHtml` does not escape or sanitize JavaScript or CSS. Keep these values trusted and do not include the closing tag for the current element. This no-children rule is specific to `script` and `style`: `title` and `textarea` still render their ordinary text children, and ordinary elements still accept children (or `rawHtml` without children).
 
 ## See also
 

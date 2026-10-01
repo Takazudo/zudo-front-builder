@@ -144,24 +144,38 @@ const market = normalizeMarket(request.headers.get(VARY_HEADER));
 
 ### Worker の中からタグ単位でパージする
 
-`POST /api/purge` は同じ契約の書き込み側です。`X-Purge-Token` ヘッダと `PURGE_TOKEN` シークレットを定数時間比較で照合し、その後ローカルで狭く型を広げてキャッシュ API を呼びます。Cloudflare のランタイムは `ctx.cache` を持っているものの、アダプター側の `ctx` 型がまだそれを含んでいないためです。
+`POST /api/purge` は同じ契約の書き込み側です。`X-Purge-Token` ヘッダと `PURGE_TOKEN` シークレットを定数時間比較で照合し、その後アダプターの第 2 コンテキストジェネリックを使ってキャッシュ API を呼びます。呼び出し側で指定する任意の型が TypeScript に期待する形を伝えますが、ランタイムに `ctx.cache` を追加するわけではないため、機能の有無を確認します。
 
 ```tsx title="pages/api/purge.tsx"
-const cache = (ctx as CacheAwareExecutionContext).cache;
-if (!cache) {
-  return jsonResponse(
-    {
-      ok: false,
-      error: "cache_context_unavailable",
-      detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
-    },
-    { status: 501 },
-  );
-}
+import {
+  getCloudflareContext,
+  type CloudflareExecutionContext,
+} from "@takazudo/zfb-adapter-cloudflare";
 
-const result = await cache.purge({ tags: ["products"] });
-if (!result.success) {
-  return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+type CacheAwareContext = CloudflareExecutionContext & {
+  cache?: {
+    purge(options: { tags: string[] }): Promise<{ success: boolean }>;
+  };
+};
+
+async function purgeProducts() {
+  const { ctx } = getCloudflareContext<unknown, CacheAwareContext>();
+  const cache = ctx.cache;
+  if (!cache) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "cache_context_unavailable",
+        detail: "ctx.cache is unavailable in this runtime. Deploy to Workers to verify purge.",
+      },
+      { status: 501 },
+    );
+  }
+
+  const result = await cache.purge({ tags: ["products"] });
+  if (!result.success) {
+    return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+  }
 }
 ```
 
