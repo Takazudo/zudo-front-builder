@@ -20,37 +20,6 @@ beforeEach(() => {
 });
 
 describe("structural regions", () => {
-  it("hydrates structural components from another bundled module copy", () => {
-    function OtherShow(): never {
-      throw new Error("other Show must not be called as a component");
-    }
-    function OtherFor(): never {
-      throw new Error("other For must not be called as a component");
-    }
-    Object.defineProperty(OtherShow, Symbol.for("@takazudo/zfb/zudo-react/Show"), {
-      value: true,
-    });
-    Object.defineProperty(OtherFor, Symbol.for("@takazudo/zfb/zudo-react/For"), {
-      value: true,
-    });
-    const when = signal(true);
-    const each = signal(["one", "two"]);
-    const Demo = () =>
-      h(
-        "div",
-        null,
-        h(OtherShow, { when, children: () => h("b", null, "yes") }),
-        h(OtherFor, {
-          each,
-          by: (item: string) => item,
-          children: (item: { value: string }) => h("i", null, item.value),
-        }),
-      );
-    const root = server(h(Demo, null));
-    expect(hydrate(h(Demo, null), root, options())).not.toBeNull();
-    expect(root.querySelectorAll("i")).toHaveLength(2);
-    expect(diagnostics).toEqual([]);
-  });
   it("adopts both Show states and disposes a toggled branch", async () => {
     const when = signal(true);
     const inner = signal("A");

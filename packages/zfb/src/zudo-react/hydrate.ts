@@ -14,15 +14,7 @@ import {
 import type { ReadonlySignal } from "./reactive-types.js";
 import { subscribe } from "./reactive.js";
 import { batch } from "./scheduler.js";
-import {
-  isShowType,
-  isForType,
-  showProps,
-  forProps,
-  keyed,
-  keyPayload,
-  view,
-} from "./structure.js";
+import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
 import {
   booleanAttrs,
@@ -603,7 +595,7 @@ function render(
     );
     return;
   }
-  if (isShowType(value.type)) {
+  if (value.type === Show) {
     if (restricted.has(parentTag))
       fail("ZR_UNSUPPORTED_POSITION", "preflight", "flow region", parentTag, path);
     const props = showProps(value);
@@ -688,7 +680,7 @@ function render(
     });
     return;
   }
-  if (isForType(value.type)) {
+  if (value.type === For) {
     if (restricted.has(parentTag))
       fail("ZR_UNSUPPORTED_POSITION", "preflight", "flow region", parentTag, path);
     const props = forProps<unknown>(value);
