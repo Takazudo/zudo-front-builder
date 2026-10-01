@@ -433,13 +433,13 @@ describe("island shipped-size budget", () => {
     ).not.toBe(contractHash);
   });
 
-  it("checks a later lockstep release against the reviewed size ceilings", () => {
+  it("checks the current release against the reviewed size ceilings and rejects lockfile drift", () => {
     const currentVersion = JSON.parse(
       readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
     ).version;
     const state = makeState(baseContract.platform, baseContract, currentVersion);
     expect(validate(state)).toEqual({ errors: [], passed: true });
-    state.packed.measurement.provenance.pnpmLockSha256 = baseContract.toolchain.pnpmLockSha256;
+    state.packed.measurement.provenance.pnpmLockSha256 = "0".repeat(64);
     expect(validate(state).errors).toContain(
       "packed provenance: pnpm lockfile differs from the current checkout",
     );
