@@ -16,7 +16,7 @@ generated: true
 | カタログ識別子 | `v1.transition` |
 | クラスパターン | `transition` or `transition-<suffix>` |
 | 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"transition-property","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| 受け入れる値 | `6` |
+| 受け入れる値 | `7` |
 | トークンカテゴリ | トークンカテゴリなし |
 | 負の値の規則 | `forbidden` |
 | 競合グループと順位 | `transition` (`35`) |
@@ -32,8 +32,9 @@ generated: true
 | `keyword` | `null` | `"all"` |
 | `keyword` | `"all"` | `"all"` |
 | `keyword` | `"none"` | `"none"` |
-| `keyword` | `"colors"` | `"color,background-color,border-color,text-decoration-color,fill,stroke"` |
+| `keyword` | `"colors"` | `"color,background-color,border-color,outline-color,text-decoration-color,fill,stroke"` |
 | `keyword` | `"opacity"` | `"opacity"` |
+| `keyword` | `"shadow"` | `"box-shadow"` |
 | `keyword` | `"transform"` | `"transform,translate,rotate,scale"` |
 
 ### 宣言テンプレート
@@ -48,4 +49,4 @@ generated: true
 
 | クラスの例 | 期待される宣言 |
 | --- | --- |
-| `transition-colors` | `transition-property: color,background-color,border-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |
+| `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |

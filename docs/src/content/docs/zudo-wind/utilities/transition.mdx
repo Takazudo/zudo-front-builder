@@ -16,7 +16,7 @@ Choose the property set used by a transition and its built-in timing defaults.
 | Catalog identifier | `v1.transition` |
 | Class pattern | `transition` or `transition-<suffix>` |
 | Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"transition-property","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| Accepted values | `6` |
+| Accepted values | `7` |
 | Token categories | No token category |
 | Negative-value policy | `forbidden` |
 | Conflict group and rank | `transition` (`35`) |
@@ -32,8 +32,9 @@ Choose the property set used by a transition and its built-in timing defaults.
 | `keyword` | `null` | `"all"` |
 | `keyword` | `"all"` | `"all"` |
 | `keyword` | `"none"` | `"none"` |
-| `keyword` | `"colors"` | `"color,background-color,border-color,text-decoration-color,fill,stroke"` |
+| `keyword` | `"colors"` | `"color,background-color,border-color,outline-color,text-decoration-color,fill,stroke"` |
 | `keyword` | `"opacity"` | `"opacity"` |
+| `keyword` | `"shadow"` | `"box-shadow"` |
 | `keyword` | `"transform"` | `"transform,translate,rotate,scale"` |
 
 ### Declaration templates
@@ -48,4 +49,4 @@ Choose the property set used by a transition and its built-in timing defaults.
 
 | Example class | Expected declarations |
 | --- | --- |
-| `transition-colors` | `transition-property: color,background-color,border-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |
+| `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |

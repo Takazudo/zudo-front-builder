@@ -154,7 +154,28 @@ impl Catalog {
         let (mut value, mut status) = match entry_value(entry, suffix, candidate, tokens) {
             Ok(value) => value,
             Err((code, message, rejection_id)) => {
-                return invalid(candidate, origin, code, &message, rejection_id)
+                let mut result = invalid(candidate, origin, code, &message, rejection_id);
+                if entry.root == "aspect" {
+                    let denominator = candidate.utility.slash_modifier.as_deref().unwrap_or("1");
+                    let positive = |part: &str| {
+                        Decimal::parse(part)
+                            .is_ok_and(|decimal| !decimal.is_negative() && !decimal.is_zero())
+                    };
+                    if (suffix.contains('.') || denominator.contains('.'))
+                        && positive(suffix)
+                        && positive(denominator)
+                    {
+                        match &mut result {
+                            Resolution::Diagnostic(diagnostic)
+                            | Resolution::Failure(diagnostic) => {
+                                diagnostic.suggested_spelling =
+                                    Some(format!("aspect-[{suffix}/{denominator}]"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                return result;
             }
         };
         if utility.negative {
@@ -412,6 +433,12 @@ fn resolve_value(
         }
         let numerator = positive_ratio_part(suffix)?;
         let denominator = positive_ratio_part(denominator)?;
+        if entry.root == "aspect" {
+            return Ok((
+                format!("{numerator} / {denominator}"),
+                ValueStatus::Verified,
+            ));
+        }
         return Ok((
             format!("calc(100% * {numerator} / {denominator})"),
             ValueStatus::Verified,

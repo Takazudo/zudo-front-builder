@@ -299,7 +299,7 @@ mod tests {
             ("rotate-90", "rotate-361"),
             ("cursor-pointer", "cursor-zoom-in"),
             ("list-inside", "list-start"),
-            ("aspect-[1200/630]", "aspect-1/2"),
+            ("aspect-1/2", "aspect-0/2"),
             ("scroll-mt-2", "scroll-mt-missing"),
             ("sr-only", "sr-only-extra"),
         ];
@@ -491,12 +491,61 @@ mod tests {
     fn aspect_ratio_and_complete_truncation_statics_are_pinned() {
         let tokens = test_tokens();
         assert_eq!(
+            rule_with("aspect-1/2", &tokens).declarations,
+            vec![Declaration {
+                property: "aspect-ratio".to_owned(),
+                value: "1 / 2".to_owned(),
+            }]
+        );
+        assert_eq!(
             rule_with("aspect-[1200/630]", &tokens).declarations,
             vec![Declaration {
                 property: "aspect-ratio".to_owned(),
                 value: "1200 / 630".to_owned(),
             }]
         );
+        for (candidate, value) in [
+            ("aspect-1000000/1", "1000000 / 1"),
+            ("aspect-16/9", "16 / 9"),
+            ("hover:aspect-4/3", "4 / 3"),
+            ("aspect-square", "1 / 1"),
+            ("aspect-video", "16 / 9"),
+            ("aspect-[1.5/2.5]", "1.5 / 2.5"),
+        ] {
+            assert_eq!(rule_with(candidate, &tokens).declarations[0].value, value);
+        }
+        for candidate in [
+            "aspect-0/2",
+            "aspect-2/0",
+            "aspect-1000001/1",
+            "aspect-1/1000001",
+            "-aspect-1/2",
+            "aspect-1.5/2",
+            "aspect-1/2/3",
+            "aspect-[0/2]",
+        ] {
+            let rejected = match parse_candidate(candidate, &VariantVocabulary::default()) {
+                Ok(parsed) => !matches!(
+                    Catalog::v1().resolve(&parsed, &tokens, &test_origin(), &BTreeSet::new()),
+                    Resolution::Rule(_)
+                ),
+                Err(_) => true,
+            };
+            assert!(rejected, "{candidate} should be rejected");
+        }
+        let decimal = parse_candidate("aspect-1.5", &VariantVocabulary::default()).unwrap();
+        assert!(matches!(
+            Catalog::v1().resolve(&decimal, &tokens, &test_origin(), &BTreeSet::new()),
+            Resolution::Diagnostic(diagnostic)
+                if diagnostic.suggested_spelling.as_deref() == Some("aspect-[1.5/1]")
+        ));
+        let decimal_fraction =
+            parse_candidate("aspect-1.5/2", &VariantVocabulary::default()).unwrap();
+        assert!(matches!(
+            Catalog::v1().resolve(&decimal_fraction, &tokens, &test_origin(), &BTreeSet::new()),
+            Resolution::Diagnostic(diagnostic)
+                if diagnostic.suggested_spelling.as_deref() == Some("aspect-[1.5/2]")
+        ));
         let truncate = rule_with("truncate", &tokens).declarations;
         assert_eq!(
             truncate,
@@ -602,6 +651,27 @@ mod tests {
             }]
         );
         let transition = rule_with("transition-colors", &tokens);
+        assert_eq!(
+            transition.declarations[0].value,
+            "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke"
+        );
+        assert_eq!(
+            rule_with("hover:transition-shadow", &tokens).declarations,
+            vec![
+                Declaration {
+                    property: "transition-property".to_owned(),
+                    value: "box-shadow".to_owned(),
+                },
+                Declaration {
+                    property: "transition-duration".to_owned(),
+                    value: "150ms".to_owned(),
+                },
+                Declaration {
+                    property: "transition-timing-function".to_owned(),
+                    value: "ease".to_owned(),
+                },
+            ]
+        );
         let duration = rule_with("duration-200", &tokens);
         let easing = rule_with("ease-[ease-in]", &tokens);
         assert!(transition.conflict_group_rank < duration.conflict_group_rank);
