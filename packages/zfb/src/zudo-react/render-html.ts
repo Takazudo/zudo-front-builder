@@ -17,6 +17,8 @@ import {
   view,
 } from "./structure.js";
 import {
+  attributeError,
+  attributeText,
   booleanAttrs,
   commonAttrs,
   dialectSuggestion,
@@ -176,29 +178,15 @@ function attributes(
         `${tag}.${name} requires ${suggestion ?? "a static value"}`,
       );
     }
-    if (value == null) continue;
     if (/^on[a-z]/.test(name) && typeof value === "function")
       fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
-    if (custom && typeof value !== "string")
-      fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-    if (name === "style") output += ` style="${escapeAttribute(style(value, context))}"`;
-    else if (booleanAttrs.has(name)) {
-      if (typeof value !== "boolean")
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a boolean`);
-      if (value) output += ` ${name}`;
-    } else {
-      if (
-        typeof value !== "string" &&
-        typeof value !== "boolean" &&
-        !(typeof value === "number" && Number.isFinite(value))
-      )
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a scalar`);
-      if (typeof value === "boolean" && !name.startsWith("aria-") && !name.startsWith("data-"))
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-      if (/^on[a-z]/.test(name) && typeof value !== "string")
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-      output += ` ${name}="${escapeAttribute(String(value))}"`;
-    }
+    const error = attributeError(name, value, custom);
+    if (error) fail("ZR_ATTRIBUTE", context, `${tag}.${name} ${error}`);
+    if (value == null) continue;
+    const text = name === "style" ? style(value, context) : attributeText(name, value);
+    if (text === null) continue;
+    output +=
+      booleanAttrs.has(name) && value === true ? ` ${name}` : ` ${name}="${escapeAttribute(text)}"`;
   }
   return output;
 }
