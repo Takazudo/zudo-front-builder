@@ -365,7 +365,8 @@ Raw HTML: `Demo` returns `h("section", { rawHtml: "<em>trusted</em>" })`.
 | `td`, `th`, `caption` | Ordinary valid content, including regions, resumes. |
 | SVG subset and `foreignObject` | Regions allowed where SVG permits those children; namespace is checked. HTML resumes inside `foreignObject`. RawHtml in SVG is rejected in v1. |
 | `template` in an island | Rejected in v1; static page templates and render-region sentinels remain supported. |
-| `noscript`, `xmp`, `iframe`, `noembed`, `noframes`, `plaintext` content | No hydrated content or rawHtml; reject in island mode by name. Static empty/ordinary supported element shells do not promise hydration of parser-sensitive content. |
+| `noscript`, `xmp`, `noembed`, `noframes`, `plaintext` content | No hydrated content or `rawHtml`; reject in island mode by name. |
+| `iframe` shell and foreign document | A childless iframe shell is supported inside an island. Its attributes, ref, listeners and element lifetime are owned; its `src`/`srcdoc` document and fallback children are outside reconciliation. Reject JSX children, `rawHtml`, and nonempty parsed fallback DOM. `srcdoc` is trusted application input and is not sanitized. |
 
 Restrictions apply after component expansion as well as to authored syntax. The wrapper `div` itself must appear in a valid parent (never directly inside a `p`, `table`, `select`, or SVG). Unsupported shapes fail server rendering with element/island/path context. They never rely on browser foster parenting or silently disable markers.
 
