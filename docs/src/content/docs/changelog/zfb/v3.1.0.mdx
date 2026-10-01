@@ -1,0 +1,29 @@
+---
+title: v3.1.0
+sidebar_position: 140
+---
+
+# v3.1.0
+
+Released: 2026-10-01
+
+## Features
+
+- Configure the default zudo-wind transition timing function while preserving explicit `ease-*` precedence (63f9f74b).
+- Add `transition-shadow`, include outline color in `transition-colors`, and accept bounded bare integer aspect ratios such as `aspect-4/3` (c84854ff).
+- Add failure thresholds to `zfb wind audit` for policy checks (03122604).
+- Resolve authored CSS package subpaths through package `exports` (215da300).
+- Type zudo-react event listeners through DOM event maps (b1d2e3b8).
+
+## Bug Fixes
+
+- Explain invalid utility candidates that share a zudo-wind root and point authored classes to `wind.authoredClasses` (c95da964).
+- Restrict `<script>` and `<style>` JSX props to the supported raw-text contract while retaining childless external scripts (c9943d70).
+- Recognize Show and For during server rendering when the consumer and renderer load separate package copies (164831a7).
+- Keep nested persisted island nodes alive during client-router swaps (712f4615).
+- Preserve leading newlines in server-rendered `<pre>` elements (38a95271).
+- Report unsupported JSX prop dialects with actionable suggestions and reject reactive `value` or `checked` where model binding is required (111f6204, e85e8ef9).
+- Watch manifests used by CSS package exports and report explicitly excluded CSS sources (21c31000, 892d7140).
+- Validate arbitrary sizing properties and keep generated sizing catalog entries in sync (61f77d00, 3a000606).
+- Make island bundle identities depend on project source inputs and use project-relative module labels (4c241358, bb56e67b).
+- Supervise preview descendant processes and preserve signal exits during shutdown (4c3bf6e4).
