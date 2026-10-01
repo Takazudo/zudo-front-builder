@@ -116,6 +116,23 @@ const badClass = <div className="box" />;
 const badDanger = <div dangerouslySetInnerHTML={{ __html: "x" }} />;
 // @ts-expect-error rawHtml accepts trusted strings, not objects.
 const badRaw = <div rawHtml={{ __html: "x" }} />;
+const iframeSrcdoc = signal("<p>trusted</p>");
+const frameRef = { current: null as HTMLIFrameElement | null };
+const iframeShell = (
+  <iframe
+    src="/embed"
+    srcdoc={iframeSrcdoc}
+    sandbox="allow-scripts"
+    allow="fullscreen"
+    ref={frameRef}
+    on:load={() => {}}
+  />
+);
+// @ts-expect-error Iframe fallback children are outside the owned shell contract.
+const iframeChildren = <iframe>fallback</iframe>;
+// @ts-expect-error Iframe rawHtml is outside the owned shell contract.
+const iframeRawHtml = <iframe rawHtml="" />;
+void [iframeShell, iframeChildren, iframeRawHtml];
 // @ts-expect-error Object style keys use CSS spelling.
 const badStyle = <div style={{ backgroundColor: "red" }} />;
 // @ts-expect-error A ref is an object, not a callback.
