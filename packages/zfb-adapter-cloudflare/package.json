@@ -72,9 +72,11 @@
   "scripts": {
     "build": "tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs && cp src/emit-worker.mjs dist/emit-worker.mjs",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "vitest run",
+    "test": "pnpm typecheck:consumer && vitest run && pnpm test:packed-types",
+    "test:packed-types": "pnpm build && node scripts/check-packed-types.mjs",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && pnpm typecheck:consumer",
+    "typecheck:consumer": "tsc --project tsconfig.consumer.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

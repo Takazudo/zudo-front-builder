@@ -44,8 +44,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * `ExecutionContext` interface. We do not depend on `@cloudflare/workers-types`
  * at the type level here because that would force every consumer of this
  * package to install it; instead we keep a minimal structural shape and
- * let users widen it via the generic on [`getCloudflareContext`] when
- * they need richer bindings.
+ * let consumers describe a compatible richer shape with the second generic
+ * on [`getCloudflareContext`] when they need additional execution-context
+ * bindings. That type is supplied by the caller; it is not detected or
+ * validated at runtime.
  */
 export interface CloudflareExecutionContext {
   /** Extends the lifetime of the request beyond the response. */
@@ -55,14 +57,18 @@ export interface CloudflareExecutionContext {
 }
 
 /**
- * Per-request Cloudflare context. `Env` defaults to `unknown` so the
- * caller can narrow it at the call site (recommended) or leave it open.
+ * Per-request Cloudflare context. `Env` defaults to `unknown` and `Ctx` to
+ * the minimal execution-context shape. Consumers can supply narrower or
+ * richer types at the call site when they know the runtime shape.
  */
-export interface CloudflareContext<Env = unknown> {
+export interface CloudflareContext<
+  Env = unknown,
+  Ctx extends CloudflareExecutionContext = CloudflareExecutionContext,
+> {
   /** CF env bindings (secrets, KV, D1, …) wired up via wrangler.toml. */
   readonly env: Env;
-  /** ExecutionContext for waitUntil / passThroughOnException. */
-  readonly ctx: CloudflareExecutionContext;
+  /** ExecutionContext for waitUntil / passThroughOnException and any declared extensions. */
+  readonly ctx: Ctx;
   /** The original Request, useful when handlers want headers / URL. */
   readonly request: Request;
 }
@@ -95,7 +101,10 @@ function getStorage(): AsyncLocalStorage<CloudflareContext> {
  * Establish a Cloudflare context for the duration of `fn`. Used by the
  * `_worker.js` wrapper; not normally called by user code.
  */
-export function runWithCloudflareContext<T>(context: CloudflareContext, fn: () => T): T {
+export function runWithCloudflareContext<T, C extends CloudflareContext = CloudflareContext>(
+  context: C,
+  fn: () => T,
+): T {
   return getStorage().run(context, fn);
 }
 
@@ -105,10 +114,15 @@ export function runWithCloudflareContext<T>(context: CloudflareContext, fn: () =
  * the error and gate on `prerender = false` if you need a route to work
  * in both modes.
  *
- * The `Env` generic narrows the bindings shape — passing it is
- * recommended so TypeScript catches typos like `env.ANTRHOPIC_KEY`.
+ * `Env` describes the bindings available to the caller, while `Ctx` can
+ * describe a compatible richer execution context. These generic arguments
+ * are caller assertions: this function does not inspect runtime bindings or
+ * feature-detect optional properties. Guard optional fields before use.
  */
-export function getCloudflareContext<Env = unknown>(): CloudflareContext<Env> {
+export function getCloudflareContext<
+  Env = unknown,
+  Ctx extends CloudflareExecutionContext = CloudflareExecutionContext,
+>(): CloudflareContext<Env, Ctx> {
   const c = getStorage().getStore();
   if (!c) {
     throw new Error(
@@ -117,5 +131,5 @@ export function getCloudflareContext<Env = unknown>(): CloudflareContext<Env> {
         "the Worker. Add `export const prerender = false;` to the page if it needs Cloudflare bindings.",
     );
   }
-  return c as CloudflareContext<Env>;
+  return c as CloudflareContext<Env, Ctx>;
 }
