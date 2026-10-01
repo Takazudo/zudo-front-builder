@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SOURCE_FIXTURE = join(REPO_ROOT, "crates/zfb/tests/fixtures/embedded-host-request-time");
+const STARTUP_TIMEOUT_MS = 25 * 60_000;
 
 function sharedTargetDir(repoRoot) {
   for (let directory = repoRoot; ; directory = dirname(directory)) {
@@ -165,7 +166,7 @@ export async function startWindRawDevServer() {
   }
 
   try {
-    const deadline = Date.now() + 900_000;
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     let lastObservation = "the dev server has not responded";
     let lastUrl = "the zfb ready banner has not announced an ephemeral URL";
     while (Date.now() < deadline) {

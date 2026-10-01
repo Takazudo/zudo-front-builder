@@ -4,7 +4,8 @@ import { startWindRawDevServer } from "./start-wind-raw-dev.mjs";
 let server;
 
 test.beforeAll(async () => {
-  test.setTimeout(960_000);
+  // Allow the 25-minute cold zfb/V8 startup budget plus time to clean up.
+  test.setTimeout(1_560_000);
   server = await startWindRawDevServer();
 });
 
