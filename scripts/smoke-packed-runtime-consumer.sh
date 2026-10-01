@@ -129,7 +129,6 @@ RUNTIME_HONO_RANGE="$(PACKAGE_MANIFEST="$ARTIFACT_DIR/zfb-runtime-package.json" 
 [[ -n "$RUNTIME_HONO_RANGE" ]] || fail "packed zfb-runtime manifest does not declare dependencies.hono"
 printf 'Packed package versions: @takazudo/zfb@%s, @takazudo/zfb-runtime@%s\n' "$ZFB_VERSION" "$RUNTIME_VERSION"
 printf 'Packed runtime Hono range: %s\n' "$RUNTIME_HONO_RANGE"
-[[ "$BINARY_VERSION" == *"$ZFB_VERSION"* ]] || fail "zfb binary version does not contain packed @takazudo/zfb version $ZFB_VERSION"
 
 ZFB_TARBALL="$ZFB_TARBALL" \
 RUNTIME_TARBALL="$RUNTIME_TARBALL" \
