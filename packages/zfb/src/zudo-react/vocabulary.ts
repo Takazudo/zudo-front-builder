@@ -29,6 +29,12 @@ export const htmlTags = words(
 );
 export type Namespace = "html" | "svg";
 
+// An iframe is an owned element shell. Its fallback and foreign document are never owned children.
+export function emptyIframeChildren(value: unknown): boolean {
+  if (value == null || typeof value === "boolean" || value === "") return true;
+  return Array.isArray(value) && value.every(emptyIframeChildren);
+}
+
 export function attributeError(name: string, value: unknown, custom: boolean): string | undefined {
   if (value == null) return undefined;
   if (custom) return typeof value === "string" ? undefined : "requires a string";

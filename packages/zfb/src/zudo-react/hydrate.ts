@@ -20,6 +20,7 @@ import {
   attributeError,
   commonAttrs,
   dialectSuggestion,
+  emptyIframeChildren,
   formProps,
   htmlAttrs,
   htmlTags,
@@ -32,7 +33,7 @@ import {
 
 const HTML = "http://www.w3.org/1999/xhtml";
 const SVG = "http://www.w3.org/2000/svg";
-const sensitive = new Set("template noscript xmp iframe noembed noframes plaintext".split(" "));
+const sensitive = new Set("template noscript xmp noembed noframes plaintext".split(" "));
 const tableChildren: Record<string, Set<string>> = {
   table: new Set("caption colgroup thead tbody tfoot".split(" ")),
   thead: new Set(["tr"]),
@@ -282,6 +283,12 @@ function element(
   const childNamespace = tag === "foreignObject" ? HTML : ownNamespace;
   const element = context.document.createElementNS(ownNamespace, tag);
   const props = desc.props;
+  if (tag === "iframe") {
+    if (Object.hasOwn(props, "rawHtml"))
+      fail("ZR_RAW_HTML", "preflight", "iframe without rawHtml", "rawHtml", path);
+    if (!emptyIframeChildren(props.children))
+      fail("ZR_UNSUPPORTED_POSITION", "preflight", "empty iframe children", "children", path);
+  }
   if (tag === "select" && read(props.multiple) === true)
     fail("ZR_MODEL_UNSUPPORTED", "preflight", "single select", "multiple", path);
   if (voidTags.has(tag) && ("children" in props || "rawHtml" in props))
@@ -473,6 +480,8 @@ function element(
         cleanups.push(() => subscription.dispose());
       });
     }
+  } else if (tag === "iframe") {
+    // The iframe document and fallback content are outside owned reconciliation.
   } else if (
     tag === "textarea" &&
     (props.modelValue !== undefined || props.defaultValue !== undefined)
