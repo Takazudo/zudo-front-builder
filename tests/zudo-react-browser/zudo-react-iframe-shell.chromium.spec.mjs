@@ -252,9 +252,12 @@ test("iframe shells preserve parsed documents on hydrate and own navigation, mou
       const { islandRoot, renderToString } = await import("@takazudo/zfb/zudo-react/server");
       const h = window.__zudoReactBrowser.h;
       const rejected = (node) => {
+        function Rejected() {
+          return node;
+        }
         try {
           renderToString(
-            islandRoot(node, { identity: { component: "IframeContract", build: "b1" } }),
+            islandRoot(h(Rejected, {}), { identity: { component: "Rejected", build: "b1" } }),
           );
           return null;
         } catch (error) {
