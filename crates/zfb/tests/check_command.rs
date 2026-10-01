@@ -22,6 +22,15 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+#[cfg(unix)]
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/zfb must live two levels under the workspace root")
+        .to_path_buf()
+}
+
 fn combined_output(output: &std::process::Output) -> String {
     format!(
         "{}{}",
@@ -150,6 +159,38 @@ fn check_fails_when_tsc_exits_nonzero() {
     assert!(
         combined.contains("type errors") || combined.contains("check failed"),
         "expected 'type errors' or 'check failed' in output:\n{combined}",
+    );
+}
+
+/// The command-level typecheck must reject raw-text children in a real
+/// consumer project, not only in the package's direct type-test fixtures.
+#[test]
+#[cfg(unix)]
+fn raw_text_children_are_rejected_by_zfb_check() {
+    let (_scaffold, _node_modules, root) = scaffold_build_fixture("raw-html-invalid-check");
+    let mut path_entries =
+        env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
+    path_entries.insert(0, workspace_root().join("node_modules/.bin"));
+    let path = env::join_paths(path_entries).expect("compose PATH with workspace TypeScript");
+
+    let output = Command::new(zfb_binary!())
+        .arg("check")
+        .current_dir(&root)
+        .env("PATH", path)
+        .output()
+        .expect("spawn zfb check for invalid raw-text children");
+    let combined = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "zfb check must fail when a script has both rawHtml and children:\n{combined}"
+    );
+    assert!(
+        combined.contains("pages/index.tsx") && combined.contains("children"),
+        "the TypeScript diagnostic must identify the offending source and child prop:\n{combined}"
+    );
+    assert!(
+        combined.contains("type error"),
+        "zfb check must fold the finding into its type-error summary:\n{combined}"
     );
 }
 

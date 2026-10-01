@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>W-A08 aspect and motion</title>
+    <link rel="stylesheet" href="../../dist/w-a08/wind.css" />
+    <style>
+      #aspect-target {
+        width: 320px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="aspect-target" class="aspect-16/9"></div>
+    <div id="shadow-target" class="shadow-card transition-shadow"></div>
+    <div id="motion-configured" class="transition-shadow"></div>
+    <div id="motion-explicit" class="transition-shadow ease-gentle"></div>
+    <button
+      id="focus-outline"
+      type="button"
+      class="outline-2 outline-[#000000] transition-colors focus-visible:outline-[#ffffff]"
+      style="transition-duration: 1000ms"
+    >
+      Focus outline
+    </button>
+  </body>
+</html>

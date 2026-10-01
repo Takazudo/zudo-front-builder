@@ -30,6 +30,13 @@ fn fixture_dir() -> PathBuf {
         .join("wind-assets")
 }
 
+fn wind_v3_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wind-v3-functional")
+}
+
 fn copy_source_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
@@ -81,13 +88,25 @@ fn copy_fixture_to_temp() -> (tempfile::TempDir, PathBuf, tempfile::TempDir) {
     (temp, root, embedded_node_modules)
 }
 
-fn run_build(root: &Path, esbuild: &Path, label: &str) -> Option<String> {
-    let output = Command::new(zfb_binary!())
+fn copy_wind_v3_fixture_to_temp(label: &str) -> (tempfile::TempDir, PathBuf, tempfile::TempDir) {
+    let temp = tempfile::tempdir().expect("create wind v3 confirmation tempdir");
+    let root = temp.path().join(label);
+    copy_source_tree(&wind_v3_fixture_dir(), &root).expect("copy wind v3 fixture");
+    let embedded_node_modules = link_embedded_framework_packages(&root);
+    (temp, root, embedded_node_modules)
+}
+
+fn run_build_output(root: &Path, esbuild: &Path) -> std::process::Output {
+    Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
-        .expect("spawn `zfb build`");
+        .expect("spawn `zfb build`")
+}
+
+fn run_build(root: &Path, esbuild: &Path, label: &str) -> Option<String> {
+    let output = run_build_output(root, esbuild);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
@@ -105,15 +124,18 @@ fn run_build(root: &Path, esbuild: &Path, label: &str) -> Option<String> {
     Some(combined)
 }
 
-fn run_wind_audit(root: &Path) -> String {
-    let output = Command::new(zfb_binary!())
-        .arg("wind")
-        .arg("audit")
-        .arg("--project-root")
+fn run_wind_audit_output(root: &Path, flags: &[&str]) -> std::process::Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "audit", "--project-root"])
         .arg(root)
+        .args(flags)
         .current_dir(root)
         .output()
-        .expect("spawn `zfb wind audit`");
+        .expect("spawn `zfb wind audit`")
+}
+
+fn run_wind_audit(root: &Path) -> String {
+    let output = run_wind_audit_output(root, &[]);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -122,6 +144,56 @@ fn run_wind_audit(root: &Path) -> String {
         output.status
     );
     stdout
+}
+
+fn run_wind_explain(root: &Path, candidate: &str) -> std::process::Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "explain", candidate, "--project-root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("spawn `zfb wind explain`")
+}
+
+fn run_standalone_css(root: &Path) -> std::process::Output {
+    Command::new(zfb_binary!())
+        .args([
+            "css",
+            "--input",
+            "styles/global.css",
+            "--output",
+            "../standalone.css",
+            "--project-root",
+            ".",
+            "--source",
+            ".",
+            "--no-auto-source",
+        ])
+        .current_dir(root)
+        .output()
+        .expect("spawn standalone `zfb css`")
+}
+
+fn output_text(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn set_default_transition_timing_function(root: &Path, timing: &str) {
+    let config_path = root.join("zfb.config.json");
+    let config = fs::read_to_string(&config_path).expect("read wind v3 config");
+    let configured = config.replace(
+        "\"spec\": 1,",
+        &format!("\"spec\": 1,\n      \"defaultTransitionTimingFunction\": \"{timing}\","),
+    );
+    assert_ne!(
+        configured, config,
+        "wind spec field must exist in fixture config"
+    );
+    fs::write(config_path, configured).expect("configure default transition timing");
 }
 
 fn collect_files(dir: &Path) -> Vec<PathBuf> {
@@ -504,5 +576,176 @@ fn w_a06_real_build_preserves_package_assets_and_css_modules() {
                 "relative package reference must resolve beside the base-build stylesheet: {url}"
             );
         }
+    }
+}
+
+#[test]
+fn w_a08_strict_wind_commands_report_hints_for_authored_and_malformed_classes() {
+    let _serial = BUILD_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping W-A08 strict CLI proof.");
+        return;
+    };
+    let (_temp, root, _embedded_node_modules) = copy_wind_v3_fixture_to_temp("invalid");
+
+    let build = run_build_output(&root, &esbuild);
+    let build_output = output_text(&build);
+    if !build.status.success()
+        && (build_output.contains("embed_v8") || build_output.contains("no esbuild"))
+    {
+        eprintln!("[W-A08 strict CLI] known environment skip; {build_output}");
+        return;
+    }
+    assert!(
+        !build.status.success(),
+        "zfb build must reject malformed and unauthored candidates:\n{build_output}"
+    );
+    assert!(
+        build_output.contains("aspect-1.5") && build_output.contains("aspect-[1.5/1]"),
+        "zfb build must retain the malformed aspect candidate and its canonical hint:\n{build_output}"
+    );
+
+    let css = run_standalone_css(&root);
+    let css_output = output_text(&css);
+    assert!(
+        !css.status.success(),
+        "standalone zfb css must reject the same strict fixture:\n{css_output}"
+    );
+    assert!(
+        css_output.contains("aspect-1.5") && css_output.contains("aspect-[1.5/1]"),
+        "zfb css must retain the malformed aspect candidate and its canonical hint:\n{css_output}"
+    );
+    assert!(
+        !root
+            .parent()
+            .expect("fixture parent")
+            .join("standalone.css")
+            .exists(),
+        "failed standalone CSS compilation must not publish an output file"
+    );
+
+    let explain = run_wind_explain(&root, "aspect-1.5");
+    let explain_output = output_text(&explain);
+    assert!(
+        explain.status.success() && explain_output.contains("aspect-[1.5/1]"),
+        "wind explain must return the aspect spelling hint:\n{explain_output}"
+    );
+
+    let audit = run_wind_audit_output(&root, &["--fail-on", "error"]);
+    let audit_output = output_text(&audit);
+    assert!(
+        !audit.status.success(),
+        "strict wind audit must fail on error-severity findings:\n{audit_output}"
+    );
+    assert!(
+        audit_output.contains("text-link")
+            && audit_output.contains("wind.authoredClasses: { \"text-link\": true }")
+            && audit_output.contains("aspect-[1.5/1]"),
+        "wind audit must distinguish an authored class hint from the malformed aspect hint:\n{audit_output}"
+    );
+    assert!(
+        !audit_output.contains("ordinary-card"),
+        "an ordinary authored class must stay out of utility diagnostics:\n{audit_output}"
+    );
+}
+
+#[test]
+fn w_a08_real_build_css_explain_and_audit_agree_on_transition_timing() {
+    let _serial = BUILD_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping W-A08 command parity.");
+        return;
+    };
+
+    for (label, configured_timing, expected_timing) in [
+        ("default", None, "ease"),
+        ("configured", Some("linear"), "linear"),
+    ] {
+        let (_temp, root, _embedded_node_modules) = copy_wind_v3_fixture_to_temp(label);
+        fs::remove_file(root.join("pages/diagnostics.tsx"))
+            .expect("remove strict-only page from valid build fixture");
+        if let Some(timing) = configured_timing {
+            set_default_transition_timing_function(&root, timing);
+        }
+
+        let Some(_build_log) = run_build(&root, &esbuild, &format!("W-A08 {label} build")) else {
+            return;
+        };
+        let dist = root.join("dist");
+        let (stylesheet, build_css) = read_stylesheet(&dist);
+        let html = collect_html(&dist);
+        assert!(
+            html.contains("aspect-16/9"),
+            "new aspect syntax must reach emitted HTML"
+        );
+        assert!(
+            build_css.contains("aspect-ratio: 16 / 9;"),
+            "new aspect syntax must emit the expected aspect ratio:\n{build_css}"
+        );
+        assert!(
+            build_css.contains("transition-timing-function: {expected_timing};"),
+            "the default transition timing must reach build CSS:\n{build_css}"
+        );
+        assert!(
+            build_css.contains("transition-timing-function: var(--zw-ease-gentle);"),
+            "explicit easing token must remain an explicit utility:\n{build_css}"
+        );
+        assert!(
+            build_css.contains("--zw-ease-gentle: ease-in-out;"),
+            "the configured easing token must be emitted:\n{build_css}"
+        );
+        assert!(
+            build_css.contains("--wind-reservation-control: present;")
+                && !build_css.contains(".p-4"),
+            "authored CSS must remain while its reserved utility stays suppressed:\n{build_css}"
+        );
+        assert!(
+            html.contains("bg-red") && !build_css.contains(".bg-red"),
+            "the runtime dynamic class must reach HTML without creating a completed CSS rule:\nHTML: {html}\nCSS: {build_css}"
+        );
+
+        let standalone = run_standalone_css(&root);
+        let standalone_output = output_text(&standalone);
+        assert!(
+            standalone.status.success(),
+            "standalone zfb css must succeed for the valid fixture:\n{standalone_output}"
+        );
+        let standalone_css = fs::read(root.parent().unwrap().join("standalone.css"))
+            .expect("read standalone CSS output");
+        assert_eq!(
+            fs::read(stylesheet).expect("read build CSS bytes"),
+            standalone_css,
+            "build and standalone CSS must emit identical bytes for {label} timing"
+        );
+
+        let transition_explanation = run_wind_explain(&root, "transition-shadow");
+        let explanation_output = output_text(&transition_explanation);
+        assert!(
+            transition_explanation.status.success()
+                && explanation_output.contains(&format!(
+                    "declaration: transition-timing-function: {expected_timing}"
+                )),
+            "wind explain must use the same {label} default as build/css:\n{explanation_output}"
+        );
+        let explicit_explanation = run_wind_explain(&root, "ease-gentle");
+        let explicit_output = output_text(&explicit_explanation);
+        assert!(
+            explicit_explanation.status.success()
+                && explicit_output.contains("ease-in-out")
+                && explicit_output.contains("var(--zw-ease-gentle)"),
+            "wind explain must report the explicit token and its configured value:\n{explicit_output}"
+        );
+
+        let audit = run_wind_audit(&root);
+        assert!(
+            audit.contains("outcome: complete")
+                && audit.contains("bg-")
+                && !audit.contains("ordinary-card"),
+            "wind audit must keep dynamic construction visible and ordinary classes quiet:\n{audit}"
+        );
     }
 }
