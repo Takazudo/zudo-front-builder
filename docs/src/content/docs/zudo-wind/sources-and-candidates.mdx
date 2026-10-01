@@ -46,7 +46,7 @@ The schema version is separate from the language version. A manifest contains ca
 
 ## Authored classes
 
-Use `authoredClasses` to reserve exact full class tokens for rules you write in CSS. Each key maps to `true`. A match suppresses utility validation, emission, and candidate diagnostics at every origin. This lets a class remain in markup for an authored selector without being interpreted as a utility.
+Use `authoredClasses` to reserve exact complete candidate spellings for rules you write in CSS. Each key maps to `true`; include a variant chain when the whole variant-bearing candidate should stay authored. A match suppresses utility validation, emission, generated CSS, and candidate diagnostics at every origin. This lets a class remain in markup for an authored selector without being interpreted as a utility.
 
 The allowlist is exact: it does not accept prefixes, patterns, or partial names. It cannot suppress invalid configuration or a leftover directive in a stylesheet.
 

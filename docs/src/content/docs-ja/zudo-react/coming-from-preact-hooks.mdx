@@ -340,6 +340,21 @@ function TrustedFragment({ markup }: { markup: string }) {
 
 rawHtml は信頼できる内容を直接渡すための手段で、汎用のサニタイザーではありません。内容はハイドレーションから見て不透明で、children と併用できず、親要素に対して妥当である必要があります。アプリケーション側で信頼性とサニタイズの判断をせずに、ユーザーが制御するマークアップを渡さないでください。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
 
+zudo-react では `<style>` と `<script>` のテキストの子は描画時に拒否されます。インラインの重要なスタイルシートは、静的な文字列を `rawHtml` に渡して書き換えます。
+
+~~~tsx
+function CriticalStyles() {
+  const CRITICAL_CSS = `body { font-family: "Atkinson", sans-serif; }`;
+  return <style rawHtml={CRITICAL_CSS} />;
+}
+
+function ExternalScript() {
+  return <script src="/assets/app.js" />;
+}
+~~~
+
+raw-text の文字列はエスケープもサニタイズもされず、そのまま出力されます。信頼できる内容だけを使い、閉じる `</style>` や `</script>` を含めないでください。外部 script は子なしのまま有効です: `<script src="/assets/app.js" />`。この規則は `script` と `style` に限られます。`title` と `textarea` は通常のエスケープされたテキストの子を引き続き受け入れます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
 ## カスタム hook は通常の関数になる
 
 ヘルパーには、現在のスコープと使用する signal を通常の引数として渡せます。コンポーネントのセットアップ中に呼んでください。呼び出し順のレジストリーや hook の順序に関する規則はありません。
@@ -599,3 +614,7 @@ export function Profile({ initialName }: ProfileProps) {
 ~~~
 
 サーバーからブラウザへ渡す props はデータにとどめ、更新される状態とイベントハンドラーはコンポーネント内で作ってください。境界と検査については[サーバーレンダリング](./server-rendering.mdx)と[ハイドレーション](./hydration.mdx)を参照してください。JSX、リアクティブな値、コンポーネントの動作については[概要](./overview.mdx)と[API リファレンス](./api-reference.mdx)に進んでください。
+
+## クライアントバンドルのサイズ
+
+zudo-react のクライアントランタイムについて、Preact と同じバンドルサイズになる保証はなく、固定のバイト数予算もまだ決まっていません。別のフォローアップで、本番用アイランドの出力を測定し、安全に測定できる最適化を評価したうえで、その結果から回帰予算を決めます。この作業は v3 への移行を妨げません。このガイドではプロジェクトやアイランドのサイズを保証しません。
