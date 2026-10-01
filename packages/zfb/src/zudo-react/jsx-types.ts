@@ -66,9 +66,9 @@ interface CommonAttributes<T extends Element = Element> extends ReservedProps<T>
   style?: Value<string | CssStyle | null>;
   hidden?: BooleanAttribute;
   inert?: BooleanAttribute;
-  contenteditable?: StringAttribute;
-  draggable?: StringAttribute;
-  spellcheck?: StringAttribute;
+  contenteditable?: Value<string | boolean | null>;
+  draggable?: Value<string | boolean | null>;
+  spellcheck?: Value<string | boolean | null>;
   tabindex?: Value<number | null>;
   accesskey?: StringAttribute;
   translate?: StringAttribute;
@@ -81,7 +81,28 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   href?: StringAttribute;
   target?: StringAttribute;
   rel?: StringAttribute;
-  download?: StringAttribute;
+  download?: Value<string | boolean | null>;
+  property?: StringAttribute;
+  itemprop?: StringAttribute;
+  hreflang?: StringAttribute;
+  as?: StringAttribute;
+  integrity?: StringAttribute;
+  async?: BooleanAttribute;
+  defer?: BooleanAttribute;
+  nonce?: StringAttribute;
+  popover?: StringAttribute;
+  popovertarget?: StringAttribute;
+  popovertargetaction?: StringAttribute;
+  srcdoc?: StringAttribute;
+  fetchpriority?: StringAttribute;
+  inputmode?: StringAttribute;
+  autocapitalize?: StringAttribute;
+  form?: StringAttribute;
+  label?: StringAttribute;
+  preload?: StringAttribute;
+  playsinline?: BooleanAttribute;
+  wrap?: StringAttribute;
+  closedby?: StringAttribute;
   src?: StringAttribute;
   alt?: StringAttribute;
   width?: Value<string | number | null>;
@@ -208,6 +229,10 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   refY?: ScalarAttribute;
   "xlink:href"?: StringAttribute;
   "xml:lang"?: StringAttribute;
+  xmlns?: StringAttribute;
+  "xmlns:xlink"?: StringAttribute;
+  href?: StringAttribute;
+  focusable?: StringAttribute;
   "stroke-width"?: ScalarAttribute;
   "fill-rule"?: StringAttribute;
   "clip-rule"?: StringAttribute;
@@ -215,6 +240,9 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   "stroke-linejoin"?: StringAttribute;
   "stop-color"?: StringAttribute;
   "stop-opacity"?: ScalarAttribute;
+  "fill-opacity"?: ScalarAttribute;
+  "stroke-dasharray"?: StringAttribute;
+  "text-anchor"?: StringAttribute;
   fill?: StringAttribute;
   stroke?: StringAttribute;
   d?: StringAttribute;
@@ -269,6 +297,9 @@ type HtmlTag =
   | "section"
   | "article"
   | "aside"
+  | "search"
+  | "hgroup"
+  | "menu"
   | "h1"
   | "h2"
   | "h3"
@@ -379,7 +410,11 @@ type SvgTag =
   | "radialGradient"
   | "stop"
   | "desc"
-  | "foreignObject";
+  | "foreignObject"
+  | "pattern"
+  | "filter"
+  | "marker"
+  | "image";
 
 export namespace JSX {
   export type Element = Child;
