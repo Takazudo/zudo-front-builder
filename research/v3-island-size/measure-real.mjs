@@ -46,6 +46,7 @@ const zfb = resolve(option("--zfb"));
 const esbuild = resolve(option("--esbuild"));
 const packageDir = resolve(option("--package"));
 const runtimePackageDir = resolve(option("--runtime-package"));
+const honoPackageDir = resolve(option("--hono-package"));
 const out = resolve(option("--out"));
 const mode = option("--mode");
 const sourceSha = option("--source-sha");
@@ -66,6 +67,10 @@ if (runtimePackageJson.name !== "@takazudo/zfb-runtime")
   throw new Error("wrong runtime package path");
 if (runtimePackageJson.version !== packageJson.version)
   throw new Error("zfb and zfb-runtime package versions differ");
+const honoPackageJson = JSON.parse(readFileSync(join(honoPackageDir, "package.json"), "utf8"));
+if (honoPackageJson.name !== "hono") throw new Error("wrong Hono package path");
+if (runtimePackageJson.dependencies?.hono !== `^${honoPackageJson.version}`)
+  throw new Error("runtime and Hono package versions differ");
 if (mode === "packed") readFileSync(join(packageDir, "dist", "zudo-react", "client.js"));
 if (mode === "packed") readFileSync(join(runtimePackageDir, "dist", "server.js"));
 function sha(bytes) {
@@ -96,6 +101,7 @@ function build(label, ids, pass) {
     mkdirSync(join(work, "node_modules", "@takazudo"), { recursive: true });
     symlinkSync(packageDir, join(work, "node_modules", "@takazudo", "zfb"), "dir");
     symlinkSync(runtimePackageDir, join(work, "node_modules", "@takazudo", "zfb-runtime"), "dir");
+    symlinkSync(honoPackageDir, join(work, "node_modules", "hono"), "dir");
     writeFileSync(join(work, "zfb.config.json"), '{"wind":false}\n');
     writeFileSync(join(work, "pages", "index.tsx"), projectPage(ids));
     for (const id of ids)
@@ -209,6 +215,9 @@ const report = {
     runtimePackageVersion: runtimePackageJson.version,
     runtimePackageJsonSha256: sha(readFileSync(join(runtimePackageDir, "package.json"))),
     runtimePackagePath: runtimePackageDir,
+    honoPackageVersion: honoPackageJson.version,
+    honoPackageJsonSha256: sha(readFileSync(join(honoPackageDir, "package.json"))),
+    honoPackagePath: honoPackageDir,
     zfbBinarySha256: sha(readFileSync(zfb)),
     esbuildVersion: version,
     esbuildBinarySha256: sha(readFileSync(esbuild)),
