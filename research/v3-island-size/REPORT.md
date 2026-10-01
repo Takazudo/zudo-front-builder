@@ -22,4 +22,4 @@ Use the modeled metafiles to identify retained inputs and `bytesInOutput` for ev
 
 ## Limits
 
-These frozen recipes are controlled current-baseline measurements. Exact historical v2/v3 recipe inputs have not been recovered, so no historical numbers are reproduced. The modeled sidecar entry is an attribution aid; real CLI output controls shipped totals. No arbitrary byte ceiling is applied.
+These frozen recipes are controlled current-baseline measurements. Exact historical v2/v3 recipe inputs have not been recovered, so no historical numbers are reproduced. The modeled sidecar matches the production export-selection and registration protocol but uses a fixed identity and relative temporary imports instead of the CLI's real build identity and staged paths. It is an attribution aid; real CLI output controls shipped totals. No arbitrary byte ceiling is applied.
