@@ -69,6 +69,11 @@ export type WindConfig = {
   spec?: 1;
   /** Reset policy. Defaults to `none`. */
   reset?: "none" | "minimal-v1" | "owned-v1";
+  /**
+   * One raw CSS timing function for transition utilities, not an easing token
+   * name. Defaults to `ease`.
+   */
+  defaultTransitionTimingFunction?: string;
   /** Explicit design tokens. Every category defaults to an empty map. */
   tokens?: {
     /** Base unit used by numeric spacing utilities. */

@@ -1,6 +1,9 @@
 mod common;
 
-use zudo_wind::{compile, explain, ExplanationOutcome, WindConfig, SPEC_REVISION, SPEC_VERSION};
+use zudo_wind::{
+    compile, explain, DiagnosticCode, ExplanationOutcome, Origin, WindConfig, SPEC_REVISION,
+    SPEC_VERSION,
+};
 
 #[test]
 fn new_motion_and_aspect_classes_emit_css_with_variants() {
@@ -43,4 +46,143 @@ fn explanation_reports_new_rules_and_decimal_hint() {
         invalid.diagnostics[0].suggestion.as_deref(),
         Some("aspect-[1.5/1]")
     );
+}
+
+#[test]
+fn configured_transition_timing_applies_to_every_transition_shape() {
+    for timing in [
+        "linear",
+        "cubic-bezier(0.2, 0, 0, 1)",
+        "steps(4, end)",
+        "var(--project-ease)",
+    ] {
+        let mut input = common::input(&[
+            "transition",
+            "transition-shadow",
+            "transition-[left,color]",
+            "hover:transition-colors",
+            "transition-none",
+        ]);
+        input.config.default_transition_timing_function = Some(timing.to_owned());
+        let compiled = compile(&input);
+        assert!(
+            !compiled.has_errors(),
+            "{timing}: {:?}",
+            compiled.diagnostics
+        );
+        for rule in &compiled.rules {
+            if !rule.parsed.utility.named.starts_with("transition") {
+                continue;
+            }
+            let declarations = &rule.resolved.as_ref().unwrap().declarations;
+            let timing_declaration = declarations
+                .iter()
+                .find(|declaration| declaration.property == "transition-timing-function");
+            if rule.candidate == "transition-none" {
+                assert!(timing_declaration.is_none());
+            } else {
+                assert_eq!(
+                    timing_declaration.unwrap().value,
+                    timing,
+                    "{}",
+                    rule.candidate
+                );
+            }
+        }
+        let explained = explain("transition-shadow", &input.config);
+        assert_eq!(explained.declarations[2].value, timing);
+        assert_eq!(
+            explained.value_status.as_deref(),
+            Some(if timing.starts_with("var(") {
+                "categoryUnverified"
+            } else {
+                "verified"
+            })
+        );
+    }
+}
+
+#[test]
+fn explicit_easing_wins_in_each_variant_regardless_of_candidate_arrival_order() {
+    for classes in [
+        [
+            "ease-gentle",
+            "transition-shadow",
+            "hover:ease-[steps(2,end)]",
+            "hover:transition-colors",
+        ],
+        [
+            "hover:transition-colors",
+            "hover:ease-[steps(2,end)]",
+            "transition-shadow",
+            "ease-gentle",
+        ],
+    ] {
+        let mut input = common::input(&classes);
+        input.config.default_transition_timing_function = Some("linear".to_owned());
+        input
+            .config
+            .tokens
+            .easings
+            .insert("gentle".to_owned(), "ease-in-out".to_owned());
+        let result = compile(&input);
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        let candidates: Vec<_> = result
+            .rules
+            .iter()
+            .map(|rule| rule.candidate.as_str())
+            .collect();
+        assert!(
+            candidates
+                .iter()
+                .position(|candidate| *candidate == "transition-shadow")
+                .unwrap()
+                < candidates
+                    .iter()
+                    .position(|candidate| *candidate == "ease-gentle")
+                    .unwrap()
+        );
+        assert!(
+            candidates
+                .iter()
+                .position(|candidate| *candidate == "hover:transition-colors")
+                .unwrap()
+                < candidates
+                    .iter()
+                    .position(|candidate| *candidate == "hover:ease-[steps(2,end)]")
+                    .unwrap()
+        );
+        assert!(result
+            .stylesheet
+            .contains("transition-timing-function: linear;"));
+        assert!(result
+            .stylesheet
+            .contains("transition-timing-function: var(--zw-ease-gentle);"));
+        assert!(result
+            .stylesheet
+            .contains("transition-timing-function: steps(2,end);"));
+    }
+}
+
+#[test]
+fn transition_timing_reuses_easing_value_validation_with_config_path() {
+    for value in [
+        "",
+        "ease, linear",
+        "inherit",
+        "bogus",
+        "ease; color: red",
+        "var(--zw-private)",
+    ] {
+        let config = WindConfig {
+            default_transition_timing_function: Some(value.to_owned()),
+            ..WindConfig::default()
+        };
+        let diagnostics = config.validate().unwrap_err();
+        assert_eq!(diagnostics.len(), 1, "{value}: {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::Zw007);
+        assert!(
+            matches!(diagnostics[0].origin.as_deref(), Some(Origin::Config { key_path }) if key_path == "defaultTransitionTimingFunction")
+        );
+    }
 }
