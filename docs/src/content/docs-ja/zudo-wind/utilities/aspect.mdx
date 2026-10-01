@@ -15,7 +15,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.aspect` |
 | クラスパターン | `aspect-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","fraction","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `3` |
 | トークンカテゴリ | トークンカテゴリなし |
 | 負の値の規則 | `forbidden` |
@@ -43,4 +43,4 @@ generated: true
 
 | クラスの例 | 期待される宣言 |
 | --- | --- |
-| `aspect-[1200/630]` | `aspect-ratio: 1200 / 630` |
+| `aspect-16/9` | `aspect-ratio: 16 / 9` |

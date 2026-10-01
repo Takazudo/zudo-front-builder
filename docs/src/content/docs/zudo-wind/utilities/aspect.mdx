@@ -15,7 +15,7 @@ Set an automatic, named, or arbitrary aspect ratio.
 | --- | --- |
 | Catalog identifier | `v1.aspect` |
 | Class pattern | `aspect-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","fraction","arbitrary"],"arbitraryProperty":"aspect-ratio","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `3` |
 | Token categories | No token category |
 | Negative-value policy | `forbidden` |
@@ -43,4 +43,4 @@ Set an automatic, named, or arbitrary aspect ratio.
 
 | Example class | Expected declarations |
 | --- | --- |
-| `aspect-[1200/630]` | `aspect-ratio: 1200 / 630` |
+| `aspect-16/9` | `aspect-ratio: 16 / 9` |

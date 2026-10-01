@@ -32,21 +32,25 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         42,
         0,
         &["aspect-ratio"],
-        &[ValueKind::Keyword, ValueKind::Arbitrary],
+        &[
+            ValueKind::Keyword,
+            ValueKind::Fraction,
+            ValueKind::Arbitrary,
+        ],
         &[("auto", "auto"), ("square", "1 / 1"), ("video", "16 / 9")],
         &[],
         Some("aspect-ratio"),
-        false,
+        true,
         false,
         OWN,
-        Some("[1200/630]"),
-        "1200 / 630",
+        Some("16/9"),
+        "16 / 9",
     );
     set_id(&mut aspect, "v1.aspect");
     set_templates(
         &mut aspect,
         &[resolved("aspect-ratio")],
-        &[("aspect-ratio", "1200 / 630")],
+        &[("aspect-ratio", "16 / 9")],
     );
     entries.push(aspect);
 

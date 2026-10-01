@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
+  "specRevision": 3,
   "entries": [
     {
       "id": "v1.block",
@@ -7824,12 +7825,17 @@
         {
           "kind": "keyword",
           "suffix": "colors",
-          "emittedValue": "color,background-color,border-color,text-decoration-color,fill,stroke"
+          "emittedValue": "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke"
         },
         {
           "kind": "keyword",
           "suffix": "opacity",
           "emittedValue": "opacity"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "shadow",
+          "emittedValue": "box-shadow"
         },
         {
           "kind": "keyword",
@@ -7869,7 +7875,7 @@
           "declarations": [
             {
               "property": "transition-property",
-              "value": "color,background-color,border-color,text-decoration-color,fill,stroke"
+              "value": "color,background-color,border-color,outline-color,text-decoration-color,fill,stroke"
             },
             {
               "property": "transition-duration",
@@ -8663,9 +8669,9 @@
       "id": "v1.aspect",
       "root": "aspect",
       "grammar": {
-        "acceptedKinds": ["keyword", "arbitrary"],
+        "acceptedKinds": ["keyword", "fraction", "arbitrary"],
         "arbitraryProperty": "aspect-ratio",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -8703,11 +8709,11 @@
       "specVersion": 1,
       "examples": [
         {
-          "candidate": "aspect-[1200/630]",
+          "candidate": "aspect-16/9",
           "declarations": [
             {
               "property": "aspect-ratio",
-              "value": "1200 / 630"
+              "value": "16 / 9"
             }
           ]
         }
