@@ -6,13 +6,10 @@ export function ShowFor() {
   return (
     <div>
       <button on:click={() => (visible.value = !visible.value)}>Toggle</button>
-      <Show when={visible}>
-        {() => (
-          <For each={items} by={(item) => item}>
-            {(item) => <span>{item}</span>}
-          </For>
-        )}
-      </Show>
+      <Show when={visible}>{() => <strong>Visible</strong>}</Show>
+      <For each={items} by={(item) => item}>
+        {(item) => <span>{item.value}</span>}
+      </For>
     </div>
   );
 }

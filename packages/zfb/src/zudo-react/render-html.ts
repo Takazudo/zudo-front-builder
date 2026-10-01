@@ -7,7 +7,15 @@ import { createScope, withScope, type RuntimeScope } from "./scope.js";
 import { serializeProps } from "./props-transport.js";
 import { islandRootType } from "./island-root-type.js";
 import type { IslandOptions, RenderOptions } from "./server.js";
-import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
+import {
+  isShowType,
+  isForType,
+  showProps,
+  forProps,
+  keyed,
+  keyPayload,
+  view,
+} from "./structure.js";
 import {
   booleanAttrs,
   commonAttrs,
@@ -449,7 +457,7 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     return island(value, context, namespace, parent);
   if (value.type === Fragment)
     return region(context, "f", () => children(value.props.children, context, namespace, parent));
-  if (value.type === Show) {
+  if (isShowType(value.type)) {
     if (
       parent in tableChildren ||
       ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)
@@ -477,7 +485,7 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
       }
     });
   }
-  if (value.type === For) {
+  if (isForType(value.type)) {
     if (
       parent in tableChildren ||
       ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)

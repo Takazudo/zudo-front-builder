@@ -6,6 +6,33 @@ import { renderToString } from "../../zudo-react/server.js";
 const identity = { component: "Demo", build: "b1" };
 
 describe("structure server output", () => {
+  it("recognizes Show and For from another bundled module copy", () => {
+    function OtherShow(): never {
+      throw new Error("other Show must not be called as a component");
+    }
+    function OtherFor(): never {
+      throw new Error("other For must not be called as a component");
+    }
+    Object.defineProperty(OtherShow, Symbol.for("@takazudo/zfb/zudo-react/Show"), {
+      value: true,
+    });
+    Object.defineProperty(OtherFor, Symbol.for("@takazudo/zfb/zudo-react/For"), {
+      value: true,
+    });
+    const when = signal(true);
+    const each = signal(["one", "two"]);
+    const node = h(
+      "div",
+      null,
+      h(OtherShow, { when, children: () => h("b", null, "yes") }),
+      h(OtherFor, {
+        each,
+        by: (item: string) => item,
+        children: (item: { value: string }) => h("i", null, item.value),
+      }),
+    );
+    expect(renderToString(node)).toBe("<div><b>yes</b><i>one</i><i>two</i></div>");
+  });
   it("renders both conditional states with exact regions", () => {
     const when = signal(true);
     function Demo() {
