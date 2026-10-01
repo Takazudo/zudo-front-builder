@@ -80,7 +80,8 @@ const badCaptureProps: JSX.IntrinsicElements["button"] = {
   "on:click:capture": (event: KeyboardEvent) => void event.key,
 };
 
-const broadRef: Ref<HTMLElement> = { current: null };
+const divRef: Ref<HTMLDivElement> = { current: null };
+const formRef: Ref<HTMLFormElement> = { current: null };
 const inputRefType: Equal<
   JSX.IntrinsicElements["input"]["ref"],
   Ref<HTMLInputElement> | undefined
@@ -95,8 +96,8 @@ const selectRefType: Equal<
 > = true;
 const refs = (
   <>
-    <div ref={broadRef} />
-    <form ref={broadRef} />
+    <div ref={divRef} />
+    <form ref={formRef} />
   </>
 );
 
