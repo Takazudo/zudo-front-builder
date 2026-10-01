@@ -204,7 +204,10 @@ mod tests {
             CssProvenanceKind::Generated
         );
         assert_eq!(result.provenance.as_ref().unwrap().spec_version, 1);
-        assert_eq!(result.provenance.as_ref().unwrap().spec_revision, 2);
+        assert_eq!(
+            result.provenance.as_ref().unwrap().spec_revision,
+            zudo_wind::SPEC_REVISION
+        );
         assert!(result.provenance.as_ref().unwrap().map.is_none());
     }
     #[test]
