@@ -22,7 +22,25 @@ const use: JSX.IntrinsicElements["use"] = {
   "text-anchor": "middle",
 };
 const tags = [<search />, <hgroup />, <menu />, <pattern />, <filter />, <marker />, <image />];
-void [metadata, preload, script, video, download, ordered, svg, use, tags];
+
+export function StandardMarkupPage() {
+  return (
+    <html>
+      <head>
+        <meta property="og:title" content="Standard markup" />
+        <link rel="preload" href="/assets/body.woff2" as="font" integrity="sha256-x" />
+        <script src="/assets/site.js" defer nonce="page-nonce" />
+      </head>
+      <body>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+          <use href="#shape" xlink:href="#shape" />
+        </svg>
+      </body>
+    </html>
+  );
+}
+
+void [metadata, preload, script, video, download, ordered, svg, use, tags, StandardMarkupPage];
 
 // @ts-expect-error true boolean attributes reject strings.
 const badAsync: JSX.IntrinsicElements["script"] = { async: "true" };

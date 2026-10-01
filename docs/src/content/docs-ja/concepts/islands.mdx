@@ -448,6 +448,8 @@ export default function Layout({ children }) {
 
 **外部スクリプト** — `public/` または CDN の任意の `.js` ファイルを参照します。
 
+`defer`、`async`、`nonce` などの標準的な script 属性は JSX で直接使えます。外部 script は通常の要素として記述してください。`rawHtml` は信頼できるインライン script のテキストに使います。
+
 ```tsx
 <script src="/scripts/analytics.js" defer />
 <script src="https://cdn.example.com/lib.js" defer />

@@ -1,9 +1,19 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Fragment, getScope, h, signal, flush } from "../../zudo-react/index.js";
 import { subscriberCount } from "../../zudo-react/reactive.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
 import * as server from "../../zudo-react/server.js";
+
+const packageJson = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../package.json"), "utf8"),
+) as {
+  exports: Record<string, { types: string; default: string }>;
+  publishConfig: { exports: Record<string, { types: string; default: string }> };
+};
 
 const identity = { component: "Demo", build: "b1" };
 function Demo() {
@@ -13,6 +23,53 @@ function Demo() {
 describe("server renderer", () => {
   it("exports exactly the locked server entry values", () => {
     expect(Object.keys(server).sort()).toEqual(["islandRoot", "renderToString", "serializeProps"]);
+    expect(typeof globalThis.document).toBe("undefined");
+  });
+
+  it("keeps source and published zudo-react export maps aligned", () => {
+    const entries = {
+      "./zudo-react": [
+        "./src/zudo-react/index.ts",
+        "./dist/zudo-react/index.d.ts",
+        "./dist/zudo-react/index.js",
+      ],
+      "./zudo-react/jsx-runtime": [
+        "./src/zudo-react/jsx-runtime.ts",
+        "./dist/zudo-react/jsx-runtime.d.ts",
+        "./dist/zudo-react/jsx-runtime.js",
+      ],
+      "./zudo-react/jsx-dev-runtime": [
+        "./src/zudo-react/jsx-dev-runtime.ts",
+        "./dist/zudo-react/jsx-dev-runtime.d.ts",
+        "./dist/zudo-react/jsx-dev-runtime.js",
+      ],
+      "./zudo-react/server": [
+        "./src/zudo-react/server.ts",
+        "./dist/zudo-react/server.d.ts",
+        "./dist/zudo-react/server.js",
+      ],
+      "./zudo-react/client": [
+        "./src/zudo-react/client.ts",
+        "./dist/zudo-react/client.d.ts",
+        "./dist/zudo-react/client.js",
+      ],
+    } as const;
+    const expectedSubpaths = Object.keys(entries).sort();
+    const zudoReactSubpaths = (exports: Record<string, unknown>) =>
+      Object.keys(exports)
+        .filter((subpath) => /^\.\/zudo-react(?:\/.*)?$/.test(subpath))
+        .sort();
+
+    expect(zudoReactSubpaths(packageJson.exports)).toEqual(expectedSubpaths);
+    expect(zudoReactSubpaths(packageJson.publishConfig.exports)).toEqual(expectedSubpaths);
+
+    for (const [subpath, [source, types, runtime]] of Object.entries(entries)) {
+      expect(packageJson.exports[subpath]).toEqual({ types: source, default: source });
+      expect(packageJson.publishConfig.exports[subpath]).toEqual({
+        types,
+        default: runtime,
+      });
+    }
   });
 
   it("renders a whole document with exact bytes and no static markers", () => {
@@ -33,6 +90,37 @@ describe("server renderer", () => {
     expect(renderToString(page)).toBe(expected);
     expect(renderToString(h(Fragment, null, page))).toBe(expected);
     expect(renderToString(page)).toBe(expected);
+  });
+  it("renders a complete page head and SVG with standard markup attributes", () => {
+    const page = h(
+      "html",
+      null,
+      h(
+        "head",
+        null,
+        h("meta", { property: "og:title", content: "Standard markup" }),
+        h("link", {
+          rel: "preload",
+          href: "/assets/body.woff2",
+          as: "font",
+          integrity: "sha256-x",
+        }),
+        h("script", { src: "/assets/site.js", defer: true, nonce: "page-nonce" }),
+      ),
+      h(
+        "body",
+        null,
+        h(
+          "svg",
+          { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 16 16" },
+          h("use", { href: "#shape", "xlink:href": "#shape" }),
+        ),
+      ),
+    );
+
+    expect(renderToString(page)).toBe(
+      '<html><head><meta property="og:title" content="Standard markup"><link rel="preload" href="/assets/body.woff2" as="font" integrity="sha256-x"><script src="/assets/site.js" defer nonce="page-nonce"></script></head><body><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><use href="#shape" xlink:href="#shape"></use></svg></body></html>',
+    );
   });
   it("renders SVG dimensions as strings or numbers and rejects booleans", () => {
     expect(renderToString(h("svg", { width: "16", height: 24 }))).toBe(
