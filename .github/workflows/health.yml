@@ -682,6 +682,72 @@ jobs:
           # at the 1-day floor like release.yml's transfer artifacts.
           retention-days: 1
 
+      # Keep the test suite on Node 22 above. The size contract pins Node and
+      # zlib separately because gzip-9 is part of the measured byte oracle.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Assert island-size toolchain
+        run: |
+          node --input-type=module -e '
+            if (process.version !== "v24.14.0") {
+              throw new Error("expected Node v24.14.0, got " + process.version);
+            }
+            if (process.versions.zlib !== "1.3.1-e00f703") {
+              throw new Error("expected zlib 1.3.1-e00f703, got " + process.versions.zlib);
+            }
+            console.log("Node " + process.version + "; zlib " + process.versions.zlib);
+          '
+
+      # Rebuild and pack both packages from this checkout so workspace and
+      # published-consumer resolution are measured from the same source SHA.
+      - name: Build and pack packages for island-size measurement
+        run: |
+          ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
+          mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime"
+          pnpm -C packages/zfb build
+          pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb pack --pack-destination "$ZFB_SIZE_OUT/pack"
+          pnpm -C packages/zfb-runtime pack --pack-destination "$ZFB_SIZE_OUT/pack"
+          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-package"
+          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
+
+      - name: Measure and enforce real island JavaScript budgets
+        run: |
+          ZFB_SIZE_SHA="$(git rev-parse HEAD)"
+          ZFB_SIZE_BIN="$GITHUB_WORKSPACE/target/debug/zfb"
+          ZFB_SIZE_ESBUILD="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
+          ZFB_SIZE_HONO="$GITHUB_WORKSPACE/packages/zfb-runtime/node_modules/hono"
+          ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
+          node research/v3-island-size/measure-real.mjs \
+            --mode workspace \
+            --package "$GITHUB_WORKSPACE/packages/zfb" \
+            --runtime-package "$GITHUB_WORKSPACE/packages/zfb-runtime" \
+            --hono-package "$ZFB_SIZE_HONO" \
+            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" \
+            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" \
+            --zfb "$ZFB_SIZE_BIN" \
+            --esbuild "$ZFB_SIZE_ESBUILD" \
+            --source-sha "$ZFB_SIZE_SHA" \
+            --out "$ZFB_SIZE_OUT/real-workspace"
+          node research/v3-island-size/measure-real.mjs \
+            --mode packed \
+            --package "$ZFB_SIZE_OUT/packed-package/package" \
+            --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" \
+            --hono-package "$ZFB_SIZE_HONO" \
+            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" \
+            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" \
+            --zfb "$ZFB_SIZE_BIN" \
+            --esbuild "$ZFB_SIZE_ESBUILD" \
+            --source-sha "$ZFB_SIZE_SHA" \
+            --out "$ZFB_SIZE_OUT/real-packed"
+          node research/v3-island-size/check-budget.mjs \
+            --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" \
+            --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
+            --contract "$GITHUB_WORKSPACE/research/v3-island-size/decision.json"
+
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
   # Without this job the cfg(feature = "embed_v8") gates can rot
