@@ -458,9 +458,18 @@ function sameHashMaps(expected, actual) {
   );
 }
 
-function validateProvenance(run, mode, contract, expectedSourceSha, runningPlatform, errors) {
+function validateProvenance(
+  run,
+  mode,
+  contract,
+  expectedSourceSha,
+  runningPlatform,
+  localInputs,
+  errors,
+) {
   const provenance = run.measurement?.provenance;
   const label = mode + " provenance";
+  const packageVersion = localInputs.packageVersion ?? contract.toolchain.packageVersion;
   if (!isRecord(provenance)) {
     errors.push(label + ": missing provenance");
     return null;
@@ -497,10 +506,10 @@ function validateProvenance(run, mode, contract, expectedSourceSha, runningPlatf
   if (!sameHashMaps(contract.runnerSha256, provenance.runnerSha256)) {
     errors.push(label + ": runner hashes differ from the contract");
   }
-  if (provenance.packageVersion !== expectedToolchain.packageVersion) {
+  if (provenance.packageVersion !== packageVersion) {
     errors.push(label + ": unsupported @takazudo/zfb version");
   }
-  if (provenance.runtimePackageVersion !== expectedToolchain.packageVersion) {
+  if (provenance.runtimePackageVersion !== packageVersion) {
     errors.push(label + ": unsupported @takazudo/zfb-runtime version");
   }
   if (provenance.honoPackageVersion !== expectedToolchain.honoVersion) {
@@ -554,10 +563,10 @@ function validateProvenance(run, mode, contract, expectedSourceSha, runningPlatf
     ]) {
       if (manifest?.name !== expectedName) errors.push(label + ": wrong actual " + name);
     }
-    if (actualInputs.packageManifest?.version !== expectedToolchain.packageVersion) {
+    if (actualInputs.packageManifest?.version !== packageVersion) {
       errors.push(label + ": actual @takazudo/zfb manifest has an unsupported version");
     }
-    if (actualInputs.runtimePackageManifest?.version !== expectedToolchain.packageVersion) {
+    if (actualInputs.runtimePackageManifest?.version !== packageVersion) {
       errors.push(label + ": actual @takazudo/zfb-runtime manifest has an unsupported version");
     }
     if (actualInputs.honoPackageManifest?.version !== expectedToolchain.honoVersion) {
@@ -582,8 +591,11 @@ function validateProvenance(run, mode, contract, expectedSourceSha, runningPlatf
       errors.push(label + ": runtime package manifest differs from its packed tarball");
     }
   }
-  if (provenance.pnpmLockSha256 !== contract.toolchain?.pnpmLockSha256) {
-    errors.push(label + ": pnpm lockfile differs from the contract");
+  if (
+    provenance.pnpmLockSha256 !==
+    (localInputs.pnpmLockActualSha256 ?? contract.toolchain?.pnpmLockSha256)
+  ) {
+    errors.push(label + ": pnpm lockfile differs from the current checkout");
   }
   if (provenance.cargoLockSha256 !== contract.toolchain?.cargoLockSha256) {
     errors.push(label + ": Cargo lockfile differs from the contract");
@@ -808,7 +820,7 @@ function compareMatchingProvenance(workspace, packed, errors) {
   }
 }
 
-function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, errors) {
+function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, localInputs, errors) {
   if (!isRecord(run) || !isRecord(run.measurement)) {
     errors.push(mode + ": missing measurement.json");
     return {};
@@ -823,6 +835,7 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, er
     contract,
     expectedSourceSha,
     runningPlatform,
+    localInputs,
     errors,
   );
   const expectedRootEntries = [
@@ -876,6 +889,7 @@ export function validateIslandSizeBudget({
     contract,
     expectedSourceSha,
     platform,
+    localInputs,
     errors,
   );
   const packedProvenance = validateRun(
@@ -884,6 +898,7 @@ export function validateIslandSizeBudget({
     contract,
     expectedSourceSha,
     platform,
+    localInputs,
     errors,
   );
   compareMatchingProvenance(workspaceProvenance, packedProvenance, errors);
@@ -1026,7 +1041,9 @@ function currentLocalInputs(contract) {
   const currentVersion = JSON.parse(
     readFileSync(resolve(repoRoot, "packages/zfb/package.json")),
   ).version;
+  const pnpmLockText = readFileSync(resolve(repoRoot, "pnpm-lock.yaml"), "utf8");
   return {
+    packageVersion: currentVersion,
     fixtureSha256: Object.fromEntries(
       fixtureFiles.map((name) => [name, hashFile(resolve(scriptDir, "fixtures", name + ".tsx"))]),
     ),
@@ -1034,10 +1051,11 @@ function currentLocalInputs(contract) {
       runnerFiles.map((name) => [name, hashFile(resolve(scriptDir, name))]),
     ),
     pnpmLockSha256: pnpmLockHashForContract(
-      readFileSync(resolve(repoRoot, "pnpm-lock.yaml"), "utf8"),
+      pnpmLockText,
       currentVersion,
       contract.toolchain.packageVersion,
     ),
+    pnpmLockActualSha256: sha256(pnpmLockText),
     cargoLockSha256: hashFile(resolve(repoRoot, "Cargo.lock")),
   };
 }

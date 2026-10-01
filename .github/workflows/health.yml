@@ -709,13 +709,14 @@ jobs:
       - name: Build and pack packages for island-size measurement
         run: |
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
+          ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
           mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime"
           pnpm -C packages/zfb build
           pnpm -C packages/zfb-runtime build
           pnpm -C packages/zfb pack --pack-destination "$ZFB_SIZE_OUT/pack"
           pnpm -C packages/zfb-runtime pack --pack-destination "$ZFB_SIZE_OUT/pack"
-          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-package"
-          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
+          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-package"
+          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
 
       # Exact Linux x64 contract selected after the reviewed Linux replay.
       # Keep the complete workspace and packed real CLI matrices together so
@@ -729,13 +730,14 @@ jobs:
           ZFB_SIZE_ESBUILD="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
           ZFB_SIZE_HONO="$GITHUB_WORKSPACE/packages/zfb-runtime/node_modules/hono"
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
+          ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
           node research/v3-island-size/measure-real.mjs \
             --mode workspace \
             --package "$GITHUB_WORKSPACE/packages/zfb" \
             --runtime-package "$GITHUB_WORKSPACE/packages/zfb-runtime" \
             --hono-package "$ZFB_SIZE_HONO" \
-            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" \
-            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" \
+            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
+            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
             --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
@@ -745,8 +747,8 @@ jobs:
             --package "$ZFB_SIZE_OUT/packed-package/package" \
             --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" \
             --hono-package "$ZFB_SIZE_HONO" \
-            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-3.0.0.tgz" \
-            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-3.0.0.tgz" \
+            --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
+            --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
             --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \

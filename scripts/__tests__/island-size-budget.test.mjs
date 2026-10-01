@@ -43,8 +43,18 @@ function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function currentLocalInputs() {
+function currentLocalInputs(packageVersion = baseContract.toolchain.packageVersion) {
+  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+  const checkedOutVersion = JSON.parse(
+    readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
+  ).version;
+  const contractLockHash = pnpmLockHashForContract(
+    lockText,
+    checkedOutVersion,
+    baseContract.toolchain.packageVersion,
+  );
   return {
+    packageVersion,
     fixtureSha256: Object.fromEntries(
       fixtureFiles.map((name) => [
         name,
@@ -54,11 +64,9 @@ function currentLocalInputs() {
     runnerSha256: Object.fromEntries(
       runnerFiles.map((name) => [name, sha(readFileSync(join(sizeDir, name)))]),
     ),
-    pnpmLockSha256: pnpmLockHashForContract(
-      readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8"),
-      JSON.parse(readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8")).version,
-      baseContract.toolchain.packageVersion,
-    ),
+    pnpmLockSha256: contractLockHash,
+    pnpmLockActualSha256:
+      packageVersion === baseContract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
   };
 }
@@ -201,7 +209,7 @@ function packageTarball(manifestBytes) {
   return gzipSync(archive, { level: 9, mtime: 0 });
 }
 
-function makePackageInputs(root) {
+function makePackageInputs(root, packageVersion = baseContract.toolchain.packageVersion) {
   const packageDirectories = {
     workspace: {
       packagePath: join(root, "packages/workspace/zfb"),
@@ -214,25 +222,25 @@ function makePackageInputs(root) {
   };
   const workspaceZfb = {
     name: "@takazudo/zfb",
-    version: "3.0.0",
+    version: packageVersion,
     main: "./src/index.ts",
     publishConfig: { main: "./dist/index.js" },
   };
   const packedZfb = {
     name: "@takazudo/zfb",
-    version: "3.0.0",
+    version: packageVersion,
     main: "./dist/index.js",
   };
   const workspaceRuntime = {
     name: "@takazudo/zfb-runtime",
-    version: "3.0.0",
+    version: packageVersion,
     main: "./src/index.ts",
     dependencies: { hono: "^4.12.25" },
     publishConfig: { main: "./dist/index.js" },
   };
   const packedRuntime = {
     name: "@takazudo/zfb-runtime",
-    version: "3.0.0",
+    version: packageVersion,
     main: "./dist/index.js",
     dependencies: { hono: "^4.12.25" },
   };
@@ -242,8 +250,8 @@ function makePackageInputs(root) {
   writeManifest(packageDirectories.packed.runtimePackagePath, packedRuntime);
   const honoPackagePath = join(root, "node_modules/hono");
   writeManifest(honoPackagePath, { name: "hono", version: "4.12.25" });
-  const zfbTarballPath = join(root, "pack/takazudo-zfb-3.0.0.tgz");
-  const runtimeTarballPath = join(root, "pack/takazudo-zfb-runtime-3.0.0.tgz");
+  const zfbTarballPath = join(root, `pack/takazudo-zfb-${packageVersion}.tgz`);
+  const runtimeTarballPath = join(root, `pack/takazudo-zfb-runtime-${packageVersion}.tgz`);
   mkdirSync(dirname(zfbTarballPath), { recursive: true });
   writeFileSync(
     zfbTarballPath,
@@ -274,10 +282,10 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
     fixtureVersion: baseContract.fixtureVersion,
     fixtureSha256: localInputs.fixtureSha256,
     runnerSha256: localInputs.runnerSha256,
-    packageVersion: baseContract.toolchain.packageVersion,
+    packageVersion: localInputs.packageVersion,
     packageJsonSha256: sha(readFileSync(join(packageInputs.packagePath, "package.json"))),
     packagePath: packageInputs.packagePath,
-    runtimePackageVersion: baseContract.toolchain.packageVersion,
+    runtimePackageVersion: localInputs.packageVersion,
     runtimePackageJsonSha256: sha(
       readFileSync(join(packageInputs.runtimePackagePath, "package.json")),
     ),
@@ -296,7 +304,7 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
     zlibVersion: baseContract.toolchain.zlibVersion,
     compression: baseContract.compression,
     repeats: 2,
-    pnpmLockSha256: localInputs.pnpmLockSha256,
+    pnpmLockSha256: localInputs.pnpmLockActualSha256,
     cargoLockSha256: localInputs.cargoLockSha256,
   };
 }
@@ -322,12 +330,16 @@ function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform) 
   return { jsonPath, run: loadRun(jsonPath) };
 }
 
-function makeState(platform = baseContract.platform, base = baseContract) {
+function makeState(
+  platform = baseContract.platform,
+  base = baseContract,
+  packageVersion = base.toolchain.packageVersion,
+) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
-  const localInputs = currentLocalInputs();
-  const packageInputs = makePackageInputs(root);
+  const localInputs = currentLocalInputs(packageVersion);
+  const packageInputs = makePackageInputs(root, packageVersion);
   const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs, platform);
   const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs, platform);
   const contract = structuredClone(base);
@@ -416,6 +428,18 @@ describe("island shipped-size budget", () => {
         baseContract.toolchain.packageVersion,
       ),
     ).not.toBe(contractHash);
+  });
+
+  it("checks a later lockstep release against the reviewed size ceilings", () => {
+    const currentVersion = JSON.parse(
+      readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
+    ).version;
+    const state = makeState(baseContract.platform, baseContract, currentVersion);
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    state.packed.measurement.provenance.pnpmLockSha256 = baseContract.toolchain.pnpmLockSha256;
+    expect(validate(state).errors).toContain(
+      "packed provenance: pnpm lockfile differs from the current checkout",
+    );
   });
 
   it("selects only reviewed Darwin arm64 and Linux x64 contracts", () => {
