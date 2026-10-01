@@ -35,7 +35,6 @@ const contractFilesByPlatform = {
   "linux-x64": "decision-linux-x64.json",
 };
 const expectedToolchain = {
-  packageVersion: "3.0.0",
   honoVersion: "4.12.25",
   esbuildVersion: "0.25.12",
   nodeVersion: "v24.14.0",
@@ -44,6 +43,7 @@ const expectedToolchain = {
 const compression =
   "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file";
 const shaPattern = /^[0-9a-f]{64}$/;
+const packageVersionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 const sourceShaPattern = /^[0-9a-f]{40}$/;
 const javascriptPattern = /\.(?:js|mjs|cjs)$/;
 const entryPattern = /^assets\/islands(?:-[^/]+)?\.js$/;
@@ -381,6 +381,9 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   }
   if (!isRecord(contract.toolchain)) errors.push("contract: missing toolchain");
   else {
+    if (!packageVersionPattern.test(contract.toolchain.packageVersion ?? "")) {
+      errors.push("contract: invalid package version");
+    }
     for (const [key, expected] of Object.entries(expectedToolchain)) {
       if (contract.toolchain[key] !== expected)
         errors.push("contract: unsupported toolchain " + key);

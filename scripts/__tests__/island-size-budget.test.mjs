@@ -43,7 +43,10 @@ function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function currentLocalInputs(packageVersion = baseContract.toolchain.packageVersion) {
+function currentLocalInputs(
+  contract = baseContract,
+  packageVersion = contract.toolchain.packageVersion,
+) {
   const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
   const checkedOutVersion = JSON.parse(
     readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
@@ -51,7 +54,7 @@ function currentLocalInputs(packageVersion = baseContract.toolchain.packageVersi
   const contractLockHash = pnpmLockHashForContract(
     lockText,
     checkedOutVersion,
-    baseContract.toolchain.packageVersion,
+    contract.toolchain.packageVersion,
   );
   return {
     packageVersion,
@@ -66,7 +69,7 @@ function currentLocalInputs(packageVersion = baseContract.toolchain.packageVersi
     ),
     pnpmLockSha256: contractLockHash,
     pnpmLockActualSha256:
-      packageVersion === baseContract.toolchain.packageVersion ? contractLockHash : sha(lockText),
+      packageVersion === contract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
   };
 }
@@ -338,7 +341,7 @@ function makeState(
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
-  const localInputs = currentLocalInputs(packageVersion);
+  const localInputs = currentLocalInputs(base, packageVersion);
   const packageInputs = makePackageInputs(root, packageVersion);
   const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs, platform);
   const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs, platform);
@@ -469,6 +472,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
+    expect(linuxContract.toolchain.packageVersion).toBe("3.1.0");
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
@@ -476,19 +480,19 @@ describe("island shipped-size budget", () => {
       "scalar-signal": { raw: 49838, gzip: 17005 },
       "show-for": { raw: 49985, gzip: 17081 },
       model: { raw: 49829, gzip: 17014 },
-      "blog-theme": { raw: 50180, gzip: 17137 },
-      "json-api": { raw: 49984, gzip: 17098 },
-      "multi-island": { raw: 50106, gzip: 17098 },
+      "blog-theme": { raw: 50180, gzip: 17138 },
+      "json-api": { raw: 49984, gzip: 17100 },
+      "multi-island": { raw: 50106, gzip: 17100 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
       "event-only": { raw: 49892, gzip: 17030 },
       "scalar-signal": { raw: 49900, gzip: 17036 },
-      "show-for": { raw: 50047, gzip: 17111 },
+      "show-for": { raw: 50047, gzip: 17114 },
       model: { raw: 49891, gzip: 17046 },
-      "blog-theme": { raw: 50242, gzip: 17167 },
-      "json-api": { raw: 50046, gzip: 17123 },
-      "multi-island": { raw: 50168, gzip: 17134 },
+      "blog-theme": { raw: 50242, gzip: 17169 },
+      "json-api": { raw: 50046, gzip: 17126 },
+      "multi-island": { raw: 50168, gzip: 17136 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
