@@ -9,7 +9,7 @@ export type VNodeObject = {
   readonly key: unknown;
 };
 
-/** Broad authored child input; the owned renderer validates actual children. */
+/** @deprecated Broad legacy input. Use Child from @takazudo/zfb/zudo-react for owned JSX. */
 export type VNode =
   | string
   | number

@@ -50,7 +50,9 @@ hidden 属性は真偽値だけを受け付け、until-found は使えません�
 
 `ol` の `start` には数値または文字列を指定でき、`reversed` は真偽値の属性です。
 
-SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
+有限の HTML 語彙には、`meta[property]`、`link[as]`、`integrity`、外部 script の `script[defer]` など、標準的な head とメタデータの属性が含まれます。Open Graph タグ、preload リンク、defer 付き script は通常の JSX として書けるため、`rawHtml` で囲む必要はありません。属性値の扱いは HTML の分類に従います。真偽値属性は存在の有無で表し、`spellcheck` などの列挙値は文字列または真偽値、`download` はオーバーロード属性、`ol[start]` は数値を受け付けます。未知の標準属性名は引き続きエラーになり、カスタム要素の属性は引き続き文字列のみです。
+
+SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject、pattern、filter、marker、image です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
 
 ## スタイルとイベント
 

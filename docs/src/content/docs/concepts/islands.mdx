@@ -516,6 +516,8 @@ This is the right tool for synchronous pre-hydration work that must run before t
 
 **External scripts** — reference any `.js` file from `public/` or a CDN:
 
+Standard script attributes such as `defer`, `async`, and `nonce` are supported directly in JSX. Keep external scripts as ordinary elements; `rawHtml` is for trusted inline script text.
+
 ```tsx
 <script src="/scripts/analytics.js" defer />
 <script src="https://cdn.example.com/lib.js" defer />

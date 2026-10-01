@@ -3,7 +3,7 @@ import type { ReadonlySignal } from "./reactive-types.js";
 import type { RuntimeScope } from "./scope.js";
 import type { RootOptions } from "./root.js";
 import { diagnostic, report, rootPath } from "./root.js";
-import { booleanAttrs } from "./vocabulary.js";
+import { attributeNamespace, attributeText } from "./vocabulary.js";
 
 export function isReactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -32,12 +32,18 @@ export function styleText(value: unknown): string {
   return result;
 }
 export function setAttribute(element: Element, name: string, value: unknown): void {
-  if (value == null || (booleanAttrs.has(name) && value === false)) {
-    element.removeAttribute(name);
+  const namespace = attributeNamespace(name);
+  const localName = namespace && name.includes(":") ? name.split(":")[1]! : name;
+  const text = name === "style" && value != null ? styleText(value) : attributeText(name, value);
+  if (text === null) {
+    if (namespace) element.removeAttributeNS(namespace, localName);
+    else element.removeAttribute(name);
     return;
   }
-  const text = name === "style" ? styleText(value) : booleanAttrs.has(name) ? "" : String(value);
-  if (element.getAttribute(name) !== text) element.setAttribute(name, text);
+  if (namespace) {
+    if (element.getAttributeNS(namespace, localName) !== text)
+      element.setAttributeNS(namespace, name, text);
+  } else if (element.getAttribute(name) !== text) element.setAttribute(name, text);
 }
 export function bind<T>(
   source: ReadonlySignal<T>,

@@ -1,6 +1,5 @@
 import { isDescription, type Description } from "./zudo-react/index.js";
 import { islandRoot } from "./zudo-react/server.js";
-import type { VNode } from "./jsx-types.js";
 import type { Child } from "./zudo-react/description.js";
 import type { When } from "./types.js";
 
@@ -19,8 +18,8 @@ function singleChild(value: unknown): Description {
 }
 
 export function ownedIslandBoundary(
-  child: VNode,
-  fallback: VNode | undefined,
+  child: Description | undefined,
+  fallback: Child | undefined,
   when: When,
   media: string | undefined,
 ): Description {
@@ -50,6 +49,6 @@ export function ownedIslandBoundary(
     when,
     media,
     skipSsr: fallback !== undefined,
-    fallback: fallback as Child,
+    fallback,
   });
 }

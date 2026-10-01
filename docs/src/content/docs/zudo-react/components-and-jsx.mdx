@@ -50,7 +50,9 @@ The hidden attribute accepts booleans only, not until-found, and inert is boolea
 
 An `ol` accepts a numeric or string `start` value and a boolean `reversed` attribute.
 
-SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, and foreignObject. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
+The finite HTML vocabulary includes standard head and metadata attributes such as `meta[property]`, `link[as]`, `integrity`, and external `script[defer]`. Write Open Graph tags, preload links, and deferred scripts as ordinary JSX; these do not need a `rawHtml` wrapper. Attribute values keep their HTML categories: true booleans use presence, enumerated values such as `spellcheck` accept strings or booleans, `download` is overloaded, and `ol[start]` is numeric. Unknown standard names remain errors, and custom elements keep their string-only attribute contract.
+
+SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, foreignObject, pattern, filter, marker, and image. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
 
 ## Styles and events
 
