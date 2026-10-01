@@ -180,6 +180,9 @@ pub struct SsrDispatchError {
 /// achieves this by wrapping the `!Send` V8 isolate behind an mpsc
 /// channel; the wrapper itself only holds clones of the sender and is
 /// trivially `Send + Sync`.
+// async_trait generates #[must_use] on boxed futures; newer Clippy reports it
+// as redundant for this trait method.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SsrDispatcher: Send + Sync {
     /// Dispatch one request through the embedded V8 host and return
