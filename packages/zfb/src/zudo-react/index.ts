@@ -4,6 +4,16 @@ import type { Child, ElementType } from "./description.js";
 export { Fragment, isDescription, flattenChildren } from "./description.js";
 export type { Key, Scalar, Child, Component, ElementType, Description } from "./description.js";
 export type { ReadonlySignal, Signal } from "./reactive-types.js";
+export type {
+  CSSProperties,
+  CssProperty,
+  ElementForTag,
+  HTMLAttributes,
+  InputProps,
+  SelectProps,
+  SVGAttributes,
+  TextareaProps,
+} from "./jsx-types.js";
 export { signal, computed } from "./reactive.js";
 export { batch, flush } from "./scheduler.js";
 export { getScope } from "./scope.js";
@@ -19,7 +29,7 @@ export interface Scope {
 export interface Ref<T> {
   current: T | null;
 }
-export type Style = string | Readonly<Record<string, string | number | null | undefined>>;
+export type Style = string | import("./jsx-types.js").CSSProperties;
 export type Listener<E extends Event = Event> = (event: E) => void | Promise<void>;
 export interface IslandIdentity {
   readonly component: string;

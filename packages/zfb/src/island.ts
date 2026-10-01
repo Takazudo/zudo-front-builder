@@ -1,7 +1,6 @@
 // Build-time Island wrapper for the owned zudo-react runtime.
 import { ownedIslandBoundary } from "./island-boundary.js";
-import type { VNode } from "./jsx-types.js";
-import type { Description } from "./zudo-react/description.js";
+import type { Child, Description } from "./zudo-react/description.js";
 import { DEFAULT_WHEN, resolveWhen, type When } from "./types.js";
 
 export { resolveWhen } from "./types.js";
@@ -11,8 +10,9 @@ export const SKIP_SSR_MARKER_ATTR = "data-zfb-island-skip-ssr";
 export interface IslandProps {
   when?: When;
   media?: string;
-  ssrFallback?: VNode;
-  children?: VNode;
+  ssrFallback?: Child;
+  /** JSX erases the tag kind; the boundary checks for one function component at runtime. */
+  children?: Description;
 }
 
 export type IslandElement = Description;
