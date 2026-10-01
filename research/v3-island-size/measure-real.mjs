@@ -45,6 +45,7 @@ function option(flag) {
 const zfb = resolve(option("--zfb"));
 const esbuild = resolve(option("--esbuild"));
 const packageDir = resolve(option("--package"));
+const runtimePackageDir = resolve(option("--runtime-package"));
 const out = resolve(option("--out"));
 const mode = option("--mode");
 const sourceSha = option("--source-sha");
@@ -58,7 +59,15 @@ const version = execFileSync(esbuild, ["--version"], { encoding: "utf8" }).trim(
 if (version !== "0.25.12") throw new Error(`expected esbuild 0.25.12, got ${version}`);
 const packageJson = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 if (packageJson.name !== "@takazudo/zfb") throw new Error("wrong package path");
+const runtimePackageJson = JSON.parse(
+  readFileSync(join(runtimePackageDir, "package.json"), "utf8"),
+);
+if (runtimePackageJson.name !== "@takazudo/zfb-runtime")
+  throw new Error("wrong runtime package path");
+if (runtimePackageJson.version !== packageJson.version)
+  throw new Error("zfb and zfb-runtime package versions differ");
 if (mode === "packed") readFileSync(join(packageDir, "dist", "zudo-react", "client.js"));
+if (mode === "packed") readFileSync(join(runtimePackageDir, "dist", "server.js"));
 function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -86,6 +95,7 @@ function build(label, ids, pass) {
     mkdirSync(join(work, "components"));
     mkdirSync(join(work, "node_modules", "@takazudo"), { recursive: true });
     symlinkSync(packageDir, join(work, "node_modules", "@takazudo", "zfb"), "dir");
+    symlinkSync(runtimePackageDir, join(work, "node_modules", "@takazudo", "zfb-runtime"), "dir");
     writeFileSync(join(work, "zfb.config.json"), '{"wind":false}\n');
     writeFileSync(join(work, "pages", "index.tsx"), projectPage(ids));
     for (const id of ids)
@@ -196,6 +206,9 @@ const report = {
     packageVersion: packageJson.version,
     packageJsonSha256: sha(readFileSync(join(packageDir, "package.json"))),
     packagePath: packageDir,
+    runtimePackageVersion: runtimePackageJson.version,
+    runtimePackageJsonSha256: sha(readFileSync(join(runtimePackageDir, "package.json"))),
+    runtimePackagePath: runtimePackageDir,
     zfbBinarySha256: sha(readFileSync(zfb)),
     esbuildVersion: version,
     esbuildBinarySha256: sha(readFileSync(esbuild)),
