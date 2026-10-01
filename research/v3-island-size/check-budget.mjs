@@ -30,6 +30,10 @@ const fixtureFiles = [
   "json-api",
 ];
 const runnerFiles = ["measure-real.mjs", "measure.mjs"];
+const contractFilesByPlatform = {
+  "darwin-arm64": "decision.json",
+  "linux-x64": "decision-linux-x64.json",
+};
 const expectedToolchain = {
   packageVersion: "3.0.0",
   honoVersion: "4.12.25",
@@ -149,6 +153,30 @@ function sameKeys(value, expected) {
 
 function validCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
+}
+
+function platformId(platform) {
+  if (!isRecord(platform) || !sameKeys(platform, ["os", "arch"])) return null;
+  if (typeof platform.os !== "string" || typeof platform.arch !== "string") return null;
+  return platform.os + "-" + platform.arch;
+}
+
+function currentPlatform() {
+  return { os: process.platform, arch: process.arch };
+}
+
+export function contractPathForPlatform(platform = currentPlatform(), directory = scriptDir) {
+  const id = platformId(platform);
+  const filename = id ? contractFilesByPlatform[id] : null;
+  if (!filename) {
+    throw new Error(
+      "no reviewed island-size contract for platform " +
+        (id ?? JSON.stringify(platform)) +
+        "; supported platforms: " +
+        Object.keys(contractFilesByPlatform).join(", "),
+    );
+  }
+  return resolve(directory, filename);
 }
 
 function safeRelativePath(value) {
@@ -299,7 +327,7 @@ function equalSize(left, right) {
   );
 }
 
-function validateContract(contract, localInputs, errors) {
+function validateContract(contract, localInputs, runningPlatform, errors) {
   if (!isRecord(contract)) {
     errors.push("contract: expected a JSON object");
     return;
@@ -309,6 +337,27 @@ function validateContract(contract, localInputs, errors) {
     errors.push("contract: unsupported fixtureVersion");
   if (!sourceShaPattern.test(contract.baselineSourceSha ?? "")) {
     errors.push("contract: baselineSourceSha must be a full git SHA");
+  }
+  const contractPlatformId = platformId(contract.platform);
+  const runningPlatformId = platformId(runningPlatform);
+  if (!contractPlatformId) {
+    errors.push("contract: platform must include exactly os and arch strings");
+  } else if (!contractFilesByPlatform[contractPlatformId]) {
+    errors.push("contract: unsupported platform " + contractPlatformId);
+  }
+  if (!runningPlatformId || !contractFilesByPlatform[runningPlatformId]) {
+    errors.push(
+      "runtime: no reviewed island-size contract for platform " +
+        (runningPlatformId ?? JSON.stringify(runningPlatform)),
+    );
+  }
+  if (contractPlatformId && runningPlatformId && contractPlatformId !== runningPlatformId) {
+    errors.push(
+      "contract: platform " +
+        contractPlatformId +
+        " does not match running platform " +
+        runningPlatformId,
+    );
   }
   if (contract.compression !== compression) errors.push("contract: unsupported compression method");
   if (!isRecord(contract.allowance)) errors.push("contract: missing allowance");
@@ -400,7 +449,7 @@ function sameHashMaps(expected, actual) {
   );
 }
 
-function validateProvenance(run, mode, contract, expectedSourceSha, errors) {
+function validateProvenance(run, mode, contract, expectedSourceSha, runningPlatform, errors) {
   const provenance = run.measurement?.provenance;
   const label = mode + " provenance";
   if (!isRecord(provenance)) {
@@ -408,6 +457,19 @@ function validateProvenance(run, mode, contract, expectedSourceSha, errors) {
     return null;
   }
   if (provenance.mode !== mode) errors.push(label + ": wrong measurement mode");
+  if (!platformId(provenance.platform)) {
+    errors.push(label + ": missing or invalid platform provenance");
+  } else {
+    const measuredPlatformId = platformId(provenance.platform);
+    const contractPlatformId = platformId(contract.platform);
+    const runningPlatformId = platformId(runningPlatform);
+    if (measuredPlatformId !== contractPlatformId) {
+      errors.push(label + ": measured platform differs from the selected contract");
+    }
+    if (measuredPlatformId !== runningPlatformId) {
+      errors.push(label + ": measured platform differs from the running platform");
+    }
+  }
   if (provenance.sourceSha !== expectedSourceSha) {
     errors.push(
       label +
@@ -737,7 +799,7 @@ function compareMatchingProvenance(workspace, packed, errors) {
   }
 }
 
-function validateRun(run, mode, contract, expectedSourceSha, errors) {
+function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, errors) {
   if (!isRecord(run) || !isRecord(run.measurement)) {
     errors.push(mode + ": missing measurement.json");
     return {};
@@ -746,7 +808,14 @@ function validateRun(run, mode, contract, expectedSourceSha, errors) {
   for (const path of run.duplicateKeys ?? []) {
     errors.push(mode + ": duplicate JSON object key " + path);
   }
-  const provenance = validateProvenance(run, mode, contract, expectedSourceSha, errors);
+  const provenance = validateProvenance(
+    run,
+    mode,
+    contract,
+    expectedSourceSha,
+    runningPlatform,
+    errors,
+  );
   const expectedRootEntries = [
     "measurement.json",
     "report.md",
@@ -784,9 +853,10 @@ export function validateIslandSizeBudget({
   contract,
   expectedSourceSha,
   localInputs,
+  platform = currentPlatform(),
 }) {
   const errors = [];
-  validateContract(contract, localInputs, errors);
+  validateContract(contract, localInputs, platform, errors);
   if (!isRecord(contract)) return { errors, passed: false };
   if (!sourceShaPattern.test(expectedSourceSha ?? "")) {
     errors.push("requested source SHA must be a full git SHA");
@@ -796,9 +866,17 @@ export function validateIslandSizeBudget({
     "workspace",
     contract,
     expectedSourceSha,
+    platform,
     errors,
   );
-  const packedProvenance = validateRun(packed, "packed", contract, expectedSourceSha, errors);
+  const packedProvenance = validateRun(
+    packed,
+    "packed",
+    contract,
+    expectedSourceSha,
+    platform,
+    errors,
+  );
   compareMatchingProvenance(workspaceProvenance, packedProvenance, errors);
   return { errors, passed: errors.length === 0 };
 }
@@ -955,7 +1033,7 @@ function currentSourceSha() {
   }).trim();
 }
 
-function parseArgs(args) {
+function parseArgs(args, platform = currentPlatform()) {
   const values = {};
   const allowed = new Set(["--workspace", "--packed", "--contract"]);
   for (let index = 0; index < args.length; index += 2) {
@@ -971,12 +1049,13 @@ function parseArgs(args) {
   return {
     workspacePath: values["--workspace"],
     packedPath: values["--packed"],
-    contractPath: values["--contract"] ?? resolve(scriptDir, "decision.json"),
+    contractPath: values["--contract"] ?? contractPathForPlatform(platform),
+    platform,
   };
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), currentPlatform());
   const contractText = readFileSync(resolve(args.contractPath), "utf8");
   const contractDuplicates = duplicateJsonKeys(contractText);
   if (contractDuplicates.length) {
@@ -991,6 +1070,7 @@ function main() {
     contract,
     expectedSourceSha: currentSourceSha(),
     localInputs: currentLocalInputs(),
+    platform: args.platform,
   });
   if (!result.passed) {
     console.error("Island size budget rejected:");

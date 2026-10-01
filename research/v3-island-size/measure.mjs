@@ -237,6 +237,7 @@ if (
   throw new Error("packed graph did not retain the built zudo-react client module");
 const provenance = {
   sourceSha: pin,
+  platform: { os: process.platform, arch: process.arch },
   packageVersion: packageJson.version,
   packageMode: mode,
   packagePath: packageDir,

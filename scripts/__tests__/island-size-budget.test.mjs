@@ -6,7 +6,11 @@ import { dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-import { loadRun, validateIslandSizeBudget } from "../../research/v3-island-size/check-budget.mjs";
+import {
+  contractPathForPlatform,
+  loadRun,
+  validateIslandSizeBudget,
+} from "../../research/v3-island-size/check-budget.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -257,10 +261,11 @@ function makePackageInputs(root) {
   };
 }
 
-function provenance(mode, sourceSha, localInputs, packageInputs) {
+function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
   return {
     sourceSha,
     mode,
+    platform,
     fixtureVersion: baseContract.fixtureVersion,
     fixtureSha256: localInputs.fixtureSha256,
     runnerSha256: localInputs.runnerSha256,
@@ -291,11 +296,11 @@ function provenance(mode, sourceSha, localInputs, packageInputs) {
   };
 }
 
-function buildMode(root, mode, sourceSha, localInputs, packageInputs) {
+function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform) {
   const outDir = join(root, mode);
   mkdirSync(outDir, { recursive: true });
   const measurement = {
-    provenance: provenance(mode, sourceSha, localInputs, packageInputs[mode]),
+    provenance: provenance(mode, sourceSha, localInputs, packageInputs[mode], platform),
     results: {},
   };
   for (const fixture of fixtures) {
@@ -312,15 +317,15 @@ function buildMode(root, mode, sourceSha, localInputs, packageInputs) {
   return { jsonPath, run: loadRun(jsonPath) };
 }
 
-function makeState() {
+function makeState(platform = baseContract.platform, base = baseContract) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
   const localInputs = currentLocalInputs();
   const packageInputs = makePackageInputs(root);
-  const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs);
-  const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs);
-  const contract = structuredClone(baseContract);
+  const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs, platform);
+  const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs, platform);
+  const contract = structuredClone(base);
   for (const mode of ["workspace", "packed"]) {
     const run = mode === "workspace" ? workspace.run : packed.run;
     for (const fixture of fixtures) {
@@ -332,6 +337,7 @@ function makeState() {
   return {
     root,
     sourceSha,
+    platform,
     localInputs,
     packageInputs,
     contract,
@@ -349,6 +355,7 @@ function validate(state) {
     contract: state.contract,
     expectedSourceSha: state.sourceSha,
     localInputs: state.localInputs,
+    platform: state.platform,
   });
 }
 
@@ -386,6 +393,85 @@ afterEach(() => {
 });
 
 describe("island shipped-size budget", () => {
+  it("selects only reviewed Darwin arm64 and Linux x64 contracts", () => {
+    expect(contractPathForPlatform({ os: "darwin", arch: "arm64" })).toBe(
+      join(sizeDir, "decision.json"),
+    );
+    expect(contractPathForPlatform({ os: "linux", arch: "x64" })).toBe(
+      join(sizeDir, "decision-linux-x64.json"),
+    );
+    expect(() => contractPathForPlatform({ os: "linux", arch: "arm64" })).toThrow(
+      "no reviewed island-size contract for platform linux-arm64",
+    );
+    const currentPlatformId = process.platform + "-" + process.arch;
+    const currentContract = {
+      "darwin-arm64": "decision.json",
+      "linux-x64": "decision-linux-x64.json",
+    }[currentPlatformId];
+    if (currentContract) {
+      expect(contractPathForPlatform()).toBe(join(sizeDir, currentContract));
+    } else {
+      expect(() => contractPathForPlatform()).toThrow("no reviewed island-size contract");
+    }
+  });
+
+  it("records the reviewed Linux x64 ceilings with zero allowance", () => {
+    const linuxContract = JSON.parse(
+      readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
+    );
+    expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
+    expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
+    expect(linuxContract.ceilings.workspace).toEqual({
+      "no-island": { raw: 0, gzip: 0 },
+      "event-only": { raw: 49830, gzip: 17003 },
+      "scalar-signal": { raw: 49838, gzip: 17005 },
+      "show-for": { raw: 49985, gzip: 17081 },
+      model: { raw: 49829, gzip: 17014 },
+      "blog-theme": { raw: 50180, gzip: 17137 },
+      "json-api": { raw: 49984, gzip: 17098 },
+      "multi-island": { raw: 50106, gzip: 17098 },
+    });
+    expect(linuxContract.ceilings.packed).toEqual({
+      "no-island": { raw: 0, gzip: 0 },
+      "event-only": { raw: 49892, gzip: 17030 },
+      "scalar-signal": { raw: 49900, gzip: 17036 },
+      "show-for": { raw: 50047, gzip: 17111 },
+      model: { raw: 49891, gzip: 17046 },
+      "blog-theme": { raw: 50242, gzip: 17167 },
+      "json-api": { raw: 50046, gzip: 17123 },
+      "multi-island": { raw: 50168, gzip: 17134 },
+    });
+    const state = makeState(linuxContract.platform, linuxContract);
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("rejects a contract or run measured for a different platform", () => {
+    const wrongContract = makeState();
+    wrongContract.platform = { os: "linux", arch: "x64" };
+    const contractErrors = validate(wrongContract).errors.join("\n");
+    expect(contractErrors).toContain(
+      "contract: platform darwin-arm64 does not match running platform linux-x64",
+    );
+    expect(contractErrors).toContain(
+      "workspace provenance: measured platform differs from the running platform",
+    );
+
+    const wrongMeasurement = makeState();
+    wrongMeasurement.workspace.measurement.provenance.platform = {
+      os: "linux",
+      arch: "x64",
+    };
+    expect(validate(wrongMeasurement).errors.join("\n")).toContain(
+      "workspace provenance: measured platform differs from the selected contract",
+    );
+
+    const missingMeasurementPlatform = makeState();
+    delete missingMeasurementPlatform.workspace.measurement.provenance.platform;
+    expect(validate(missingMeasurementPlatform).errors.join("\n")).toContain(
+      "workspace provenance: missing or invalid platform provenance",
+    );
+  });
+
   it("accepts exact ceilings for both complete eight-fixture matrices", () => {
     const state = makeState();
     const result = validate(state);

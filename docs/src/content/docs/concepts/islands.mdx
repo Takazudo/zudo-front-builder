@@ -199,27 +199,27 @@ Because all islands are bundled together into a single file:
 
 ### Measured shared-bundle baseline
 
-The controlled v3 fixture study found **no JavaScript reduction**; it preserves the current bundle as a regression baseline. It exercised eight real consumer pages in both workspace and packed-package resolution: no island, event-only, scalar signal, Show/For, modelValue, blog menu plus theme toggle, JSON API, and a two-island page.
+The controlled v3 fixture study found **no JavaScript reduction**; it preserves the current bundle as a regression baseline. It exercised eight real consumer pages in workspace and packed-package resolution on Darwin arm64 and Linux x64: no island, event-only, scalar signal, Show/For, modelValue, blog menu plus theme toggle, JSON API, and a two-island page. Each platform's contract has zero raw and gzip allowance.
 
-| Fixture | Workspace raw / gzip | Packed raw / gzip |
-| --- | ---: | ---: |
-| no-island | 0 / 0 | 0 / 0 |
-| event-only | 49,830 / 17,004 | 49,892 / 17,027 |
-| scalar-signal | 49,838 / 17,009 | 49,900 / 17,037 |
-| Show/For | 49,985 / 17,082 | 50,047 / 17,111 |
-| modelValue | 49,829 / 17,012 | 49,891 / 17,045 |
-| blog menu plus theme toggle | 50,180 / 17,138 | 50,242 / 17,166 |
-| JSON API | 49,984 / 17,096 | 50,046 / 17,127 |
-| two islands | 50,106 / 17,103 | 50,168 / 17,132 |
+| Fixture | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
+| --- | ---: | ---: | ---: | ---: |
+| no-island | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| event-only | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
+| scalar-signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
+| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
+| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
+| blog menu plus theme toggle | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
+| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
+| two islands | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
 
-Each mode built every fixture twice and compared the complete emitted dist inventory. The recorded non-empty fixtures each produced one entry and no later chunk; the size contract still counts every emitted entry, shared, and lazy JavaScript file if splitting produces them. Raw size is the sum of file bytes. Gzip is computed separately for each file with node:zlib gzipSync at level 9 and mtime 0, then summed; HTTP transfer compression may differ.
+Each platform and mode built every fixture twice and compared the complete emitted dist inventory. The recorded non-empty fixtures each produced one entry and no later chunk; the size contract still counts every emitted entry, shared, and lazy JavaScript file if splitting produces them. Raw size is the sum of file bytes. Gzip is computed separately for each file with node:zlib gzipSync at level 9 and mtime 0, then summed; HTTP transfer compression may differ.
 
-These samples use @takazudo/zfb 3.0.0, Node v24.14.0, zlib 1.3.1-e00f703, esbuild 0.25.12, and lockfile Hono 4.12.25. The measured baseline source was 897f288c013e24ff4fde01483a55d8a1945fc964 on Darwin arm64. Linux equivalence has not yet been validated, so these values do not claim cross-platform reproducibility.
+Both contracts pin @takazudo/zfb 3.0.0, Node v24.14.0, zlib 1.3.1-e00f703, esbuild 0.25.12, and lockfile Hono 4.12.25. The Darwin baseline source was 897f288c013e24ff4fde01483a55d8a1945fc964. The Linux x64 probe ran in GitHub Actions health run 36831966429 at pull-request merge ref afa523768b3de897859521e1bf940179191f50ab (PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40), not at the historical Darwin commit. Linux raw totals match Darwin, but gzip totals differ and every real island JavaScript file has a different SHA-256. This is a pair of platform-specific size baselines, not a claim of byte-identical output or semantic equivalence across platforms. The Linux result covers one pinned GitHub Actions run on x64; it does not establish behavior for other Linux architectures or future toolchains.
 
-Use the repository's [measurement and replay commands](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md) to reproduce the two real matrices. After both runs, check the saved files against the committed contract:
+Use the repository's [measurement and replay commands](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md) to reproduce the two real matrices. The guard selects `decision.json` on Darwin arm64 and `decision-linux-x64.json` on Linux x64, and rejects unsupported hosts or platform-mismatched artifacts. After both runs, check the saved files against the selected contract:
 
 ```sh
-node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" --contract research/v3-island-size/decision.json
+node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
 ```
 
 ## One runtime

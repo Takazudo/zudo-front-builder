@@ -186,27 +186,27 @@ export default function Header() {
 
 ### 共有バンドルの実測ベースライン
 
-制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。ワークスペース解決と packed パッケージ解決の両方で、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。
+制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。Darwin arm64 と Linux x64 で、ワークスペース解決と packed パッケージ解決の両方を使い、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。各プラットフォームの契約では raw と gzip の許容増加量を 0 にしています。
 
-| フィクスチャ | Workspace raw / gzip | Packed raw / gzip |
-| --- | ---: | ---: |
-| 島なし | 0 / 0 | 0 / 0 |
-| イベントのみ | 49,830 / 17,004 | 49,892 / 17,027 |
-| scalar signal | 49,838 / 17,009 | 49,900 / 17,037 |
-| Show/For | 49,985 / 17,082 | 50,047 / 17,111 |
-| modelValue | 49,829 / 17,012 | 49,891 / 17,045 |
-| ブログメニューとテーマ切り替え | 50,180 / 17,138 | 50,242 / 17,166 |
-| JSON API | 49,984 / 17,096 | 50,046 / 17,127 |
-| 2 つの島 | 50,106 / 17,103 | 50,168 / 17,132 |
+| フィクスチャ | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
+| --- | ---: | ---: | ---: | ---: |
+| 島なし | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| イベントのみ | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
+| scalar signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
+| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
+| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
+| ブログメニューとテーマ切り替え | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
+| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
+| 2 つの島 | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
 
-両モードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
+各プラットフォームとモードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
 
-この測定は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を使っています。ベースラインのソースは Darwin arm64 上の 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux との同等性は未検証のため、この値はクロスプラットフォームの再現性を示すものではありません。
+両契約は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
 
-2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。両方の実行後、保存したファイルをコミット済み契約と照合します。
+2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。ガードは Darwin arm64 では `decision.json`、Linux x64 では `decision-linux-x64.json` を選び、未対応ホストや異なるプラットフォームの測定結果を拒否します。両方の実行後、保存したファイルを選択された契約と照合します。
 
 ```sh
-node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" --contract research/v3-island-size/decision.json
+node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
 ```
 
 ## 単一のランタイム
