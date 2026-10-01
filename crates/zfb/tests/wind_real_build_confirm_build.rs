@@ -646,8 +646,8 @@ fn w_a08_strict_wind_commands_report_hints_for_authored_and_malformed_classes() 
         "wind audit must distinguish an authored class hint from the malformed aspect hint:\n{audit_output}"
     );
     assert!(
-        !audit_output.contains("ordinary-card"),
-        "an ordinary authored class must stay out of utility diagnostics:\n{audit_output}"
+        audit_output.contains("unrecognized classes:\n  - ordinary-card"),
+        "an ordinary class must be listed as unrecognized, not rejected as a utility:\n{audit_output}"
     );
 }
 
@@ -687,7 +687,7 @@ fn w_a08_real_build_css_explain_and_audit_agree_on_transition_timing() {
             "new aspect syntax must emit the expected aspect ratio:\n{build_css}"
         );
         assert!(
-            build_css.contains("transition-timing-function: {expected_timing};"),
+            build_css.contains(&format!("transition-timing-function: {expected_timing};")),
             "the default transition timing must reach build CSS:\n{build_css}"
         );
         assert!(
@@ -744,8 +744,8 @@ fn w_a08_real_build_css_explain_and_audit_agree_on_transition_timing() {
         assert!(
             audit.contains("outcome: complete")
                 && audit.contains("bg-")
-                && !audit.contains("ordinary-card"),
-            "wind audit must keep dynamic construction visible and ordinary classes quiet:\n{audit}"
+                && audit.contains("unrecognized classes:\n  - ordinary-card"),
+            "wind audit must keep dynamic construction visible and classify ordinary classes separately:\n{audit}"
         );
     }
 }

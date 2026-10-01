@@ -11,7 +11,7 @@ export default function WindRawLayout({ children }: { children: Child }) {
         <title>Wind raw HTML SSR route</title>
         <style rawHtml={INLINE_CSS} />
         <script rawHtml={INLINE_SCRIPT} />
-        <script src="/assets/wind-layout.js" />
+        <script src="/wind-layout.js" />
       </head>
       <body data-zfb-wind="raw">{children}</body>
     </html>

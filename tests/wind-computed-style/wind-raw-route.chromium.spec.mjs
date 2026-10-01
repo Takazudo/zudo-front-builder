@@ -20,7 +20,7 @@ test("W-A08 computes quoted rawHtml styles on the live /wind-raw SSR route", asy
   expect(response?.status()).toBe(200);
   await expect(page.locator("#wind-raw-route")).toHaveText(server.marker);
 
-  const style = page.locator("head > style").filter({ hasText: "--quoted-css" });
+  const style = page.locator("head > style");
   await expect(style).toHaveCount(1);
   expect(await style.textContent()).toBe(
     'body[data-zfb-wind="raw"] { font-family: "Wind & Raw"; --quoted-css: "<raw & trusted>"; }',

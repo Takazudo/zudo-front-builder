@@ -105,7 +105,12 @@ impl CssEngine for WindEngine {
                             CssDiagnosticSeverity::Warning
                         },
                         code: format!("{:?}", diagnostic.code).to_ascii_uppercase(),
-                        message: diagnostic.message.clone(),
+                        message: match diagnostic.suggested_spelling.as_deref() {
+                            Some(spelling) => {
+                                format!("{}; suggested spelling: {spelling}", diagnostic.message)
+                            }
+                            None => diagnostic.message.clone(),
+                        },
                         origin,
                         candidate: diagnostic.candidate.clone(),
                     }

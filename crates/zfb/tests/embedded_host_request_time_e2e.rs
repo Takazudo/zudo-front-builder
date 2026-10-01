@@ -431,8 +431,9 @@ async fn poll_for_marker(
 }
 
 /// Poll an SSR route expected to fail during server rendering. Requiring both
-/// the HTTP 500 and the renderer's structured error code prevents a missing
-/// route or generic request failure from standing in for the runtime guard.
+/// the HTTP 500 and the renderer's structured error code in the response
+/// prevents a missing route or generic request failure from standing in for
+/// the runtime guard.
 async fn poll_for_runtime_rejection(
     client: &reqwest::Client,
     base_url: &str,
@@ -448,7 +449,7 @@ async fn poll_for_runtime_rejection(
                 let status = response.status().as_u16();
                 let body = response.text().await.unwrap_or_default();
                 let logs = session.logs();
-                if status == 500 && logs.contains(error_marker) {
+                if status == 500 && body.contains(error_marker) {
                     return body;
                 }
                 format!("status {status}, body:\n{body}\nlogs:\n{logs}")
@@ -457,7 +458,7 @@ async fn poll_for_runtime_rejection(
         };
         assert!(
             start.elapsed() < RESPONSE_DEADLINE,
-            "GET {url} did not fail with HTTP 500 and {error_marker:?} within {}s. \
+            "GET {url} did not respond with HTTP 500 and {error_marker:?} within {}s. \
              Last observation: {observation}",
             RESPONSE_DEADLINE.as_secs(),
         );
@@ -675,14 +676,14 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
         "the inline font declaration must retain its quoted family:\n{raw_body}"
     );
     assert!(
-        raw_body.contains("<script src=\"/assets/wind-layout.js\"></script>"),
+        raw_body.contains("<script src=\"/wind-layout.js\"></script>"),
         "a childless external script must retain its src and empty body:\n{raw_body}"
     );
 
     let external_script = poll_for_marker(
         &client,
         &base_url,
-        "/assets/wind-layout.js",
+        "/wind-layout.js",
         "served external script",
         &session,
     )

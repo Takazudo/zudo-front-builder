@@ -311,9 +311,14 @@ pub fn render_explanation(explanation: &Explanation) -> String {
             .and_then(|origin| origin.source_id.as_deref().zip(origin.byte_offset))
             .map(|(source, offset)| format!(" at {source}:{offset}"))
             .unwrap_or_default();
+        let suggestion = diagnostic
+            .suggestion
+            .as_deref()
+            .map(|spelling| format!("; suggested spelling: {spelling}"))
+            .unwrap_or_default();
         output.push_str(&format!(
-            "diagnostic: {} {}{}: {}\n",
-            diagnostic.code, diagnostic.severity, location, diagnostic.message
+            "diagnostic: {} {}{}: {}{}\n",
+            diagnostic.code, diagnostic.severity, location, diagnostic.message, suggestion
         ));
     }
     output
