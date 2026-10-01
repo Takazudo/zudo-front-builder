@@ -55,26 +55,16 @@ test("W-A08 seeks the real focus-visible outline transition and retains visual s
     (element) => getComputedStyle(element).outlineColor,
   );
   expect(initialColor).toBe("rgb(0, 0, 0)");
-  await expect(focusOutline).toHaveCSS("transition-duration", "1s");
+  await expect(focusOutline).toHaveCSS("transition-duration", "10s");
   await testInfo.attach("w-a08-outline-before-focus.png", {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
   });
 
   await page.keyboard.press("Tab");
-  await expect(focusOutline).toBeFocused();
-  await page.waitForFunction(() => {
-    const element = document.getElementById("focus-outline");
-    return element
-      ?.getAnimations()
-      .some(
-        (animation) =>
-          animation.constructor.name === "CSSTransition" &&
-          animation.transitionProperty === "outline-color",
-      );
-  });
-
   const intermediate = await focusOutline.evaluate((element) => {
+    const focused = document.activeElement === element;
+    void getComputedStyle(element).outlineColor;
     const transition = element
       .getAnimations()
       .find(
@@ -84,15 +74,21 @@ test("W-A08 seeks the real focus-visible outline transition and retains visual s
       );
     if (!transition) throw new Error("outline-color CSSTransition disappeared");
     transition.pause();
-    transition.currentTime = 500;
+    const duration = transition.effect?.getTiming().duration;
+    if (typeof duration !== "number") throw new Error("transition duration is not numeric");
+    transition.currentTime = duration * 0.5;
     window.__wA08OutlineTransition = transition;
     return {
+      focused,
+      duration,
       currentTime: transition.currentTime,
       progress: transition.effect?.getComputedTiming().progress,
       color: getComputedStyle(element).outlineColor,
     };
   });
-  expect(intermediate.currentTime).toBe(500);
+  expect(intermediate.focused).toBe(true);
+  expect(intermediate.duration).toBe(10_000);
+  expect(intermediate.currentTime).toBe(5_000);
   expect(intermediate.progress).toBeGreaterThan(0);
   expect(intermediate.progress).toBeLessThan(1);
   expect(intermediate.color).not.toBe(initialColor);
@@ -105,14 +101,18 @@ test("W-A08 seeks the real focus-visible outline transition and retains visual s
   const settled = await focusOutline.evaluate((element) => {
     const transition = window.__wA08OutlineTransition;
     if (!transition) throw new Error("outline-color CSSTransition disappeared before settle");
-    transition.currentTime = transition.effect?.getTiming().duration ?? 1000;
+    const duration = transition.effect?.getTiming().duration;
+    if (typeof duration !== "number") throw new Error("transition duration is not numeric");
+    transition.currentTime = duration;
     return {
       currentTime: transition.currentTime,
+      duration,
       progress: transition.effect?.getComputedTiming().progress,
       color: getComputedStyle(element).outlineColor,
     };
   });
-  expect(settled.currentTime).toBe(1000);
+  expect(settled.currentTime).toBe(settled.duration);
+  expect(settled.duration).toBe(10_000);
   expect(settled.progress).toBe(1);
   expect(settled.color).toBe("rgb(255, 255, 255)");
   await testInfo.attach("w-a08-outline-settled.png", {

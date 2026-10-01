@@ -5,9 +5,9 @@
 //! asserts the expected statuses and diagnostics.
 //!
 //! Most fixtures pass `--skip-tsc` so schema validation can run without a
-//! TypeScript installation. The deterministic failure fixture and the Wasm
-//! fixture exercise the tsc subprocess directly; the latter uses the real
-//! compiler.
+//! TypeScript installation. The deterministic failure fixture, rawHtml
+//! consumer fixture, and Wasm fixture exercise the tsc subprocess directly;
+//! the latter two use the real compiler.
 
 use std::env;
 use std::path::PathBuf;
@@ -20,15 +20,6 @@ fn fixture(name: &str) -> PathBuf {
         .join("tests")
         .join("fixtures")
         .join(name)
-}
-
-#[cfg(unix)]
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("crates/zfb must live two levels under the workspace root")
-        .to_path_buf()
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -168,10 +159,24 @@ fn check_fails_when_tsc_exits_nonzero() {
 #[cfg(unix)]
 fn raw_text_children_are_rejected_by_zfb_check() {
     let (_scaffold, _node_modules, root) = scaffold_build_fixture("raw-html-invalid-check");
-    let mut path_entries =
-        env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
-    path_entries.insert(0, workspace_root().join("node_modules/.bin"));
-    let path = env::join_paths(path_entries).expect("compose PATH with workspace TypeScript");
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/zfb must have a repository root")
+        .to_path_buf();
+    let typescript_bin_dir = repo_root.join("packages/zfb/node_modules/.bin");
+    let tsc = typescript_bin_dir.join("tsc");
+    assert!(
+        tsc.is_file(),
+        "TypeScript must be installed at {}; run pnpm install first",
+        tsc.display(),
+    );
+    let mut path_entries = vec![typescript_bin_dir];
+    if let Some(existing) = env::var_os("PATH") {
+        path_entries.extend(env::split_paths(&existing));
+    }
+    let path = env::join_paths(path_entries)
+        .expect("TypeScript bin directory and inherited PATH entries must be valid");
 
     let output = Command::new(zfb_binary!())
         .arg("check")

@@ -660,13 +660,15 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
     .await;
     let expected_css = r#"body[data-zfb-wind="raw"] { font-family: "Wind & Raw"; --quoted-css: "<raw & trusted>"; }"#;
     let expected_script = r#"window.__zfbWindRaw = "quoted <& trusted";"#;
+    let expected_style_element = format!("<style>{expected_css}</style>");
+    let expected_script_element = format!("<script>{expected_script}</script>");
     assert!(
-        contains_verbatim_bytes(&raw_body, expected_css),
-        "the layout's quoted inline CSS must reach the HTTP response verbatim:\n{raw_body}"
+        contains_verbatim_bytes(&raw_body, &expected_style_element),
+        "the quoted inline CSS must reach the response verbatim inside a live style element:\n{raw_body}"
     );
     assert!(
-        contains_verbatim_bytes(&raw_body, expected_script),
-        "the layout's quoted inline script must reach the HTTP response verbatim:\n{raw_body}"
+        contains_verbatim_bytes(&raw_body, &expected_script_element),
+        "the quoted inline script must reach the response verbatim inside a live script element:\n{raw_body}"
     );
     assert!(
         raw_body.contains("font-family: \"Wind & Raw\""),
