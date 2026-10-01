@@ -36,7 +36,8 @@ pass() { printf '[PASS] %s\n' "$*"; }
 if [[ "$ZFB_BINARY" != /* ]]; then
   ZFB_BINARY="$ROOT_DIR/$ZFB_BINARY"
 fi
-[[ -f "$ZFB_BINARY" && -x "$ZFB_BINARY" ]] || fail "ZFB_BINARY is missing or not executable: $ZFB_BINARY"
+[[ -f "$ZFB_BINARY" ]] || fail "ZFB_BINARY is missing: $ZFB_BINARY"
+BINARY_SOURCE_PATH="$ZFB_BINARY"
 
 SOURCE_SHA="$(git rev-parse HEAD)"
 [[ "$ZFB_BINARY_SOURCE_SHA" == "$SOURCE_SHA" ]] || fail "binary source SHA $ZFB_BINARY_SOURCE_SHA does not match checkout $SOURCE_SHA"
@@ -55,6 +56,12 @@ esac
 if [[ -n "$(find "$ARTIFACT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   fail "artifact directory must be empty before the run: $ARTIFACT_DIR"
 fi
+
+# GitHub artifact downloads do not retain the executable bit. Run an executable
+# copy in the external scratch directory and leave the downloaded source alone.
+ZFB_BINARY="$ARTIFACT_DIR/zfb-bin"
+cp "$BINARY_SOURCE_PATH" "$ZFB_BINARY"
+chmod 0755 "$ZFB_BINARY"
 
 PACK_DIR="$ARTIFACT_DIR/pack"
 CONSUMER_DIR="$ARTIFACT_DIR/consumer"
@@ -213,6 +220,7 @@ cat > "$METADATA" <<EOF
 issue=3484
 source_sha=$SOURCE_SHA
 binary_path=$ZFB_BINARY
+binary_source_path=$BINARY_SOURCE_PATH
 binary_source_sha=$ZFB_BINARY_SOURCE_SHA
 binary_provenance=$ZFB_BINARY_PROVENANCE
 binary_version=$BINARY_VERSION
