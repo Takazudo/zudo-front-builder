@@ -14,9 +14,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, normalize, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-const root = dirname(new URL(import.meta.url).pathname);
+const scriptPath = fileURLToPath(import.meta.url);
+const root = dirname(scriptPath);
+const repoRoot = resolve(root, "../..");
+const fixtureVersion = "v3-islands-1";
 const fixtures = join(root, "fixtures");
 const cases = {
   "no-island": [],
@@ -44,6 +48,8 @@ function option(flag) {
 }
 const zfb = resolve(option("--zfb"));
 const esbuild = resolve(option("--esbuild"));
+const zfbTarball = resolve(option("--zfb-tarball"));
+const runtimeTarball = resolve(option("--runtime-tarball"));
 const packageDir = resolve(option("--package"));
 const runtimePackageDir = resolve(option("--runtime-package"));
 const honoPackageDir = resolve(option("--hono-package"));
@@ -82,6 +88,7 @@ function walk(dir) {
     const path = join(dir, item.name);
     if (item.isDirectory()) rows.push(...walk(path));
     else if (item.isFile()) rows.push(path);
+    else throw new Error("unexpected non-file dist entry: " + path);
   }
   return rows.sort();
 }
@@ -145,8 +152,8 @@ function build(label, ids, pass) {
       initial.add(path);
       const code = readFileSync(file, "utf8");
       const staticImports = [
-        /\bimport\s*(?!\()(?:[^;'"()]*?\bfrom\s*)?["'](\.\/[^"']+\.(?:js|mjs|cjs))["']/g,
-        /\bexport\s+[^;'"()]*?\bfrom\s*["'](\.\/[^"']+\.(?:js|mjs|cjs))["']/g,
+        /\bimport\s*(?!\()(?:[^;'"()]*?\bfrom\s*)?["'](\.\.?\/[^"']+\.(?:js|mjs|cjs))["']/g,
+        /\bexport\s+[^;'"()]*?\bfrom\s*["'](\.\.?\/[^"']+\.(?:js|mjs|cjs))["']/g,
       ];
       for (const pattern of staticImports)
         for (const match of code.matchAll(pattern)) visit(resolveImport(path, match[1]));
@@ -158,13 +165,14 @@ function build(label, ids, pass) {
     }
     const dest = join(out, label, `pass-${pass}`);
     mkdirSync(dest, { recursive: true });
-    copyFileSync(join(dist, "index.html"), join(dest, "index.html"));
+    for (const item of files) {
+      const target = join(dest, item.path);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(join(dist, item.path), target);
+    }
     const chunks = jsPaths.map((path) => {
       const file = relative(dist, path);
       const bytes = readFileSync(path);
-      const target = join(dest, file);
-      mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(path, target);
       return {
         file,
         phase: initial.has(file) ? "initial" : "later",
@@ -203,12 +211,27 @@ for (const [label, ids] of Object.entries(cases).filter(
   const two = build(label, ids, 2);
   if (JSON.stringify(one) !== JSON.stringify(two))
     throw new Error(`${label}: repeat builds differ; inspect ${join(out, label)}`);
-  results[label] = one;
+  results[label] = {
+    ...one,
+    repeatVerification: {
+      passes: 2,
+      inventoriesIdentical: true,
+      inventorySha256: sha(Buffer.from(JSON.stringify(one.files))),
+    },
+  };
 }
 const report = {
   provenance: {
     sourceSha,
     mode,
+    fixtureVersion,
+    fixtureSha256: Object.fromEntries(
+      Object.keys(names).map((name) => [name, sha(readFileSync(join(fixtures, `${name}.tsx`)))]),
+    ),
+    runnerSha256: {
+      "measure-real.mjs": sha(readFileSync(scriptPath)),
+      "measure.mjs": sha(readFileSync(join(root, "measure.mjs"))),
+    },
     packageVersion: packageJson.version,
     packageJsonSha256: sha(readFileSync(join(packageDir, "package.json"))),
     packagePath: packageDir,
@@ -219,12 +242,17 @@ const report = {
     honoPackageJsonSha256: sha(readFileSync(join(honoPackageDir, "package.json"))),
     honoPackagePath: honoPackageDir,
     zfbBinarySha256: sha(readFileSync(zfb)),
+    zfbTarballSha256: sha(readFileSync(zfbTarball)),
+    runtimeTarballSha256: sha(readFileSync(runtimeTarball)),
     esbuildVersion: version,
     esbuildBinarySha256: sha(readFileSync(esbuild)),
     nodeVersion: process.version,
     zlibVersion: process.versions.zlib,
-    compression: "node:zlib gzipSync level=9 mtime=0 per JS file",
+    compression:
+      "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
     repeats: 2,
+    pnpmLockSha256: sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+    cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
   },
   results,
   incremental:
@@ -249,5 +277,6 @@ for (const [label, value] of Object.entries(results))
 if (report.incremental)
   markdown += `\nMulti-island incremental against scalar signal: ${report.incremental.secondIslandVersusScalar.raw} raw, ${report.incremental.secondIslandVersusScalar.gzip} gzip.\n`;
 markdown += `\nEvery emitted JS file is counted once. Sidecar metafiles in the matching modeled report attribute retained inputs; zfb's private resource and stage-audit metafiles are untouched. Historical v2/v3 recipe numbers are not reproduced.\n`;
+markdown += `\nProvenance SHA-256: zfb CLI ${report.provenance.zfbBinarySha256}; esbuild ${report.provenance.esbuildBinarySha256}; zfb tarball ${report.provenance.zfbTarballSha256}; zfb-runtime tarball ${report.provenance.runtimeTarballSha256}.\n`;
 writeFileSync(join(out, "report.md"), markdown);
 console.log(join(out, "report.md"));

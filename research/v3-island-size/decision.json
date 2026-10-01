@@ -15,11 +15,12 @@
     "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
   },
   "runnerSha256": {
-    "measure-real.mjs": "42572d2dbbcd866b45ed09c364f3f283eb89be5b7f59c48318e31bf9b654f36f",
+    "measure-real.mjs": "c5c89c5f7974cbad55f0381e7238b14e60c97b149489ee668c5c5d02f9d1c98d",
     "measure.mjs": "e2768c79d7d2c551799f56e67e66e42b404c7180904b0b499ab871c1e489c20d"
   },
   "toolchain": {
     "packageVersion": "3.0.0",
+    "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",

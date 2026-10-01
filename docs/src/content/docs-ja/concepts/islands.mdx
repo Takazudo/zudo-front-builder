@@ -184,6 +184,31 @@ export default function Header() {
 - **島のないページには islands スクリプトが入りません。** ページに島マーカーが含まれない場合、ビルドパイプラインはそのページへの共有 islands `<script>` 注入をスキップします。使われている場合、他の client-script 仕組みは引き続き JavaScript を追加できます。
 - **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
 
+### 共有バンドルの実測ベースライン
+
+制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。ワークスペース解決と packed パッケージ解決の両方で、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。
+
+| フィクスチャ | Workspace raw / gzip | Packed raw / gzip |
+| --- | ---: | ---: |
+| 島なし | 0 / 0 | 0 / 0 |
+| イベントのみ | 49,830 / 17,004 | 49,892 / 17,027 |
+| scalar signal | 49,838 / 17,009 | 49,900 / 17,037 |
+| Show/For | 49,985 / 17,082 | 50,047 / 17,111 |
+| modelValue | 49,829 / 17,012 | 49,891 / 17,045 |
+| ブログメニューとテーマ切り替え | 50,180 / 17,138 | 50,242 / 17,166 |
+| JSON API | 49,984 / 17,096 | 50,046 / 17,127 |
+| 2 つの島 | 50,106 / 17,103 | 50,168 / 17,132 |
+
+両モードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
+
+この測定は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を使っています。ベースラインのソースは Darwin arm64 上の 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux との同等性は未検証のため、この値はクロスプラットフォームの再現性を示すものではありません。
+
+2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。両方の実行後、保存したファイルをコミット済み契約と照合します。
+
+```sh
+node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" --contract research/v3-island-size/decision.json
+```
+
 ## 単一のランタイム
 
 すべての島は `@takazudo/zfb` に同梱される zudo-react を使います。コンポーネントはセットアップ中に signal を作り、クライアントはラッパーの識別子と厳格な JSON props を検証してから、既存の子 DOM を引き受けます。プロジェクトごとのフレームワーク設定や互換エイリアスはありません。JSX 方言とコンポーネントモデルは [zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
