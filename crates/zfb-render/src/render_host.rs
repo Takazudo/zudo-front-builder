@@ -64,6 +64,9 @@ impl ModuleHandle {
 /// All methods are `async` so implementations that need I/O (V8 microtask
 /// draining, top-level await on module evaluate) can do so without blocking
 /// the caller's thread.
+// async_trait adds #[must_use] to the generated boxed futures; newer Clippy
+// considers that redundant on Future and reports each method at this trait.
+#[allow(clippy::double_must_use)]
 #[async_trait(?Send)]
 pub trait RenderHost {
     /// Load `source` as an ES module under the display `name`. Subsequent
