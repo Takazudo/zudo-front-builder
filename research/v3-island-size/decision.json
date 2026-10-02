@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455",
+  "baselineSourceSha": "362ab0a708adccfb0f8dd2567182d0ffcebbea9c",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 51220,
-        "gzip": 17471
+        "raw": 60008,
+        "gzip": 19908
       },
       "scalar-signal": {
-        "raw": 51228,
-        "gzip": 17480
+        "raw": 60016,
+        "gzip": 19910
       },
       "show-for": {
-        "raw": 51375,
-        "gzip": 17555
+        "raw": 60163,
+        "gzip": 19994
       },
       "model": {
-        "raw": 51219,
-        "gzip": 17485
+        "raw": 60007,
+        "gzip": 19917
       },
       "blog-theme": {
-        "raw": 51570,
-        "gzip": 17620
+        "raw": 60358,
+        "gzip": 20043
       },
       "json-api": {
-        "raw": 51374,
-        "gzip": 17574
+        "raw": 60162,
+        "gzip": 20004
       },
       "multi-island": {
-        "raw": 51496,
-        "gzip": 17583
+        "raw": 60284,
+        "gzip": 20006
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 51282,
-        "gzip": 17512
+        "raw": 60070,
+        "gzip": 19932
       },
       "scalar-signal": {
-        "raw": 51290,
-        "gzip": 17513
+        "raw": 60078,
+        "gzip": 19934
       },
       "show-for": {
-        "raw": 51437,
-        "gzip": 17591
+        "raw": 60225,
+        "gzip": 20016
       },
       "model": {
-        "raw": 51281,
-        "gzip": 17521
+        "raw": 60069,
+        "gzip": 19942
       },
       "blog-theme": {
-        "raw": 51632,
-        "gzip": 17652
+        "raw": 60420,
+        "gzip": 20072
       },
       "json-api": {
-        "raw": 51436,
-        "gzip": 17607
+        "raw": 60224,
+        "gzip": 20028
       },
       "multi-island": {
-        "raw": 51558,
-        "gzip": 17619
+        "raw": 60346,
+        "gzip": 20034
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after SDK Island persistence support; raw totals are unchanged and gzip totals are platform-specific.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after the finite shared literal-style registry; Linux x64 uses its separately measured contract.",
   "baselineEvidence": {
     "event": "local",
-    "sourceSha": "ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455",
-    "workspaceReport": "research/v3-island-size/results/persist-darwin-ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455/real-workspace/report.md",
-    "packedReport": "research/v3-island-size/results/persist-darwin-ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455/real-packed/report.md",
-    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. SDK persistence left raw totals unchanged and shifted gzip totals slightly in both directions; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
+    "sourceSha": "362ab0a708adccfb0f8dd2567182d0ffcebbea9c",
+    "workspaceReport": "research/v3-island-size/results/style-darwin-362ab0a708adccfb0f8dd2567182d0ffcebbea9c/real-workspace/report.md",
+    "packedReport": "research/v3-island-size/results/style-darwin-362ab0a708adccfb0f8dd2567182d0ffcebbea9c/real-packed/report.md",
+    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. The shared style registry added 8,788 raw bytes per nonempty fixture; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
   }
 }
