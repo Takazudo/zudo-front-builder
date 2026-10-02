@@ -1,4 +1,4 @@
-import { clientScript } from "@takazudo/zfb";
+import { Island, clientScript } from "@takazudo/zfb";
 import { CrossPipelineIsland } from "../components/cross-pipeline/Island";
 
 export default function CrossPipelinePage() {
@@ -12,7 +12,9 @@ export default function CrossPipelinePage() {
       <body>
         <main>
           <h1>ZFB_CROSS_PIPELINE_PAGE</h1>
-          <CrossPipelineIsland />
+          <Island>
+            <CrossPipelineIsland />
+          </Island>
         </main>
       </body>
     </html>

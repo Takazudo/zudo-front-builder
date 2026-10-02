@@ -233,6 +233,15 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 "demanded import {name:?} from {specifier:?} could not be resolved"
             )));
         };
+        // Asset and configured-loader imports can appear in ordinary JSX
+        // props next to a real boundary. Only a boundary child demands a
+        // component from them; keep the unsupported value until that site is
+        // evaluated so unrelated resource expressions do not fail the scan.
+        if !is_scannable_source(&target) {
+            return Ok(Value::Unsupported(format!(
+                "demanded binding from {specifier:?} resolves to a non-JavaScript module"
+            )));
+        }
         self.resolve_export(&target, name)
     }
 
@@ -2206,6 +2215,52 @@ mod tests {
         .unwrap();
         assert_eq!(markers(&islands), ["Counter"]);
         assert_eq!(islands[0].component_name, "default");
+    }
+
+    #[test]
+    fn configured_loader_import_in_ordinary_props_does_not_block_a_boundary() {
+        let islands = scan(&[
+            (
+                "pages/home.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                import { Counter } from '../components/counter';
+                <Island><Counter /></Island>;
+            "#,
+            ),
+            (
+                "components/counter.tsx",
+                r#"
+                'use client';
+                import configuredLoader from './entry.fixture';
+                export function Counter() {
+                    return <button data-contract={[configuredLoader].join('|')}>count</button>;
+                }
+            "#,
+            ),
+            ("components/entry.fixture", "configured loader payload"),
+        ])
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[test]
+    fn non_javascript_import_as_boundary_child_is_an_actionable_error() {
+        let error = scan(&[
+            (
+                "pages/home.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                import Resource from '../components/entry.fixture';
+                <Island><Resource /></Island>;
+            "#,
+            ),
+            ("components/entry.fixture", "configured loader payload"),
+        ])
+        .expect_err("a resource cannot be registered as a function component");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("pages/home.tsx"), "{diagnostic}");
+        assert!(diagnostic.contains("non-JavaScript module"), "{diagnostic}");
     }
 
     #[test]
