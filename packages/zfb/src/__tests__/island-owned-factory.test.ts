@@ -46,6 +46,35 @@ it("serializes only supported persistence options on an owned island", async () 
   expect(() => render({ persistProps: false })).toThrow("persistProps requires persist");
 });
 
+it("keeps persistence options beside SDK-owned identity on a deferred skip-SSR island", async () => {
+  (
+    globalThis as typeof globalThis & {
+      __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+    }
+  ).__zfb = {
+    zudoReactBuild: "b1",
+    zudoReactIslands: ["Card"],
+  };
+  const { Island } = await import("../island.js");
+  function Card({ count }: { count: number }) {
+    return jsx("b", { children: count });
+  }
+  const html = renderToString(
+    Island({
+      children: jsx(Card, { count: 3 }),
+      when: "media",
+      media: "(min-width: 40rem)",
+      persist: "sidebar-tree",
+      persistProps: true,
+      ssrFallback: jsx("span", { children: "pending" }),
+    }) as never,
+  );
+
+  expect(html).toBe(
+    '<div data-zfb-island-skip-ssr="Card" data-when="media" data-media="(min-width: 40rem)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="b1" data-props="{&quot;count&quot;:3}" data-zfb-transition-persist="sidebar-tree" data-zfb-transition-persist-props="true"><span>pending</span></div>',
+  );
+});
+
 it("rejects a conflicting displayName against scanner identity", async () => {
   const { Island } = await import("../island.js");
   function Card() {

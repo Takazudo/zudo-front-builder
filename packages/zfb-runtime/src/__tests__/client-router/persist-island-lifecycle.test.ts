@@ -29,6 +29,9 @@ import {
   type IslandManifestValue,
 } from "@takazudo/zfb/runtime";
 import type { RootHandle } from "@takazudo/zfb/zudo-react/client";
+import { Island } from "@takazudo/zfb";
+import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 
@@ -43,6 +46,10 @@ const NEW_BUILD = "2222222222222222";
 
 const ownedAttrs = (build = BUILD): string =>
   `data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${build}"`;
+
+function SdkPersistedPanel({ value }: { value: number }) {
+  return jsx("span", { children: value });
+}
 
 function rootHandle(
   component: string,
@@ -308,6 +315,178 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     expect(markerAtMount).toEqual([false]);
     expect(freshEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
   });
+
+  it("keeps SDK-generated persisted islands or remounts them according to their props option", () => {
+    const zfbGlobal = globalThis as typeof globalThis & {
+      __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+    };
+    const previousMetadata = zfbGlobal.__zfb;
+    zfbGlobal.__zfb = { zudoReactBuild: BUILD, zudoReactIslands: ["SdkPersistedPanel"] };
+    try {
+      const sdkIsland = (key: string, value: number, persistProps = false) =>
+        renderToString(
+          Island({
+            children: jsx(SdkPersistedPanel, { value }),
+            persist: key,
+            persistProps,
+          }),
+        );
+      const page = (refreshValue: number, retainedValue: number) =>
+        [
+          sdkIsland("sdk-stable", 1),
+          sdkIsland("sdk-refresh", refreshValue),
+          sdkIsland("sdk-retain", retainedValue, true),
+        ].join("");
+      document.body.innerHTML = page(1, 1);
+
+      const disposedElements: Element[] = [];
+      const mount = vi.fn((...args: Parameters<IslandManifestValue["mount"]>) =>
+        rootHandle("SdkPersistedPanel", BUILD, () => disposedElements.push(args[1])),
+      );
+      mountIslands({ SdkPersistedPanel: ownedEntry("SdkPersistedPanel", mount) });
+      const nodes = Object.fromEntries(
+        ["sdk-stable", "sdk-refresh", "sdk-retain"].map((key) => [
+          key,
+          document.querySelector(`[${PERSIST}="${key}"]`)!,
+        ]),
+      ) as Record<string, Element>;
+      const stableHandle = (nodes["sdk-stable"] as unknown as Record<symbol, RootHandle>)[
+        Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+      ];
+      const refreshHandle = (nodes["sdk-refresh"] as unknown as Record<symbol, RootHandle>)[
+        Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+      ];
+      const retainedHandle = (nodes["sdk-retain"] as unknown as Record<symbol, RootHandle>)[
+        Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+      ];
+
+      const next = incomingBody(page(2, 2));
+      cancelPendingIslands();
+      unmountIslands(document.body, next);
+      swapBodyElement(next, document.body);
+      mountNewIslands();
+
+      expect(document.querySelector(`[${PERSIST}="sdk-stable"]`)).toBe(nodes["sdk-stable"]);
+      expect(document.querySelector(`[${PERSIST}="sdk-refresh"]`)).toBe(nodes["sdk-refresh"]);
+      expect(document.querySelector(`[${PERSIST}="sdk-retain"]`)).toBe(nodes["sdk-retain"]);
+      expect(
+        (nodes["sdk-stable"] as unknown as Record<symbol, RootHandle>)[
+          Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+        ],
+      ).toBe(stableHandle);
+      expect(
+        (nodes["sdk-retain"] as unknown as Record<symbol, RootHandle>)[
+          Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+        ],
+      ).toBe(retainedHandle);
+      expect(
+        (nodes["sdk-refresh"] as unknown as Record<symbol, RootHandle>)[
+          Symbol.for("@takazudo/zfb/zudo-react/root-v1")
+        ],
+      ).not.toBe(refreshHandle);
+      expect(nodes["sdk-stable"]?.getAttribute("data-props")).toBe('{"value":1}');
+      expect(nodes["sdk-refresh"]?.getAttribute("data-props")).toBe('{"value":2}');
+      expect(nodes["sdk-retain"]?.getAttribute("data-props")).toBe('{"value":1}');
+      expect(disposedElements).toEqual([nodes["sdk-refresh"]]);
+      expect(mount).toHaveBeenCalledTimes(4);
+      expect(mount.mock.calls[3]?.[0]).toEqual({ value: 2 });
+      expect(mount.mock.calls[3]?.[2]).toBe("render");
+    } finally {
+      if (previousMetadata === undefined) delete zfbGlobal.__zfb;
+      else zfbGlobal.__zfb = previousMetadata;
+    }
+  });
+
+  it.each(["idle", "visible", "media"] as const)(
+    "reschedules a persisted SDK %s island after navigation and ignores its stale callback",
+    (when) => {
+      const zfbGlobal = globalThis as typeof globalThis & {
+        __zfb?: { zudoReactBuild: string; zudoReactIslands: string[] };
+      };
+      const previousMetadata = zfbGlobal.__zfb;
+      zfbGlobal.__zfb = { zudoReactBuild: BUILD, zudoReactIslands: ["SdkPersistedPanel"] };
+      const callbacks: Array<() => void> = [];
+      try {
+        if (when === "idle") {
+          vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+            callbacks.push(callback);
+            return callbacks.length;
+          });
+          vi.stubGlobal("cancelIdleCallback", vi.fn());
+        } else if (when === "visible") {
+          class TestObserver {
+            constructor(
+              private readonly callback: (entries: unknown[], observer: TestObserver) => void,
+            ) {}
+            private target: Element | undefined;
+            observe(target: Element) {
+              this.target = target;
+              callbacks.push(() =>
+                this.callback([{ isIntersecting: true, target: this.target }], this),
+              );
+            }
+            disconnect() {}
+          }
+          vi.stubGlobal("IntersectionObserver", TestObserver);
+        } else {
+          vi.stubGlobal("matchMedia", (query: string) => {
+            let listener: ((event: { matches: boolean }) => void) | undefined;
+            const entry = () => listener?.({ matches: true });
+            callbacks.push(entry);
+            return {
+              matches: false,
+              media: query,
+              addEventListener(_type: string, next: (event: { matches: boolean }) => void) {
+                listener = next;
+              },
+              // Keep the callback callable to model a match event already
+              // queued when the router removes its listener during a swap.
+              removeEventListener() {},
+            };
+          });
+        }
+
+        const markup = renderToString(
+          Island({
+            children: jsx(SdkPersistedPanel, { value: 7 }),
+            when,
+            ...(when === "media" ? { media: "(min-width: 40rem)" } : {}),
+            persist: `sdk-${when}`,
+            ...(when === "media" ? { ssrFallback: jsx("i", { children: "pending" }) } : {}),
+          }),
+        );
+        document.body.innerHTML = markup;
+        const dispose = vi.fn();
+        const mount = vi.fn((..._args: Parameters<IslandManifestValue["mount"]>) =>
+          rootHandle("SdkPersistedPanel", BUILD, dispose),
+        );
+        mountIslands({ SdkPersistedPanel: ownedEntry("SdkPersistedPanel", mount) });
+        expect(mount).not.toHaveBeenCalled();
+        expect(callbacks).toHaveLength(1);
+
+        const next = incomingBody(markup);
+        cancelPendingIslands();
+        unmountIslands(document.body, next);
+        swapBodyElement(next, document.body);
+        mountNewIslands();
+
+        expect(callbacks).toHaveLength(2);
+        callbacks[0]!();
+        expect(mount).not.toHaveBeenCalled();
+        callbacks[1]!();
+        expect(mount).toHaveBeenCalledTimes(1);
+        expect(mount.mock.calls[0]?.[2]).toBe(when === "media" ? "render" : "hydrate");
+        expect(document.querySelector(`[${PERSIST}="sdk-${when}"]`)?.isConnected).toBe(true);
+        callbacks[1]!();
+        expect(mount).toHaveBeenCalledTimes(1);
+        expect(dispose).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+        if (previousMetadata === undefined) delete zfbGlobal.__zfb;
+        else zfbGlobal.__zfb = previousMetadata;
+      }
+    },
+  );
 });
 
 // These tests exercise islands riding inside retained non-island chrome. Keep

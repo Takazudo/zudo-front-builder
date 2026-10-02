@@ -2,12 +2,18 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Island } from "../../packages/zfb/dist/index.js";
 import * as react from "../../packages/zfb/dist/zudo-react/index.js";
+import { jsx } from "../../packages/zfb/dist/zudo-react/jsx-runtime.js";
 import { islandRoot, renderToString } from "../../packages/zfb/dist/zudo-react/server.js";
 import { createComponents } from "./fixture/real-islands-components.mjs";
 
 const fixture = join(fileURLToPath(new URL(".", import.meta.url)), "fixture");
 const components = createComponents(react);
+globalThis.__zfb = {
+  zudoReactBuild: "browser-fixture-1",
+  zudoReactIslands: Object.keys(components),
+};
 const identity = (name) => ({ component: name, build: "browser-fixture-1" });
 const island = (name, props, id, when = "load") =>
   renderToString(
@@ -40,6 +46,42 @@ for (const [name, config] of Object.entries(pages)) {
 <meta name="zfb-view-transitions-enabled" content=""><meta name="zfb-view-transitions-fallback" content="animate">
 <script type="importmap">{"imports":{"@takazudo/zfb/runtime":"/zfb-dist/runtime.js"}}</script>
 </head><body><nav>${nav}</nav><h1>real islands ${name}</h1>${header}
+<script type="module" src="/real-islands-bootstrap.js"></script></body></html>`,
+  );
+}
+
+const sdkPages = {
+  a: { same: 2, refresh: 10, retain: 100, present: true },
+  b: { same: 2, refresh: 20, retain: 200, present: true },
+  gone: { present: false },
+};
+const sdkNav = Object.keys(sdkPages)
+  .map((name) => `<a id="to-sdk-${name}" href="/real-islands-sdk-${name}.html">${name}</a>`)
+  .join(" ");
+const sdkIsland = (key, id, start, persistProps = false) =>
+  renderToString(
+    Island({
+      children: jsx(components.Counter, { id, start }),
+      persist: `sdk-${key}`,
+      persistProps,
+    }),
+  ).replace(/^<div /, `<div id="sdk-island-${key}" `);
+
+for (const [name, config] of Object.entries(sdkPages)) {
+  const persistedIslands = config.present
+    ? [
+        sdkIsland("same", "sdk-same", config.same),
+        sdkIsland("refresh", "sdk-refresh", config.refresh),
+        sdkIsland("retain", "sdk-retain", config.retain, true),
+      ].join("\n")
+    : '<p id="sdk-no-targets">persist targets removed</p>';
+  writeFileSync(
+    join(fixture, `real-islands-sdk-${name}.html`),
+    `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>SDK persistence ${name}</title>
+<meta name="zfb-view-transitions-enabled" content=""><meta name="zfb-view-transitions-fallback" content="animate">
+<script type="importmap">{"imports":{"@takazudo/zfb/runtime":"/zfb-dist/runtime.js"}}</script>
+</head><body><nav>${sdkNav}</nav><h1>SDK persistence ${name}</h1><main>${persistedIslands}</main>
 <script type="module" src="/real-islands-bootstrap.js"></script></body></html>`,
   );
 }

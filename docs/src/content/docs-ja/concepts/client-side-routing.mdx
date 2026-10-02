@@ -509,40 +509,31 @@ console.log(transitionEnabledOnThisPage());
 
 ルーターは、body スワップの前に永続化された要素を `<html>` へ持ち上げ（Chrome 133+ では切り離しゼロの `moveBefore()` API を、そうでなければフォールバックの `appendChild` を使用）、新しい body 内の対応するターゲットへ再アタッチします。これは、Astro が WebGL コンテキストや再生状態を失わずに `<canvas>` や `<video>` を生かし続けるために使っているのと同じ仕組みです。
 
-#### `data-zfb-transition-persist-props` で島のコンポーネント状態を永続化する
+#### `<Island>` で島を永続化する
 
-同じ `data-zfb-transition-persist` 属性は、`<video>` のような素の要素だけでなく、島のラッパー（`[data-zfb-island]` マーカー）にも効きます。マーカーがスワップを生き延びると、そのライブなコンポーネントインスタンスも生き延びます。内部状態（開/折りたたみ、ネストしたリスト内のスクロールオフセット、フォーカスされた入力）はリセットされません。フレームワークがそれをアンマウントしていないからです。
-
-```tsx
-// A layout component — the sidebar tree keeps its expand/collapse state
-// and its scroll position across every SPA navigation.
-<div data-zfb-island="SidebarTree" data-zfb-transition-persist="sidebar-tree" data-props={props}>
-  <SidebarTree {...props} />
-</div>
-```
-
-デフォルトでは、スワップは依然として、永続化された島の props を受信ページに合わせてリフレッシュします（ルーターはそのマークアップを破棄するとはいえ、新しいページが *何を* レンダリングしたはずかを常に把握しています）。リフレッシュされた props がライブインスタンスがすでに持っているものと同一なら、それ以外は何も起きません。完全な連続性が、静かに保たれます。異なる場合、島は新しい props でアンマウントされ、新しくマウントし直されます。そのため、前のページの古いレンダリングを表示したまま固まることは決してありません。ただし props に由来しない内部状態（開閉トグルなど）は、その再マウントで失われます。これは通常の（永続化されていない）島と同じです。
-
-`data-zfb-transition-persist-props` を `"false"` **以外の** 任意の値（慣例では `"true"`）に設定すると、その props リフレッシュを完全にオプトアウトし、受信ページの props がどうであれ、島の現在の props（したがって現在のレンダリング状態）をそのまま正確に保ちます。
+島には SDK の `persist` プロパティを使います。SDK は、クライアントランタイムが検証するコンポーネント、ビルド、transport、protocol、props のメタデータとともに、所有するラッパーへ永続化キーを出力します。
 
 ```tsx
-<div
-  data-zfb-island="SidebarTree"
-  data-zfb-transition-persist="sidebar-tree"
-  data-zfb-transition-persist-props="true"
-  data-props={props}
->
+// レイアウトコンポーネント — サイドバーのツリーは開閉状態と
+// スクロール位置を SPA ナビゲーションをまたいで維持します。
+<Island persist="sidebar-tree">
   <SidebarTree {...props} />
-</div>
+</Island>
 ```
 
-これは、props がページをまたいで実質的に不変であるクロムゾーンの島（サイドバー、ヘッダー）で、再レンダリングを絶対にゼロにしたい場合に使ってください。ページに応じて props が変わることが想定されるコンテンツ領域の島（目次、「最終更新」ウィジェット）には使わないでください。オプトアウトするということは、受信 props が実際に異なるナビゲーションの後でも、島が *前の* ページのデータを表示し続けることを意味するからです。
+島を存続させたい各ページで、同じ空でない `persist` キーを使います。キーは各ドキュメント内で一意にしてください。重複すると、DOM のスワップ前にナビゲーションが失敗します。キーが一致すると、ラッパーとライブなコンポーネントインスタンスが維持されるため、メニューの開閉やフォーカス中の入力などの状態はリセットされません。
 
-<Note title="属性のデフォルトは名前が示唆するのと逆">
+デフォルトでは、ナビゲーション時に受信ページの props へ更新します。props が同じなら現在のインスタンスを維持します。異なる場合、古いインスタンスを一度破棄し、受信 props で新しくマウントするため、前のページの古いデータを表示し続けません。この再マウントでは、古いインスタンスの内部状態は失われます。
 
-`data-zfb-transition-persist-props` が存在しない、または明示的に `"false"` である場合、props は **リフレッシュされます**（よくあるケース: 状態は永続化されるが、データは最新に保たれる）。それ以外の任意の値はリフレッシュをオプト **アウト** します。慣例では `"true"` ですが、チェックは常にリテラル文字列 `"false"` に対してのみ行われます。これは Astro の `data-astro-transition-persist-props` の挙動を正確にミラーしています。
+一致するキーの間、現在の props と状態を維持するには `persistProps` を設定します。
 
-</Note>
+```tsx
+<Island persist="sidebar-tree" persistProps>
+  <SidebarTree {...props} />
+</Island>
+```
+
+`persistProps` は、サイト共通のサイドバーのようにページ間で props が変わらない島に使います。boolean の SDK オプションで、デフォルトは `false` です。`persistProps` を有効にしても、コンポーネントまたはビルド識別子が変わる場合はルートを作り直します。ページ固有の目次や「最終更新」ウィジェットで古い props を維持すると、前のページのデータが表示されることがあります。
 
 #### 永続化された要素の内側にある島
 
