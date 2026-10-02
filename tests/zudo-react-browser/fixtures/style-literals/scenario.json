@@ -1,0 +1,15 @@
+{
+  "page": "style-literals",
+  "roots": [
+    {
+      "component": "component.tsx",
+      "props": { "kind": "hydrate" },
+      "mode": "hydrate"
+    },
+    {
+      "component": "component.tsx",
+      "props": { "kind": "mount" },
+      "mode": "mount"
+    }
+  ]
+}
