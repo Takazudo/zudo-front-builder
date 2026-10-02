@@ -136,6 +136,27 @@ export default function Page() {
 
 If setup fails or activation is cancelled, the fallback stays in place.
 
+## Persisting an island across navigation
+
+Pass `persist` to give the island wrapper a stable key. Use the same nonempty,
+trimmed key on each page where the island should survive client-router
+navigation. Keys must be unique within each document. The SDK emits the key on
+its owned wrapper; it does not expose the reserved transport or identity
+attributes as caller props.
+
+```tsx
+<Island persist="desktop-sidebar" persistProps>
+  <SidebarTree {...props} />
+</Island>
+```
+
+By default, changed props dispose the old root once and mount a fresh root with
+the incoming props. Identical props keep the current root and its state. Set
+`persistProps` to `true` to retain the old props and state even when the
+incoming page has different props. `persistProps` defaults to `false` and
+requires `persist`. A changed component, build, transport, protocol, or root
+kind still recreates the root.
+
 ## Mount state and persisted roots
 
 The runtime writes `data-zfb-island-mounted` only after a root is mounted
