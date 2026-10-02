@@ -5,7 +5,7 @@ import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
-import { serializeProps } from "./props-transport.js";
+import { emptyChildren, normalizeProps } from "./props-transport.js";
 import { islandRootType } from "./island-root-type.js";
 import type { IslandOptions, RenderOptions } from "./server.js";
 import {
@@ -527,11 +527,6 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     context.scope = prior;
   }
 }
-function empty(value: unknown): boolean {
-  return (
-    value == null || typeof value === "boolean" || (Array.isArray(value) && value.every(empty))
-  );
-}
 function island(
   description: Description,
   context: Context,
@@ -551,13 +546,13 @@ function island(
     (child.type as typeof child.type & { displayName?: string }).displayName ?? child.type.name;
   if (component !== options.identity.component)
     fail("ZR_ISLAND_IDENTITY", context, `expected ${options.identity.component}, got ${component}`);
-  if (Object.hasOwn(child.props, "children") && !empty(child.props.children))
+  if (Object.hasOwn(child.props, "children") && !emptyChildren(child.props.children))
     fail("ZR_ISLAND_CHILD", context, "nonempty children");
-  const props = { ...child.props };
-  delete props.children;
+  let props: Record<string, unknown>;
   let payload: string;
   try {
-    payload = serializeProps(props);
+    props = normalizeProps(child.props);
+    payload = JSON.stringify(props);
   } catch (error) {
     throw new TypeError(
       `ZR_ISLAND_PROPS ${component}: ${error instanceof Error ? error.message : String(error)}`,
