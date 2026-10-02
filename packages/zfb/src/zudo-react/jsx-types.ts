@@ -1,3 +1,5 @@
+import type { CSSProperties } from "./style.js";
+export type { CSSProperties, CssProperty } from "./style.js";
 import type { Child, Component, Description, Key } from "./description.js";
 import type { Listener, Ref } from "./index.js";
 import type { ReadonlySignal, Signal } from "./reactive-types.js";
@@ -7,34 +9,6 @@ type ScalarAttribute = Value<string | number | boolean | null>;
 type DimensionAttribute = Value<string | number | null>;
 type StringAttribute = Value<string | null>;
 type BooleanAttribute = Value<boolean | null>;
-export type CssProperty =
-  | `--${string}`
-  | `${string}-${string}`
-  | "color"
-  | "display"
-  | "opacity"
-  | "width"
-  | "height"
-  | "margin"
-  | "padding"
-  | "border"
-  | "background"
-  | "position"
-  | "top"
-  | "right"
-  | "bottom"
-  | "left"
-  | "overflow"
-  | "transform"
-  | "transition"
-  | "animation"
-  | "font"
-  | "flex"
-  | "grid"
-  | "gap";
-export type CSSProperties = Readonly<
-  Partial<Record<CssProperty, string | number | null | undefined>>
->;
 // The custom-name index must also accept every mapped listener under strict function variance.
 type AnyListener = Listener<any>;
 type EventProps<TEl extends Element, TMap extends Record<keyof TMap, Event>> = {

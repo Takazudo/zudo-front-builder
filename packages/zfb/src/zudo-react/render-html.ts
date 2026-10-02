@@ -1,3 +1,4 @@
+import { serializeStyle } from "./style.js";
 import { Fragment, isDescription, type Child, type Description } from "./description.js";
 import { escapeAttribute, escapeText } from "./escape.js";
 import type { IslandIdentity } from "./index.js";
@@ -109,24 +110,13 @@ function renderText(value: unknown, context: Context): string {
   fail("ZR_CHILD", context, `invalid scalar ${typeof value}`);
 }
 function style(value: unknown, context: Context): string {
-  if (typeof value === "string") return value;
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    fail("ZR_STYLE", context, "style must be a string or flat object");
-  let result = "";
-  for (const [name, entry] of Object.entries(value)) {
-    if (!/^(--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)$/.test(name) || /[A-Z]/.test(name))
-      fail("ZR_STYLE", context, `invalid property ${name}`);
-    if (entry == null) continue;
-    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry)))
-      fail("ZR_STYLE", context, `invalid value for ${name}`);
-    result += `${name}:${entry};`;
+  try {
+    return serializeStyle(value);
+  } catch (error) {
+    if (error instanceof TypeError)
+      fail("ZR_STYLE", context, error.message.replace(/^ZR_STYLE: /, ""));
+    throw error;
   }
-  return result;
 }
 function attributes(
   tag: string,

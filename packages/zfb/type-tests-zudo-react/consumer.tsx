@@ -33,7 +33,7 @@ const view = (
       class="box"
       data-state={true}
       aria-label={name}
-      style={{ "font-size": 12, "--accent": "red" }}
+      style={{ "font-size": "12px", "--accent": "red" }}
     >
       {name}
       <svg viewBox="0 0 10 10">
