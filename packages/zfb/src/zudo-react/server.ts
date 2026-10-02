@@ -15,6 +15,8 @@ export interface IslandOptions {
   media?: string | undefined;
   skipSsr?: boolean | undefined;
   fallback?: Child;
+  persist?: string | undefined;
+  persistProps?: boolean | undefined;
 }
 export function islandRoot(child: Description, options: IslandOptions): Description {
   return createDescription(islandRootType as never, { child, options });
