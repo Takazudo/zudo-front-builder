@@ -10,6 +10,13 @@ architecture overview: the `ClientBundler` trait,
 and code-splitting. The `NativeRustBundler` placeholder lives in
 `src/future_rust_native.rs`.
 
+## Boundary discovery implementation contract
+
+The accepted [boundary discovery contract](BOUNDARY-DISCOVERY.md) specifies the
+#3506–#3508 change from exported-function registration to actual SDK boundary
+targets, including binding identity, wrappers, diagnostics, and compatibility.
+It describes required downstream work rather than claiming it is implemented.
+
 ## esbuild Version
 
 This crate invokes the **esbuild standalone CLI** as a subprocess.
