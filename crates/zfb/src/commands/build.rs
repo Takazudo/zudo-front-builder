@@ -12663,8 +12663,9 @@ mod tests {
         std::fs::create_dir_all(project_root.join("components")).unwrap();
         std::fs::write(
             project_root.join("pages/index.tsx"),
-            "import { Gallery } from \"../components/gallery\";\n\
-             export default function Index() { return <Gallery/>; }\n",
+            "import { Island as Boundary } from \"@takazudo/zfb\";\n\
+             import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Boundary><Gallery /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -12709,7 +12710,9 @@ mod tests {
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -12911,8 +12914,17 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
+        let page = root.join("pages/index.tsx");
         let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Gallery } from '../components/gallery';\n\
+             export default function Page() { return <Boundary><Gallery /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island_src,
             "'use client';\n\
@@ -12924,7 +12936,7 @@ mod tests {
         std::fs::write(root.join("components/message.txt"), "hello").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         assert_eq!(
             islands.len(),
             1,
@@ -12987,8 +12999,17 @@ mod tests {
         std::fs::create_dir_all(&scope_dir).unwrap();
         std::os::unix::fs::symlink(&external_pkg, scope_dir.join("external")).unwrap();
 
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
+        let page = root.join("pages/index.tsx");
         let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Gallery } from '../components/gallery';\n\
+             export default function Page() { return <Boundary><Gallery /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island_src,
             "'use client';\n\
@@ -13000,7 +13021,7 @@ mod tests {
         std::fs::write(root.join("components/message.txt"), "hello").unwrap();
 
         let (islands, scan_meta) = scan_islands_with_meta_and_first_party_root(
-            std::slice::from_ref(&island_src),
+            std::slice::from_ref(&page),
             &FsResolver::new(),
             Some(root),
         )
@@ -13027,6 +13048,7 @@ mod tests {
     fn materialise_islands_shadow_copies_nearest_config_and_relative_extends_chain() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components/feature")).unwrap();
         std::fs::create_dir_all(root.join("config")).unwrap();
         std::fs::write(
@@ -13046,6 +13068,14 @@ mod tests {
         .unwrap();
         let island = root.join("components/feature/Island.tsx");
         let worker = root.join("components/feature/worker.ts");
+        let page = root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/feature/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13054,7 +13084,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13176,9 +13206,10 @@ mod tests {
         let nested_island = root.join("components/feature/NestedIsland.tsx");
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { RootIsland } from '../RootIsland';\n\
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { RootIsland } from '../RootIsland';\n\
              import { NestedIsland } from '../components/feature/NestedIsland';\n\
-             export default function Page() { return RootIsland() + NestedIsland(); }\n",
+             export default function Page() { return <div><Boundary><RootIsland /></Boundary><Boundary><NestedIsland /></Boundary></div>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -13237,6 +13268,7 @@ mod tests {
             .join(&shared_name)
             .join("tsconfig.base.json");
         assert!(!escaped_shadow_target.exists());
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::create_dir_all(&shared).unwrap();
         let external_config = shared.join("tsconfig.base.json");
@@ -13252,6 +13284,14 @@ mod tests {
         .unwrap();
         let island = root.join("components/Island.tsx");
         let worker = root.join("components/worker.ts");
+        let page = root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13260,7 +13300,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(&root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13585,6 +13625,7 @@ mod tests {
         let physical_root = tmp.path().join("physical-project");
         let linked_root = tmp.path().join("linked-project");
         std::fs::create_dir_all(physical_root.join("components")).unwrap();
+        std::fs::create_dir_all(physical_root.join("pages")).unwrap();
         std::os::unix::fs::symlink(&physical_root, &linked_root).unwrap();
         std::fs::write(
             linked_root.join("tsconfig.json"),
@@ -13593,6 +13634,14 @@ mod tests {
         .unwrap();
         let island = linked_root.join("components/Island.tsx");
         let worker = linked_root.join("components/worker.ts");
+        let page = linked_root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13601,7 +13650,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(&linked_root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13713,8 +13762,9 @@ mod tests {
 
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { ShadowIsland } from '../components/feature/ShadowIsland';\n\
-             export default ShadowIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { ShadowIsland } from '../components/feature/ShadowIsland';\n\
+             export default function Page() { return <Boundary><ShadowIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14135,8 +14185,9 @@ mod tests {
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { ChildIsland } from '../components/ChildIsland';\n\
-             export default ChildIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { ChildIsland } from '../components/ChildIsland';\n\
+             export default function Page() { return <Boundary><ChildIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14386,8 +14437,9 @@ mod tests {
         .unwrap();
         std::fs::write(
             project.join("pages/index.tsx"),
-            "import { GlobWidget } from '../components/GlobWidget';\n\
-             export default GlobWidget;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { GlobWidget } from '../components/GlobWidget';\n\
+             export default function Page() { return <Boundary><GlobWidget /></Boundary>; }\n",
         )
         .unwrap();
         // The unrecorded edge: a plain, query-free `require(...)` call,
@@ -14576,7 +14628,9 @@ mod tests {
         let island = root.join("components/Island.tsx");
         std::fs::write(
             &page,
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14613,7 +14667,9 @@ mod tests {
         let raw_target = project_root.join("components/broken.js");
         std::fs::write(
             &page,
-            "import { Shader } from '../components/shader';\nexport default Shader;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Shader } from '../components/shader';\n\
+             export default function Page() { return <Boundary><Shader /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14686,7 +14742,9 @@ mod tests {
         let raw_target = project_root.join("src/content/shader.txt");
         std::fs::write(
             &page,
-            "import { Shader } from '../components/Shader';\nexport default Shader;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Shader } from '../components/Shader';\n\
+             export default function Page() { return <Boundary><Shader /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14740,7 +14798,9 @@ mod tests {
         let raw_target = package.join("payload.txt");
         std::fs::write(
             &route,
-            "import { PresetIsland } from '../PresetIsland';\nexport default PresetIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { PresetIsland } from '../PresetIsland';\n\
+             export default function Route() { return <Boundary><PresetIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14794,7 +14854,9 @@ mod tests {
         let worker_css = root.join("lib/worker.css");
         std::fs::write(
             &page,
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -17262,8 +17324,9 @@ mod tests {
         write_shadow_fixture(
             project_root,
             "pages/index.tsx",
-            "import { Gallery } from \"../components/gallery\";\n\
-             export default function Index() { return <Gallery/>; }\n",
+            "import { Island as Boundary } from \"@takazudo/zfb\";\n\
+             import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Boundary><Gallery /></Boundary>; }\n",
         );
         write_shadow_fixture(
             project_root,
