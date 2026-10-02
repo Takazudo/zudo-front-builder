@@ -1487,6 +1487,9 @@ fn bundler_timing_enabled() -> bool {
 /// [`reap_stale_shadow_sessions`] uses to recognize a sibling session dir.
 pub(crate) const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
 
+/// Prefix of the sessionless (prod) bundler shadow tempdir.
+pub(crate) const BUNDLER_TEMPDIR_PREFIX: &str = "zfb-bundler-";
+
 /// Reserved lock-file name at a shadow session dir's root (issue #2257) —
 /// zfb-namespaced (mirrors the watcher-liveness probe's per-session
 /// `.owner.lock` convention, `crates/zfb/src/commands/watcher_liveness_probe.rs`)
@@ -3441,7 +3444,7 @@ pub fn bundle_with_session(
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
             let work = allocate_bundler_tempdir(
-                "zfb-bundler-",
+                BUNDLER_TEMPDIR_PREFIX,
                 Some(&parent),
                 keep_build_shadow_enabled(),
                 "bundler shadow root",
