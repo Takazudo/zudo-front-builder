@@ -220,6 +220,14 @@ function restricted(
   namespace: Namespace,
   parent: string,
 ): string {
+  return tracked(value, context, () => restrictedValue(value, context, namespace, parent));
+}
+function restrictedValue(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
   if (value == null || typeof value === "boolean") return "";
   if (Array.isArray(value))
     return value
@@ -245,8 +253,6 @@ function element(
   parent: string,
 ): string {
   const tag = description.type as string;
-  const previousNode = context.node;
-  context.node = description;
   const custom = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(tag);
   const elementNamespace = tag === "svg" || namespace === "svg" ? "svg" : "html";
   const childNamespace = tag === "foreignObject" ? "html" : elementNamespace;
@@ -463,10 +469,28 @@ function element(
   if (tag === "pre" && raw === undefined && (content.startsWith("\n") || content.startsWith("\r")))
     content = `\n${content}`;
   context.formId = previousFormId;
-  context.node = previousNode;
   return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
 }
+// A failure is attributed only to the value being rendered: a description's own site,
+// or no site at all for scalars, promises and other non-description children.
+function tracked<T>(value: unknown, context: Context, fn: () => T): T {
+  const prior = context.node;
+  context.node = isDescription(value) ? value : undefined;
+  try {
+    return fn();
+  } finally {
+    context.node = prior;
+  }
+}
 function render(value: unknown, context: Context, namespace: Namespace, parent: string): string {
+  return tracked(value, context, () => renderValue(value, context, namespace, parent));
+}
+function renderValue(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
   if (value == null || typeof value === "boolean") return "";
   if (Array.isArray(value))
     return region(context, "f", () => children(value, context, namespace, parent));
@@ -551,9 +575,7 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
   const component = value.type;
   const scope = context.scope.child(component.name || "Anonymous");
   const prior = context.scope;
-  const priorNode = context.node;
   context.scope = scope;
-  context.node = value;
   try {
     return region(context, "c", () => {
       const output = withScope(scope, () => component(value.props));
@@ -563,7 +585,6 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     });
   } finally {
     context.scope = prior;
-    context.node = priorNode;
   }
 }
 function island(

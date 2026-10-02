@@ -71,11 +71,12 @@ export type DescriptionSite =
     };
 
 const sites = new WeakMap<Description, DescriptionSite>();
-// The build host's SSR router enables call-site capture only while it re-renders a failed page.
+// The build host's SSR router holds a count here only while it re-renders failed pages.
 const siteCapture = Symbol.for("@takazudo/zfb/zudo-react/site-capture-v1");
 
 function generatedSite(caller: Function): DescriptionSite | undefined {
-  if ((globalThis as Record<symbol, unknown>)[siteCapture] !== true) return undefined;
+  const active = (globalThis as Record<symbol, unknown>)[siteCapture];
+  if (typeof active !== "number" || active < 1) return undefined;
   if (typeof Error.captureStackTrace !== "function") return undefined;
   const holder: { stack?: string } = {};
   Error.captureStackTrace(holder, caller);

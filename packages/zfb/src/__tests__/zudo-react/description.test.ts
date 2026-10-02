@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Fragment, flattenChildren, h, isDescription } from "../../zudo-react/index.js";
+import { Fragment, Show, flattenChildren, h, isDescription } from "../../zudo-react/index.js";
 import { jsx, jsxs } from "../../zudo-react/jsx-runtime.js";
 import { jsxDEV } from "../../zudo-react/jsx-dev-runtime.js";
 import { descriptionSite } from "../../zudo-react/description.js";
-import { renderToString } from "../../zudo-react/server.js";
+import { islandRoot, renderToString } from "../../zudo-react/server.js";
 
 describe("zudo-react descriptions", () => {
   it("copies props, normalizes keys and stays inert", () => {
@@ -83,7 +83,7 @@ describe("zudo-react description sites", () => {
 
   it("records no generated site unless the build host enables capture", () => {
     expect(descriptionSite(jsx("p", null))).toBeUndefined();
-    flags[capture] = true;
+    flags[capture] = 1;
     try {
       const site = descriptionSite(jsx("p", null));
       expect(site).toEqual({
@@ -113,6 +113,53 @@ describe("zudo-react description sites", () => {
       component: "static render",
       spelling: { name: "autoComplete", suggestion: "autocomplete" },
       site: { kind: "source", file: "components/field.tsx", line: 6, column: 7 },
+    });
+  });
+
+  describe("never attributes a failure to the enclosing element", () => {
+    const layout = { fileName: "layouts/base.tsx", lineNumber: 3, columnNumber: 5 };
+    const inLayout = (child: unknown) =>
+      jsxDEV("main", { children: child }, undefined, false, layout, null);
+    function diagnosticOf(node: unknown): Record<string, unknown> {
+      try {
+        renderToString(node as never);
+      } catch (error) {
+        return (error as { diagnostic: Record<string, unknown> }).diagnostic;
+      }
+      throw new Error("expected a render failure");
+    }
+    const identity = { component: "Counter", build: "b1" };
+    function Counter() {
+      return jsx("p", { children: "1" });
+    }
+    function Outer() {
+      return islandRoot(jsx(Counter, {}), { identity });
+    }
+
+    it.each([
+      ["a promise child", () => inLayout(Promise.resolve("late")), "ZR_ASYNC_COMPONENT"],
+      ["an invalid scalar child", () => inLayout(Symbol("bad")), "ZR_CHILD"],
+      [
+        "a nested island",
+        () =>
+          inLayout(islandRoot(jsx(Outer, {}), { identity: { component: "Outer", build: "b1" } })),
+        "ZR_NESTED_ISLAND",
+      ],
+    ])("omits the site for %s", (_name, build, code) => {
+      const diagnostic = diagnosticOf(build());
+      expect(diagnostic.code).toBe(code);
+      expect(diagnostic).not.toHaveProperty("site");
+    });
+
+    it("reports a failing Show description's own site", () => {
+      const show = { fileName: "components/toggle.tsx", lineNumber: 8, columnNumber: 3 };
+      const diagnostic = diagnosticOf(
+        inLayout(jsxDEV(Show as never, { when: "yes" }, undefined, false, show, null)),
+      );
+      expect(diagnostic).toMatchObject({
+        code: "ZR_CHILD",
+        site: { kind: "source", file: "components/toggle.tsx", line: 8, column: 3 },
+      });
     });
   });
 });
