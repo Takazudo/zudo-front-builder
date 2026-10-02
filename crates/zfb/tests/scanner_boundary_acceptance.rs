@@ -666,13 +666,24 @@ export default function Home() {
         "helper names must not leak into the zero-boundary SSR allowlist"
     );
     assert_no_published_islands(&helper_only);
-    let client_script = helper_only.join("dist/assets/client/keep.js");
-    let client_script_source = fs::read_to_string(&client_script).unwrap_or_else(|error| {
-        panic!(
-            "read preserved client script {}: {error}",
-            client_script.display()
-        )
-    });
+    // Production ships client scripts only under their content-hashed name.
+    let client_dir = helper_only.join("dist/assets/client");
+    let client_scripts: Vec<PathBuf> = fs::read_dir(&client_dir)
+        .unwrap_or_else(|error| panic!("read client script dir {}: {error}", client_dir.display()))
+        .map(|entry| entry.expect("client script dir entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("keep-") && name.ends_with(".js"))
+        })
+        .collect();
+    assert_eq!(
+        client_scripts.len(),
+        1,
+        "island-free build must ship exactly one hashed keep client script: {client_scripts:?}"
+    );
+    let client_script_source =
+        fs::read_to_string(&client_scripts[0]).expect("read preserved client script");
     assert!(
         client_script_source.contains("ZERO_BOUNDARY_CLIENT_SCRIPT"),
         "island-free builds must preserve independent client-script output"
