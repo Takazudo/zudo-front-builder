@@ -700,6 +700,68 @@ mod tests {
         assert_eq!(validated_island_names(&islands).unwrap(), ["A", "B"]);
     }
 
+    #[test]
+    fn injected_worker_only_ssr_preflight_rejects_marker_collision_before_projection() {
+        let project = tempfile::tempdir().expect("worker-only SSR fixture");
+        let root = project.path();
+        let routes = root.join(".zudo-doc/routes");
+        let components = root.join("components");
+        std::fs::create_dir_all(&routes).expect("create injected route directory");
+        std::fs::create_dir_all(&components).expect("create component directory");
+
+        std::fs::write(
+            components.join("first.tsx"),
+            "\"use client\"; export function WorkerOnlyTwin() { return null; }\n",
+        )
+        .expect("write first colliding target");
+        std::fs::write(
+            components.join("second.tsx"),
+            "\"use client\"; export function WorkerOnlyTwin() { return null; }\n",
+        )
+        .expect("write second colliding target");
+        let injected_entry = routes.join("worker-only.tsx");
+        std::fs::write(
+            &injected_entry,
+            "import { Island } from \"@takazudo/zfb\";\n\
+             import { WorkerOnlyTwin as First } from \"../../components/first\";\n\
+             import { WorkerOnlyTwin as Second } from \"../../components/second\";\n\
+             export default function WorkerOnlyRoute() { return <><Island><First /></Island><Island><Second /></Island></>; }\n",
+        )
+        .expect("write injected worker-only route");
+
+        // There is deliberately no pages/ route: this injected route is the
+        // sole SSR entry, as in a worker-only route set. Preflight must validate
+        // its full target identities before projecting marker names into the
+        // worker bundler input.
+        let result = assemble_bundler_input(
+            root,
+            &root.join(".zfb-build"),
+            &Config::default(),
+            BundleMode::Production,
+            CssModuleFailMode::HardFail,
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            vec![injected_entry],
+        );
+        let error = match result {
+            Ok(_) => panic!("worker-only SSR preparation accepted duplicate marker identities"),
+            Err(error) => error,
+        };
+
+        let diagnostic = format!("{error:#}");
+        assert!(
+            diagnostic.contains("ambiguous owned island marker"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("WorkerOnlyTwin"), "{diagnostic}");
+        assert!(diagnostic.contains("components/first.tsx"), "{diagnostic}");
+        assert!(diagnostic.contains("components/second.tsx"), "{diagnostic}");
+    }
+
     fn config_with(emit_render_artifacts: bool) -> Config {
         Config {
             emit_render_artifacts,
