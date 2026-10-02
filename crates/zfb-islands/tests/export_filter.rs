@@ -1,14 +1,10 @@
-//! Issue #998 — only component-valued exports of `"use client"` modules
-//! become mountable-island registry entries.
+//! Issue #998 — client helpers do not become mountable-island entries.
 //!
 //! Two layers are covered:
 //!
-//! 1. **Build-time AST filter** (`scanner::exported_island_records`, via the
-//!    public [`scan_islands`] API) — clearly-non-component exports (string /
-//!    number / object / array literals, untagged template strings,
-//!    `export * as ns`, and local re-exports resolving to such values) are
-//!    dropped; functions, classes, call expressions (`memo`/`forwardRef`/
-//!    `lazy`/`styled`/…), tagged templates, and anything ambiguous are kept.
+//! 1. **Boundary target discovery** (via public [`scan_islands`]) registers
+//!    only concrete functions supplied to the SDK boundary. Unused client
+//!    exports remain helpers. Opaque values demanded as targets fail loudly.
 //!
 //! 2. **Generated-source runtime guard** (`render_shared_bundle_entry_source`) — the shared bundle entry reject non-component values with a loud `console.warn`
 //!    instead of a truthy-only check that would hand a bogus type to
@@ -60,7 +56,8 @@ fn string_const_export_alongside_default_component_is_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import DesktopSidebarToggle from "../components/desktop-sidebar-toggle";
-            export default function Home() { return <DesktopSidebarToggle/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><DesktopSidebarToggle/></Island>; }
             "#,
         )
         .with_file(
@@ -86,7 +83,8 @@ fn number_object_and_array_literal_const_exports_are_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Widget } from "../components/literals";
-            export default function Home() { return <Widget/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Widget/></Island>; }
             "#,
         )
         .with_file(
@@ -110,14 +108,14 @@ fn number_object_and_array_literal_const_exports_are_dropped() {
 }
 
 #[test]
-fn call_expression_exports_are_retained() {
-    // memo(...) / forwardRef(...) / lazy(...) / styled(...) /
-    // connect(...)(...) — ANY call expression is kept (no callee whitelist).
+fn opaque_call_expression_target_is_rejected() {
+    // A call expression is not proof of the returned function's identity.
     let resolver = InMemoryResolver::new()
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Memoized } from "../components/calls";
-            export default function Home() { return <Memoized/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Memoized/></Island>; }
             "#,
         )
         .with_file(
@@ -130,27 +128,23 @@ fn call_expression_exports_are_retained() {
             "#,
         );
 
-    assert_eq!(
-        component_names(&resolver, "components/calls.tsx"),
-        vec![
-            "Connected".to_string(),
-            "Forwarded".to_string(),
-            "Lazied".to_string(),
-            "Memoized".to_string(),
-        ],
-        "every call-expression export must be retained"
+    let error = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap_err();
+    assert!(
+        error.to_string().contains("unsupported initializer"),
+        "{error}"
     );
+    assert!(error.to_string().contains("named function"), "{error}");
 }
 
 #[test]
-fn tagged_template_export_is_retained() {
-    // `styled.div\`...\`` parses as a tagged template (Expr::TaggedTpl),
-    // distinct from an untagged template string — it must be kept.
+fn opaque_tagged_template_target_is_rejected() {
+    // A tagged template may produce a function, but does not prove identity.
     let resolver = InMemoryResolver::new()
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Box } from "../components/styled";
-            export default function Home() { return <Box/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Box/></Island>; }
             "#,
         )
         .with_file(
@@ -158,10 +152,10 @@ fn tagged_template_export_is_retained() {
             "\"use client\";\nexport const Box = styled.div`color: red;`;\n",
         );
 
-    assert_eq!(
-        component_names(&resolver, "components/styled.tsx"),
-        vec!["Box".to_string()],
-        "tagged-template export must be retained"
+    let error = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap_err();
+    assert!(
+        error.to_string().contains("unsupported initializer"),
+        "{error}"
     );
 }
 
@@ -173,7 +167,8 @@ fn local_alias_export_of_arrow_const_is_retained() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Bar } from "../components/alias";
-            export default function Home() { return <Bar/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Bar/></Island>; }
             "#,
         )
         .with_file(
@@ -199,7 +194,8 @@ fn local_alias_export_as_default_of_function_is_retained() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import Foo from "../components/default-alias";
-            export default function Home() { return <Foo/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Foo/></Island>; }
             "#,
         )
         .with_file(
@@ -226,7 +222,8 @@ fn local_non_component_reexport_is_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Widget } from "../components/reexport";
-            export default function Home() { return <Widget/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Widget/></Island>; }
             "#,
         )
         .with_file(
@@ -254,7 +251,8 @@ fn namespace_reexport_is_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Widget } from "../components/widget";
-            export default function Home() { return <Widget/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Widget/></Island>; }
             "#,
         )
         .with_file(
@@ -278,15 +276,15 @@ fn namespace_reexport_is_dropped() {
 }
 
 #[test]
-fn source_reexport_is_kept_permissively() {
-    // `export { Button } from "./button"` — resolving the other module is
-    // out of scope, so the re-export is kept permissively (compiled package
-    // barrels use this shape).
+fn source_reexport_is_registered_when_demanded() {
+    // A concrete target can pass through a client barrel even when its
+    // defining module has no directive.
     let resolver = InMemoryResolver::new()
         .with_file(
             root().join("pages/home.tsx"),
-            r#"import { Widget } from "../components/barrel";
-            export default function Home() { return <Widget/>; }
+            r#"import { Widget, Button } from "../components/barrel";
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <><Island><Widget/></Island><Island><Button/></Island></>; }
             "#,
         )
         .with_file(
@@ -305,7 +303,7 @@ fn source_reexport_is_kept_permissively() {
     assert_eq!(
         component_names(&resolver, "components/barrel.tsx"),
         vec!["Button".to_string(), "Widget".to_string()],
-        "a cross-module source re-export must be kept permissively"
+        "a cross-module source re-export registers only when bounded"
     );
 }
 
@@ -318,7 +316,8 @@ fn default_string_literal_export_is_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Widget } from "../components/default-string";
-            export default function Home() { return <Widget/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Widget/></Island>; }
             "#,
         )
         .with_file(
@@ -347,7 +346,8 @@ fn parenthesized_literal_const_export_is_dropped() {
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { Widget } from "../components/paren-literal";
-            export default function Home() { return <Widget/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><Widget/></Island>; }
             "#,
         )
         .with_file(
@@ -366,19 +366,14 @@ fn parenthesized_literal_const_export_is_dropped() {
 }
 
 #[test]
-fn ts_cast_const_exports_are_retained_as_ambiguous() {
-    // Documented spec decision (issue #998): TS casts (`as` / `satisfies` /
-    // non-null `!`) are intentionally NOT peeled by
-    // `init_is_clearly_non_component`. A cast hides the runtime shape, so the
-    // value stays ambiguous and IS registered rather than dropped — even
-    // though the underlying expressions here are object literals, the cast
-    // wrapper keeps them in (mirrors the conservative "keep ambiguous"
-    // policy that retains `memo()` / `forwardRef()` call exports).
+fn ts_cast_object_target_is_rejected() {
+    // A cast cannot turn an object literal into a known function binding.
     let resolver = InMemoryResolver::new()
         .with_file(
             root().join("pages/home.tsx"),
             r#"import { AsCast } from "../components/ts-casts";
-            export default function Home() { return <AsCast/>; }
+            import { Island } from "@takazudo/zfb";
+            export default function Home() { return <Island><AsCast/></Island>; }
             "#,
         )
         .with_file(
@@ -390,14 +385,10 @@ fn ts_cast_const_exports_are_retained_as_ambiguous() {
             "#,
         );
 
-    assert_eq!(
-        component_names(&resolver, "components/ts-casts.tsx"),
-        vec![
-            "AsCast".to_string(),
-            "NonNullCast".to_string(),
-            "SatisfiesCast".to_string(),
-        ],
-        "TS cast exports must stay ambiguous and be retained (casts are not peeled)"
+    let error = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap_err();
+    assert!(
+        error.to_string().contains("unsupported initializer"),
+        "{error}"
     );
 }
 

@@ -66,6 +66,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::scanner::IslandsSet;
+use crate::Island;
 
 /// A marker-name → resolved-source-path map.
 ///
@@ -286,7 +287,7 @@ impl Manifest {
     /// model the runtime/bundling path uses: two valid default-export
     /// islands (both `component_name == "default"`) with distinct
     /// `marker_name`s are preserved as two entries, not collapsed.
-    pub fn from_islands(islands: &IslandsSet) -> Self {
+    pub fn from_islands(islands: &[Island]) -> Self {
         let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
         let mut selected_exports: BTreeMap<String, String> = BTreeMap::new();
         let mut collisions: Vec<Collision> = Vec::new();

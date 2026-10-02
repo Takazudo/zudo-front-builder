@@ -4484,7 +4484,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let resolver = FsResolver::new()
         .with_project_root(project_root)
         .with_injected_route_roots(package_route_entrypoints)
-        .with_virtual_modules(project_root, &plugin_config.virtual_modules);
+        .with_virtual_modules(project_root, &plugin_config.virtual_modules)
+        .with_plugin_aliases(&plugin_config.alias_entries);
     // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
     // by `materialise_islands_shadow_with_worker_context` below, via
     // `scan_meta.workspace_package_edges_from_islands`) to the first-party
@@ -4502,12 +4503,16 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         Some(&first_party_root),
     ) {
         Ok(result) => result,
+        Err(error @ zfb_islands::ScanError::Registration { .. }) => {
+            // A failed registration is not a valid empty registry. Let the
+            // dev rebuild report failure without publishing partial names.
+            return Err(anyhow!("zfb islands: {error}"));
+        }
         Err(
             error @ (zfb_islands::ScanError::ImportQuery { .. }
             | zfb_islands::ScanError::RawImport { .. }
             | zfb_islands::ScanError::ModuleWorker { .. }
-            | zfb_islands::ScanError::SharedWorker { .. }
-            | zfb_islands::ScanError::Registration { .. }),
+            | zfb_islands::ScanError::SharedWorker { .. }),
         ) => {
             let message = format!("zfb islands: {error}");
             match islands_glob_policy {
@@ -4696,10 +4701,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
     {
         for island in &islands_set {
-            if island.marker_name.is_empty()
-                || island.marker_name == "default"
-                || island.marker_name == "Anonymous"
-            {
+            if island.marker_name.is_empty() {
                 anyhow::bail!(
                     "owned island in {} has no stable scanner component identity ({:?})",
                     island.source_path.display(),
