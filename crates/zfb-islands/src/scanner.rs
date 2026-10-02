@@ -6172,7 +6172,7 @@ mod tests {
         // under node_modules, so its chrome's bare `@takazudo/zfb` import is
         // hard-stopped.
         let resolver = FsResolver::new();
-        let graph = scan_reachable_modules(&[route.clone()], &resolver).unwrap();
+        let graph = scan_reachable_modules(std::slice::from_ref(&route), &resolver).unwrap();
         assert!(
             !graph.iter().any(|path| path.ends_with("@takazudo/zfb/dist/index.js")),
             "without the injected-route exemption, the ordinary graph must stop before the package: {graph:?}",
