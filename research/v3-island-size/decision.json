@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "1d1e8b32eebc2014659cd7c7b54742202ecf8627",
+  "baselineSourceSha": "ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -44,31 +44,31 @@
       },
       "event-only": {
         "raw": 51220,
-        "gzip": 17476
+        "gzip": 17471
       },
       "scalar-signal": {
         "raw": 51228,
-        "gzip": 17479
+        "gzip": 17480
       },
       "show-for": {
         "raw": 51375,
-        "gzip": 17559
+        "gzip": 17555
       },
       "model": {
         "raw": 51219,
-        "gzip": 17483
+        "gzip": 17485
       },
       "blog-theme": {
         "raw": 51570,
-        "gzip": 17616
+        "gzip": 17620
       },
       "json-api": {
         "raw": 51374,
-        "gzip": 17573
+        "gzip": 17574
       },
       "multi-island": {
         "raw": 51496,
-        "gzip": 17585
+        "gzip": 17583
       }
     },
     "packed": {
@@ -78,41 +78,41 @@
       },
       "event-only": {
         "raw": 51282,
-        "gzip": 17508
+        "gzip": 17512
       },
       "scalar-signal": {
         "raw": 51290,
-        "gzip": 17515
+        "gzip": 17513
       },
       "show-for": {
         "raw": 51437,
-        "gzip": 17594
+        "gzip": 17591
       },
       "model": {
         "raw": 51281,
-        "gzip": 17519
+        "gzip": 17521
       },
       "blog-theme": {
         "raw": 51632,
-        "gzip": 17654
+        "gzip": 17652
       },
       "json-api": {
         "raw": 51436,
-        "gzip": 17609
+        "gzip": 17607
       },
       "multi-island": {
         "raw": 51558,
-        "gzip": 17620
+        "gzip": 17619
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after owned empty iframe shell support; Linux x64 uses its separately measured contract.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after SDK Island persistence support; raw totals are unchanged and gzip totals are platform-specific.",
   "baselineEvidence": {
     "event": "local",
-    "sourceSha": "1d1e8b32eebc2014659cd7c7b54742202ecf8627",
-    "workspaceReport": "research/v3-island-size/results/iframe-darwin-1d1e8b32eebc2014659cd7c7b54742202ecf8627/real-workspace/report.md",
-    "packedReport": "research/v3-island-size/results/iframe-darwin-1d1e8b32eebc2014659cd7c7b54742202ecf8627/real-packed/report.md",
-    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. Empty iframe support added 333 raw bytes per nonempty fixture; ceilings equal current measured totals, no-island remains zero, and allowance remains zero."
+    "sourceSha": "ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455",
+    "workspaceReport": "research/v3-island-size/results/persist-darwin-ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455/real-workspace/report.md",
+    "packedReport": "research/v3-island-size/results/persist-darwin-ae8fa89eb7a0fd07ac0e63a26a6ceb1039d5b455/real-packed/report.md",
+    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. SDK persistence left raw totals unchanged and shifted gzip totals slightly in both directions; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
   }
 }
