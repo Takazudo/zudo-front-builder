@@ -1,6 +1,6 @@
 ---
 title: API リファレンス
-description: 確定した zudo-react v1 のエクスポートを五つのパッケージエントリごとに示します。
+description: 確定した zudo-react v1 のエクスポートを六つのパッケージエントリごとに示します。
 sidebar_position: 9
 ---
 
@@ -452,6 +452,33 @@ export function parseProps(json: string): Record<string, unknown>;
 
 parseProps は厳密な島の props レコードを解析・検証し、不正な入力では名前付きの転送エラーを投げます。[ハイドレーション](./hydration.mdx)を参照してください。
 
+## Testing: @takazudo/zfb/zudo-react/testing
+
+testing エントリは実際のサーバーレンダラーでアイランドを描画し、呼び出し元の document で解析して、有効化、診断、flush、破棄用のヘルパーを提供します。DOM に触れない server エントリとは分かれたテスト環境向けの API です。
+
+### createIslandTest
+
+~~~ts
+export function createIslandTest<P extends Record<string, unknown>>(
+  component: Component<P>,
+  props: P,
+  options: { document: Document; identity?: IslandIdentity },
+): IslandTest;
+~~~
+
+返された `IslandTest` はシリアライズ済みの `html`、解析済みの `host`、変更可能な `identity`、診断配列、`hydrate()`、`mount()`、`flush()`、複数回呼べる `dispose()` を持ちます。[テスト](./testing.mdx)を参照してください。
+
+### withIslandTestContext
+
+~~~ts
+export function withIslandTestContext<T>(
+  options: { components: Readonly<Record<string, Component<any>>> | readonly Component<any>[]; build?: string },
+  callback: () => T,
+): T;
+~~~
+
+withIslandTestContext は同期コールバックの間だけ、SDK の `Island` 描画に実際のコンポーネント名を渡し、その後、元の `globalThis.__zfb` メタデータを復元します。非同期コールバックは拒否されます。[テスト](./testing.mdx)を参照してください。
+
 ## See also
 
 - [概要](./overview.mdx)
@@ -459,3 +486,4 @@ parseProps は厳密な島の props レコードを解析・検証し、不正�
 - [リアクティビティ](./reactivity.mdx)
 - [サーバーレンダリング](./server-rendering.mdx)
 - [ハイドレーション](./hydration.mdx)
+- [テスト](./testing.mdx)

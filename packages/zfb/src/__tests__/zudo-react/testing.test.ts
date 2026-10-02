@@ -15,8 +15,18 @@ afterEach(() => {
 describe("createIslandTest", () => {
   it("renders transport HTML, hydrates without replacing nodes, flushes, and disposes", async () => {
     const value = signal("first");
+    let clicks = 0;
     function Counter(props: { label: string }) {
-      return h("button", null, props.label, value);
+      return h(
+        "button",
+        {
+          "on:click": () => {
+            clicks++;
+          },
+        },
+        props.label,
+        value,
+      );
     }
     const test = createIslandTest(Counter, { label: "go" }, { document });
     tests.push(test);
@@ -26,6 +36,8 @@ describe("createIslandTest", () => {
     expect(root).not.toBeNull();
     expect(test.host.querySelector("button")).toBe(button);
     expect(test.diagnostics).toEqual([]);
+    button.dispatchEvent(new Event("click", { bubbles: true }));
+    expect(clicks).toBe(1);
     value.value = "second";
     await test.flush();
     expect(button.textContent).toBe("gosecond");
@@ -35,6 +47,11 @@ describe("createIslandTest", () => {
     expect(root?.disposed).toBe(true);
     expect(test.host.isConnected).toBe(false);
     expect(subscriberCount(value)).toBe(0);
+    button.dispatchEvent(new Event("click", { bubbles: true }));
+    value.value = "after-dispose";
+    await test.flush();
+    expect(button.textContent).toBe("gosecond");
+    expect(clicks).toBe(1);
   });
 
   it("fails hydration after host mutation without mounting and allows explicit identity override", () => {
@@ -73,7 +90,7 @@ describe("createIslandTest", () => {
     expect(test.diagnostics.at(-1)?.code).toBe("ZR_IDENTITY");
   });
 
-  it("returns the mounted root handle", () => {
+  it("mount replaces parsed host children and disposal removes a moved host", () => {
     function Card() {
       return h("p", null, "client");
     }
@@ -84,6 +101,9 @@ describe("createIslandTest", () => {
     expect(root).not.toBeNull();
     expect(test.host.querySelector("p")).not.toBe(original);
     expect(test.diagnostics).toEqual([]);
+    document.body.append(test.host);
+    test.dispose();
+    expect(test.host.isConnected).toBe(false);
   });
 
   it("reports malformed serialized props without activating", () => {
@@ -158,6 +178,29 @@ describe("withIslandTestContext", () => {
       const callback = vi.fn(() => Promise.resolve("later"));
       expect(() => withIslandTestContext({ components: [Card] }, callback)).toThrow("synchronous");
       expect(Object.hasOwn(scope, "__zfb")).toBe(false);
+    } finally {
+      if (previous === undefined) delete scope.__zfb;
+      else scope.__zfb = previous;
+    }
+  });
+
+  it("restores the original site metadata object when the callback throws", () => {
+    function Card() {
+      return h("p", null, "card");
+    }
+    const scope = globalThis as typeof globalThis & { __zfb?: Record<string, unknown> };
+    const previous = scope.__zfb;
+    const installed = { site: "https://example.test", base: "/docs" };
+    scope.__zfb = installed;
+    try {
+      expect(() =>
+        withIslandTestContext({ components: [Card] }, () => {
+          expect(scope.__zfb).toMatchObject({ zudoReactIslands: ["Card"] });
+          throw new Error("render failed");
+        }),
+      ).toThrow("render failed");
+      expect(scope.__zfb).toBe(installed);
+      expect(scope.__zfb).toEqual({ site: "https://example.test", base: "/docs" });
     } finally {
       if (previous === undefined) delete scope.__zfb;
       else scope.__zfb = previous;

@@ -54,6 +54,7 @@ function assertPackedExports(directory) {
     ],
     "./zudo-react/server": ["./dist/zudo-react/server.d.ts", "./dist/zudo-react/server.js"],
     "./zudo-react/client": ["./dist/zudo-react/client.d.ts", "./dist/zudo-react/client.js"],
+    "./zudo-react/testing": ["./dist/zudo-react/testing.d.ts", "./dist/zudo-react/testing.js"],
   };
   const actualSubpaths = Object.keys(packageJson.exports ?? {})
     .filter((subpath) => /^\.\/zudo-react(?:\/.*)?$/.test(subpath))

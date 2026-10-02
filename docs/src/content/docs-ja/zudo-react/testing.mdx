@@ -1,0 +1,186 @@
+---
+title: テスト
+description: Vitest で zudo-react アイランドのシリアライズ、ハイドレーション、マウント、診断、クリーンアップをテストします。
+sidebar_position: 11
+---
+
+## JSX と DOM を設定する
+
+`@takazudo/zfb/zudo-react/testing` はテストヘルパーを提供します。テストランナーへの依存は追加しません。ランナーに zudo-react の自動 JSX ランタイムと `happy-dom` などの DOM 環境を設定してください。
+
+まだない場合は Vitest と happy-dom を開発依存として `pnpm add -D vitest happy-dom` で追加します。
+
+~~~ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "@takazudo/zfb/zudo-react",
+  },
+  test: {
+    environment: "happy-dom",
+  },
+});
+~~~
+
+テストの JSX をランタイムの型で検査できるよう、`tsconfig.json` にも同じ import source を設定します。
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+## アイランドをハイドレートしてマウントする
+
+`createIslandTest` は実際のサーバーレンダラーを呼び、指定した document で HTML を解析し、ラッパーを `document.body` に追加します。返される `host` はアイランドのラッパーです。ハイドレーションは解析済みの子ノードを引き継ぎ、mount は子ノードをクライアントレンダリングした DOM に置き換えます。
+
+~~~tsx
+import { afterEach, expect, it } from "vitest";
+import { signal } from "@takazudo/zfb/zudo-react";
+import { createIslandTest } from "@takazudo/zfb/zudo-react/testing";
+
+const active: Array<ReturnType<typeof createIslandTest>> = [];
+
+afterEach(() => {
+  for (const test of active) test.dispose();
+  active.length = 0;
+});
+
+it("サーバー DOM をハイドレートし signal の更新を flush する", async () => {
+  const label = signal("ready");
+  let clicks = 0;
+  function Counter() {
+    return (
+      <button on:click={() => clicks++}>
+        Count: {label}
+      </button>
+    );
+  }
+
+  const test = createIslandTest(Counter, {}, { document });
+  active.push(test);
+  const button = test.host.querySelector("button")!;
+  const root = test.hydrate();
+
+  expect(test.html).toContain('data-zfb-island="Counter"');
+  expect(root).not.toBeNull();
+  expect(test.host.querySelector("button")).toBe(button);
+  button.click();
+  label.value = "updated";
+  await test.flush();
+  expect(button.textContent).toBe("Count: updated");
+  expect(clicks).toBe(1);
+
+  test.dispose();
+  test.dispose();
+  button.click();
+  label.value = "after disposal";
+  await test.flush();
+  expect(button.textContent).toBe("Count: updated");
+  expect(clicks).toBe(1);
+});
+~~~
+
+クライアントレンダリングの経路は、別の harness で `mount()` を呼び出して確認できます。ラッパーは維持したまま、解析済みの子ノードを置き換えます。
+
+~~~tsx
+it("解析済みの島ラッパーにマウントする", () => {
+  function Card() {
+    return <p>client content</p>;
+  }
+
+  const test = createIslandTest(Card, {}, { document });
+  active.push(test);
+  const serverParagraph = test.host.querySelector("p");
+
+  expect(test.mount()).not.toBeNull();
+  expect(test.host.querySelector("p")).not.toBe(serverParagraph);
+  expect(test.host.textContent).toBe("client content");
+});
+~~~
+
+ハイドレーションのテストではラッパーと属性を保ってください。子 DOM や転送属性を変えて、失敗時に有効化しない動作を確認できます。不正な props は `null` を返し、構造化された診断を記録し、既存の子 DOM を保ちます。
+
+~~~tsx
+it("不正な transport を報告し、サーバーの子ノードを変更しない", () => {
+  function Card() {
+    return <p>server content</p>;
+  }
+
+  const test = createIslandTest(Card, {}, { document });
+  active.push(test);
+  test.host.setAttribute("data-props", "{");
+  const before = test.host.innerHTML;
+
+  expect(test.hydrate()).toBeNull();
+  expect(test.diagnostics.at(-1)).toMatchObject({ code: "ZR_PROPS", phase: "preflight" });
+  expect(test.host.innerHTML).toBe(before);
+});
+~~~
+
+完全な `Diagnostic` オブジェクトは `test.diagnostics` で確認できます。クライアントランタイムのデフォルト reporter は、検索しやすい短い行の後にオブジェクトを出力します。サーバーと一致しない identity を明示して、負のテストを作ることもできます。
+
+~~~tsx
+it("負のテストで identity を上書きできる", () => {
+  function Card() {
+    return <p>server content</p>;
+  }
+
+  const test = createIslandTest(
+    Card,
+    {},
+    { document, identity: { component: "WrongCard", build: "test-build" } },
+  );
+  active.push(test);
+
+  expect(test.hydrate()).toBeNull();
+  expect(test.diagnostics.at(-1)?.code).toBe("ZR_IDENTITY");
+});
+~~~
+
+`dispose()` は複数回呼んでも安全です。signal の購読とイベントリスナーを解放し、テストで別の位置に動かした場合もラッパーを削除します。
+
+## SDK Island を含むページ全体を描画する
+
+`Island` は同期的なページ描画時にコンポーネント登録メタデータを読み取ります。`withIslandTestContext` は渡されたコンポーネントの値から名前を取り出し、`globalThis.__zfb` の無関係なフィールドを保ちます。描画が例外を投げた場合も `finally` で元の global に戻します。
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { withIslandTestContext } from "@takazudo/zfb/zudo-react/testing";
+
+function ThemeToggle() {
+  return <button>Theme</button>;
+}
+
+const html = withIslandTestContext({ components: [ThemeToggle], build: "test-build" }, () =>
+  renderToString(
+    <html>
+      <head>
+        <title>Test page</title>
+      </head>
+      <body>
+        <main>
+          <Island>
+            <ThemeToggle />
+          </Island>
+        </main>
+      </body>
+    </html>,
+  ),
+);
+~~~
+
+コールバックは同期でなければなりません。一時登録は共有 global を使うため、非同期のコールバックは拒否されます。非同期の準備はコールバックに入る前に済ませてください。
+
+## 関連ページ
+
+- [サーバーレンダリング](./server-rendering.mdx)
+- [ハイドレーション](./hydration.mdx)
+- [API リファレンス](./api-reference.mdx)
