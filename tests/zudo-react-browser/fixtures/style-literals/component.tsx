@@ -24,9 +24,12 @@ export default function StyleLiterals(props: { kind: string }) {
   const style = signal(initialStyle());
   styles.set(props.kind, style);
   return (
-    <div id={`style-${props.kind}`} style={style}>
-      Style fixture
-    </div>
+    <section>
+      <span>Style fixture</span>
+      <div id={`style-${props.kind}`} style={style}>
+        Styled target
+      </div>
+    </section>
   );
 }
 
