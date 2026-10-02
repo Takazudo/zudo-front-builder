@@ -18,9 +18,35 @@ type RootElement = Element & { [ROOT_KEY]?: RootHandle };
 export function storedRoot(container: Element): RootHandle | undefined {
   return (container as RootElement)[ROOT_KEY];
 }
+const phaseMessages: Record<Diagnostic["phase"], string> = {
+  setup: "root setup failed",
+  preflight: "root validation failed",
+  commit: "root commit failed",
+  activation: "activation failed",
+  update: "reactive update failed",
+  cleanup: "cleanup failed",
+};
+
+function diagnosticLine(value: Diagnostic): string {
+  // Only runtime-shaped identifiers and DOM paths belong on the searchable line.
+  // The structured object retains the full details for inspection.
+  const code = /^ZR_[A-Z0-9_]+$/.test(value.code) ? value.code : "ZR_UNKNOWN";
+  const phase = Object.hasOwn(phaseMessages, value.phase) ? value.phase : "setup";
+  const component = /^[A-Za-z_$][\w$.-]*$/.test(value.component) ? value.component : "[component]";
+  const path =
+    /^\/[a-z][a-z0-9-]*:nth-child\(\d+\)(?:\/[a-z#][a-z0-9#-]*(?::nth-child\(\d+\))?(?:\[\d+\])?)*$/.test(
+      value.path,
+    )
+      ? value.path
+      : "[path]";
+  const message = code === "ZR_HYDRATION_MISMATCH" ? "hydration mismatch" : phaseMessages[phase];
+  return `[zudo-react] ${code} ${phase} ${component} ${path}: ${message}`;
+}
+
 export function report(options: RootOptions, diagnostic: Diagnostic): void {
   try {
-    (options.report ?? ((value) => console.error(value)))(diagnostic);
+    if (options.report) options.report(diagnostic);
+    else console.error(diagnosticLine(diagnostic), diagnostic);
   } catch (error) {
     console.error(error);
   }
