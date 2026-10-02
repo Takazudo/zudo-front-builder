@@ -1457,7 +1457,7 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-chunk-retention");
     let lazy_part_path = root.join("components/lazy-part.tsx");
-    let page_path = root.join("pages/index.tsx");
+    let page_note_path = root.join("content/page-note.txt");
     let mut session = spawn_dev_in_root(
         &root,
         &esbuild,
@@ -1535,21 +1535,16 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
     );
     assert_asset_status(&client, &base, &chunk0, 200, &session).await;
 
-    // Document-only boundary: publication advances, but islands must not
-    // re-bundle and the retained original chunk must not be cleared.
+    // The page's raw text input changes its rendered document without
+    // changing the shared SSR/islands build identity. Publication advances,
+    // but islands must not re-bundle or clear the retained original chunk.
     let page_before = log_line_count(&session, PAGE_MARKER);
     let islands_before_page = log_line_count(&session, ISLANDS_MARKER);
-    let original_page = fs::read_to_string(&page_path).expect("read retention fixture page");
-    let edited_page = original_page.replacen(
-        "<h1>dev-islands-chunk-retention</h1>",
-        "<h1>dev-islands-chunk-retention page edit</h1>",
-        1,
-    );
-    assert_ne!(
-        edited_page, original_page,
-        "page edit fixture insertion point"
-    );
-    fs::write(&page_path, edited_page).expect("write document-only generation");
+    fs::write(
+        &page_note_path,
+        "dev-islands-chunk-retention document edit\n",
+    )
+    .expect("write document-only raw input");
     wait_for_log_line_count_above(&session, PAGE_MARKER, page_before, RENDER_DEADLINE).await;
     let ready =
         wait_for_publication_ready(&client, &ready_url, generation, RENDER_DEADLINE, &session)
@@ -1558,8 +1553,19 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
     assert_eq!(
         log_line_count(&session, ISLANDS_MARKER),
         islands_before_page,
-        "a page-only edit must not publish an islands generation\n{}",
+        "a document-only raw input edit must not publish an islands generation\n{}",
         session.logs(),
+    );
+    let page = client
+        .get(&base)
+        .send()
+        .await
+        .expect("request edited document");
+    assert_eq!(page.status(), 200, "edited document status");
+    let body = page.text().await.expect("read edited document");
+    assert!(
+        body.contains("dev-islands-chunk-retention document edit"),
+        "raw input edit must change rendered HTML: {body}"
     );
     assert_asset_status(&client, &base, &chunk0, 200, &session).await;
 

@@ -1,5 +1,6 @@
 import { Island } from "@takazudo/zfb";
 import { ProbeIsland } from "../components/probe-island";
+import pageNote from "../content/page-note.txt?raw";
 
 export default function HomePage() {
   return (
@@ -9,7 +10,7 @@ export default function HomePage() {
         <title>dev-islands-chunk-retention</title>
       </head>
       <body>
-        <h1>dev-islands-chunk-retention</h1>
+        <h1>{pageNote.trim()}</h1>
         <Island when="load">
           <ProbeIsland />
         </Island>
