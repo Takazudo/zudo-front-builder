@@ -81,6 +81,33 @@ describe("structured render diagnostics", () => {
     });
   });
 
+  it("keeps capture enabled for a replay that overlaps another one finishing", async () => {
+    const gated = () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let calls = 0;
+      const page: PageModule = {
+        default: async () => {
+          if (calls++ > 0) await gate;
+          return jsx("input", { autoComplete: "off" });
+        },
+      };
+      return { page, release };
+    };
+    const first = gated();
+    const second = gated();
+    const firstBody = renderBody(first.page, true);
+    const secondBody = renderBody(second.page, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    first.release();
+    expect(diagnosticLine(await firstBody)).toHaveProperty("site.kind", "generated");
+    second.release();
+    expect(diagnosticLine(await secondBody)).toHaveProperty("site.kind", "generated");
+    expect(Object.getOwnPropertySymbols(globalThis)).not.toContain(
+      Symbol.for("@takazudo/zfb/zudo-react/site-capture-v1"),
+    );
+  });
+
   it("does not emit a structured line for ordinary errors", async () => {
     const body = await renderBody(
       {

@@ -640,7 +640,8 @@ async function locateRenderFailure(
   const first = renderDiagnostic(err);
   if (!first || first.site) return first;
   const flags = globalThis as Record<symbol, unknown>;
-  flags[SITE_CAPTURE] = true;
+  // A count, not a flag: overlapping dev replays must not switch capture off for each other.
+  flags[SITE_CAPTURE] = ((flags[SITE_CAPTURE] as number | undefined) ?? 0) + 1;
   try {
     await render();
   } catch (again) {
@@ -648,7 +649,9 @@ async function locateRenderFailure(
     if (located?.site && again instanceof Error && (err as Error).message === again.message)
       return located;
   } finally {
-    delete flags[SITE_CAPTURE];
+    const remaining = (flags[SITE_CAPTURE] as number) - 1;
+    if (remaining > 0) flags[SITE_CAPTURE] = remaining;
+    else delete flags[SITE_CAPTURE];
   }
   return first;
 }
