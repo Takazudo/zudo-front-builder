@@ -150,8 +150,25 @@ const styleValues: CSSProperties = {
   outline: "none",
   filter: "blur(1px)",
 };
+const jsxLiteralStyle = (
+  <div
+    style={{
+      left: "10px",
+      top: 0,
+      width: "100%",
+      "max-height": "20rem",
+      opacity: 0.5,
+      "line-height": 1.25,
+      "--scale": 2,
+      "-webkit-mask-image": "linear-gradient(black, transparent)",
+    }}
+  />
+);
+const jsxStyleStringEscape = <div style="left: calc(1rem + var(--offset));" />;
 // @ts-expect-error Nonzero lengths require explicit units.
 const badLength: CSSProperties = { left: 10 };
+// @ts-expect-error JSX styles also reject automatic px for nonzero lengths.
+const badJsxLength = <div style={{ left: 10 }} />;
 // @ts-expect-error Vendor properties do not take nonzero numeric values.
 const badVendorNumber: CSSProperties = { "-webkit-transform": 2 };
 // @ts-expect-error Supported but uncategorized properties accept only string or zero.
@@ -164,7 +181,10 @@ const badUnknownProperty: CSSProperties = { "invented-property": "x" };
 const badCamelProperty: CSSProperties = { fontSize: "12px" };
 void [
   styleValues,
+  jsxLiteralStyle,
+  jsxStyleStringEscape,
   badLength,
+  badJsxLength,
   badVendorNumber,
   badUncategorizedNumber,
   badCssKey,

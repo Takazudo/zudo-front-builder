@@ -7,9 +7,13 @@ import type { Diagnostic } from "../../zudo-react/index.js";
 
 const valid = {
   left: 0,
+  top: "0.5rem",
+  width: "120px",
+  "max-height": "80px",
   opacity: 0.5,
   "line-height": 1.5,
   "--space": 2,
+  "-webkit-mask-image": "linear-gradient(black, transparent)",
   "-webkit-transform": "translateX(1px)",
   inset: "1rem",
   cursor: "pointer",
@@ -68,18 +72,45 @@ describe("literal styles", () => {
     document.body.append(host);
     const container = host.firstElementChild!;
     const element = container.querySelector("div")!;
+    expect(element.getAttribute("style")).toBe("left:0;");
     const handle = hydrate(h(Demo, {}), container, {
       identity,
       report: (item) => diagnostics.push(item),
     })!;
-    style.value = { opacity: 0.5, "--space": 2 };
+    style.value = {
+      left: "12px",
+      top: "0.5rem",
+      width: "120px",
+      "max-height": "40px",
+      opacity: 0.5,
+      "line-height": 1.5,
+      "--space": 2,
+      "-webkit-mask-image": "linear-gradient(black, transparent)",
+    };
     await flush();
-    expect(element.getAttribute("style")).toBe("opacity:0.5;--space:2;");
+    expect(element.getAttribute("style")).toBe(
+      "left:12px;top:0.5rem;width:120px;max-height:40px;opacity:0.5;line-height:1.5;--space:2;-webkit-mask-image:linear-gradient(black, transparent);",
+    );
+    style.value = {
+      left: "12px",
+      width: "120px",
+      "max-height": "40px",
+      opacity: 0.5,
+      "line-height": 1.5,
+      "--space": 2,
+      "-webkit-mask-image": "linear-gradient(black, transparent)",
+    };
+    await flush();
+    expect(element.getAttribute("style")).toBe(
+      "left:12px;width:120px;max-height:40px;opacity:0.5;line-height:1.5;--space:2;-webkit-mask-image:linear-gradient(black, transparent);",
+    );
     style.value = { left: 10 };
     await flush();
     expect(diagnostics.at(-1)?.code).toBe("ZR_SUBSCRIBER_ERROR");
     expect(diagnostics.at(-1)?.actual).toContain("ZR_STYLE: nonzero numeric left");
-    expect(element.getAttribute("style")).toBe("opacity:0.5;--space:2;");
+    expect(element.getAttribute("style")).toBe(
+      "left:12px;width:120px;max-height:40px;opacity:0.5;line-height:1.5;--space:2;-webkit-mask-image:linear-gradient(black, transparent);",
+    );
     style.value = new (class Style {
       left = 0;
     })();
@@ -87,7 +118,9 @@ describe("literal styles", () => {
     expect(diagnostics.at(-1)?.actual).toContain(
       "ZR_STYLE: style must be a string or plain object",
     );
-    expect(element.getAttribute("style")).toBe("opacity:0.5;--space:2;");
+    expect(element.getAttribute("style")).toBe(
+      "left:12px;width:120px;max-height:40px;opacity:0.5;line-height:1.5;--space:2;-webkit-mask-image:linear-gradient(black, transparent);",
+    );
     handle.dispose();
   });
 });
