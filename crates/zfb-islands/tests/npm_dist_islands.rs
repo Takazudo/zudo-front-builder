@@ -47,8 +47,8 @@ fn scan_component_names(page: &Path) -> Vec<String> {
 
 /// A regular npm package laid out as a flat `node_modules/<pkg>` directory
 /// (npm/yarn-classic layout — a real dir, NOT a workspace symlink) whose
-/// dist module carries `"use client"` must register its islands when a
-/// page imports it.
+/// dist module carries `"use client"` must register its target when a
+/// page uses that function inside an SDK Island boundary.
 #[test]
 fn flat_regular_npm_package_use_client_module_is_registered() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -86,8 +86,8 @@ fn flat_regular_npm_package_use_client_module_is_registered() {
 /// pnpm consumer layout: `node_modules/@acme/widgets` is a SYMLINK into
 /// `node_modules/.pnpm/.../node_modules/@acme/widgets`. Its canonical path
 /// still contains a `node_modules/` segment, so it is a *regular* package
-/// (not a workspace package), yet a page importing it must still register
-/// its dist island.
+/// (not a workspace package), yet a page using its function in an SDK Island
+/// boundary must still register the dist target.
 #[cfg(unix)]
 #[test]
 fn pnpm_symlinked_regular_package_use_client_module_is_registered() {
