@@ -5,7 +5,8 @@
  * scenario.json with `page` and either the legacy single-root fields
  * (`component`, `props`, `mode`) or a `roots` array. Root entries may point at
  * different TSX modules and may request a pre-commit abort, a deliberate
- * post-SSR mutation, or skip-SSR mounting. Set a root's `static` flag to true
+ * post-SSR mutation, skip-SSR mounting, or `undefinedProps` paths that add own
+ * undefined record members JSON cannot express. Set a root's `static` flag to true
  * with `mode: "none"` to render its component directly, without an island
  * boundary; the harness adds a plain container around that output for root
  * lookup. `mode: "none"` without `static: true` keeps the usual island SSR
@@ -33,6 +34,7 @@ const PACKED_SDK_SCRIPT = join(REPO_ROOT, "packages/zfb/scripts/zudo-react-packe
 const IMPORT_MAP_PREFIX = "/zfb-dist/";
 const BUILD_ID = "zudo-react-browser-harness-v1";
 const MODES = new Set(["hydrate", "mount", "none"]);
+const FORBIDDEN_PROP_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function run(binary, args, cwd) {
   execFileSync(binary, args, { cwd, stdio: "inherit" });
@@ -43,6 +45,59 @@ function assertInside(root, target, label) {
   if (path === "" || path === ".." || path.startsWith(`..${sep}`)) {
     throw new Error(`${label} escapes its fixture directory: ${target}`);
   }
+}
+
+function addUndefinedProps(props, paths, label) {
+  if (!Array.isArray(paths)) throw new Error(`${label} undefinedProps must be an array of paths`);
+  const result = structuredClone(props);
+  for (const [pathIndex, path] of paths.entries()) {
+    if (
+      !Array.isArray(path) ||
+      path.length === 0 ||
+      path.some((part) =>
+        typeof part === "number"
+          ? !Number.isInteger(part) || part < 0
+          : typeof part !== "string" || FORBIDDEN_PROP_KEYS.has(part),
+      ) ||
+      typeof path.at(-1) !== "string"
+    ) {
+      throw new Error(`${label} undefinedProps path ${pathIndex} must end in a record key`);
+    }
+
+    let parent = result;
+    for (const part of path.slice(0, -1)) {
+      if (Array.isArray(parent)) {
+        if (typeof part !== "number" || part >= parent.length || !Object.hasOwn(parent, part)) {
+          throw new Error(`${label} undefinedProps path ${pathIndex} has an invalid array index`);
+        }
+      } else if (
+        parent === null ||
+        typeof parent !== "object" ||
+        typeof part !== "string" ||
+        !Object.hasOwn(parent, part)
+      ) {
+        throw new Error(`${label} undefinedProps path ${pathIndex} has an invalid record path`);
+      }
+      parent = parent[part];
+    }
+
+    const key = path.at(-1);
+    if (
+      parent === null ||
+      typeof parent !== "object" ||
+      Array.isArray(parent) ||
+      Object.hasOwn(parent, key)
+    ) {
+      throw new Error(`${label} undefinedProps path ${pathIndex} must target a missing record key`);
+    }
+    Object.defineProperty(parent, key, {
+      value: undefined,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
 }
 
 function inlineJson(value) {
@@ -107,12 +162,14 @@ function readScenarios() {
         if (root.props === null || typeof root.props !== "object" || Array.isArray(root.props)) {
           throw new Error(`Scenario ${config.page} root ${index} props must be an object`);
         }
+        const label = `Scenario ${config.page} root ${index}`;
+        const props = addUndefinedProps(root.props, root.undefinedProps ?? [], label);
         const componentPath = resolve(directory, root.component);
         assertInside(directory, componentPath, `Scenario ${config.page} root ${index} component`);
         if (!statSync(componentPath).isFile()) {
           throw new Error(`Scenario ${config.page} component is not a file: ${componentPath}`);
         }
-        return { ...root, props: root.props, componentPath, index };
+        return { ...root, props, componentPath, index };
       });
       const assets = config.assets ?? [];
       if (!Array.isArray(assets))

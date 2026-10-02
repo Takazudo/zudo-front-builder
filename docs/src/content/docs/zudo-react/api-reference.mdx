@@ -396,7 +396,7 @@ islandRoot creates the explicit zfb-facing island wrapper description; see [Serv
 export function serializeProps(props: Record<string, unknown>): string;
 ~~~
 
-serializeProps validates strict JSON data and returns JSON text for the wrapper attribute; see [Server rendering](./server-rendering.mdx).
+serializeProps validates JSON transport data and returns JSON text for the wrapper attribute. Own enumerable string data properties on records are omitted recursively when their value is undefined; explicit `null` stays present, while undefined array entries and holes remain invalid. See [Server rendering](./server-rendering.mdx).
 
 ## Client: @takazudo/zfb/zudo-react/client
 

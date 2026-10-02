@@ -72,6 +72,31 @@ Standard HTML and SVG markup uses the shared finite vocabulary across TypeScript
 
 `<Island>` remains the build-time wrapper for a component. Its transport is stricter: use one component child, JSON props, and an identity that agrees with the source scanner. Hand-authored wrappers need the complete valid metadata. Hydration adopts matching server markup or fails closed per island; skipped SSR roots use `data-when` scheduling and replace fallback after a successful client mount. Review form behavior because supported controls use explicit writable models, single-select only, and the DOM value wins during hydration. See the [islands guide](../concepts/islands.mdx).
 
+### Optional island props
+
+For optional island props, own enumerable string data properties on records
+whose value is `undefined` are omitted recursively before SSR and JSON
+transport, including properties in records inside arrays. The server component
+and the client receive the same normalized keys, so `Object.hasOwn` checks
+agree. An explicit `null` remains a present property:
+
+This matches v2's omission of undefined-valued record members. Arrays stay
+strict: an undefined array entry or a hole is an error rather than a value to
+coerce. Use `null` when an array value should remain present.
+
+~~~ts
+import { serializeProps } from "@takazudo/zfb/zudo-react/server";
+
+serializeProps({
+  currentSlug: undefined,
+  nodes: [{ slug: "a", description: undefined }, { slug: "b", description: null }],
+});
+// {"nodes":[{"slug":"a"},{"slug":"b","description":null}]}
+~~~
+
+See [Server rendering](../zudo-react/server-rendering.mdx) for the full
+transport contract.
+
 The zudo-react client runtime has no promise to match Preact's bundle size, and no fixed byte budget has been selected. A separate follow-up will measure production island output, evaluate safe optimizations, and set any regression budget from those results. That work does not block the v3 migration. This guide makes no project-specific size claim.
 
 ## MDX and md-wasm
