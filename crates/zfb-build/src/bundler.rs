@@ -7,7 +7,8 @@
 //!
 //! `zfb-islands` already wraps esbuild for the *client-side* island
 //! bundle (`{outdir}/assets/islands-{hash}.js`). That work targets the
-//! browser and is keyed on `"use client"` components only.
+//! browser and registers concrete boundary targets imported through
+//! `"use client"` modules.
 //!
 //! This module targets the *server side*: every page module the router
 //! can serve, every layout/component they transitively pull in, plus the
@@ -17,6 +18,12 @@
 //! in the browser" with "what runs on the worker"; keeping them in
 //! sibling crates is cleaner and matches how the dev pipeline already
 //! splits CSS / islands / pages.
+//!
+//! For owned islands, `BundlerInput::zudo_react_island_names` is the exact
+//! marker allowlist from the scanner's validated target set. The CLI validates
+//! collisions before creating that name-only value, then the browser bundler
+//! receives the same target set. Keeping SSR metadata and the client registry
+//! aligned lets both sides enforce the same function name and build token.
 //!
 //! ## Pipeline
 //!
@@ -344,7 +351,9 @@ pub struct BundlerInput {
     pub components_dir: PathBuf,
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
-    /// Static scanner marker names available before owned page evaluation.
+    /// Validated scanner marker names available before owned page evaluation.
+    /// This is the exact SSR allowlist shared with the client registry; the CLI
+    /// checks distinct target bindings for collisions before projecting names.
     pub zudo_react_island_names: Option<Vec<String>>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string

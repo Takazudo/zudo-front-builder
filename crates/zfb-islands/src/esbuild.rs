@@ -16,6 +16,13 @@
 //! `ProductionAssetPipeline` is the single source of truth for content
 //! hashing per the Prod Asset Graph epic.
 //!
+//! The scanner supplies only validated concrete boundary targets here.
+//! The generated entry imports each target through its selected export,
+//! registers its actual function name as the marker, and keeps ordinary
+//! dependencies alive through that target's import graph. An unused helper
+//! may be tree-shaken without receiving a registry slot. Production keeps
+//! function names so the browser checks match the SSR marker and build token.
+//!
 //! ## CSS-import policy (issue #1395)
 //!
 //! `"use client"` islands are allowed to `import "./x.css"` (and

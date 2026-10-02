@@ -31,6 +31,11 @@
 //! - `module_ids` returns the bundled module identifiers (typically the
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
+//! - The input contains only boundary targets validated by the scanner.
+//!   Helpers and other client-module exports are not registration entries;
+//!   ordinary imports from selected targets still determine the bundled code.
+//!   The SSR allowlist and this browser registry must derive from the same
+//!   validated marker set.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -46,14 +51,14 @@ use zfb_types::{DIST_ASSETS_DIR, STABLE_ISLANDS_FILENAME, STABLE_ISLANDS_URL};
 /// without breaking call sites.
 pub type ModuleId = String;
 
-/// One `"use client"` component selected for hydration.
+/// One concrete function selected by a reachable SDK island boundary.
 ///
-/// Two islands are equal iff their `(source_path, component_name)` pair is
-/// equal — this is the stable component-name identity the scanner promises.
-/// The newer [`marker_name`] field is metadata derived by the scanner from
-/// the same source file and is intentionally **excluded** from the
-/// equality / hashing contract so dedup behaviour is unchanged across
-/// scanner upgrades.
+/// The scanner resolves aliases and re-exports to a defining binding before
+/// constructing this importable route. It deduplicates the canonical
+/// definition first and rejects different functions with the same public
+/// marker before the flat browser registry is emitted. The public struct's
+/// equality remains `(source_path, component_name)` for compatibility; it is
+/// not the scanner's internal definition-identity check.
 #[derive(Debug, Clone)]
 pub struct Island {
     /// Exported component name from the source file. For default exports
@@ -63,35 +68,29 @@ pub struct Island {
     /// `"use client"` directive. Whatever form the scanner returned —
     /// typically the resolver's resolved-path representation.
     pub source_path: PathBuf,
-    /// SSR-marker name — the string the SSR side will write into the
+    /// Public marker — the actual function name the SSR side writes into the
     /// `data-zfb-island` / `data-zfb-island-skip-ssr` attribute for this
     /// island. The hydration manifest in the production shared bundle is
     /// keyed on this name (NOT [`component_name`]), because the SSR side
-    /// derives the marker via `captureComponentName(child)` =
-    /// `child.type.displayName ?? child.type.name`, while the scanner
-    /// records [`component_name`] as the export-side name (which is
-    /// `"default"` for `export default function Foo()` and is mangled by
-    /// esbuild minification at runtime).
+    /// derives the marker from `child.type.name`; a `displayName` is accepted
+    /// only when it equals that function name. The browser bundler keeps names
+    /// through production minification and checks the selected export against
+    /// this marker.
     ///
     /// Resolution rules in the scanner (issues #149, #984):
     ///
-    /// - `export default function Foo()` / `export default class Foo` →
-    ///   `marker_name = "Foo"` (the identifier name), NOT `"default"`.
-    /// - `export { Foo as default }` / `export { Foo as "default" }` →
-    ///   `marker_name = "Foo"` (the local identifier), NOT `"default"`.
-    ///   This is the alias form tsup/esbuild emits when compiling
-    ///   `export default function Foo()`.
-    /// - `export function Foo()` / `export class Foo` /
+    /// - `export default function Foo()` → `marker_name = "Foo"`.
+    /// - `export { Foo as default }` / `export { Foo as "default" }` keeps
+    ///   the defining function's actual name; the export spelling does not
+    ///   rename it. This is also the alias form tsup/esbuild emits for named
+    ///   default functions.
+    /// - `export function Foo()` /
     ///   `export const Foo = ...` → `marker_name = "Foo"`.
-    /// - When the body of an exported function calls
-    ///   `renderSsrSkipPlaceholder("X", ...)` (the host-side SSR-skip
-    ///   wrapper convention used by zudo-doc-v2's `*-island.tsx` shims),
-    ///   the literal first argument `"X"` overrides the rule above so the
-    ///   manifest key matches `data-zfb-island-skip-ssr="X"` rather than
-    ///   the wrapper's identifier name.
-    /// - Anonymous default expressions (`export default () => …`,
-    ///   `export default someFn(…)`) fall back to
-    ///   [`component_name`] verbatim (typically `"default"`).
+    /// - A named function expression keeps its inner name; an anonymous
+    ///   function assigned to an immutable `const` uses the inferred binding
+    ///   name. An anonymous literal default function uses `"default"`.
+    /// - Export and import aliases do not rename the function. Opaque default
+    ///   factories and unnamed functions are unsupported.
     pub marker_name: String,
 }
 
@@ -705,7 +704,7 @@ pub struct ProductionIslandsAsset {
 /// suitable for `ProductionAssetPipeline`.
 ///
 /// **Empty input is a no-op** (with one exception). When `islands` is
-/// empty (project carries no `"use client"` components) *and*
+/// empty (no reachable boundary targets were discovered) *and*
 /// `config.client_router` is `false`, this returns `Ok(None)` *without*
 /// invoking the bundler — so no empty asset is produced and the rendered
 /// HTML stays free of a `<script>` tag pointing at a non-existent asset

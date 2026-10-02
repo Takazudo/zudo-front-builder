@@ -764,6 +764,27 @@ impl OrchestratorConfig {
     }
 }
 
+/// Whether a changed source is an entry to the browser-islands scan.
+///
+/// The scanner starts from script pages as well as imports under configured
+/// islands roots. Page edits can therefore add or remove boundary children even
+/// when none of their imported component files changed. Conventional client
+/// script sidecars under `pages/` are not scanner entries.
+fn is_islands_scan_input(policy: &GranularityPolicy, class: PathClass, path: &Path) -> bool {
+    match class {
+        PathClass::Page => {
+            !zfb_types::is_page_sidecar_file(path)
+                && !zfb_types::is_client_script_file(path)
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&extension))
+        }
+        PathClass::Module => policy.is_islands_candidate(path),
+        _ => false,
+    }
+}
+
 /// Pure derivation of the [`WatchOptions`] used to start the dev-loop
 /// watcher (issue #2174): the configured debounce (or
 /// [`zfb_watcher::DEFAULT_DEBOUNCE`] when absent) plus the configured
@@ -1078,9 +1099,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 if self.content_under_css_mirror_root(class, &path) {
                     plan.mark_css();
                 }
-                if matches!(class, PathClass::Module)
-                    && self.config.policy.is_islands_candidate(&path)
-                {
+                if is_islands_scan_input(&self.config.policy, class, &path) {
                     plan.mark_islands();
                 }
                 if self.config.policy.is_islands_dependency(&path) {
@@ -1159,10 +1178,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // on SSR-only projects where pages is always empty (issue #807).
                     plan.mark_ssr_reload_needed();
 
-                    // Modules under an islands root re-bundle islands.
-                    if matches!(class, PathClass::Module)
-                        && self.config.policy.is_islands_candidate(&path)
-                    {
+                    // Script pages are scanner roots: editing a boundary in
+                    // the route changes the validated registry even when its
+                    // component imports are unchanged. Client-script sidecars
+                    // are excluded by `is_islands_scan_input`.
+                    if is_islands_scan_input(&self.config.policy, class, &path) {
                         plan.mark_islands();
                     }
                     // #1288 — a component (`.tsx` `Module`) edit may author a
@@ -1560,9 +1580,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
                     plan.mark_ssr_reload_needed();
-                    if matches!(class, PathClass::Module)
-                        && self.config.policy.is_islands_candidate(path)
-                    {
+                    if is_islands_scan_input(&self.config.policy, class, path) {
                         plan.mark_islands();
                     }
                 }
@@ -2366,7 +2384,10 @@ mod tests {
             other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
         assert!(!plan.rerun_css);
-        assert!(!plan.rerun_islands);
+        assert!(
+            plan.rerun_islands,
+            "editing a scanned page can change concrete boundary targets"
+        );
     }
 
     #[test]
@@ -3744,8 +3765,8 @@ mod tests {
     /// This is the BLOCKING acceptance test for the pages/ root: without the
     /// post-match `is_client_script_candidate` check in `plan_for_changes`,
     /// a `pages/*.client.ts` edit would never trigger the client-scripts
-    /// rebuild pass because the `mark_islands` gate only fires for Module
-    /// changes inside `islands_roots`.
+    /// rebuild pass. The islands scanner separately excludes these sidecars
+    /// from its page-entry triggers.
     #[test]
     fn client_script_edit_under_pages_sets_rerun_client_scripts() {
         let orch = make_orch(CountingPipeline::default());
@@ -3754,10 +3775,10 @@ mod tests {
             plan.rerun_client_scripts,
             "*.client.ts under pages/ must set rerun_client_scripts"
         );
-        // Also: the page edit path still fires.
+        // The client-script sidecar is not a scanner page entry.
         assert!(
             !plan.rerun_islands,
-            "pages/ file must NOT trigger islands rerun"
+            "pages/*.client.ts sidecars must NOT trigger islands reruns"
         );
     }
 
@@ -3837,6 +3858,32 @@ mod tests {
         assert!(
             !plan.rerun_client_scripts,
             "regular .tsx under pages/ must NOT set rerun_client_scripts"
+        );
+        assert!(
+            plan.rerun_islands,
+            "script page edits must rerun boundary discovery"
+        );
+    }
+
+    #[test]
+    fn removed_script_page_reruns_boundary_discovery() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/pages/index.tsx"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(
+            plans[0].rerun_islands,
+            "removing a script page must remove targets from the next registry"
         );
     }
 

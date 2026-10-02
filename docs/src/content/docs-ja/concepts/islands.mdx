@@ -28,7 +28,32 @@ export default function Counter() {
 }
 ```
 
-この 1 つのディレクティブが opt-in のすべてです。これを持たないファイルは純粋なサーバーコンポーネントです。ビルド時に一度レンダリングされるだけで、ブラウザには決して届きません。
+`"use client"` は、そのモジュールの export を island target として使えるようにします。関数がハイドレーション対象として登録されるのは、到達可能なページで SDK の `<Island>` 境界の唯一のコンポーネント子として使われる場合だけです。client module は別の場所で定義された関数を re-export できます。登録された関数が使う import や resource も、通常の bundle graph を通じてブラウザーに届きます。
+
+## 境界ターゲットの検出と移行
+
+到達可能な `<Island>` 境界の具体的なターゲットだけが公開マーカーを持ちます。クライアントモジュールから関数を export すること、大文字で始まる名前を付けること、JSX を返すことだけでは登録されません。未使用のヘルパーは、複数のモジュールで同じ名前のままにできます。名前を変更する必要はありません。
+
+スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper も、動作を静的に解決できれば利用できます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
+
+ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import { Counter } from "./counter";
+
+<Island><Counter /></Island>;
+```
+
+子を動的に選ぶ形は production build で拒否されます。境界の内側で関数を選ぶのではなく、条件をそれぞれ具体的な境界の外側に置きます。
+
+```tsx
+{showCounter
+  ? <Island><Counter /></Island>
+  : <Island><Summary /></Island>}
+```
+
+衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias は関数の marker を変えません。`displayName` は未設定か、関数本来の名前と同じである必要があります。ターゲット名の変更には使えません。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
 
 同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。以下はパターンを示す簡略版です。同梱のテンプレートはアイコンに `Show` を使い、ユーティリティクラスと SVG のマークアップも含みます。
 

@@ -14,15 +14,22 @@
 //!     source reading. The default [`FsResolver`] hits the file system;
 //!     tests use [`InMemoryResolver`].
 //! - **Output**: an [`IslandsSet`] (`Vec<Island>`), sorted by
-//!   `(source_path, component_name)`, with one entry per canonical target.
-//!   Directive-bearing client modules remain graph roots even when they
-//!   contribute no registration.
+//!   `(source_path, component_name)`, with one entry per canonical target
+//!   actually used as a reachable SDK `Island` child. Exporting or declaring
+//!   a function in a client module does not register it by itself.
+//! - **Independent graph facts**: directive-bearing client modules remain
+//!   roots for `ScanMeta`, resource edges, package edges, workers, and staging
+//!   even when they contribute no registration. A helper called by a target
+//!   stays in the normal import closure; registry membership never prunes the
+//!   module graph.
 //!
 //! ## "use client" detection
 //!
-//! A source file is an islands entry if and only if its leading directive
+//! A source file is a client-module graph root if its leading directive
 //! prologue contains a string-literal expression statement whose value
-//! equals `"use client"` — same rule Next.js uses. The rules:
+//! equals `"use client"` — same rule Next.js uses. This marks client eligibility;
+//! a function becomes a registry target only when a reachable SDK `Island`
+//! boundary resolves to it. The rules:
 //!
 //! - The prologue is the run of expression-statement string literals at
 //!   the top of the module. As soon as a non-string-literal-expr-stmt
@@ -40,9 +47,12 @@
 //! ## Component identity
 //!
 //! The registration pass resolves SDK boundaries and their child bindings
-//! through imports, exports, and supported wrappers. Defining module and
-//! binding determine internal identity; the selected export is an importable
-//! client route, and the function's runtime name is the public marker.
+//! through lexical bindings, imports, exports, and finite forwarding/fixed
+//! wrapper summaries. Defining module and binding determine internal identity;
+//! the selected export is an importable client route, and the actual function
+//! name is the public marker. Aliases and re-exports preserve that marker.
+//! A conflicting marker or a demanded dynamic/opaque target is an error with
+//! its boundary location and a static rewrite hint.
 //!
 //! ## Cycles and dedup
 //!
@@ -1823,8 +1833,8 @@ impl Resolver for InMemoryResolver {
     }
 }
 
-/// Walk every page, resolve imports recursively, and collect every
-/// `"use client"` component reachable from any page.
+/// Walk every page, resolve imports recursively, and collect the concrete
+/// function targets used by reachable SDK `Island` boundaries.
 ///
 /// `pages` should be the path representation the caller wants reflected
 /// back in [`Island::source_path`]; whatever the resolver returns from
@@ -1832,8 +1842,9 @@ impl Resolver for InMemoryResolver {
 /// of any island found in or beyond that file.
 ///
 /// The returned vector is sorted by `(source_path, component_name)` and
-/// deduped — duplicate entries (same path + name reachable through
-/// multiple chains) collapse to one.
+/// deduped by defining function binding before marker collisions are checked.
+/// Directive-bearing helper modules remain part of the separate graph
+/// metadata even when they contribute no target.
 ///
 /// This is a thin wrapper over [`scan_islands_with_meta`] that drops the
 /// [`ScanMeta`] side-channel — kept so the long-standing

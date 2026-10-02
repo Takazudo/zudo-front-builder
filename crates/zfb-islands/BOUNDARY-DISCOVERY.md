@@ -4,8 +4,9 @@ Accepted implementation contract for [#3506](https://github.com/Takazudo/zudo-fr
 implemented by [#3507](https://github.com/Takazudo/zudo-front-builder/issues/3507) and
 verified by [#3508](https://github.com/Takazudo/zudo-front-builder/issues/3508).
 Source problem: [#3384](https://github.com/Takazudo/zudo-front-builder/issues/3384).
-This document specifies the intended change; it does not claim that the implementation has landed.
-The inspected base is `9dd868bdd35733bbf0d93be204b78753bd275a4d`.
+This document is the normative scanner contract. The implementation landed in
+#3507; #3508 adds real production and packed-consumer acceptance, browser
+hydration checks, and migration guidance.
 
 ## 1. Register boundary targets; preserve the module graph
 

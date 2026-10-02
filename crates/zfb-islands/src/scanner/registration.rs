@@ -3,6 +3,10 @@
 //! This pass is intentionally separate from the module walk in `scanner.rs`:
 //! imports and client-module resource facts remain rooted at every reachable
 //! directive-bearing module, while this pass returns only validated targets.
+//! It resolves static JSX and owned `h`/`jsx`/`jsxs`/`jsxDEV` descriptions,
+//! follows aliases and re-export barrels, and summarizes fixed or
+//! child-forwarding wrappers. It does not infer arbitrary dynamic evaluation:
+//! demanded unresolved or opaque child flows become source-located errors.
 
 use super::*;
 use swc_core::common::{Span, Spanned};
