@@ -1104,27 +1104,26 @@ fn render_one_inner(
     if !(200..300).contains(&status) {
         let (body_str, diagnostic) = split_render_diagnostic(&String::from_utf8_lossy(&body));
         // A render diagnostic is thrown inside the renderer, so its stack
-        // frames never locate the authored element; only its site can.
-        let (user_location, internal_location) = match (&diagnostic, sourcemap) {
-            (Some(diagnostic), _) => (
-                diagnostic.site.as_ref().and_then(|site| {
-                    authored_site(
-                        site,
-                        sourcemap,
-                        expected_inner_bundle_basename,
-                        project_root,
-                    )
-                }),
-                None,
-            ),
-            (None, Some(sm)) => {
-                let projection = reproject_first_frame(
-                    &body_str,
-                    sm,
+        // frames never locate the authored element; only its site can. The
+        // first mapped frame stays available as the internal debugging cause.
+        let projection = sourcemap.map(|sm| {
+            reproject_first_frame(&body_str, sm, expected_inner_bundle_basename, project_root)
+        });
+        let (user_location, internal_location) = match (&diagnostic, projection) {
+            (Some(diagnostic), projection) => match diagnostic.site.as_ref().and_then(|site| {
+                authored_site(
+                    site,
+                    sourcemap,
                     expected_inner_bundle_basename,
                     project_root,
-                );
-                (projection.authored, projection.internal)
+                )
+            }) {
+                Some(location) => (Some(location), None),
+                None => (None, projection.and_then(|p| p.internal)),
+            },
+            (None, Some(Projection { authored, internal })) => {
+                let internal = if authored.is_some() { None } else { internal };
+                (authored, internal)
             }
             (None, None) => (None, None),
         };
@@ -1496,8 +1495,8 @@ fn percent_decode(s: &str) -> Cow<'_, str> {
 /// Walk the response body's `bundle.mjs:LINE:COL` style frames and
 /// re-project them through the source map. `authored` is the first frame
 /// that lands in a verified project file (`"<source>:line:col"`, 1-based);
-/// `internal` is the first resolving frame otherwise, sanitized so staging
-/// tempdirs and local absolute paths never reach the user.
+/// `internal` is the first non-authored frame before it, sanitized so
+/// staging tempdirs and local absolute paths never reach the user.
 ///
 /// `expected_inner_bundle_basename` (see [`inner_bundle_basename`])
 /// filters candidates to those whose own specifier resolves to the
@@ -1538,9 +1537,6 @@ fn reproject_first_frame(
             }
             _ => {}
         }
-    }
-    if projection.authored.is_some() {
-        projection.internal = None;
     }
     projection
 }
@@ -2954,30 +2950,50 @@ mod tests {
                 unreachable!("expected RenderFailed");
             };
             assert_eq!(user_location, None);
-            assert_eq!(internal_location, None);
+            assert_eq!(
+                internal_location.as_deref(),
+                Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9")
+            );
             assert!(diagnostic.is_some());
-            assert!(!display.contains(" — "), "{display}");
+            assert!(!display.contains(" — at "), "{display}");
         }
 
         #[test]
-        fn structural_fallback_does_not_report_the_renderer_throw_frame() {
+        fn structural_fallback_keeps_the_throw_frame_only_as_internal_cause() {
             let (_tmp, project, map_path) = fixture(FIELD);
-            let err = fail_with(
-                format!("{MESSAGE}{}", diagnostic_line("")),
-                &project,
-                map_path,
-            );
-            let RendererError::RenderFailed {
-                user_location,
-                internal_location,
-                diagnostic,
-                ..
-            } = err
-            else {
-                unreachable!("expected RenderFailed");
-            };
-            assert_eq!((user_location, internal_location), (None, None));
-            assert_eq!(diagnostic.and_then(|d| d.site), None);
+            for site in [
+                "",
+                // A site that resolves outside the project.
+                r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":20,"column":1}"#,
+            ] {
+                let err = fail_with(
+                    format!("{MESSAGE}{}", diagnostic_line(site)),
+                    &project,
+                    map_path.clone(),
+                );
+                let display = err.to_string();
+                let RendererError::RenderFailed {
+                    user_location,
+                    internal_location,
+                    diagnostic,
+                    ..
+                } = err
+                else {
+                    unreachable!("expected RenderFailed");
+                };
+                assert_eq!(user_location, None, "{site}");
+                assert_eq!(
+                    internal_location.as_deref(),
+                    Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9"),
+                    "{site}"
+                );
+                assert!(diagnostic.is_some());
+                assert!(!display.contains(" — at "), "{display}");
+                assert!(
+                    display.contains(" — internal frame node_modules/"),
+                    "{display}"
+                );
+            }
         }
 
         #[test]
