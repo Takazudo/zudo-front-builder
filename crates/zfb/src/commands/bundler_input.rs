@@ -579,6 +579,17 @@ pub(crate) fn assemble_bundler_input(
             Some(&first_party_root),
         )
         .context("owned island scanner preflight failed")?;
+        let manifest = zfb_islands::Manifest::from_islands(&islands);
+        if let Some(collision) = manifest.collisions().first() {
+            anyhow::bail!(
+                "ambiguous owned island marker {:?}: {} export {:?} and {} export {:?}",
+                collision.name,
+                collision.kept_path.display(),
+                collision.kept_export,
+                collision.dropped_path.display(),
+                collision.dropped_export,
+            );
+        }
         let names: std::collections::BTreeSet<_> = islands
             .iter()
             .map(|island| island.marker_name.clone())

@@ -95,6 +95,10 @@ pub struct Collision {
     pub dropped_path: PathBuf,
     /// The source path that **did** make it into the manifest.
     pub kept_path: PathBuf,
+    /// Export selected for the dropped target.
+    pub dropped_export: String,
+    /// Export selected for the kept target.
+    pub kept_export: String,
 }
 
 /// Module extensions an island can be authored or shipped in. Used when
@@ -284,18 +288,24 @@ impl Manifest {
     /// `marker_name`s are preserved as two entries, not collapsed.
     pub fn from_islands(islands: &IslandsSet) -> Self {
         let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut selected_exports: BTreeMap<String, String> = BTreeMap::new();
         let mut collisions: Vec<Collision> = Vec::new();
         for island in islands {
             match entries.get(&island.marker_name) {
                 None => {
                     entries.insert(island.marker_name.clone(), island.source_path.clone());
+                    selected_exports
+                        .insert(island.marker_name.clone(), island.component_name.clone());
                 }
                 Some(kept) => {
-                    if kept != &island.source_path {
+                    let kept_export = &selected_exports[&island.marker_name];
+                    if kept != &island.source_path || kept_export != &island.component_name {
                         collisions.push(Collision {
                             name: island.marker_name.clone(),
                             dropped_path: island.source_path.clone(),
                             kept_path: kept.clone(),
+                            dropped_export: island.component_name.clone(),
+                            kept_export: kept_export.clone(),
                         });
                     }
                 }
@@ -535,6 +545,8 @@ mod tests {
             name: "Widget".to_string(),
             kept_path: kept.to_path_buf(),
             dropped_path: dropped.to_path_buf(),
+            kept_export: "Widget".to_string(),
+            dropped_export: "Widget".to_string(),
         }
     }
 
@@ -811,6 +823,19 @@ Widget.displayName = "Widget";
         assert_eq!(c.name, "Counter");
         assert_eq!(c.kept_path, PathBuf::from("/a/counter.tsx"));
         assert_eq!(c.dropped_path, PathBuf::from("/b/counter.tsx"));
+    }
+
+    #[test]
+    fn distinct_exports_in_one_module_with_one_marker_collide() {
+        let set = vec![
+            island_marker("First", "/components/duo.tsx", "Widget"),
+            island_marker("Second", "/components/duo.tsx", "Widget"),
+        ];
+        let manifest = Manifest::from_islands(&set);
+        let collision = manifest.collisions().first().expect("collision");
+        assert_eq!(collision.kept_path, collision.dropped_path);
+        assert_eq!(collision.kept_export, "First");
+        assert_eq!(collision.dropped_export, "Second");
     }
 
     #[test]

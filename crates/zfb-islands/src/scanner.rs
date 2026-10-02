@@ -153,6 +153,15 @@ pub enum ScanError {
         /// Literal first argument passed to `new URL(...)`.
         specifier: String,
     },
+    /// An actual boundary target could not be resolved to a supported,
+    /// unambiguous runtime function.
+    #[error("unsupported island registration at {path}: {message}")]
+    Registration {
+        /// Boundary use site.
+        path: PathBuf,
+        /// Binding trace, reason, and supported rewrite.
+        message: String,
+    },
 }
 
 /// Convenience alias for scanner results.

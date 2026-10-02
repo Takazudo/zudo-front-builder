@@ -426,8 +426,8 @@ fn shared_bundle_entry_uses_component_shape_guard_not_truthy_only() {
     );
     // Loud, non-silent rejection naming the export + module.
     assert!(
-        src.contains("console.error(") && src.contains("must be a function"),
-        "expected a loud console.error on rejection:\n{src}"
+        src.contains("throw new Error(") && src.contains("must be a function"),
+        "expected a hard error on rejection:\n{src}"
     );
     // The module label is threaded through as the 4th register arg.
     assert!(
