@@ -4484,7 +4484,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let resolver = FsResolver::new()
         .with_project_root(project_root)
         .with_injected_route_roots(package_route_entrypoints)
-        .with_virtual_modules(project_root, &plugin_config.virtual_modules);
+        .with_virtual_modules(project_root, &plugin_config.virtual_modules)
+        .with_plugin_aliases(&plugin_config.alias_entries);
     // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
     // by `materialise_islands_shadow_with_worker_context` below, via
     // `scan_meta.workspace_package_edges_from_islands`) to the first-party
@@ -4502,6 +4503,11 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         Some(&first_party_root),
     ) {
         Ok(result) => result,
+        Err(error @ zfb_islands::ScanError::Registration { .. }) => {
+            // A failed registration is not a valid empty registry. Let the
+            // dev rebuild report failure without publishing partial names.
+            return Err(anyhow!("zfb islands: {error}"));
+        }
         Err(
             error @ (zfb_islands::ScanError::ImportQuery { .. }
             | zfb_islands::ScanError::RawImport { .. }
@@ -4695,10 +4701,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
     {
         for island in &islands_set {
-            if island.marker_name.is_empty()
-                || island.marker_name == "default"
-                || island.marker_name == "Anonymous"
-            {
+            if island.marker_name.is_empty() {
                 anyhow::bail!(
                     "owned island in {} has no stable scanner component identity ({:?})",
                     island.source_path.display(),
@@ -4708,35 +4711,18 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         }
     }
 
-    // #999: scanning `node_modules` for dist-shipped islands makes
-    // duplicate marker names far more likely — e.g. a local
-    // `ThemeToggle` component and a package-provided `ThemeToggle` from
-    // `@takazudo/zudo-doc`. The manifest keys on marker name and keeps
-    // only the first by source-path sort order, silently dropping the
-    // rest; the dropped island then ships a dead SSR marker that never
-    // hydrates. Surface every such collision loudly with BOTH source
-    // paths so the author can disambiguate (rename one component, or give
-    // it a distinct `displayName`) instead of debugging a silent
-    // dead-island. This does not change selection behaviour — it only
-    // warns, and only for the collisions the author can act on (see the
-    // #2441 filter below).
+    // The flat manifest would otherwise drop a distinct target with the
+    // same marker. Reject collisions before emitting the browser registry;
+    // package membership and byte similarity cannot prove shared identity.
     let island_manifest = zfb_islands::Manifest::from_islands(&islands_set);
     for collision in island_manifest.collisions() {
-        // #2441: a package that ships both its compiled `dist/` output and
-        // its sources can have the same component reach the scanner twice,
-        // through two entry graphs. Those two participants are the same
-        // component — hydration is correct whichever the manifest keeps —
-        // and the remediation below is not actionable, because both live
-        // inside a dependency. Drop them silently; every collision the
-        // author CAN act on still warns.
-        if zfb_islands::is_same_package_duplicate(collision) {
-            continue;
-        }
         anyhow::bail!(
-            "ambiguous owned island marker {:?}: {} and {}",
+            "ambiguous owned island marker {:?}: {} export {:?} and {} export {:?}",
             collision.name,
             collision.kept_path.display(),
-            collision.dropped_path.display()
+            collision.kept_export,
+            collision.dropped_path.display(),
+            collision.dropped_export,
         );
     }
 

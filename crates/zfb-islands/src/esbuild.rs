@@ -2504,8 +2504,8 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
 /// The synthesised entry imports each island as a namespace and
 /// **registers** it into a manifest at top-level using a
 /// `__zfb_register(ns, exportName, markerName, moduleLabel)` helper: the
-/// helper picks the component (`__zfb_pick` — named export first, then
-/// `default`) and stashes a mount thunk under `markerName`.
+/// helper picks the exact scanner-selected export (`__zfb_pick`) and
+/// stashes a mount thunk under `markerName`.
 ///
 /// `markerName` is the scanner-derived SSR marker name baked into the source.
 /// Registration checks the component's runtime name against that literal,
@@ -2599,12 +2599,15 @@ fn render_shared_bundle_entry_source_with_build(
             ));
         }
         out.push_str("const __zfb_manifest = Object.create(null);\n");
-        out.push_str("function __zfb_pick(ns, exportName) { const named = ns[exportName]; return (named !== undefined && named !== null) ? named : ns.default; }\n");
+        // The scanner has selected a concrete export route. Falling back to
+        // `default` can mount a different function under the selected marker.
+        out.push_str("function __zfb_pick(ns, exportName) { if (!Object.prototype.hasOwnProperty.call(ns, exportName)) throw new Error(\"[zfb] missing owned island export \" + exportName); return ns[exportName]; }\n");
         out.push_str("function __zfb_register(ns, exportName, markerName, moduleLabel) {\n");
         out.push_str("  const C = __zfb_pick(ns, exportName);\n");
-        out.push_str("  if (typeof C !== \"function\") { console.error(\"[zfb] owned island export \" + exportName + \" from \" + moduleLabel + \" must be a function\"); return; }\n");
-        out.push_str("  const name = C.displayName ?? C.name;\n");
-        out.push_str("  if (name !== markerName) { console.error(\"[zfb] owned island identity mismatch: \" + markerName + \" versus \" + name); return; }\n");
+        out.push_str("  if (typeof C !== \"function\") throw new Error(\"[zfb] owned island export \" + exportName + \" from \" + moduleLabel + \" must be a function\");\n");
+        out.push_str("  const name = C.name;\n");
+        out.push_str("  if (!name || (C.displayName != null && C.displayName !== name) || name !== markerName) throw new Error(\"[zfb] owned island identity mismatch: \" + markerName + \" versus \" + name);\n");
+        out.push_str("  if (Object.prototype.hasOwnProperty.call(__zfb_manifest, markerName)) throw new Error(\"[zfb] duplicate owned island marker: \" + markerName);\n");
         out.push_str(&format!("  __zfb_manifest[markerName] = {{ identity: {{ component: markerName, build: {} }}, mount: (props, element, mode) => {{\n", json_string(build)));
         out.push_str(&format!(
             "    const identity = {{ component: markerName, build: {} }};\n",
@@ -2647,6 +2650,15 @@ fn is_absolute_module_label(label: &str) -> bool {
 impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
         validate_owned_build_identity(islands, config)?;
+        let mut markers = std::collections::HashSet::new();
+        for island in islands {
+            if !markers.insert(&island.marker_name) {
+                anyhow::bail!(
+                    "duplicate owned island marker {:?} reached browser emission; validate and deduplicate defining bindings before bundling",
+                    island.marker_name
+                );
+            }
+        }
         self.sweep_stranded_entries();
 
         let OneEntryOutput {
@@ -3884,6 +3896,11 @@ mod tests {
         // **static literal** — the scanner-derived `marker_name`. The owned
         // glue checks the function name against that marker before mounting.
         assert!(src.contains("function __zfb_pick("));
+        assert!(src.contains("Object.prototype.hasOwnProperty.call(ns, exportName)"));
+        assert!(!src.contains("return ns.default"));
+        assert!(src.contains("duplicate owned island marker"));
+        assert!(src.contains("C.displayName !== name"));
+        assert!(src.contains("if (!name"));
         assert!(src.contains("function __zfb_register("));
         assert!(
             !src.contains("function __zfb_keyFor("),
@@ -4307,6 +4324,24 @@ mod tests {
             result.is_ok(),
             "mock mode must skip the stage-escape audit entirely: {result:?}"
         );
+    }
+
+    #[test]
+    fn browser_bundler_rejects_duplicate_marker_before_emitting() {
+        let bundler =
+            EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+        let config =
+            BundleConfig::production().with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()));
+        let error = bundler
+            .bundle(
+                &[
+                    Island::with_marker_name("A", "/components/a.tsx", "Same"),
+                    Island::with_marker_name("B", "/components/b.tsx", "Same"),
+                ],
+                &config,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate owned island marker"));
     }
 
     /// Mirrors the mock-mode guarantee above for the client-script path
