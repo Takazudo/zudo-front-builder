@@ -4737,7 +4737,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // same marker. Reject collisions before emitting the browser registry;
     // package membership and byte similarity cannot prove shared identity.
     let island_manifest = zfb_islands::Manifest::from_islands(&islands_set);
-    for collision in island_manifest.collisions() {
+    if let Some(collision) = island_manifest.collisions().first() {
         anyhow::bail!(
             "ambiguous owned island marker {:?}: {} export {:?} and {} export {:?}",
             collision.name,
