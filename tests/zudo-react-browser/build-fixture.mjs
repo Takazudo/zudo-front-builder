@@ -227,13 +227,19 @@ function createImportMap(stagedPackage) {
   const runtimeExports = Object.entries(exportsMap).filter(([subpath]) =>
     /^\.\/zudo-react(?:\/.*)?$/.test(subpath),
   );
-  if (runtimeExports.length !== 5) {
+  if (runtimeExports.length !== 6) {
     throw new Error(
-      `Expected five zudo-react exports in staged package, found ${runtimeExports.length}`,
+      `Expected six zudo-react exports in staged package, found ${runtimeExports.length}`,
     );
   }
 
-  const imports = {};
+  const root = exportsMap["."];
+  const rootTarget = typeof root === "string" ? root : root?.default;
+  if (typeof rootTarget !== "string" || !rootTarget.startsWith("./dist/")) {
+    throw new Error(`Staged package root does not point into dist/: ${rootTarget}`);
+  }
+
+  const imports = { "@takazudo/zfb": IMPORT_MAP_PREFIX + rootTarget.slice("./dist/".length) };
   for (const [subpath, conditions] of runtimeExports) {
     const target = typeof conditions === "string" ? conditions : conditions?.default;
     if (typeof target !== "string" || !target.startsWith("./dist/")) {

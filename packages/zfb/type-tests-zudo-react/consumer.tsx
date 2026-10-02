@@ -17,11 +17,22 @@ import {
 } from "@takazudo/zfb/zudo-react/server";
 // @ts-expect-error The internal island marker is not part of the public server API.
 import { islandRootType } from "@takazudo/zfb/zudo-react/server";
+import {
+  createIslandTest,
+  withIslandTestContext,
+  type IslandTest,
+} from "@takazudo/zfb/zudo-react/testing";
 
 const serverRenderOptions: RenderOptions = {};
 const serverIslandOptions: IslandOptions = { identity: { component: "Example", build: "b1" } };
 void [islandRoot, renderToString, serializeProps, serverRenderOptions, serverIslandOptions];
 void islandRootType;
+const islandTest: IslandTest = createIslandTest(ExampleIsland, {}, { document });
+islandTest.identity = { component: "ExampleIsland", build: "negative-test" };
+void islandTest.hydrate();
+void islandTest.mount();
+void islandTest.flush();
+islandTest.dispose();
 
 const name = {
   value: "ok",
@@ -64,6 +75,9 @@ function ExampleIsland() {
   return <span>example</span>;
 }
 void island;
+withIslandTestContext({ components: { ExampleIsland }, build: "test" }, () =>
+  renderToString(island),
+);
 // Island now returns an owned branded description directly.
 const assumedOwned: Description = Island({ children: <ExampleIsland /> });
 void assumedOwned;

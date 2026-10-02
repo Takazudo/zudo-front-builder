@@ -1,0 +1,186 @@
+---
+title: Testing
+description: Test real zudo-react island serialization, hydration, mounting, diagnostics, and cleanup with Vitest.
+sidebar_position: 11
+---
+
+## Configure JSX and a DOM
+
+The `@takazudo/zfb/zudo-react/testing` entry provides test helpers; it does not add a test-runner dependency. Configure your runner to use zudo-react's automatic JSX runtime and provide a DOM such as `happy-dom`.
+
+If your project does not already have them, add Vitest and happy-dom as development dependencies with `pnpm add -D vitest happy-dom`.
+
+~~~ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "@takazudo/zfb/zudo-react",
+  },
+  test: {
+    environment: "happy-dom",
+  },
+});
+~~~
+
+Set the same import source in `tsconfig.json` so TypeScript checks test JSX with the runtime's types.
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+## Hydrate and mount an island
+
+`createIslandTest` calls the real server renderer, parses its HTML with the supplied document, and appends the wrapper to `document.body`. The returned `host` is the island wrapper. Hydration adopts its parsed children, while mount replaces those children with client-rendered DOM.
+
+~~~tsx
+import { afterEach, expect, it } from "vitest";
+import { signal } from "@takazudo/zfb/zudo-react";
+import { createIslandTest } from "@takazudo/zfb/zudo-react/testing";
+
+const active: Array<ReturnType<typeof createIslandTest>> = [];
+
+afterEach(() => {
+  for (const test of active) test.dispose();
+  active.length = 0;
+});
+
+it("hydrates server DOM and flushes a signal update", async () => {
+  const label = signal("ready");
+  let clicks = 0;
+  function Counter() {
+    return (
+      <button on:click={() => clicks++}>
+        Count: {label}
+      </button>
+    );
+  }
+
+  const test = createIslandTest(Counter, {}, { document });
+  active.push(test);
+  const button = test.host.querySelector("button")!;
+  const root = test.hydrate();
+
+  expect(test.html).toContain('data-zfb-island="Counter"');
+  expect(root).not.toBeNull();
+  expect(test.host.querySelector("button")).toBe(button);
+  button.click();
+  label.value = "updated";
+  await test.flush();
+  expect(button.textContent).toBe("Count: updated");
+  expect(clicks).toBe(1);
+
+  test.dispose();
+  test.dispose();
+  button.click();
+  label.value = "after disposal";
+  await test.flush();
+  expect(button.textContent).toBe("Count: updated");
+  expect(clicks).toBe(1);
+});
+~~~
+
+To exercise the client-rendered path, call `mount()` on another harness. It keeps the wrapper while replacing its parsed children:
+
+~~~tsx
+it("mounts into the parsed island wrapper", () => {
+  function Card() {
+    return <p>client content</p>;
+  }
+
+  const test = createIslandTest(Card, {}, { document });
+  active.push(test);
+  const serverParagraph = test.host.querySelector("p");
+
+  expect(test.mount()).not.toBeNull();
+  expect(test.host.querySelector("p")).not.toBe(serverParagraph);
+  expect(test.host.textContent).toBe("client content");
+});
+~~~
+
+Keep the wrapper and its attributes when testing hydration. You can alter its child DOM or transport attributes to exercise fail-closed behavior. A malformed props payload returns `null`, records a structured diagnostic, and leaves the existing child DOM untouched:
+
+~~~tsx
+it("reports invalid transport without changing server children", () => {
+  function Card() {
+    return <p>server content</p>;
+  }
+
+  const test = createIslandTest(Card, {}, { document });
+  active.push(test);
+  test.host.setAttribute("data-props", "{");
+  const before = test.host.innerHTML;
+
+  expect(test.hydrate()).toBeNull();
+  expect(test.diagnostics.at(-1)).toMatchObject({ code: "ZR_PROPS", phase: "preflight" });
+  expect(test.host.innerHTML).toBe(before);
+});
+~~~
+
+Use `test.diagnostics` for the complete `Diagnostic` objects. The client runtime's default reporter logs a concise searchable line followed by that object. An explicit `identity` option lets a negative test supply an identity that differs from the server wrapper:
+
+~~~tsx
+it("can override identity for a negative test", () => {
+  function Card() {
+    return <p>server content</p>;
+  }
+
+  const test = createIslandTest(
+    Card,
+    {},
+    { document, identity: { component: "WrongCard", build: "test-build" } },
+  );
+  active.push(test);
+
+  expect(test.hydrate()).toBeNull();
+  expect(test.diagnostics.at(-1)?.code).toBe("ZR_IDENTITY");
+});
+~~~
+
+`dispose()` is idempotent; it releases subscriptions and listeners, then removes the wrapper even if a test moved it elsewhere in the document.
+
+## Render a complete page with SDK Islands
+
+`Island` reads component registration metadata during synchronous page rendering. `withIslandTestContext` derives those names from the component values you pass, preserves unrelated `globalThis.__zfb` fields, and restores the previous global in `finally`, including when rendering throws.
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { withIslandTestContext } from "@takazudo/zfb/zudo-react/testing";
+
+function ThemeToggle() {
+  return <button>Theme</button>;
+}
+
+const html = withIslandTestContext({ components: [ThemeToggle], build: "test-build" }, () =>
+  renderToString(
+    <html>
+      <head>
+        <title>Test page</title>
+      </head>
+      <body>
+        <main>
+          <Island>
+            <ThemeToggle />
+          </Island>
+        </main>
+      </body>
+    </html>,
+  ),
+);
+~~~
+
+The callback must be synchronous. Do asynchronous setup before entering it; an async callback is rejected because the temporary registration lives on a shared global.
+
+## See also
+
+- [Server rendering](./server-rendering.mdx)
+- [Hydration](./hydration.mdx)
+- [API reference](./api-reference.mdx)

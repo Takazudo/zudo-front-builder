@@ -1063,7 +1063,7 @@ function execute(
       );
     scope = createScope({
       component: options.identity.component,
-      ...(options.report ? { reporter: options.report } : {}),
+      reporter: (value) => report(options, value),
       protocol,
       build: options.identity.build,
       path: rootPath(container),

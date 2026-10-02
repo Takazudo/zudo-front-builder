@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d",
+  "baselineSourceSha": "811c0023197e26b08aab2feddefba404860c4bfe",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60171,
-        "gzip": 19965
+        "raw": 60802,
+        "gzip": 20259
       },
       "scalar-signal": {
-        "raw": 60179,
-        "gzip": 19968
+        "raw": 60810,
+        "gzip": 20253
       },
       "show-for": {
-        "raw": 60326,
-        "gzip": 20050
+        "raw": 60957,
+        "gzip": 20336
       },
       "model": {
-        "raw": 60170,
-        "gzip": 19975
+        "raw": 60801,
+        "gzip": 20265
       },
       "blog-theme": {
-        "raw": 60521,
-        "gzip": 20101
+        "raw": 61152,
+        "gzip": 20398
       },
       "json-api": {
-        "raw": 60325,
-        "gzip": 20061
+        "raw": 60956,
+        "gzip": 20356
       },
       "multi-island": {
-        "raw": 60447,
-        "gzip": 20065
+        "raw": 61078,
+        "gzip": 20352
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60233,
-        "gzip": 19988
+        "raw": 60864,
+        "gzip": 20267
       },
       "scalar-signal": {
-        "raw": 60241,
-        "gzip": 19990
+        "raw": 60872,
+        "gzip": 20270
       },
       "show-for": {
-        "raw": 60388,
-        "gzip": 20070
+        "raw": 61019,
+        "gzip": 20347
       },
       "model": {
-        "raw": 60232,
-        "gzip": 19994
+        "raw": 60863,
+        "gzip": 20277
       },
       "blog-theme": {
-        "raw": 60583,
-        "gzip": 20120
+        "raw": 61214,
+        "gzip": 20400
       },
       "json-api": {
-        "raw": 60387,
-        "gzip": 20079
+        "raw": 61018,
+        "gzip": 20358
       },
       "multi-island": {
-        "raw": 60509,
-        "gzip": 20085
+        "raw": 61140,
+        "gzip": 20364
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after optional Island prop normalization; Linux x64 uses its separately measured contract.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after the public testing harness and readable diagnostics; Linux x64 uses its separately measured contract.",
   "baselineEvidence": {
     "event": "local",
-    "sourceSha": "c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d",
-    "workspaceReport": "research/v3-island-size/results/optional-props-darwin-c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d/real-workspace/report.md",
-    "packedReport": "research/v3-island-size/results/optional-props-darwin-c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d/real-packed/report.md",
-    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. Optional Island prop normalization increased every nonempty fixture by 163 raw bytes; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
+    "sourceSha": "811c0023197e26b08aab2feddefba404860c4bfe",
+    "workspaceReport": "research/v3-island-size/results/testing-darwin-811c0023197e26b08aab2feddefba404860c4bfe/real-workspace/report.md",
+    "packedReport": "research/v3-island-size/results/testing-darwin-811c0023197e26b08aab2feddefba404860c4bfe/real-packed/report.md",
+    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. The default diagnostic formatter increased every nonempty fixture by 631 raw bytes; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
   }
 }
