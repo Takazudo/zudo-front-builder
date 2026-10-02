@@ -470,10 +470,9 @@ export default function Page() {
     let virtual_entrypoint = package_root.join("src/virtual-page.tsx");
     fs::write(
         &virtual_entrypoint,
-        r#"import { bindings } from "virtual:host-bindings";
+        r#"import { SidebarToggle } from "virtual:host-bindings";
 import { Island } from "@takazudo/zfb";
 export default function Page() {
-  const SidebarToggle = bindings.SidebarToggle;
   return <html lang="en"><body><Island><SidebarToggle /></Island></body></html>;
 }
 "#,
@@ -489,8 +488,7 @@ export default function Page() {
     let host_bindings = root.join("src/host-bindings.tsx");
     fs::write(
         &host_bindings,
-        r#"import { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
-export const bindings = { SidebarToggle };
+        r#"export { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
 "#,
     )
     .unwrap();
@@ -499,7 +497,7 @@ export const bindings = { SidebarToggle };
     let virtual_entrypoint_json =
         serde_json::to_string(&virtual_entrypoint.to_string_lossy()).unwrap();
     let virtual_module_source = format!(
-        "export {{ bindings }} from {};\n",
+        "export {{ SidebarToggle }} from {};\n",
         serde_json::to_string(&host_bindings.to_string_lossy()).unwrap()
     );
     let virtual_module_source_json = serde_json::to_string(&virtual_module_source).unwrap();
