@@ -22,6 +22,8 @@ export function ownedIslandBoundary(
   fallback: Child | undefined,
   when: When,
   media: string | undefined,
+  persist?: string,
+  persistProps?: boolean,
 ): Description {
   const description = singleChild(child);
   const functionName = (description.type as Function).name;
@@ -48,6 +50,8 @@ export function ownedIslandBoundary(
     identity: { component, build },
     when,
     media,
+    persist,
+    persistProps,
     skipSsr: fallback !== undefined,
     fallback,
   });

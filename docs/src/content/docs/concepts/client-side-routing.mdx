@@ -509,40 +509,31 @@ Add `data-zfb-transition-persist="<id>"` to an element you want to keep alive ac
 
 The router lifts persisted elements to `<html>` before the body swap (using the zero-detachment `moveBefore()` API on Chrome 133+ or a fallback `appendChild`) and reattaches them to their matching target in the new body. This is the mechanism Astro uses to keep `<canvas>` and `<video>` alive without losing WebGL context or playback state.
 
-#### Persisting an island's component state with `data-zfb-transition-persist-props`
+#### Persisting an island with `<Island>`
 
-The same `data-zfb-transition-persist` attribute works on an island wrapper (a `[data-zfb-island]` marker), not just plain elements like `<video>`. When the marker survives the swap, its live component instance survives too — internal state (open/collapsed, scroll offset inside a nested list, a focused input) is not reset, because the framework never unmounted it.
+For islands, use the SDK's `persist` prop. The SDK writes the persistence key onto its owned wrapper alongside the component, build, transport, protocol, and props metadata the client runtime checks:
 
 ```tsx
 // A layout component — the sidebar tree keeps its expand/collapse state
 // and its scroll position across every SPA navigation.
-<div data-zfb-island="SidebarTree" data-zfb-transition-persist="sidebar-tree" data-props={props}>
+<Island persist="sidebar-tree">
   <SidebarTree {...props} />
-</div>
+</Island>
 ```
 
-By default, a swap still refreshes the persisted island's props to match the incoming page (the router always knows what the new page *would* have rendered, even though it discards that markup). If the refreshed props are identical to what the live instance already has, nothing else happens — full continuity, silently. If they differ, the island is unmounted and remounted fresh with the new props, so it never gets stuck showing a stale render from the previous page — but any internal state not derived from props (like an open/closed toggle) is lost in that remount, same as an ordinary (non-persisted) island would be.
+Use the same nonempty `persist` key on each page where the island should survive. Keys must be unique within each document; duplicate keys make the navigation fail before the DOM swap. When the key matches, the wrapper and live component instance survive, so state such as an open menu or a focused input is not reset.
 
-Set `data-zfb-transition-persist-props` to any value **other than** `"false"` (conventionally `"true"`) to opt out of that props refresh entirely and keep the island's current props (and therefore its current rendered state) exactly as they were, regardless of what the incoming page's props would have been:
+By default, navigation refreshes the persisted island's props from the incoming page. Identical props keep the current instance. Changed props dispose it once and mount a fresh instance with the incoming props, so the island does not keep showing stale page data. Any internal state held by the old instance is lost during that remount.
+
+Set `persistProps` to keep the current props and state when the key matches:
 
 ```tsx
-<div
-  data-zfb-island="SidebarTree"
-  data-zfb-transition-persist="sidebar-tree"
-  data-zfb-transition-persist-props="true"
-  data-props={props}
->
+<Island persist="sidebar-tree" persistProps>
   <SidebarTree {...props} />
-</div>
+</Island>
 ```
 
-Use this for chrome-zone islands whose props are effectively invariant across pages (a sidebar, a header) where you want to guarantee zero re-render, ever — not for content-area islands whose props are expected to change with the page (a table of contents, a "last updated" widget), since opting out means the island would keep showing the *previous* page's data after a navigation whose incoming props actually differed.
-
-<Note title="Attribute default is the opposite of what the name suggests">
-
-`data-zfb-transition-persist-props` absent, or explicitly `"false"`, means props ARE refreshed (the common case: state persists, but data stays current). Any other value opts OUT of the refresh — `"true"` by convention, but the check is only ever against the literal string `"false"`. This mirrors Astro's `data-astro-transition-persist-props` behavior exactly.
-
-</Note>
+Use `persistProps` for islands with page-invariant props, such as a site-wide sidebar. It is a boolean SDK option and defaults to `false`. A changed component or build identity still recreates the root, even when `persistProps` is enabled. Keeping old props on a page-specific table of contents or "last updated" widget can leave it showing the previous page's data.
 
 #### Islands inside a persisted element
 

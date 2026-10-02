@@ -11,6 +11,10 @@ export interface IslandProps {
   when?: When;
   media?: string;
   ssrFallback?: Child;
+  /** Stable key for preserving this island root across client-side navigation. */
+  persist?: string;
+  /** Keep the original props and state when the key matches (default: refresh changed props). */
+  persistProps?: boolean;
   /** JSX erases the tag kind; the boundary checks for one function component at runtime. */
   children?: Description;
 }
@@ -19,7 +23,14 @@ export type IslandElement = Description;
 
 export function Island(props: IslandProps): IslandElement {
   const { when, media } = resolveMediaProps(props);
-  return ownedIslandBoundary(props.children, props.ssrFallback, when, media);
+  return ownedIslandBoundary(
+    props.children,
+    props.ssrFallback,
+    when,
+    media,
+    props.persist,
+    props.persistProps,
+  );
 }
 
 function resolveMediaProps(props: IslandProps): { when: When; media: string | undefined } {

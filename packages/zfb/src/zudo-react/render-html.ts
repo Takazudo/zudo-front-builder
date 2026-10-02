@@ -580,8 +580,24 @@ function island(
     (when !== "media" && options.media !== undefined)
   )
     fail("ZR_ISLAND_WHEN", context, when);
+  if (
+    options.persist !== undefined &&
+    (typeof options.persist !== "string" ||
+      !options.persist.trim() ||
+      options.persist !== options.persist.trim() ||
+      /[\u0000-\u001f\u007f]/.test(options.persist))
+  )
+    fail(
+      "ZR_ISLAND_PERSIST",
+      context,
+      "persist must be a nonempty string without surrounding whitespace or control characters",
+    );
+  if (options.persistProps !== undefined && typeof options.persistProps !== "boolean")
+    fail("ZR_ISLAND_PERSIST", context, "persistProps must be a boolean");
+  if (options.persistProps !== undefined && options.persist === undefined)
+    fail("ZR_ISLAND_PERSIST", context, "persistProps requires persist");
   const marker = options.skipSsr ? "data-zfb-island-skip-ssr" : "data-zfb-island";
-  const attrs = ` ${marker}="${escapeAttribute(options.identity.component)}" data-when="${when}"${when === "media" ? ` data-media="${escapeAttribute(options.media!)}"` : ""} data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${escapeAttribute(options.identity.build)}" data-props="${escapeAttribute(payload)}"`;
+  const attrs = ` ${marker}="${escapeAttribute(options.identity.component)}" data-when="${when}"${when === "media" ? ` data-media="${escapeAttribute(options.media!)}"` : ""} data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${escapeAttribute(options.identity.build)}" data-props="${escapeAttribute(payload)}"${options.persist === undefined ? "" : ` data-zfb-transition-persist="${escapeAttribute(options.persist)}"`}${options.persistProps === true ? ' data-zfb-transition-persist-props="true"' : ""}`;
   const local: Context = {
     radioGroups: new Map(),
     radioNames: new Map(),

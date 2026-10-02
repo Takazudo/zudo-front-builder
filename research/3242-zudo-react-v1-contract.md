@@ -167,6 +167,8 @@ export interface IslandOptions {
   media?: string | undefined;
   skipSsr?: boolean | undefined;
   fallback?: Child;
+  persist?: string | undefined;
+  persistProps?: boolean | undefined;
 }
 export function renderToString(node: Child, options?: RenderOptions): string;
 export function islandRoot(child: Description, options: IslandOptions): Description;
@@ -285,6 +287,8 @@ No fragment separator or whitespace is inserted into static output. Attribute or
 | `data-zfb-protocol` | `zudo-react/1` |
 | `data-zfb-build` | Nonempty opaque build identity supplied by zfb |
 | `data-props` | Always present, including `{}`; strict JSON with one attribute-escaping pass |
+| `data-zfb-transition-persist` | Optional nonempty, trimmed key with no control characters |
+| `data-zfb-transition-persist-props` | `true` only when SDK `persistProps` is `true`; otherwise omitted |
 
 The wrapper is a `div`. Identity is scoped by the wrapper element itself plus component/build; no global root counter or globally unique element ID is required. Separate instances of the same component intentionally reuse local region numbers. Diagnostics distinguish them with the root's DOM path. Both caller-provided `RootOptions.identity` values must agree with the wrapper before setup; the fixed transport/protocol strings must also match.
 
@@ -459,7 +463,7 @@ The top-level props payload must be a plain record. Validation happens recursive
 
 Reject the same forbidden key names recursively during `parseProps`. JSON parsing must produce a top-level record, not null/array/scalar. Missing `data-props`, malformed JSON or missing metadata on an owned root is failure, never `{}` fallback. Hand-authored duplicate JSON keys follow JSON.parse last-value semantics; the resulting record is validated recursively. serializeProps cannot emit duplicates. This avoids adding a second JSON parser to the small runtime. Diagnostics name the island and property path but not the complete value. A bad server payload fails the page render; a bad client payload fails only that island.
 
-Hand-authored persisted wrapper `div` elements **remain supported**, provided they carry every attribute above and inner SSR produced by `renderToString(child, { island: identity })`. No inference of missing metadata or legacy hydration occurs after cutover. Authors can attach the existing `data-zfb-transition-persist` and `data-zfb-transition-persist-props` attributes to that wrapper. Persisted ancestors preserve descendant islands by matching each descendant's boundary identity under the retained DOM; nested island roots themselves remain forbidden. No new persist prop is added to the SDK `Island` surface by this contract.
+The SDK `IslandProps` surface includes `persist?: string` and `persistProps?: boolean`. `persist` must be nonempty, trimmed, and free of control characters; `persistProps` requires `persist`. The SDK emits these options on its owned wrapper and does not accept arbitrary attribute passthrough. A key must be unique in each document; the router rejects duplicate keys before moving or replacing nodes. By default, changed props are copied from the incoming wrapper and recreate the root in `render` mode. `persistProps: true` retains the old props and state when the key matches, but never suppresses changes to component, root kind, transport, protocol, or build identity. Hand-authored persisted `div` wrappers remain supported at the lower-level protocol boundary when they carry complete metadata and inner SSR produced by `renderToString(child, { island: identity })`; no metadata is inferred. Persisted ancestors preserve descendant islands by matching each descendant's boundary identity under retained DOM; nested island roots themselves remain forbidden.
 
 ## Lifecycle and isolation
 
