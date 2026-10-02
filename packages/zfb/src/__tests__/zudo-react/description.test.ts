@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { Fragment, flattenChildren, h, isDescription } from "../../zudo-react/index.js";
 import { jsx, jsxs } from "../../zudo-react/jsx-runtime.js";
 import { jsxDEV } from "../../zudo-react/jsx-dev-runtime.js";
+import { descriptionSite } from "../../zudo-react/description.js";
+import { renderToString } from "../../zudo-react/server.js";
 
 describe("zudo-react descriptions", () => {
   it("copies props, normalizes keys and stays inert", () => {
@@ -60,5 +62,57 @@ describe("zudo-react descriptions", () => {
     );
     expect(() => flattenChildren(Promise.resolve("bad") as never)).toThrow(/promise/);
     expect(() => flattenChildren(Infinity as never)).toThrow(/number/);
+  });
+});
+
+describe("zudo-react description sites", () => {
+  const capture = Symbol.for("@takazudo/zfb/zudo-react/site-capture-v1");
+  const flags = globalThis as Record<symbol, unknown>;
+
+  it("keeps compiler source metadata from jsxDEV", () => {
+    const source = { fileName: "pages/index.tsx", lineNumber: 4, columnNumber: 7 };
+    const description = jsxDEV("p", null, undefined, false, source, null);
+    expect(descriptionSite(description)).toEqual({
+      kind: "source",
+      file: "pages/index.tsx",
+      line: 4,
+      column: 7,
+    });
+    expect(Object.keys(description)).toEqual(["$$zudo", "type", "props", "key"]);
+  });
+
+  it("records no generated site unless the build host enables capture", () => {
+    expect(descriptionSite(jsx("p", null))).toBeUndefined();
+    flags[capture] = true;
+    try {
+      const site = descriptionSite(jsx("p", null));
+      expect(site).toEqual({
+        kind: "generated",
+        specifier: expect.stringMatching(/description\.test\.ts$/),
+        line: expect.any(Number),
+        column: expect.any(Number),
+      });
+      expect(descriptionSite(h("p", null))).toBeUndefined();
+    } finally {
+      delete flags[capture];
+    }
+  });
+
+  it("attaches the failing element's site to the structured render error", () => {
+    const source = { fileName: "components/field.tsx", lineNumber: 6, columnNumber: 7 };
+    const failing = jsxDEV("input", { autoComplete: "off" }, undefined, false, source, null);
+    let caught: unknown;
+    try {
+      renderToString(jsx("form", { children: failing }));
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as { diagnostic?: unknown }).diagnostic).toEqual({
+      code: "ZR_PROP_DIALECT",
+      path: "root",
+      component: "static render",
+      spelling: { name: "autoComplete", suggestion: "autocomplete" },
+      site: { kind: "source", file: "components/field.tsx", line: 6, column: 7 },
+    });
   });
 });

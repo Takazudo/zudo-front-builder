@@ -524,6 +524,11 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       // or by renderToString surfaces as a descriptive 500 rather than
       // escaping to Hono's generic error handler (which discards the real
       // message). Mirrors the getStaticProps catch above.
+      const renderPage = async (): Promise<Response | string> => {
+        const result = await mod.default(componentInput);
+        if (result instanceof Response || typeof result === "string") return result;
+        return renderToString(result as never);
+      };
       try {
         const result = await mod.default(componentInput);
         // API route short-circuit: a page module that returns a Response
@@ -553,9 +558,15 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
           opts.includeErrorStack ??
           (globalThis as { __zfb?: { ssrDebug?: boolean } }).__zfb?.ssrDebug === true;
         const stack = includeStack && err instanceof Error && err.stack ? `\n${err.stack}` : "";
-        return c.body(`[zfb-runtime] render threw for "${page.route}": ${msg}${stack}`, 500, {
-          "Content-Type": "text/plain; charset=utf-8",
-        });
+        const diagnostic = includeStack ? await locateRenderFailure(err, renderPage) : undefined;
+        const structured = diagnostic
+          ? `\n${RENDER_DIAGNOSTIC_PREFIX}${JSON.stringify(diagnostic)}`
+          : "";
+        return c.body(
+          `[zfb-runtime] render threw for "${page.route}": ${msg}${stack}${structured}`,
+          500,
+          { "Content-Type": "text/plain; charset=utf-8" },
+        );
       }
     });
   }
@@ -566,6 +577,80 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // synchronous throw inside `app.fetch` is converted to a rejected
   // promise instead of escaping the caller's `await`.
   return async (request) => await app.fetch(request);
+}
+
+// zfb-build's renderer reads this line back out of the 500 body (renderer.rs).
+const RENDER_DIAGNOSTIC_PREFIX = "[zfb-render-diagnostic] ";
+// Shared with zudo-react's description.ts, which records jsx() call sites while it is set.
+const SITE_CAPTURE = Symbol.for("@takazudo/zfb/zudo-react/site-capture-v1");
+
+interface RenderDiagnostic {
+  readonly code: string;
+  readonly path: string;
+  readonly component: string;
+  readonly spelling?: { readonly name: string; readonly suggestion?: string };
+  readonly site?: Readonly<Record<string, string | number>>;
+}
+
+function renderDiagnostic(err: unknown): RenderDiagnostic | undefined {
+  if (!(err instanceof Error) || !("diagnostic" in err)) return undefined;
+  const value = err.diagnostic as Partial<RenderDiagnostic> | null;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof value.code !== "string" ||
+    typeof value.path !== "string" ||
+    typeof value.component !== "string"
+  )
+    return undefined;
+  const { code, path, component, spelling, site } = value;
+  return {
+    code,
+    path,
+    component,
+    ...(spelling &&
+      typeof spelling.name === "string" && {
+        spelling: {
+          name: spelling.name,
+          ...(typeof spelling.suggestion === "string" && { suggestion: spelling.suggestion }),
+        },
+      }),
+    ...(site && { site: pickSite(site) }),
+  };
+}
+
+function pickSite(site: Readonly<Record<string, unknown>>): Record<string, string | number> {
+  const picked: Record<string, string | number> = {};
+  for (const key of ["kind", "file", "specifier", "line", "column"])
+    if (typeof site[key] === "string" || typeof site[key] === "number")
+      picked[key] = site[key] as string | number;
+  return picked;
+}
+
+/**
+ * Production descriptions carry no call sites. When a render diagnostic has
+ * none, render the page once more with call-site capture enabled so the
+ * failing element's generated position can be source-mapped by the build host.
+ * The replay is accepted only when it fails with the identical message.
+ */
+async function locateRenderFailure(
+  err: unknown,
+  render: () => Promise<unknown>,
+): Promise<RenderDiagnostic | undefined> {
+  const first = renderDiagnostic(err);
+  if (!first || first.site) return first;
+  const flags = globalThis as Record<symbol, unknown>;
+  flags[SITE_CAPTURE] = true;
+  try {
+    await render();
+  } catch (again) {
+    const located = renderDiagnostic(again);
+    if (located?.site && again instanceof Error && (err as Error).message === again.message)
+      return located;
+  } finally {
+    delete flags[SITE_CAPTURE];
+  }
+  return first;
 }
 
 /**

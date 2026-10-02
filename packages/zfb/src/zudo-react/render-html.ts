@@ -1,5 +1,12 @@
 import { serializeStyle } from "./style.js";
-import { Fragment, isDescription, type Child, type Description } from "./description.js";
+import {
+  Fragment,
+  descriptionSite,
+  isDescription,
+  type Child,
+  type Description,
+  type DescriptionSite,
+} from "./description.js";
 import { escapeAttribute, escapeText } from "./escape.js";
 import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
@@ -52,6 +59,7 @@ interface Context {
   next: number;
   scope: RuntimeScope;
   path: string;
+  node?: Description | undefined;
   selectValue?: string | undefined;
   selectSeen?: Set<string> | undefined;
   selectMatches?: number | undefined;
@@ -63,10 +71,31 @@ interface Context {
   formId: string;
   nextFormId: number;
 }
-function fail(code: string, context: Context, detail: string): never {
-  throw new TypeError(
-    `${code}: ${detail} at ${context.path} in ${context.identity?.component ?? "static render"}`,
-  );
+export interface RenderDiagnostic {
+  readonly code: string;
+  readonly path: string;
+  readonly component: string;
+  readonly spelling?: { readonly name: string; readonly suggestion?: string };
+  readonly site?: DescriptionSite;
+}
+function fail(
+  code: string,
+  context: Context,
+  detail: string,
+  spelling?: RenderDiagnostic["spelling"],
+): never {
+  const component = context.identity?.component ?? "static render";
+  const site = context.node && descriptionSite(context.node);
+  const diagnostic: RenderDiagnostic = {
+    code,
+    path: context.path,
+    component,
+    ...(spelling && { spelling }),
+    ...(site && { site }),
+  };
+  throw Object.assign(new TypeError(`${code}: ${detail} at ${context.path} in ${component}`), {
+    diagnostic,
+  });
 }
 function reactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -135,6 +164,7 @@ function attributes(
         "ZR_PROP_DIALECT",
         context,
         `${tag}.${name}${suggestion ? ` (use \`${suggestion}\` instead of \`${name}\`)` : ""}`,
+        suggestion ? { name, suggestion } : { name },
       );
     }
     if (name.startsWith("on:")) {
@@ -170,7 +200,10 @@ function attributes(
       );
     }
     if (/^on[a-z]/.test(name) && typeof value === "function")
-      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
+      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`, {
+        name,
+        suggestion: `on:${name.slice(2)}`,
+      });
     const error = attributeError(name, value, custom);
     if (error) fail("ZR_ATTRIBUTE", context, `${tag}.${name} ${error}`);
     if (value == null) continue;
@@ -212,6 +245,8 @@ function element(
   parent: string,
 ): string {
   const tag = description.type as string;
+  const previousNode = context.node;
+  context.node = description;
   const custom = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(tag);
   const elementNamespace = tag === "svg" || namespace === "svg" ? "svg" : "html";
   const childNamespace = tag === "foreignObject" ? "html" : elementNamespace;
@@ -428,6 +463,7 @@ function element(
   if (tag === "pre" && raw === undefined && (content.startsWith("\n") || content.startsWith("\r")))
     content = `\n${content}`;
   context.formId = previousFormId;
+  context.node = previousNode;
   return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
 }
 function render(value: unknown, context: Context, namespace: Namespace, parent: string): string {
@@ -515,7 +551,9 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
   const component = value.type;
   const scope = context.scope.child(component.name || "Anonymous");
   const prior = context.scope;
+  const priorNode = context.node;
   context.scope = scope;
+  context.node = value;
   try {
     return region(context, "c", () => {
       const output = withScope(scope, () => component(value.props));
@@ -525,6 +563,7 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     });
   } finally {
     context.scope = prior;
+    context.node = priorNode;
   }
 }
 function island(

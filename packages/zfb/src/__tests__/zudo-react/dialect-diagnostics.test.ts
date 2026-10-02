@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { h, signal, type Child, type Diagnostic } from "../../zudo-react/index.js";
 import { mount } from "../../zudo-react/client.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
+import type { RenderDiagnostic } from "../../zudo-react/render-html.js";
 
 const identity = { component: "DialectDiagnostics", build: "b1" };
 
@@ -308,12 +309,23 @@ describe("SSR and client attribute diagnostics", () => {
     const serverNode = testCase.build();
     if (testCase.error) {
       let message = "";
+      let diagnostic: RenderDiagnostic | undefined;
       try {
         renderToString(serverNode);
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
+        diagnostic = (error as { diagnostic?: RenderDiagnostic }).diagnostic;
       }
       expect(message).toContain(`${testCase.error.code}:`);
+      // Hand-authored h() descriptions keep the structural fallback without invented coordinates.
+      expect(diagnostic).toMatchObject({ code: testCase.error.code, path: "root" });
+      expect(diagnostic).not.toHaveProperty("site");
+      if (testCase.error.code === "ZR_PROP_DIALECT")
+        expect(diagnostic?.spelling).toEqual(
+          testCase.error.clientExpected === "HTML-spelled prop"
+            ? { name: testCase.error.authored }
+            : { name: testCase.error.authored, suggestion: testCase.error.clientExpected },
+        );
       expect(message).toContain(testCase.error.serverDetail);
       expect(message).toContain(testCase.error.authored);
 

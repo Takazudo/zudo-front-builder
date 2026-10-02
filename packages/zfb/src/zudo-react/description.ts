@@ -50,6 +50,71 @@ export function createDescription(
   };
 }
 
+export interface CompilerSource {
+  readonly fileName: string;
+  readonly lineNumber: number;
+  readonly columnNumber: number;
+}
+
+export type DescriptionSite =
+  | {
+      readonly kind: "source";
+      readonly file: string;
+      readonly line: number;
+      readonly column: number;
+    }
+  | {
+      readonly kind: "generated";
+      readonly specifier: string;
+      readonly line: number;
+      readonly column: number;
+    };
+
+const sites = new WeakMap<Description, DescriptionSite>();
+// The build host's SSR router enables call-site capture only while it re-renders a failed page.
+const siteCapture = Symbol.for("@takazudo/zfb/zudo-react/site-capture-v1");
+
+function generatedSite(caller: Function): DescriptionSite | undefined {
+  if ((globalThis as Record<symbol, unknown>)[siteCapture] !== true) return undefined;
+  if (typeof Error.captureStackTrace !== "function") return undefined;
+  const holder: { stack?: string } = {};
+  Error.captureStackTrace(holder, caller);
+  const frame = holder.stack?.split("\n")[1]?.trim();
+  const match = frame && /([^\s()]+):(\d+):(\d+)\)?$/.exec(frame);
+  if (!match) return undefined;
+  return {
+    kind: "generated",
+    specifier: match[1]!,
+    line: Number(match[2]),
+    column: Number(match[3]),
+  };
+}
+
+export function recordSite(
+  description: Description,
+  source: CompilerSource | undefined,
+  caller: Function,
+): Description {
+  const site =
+    source &&
+    typeof source.fileName === "string" &&
+    Number.isInteger(source.lineNumber) &&
+    Number.isInteger(source.columnNumber)
+      ? {
+          kind: "source" as const,
+          file: source.fileName,
+          line: source.lineNumber,
+          column: source.columnNumber,
+        }
+      : generatedSite(caller);
+  if (site) sites.set(description, site);
+  return description;
+}
+
+export function descriptionSite(description: Description): DescriptionSite | undefined {
+  return sites.get(description);
+}
+
 export function isDescription(value: unknown): value is Description {
   return (
     typeof value === "object" &&
