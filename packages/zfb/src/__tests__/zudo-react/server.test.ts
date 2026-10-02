@@ -100,6 +100,11 @@ describe("server renderer", () => {
         "./dist/zudo-react/client.d.ts",
         "./dist/zudo-react/client.js",
       ],
+      "./zudo-react/testing": [
+        "./src/zudo-react/testing.ts",
+        "./dist/zudo-react/testing.d.ts",
+        "./dist/zudo-react/testing.js",
+      ],
     } as const;
     const expectedSubpaths = Object.keys(entries).sort();
     const zudoReactSubpaths = (exports: Record<string, unknown>) =>
