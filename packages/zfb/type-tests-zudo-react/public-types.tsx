@@ -56,7 +56,7 @@ const input: InputProps = { type: "text", modelValue: textModel };
 const checkbox: InputProps = { type: "checkbox", modelChecked: checkedModel };
 const textarea: TextareaProps = { modelValue: textModel };
 const select: SelectProps = { modelValue: textModel };
-const style: CSSProperties = { color: "red", "font-size": 12, "--theme": "dark" };
+const style: CSSProperties = { color: "red", "font-size": "12px", "--theme": "dark" };
 const styleAlias: JSX.CSSProperties = style;
 const styleKey: CssProperty = "font-size";
 const publicStyle: Style = style;
@@ -136,4 +136,38 @@ void [
   badTextarea,
   badHTML,
   badSVG,
+];
+
+const styleValues: CSSProperties = {
+  left: 0,
+  opacity: 0.5,
+  "--spacing": 2,
+  "-webkit-transform": "translateX(2px)",
+  inset: "1rem",
+  cursor: "pointer",
+  mask: "none",
+  visibility: "hidden",
+  outline: "none",
+  filter: "blur(1px)",
+};
+// @ts-expect-error Nonzero lengths require explicit units.
+const badLength: CSSProperties = { left: 10 };
+// @ts-expect-error Vendor properties do not take nonzero numeric values.
+const badVendorNumber: CSSProperties = { "-webkit-transform": 2 };
+// @ts-expect-error Supported but uncategorized properties accept only string or zero.
+const badUncategorizedNumber: CSSProperties = { filter: 1 };
+// @ts-expect-error CssProperty has no arbitrary kebab-name fallback.
+const badCssKey: CssProperty = "invented-property";
+// @ts-expect-error Unsupported CSS keys are rejected.
+const badUnknownProperty: CSSProperties = { "invented-property": "x" };
+// @ts-expect-error CSS object keys must use CSS spelling.
+const badCamelProperty: CSSProperties = { fontSize: "12px" };
+void [
+  styleValues,
+  badLength,
+  badVendorNumber,
+  badUncategorizedNumber,
+  badCssKey,
+  badUnknownProperty,
+  badCamelProperty,
 ];
