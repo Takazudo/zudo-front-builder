@@ -69,12 +69,18 @@ the wrapper before setup.
 Only JSON data crosses in `data-props`. The top-level value must be a plain
 record; ordinary and null-prototype records are accepted. Nested values may be
 null, booleans, strings, finite numbers, dense arrays, and plain records.
+Own enumerable string data properties on records whose value is `undefined`
+are omitted recursively. The same normalized props go to the server component
+and the JSON transport, so an omitted optional key is absent after parsing and
+during hydration. This applies to records inside arrays too; it does not remove
+or shift array elements.
 Repeated references serialize by value. Getters and custom `toJSON` methods
 are never invoked.
 
-The serializer rejects undefined values and array holes, functions, symbols,
-bigints, non-finite numbers, cycles, class instances, dates, maps, sets, DOM
-nodes, promises, descriptions, and signals. It also rejects accessors,
+An explicit `null` remains present as an own property. Undefined array entries
+and array holes are rejected, as are functions, symbols, bigints, non-finite
+numbers, cycles, class instances, dates, maps, sets, DOM nodes, promises,
+descriptions, and signals. The serializer also rejects accessors,
 non-enumerable or symbol properties, and the own keys `__proto__`, `prototype`,
 and `constructor`. Nested properties named `children` are ordinary JSON data;
 only the wrapper's top-level empty `children` is omitted. A bad server payload

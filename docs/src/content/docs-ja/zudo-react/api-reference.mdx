@@ -396,7 +396,7 @@ islandRoot は zfb 向けの明示的な島ラッパー記述を作ります。[
 export function serializeProps(props: Record<string, unknown>): string;
 ~~~
 
-serializeProps は厳密な JSON データを検証し、ラッパー属性用の JSON テキストを返します。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+serializeProps は JSON transport のデータを検証し、ラッパー属性用の JSON テキストを返します。値が undefined の、自身が持つ列挙可能な文字列キーのデータプロパティは再帰的に省略されます。明示的な `null` は保持され、undefined の配列要素と配列の穴は引き続き無効です。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
 
 ## Client: @takazudo/zfb/zudo-react/client
 

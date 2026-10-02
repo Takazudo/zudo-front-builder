@@ -121,7 +121,6 @@ it("rejects unsupported props with the component and path", async () => {
   const invalid: Record<string, unknown> = {
     action: () => {},
     symbol: Symbol(),
-    missing: undefined,
     big: 1n,
     number: Infinity,
     date: new Date(),
@@ -135,6 +134,23 @@ it("rejects unsupported props with the component and path", async () => {
     const wrapper = Island({ children: jsx(Card, { [key]: value }) });
     expect(() => renderToString(wrapper as never)).toThrow(new RegExp(`Card:.*props\\.${key}`));
   }
+});
+
+it("omits undefined props from both owned island SSR and payload", async () => {
+  const { Island } = await import("../island.js");
+  const nested = { missing: undefined, present: null };
+  function Card({ nested: value }: { nested: typeof nested }) {
+    return jsx("span", {
+      children: `${Object.hasOwn(value, "missing")}:${Object.hasOwn(value, "present")}`,
+    });
+  }
+  const html = renderToString(Island({ children: jsx(Card, { nested }) }) as never);
+  const window = new Window();
+  window.document.body.innerHTML = html;
+  const wrapper = window.document.body.firstElementChild;
+  expect(wrapper?.getAttribute("data-props")).toBe('{"nested":{"present":null}}');
+  expect(wrapper?.textContent).toBe("false:true");
+  expect(Object.hasOwn(nested, "missing")).toBe(true);
 });
 
 it("round-trips script-like and attribute-sensitive strings", async () => {

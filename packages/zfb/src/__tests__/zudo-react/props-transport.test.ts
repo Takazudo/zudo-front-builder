@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { h, signal } from "../../zudo-react/index.js";
-import { parseProps, serializeProps } from "../../zudo-react/props-transport.js";
+import { normalizeProps, parseProps, serializeProps } from "../../zudo-react/props-transport.js";
 
 describe("strict props transport", () => {
   it("round trips punctuation and script terminators as JSON", () => {
@@ -9,7 +9,7 @@ describe("strict props transport", () => {
     expect(parseProps(serializeProps(input))).toEqual(input);
   });
   it.each([
-    [{ bad: undefined }, "ZR_PROPS_UNDEFINED", "props.bad"],
+    [{ bad: [undefined] }, "ZR_PROPS_UNDEFINED", "props.bad[0]"],
     [{ bad: () => 1 }, "ZR_PROPS_FUNCTION", "props.bad"],
     [{ bad: Symbol() }, "ZR_PROPS_SYMBOL", "props.bad"],
     [{ bad: 1n }, "ZR_PROPS_BIGINT", "props.bad"],
@@ -80,5 +80,108 @@ describe("strict props transport", () => {
     expect(serializeProps({ first: nested, second: nested })).toBe(
       '{"first":{"value":0},"second":{"value":0}}',
     );
+    const normalized = normalizeProps({ first: nested, second: nested });
+    expect(Object.getPrototypeOf(normalized.first)).toBeNull();
+    expect(normalized.first).not.toBe(normalized.second);
+    expect(normalized.first).not.toBe(nested);
+  });
+  it("omits undefined record members deeply without changing the input", () => {
+    expect(serializeProps({ missing: undefined })).toBe("{}");
+    const nested = Object.defineProperty({ missing: undefined, present: null }, "fixed", {
+      value: { absent: undefined, retained: 1 },
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+    const original = Object.getOwnPropertyDescriptors(nested);
+    const input = { nested, items: [{ absent: undefined, present: null }] };
+    const normalized = normalizeProps(input);
+    expect(normalized).toEqual({
+      nested: { present: null, fixed: { retained: 1 } },
+      items: [{ present: null }],
+    });
+    expect(serializeProps(input)).toBe(
+      '{"nested":{"present":null,"fixed":{"retained":1}},"items":[{"present":null}]}',
+    );
+    expect(Object.getOwnPropertyDescriptors(nested)).toEqual(original);
+    expect(nested.missing).toBeUndefined();
+    expect(Object.hasOwn(nested, "missing")).toBe(true);
+    expect(normalized.nested).not.toBe(nested);
+  });
+  it("round trips omitted record keys separately from explicit null keys", () => {
+    const input = {
+      omitted: undefined,
+      explicitNull: null,
+      records: [{ description: undefined }, { description: null }],
+    };
+    const normalized = normalizeProps(input);
+    const parsed = parseProps(serializeProps(input));
+
+    for (const props of [normalized, parsed]) {
+      expect(Object.hasOwn(props, "omitted")).toBe(false);
+      expect(Object.hasOwn(props, "explicitNull")).toBe(true);
+      expect(props.explicitNull).toBeNull();
+      expect(
+        Object.hasOwn((props.records as Array<Record<string, unknown>>)[0]!, "description"),
+      ).toBe(false);
+      expect(
+        Object.hasOwn((props.records as Array<Record<string, unknown>>)[1]!, "description"),
+      ).toBe(true);
+      expect((props.records as Array<Record<string, unknown>>)[1]!.description).toBeNull();
+    }
+    expect(Object.hasOwn(input, "omitted")).toBe(true);
+    expect(Object.hasOwn(input.records[0]!, "description")).toBe(true);
+  });
+  it.each([
+    [
+      "array undefined",
+      () => ({ omitted: undefined, bad: [undefined] }),
+      "ZR_PROPS_UNDEFINED at props.bad[0]",
+    ],
+    [
+      "array hole",
+      () => ({ omitted: undefined, bad: Array(1) }),
+      "ZR_PROPS_UNDEFINED at props.bad[0]",
+    ],
+    ["function", () => ({ omitted: undefined, bad: () => 1 }), "ZR_PROPS_FUNCTION at props.bad"],
+    ["symbol", () => ({ omitted: undefined, bad: Symbol("bad") }), "ZR_PROPS_SYMBOL at props.bad"],
+    ["bigint", () => ({ omitted: undefined, bad: 1n }), "ZR_PROPS_BIGINT at props.bad"],
+    ["non-finite number", () => ({ omitted: undefined, bad: NaN }), "ZR_PROPS_NUMBER at props.bad"],
+    [
+      "cycle",
+      () => {
+        const bad: Record<string, unknown> = {};
+        bad.self = bad;
+        return { omitted: undefined, bad };
+      },
+      "ZR_PROPS_CYCLE at props.bad.self",
+    ],
+    [
+      "forbidden key",
+      () => ({
+        omitted: undefined,
+        ...Object.defineProperty({}, "constructor", { value: undefined, enumerable: true }),
+      }),
+      "ZR_PROPS_KEY at props.constructor",
+    ],
+  ] as const)(
+    "still rejects %s when an undefined record member can be omitted",
+    (_label, makeProps, diagnostic) => {
+      expect(() => normalizeProps(makeProps())).toThrow(diagnostic);
+      expect(() => serializeProps(makeProps())).toThrow(diagnostic);
+    },
+  );
+  it("rejects top-level undefined and does not read empty children accessors", () => {
+    expect(() => serializeProps(undefined as never)).toThrow("ZR_PROPS_OBJECT_KIND at props");
+    let called = false;
+    const children = Object.defineProperty([], "0", {
+      get() {
+        called = true;
+        return null;
+      },
+      enumerable: true,
+    });
+    expect(() => serializeProps({ children })).toThrow("ZR_PROPS_CHILDREN at props.children");
+    expect(called).toBe(false);
   });
 });
