@@ -4,13 +4,15 @@
  * Scenario contract for #3280: each directory in fixtures/ contains a
  * scenario.json with `page` and either the legacy single-root fields
  * (`component`, `props`, `mode`) or a `roots` array. Root entries may point at
- * different TSX modules and may request a pre-commit abort or a deliberate
- * post-SSR mutation. Set a root's `static` flag to true with `mode: "none"` to
- * render its component directly, without an island boundary; the harness adds
- * a plain container around that output for root lookup. `mode: "none"` without
- * `static: true` keeps the usual island SSR markup while disabling activation.
- * An optional fixture `page.css` can be loaded with the scenario's
- * `stylesheet` field. The generated bootstrap stores `{ roots,
+ * different TSX modules and may request a pre-commit abort, a deliberate
+ * post-SSR mutation, or skip-SSR mounting. Set a root's `static` flag to true
+ * with `mode: "none"` to render its component directly, without an island
+ * boundary; the harness adds a plain container around that output for root
+ * lookup. `mode: "none"` without `static: true` keeps the usual island SSR
+ * markup while disabling activation. Optional HTML resources named in the
+ * scenario's `assets` field are served under `/fixtures/<page>/`; an optional
+ * fixture stylesheet can be loaded with the `stylesheet` field. The generated
+ * bootstrap stores `{ roots,
  * root, flush, result, mode, identity, client, h }` on
  * `globalThis.__zudoReactBrowser`; its URL under /generated/ can be held with
  * `page.route` to inspect SSR DOM before the module executes.
@@ -94,6 +96,14 @@ function readScenarios() {
             `Scenario ${config.page} root ${index} may use static rendering only with mode: "none"`,
           );
         }
+        if (root.skipSsr !== undefined && typeof root.skipSsr !== "boolean") {
+          throw new Error(`Scenario ${config.page} root ${index} skipSsr must be a boolean`);
+        }
+        if (root.skipSsr === true && root.mode !== "mount") {
+          throw new Error(
+            `Scenario ${config.page} root ${index} may use skipSsr only with mode: "mount"`,
+          );
+        }
         if (root.props === null || typeof root.props !== "object" || Array.isArray(root.props)) {
           throw new Error(`Scenario ${config.page} root ${index} props must be an object`);
         }
@@ -103,6 +113,20 @@ function readScenarios() {
           throw new Error(`Scenario ${config.page} component is not a file: ${componentPath}`);
         }
         return { ...root, props: root.props, componentPath, index };
+      });
+      const assets = config.assets ?? [];
+      if (!Array.isArray(assets))
+        throw new Error(`Scenario ${config.page} assets must be an array`);
+      const normalizedAssets = assets.map((asset, index) => {
+        if (typeof asset !== "string" || extname(asset) !== ".html") {
+          throw new Error(`Scenario ${config.page} asset ${index} must name an HTML file`);
+        }
+        const assetPath = resolve(directory, asset);
+        assertInside(directory, assetPath, `Scenario ${config.page} asset ${index}`);
+        if (!statSync(assetPath).isFile()) {
+          throw new Error(`Scenario ${config.page} asset is not a file: ${assetPath}`);
+        }
+        return assetPath;
       });
       let stylesheetPath;
       if (config.stylesheet !== undefined) {
@@ -126,7 +150,14 @@ function readScenarios() {
           );
         }
       }
-      return { config, directory, roots: normalizedRoots, stylesheetPath, headComponentPath };
+      return {
+        config,
+        directory,
+        roots: normalizedRoots,
+        stylesheetPath,
+        headComponentPath,
+        assets: normalizedAssets,
+      };
     });
 }
 
@@ -231,6 +262,12 @@ function mutateServerHtml(html, mutation) {
     }
     case "malformed-props":
       return html.replace(/data-props="[^"]*"/, 'data-props="{"');
+    case "iframe-fallback-markers": {
+      const iframe = /(<iframe\b[^>]*>)(<\/iframe>)/.exec(html);
+      if (!iframe) throw new Error("Iframe fallback mutation requires a childless iframe");
+      const markers = "<!--zr:1:0:c-->ZFB_IFRAME_FALLBACK_MARKER<!--/zr:1:0-->";
+      return html.replace(iframe[0], `${iframe[1]}${markers}${iframe[2]}`);
+    }
     default:
       throw new Error(`Unsupported server HTML mutation: ${mutation.type}`);
   }
@@ -256,7 +293,7 @@ async function main() {
   if (scenarios.length === 0) throw new Error("No scenario directories found");
   const pageNames = new Set();
 
-  for (const { config, roots, stylesheetPath, headComponentPath } of scenarios) {
+  for (const { config, directory, roots, stylesheetPath, headComponentPath, assets } of scenarios) {
     if (pageNames.has(config.page)) throw new Error(`Duplicate scenario page name: ${config.page}`);
     pageNames.add(config.page);
 
@@ -275,7 +312,7 @@ async function main() {
       const identity = { component: component.name, build: BUILD_ID };
       const serverTree = root.static
         ? h(component, root.props)
-        : islandRoot(h(component, root.props), { identity });
+        : islandRoot(h(component, root.props), { identity, skipSsr: root.skipSsr });
       let html = renderToString(serverTree);
       if (root.static) {
         html = `<div data-zudo-browser-root="root-${root.index}">${html}</div>`;
@@ -343,6 +380,16 @@ async function main() {
       const outputStylesheet = join(GENERATED_DIR, "fixtures", config.page, config.stylesheet);
       mkdirSync(dirname(outputStylesheet), { recursive: true });
       writeFileSync(outputStylesheet, readFileSync(stylesheetPath));
+    }
+    for (const assetPath of assets) {
+      const outputAsset = join(
+        GENERATED_DIR,
+        "fixtures",
+        config.page,
+        relative(directory, assetPath),
+      );
+      mkdirSync(dirname(outputAsset), { recursive: true });
+      writeFileSync(outputAsset, readFileSync(assetPath));
     }
   }
 

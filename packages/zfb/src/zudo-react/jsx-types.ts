@@ -177,6 +177,12 @@ type RawTextProps<T extends HTMLElement = HTMLElement> = Omit<
     children?: never;
     rawHtml?: string | undefined;
   };
+type IframeProps = Omit<HtmlBaseAttributes<HTMLIFrameElement>, "children" | "rawHtml"> &
+  DataAria &
+  EventProps<HTMLIFrameElement, HTMLElementEventMap> & {
+    children?: never;
+    rawHtml?: never;
+  };
 type InputBase = Omit<HtmlBaseAttributes<HTMLInputElement>, "type"> &
   DataAria &
   EventProps<HTMLInputElement, HTMLElementEventMap> & {
@@ -445,9 +451,11 @@ export namespace JSX {
         ? TextareaProps
         : K extends "select"
           ? SelectProps
-          : K extends "script" | "style"
-            ? RawTextProps<ElementForTag<K>>
-            : HTMLAttributes<ElementForTag<K>>;
+          : K extends "iframe"
+            ? IframeProps
+            : K extends "script" | "style"
+              ? RawTextProps<ElementForTag<K>>
+              : HTMLAttributes<ElementForTag<K>>;
   } & {
     [K in SvgTag]: SVGAttributes<ElementForTag<K>>;
   } & {

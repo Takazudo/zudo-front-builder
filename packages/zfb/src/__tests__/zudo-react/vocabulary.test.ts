@@ -99,7 +99,6 @@ beforeEach(() => document.body.replaceChildren());
 describe("finite HTML/SVG vocabulary", () => {
   it.each(cases)("serializes and mounts %s", (tag, props, html) => {
     expect(renderToString(h(tag, props))).toBe(html);
-    if (tag === "iframe") return; // iframe remains outside island parser contexts.
     const container = containerFor(tag, props);
     const diagnostics: Diagnostic[] = [];
     const handle = mount(h(Vocabulary, { tag, props }), container, {

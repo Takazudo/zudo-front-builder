@@ -22,6 +22,7 @@ import {
   booleanAttrs,
   commonAttrs,
   dialectSuggestion,
+  emptyIframeChildren,
   formProps,
   htmlAttrs,
   htmlTags,
@@ -226,7 +227,7 @@ function element(
   const childNamespace = tag === "foreignObject" ? "html" : elementNamespace;
   if (elementNamespace === "svg" ? !svgTags.has(tag) : !custom && !htmlTags.has(tag))
     fail("ZR_TAG", context, tag);
-  if (context.identity && (tag === "template" || sensitive.has(tag)))
+  if (context.identity && (tag === "template" || (tag !== "iframe" && sensitive.has(tag))))
     fail("ZR_PARSER_CONTEXT", context, tag);
   if (parent in tableChildren && !tableChildren[parent]?.has(tag))
     fail("ZR_PARSER_CONTEXT", context, `${parent} > ${tag}`);
@@ -243,6 +244,11 @@ function element(
         : `form:${context.nextFormId++}`;
   const source = description.props;
   const props: Record<string, unknown> = { ...source };
+  if (tag === "iframe") {
+    if (Object.hasOwn(props, "rawHtml")) fail("ZR_RAW_HTML", context, "iframe forbids rawHtml");
+    if (!emptyIframeChildren(props.children))
+      fail("ZR_PARSER_CONTEXT", context, "iframe requires empty children");
+  }
   const hasValue = source.modelValue !== undefined;
   const hasChecked = source.modelChecked !== undefined;
   if (
@@ -398,6 +404,8 @@ function element(
     const value = read(source.modelValue ?? source.defaultValue);
     if (typeof value !== "string") fail("ZR_MODEL_VALUE", context, "textarea requires string");
     content = `${value.startsWith("\n") ? "\n" : ""}${escapeText(value)}`;
+  } else if (tag === "iframe") {
+    // The shell has no owned children; srcdoc belongs to the browser's foreign document.
   } else if (tag === "script" || tag === "style") {
     if (hasChildren) fail("ZR_RAW_HTML", context, `${tag} requires rawHtml`);
   } else if (
