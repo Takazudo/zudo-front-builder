@@ -763,15 +763,16 @@ trait BuildRunner {
     ///   `build_production_islands_asset` eagerly so head injection
     ///   knows which stable URLs are backed by bytes. Returns `None`
     ///   for any slot the project does not exercise (e.g. utility CSS
-    ///   disabled, no `"use client"` components).
+    ///   disabled, no registered SDK `Island` boundary targets).
     /// - `FakeRunner` (test-only) — returns whatever bytes the test
     ///   set up so the rewrite path can be exercised without running
     ///   wind compilation or spawning esbuild.
     ///
     /// Returns both the bytes-only emitter inputs (CSS / islands / client
-    /// scripts) **and** the set of registered island marker names collected by
-    /// the islands scanner.  The marker-name set is empty when no islands were
-    /// found; callers that only need the pipeline bytes may simply ignore it.
+    /// scripts) **and** the set of validated island marker names collected by
+    /// the islands scanner. The marker-name set is empty after a successful
+    /// scan with no boundary targets; registration errors are returned instead
+    /// of being represented as an empty set.
     ///
     /// The islands DFS is seeded from TWO sources (codex P1, #1191 review):
     /// `user_pages_dir` (the REAL `project_root/pages`, so user-page islands
@@ -951,8 +952,8 @@ impl BuildRunner for DefaultRunner {
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
         // bytes. Either slot independently returns `None` when the
-        // project doesn't exercise it (wind disabled, no
-        // `"use client"` components, etc.).
+        // project doesn't exercise it (wind disabled, no registered
+        // SDK Island boundary targets, etc.).
         let css_started = build_phase_start(build_timing_enabled());
         let css_pass = build_default_css_payload_with_details(
             project_root,
@@ -2191,12 +2192,15 @@ pub(crate) enum IslandsGlobPolicy {
 /// run with `--preserve-symlinks`; in the project-`node_modules` + tsconfig
 /// `paths` shape they are copied instead, mirroring the SSR bundler's
 /// copy-mode fallback so non-hoisted pnpm/workspace resolution is not pinned
-/// under `<shadow>/node_modules/...`. The island `source_path`s are then
-/// remapped into the shadow so esbuild resolves transitive imports through the
-/// materialised tree, reaching the expanded glob copies instead of the raw
-/// project files. Raw-mirrored JS-like glob target/subtree files are scanned
-/// before materialisation so a nested `import.meta.glob` that would otherwise
-/// ship unexpanded keeps the stopgap instead.
+/// under `<shadow>/node_modules/...`. They are also copied when an installed
+/// package island shares the browser bundle with project-local islands: both
+/// graphs then resolve SDK imports through one canonical `node_modules` path,
+/// so packed signals subscribe to the same runtime that hydrates them. The
+/// island `source_path`s are then remapped into the shadow so esbuild resolves
+/// transitive imports through the materialised tree, reaching expanded glob
+/// copies instead of raw project files. Raw-mirrored JS-like glob target and
+/// subtree files are scanned before materialisation so a nested
+/// `import.meta.glob` that would otherwise ship unexpanded keeps the stopgap.
 struct IslandsShadow {
     /// Kept alive so the tempdir (and every symlink / real file inside it)
     /// survives until esbuild has finished bundling. Dropping it deletes the
@@ -3724,8 +3728,27 @@ fn materialise_islands_shadow_with_worker_context(
         detect_project_node_modules(project_root)
     };
     let has_node_modules = first_party_node_modules.is_some() || project_node_modules.is_some();
+    // Keep installed-package islands and project-local islands on one
+    // canonical `node_modules` spelling. In symlink mode, a project-local
+    // island imports the SDK through `<shadow>/node_modules`, while a packed
+    // island stays at `<project>/node_modules/<package>` and imports it
+    // through `<project>/node_modules`. With `--preserve-symlinks`, esbuild
+    // treats those two spellings as separate SDK module identities (notably
+    // the zudo-react reactive core), so signals created by a packed island
+    // cannot subscribe to the hydration runtime. Copying project-local
+    // modules into the shadow lets us omit `--preserve-symlinks`: expanded
+    // `?raw`/worker sources remain real shadow files while both SDK imports
+    // canonicalize through the same installed package path.
+    let mixed_local_and_installed_islands = has_node_modules
+        && islands
+            .iter()
+            .any(|island| zfb_types::has_node_modules_segment(&island.source_path))
+        && to_mirror
+            .iter()
+            .any(|path| paths.project_local_rel(path).is_some());
     let source_copy_mode = sibling_present
-        || (has_node_modules && shadow_config_scope_uses_paths(root, &shadow_configs));
+        || (has_node_modules && shadow_config_scope_uses_paths(root, &shadow_configs))
+        || mixed_local_and_installed_islands;
     let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
@@ -3855,17 +3878,14 @@ fn materialise_islands_shadow_with_worker_context(
 /// project's discovered island set and return its bytes packaged for
 /// [`ProductionAssetPipeline`].
 ///
-/// Returns `Ok(None)` when:
+/// Returns `Ok(None)` when a successful scan finds no SDK `Island` boundary
+/// targets and no client-router runtime is needed, or when the development
+/// `WarnAndSkip` glob policy intentionally skips a rebundle.
 ///
-/// - the project has no `"use client"` components (the scanner
-///   returns an empty set), OR
-/// - the islands scanner returned a transient error (we surface a
-///   warning so the build keeps going — a missing island bundle is
-///   an authoring concern, not a hard failure of the build's CSS or
-///   page paths), OR
-/// - `islands_glob_policy` is [`IslandsGlobPolicy::WarnAndSkip`] and the
-///   scanner found `import.meta.glob` reachable from an island (#1387) —
-///   a warning is emitted and the rebundle is skipped for this tick.
+/// Unsupported or ambiguous registration is returned as an error, including
+/// during production builds; it is never converted into an empty registry.
+/// Other recoverable development scan failures may keep the server alive with
+/// a visible warning and no new island asset.
 ///
 /// Returns `Err` when `islands_glob_policy` is
 /// [`IslandsGlobPolicy::HardError`] and the scanner found
@@ -3881,13 +3901,14 @@ fn materialise_islands_shadow_with_worker_context(
 /// replaces with the hashed form; no stable `islands.js` is written
 /// to disk in production (the bundler carries bytes in memory only).
 ///
-/// The second return value is the set of **registered marker names** from
+/// The second return value is the set of **validated registered marker names** from
 /// `islands_set` — the strings the SSR side will write into
 /// `data-zfb-island` / `data-zfb-island-skip-ssr` attributes.  The build
-/// pass uses this for the island-marker-check (#984 / #990).  It is empty
-/// (not `None`) when no islands were found or when the scanner failed, so
+/// pass uses this for the island-marker-check (#984 / #990). It is empty
+/// (not `None`) after a successful scan with no boundary targets, so
 /// the marker-check pass can still warn about rendered markers with zero
-/// registered islands.
+/// registered islands. Registration failures return `Err` before this value
+/// can be published.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)] // 8 params: #1497 added raw_invalidation; thin test-only shim over the _with_bundle_options variant below
 pub(crate) fn build_default_islands_payload(
@@ -4455,7 +4476,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             }
         }
     }
-    // Seed package-route islands from each route's REAL entrypoint (codex
+    // Seed package-route boundaries from each route's REAL entrypoint (codex
     // P1). The entrypoint's own relative imports resolve against its real
     // location (same way the bundler/overlay handle package modules), so a
     // `"use client"` component a package page imports is discovered without
@@ -4484,7 +4505,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let resolver = FsResolver::new()
         .with_project_root(project_root)
         .with_injected_route_roots(package_route_entrypoints)
-        .with_virtual_modules(project_root, &plugin_config.virtual_modules);
+        .with_virtual_modules(project_root, &plugin_config.virtual_modules)
+        .with_plugin_aliases(&plugin_config.alias_entries);
     // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
     // by `materialise_islands_shadow_with_worker_context` below, via
     // `scan_meta.workspace_package_edges_from_islands`) to the first-party
@@ -4502,6 +4524,11 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         Some(&first_party_root),
     ) {
         Ok(result) => result,
+        Err(error @ zfb_islands::ScanError::Registration { .. }) => {
+            // A failed registration is not a valid empty registry. Let the
+            // dev rebuild report failure without publishing partial names.
+            return Err(anyhow!("zfb islands: {error}"));
+        }
         Err(
             error @ (zfb_islands::ScanError::ImportQuery { .. }
             | zfb_islands::ScanError::RawImport { .. }
@@ -4651,36 +4678,37 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     }
 
     // Issue #289: a project may use `<ClientRouter />` without any
-    // `"use client"` islands (a static page that only wants View
+    // registered Island targets (a static page that only wants View
     // Transitions). When the scanner detected client-router usage, the
     // islands asset still has to be emitted so the runtime's side-effect
     // import ships — so the empty-islands short-circuit below only fires
     // when client-router is NOT in play.
     if islands_set.is_empty() && !scan_meta.uses_client_router {
         // Issue #822: only the loud warning + verify-hint when the scan
-        // saw a *near-miss* — a module that looks like it meant to be a
-        // `"use client"` island but didn't register one (a misplaced or
-        // misspelled directive, or a valid directive with no exported
-        // component). For a project that is island-free on purpose
+        // saw a malformed `"use client"` directive (misplaced, mis-cased,
+        // or malformed whitespace). A valid helper-only client module or
+        // route with no concrete boundary target is an ordinary empty result.
+        // For a project that is island-free on purpose
         // (`near_miss_candidates == 0`), the verify-hint is permanent
         // noise, so we demote to a quiet info note with no hint.
         if scan_meta.near_miss_candidates == 0 {
             output::info(
-                "no \"use client\" islands found; skipping islands bundle \
+                "no SDK Island boundary targets found; skipping islands bundle \
                  (no islands asset will be emitted)",
             );
         } else {
             // Issue #122 / #117: this branch used to be silent, which made
-            // pnpm-workspace consumers with `"use client"` islands inside a
+            // pnpm-workspace consumers with boundary targets inside a
             // workspace package look "fine" while shipping no client
             // runtime. Surface it loudly so authoring problems (a missing
-            // `"use client"` directive, an island reachable only through a
-            // path the scanner can't follow) become discoverable.
+            // malformed directive, or a target route that needs authoring
+            // attention) become discoverable.
             output::warn(format!(
-                "scanned {} page entr{} but found no \"use client\" islands; \
+                "scanned {} page entr{} but found no SDK Island boundary targets; \
                  no islands asset will be emitted. \
-                 Verify each island module starts with the literal directive \
-                 \"use client\" and is reachable from a page in pages/.",
+                 Check the malformed \"use client\" directive and pass one \
+                 exported function from a client module as the single child \
+                 of a reachable SDK Island boundary.",
                 entries.len(),
                 if entries.len() == 1 { "y" } else { "ies" }
             ));
@@ -4695,10 +4723,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
     {
         for island in &islands_set {
-            if island.marker_name.is_empty()
-                || island.marker_name == "default"
-                || island.marker_name == "Anonymous"
-            {
+            if island.marker_name.is_empty() {
                 anyhow::bail!(
                     "owned island in {} has no stable scanner component identity ({:?})",
                     island.source_path.display(),
@@ -4708,35 +4733,18 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         }
     }
 
-    // #999: scanning `node_modules` for dist-shipped islands makes
-    // duplicate marker names far more likely — e.g. a local
-    // `ThemeToggle` component and a package-provided `ThemeToggle` from
-    // `@takazudo/zudo-doc`. The manifest keys on marker name and keeps
-    // only the first by source-path sort order, silently dropping the
-    // rest; the dropped island then ships a dead SSR marker that never
-    // hydrates. Surface every such collision loudly with BOTH source
-    // paths so the author can disambiguate (rename one component, or give
-    // it a distinct `displayName`) instead of debugging a silent
-    // dead-island. This does not change selection behaviour — it only
-    // warns, and only for the collisions the author can act on (see the
-    // #2441 filter below).
+    // The flat manifest would otherwise drop a distinct target with the
+    // same marker. Reject collisions before emitting the browser registry;
+    // package membership and byte similarity cannot prove shared identity.
     let island_manifest = zfb_islands::Manifest::from_islands(&islands_set);
-    for collision in island_manifest.collisions() {
-        // #2441: a package that ships both its compiled `dist/` output and
-        // its sources can have the same component reach the scanner twice,
-        // through two entry graphs. Those two participants are the same
-        // component — hydration is correct whichever the manifest keeps —
-        // and the remediation below is not actionable, because both live
-        // inside a dependency. Drop them silently; every collision the
-        // author CAN act on still warns.
-        if zfb_islands::is_same_package_duplicate(collision) {
-            continue;
-        }
+    if let Some(collision) = island_manifest.collisions().first() {
         anyhow::bail!(
-            "ambiguous owned island marker {:?}: {} and {}",
+            "ambiguous owned island marker {:?}: {} export {:?} and {} export {:?}",
             collision.name,
             collision.kept_path.display(),
-            collision.dropped_path.display()
+            collision.kept_export,
+            collision.dropped_path.display(),
+            collision.dropped_export,
         );
     }
 
@@ -12655,8 +12663,9 @@ mod tests {
         std::fs::create_dir_all(project_root.join("components")).unwrap();
         std::fs::write(
             project_root.join("pages/index.tsx"),
-            "import { Gallery } from \"../components/gallery\";\n\
-             export default function Index() { return <Gallery/>; }\n",
+            "import { Island as Boundary } from \"@takazudo/zfb\";\n\
+             import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Boundary><Gallery /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -12701,7 +12710,9 @@ mod tests {
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -12903,8 +12914,17 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
+        let page = root.join("pages/index.tsx");
         let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Gallery } from '../components/gallery';\n\
+             export default function Page() { return <Boundary><Gallery /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island_src,
             "'use client';\n\
@@ -12916,7 +12936,7 @@ mod tests {
         std::fs::write(root.join("components/message.txt"), "hello").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         assert_eq!(
             islands.len(),
             1,
@@ -12979,8 +12999,17 @@ mod tests {
         std::fs::create_dir_all(&scope_dir).unwrap();
         std::os::unix::fs::symlink(&external_pkg, scope_dir.join("external")).unwrap();
 
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
+        let page = root.join("pages/index.tsx");
         let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Gallery } from '../components/gallery';\n\
+             export default function Page() { return <Boundary><Gallery /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island_src,
             "'use client';\n\
@@ -12992,7 +13021,7 @@ mod tests {
         std::fs::write(root.join("components/message.txt"), "hello").unwrap();
 
         let (islands, scan_meta) = scan_islands_with_meta_and_first_party_root(
-            std::slice::from_ref(&island_src),
+            std::slice::from_ref(&page),
             &FsResolver::new(),
             Some(root),
         )
@@ -13019,6 +13048,7 @@ mod tests {
     fn materialise_islands_shadow_copies_nearest_config_and_relative_extends_chain() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components/feature")).unwrap();
         std::fs::create_dir_all(root.join("config")).unwrap();
         std::fs::write(
@@ -13038,6 +13068,14 @@ mod tests {
         .unwrap();
         let island = root.join("components/feature/Island.tsx");
         let worker = root.join("components/feature/worker.ts");
+        let page = root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/feature/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13046,7 +13084,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13168,9 +13206,10 @@ mod tests {
         let nested_island = root.join("components/feature/NestedIsland.tsx");
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { RootIsland } from '../RootIsland';\n\
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { RootIsland } from '../RootIsland';\n\
              import { NestedIsland } from '../components/feature/NestedIsland';\n\
-             export default function Page() { return RootIsland() + NestedIsland(); }\n",
+             export default function Page() { return <div><Boundary><RootIsland /></Boundary><Boundary><NestedIsland /></Boundary></div>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -13229,6 +13268,7 @@ mod tests {
             .join(&shared_name)
             .join("tsconfig.base.json");
         assert!(!escaped_shadow_target.exists());
+        std::fs::create_dir_all(root.join("pages")).unwrap();
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::create_dir_all(&shared).unwrap();
         let external_config = shared.join("tsconfig.base.json");
@@ -13244,6 +13284,14 @@ mod tests {
         .unwrap();
         let island = root.join("components/Island.tsx");
         let worker = root.join("components/worker.ts");
+        let page = root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13252,7 +13300,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(&root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13577,6 +13625,7 @@ mod tests {
         let physical_root = tmp.path().join("physical-project");
         let linked_root = tmp.path().join("linked-project");
         std::fs::create_dir_all(physical_root.join("components")).unwrap();
+        std::fs::create_dir_all(physical_root.join("pages")).unwrap();
         std::os::unix::fs::symlink(&physical_root, &linked_root).unwrap();
         std::fs::write(
             linked_root.join("tsconfig.json"),
@@ -13585,6 +13634,14 @@ mod tests {
         .unwrap();
         let island = linked_root.join("components/Island.tsx");
         let worker = linked_root.join("components/worker.ts");
+        let page = linked_root.join("pages/index.tsx");
+        std::fs::write(
+            &page,
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &island,
             "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
@@ -13593,7 +13650,7 @@ mod tests {
         std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
 
         let (islands, scan_meta) =
-            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+            scan_islands_with_meta(std::slice::from_ref(&page), &FsResolver::new()).unwrap();
         let shadow = match materialise_islands_shadow(&linked_root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -13705,8 +13762,9 @@ mod tests {
 
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { ShadowIsland } from '../components/feature/ShadowIsland';\n\
-             export default ShadowIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { ShadowIsland } from '../components/feature/ShadowIsland';\n\
+             export default function Page() { return <Boundary><ShadowIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14127,8 +14185,9 @@ mod tests {
         std::fs::create_dir_all(root.join("components")).unwrap();
         std::fs::write(
             root.join("pages/index.tsx"),
-            "import { ChildIsland } from '../components/ChildIsland';\n\
-             export default ChildIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { ChildIsland } from '../components/ChildIsland';\n\
+             export default function Page() { return <Boundary><ChildIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14378,8 +14437,9 @@ mod tests {
         .unwrap();
         std::fs::write(
             project.join("pages/index.tsx"),
-            "import { GlobWidget } from '../components/GlobWidget';\n\
-             export default GlobWidget;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { GlobWidget } from '../components/GlobWidget';\n\
+             export default function Page() { return <Boundary><GlobWidget /></Boundary>; }\n",
         )
         .unwrap();
         // The unrecorded edge: a plain, query-free `require(...)` call,
@@ -14568,7 +14628,9 @@ mod tests {
         let island = root.join("components/Island.tsx");
         std::fs::write(
             &page,
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14605,7 +14667,9 @@ mod tests {
         let raw_target = project_root.join("components/broken.js");
         std::fs::write(
             &page,
-            "import { Shader } from '../components/shader';\nexport default Shader;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Shader } from '../components/shader';\n\
+             export default function Page() { return <Boundary><Shader /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14678,7 +14742,9 @@ mod tests {
         let raw_target = project_root.join("src/content/shader.txt");
         std::fs::write(
             &page,
-            "import { Shader } from '../components/Shader';\nexport default Shader;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Shader } from '../components/Shader';\n\
+             export default function Page() { return <Boundary><Shader /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14732,7 +14798,9 @@ mod tests {
         let raw_target = package.join("payload.txt");
         std::fs::write(
             &route,
-            "import { PresetIsland } from '../PresetIsland';\nexport default PresetIsland;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { PresetIsland } from '../PresetIsland';\n\
+             export default function Route() { return <Boundary><PresetIsland /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -14786,7 +14854,9 @@ mod tests {
         let worker_css = root.join("lib/worker.css");
         std::fs::write(
             &page,
-            "import { Island } from '../components/Island'; export default Island;\n",
+            "import { Island as Boundary } from '@takazudo/zfb';\n\
+             import { Island } from '../components/Island';\n\
+             export default function Page() { return <Boundary><Island /></Boundary>; }\n",
         )
         .unwrap();
         std::fs::write(
@@ -16875,6 +16945,66 @@ mod tests {
     }
 
     #[test]
+    fn materialise_islands_shadow_copies_mixed_local_and_installed_package_targets() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let local_island = write_shadow_fixture(
+            project_root,
+            "components/local.tsx",
+            "\"use client\"; import text from './message.txt?raw'; export function Local() { return text; }\n",
+        );
+        let raw_target = write_shadow_fixture(
+            project_root,
+            "components/message.txt",
+            "LOCAL_RAW_RESOURCE\n",
+        );
+        let installed_island = write_shadow_fixture(
+            project_root,
+            "node_modules/@fixture/widgets/dist/counter.tsx",
+            "\"use client\"; export function PackedCounter() { return null; }\n",
+        );
+        let islands = vec![
+            zfb_islands::Island::new("Local", local_island.clone()),
+            zfb_islands::Island::new("PackedCounter", installed_island.clone()),
+        ];
+        let scan_meta = zfb_islands::ScanMeta {
+            island_reachable_modules: vec![local_island.clone(), installed_island.clone()],
+            raw_import_edges_from_islands: vec![zfb_islands::RawImportEdge {
+                importer: local_island.clone(),
+                target: raw_target,
+            }],
+            ..Default::default()
+        };
+
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("mixed local/package shadow materialisation must succeed");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("supported terminal raw import must materialise: {offenders:?}")
+            }
+        };
+
+        assert!(
+            !shadow.preserve_symlinks,
+            "mixed local and installed-package targets must share one SDK module identity"
+        );
+        let shadow_local = shadow
+            .remap
+            .get(&local_island)
+            .expect("project-local island is remapped into the shadow");
+        let local_metadata = std::fs::symlink_metadata(shadow_local).unwrap();
+        assert!(
+            local_metadata.file_type().is_file() && !local_metadata.file_type().is_symlink(),
+            "local sources must be copied so disabling preserve-symlinks keeps rewritten raw imports"
+        );
+        assert!(
+            !shadow.remap.contains_key(&installed_island),
+            "installed package sources remain at their real node_modules path"
+        );
+    }
+
+    #[test]
     fn materialise_islands_shadow_uses_copy_mode_with_nested_tsconfig_paths() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
@@ -17194,8 +17324,9 @@ mod tests {
         write_shadow_fixture(
             project_root,
             "pages/index.tsx",
-            "import { Gallery } from \"../components/gallery\";\n\
-             export default function Index() { return <Gallery/>; }\n",
+            "import { Island as Boundary } from \"@takazudo/zfb\";\n\
+             import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Boundary><Gallery /></Boundary>; }\n",
         );
         write_shadow_fixture(
             project_root,

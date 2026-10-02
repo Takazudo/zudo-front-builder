@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "811c0023197e26b08aab2feddefba404860c4bfe",
+  "baselineSourceSha": "a3b2679ee246539a032286bbd9a6c712880a71d7",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60802,
-        "gzip": 20259
+        "raw": 61007,
+        "gzip": 20295
       },
       "scalar-signal": {
-        "raw": 60810,
-        "gzip": 20253
+        "raw": 61015,
+        "gzip": 20294
       },
       "show-for": {
-        "raw": 60957,
-        "gzip": 20336
+        "raw": 61162,
+        "gzip": 20379
       },
       "model": {
-        "raw": 60801,
-        "gzip": 20265
+        "raw": 61006,
+        "gzip": 20305
       },
       "blog-theme": {
-        "raw": 61152,
-        "gzip": 20398
+        "raw": 61357,
+        "gzip": 20438
       },
       "json-api": {
-        "raw": 60956,
-        "gzip": 20356
+        "raw": 61161,
+        "gzip": 20401
       },
       "multi-island": {
-        "raw": 61078,
-        "gzip": 20352
+        "raw": 61283,
+        "gzip": 20392
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60864,
-        "gzip": 20267
+        "raw": 61069,
+        "gzip": 20311
       },
       "scalar-signal": {
-        "raw": 60872,
-        "gzip": 20270
+        "raw": 61077,
+        "gzip": 20321
       },
       "show-for": {
-        "raw": 61019,
-        "gzip": 20347
+        "raw": 61224,
+        "gzip": 20396
       },
       "model": {
-        "raw": 60863,
-        "gzip": 20277
+        "raw": 61068,
+        "gzip": 20327
       },
       "blog-theme": {
-        "raw": 61214,
-        "gzip": 20400
+        "raw": 61419,
+        "gzip": 20447
       },
       "json-api": {
-        "raw": 61018,
-        "gzip": 20358
+        "raw": 61223,
+        "gzip": 20407
       },
       "multi-island": {
-        "raw": 61140,
-        "gzip": 20364
+        "raw": 61345,
+        "gzip": 20412
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after the public testing harness and readable diagnostics; Linux x64 uses its separately measured contract.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after concrete island boundary registration; Linux x64 uses its separately measured contract.",
   "baselineEvidence": {
     "event": "local",
-    "sourceSha": "811c0023197e26b08aab2feddefba404860c4bfe",
-    "workspaceReport": "research/v3-island-size/results/testing-darwin-811c0023197e26b08aab2feddefba404860c4bfe/real-workspace/report.md",
-    "packedReport": "research/v3-island-size/results/testing-darwin-811c0023197e26b08aab2feddefba404860c4bfe/real-packed/report.md",
-    "note": "Both complete real matrices ran twice with identical saved dist inventories on Darwin arm64. The default diagnostic formatter increased every nonempty fixture by 631 raw bytes; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
+    "sourceSha": "a3b2679ee246539a032286bbd9a6c712880a71d7",
+    "workspaceReport": "research/v3-island-size/results/scanner-darwin-a3b2679ee246539a032286bbd9a6c712880a71d7/real-workspace/report.md",
+    "packedReport": "research/v3-island-size/results/scanner-darwin-a3b2679ee246539a032286bbd9a6c712880a71d7/real-packed/report.md",
+    "note": "Both complete real matrices passed on Darwin arm64. Concrete island boundary registration increased every nonempty fixture by 205 raw bytes; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
   }
 }

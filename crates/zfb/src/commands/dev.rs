@@ -2437,7 +2437,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 alias_entries: plugin_alias_entries_for_islands.clone(),
                 virtual_modules: plugin_virtual_module_store_for_islands.snapshot_pairs(),
             };
-            rebundle_islands(
+            let result = rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
                 bundle_config.as_ref(),
@@ -2447,7 +2447,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &companion_ledger,
                 &raw_invalidation,
                 &package_route_entrypoints,
-            )
+            );
+            if let Err(error) = &result {
+                // The orchestrator intentionally keeps running after a
+                // failed rebuild, but reports tick errors through
+                // `tracing::warn!` only. A normal `zfb dev` session has no
+                // tracing subscriber, so registration failures were
+                // invisible even though the previous published registry
+                // remained intact. The deferred boot caller has its own
+                // visible warning; this is the watcher-tick diagnostic.
+                output::warn(format!(
+                    "islands rebuild failed; keeping the last successful registry: {error:#}"
+                ));
+            }
+            result
         }))
     };
 

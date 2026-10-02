@@ -571,7 +571,8 @@ pub(crate) fn assemble_bundler_input(
         let resolver = FsResolver::new()
             .with_project_root(project_root)
             .with_injected_route_roots(&bundler_input.injected_route_entrypoints)
-            .with_virtual_modules(project_root, &bundler_input.plugin_virtual_modules);
+            .with_virtual_modules(project_root, &bundler_input.plugin_virtual_modules)
+            .with_plugin_aliases(&bundler_input.plugin_alias_entries);
         let first_party_root = zfb_types::first_party_root_for(project_root);
         let (islands, _) = scan_islands_with_meta_and_first_party_root(
             &entries,
@@ -579,11 +580,7 @@ pub(crate) fn assemble_bundler_input(
             Some(&first_party_root),
         )
         .context("owned island scanner preflight failed")?;
-        let names: std::collections::BTreeSet<_> = islands
-            .iter()
-            .map(|island| island.marker_name.clone())
-            .collect();
-        bundler_input.zudo_react_island_names = Some(names.into_iter().collect());
+        bundler_input.zudo_react_island_names = Some(validated_island_names(&islands)?);
     }
 
     // Sub #212 follow-up — pre-extract the embedded esbuild binary and pin
@@ -633,6 +630,26 @@ pub(crate) fn assemble_bundler_input(
     })
 }
 
+/// Validate the full target list before reducing it to SSR's name-only set.
+fn validated_island_names(islands: &[zfb_islands::Island]) -> Result<Vec<String>> {
+    let manifest = zfb_islands::Manifest::from_islands(islands);
+    if let Some(collision) = manifest.collisions().first() {
+        anyhow::bail!(
+            "ambiguous owned island marker {:?}: {} export {:?} and {} export {:?}",
+            collision.name,
+            collision.kept_path.display(),
+            collision.kept_export,
+            collision.dropped_path.display(),
+            collision.dropped_export,
+        );
+    }
+    let names: std::collections::BTreeSet<_> = islands
+        .iter()
+        .map(|island| island.marker_name.clone())
+        .collect();
+    Ok(names.into_iter().collect())
+}
+
 fn canonical_authored_css_paths(project_root: &Path) -> std::collections::BTreeSet<PathBuf> {
     let mut paths = std::collections::BTreeSet::new();
     if let Some(entry) = crate::commands::build::resolve_input_global_css(project_root) {
@@ -663,6 +680,87 @@ fn emit_render_artifacts_for_bundle(bundle_mode: BundleMode, config: &Config) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssr_names_reject_collision_before_name_projection() {
+        let islands = vec![
+            zfb_islands::Island::with_marker_name("A", "/components/duo.tsx", "Same"),
+            zfb_islands::Island::with_marker_name("B", "/components/duo.tsx", "Same"),
+        ];
+        let error = validated_island_names(&islands).unwrap_err();
+        assert!(error.to_string().contains("ambiguous owned island marker"));
+    }
+
+    #[test]
+    fn ssr_names_equal_validated_registry_markers() {
+        let islands = vec![
+            zfb_islands::Island::with_marker_name("default", "/components/a.tsx", "A"),
+            zfb_islands::Island::with_marker_name("B", "/components/b.tsx", "B"),
+        ];
+        assert_eq!(validated_island_names(&islands).unwrap(), ["A", "B"]);
+    }
+
+    #[test]
+    fn injected_worker_only_ssr_preflight_rejects_marker_collision_before_projection() {
+        let project = tempfile::tempdir().expect("worker-only SSR fixture");
+        let root = project.path();
+        let routes = root.join(".zudo-doc/routes");
+        let components = root.join("components");
+        std::fs::create_dir_all(&routes).expect("create injected route directory");
+        std::fs::create_dir_all(&components).expect("create component directory");
+
+        std::fs::write(
+            components.join("first.tsx"),
+            "\"use client\"; export function WorkerOnlyTwin() { return null; }\n",
+        )
+        .expect("write first colliding target");
+        std::fs::write(
+            components.join("second.tsx"),
+            "\"use client\"; export function WorkerOnlyTwin() { return null; }\n",
+        )
+        .expect("write second colliding target");
+        let injected_entry = routes.join("worker-only.tsx");
+        std::fs::write(
+            &injected_entry,
+            "import { Island } from \"@takazudo/zfb\";\n\
+             import { WorkerOnlyTwin as First } from \"../../components/first\";\n\
+             import { WorkerOnlyTwin as Second } from \"../../components/second\";\n\
+             export default function WorkerOnlyRoute() { return <><Island><First /></Island><Island><Second /></Island></>; }\n",
+        )
+        .expect("write injected worker-only route");
+
+        // There is deliberately no pages/ route: this injected route is the
+        // sole SSR entry, as in a worker-only route set. Preflight must validate
+        // its full target identities before projecting marker names into the
+        // worker bundler input.
+        let result = assemble_bundler_input(
+            root,
+            &root.join(".zfb-build"),
+            &Config::default(),
+            BundleMode::Production,
+            CssModuleFailMode::HardFail,
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            vec![injected_entry],
+        );
+        let error = match result {
+            Ok(_) => panic!("worker-only SSR preparation accepted duplicate marker identities"),
+            Err(error) => error,
+        };
+
+        let diagnostic = format!("{error:#}");
+        assert!(
+            diagnostic.contains("ambiguous owned island marker"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("WorkerOnlyTwin"), "{diagnostic}");
+        assert!(diagnostic.contains("components/first.tsx"), "{diagnostic}");
+        assert!(diagnostic.contains("components/second.tsx"), "{diagnostic}");
+    }
 
     fn config_with(emit_render_artifacts: bool) -> Config {
         Config {

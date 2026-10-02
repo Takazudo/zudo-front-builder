@@ -65,8 +65,8 @@ export default function AboutPage() {
           zfb
         </a>
         . Pages are server-rendered to static HTML at build time; the only JavaScript that reaches
-        the browser is the theme toggle in the header, because it is the only component marked{" "}
-        <code class="text-sm">"use client"</code>.
+        the browser is the theme toggle in the header, because the layout places that{" "}
+        <code class="text-sm">"use client"</code> component inside an Island boundary.
       </p>
 
       <h2 class="mt-12 text-xs font-semibold tracking-[0.08em] text-neutral-500 uppercase">

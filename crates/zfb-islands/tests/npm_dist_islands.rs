@@ -26,11 +26,9 @@
 //!    not crawled.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use zfb_islands::{
-    is_same_package_duplicate, scan_islands, scan_islands_with_meta, FsResolver, Manifest,
-};
+use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver};
 
 /// Write `body` to `path`, creating parent directories first.
 fn write(path: &Path, body: &str) {
@@ -49,8 +47,8 @@ fn scan_component_names(page: &Path) -> Vec<String> {
 
 /// A regular npm package laid out as a flat `node_modules/<pkg>` directory
 /// (npm/yarn-classic layout — a real dir, NOT a workspace symlink) whose
-/// dist module carries `"use client"` must register its islands when a
-/// page imports it.
+/// dist module carries `"use client"` must register its target when a
+/// page uses that function inside an SDK Island boundary.
 #[test]
 fn flat_regular_npm_package_use_client_module_is_registered() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -77,7 +75,8 @@ fn flat_regular_npm_package_use_client_module_is_registered() {
     write(
         &page,
         r#"import { Widget } from "@acme/widgets/widget";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <Island><Widget/></Island>; }
         "#,
     );
 
@@ -87,8 +86,8 @@ fn flat_regular_npm_package_use_client_module_is_registered() {
 /// pnpm consumer layout: `node_modules/@acme/widgets` is a SYMLINK into
 /// `node_modules/.pnpm/.../node_modules/@acme/widgets`. Its canonical path
 /// still contains a `node_modules/` segment, so it is a *regular* package
-/// (not a workspace package), yet a page importing it must still register
-/// its dist island.
+/// (not a workspace package), yet a page using its function in an SDK Island
+/// boundary must still register the dist target.
 #[cfg(unix)]
 #[test]
 fn pnpm_symlinked_regular_package_use_client_module_is_registered() {
@@ -118,7 +117,8 @@ fn pnpm_symlinked_regular_package_use_client_module_is_registered() {
     write(
         &page,
         r#"import { Widget } from "@acme/widgets/widget";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <Island><Widget/></Island>; }
         "#,
     );
 
@@ -162,7 +162,8 @@ fn regular_npm_package_import_from_island_is_not_a_workspace_package_edge() {
     write(
         &page,
         r#"import { Gallery } from "../components/gallery";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <Island><Gallery/></Island>; }
         "#,
     );
 
@@ -230,7 +231,8 @@ fn barrel_without_use_client_is_traversed_to_relative_use_client_module() {
     write(
         &page,
         r#"import { Toc } from "@acme/docs";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <Island><Toc/></Island>; }
         "#,
     );
 
@@ -283,7 +285,8 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
     write(
         &page,
         r#"import { ThemeToggle } from "@takazudo/zudo-doc/theme-toggle";
-        export default function Header() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Header() { return <Island><ThemeToggle/></Island>; }
         "#,
     );
 
@@ -343,7 +346,8 @@ fn bare_import_from_inside_a_package_is_not_followed() {
     write(
         &page,
         r#"import { Widget } from "@acme/widgets";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <Island><Widget/></Island>; }
         "#,
     );
 
@@ -441,14 +445,10 @@ fn require_only_cjs_package_with_stray_esm_index_stays_inert() {
     );
 }
 
-/// When a local project-source component and a package-provided component
-/// share a marker name (e.g. both named `ThemeToggle`), the scanner emits
-/// two distinct islands (keyed by `(source_path, name)`), and the manifest
-/// records a collision the build pass can warn on. This is the #999
-/// scenario that makes duplicate marker names likely once `node_modules`
-/// is scanned.
+/// Two distinct boundary targets with the same marker must fail before
+/// SSR name projection or client registry emission.
 #[test]
-fn duplicate_marker_name_across_sources_is_recorded_as_a_collision() {
+fn duplicate_marker_name_across_sources_is_a_hard_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -481,55 +481,32 @@ fn duplicate_marker_name_across_sources_is_recorded_as_a_collision() {
         &page,
         r#"import { ThemeToggle as Pkg } from "@takazudo/zudo-doc/theme-toggle";
         import { ThemeToggle as Local } from "../src/components/theme-toggle";
-        export default function Home() { return null; }
+        import { Island } from "@takazudo/zfb";
+        export default function Home() { return <><Island><Pkg/></Island><Island><Local/></Island></>; }
         "#,
     );
 
     let resolver = FsResolver::new();
-    let islands = scan_islands(std::slice::from_ref(&page), &resolver).expect("scan");
-    // Two distinct source files, same marker name.
-    let theme_islands: Vec<&PathBuf> = islands
-        .iter()
-        .filter(|i| i.marker_name == "ThemeToggle")
-        .map(|i| &i.source_path)
-        .collect();
-    assert_eq!(
-        theme_islands.len(),
-        2,
-        "expected two ThemeToggle islands from distinct sources: {islands:?}"
-    );
-
-    let manifest = Manifest::from_islands(&islands);
-    let collisions = manifest.collisions();
-    assert_eq!(
-        collisions.len(),
-        1,
-        "expected exactly one marker-name collision: {collisions:?}"
-    );
-    assert_eq!(collisions[0].name, "ThemeToggle");
-    assert_ne!(collisions[0].kept_path, collisions[0].dropped_path);
-    // #2441 must not swallow this one: the two components are genuinely
-    // different, and "rename one" is advice the author can act on.
+    let error = scan_islands(std::slice::from_ref(&page), &resolver).unwrap_err();
     assert!(
-        !is_same_package_duplicate(&collisions[0]),
-        "a local component colliding with a package component is actionable: {:?}",
-        collisions[0]
+        error.to_string().contains("ambiguous owned island marker"),
+        "{error}"
     );
+    assert!(error.to_string().contains("ThemeToggle"), "{error}");
 }
 
 /// Issue #2441 — a package that ships BOTH its compiled `dist/` output and
-/// its sources can have one component reach the scanner twice, through two
-/// entry graphs, and the two hits are the same component.
+/// its sources can have two distinct defining bindings with the same marker.
 ///
 /// This is zudo-doc's `packageOwnedRoutes` shape, reproduced end to end
 /// through the real scanner: a page re-exports the package's compiled route
 /// barrel (pulling in `dist/routes/_widget.js`) while a second entry is a
 /// verbatim copy of the package's own `routes-src/_widget.tsx`, staged
 /// outside `node_modules` so the package's virtual-module imports resolve.
-/// The manifest records a collision because the two source paths differ —
-/// but nothing in it is actionable, so the build must not warn.
+/// Identical source bytes and a compiled counterpart do not prove canonical
+/// identity; distinct boundary targets fail before a manifest is produced.
 #[test]
-fn package_source_and_compiled_duplicate_is_classified_as_a_same_package_duplicate() {
+fn package_source_and_compiled_duplicate_is_a_hard_ambiguity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -566,7 +543,9 @@ export default function Index() { return null; }
     let page = root.join("pages/index.tsx");
     write(
         &page,
-        r#"export { default } from "@takazudo/zudo-doc/routes/index";
+        r#"import { Widget } from "@takazudo/zudo-doc/routes/index";
+import { Island } from "@takazudo/zfb";
+export default function Page() { return <Island><Widget/></Island>; }
 "#,
     );
     // Entry 2 — the injected route, pointing at the STAGED copy of the
@@ -577,34 +556,16 @@ export default function Index() { return null; }
     write(
         &injected,
         r#"import { Widget } from "./_widget";
-export default function Route() { return null; }
+import { Island } from "@takazudo/zfb";
+export default function Route() { return <Island><Widget/></Island>; }
 "#,
     );
 
     let resolver = FsResolver::new();
-    let islands = scan_islands(&[page.clone(), injected.clone()], &resolver).expect("scan");
-    let widget_paths: Vec<&PathBuf> = islands
-        .iter()
-        .filter(|i| i.marker_name == "Widget")
-        .map(|i| &i.source_path)
-        .collect();
-    assert_eq!(
-        widget_paths.len(),
-        2,
-        "expected the same component from both graphs: {islands:?}"
-    );
-
-    let manifest = Manifest::from_islands(&islands);
-    let collisions = manifest.collisions();
-    assert_eq!(
-        collisions.len(),
-        1,
-        "expected exactly one marker-name collision: {collisions:?}"
-    );
-    assert_eq!(collisions[0].name, "Widget");
+    let error = scan_islands(&[page.clone(), injected.clone()], &resolver).unwrap_err();
     assert!(
-        is_same_package_duplicate(&collisions[0]),
-        "the staged copy and the package's compiled module are the same component: {:?}",
-        collisions[0]
+        error.to_string().contains("ambiguous owned island marker"),
+        "{error}"
     );
+    assert!(error.to_string().contains("Widget"), "{error}");
 }
