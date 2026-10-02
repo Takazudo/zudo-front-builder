@@ -14,6 +14,19 @@ export type SavedFocus = {
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
 
+/** Validate before teardown: ambiguous keys must never choose an arbitrary node. */
+export function assertUniquePersistKeys(root: ParentNode, label: string): void {
+  const seen = new Set<string>();
+  for (const element of root.querySelectorAll(`[${PERSIST_ATTR}]`)) {
+    const key = element.getAttribute(PERSIST_ATTR)!;
+    if (seen.has(key))
+      throw new TypeError(
+        `ZFB_PERSIST_DUPLICATE: ${label} document contains duplicate persistence key ${JSON.stringify(key)}`,
+      );
+    seen.add(key);
+  }
+}
+
 // Cross-package island attributes must use the same literal strings here and in
 // @takazudo/zfb's runtime: PERSIST_ATTR is read by both packages;
 // ISLAND_REMOUNT_ATTR below is written here and consumed there; that runtime's
@@ -157,6 +170,8 @@ export function swapHeadElements(doc: Document) {
 }
 
 export function swapBodyElement(newElement: Element, oldElement: Element) {
+  assertUniquePersistKeys(oldElement, "current");
+  assertUniquePersistKeys(newElement, "incoming");
   // Lift persist elements to <html> before the body swap so they stay in the DOM
   // throughout replaceWith(). This prevents Safari from losing WebGL context on
   // <canvas> elements due to brief DOM detachment. Uses moveBefore() where available
@@ -390,6 +405,8 @@ export const swapFunctions = {
 };
 
 export const swap = (doc: Document) => {
+  assertUniquePersistKeys(document, "current");
+  assertUniquePersistKeys(doc, "incoming");
   deselectScripts(doc);
   swapRootAttributes(doc);
   swapHeadElements(doc);

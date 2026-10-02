@@ -23,6 +23,29 @@ it("Island mints its wrapper through the owned factory", async () => {
   expect(renderToString(wrapper as never)).toContain('data-zfb-island="Card"');
 });
 
+it("serializes only supported persistence options on an owned island", async () => {
+  const { Island } = await import("../island.js");
+  function Card() {
+    return jsx("span", { children: "owned" });
+  }
+  const render = (options: { persist?: string; persistProps?: boolean }) =>
+    renderToString(Island({ children: jsx(Card, {}), ...options }) as never);
+  expect(render({ persist: 'sidebar"&' })).toContain(
+    'data-zfb-transition-persist="sidebar&quot;&amp;"',
+  );
+  expect(render({ persist: "sidebar", persistProps: true })).toContain(
+    'data-zfb-transition-persist-props="true"',
+  );
+  expect(render({ persist: "sidebar", persistProps: false })).not.toContain(
+    "data-zfb-transition-persist-props",
+  );
+  for (const persist of ["", " ", " sidebar", "sidebar\nother"]) {
+    expect(() => render({ persist })).toThrow("ZR_ISLAND_PERSIST");
+  }
+  expect(() => render({ persistProps: true })).toThrow("persistProps requires persist");
+  expect(() => render({ persistProps: false })).toThrow("persistProps requires persist");
+});
+
 it("rejects a conflicting displayName against scanner identity", async () => {
   const { Island } = await import("../island.js");
   function Card() {
