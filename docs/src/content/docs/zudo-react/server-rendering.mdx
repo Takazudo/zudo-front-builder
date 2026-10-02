@@ -84,6 +84,23 @@ instances, runtime descriptions, signals, and computed values.
 
 Validation happens before JSON serialization. Arrays must be dense and have no extra named or symbol properties. Records may be ordinary or null-prototype records; only own enumerable string data properties are accepted. Accessors, non-enumerable fields, custom toJSON methods, symbols, and prototype-sensitive record keys are rejected without being invoked. Props do not carry live signal identity across the boundary; construct signals during client setup.
 
+## Read a render failure
+
+When server rendering rejects an element during `zfb build` or `zfb dev`, the error carries three kinds of information. Read them in this order:
+
+~~~text
+[zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7
+[zfb-runtime] render threw for "/": ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render
+TypeError: ...
+    at fail (file:///zfb/bundle.mjs:3505:23)
+~~~
+
+- **Authored span.** `— at components/search-field.tsx:4:7` is the line and column of the failing JSX element in your source file. zfb reports it only when it can map the element's call back to a project file whose content matches the build's source map. The build does not need a preceding `zfb check`.
+- **Structural context.** The first line also carries the stable code, the component (`static-render` for a page render, otherwise the island's component name), the element path, and, for a React-style prop, the supported spelling to use instead. This part is always present.
+- **Generated stack.** The `file:///zfb/bundle.mjs:…` frames are positions in the generated server bundle. They locate zfb's renderer, not your element, so do not edit by those numbers.
+
+Elements written with `h()`, elements created inside a dependency, and code changed by a preprocessor have no reliable source position. For them zfb prints the structural context without an authored span, rather than a guessed line. It may add `— internal frame node_modules/…` as a debugging hint; that label is never your source location. The first line never contains props, raw HTML, or absolute local paths.
+
 ## See also
 
 - [Overview](./overview.mdx)
