@@ -476,23 +476,23 @@ describe("island shipped-size budget", () => {
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 51220, gzip: 17474 },
-      "scalar-signal": { raw: 51228, gzip: 17480 },
-      "show-for": { raw: 51375, gzip: 17559 },
-      model: { raw: 51219, gzip: 17485 },
-      "blog-theme": { raw: 51570, gzip: 17619 },
-      "json-api": { raw: 51374, gzip: 17574 },
-      "multi-island": { raw: 51496, gzip: 17585 },
+      "event-only": { raw: 60008, gzip: 19905 },
+      "scalar-signal": { raw: 60016, gzip: 19909 },
+      "show-for": { raw: 60163, gzip: 19996 },
+      model: { raw: 60007, gzip: 19916 },
+      "blog-theme": { raw: 60358, gzip: 20044 },
+      "json-api": { raw: 60162, gzip: 20002 },
+      "multi-island": { raw: 60284, gzip: 20007 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 51282, gzip: 17512 },
-      "scalar-signal": { raw: 51290, gzip: 17516 },
-      "show-for": { raw: 51437, gzip: 17590 },
-      model: { raw: 51281, gzip: 17520 },
-      "blog-theme": { raw: 51632, gzip: 17653 },
-      "json-api": { raw: 51436, gzip: 17607 },
-      "multi-island": { raw: 51558, gzip: 17620 },
+      "event-only": { raw: 60070, gzip: 19932 },
+      "scalar-signal": { raw: 60078, gzip: 19939 },
+      "show-for": { raw: 60225, gzip: 20018 },
+      model: { raw: 60069, gzip: 19942 },
+      "blog-theme": { raw: 60420, gzip: 20072 },
+      "json-api": { raw: 60224, gzip: 20029 },
+      "multi-island": { raw: 60346, gzip: 20037 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });

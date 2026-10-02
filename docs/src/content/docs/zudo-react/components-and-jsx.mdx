@@ -56,7 +56,31 @@ SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, 
 
 ## Styles and events
 
-The style prop accepts a CSS string or a flat object with CSS-spelled keys. A numeric value is emitted as written; the runtime does not add px. Null and undefined entries are skipped, and object entries keep their insertion order. On update, a previously owned style property missing from the next object is removed. CamelCase keys, nested objects, arrays, and reactive values inside the style object are rejected. The entire style prop may be reactive.
+The style prop accepts a CSS string or a plain object with supported CSS-spelled keys. `CSSProperties` is exported from `@takazudo/zfb/zudo-react`. Nonzero lengths must include their units as strings; the runtime never adds `px`. Numeric zero remains valid for lengths, unitless properties such as `opacity` and `line-height` accept numbers, and custom properties accept finite numbers or strings. The runtime applies the same checks during SSR, hydration, mount, and updates.
+
+Use a plain object literal for object styles. Arrays, class instances, null-prototype records, nested objects, camelCase keys, and reactive values inside the object are rejected. Null and undefined entries are skipped, entries keep their insertion order, and an update removes properties omitted from the next object. The whole style prop may be reactive.
+
+```tsx
+<div
+  style={{
+    left: "1rem",
+    top: 0,
+    width: "100%",
+    "max-height": "20rem",
+    opacity: 0.5,
+    "--scale": 2,
+    "-webkit-mask-image": "linear-gradient(black, transparent)",
+  }}
+/>
+
+<iframe title="Preview" style={{ width: "100%", height: "480px" }} />
+```
+
+A CSS string is an escape hatch for valid CSS syntax that does not fit the checked object form. Its contents are emitted as authored and are not checked for supported property names or values:
+
+```tsx
+<div style="left: calc(1rem + var(--offset));" />
+```
 
 Function listeners use a native, case-sensitive event name after on:, with an optional final :capture suffix:
 

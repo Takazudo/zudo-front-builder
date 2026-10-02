@@ -1,3 +1,4 @@
+import { serializeStyle } from "./style.js";
 import { subscribe, readSnapshot, type Subscription } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
 import type { RuntimeScope } from "./scope.js";
@@ -16,21 +17,7 @@ export function isReactive(value: unknown): value is ReadonlySignal<unknown> {
 export function read(value: unknown): unknown {
   return isReactive(value) ? readSnapshot(value) : value;
 }
-export function styleText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new TypeError("ZR_STYLE");
-  let result = "";
-  for (const [name, entry] of Object.entries(value)) {
-    if (!/^(--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)$/.test(name) || /[A-Z]/.test(name))
-      throw new TypeError(`ZR_STYLE: ${name}`);
-    if (entry == null) continue;
-    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry)))
-      throw new TypeError(`ZR_STYLE: ${name}`);
-    result += `${name}:${entry};`;
-  }
-  return result;
-}
+export const styleText = serializeStyle;
 export function setAttribute(element: Element, name: string, value: unknown): void {
   const namespace = attributeNamespace(name);
   const localName = namespace && name.includes(":") ? name.split(":")[1]! : name;

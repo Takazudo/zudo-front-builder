@@ -161,6 +161,17 @@ function NameField() {
 
 An explicit model connects a supported control to a writable signal. Use signal for the model; computed and readonly signals are valid readable bindings, not writable models. The browser's current value wins when an island hydrates. The [Forms guide](./forms.mdx) lists the supported controls and their model props.
 
+### Inline styles
+
+Object styles use CSS-spelled keys, and nonzero CSS lengths must include a unit. Preact code that relied on automatic `px` needs explicit strings for values such as `left`, `top`, `width`, `max-height`, and an iframe's CSS `height`:
+
+~~~tsx
+<div style={{ left: "12px", top: "1rem", width: "320px", "max-height": "40rem" }} />
+<iframe title="Preview" style={{ height: "480px" }} />
+~~~
+
+Numeric zero is still valid for lengths. Unitless values such as `opacity` and `line-height` accept numbers, and custom properties accept numbers or strings. Use a plain object literal: arrays, class instances, null-prototype objects, nested objects, and camelCase keys are rejected. A CSS string remains an escape hatch when needed; the runtime emits its contents as authored without checking property names or values. See [Styles and events](./components-and-jsx.mdx) for the full contract.
+
 ### Derived class names
 
 Old Preact way:

@@ -210,12 +210,12 @@ describe("server renderer", () => {
     expect(
       renderToString(
         h("div", {
-          style: { "font-size": 12, "--accent": "red" },
+          style: { "font-size": "12px", "--accent": "red" },
           "aria-pressed": false,
           hidden: true,
         }),
       ),
-    ).toBe('<div style="font-size:12;--accent:red;" aria-pressed="false" hidden></div>');
+    ).toBe('<div style="font-size:12px;--accent:red;" aria-pressed="false" hidden></div>');
     expect(() => renderToString(h("script", { rawHtml: "</script>" }))).toThrow("ZR_RAW_HTML");
     expect(() => renderToString(h("table", null, h("tr", null)))).toThrow("ZR_PARSER_CONTEXT");
     expect(() => renderToString(h("svg", { rawHtml: "<path/>" }))).toThrow("ZR_RAW_HTML");
