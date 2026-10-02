@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d",
+  "baselineSourceSha": "b17bd0c923092b78aa480018159bf6c14a724f98",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60171,
-        "gzip": 19964
+        "raw": 60802,
+        "gzip": 20259
       },
       "scalar-signal": {
-        "raw": 60179,
-        "gzip": 19968
+        "raw": 60810,
+        "gzip": 20256
       },
       "show-for": {
-        "raw": 60326,
-        "gzip": 20047
+        "raw": 60957,
+        "gzip": 20335
       },
       "model": {
-        "raw": 60170,
-        "gzip": 19973
+        "raw": 60801,
+        "gzip": 20265
       },
       "blog-theme": {
-        "raw": 60521,
-        "gzip": 20104
+        "raw": 61152,
+        "gzip": 20395
       },
       "json-api": {
-        "raw": 60325,
-        "gzip": 20064
+        "raw": 60956,
+        "gzip": 20352
       },
       "multi-island": {
-        "raw": 60447,
-        "gzip": 20065
+        "raw": 61078,
+        "gzip": 20351
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 60233,
-        "gzip": 19986
+        "raw": 60864,
+        "gzip": 20269
       },
       "scalar-signal": {
-        "raw": 60241,
-        "gzip": 19989
+        "raw": 60872,
+        "gzip": 20268
       },
       "show-for": {
-        "raw": 60388,
-        "gzip": 20072
+        "raw": 61019,
+        "gzip": 20348
       },
       "model": {
-        "raw": 60232,
-        "gzip": 19994
+        "raw": 60863,
+        "gzip": 20278
       },
       "blog-theme": {
-        "raw": 60583,
-        "gzip": 20122
+        "raw": 61214,
+        "gzip": 20399
       },
       "json-api": {
-        "raw": 60387,
-        "gzip": 20079
+        "raw": 61018,
+        "gzip": 20363
       },
       "multi-island": {
-        "raw": 60509,
-        "gzip": 20086
+        "raw": 61140,
+        "gzip": 20363
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v3.1.0 ceilings measured after optional Island prop normalization on the pinned CI toolchain; gzip bytes are platform-specific.",
+  "platformStatus": "Linux x64 has exact zero-allowance v3.1.0 ceilings measured after the public testing harness and readable diagnostics on the pinned CI toolchain; gzip bytes are platform-specific.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 36962267860,
-    "jobId": 110698306268,
-    "sourceSha": "c8b1f94dda43c1f505af2d8ce9f74a9dbf77e47d",
-    "note": "Optional Island prop normalization added 163 raw bytes per nonempty fixture in workspace and packed modes, with platform-specific gzip growth. All 14 exact totals came from the failed health budget step; preceding health steps passed. Prior ceilings and evidence remain in git history."
+    "runId": 36968095129,
+    "jobId": 110716114454,
+    "sourceSha": "b17bd0c923092b78aa480018159bf6c14a724f98",
+    "note": "The default diagnostic formatter added 631 raw bytes per nonempty fixture in workspace and packed modes, with platform-specific gzip growth. All 14 exact totals came from the failed health budget step; preceding health steps passed. Prior ceilings and evidence remain in git history."
   }
 }
