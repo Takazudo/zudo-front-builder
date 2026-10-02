@@ -60,7 +60,21 @@ const inner = renderToString(<Counter />, { island: identity });
 
 ## Props は JSON で転送する
 
-**serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。複数回参照される値は値としてシリアライズされます。undefined、循環参照、関数、symbol、bigint、非有限数、クラスインスタンス、ランタイムの記述、signal、computed 値は拒否されます。
+**serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。自身が持つ列挙可能な文字列キーのデータプロパティで、値が `undefined` のものはどの階層でも省略されます。明示的な `null` は保持されます。
+
+~~~ts
+import { serializeProps } from "@takazudo/zfb/zudo-react/server";
+
+serializeProps({
+  locale: undefined,
+  currentSlug: undefined,
+  metadata: { title: "Card", description: undefined },
+  records: [{ description: undefined }, { description: null }],
+});
+// {"metadata":{"title":"Card"},"records":[{},{"description":null}]}
+~~~
+
+サーバーコンポーネントにはシリアライズされるものと同じ正規化済み props が渡るため、SSR とハイドレーション時の `Object.hasOwn` の結果は一致します。配列内のレコードにも同じ省略規則を適用しますが、配列要素を削除したり移動したりしません。undefined の配列要素と配列の穴はエラーです。`null` は値として保持されます。複数回参照される値は値としてシリアライズされます。循環参照、関数、symbol、bigint、非有限数、クラスインスタンス、ランタイムの記述、signal、computed 値も拒否されます。
 
 検証は JSON シリアライズより前に行われます。配列には欠けがなく、追加の名前付きプロパティや symbol プロパティも付けられません。レコードは通常のものでも null プロトタイプでもよく、自身が持つ列挙可能な文字列キーのデータプロパティだけが許可されます。アクセサー、列挙不可のフィールド、独自の toJSON、symbol、プロトタイプに影響するキーは、呼び出されることなく拒否されます。props は境界を越えて生きた signal の同一性を運びません。クライアントのセットアップ中に signal を作ってください。
 

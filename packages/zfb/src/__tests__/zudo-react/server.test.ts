@@ -22,20 +22,51 @@ function Demo() {
 
 describe("server renderer", () => {
   it("renders islands from the same normalized nested props sent to the client", () => {
-    const nested = { missing: undefined, present: null };
-    function OwnKeys(props: { nested: typeof nested }) {
+    const input = {
+      missing: undefined,
+      nested: { missing: undefined, present: null },
+      records: [
+        {
+          description: undefined,
+          details: [{ description: undefined }, { description: null }],
+        },
+        { description: null, details: [] },
+      ],
+    };
+    function OwnKeys(props: typeof input) {
       return h(
         "p",
         null,
-        `${Object.hasOwn(props.nested, "missing")}:${Object.hasOwn(props.nested, "present")}:${String(props.nested.present)}`,
+        JSON.stringify({
+          missing: Object.hasOwn(props, "missing"),
+          nested: {
+            missing: Object.hasOwn(props.nested, "missing"),
+            present: Object.hasOwn(props.nested, "present"),
+            value: props.nested.present,
+          },
+          records: props.records.map((record) => ({
+            description: Object.hasOwn(record, "description"),
+            value: Object.hasOwn(record, "description") ? record.description : "omitted",
+            details: record.details.map((detail) => ({
+              description: Object.hasOwn(detail, "description"),
+              value: Object.hasOwn(detail, "description") ? detail.description : "omitted",
+            })),
+          })),
+        }),
       );
     }
     const html = renderToString(
-      islandRoot(h(OwnKeys, { nested }), { identity: { component: "OwnKeys", build: "b1" } }),
+      islandRoot(h(OwnKeys, input), { identity: { component: "OwnKeys", build: "b1" } }),
     );
-    expect(html).toContain('data-props="{&quot;nested&quot;:{&quot;present&quot;:null}}"');
-    expect(html).toContain("false:true:null");
-    expect(Object.hasOwn(nested, "missing")).toBe(true);
+    expect(html).toContain(
+      'data-props="{&quot;nested&quot;:{&quot;present&quot;:null},&quot;records&quot;:[{&quot;details&quot;:[{},{&quot;description&quot;:null}]},{&quot;description&quot;:null,&quot;details&quot;:[]}]}',
+    );
+    expect(html).toContain(
+      '{"missing":false,"nested":{"missing":false,"present":true,"value":null},"records":[{"description":false,"value":"omitted","details":[{"description":false,"value":"omitted"},{"description":true,"value":null}]},{"description":true,"value":null,"details":[]}]}',
+    );
+    expect(Object.hasOwn(input, "missing")).toBe(true);
+    expect(Object.hasOwn(input.nested, "missing")).toBe(true);
+    expect(Object.hasOwn(input.records[0]!, "description")).toBe(true);
   });
   it("exports exactly the locked server entry values", () => {
     expect(Object.keys(server).sort()).toEqual(["islandRoot", "renderToString", "serializeProps"]);

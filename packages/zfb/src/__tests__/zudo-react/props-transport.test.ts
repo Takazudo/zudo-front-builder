@@ -108,16 +108,71 @@ describe("strict props transport", () => {
     expect(Object.hasOwn(nested, "missing")).toBe(true);
     expect(normalized.nested).not.toBe(nested);
   });
-  it("rejects invalid values even when another member can be omitted", () => {
-    expect(() => serializeProps({ omitted: undefined, bad: [undefined] })).toThrow(
+  it("round trips omitted record keys separately from explicit null keys", () => {
+    const input = {
+      omitted: undefined,
+      explicitNull: null,
+      records: [{ description: undefined }, { description: null }],
+    };
+    const normalized = normalizeProps(input);
+    const parsed = parseProps(serializeProps(input));
+
+    for (const props of [normalized, parsed]) {
+      expect(Object.hasOwn(props, "omitted")).toBe(false);
+      expect(Object.hasOwn(props, "explicitNull")).toBe(true);
+      expect(props.explicitNull).toBeNull();
+      expect(
+        Object.hasOwn((props.records as Array<Record<string, unknown>>)[0]!, "description"),
+      ).toBe(false);
+      expect(
+        Object.hasOwn((props.records as Array<Record<string, unknown>>)[1]!, "description"),
+      ).toBe(true);
+      expect((props.records as Array<Record<string, unknown>>)[1]!.description).toBeNull();
+    }
+    expect(Object.hasOwn(input, "omitted")).toBe(true);
+    expect(Object.hasOwn(input.records[0]!, "description")).toBe(true);
+  });
+  it.each([
+    [
+      "array undefined",
+      () => ({ omitted: undefined, bad: [undefined] }),
       "ZR_PROPS_UNDEFINED at props.bad[0]",
-    );
+    ],
+    [
+      "array hole",
+      () => ({ omitted: undefined, bad: Array(1) }),
+      "ZR_PROPS_UNDEFINED at props.bad[0]",
+    ],
+    ["function", () => ({ omitted: undefined, bad: () => 1 }), "ZR_PROPS_FUNCTION at props.bad"],
+    ["symbol", () => ({ omitted: undefined, bad: Symbol("bad") }), "ZR_PROPS_SYMBOL at props.bad"],
+    ["bigint", () => ({ omitted: undefined, bad: 1n }), "ZR_PROPS_BIGINT at props.bad"],
+    ["non-finite number", () => ({ omitted: undefined, bad: NaN }), "ZR_PROPS_NUMBER at props.bad"],
+    [
+      "cycle",
+      () => {
+        const bad: Record<string, unknown> = {};
+        bad.self = bad;
+        return { omitted: undefined, bad };
+      },
+      "ZR_PROPS_CYCLE at props.bad.self",
+    ],
+    [
+      "forbidden key",
+      () => ({
+        omitted: undefined,
+        ...Object.defineProperty({}, "constructor", { value: undefined, enumerable: true }),
+      }),
+      "ZR_PROPS_KEY at props.constructor",
+    ],
+  ] as const)(
+    "still rejects %s when an undefined record member can be omitted",
+    (_label, makeProps, diagnostic) => {
+      expect(() => normalizeProps(makeProps())).toThrow(diagnostic);
+      expect(() => serializeProps(makeProps())).toThrow(diagnostic);
+    },
+  );
+  it("rejects top-level undefined and does not read empty children accessors", () => {
     expect(() => serializeProps(undefined as never)).toThrow("ZR_PROPS_OBJECT_KIND at props");
-    expect(() =>
-      serializeProps(
-        Object.defineProperty({}, "constructor", { value: undefined, enumerable: true }),
-      ),
-    ).toThrow("ZR_PROPS_KEY at props.constructor");
     let called = false;
     const children = Object.defineProperty([], "0", {
       get() {

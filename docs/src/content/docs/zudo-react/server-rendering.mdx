@@ -60,7 +60,27 @@ Do not use this mode to invent a wrapper protocol. For SDK-integrated islands, u
 
 ## Props use JSON transport
 
-**serializeProps** returns JSON text; the renderer applies HTML attribute escaping once when it emits the text as data-props. The transport accepts only plain data records, dense arrays, strings, booleans, null, and finite numbers. Repeated references serialize by value. It rejects undefined, cycles, functions, symbols, bigints, non-finite numbers, class instances, runtime descriptions, signals, and computed values.
+**serializeProps** returns JSON text; the renderer applies HTML attribute escaping once when it emits the text as data-props. The transport accepts only plain data records, dense arrays, strings, booleans, null, and finite numbers. It omits own enumerable string data properties on records whose value is `undefined`, at every nesting level, while preserving explicit `null`:
+
+~~~ts
+import { serializeProps } from "@takazudo/zfb/zudo-react/server";
+
+serializeProps({
+  locale: undefined,
+  currentSlug: undefined,
+  metadata: { title: "Card", description: undefined },
+  records: [{ description: undefined }, { description: null }],
+});
+// {"metadata":{"title":"Card"},"records":[{},{"description":null}]}
+~~~
+
+The server component receives the same normalized props that are serialized,
+so `Object.hasOwn` reports the same optional keys during SSR and hydration.
+Records inside arrays follow the same omission rule without removing or moving
+array elements. An undefined array entry and an array hole are errors; `null`
+is a present value. Repeated references serialize by value. The transport also
+rejects cycles, functions, symbols, bigints, non-finite numbers, class
+instances, runtime descriptions, signals, and computed values.
 
 Validation happens before JSON serialization. Arrays must be dense and have no extra named or symbol properties. Records may be ordinary or null-prototype records; only own enumerable string data properties are accepted. Accessors, non-enumerable fields, custom toJSON methods, symbols, and prototype-sensitive record keys are rejected without being invoked. Props do not carry live signal identity across the boundary; construct signals during client setup.
 
