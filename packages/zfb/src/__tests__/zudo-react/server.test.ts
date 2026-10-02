@@ -21,6 +21,22 @@ function Demo() {
 }
 
 describe("server renderer", () => {
+  it("renders islands from the same normalized nested props sent to the client", () => {
+    const nested = { missing: undefined, present: null };
+    function OwnKeys(props: { nested: typeof nested }) {
+      return h(
+        "p",
+        null,
+        `${Object.hasOwn(props.nested, "missing")}:${Object.hasOwn(props.nested, "present")}:${String(props.nested.present)}`,
+      );
+    }
+    const html = renderToString(
+      islandRoot(h(OwnKeys, { nested }), { identity: { component: "OwnKeys", build: "b1" } }),
+    );
+    expect(html).toContain('data-props="{&quot;nested&quot;:{&quot;present&quot;:null}}"');
+    expect(html).toContain("false:true:null");
+    expect(Object.hasOwn(nested, "missing")).toBe(true);
+  });
   it("exports exactly the locked server entry values", () => {
     expect(Object.keys(server).sort()).toEqual(["islandRoot", "renderToString", "serializeProps"]);
     expect(typeof globalThis.document).toBe("undefined");
