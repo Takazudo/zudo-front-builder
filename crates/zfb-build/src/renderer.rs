@@ -627,13 +627,12 @@ pub enum RendererError {
     },
     /// The worker returned a non-2xx response. `user_location` is
     /// populated when the source-map walk reached an authored file.
-    #[error("render failed for {url} (status {status}): {body}{location}",
-        location = match (user_location, internal_location) {
-            (Some(l), _) => format!(" — at {l}"),
-            (None, Some(l)) => format!(" — internal frame {l}"),
-            (None, None) => String::new(),
-        },
-    )]
+    #[error("render failed for {url} (status {status}): {}", render_failed_detail(
+        body,
+        user_location.as_deref(),
+        internal_location.as_deref(),
+        diagnostic.as_deref(),
+    ))]
     RenderFailed {
         url: String,
         status: u16,
@@ -669,6 +668,104 @@ pub struct RenderDiagnostic {
     pub spelling: Option<PropSpelling>,
     #[serde(default)]
     pub site: Option<RenderSite>,
+}
+
+impl RenderDiagnostic {
+    /// One searchable line in the `[zudo-react] CODE phase component path:
+    /// message` shape the client reporter prints (#3378). Every field is
+    /// reduced to runtime-shaped identifiers, so worker-supplied text can
+    /// never inject control characters, paths, props or markup.
+    pub fn summary_line(&self) -> String {
+        let code = if is_code(&self.code) {
+            self.code.as_str()
+        } else {
+            "ZR_UNKNOWN"
+        };
+        let component = if self.component == "static render" {
+            "static-render"
+        } else if is_identifier(&self.component) {
+            self.component.as_str()
+        } else {
+            "[component]"
+        };
+        let path = if is_render_path(&self.path) {
+            self.path.as_str()
+        } else {
+            "[path]"
+        };
+        let message = match &self.spelling {
+            Some(PropSpelling {
+                name,
+                suggestion: Some(suggestion),
+            }) if is_prop_name(name) && is_prop_name(suggestion) => {
+                format!("use `{suggestion}` instead of `{name}`")
+            }
+            Some(PropSpelling { name, .. }) if is_prop_name(name) => {
+                format!("`{name}` is not a supported spelling")
+            }
+            _ => "render failed".to_string(),
+        };
+        format!("[zudo-react] {code} render {component} {path}: {message}")
+    }
+}
+
+fn is_code(value: &str) -> bool {
+    value.strip_prefix("ZR_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    })
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$' | b'.' | b'-'))
+}
+
+fn is_render_path(value: &str) -> bool {
+    let Some(mut rest) = value.strip_prefix("root") else {
+        return false;
+    };
+    while let Some(index) = rest.strip_prefix('[') {
+        let Some((digits, tail)) = index.split_once(']') else {
+            return false;
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        rest = tail;
+    }
+    rest.is_empty()
+}
+
+fn is_prop_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'.' | b'-'))
+}
+
+/// `RenderFailed`'s detail: for a structured diagnostic, the summary line and
+/// the authored span (or internal cause) come first and the worker's message
+/// with its generated-bundle stack follows; otherwise the body as before.
+fn render_failed_detail(
+    body: &str,
+    user_location: Option<&str>,
+    internal_location: Option<&str>,
+    diagnostic: Option<&RenderDiagnostic>,
+) -> String {
+    let location = match (user_location, internal_location) {
+        (Some(l), _) => format!(" — at {l}"),
+        (None, Some(l)) => format!(" — internal frame {l}"),
+        (None, None) => String::new(),
+    };
+    match diagnostic {
+        Some(diagnostic) => format!("{}{location}\n{body}", diagnostic.summary_line()),
+        None => format!("{body}{location}"),
+    }
 }
 
 /// The authored prop spelling a diagnostic rejected, plus the supported
@@ -2923,7 +3020,9 @@ mod tests {
                 })
             );
             assert!(
-                display.ends_with(" — at components/field.tsx:2:10"),
+                display.contains(
+                    "): [zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/field.tsx:2:10\n[zfb-runtime] render threw"
+                ),
                 "{display}"
             );
             assert!(!display.contains("zfb-bundler-"), "{display}");
@@ -3104,6 +3203,74 @@ mod tests {
                 classify_path(Path::new("/Users/me/lib/util.ts"), None, &project),
                 FrameOrigin::Internal("external/util.ts".into())
             );
+        }
+
+        fn diagnostic(
+            code: &str,
+            component: &str,
+            path: &str,
+            spelling: Option<(&str, Option<&str>)>,
+        ) -> RenderDiagnostic {
+            RenderDiagnostic {
+                code: code.into(),
+                path: path.into(),
+                component: component.into(),
+                spelling: spelling.map(|(name, suggestion)| PropSpelling {
+                    name: name.into(),
+                    suggestion: suggestion.map(Into::into),
+                }),
+                site: None,
+            }
+        }
+
+        #[test]
+        fn summary_line_matches_the_client_reporter_shape() {
+            assert_eq!(
+                diagnostic("ZR_PROP_DIALECT", "Search", "root[1][0]", Some(("charSet", Some("charset")))).summary_line(),
+                "[zudo-react] ZR_PROP_DIALECT render Search root[1][0]: use `charset` instead of `charSet`"
+            );
+            assert_eq!(
+                diagnostic("ZR_PROP_DIALECT", "static render", "root", Some(("strokeWidth", None))).summary_line(),
+                "[zudo-react] ZR_PROP_DIALECT render static-render root: `strokeWidth` is not a supported spelling"
+            );
+            assert_eq!(
+                diagnostic("ZR_TAG", "static render", "root", None).summary_line(),
+                "[zudo-react] ZR_TAG render static-render root: render failed"
+            );
+        }
+
+        #[test]
+        fn summary_line_escapes_hostile_fields_and_keeps_paths_private() {
+            let line = diagnostic(
+                "ZR_X\n\u{1b}[31m",
+                "Evil\ncomponent",
+                "/Users/me/secret/project/pages/index.tsx:3:1",
+                Some(("onClick\n<script>", Some("on:click`\u{0}"))),
+            )
+            .summary_line();
+            assert_eq!(
+                line,
+                "[zudo-react] ZR_UNKNOWN render [component] [path]: render failed"
+            );
+            assert!(!line.contains('\n') && !line.contains('\u{1b}'));
+
+            let detail = render_failed_detail(
+                "message\n    at fail (file:///zfb/bundle.mjs:1:1)",
+                None,
+                Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9"),
+                Some(&diagnostic(
+                    "ZR_PROP_DIALECT",
+                    "static render",
+                    "root",
+                    Some(("autoComplete", Some("autocomplete"))),
+                )),
+            );
+            let (summary, rest) = detail.split_once('\n').unwrap();
+            assert_eq!(
+                summary,
+                "[zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — internal frame node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9"
+            );
+            assert_eq!(rest, "message\n    at fail (file:///zfb/bundle.mjs:1:1)");
         }
 
         #[test]
