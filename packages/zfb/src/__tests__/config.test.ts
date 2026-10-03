@@ -88,6 +88,23 @@ describe("definePreset", () => {
       },
     });
   });
+
+  it("stamps wind sources provenance and preserves an inner preset marker", () => {
+    const inner = definePreset("@scope/inner-preset", {
+      wind: { sources: { exclude: ["fixtures/**"], packageRoots: ["."] } },
+    });
+    const outer = definePreset("@scope/outer-preset", { wind: inner.wind });
+
+    expect(inner.wind).toEqual({
+      sources: {
+        __zfb_source_package: "@scope/inner-preset",
+        exclude: ["fixtures/**"],
+        packageRoots: ["."],
+      },
+    });
+    expect(outer.wind).toEqual(inner.wind);
+    expect(definePreset("@scope/plain", { wind: { spec: 1 } }).wind).toEqual({ spec: 1 });
+  });
 });
 
 describe("defineConfig", () => {

@@ -419,6 +419,73 @@ fn css_command_partial_explicit_source_exclusion_warns_and_keeps_accepted_classe
 }
 
 #[test]
+fn css_command_wind_sources_exclude_tests_and_scan_declared_package_root() {
+    let temp = tempfile::tempdir().expect("create wind sources fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(temp.path().join(".gitignore"), "node_modules\ndist\n").expect("write .gitignore");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"],"packageRoots":["@fixture/ui"]}}}"#,
+    )
+    .expect("write wind sources config");
+    for (relative, class_name) in [
+        ("src/a.tsx", "flex"),
+        ("src/__tests__/a.test.tsx", "grid"),
+        ("node_modules/@fixture/ui/dist/route.js", "block"),
+    ] {
+        let path = temp.path().join(relative);
+        fs::create_dir_all(path.parent().expect("source file parent"))
+            .expect("create source directory");
+        fs::write(path, format!("export const c = \"{class_name}\";\n"))
+            .expect("write source file");
+    }
+
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&output, "wind.sources exclusion and package root");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "project utility is missing:\n{css}");
+    assert!(
+        css.contains(".block"),
+        "package-root utility is missing:\n{css}"
+    );
+    assert!(
+        !css.contains(".grid"),
+        "excluded test utility was emitted:\n{css}"
+    );
+
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/__tests__/a.test.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&output, "explicit source excluded by wind.sources");
+    let stderr = process_stderr(&output);
+    assert!(stderr.contains("ZW010"), "{stderr}");
+    assert!(stderr.contains("src/**/__tests__/**"), "{stderr}");
+}
+
+#[test]
+fn css_command_rejects_malformed_wind_source_exclusion() {
+    let temp = explicit_source_exclusion_fixture();
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"sources":{"exclude":["src/["]}}}"#,
+    )
+    .expect("write malformed wind sources config");
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&output, "malformed wind.sources.exclude");
+    let stderr = process_stderr(&output);
+    assert!(
+        stderr.contains("wind.sources.exclude[0] \"src/[\" declared by project"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn css_command_custom_out_dir_allows_dist_as_an_explicit_source() {
     let temp = explicit_source_exclusion_fixture();
     fs::write(
@@ -812,6 +879,48 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
         "build stylesheet {} and equivalent standalone wind output must be byte-identical",
         build_css_path.display()
     );
+}
+
+#[test]
+fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let fixture = temp.path().join("src/__tests__/a.test.tsx");
+    fs::create_dir_all(fixture.parent().expect("fixture parent")).expect("create fixture dir");
+    fs::write(
+        &fixture,
+        "export default () => <div class=\"bg-missing\" />;\n",
+    )
+    .expect("write excluded fixture");
+
+    for (flags, mode) in [
+        (&[][..], "standalone"),
+        (&["--plan", "standalone"][..], "standalone"),
+        (&["--plan", "build"][..], "build"),
+    ] {
+        let output = run_wind_audit(temp.path(), flags);
+        let stdout = process_stdout(&output);
+        let stderr = process_stderr(&output);
+        assert!(
+            output.status.success(),
+            "{mode} audit should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("wind audit plan: {mode}\n")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("  root default/src src "), "{stdout}");
+        assert!(
+            stdout.contains("  excluded src/**/__tests__/** (wind.sources.exclude from project)"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("bg-missing"),
+            "an excluded source reached the {mode} audit:\n{stdout}"
+        );
+    }
 }
 
 #[test]

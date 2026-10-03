@@ -101,6 +101,14 @@ export type WindConfig = {
   authoredClasses?: Record<string, true>;
   /** File-backed utility manifests keyed by producer id. */
   manifests?: Record<string, { path: string }>;
+  /**
+   * Source controls resolved against the declaring project or preset package.
+   * `exclude` globs remove matching files from every source root under that
+   * root and win over explicit sources; `packageRoots` are `./` paths or
+   * installed package names scanned as roots, including their `dist` and
+   * `node_modules`.
+   */
+  sources?: { exclude?: string[]; packageRoots?: string[] };
 };
 
 /**
@@ -1410,13 +1418,17 @@ export function defineConfig(config: ZfbConfig): ZfbConfig {
   return config;
 }
 
+function isPlainObject(value: unknown): value is object {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /**
  * Preset authoring helper: stamps each object entry in `config.plugins`
  * with `source_package: sourcePackage` so the Rust loader can attribute
  * plugin contributions back to the preset package that provided them.
- * Wind manifest declarations receive an internal `__zfb_source_package`
- * marker for the same reason; the Rust config model strips it, leaving the
- * public manifest shape as `{ path }`.
+ * Wind manifest declarations and the `wind.sources` object receive an
+ * internal `__zfb_source_package` marker for the same reason; the Rust config
+ * model strips it, so their paths resolve against the preset package.
  *
  * - Only plain-object plugin entries are stamped; non-object entries pass
  *   through unchanged (defensive — the current schema requires objects,
@@ -1446,19 +1458,30 @@ export function definePreset(
 ): Partial<ZfbConfig> {
   let sourceStampedConfig = config;
   const wind = config.wind;
-  if (wind && wind.manifests) {
-    const manifests = Object.fromEntries(
-      Object.entries(wind.manifests).map(([producer, manifest]) => {
-        if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
-          // Default first so a composed inner preset's source marker wins.
-          return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
-        }
-        return [producer, manifest];
-      }),
-    ) as NonNullable<WindConfig["manifests"]>;
+  if (wind && (wind.manifests || isPlainObject(wind.sources))) {
+    const manifests =
+      wind.manifests &&
+      (Object.fromEntries(
+        Object.entries(wind.manifests).map(([producer, manifest]) => {
+          if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
+            // Default first so a composed inner preset's source marker wins.
+            return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
+          }
+          return [producer, manifest];
+        }),
+      ) as NonNullable<WindConfig["manifests"]>);
     sourceStampedConfig = {
       ...config,
-      wind: { ...wind, manifests },
+      wind: {
+        ...wind,
+        ...(manifests && { manifests }),
+        ...(isPlainObject(wind.sources) && {
+          // Default first so a composed inner preset's source marker wins.
+          sources: { __zfb_source_package: sourcePackage, ...wind.sources } as NonNullable<
+            WindConfig["sources"]
+          >,
+        }),
+      },
     };
   }
 

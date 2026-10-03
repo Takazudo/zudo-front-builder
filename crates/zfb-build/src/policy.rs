@@ -94,6 +94,11 @@ pub fn is_css_config_path(project_root: &Path, path: &Path) -> bool {
 /// event, and exposes all three sets to the dynamic watcher, so raw edits,
 /// worker-graph edits, and symlink retarget/deletes still rerun the owning
 /// consumer pipeline.
+/// Subdirectory names a declared package root walks although the CSS
+/// mirror-root skip list prunes them elsewhere. Keep equal to zudo-wind's
+/// `PACKAGE_ROOT_TRAVERSES`; the `zfb` crate asserts the two agree.
+pub const PACKAGE_ROOT_TRAVERSED_DIR_NAMES: &[&str] = &["node_modules", "dist"];
+
 #[derive(Debug, Clone, Default)]
 pub struct RawImportInvalidation {
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
@@ -116,6 +121,11 @@ pub struct RawImportInvalidation {
     /// so no per-path alias expansion happens at this layer (contrast with
     /// `Self::replace`/`Self::aliases` above, used by the file-shaped sets).
     css_mirror_roots: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// Declared `wind.sources.packageRoots` directories. Watched recursively
+    /// like the mirror roots, except that their own
+    /// [`PACKAGE_ROOT_TRAVERSED_DIR_NAMES`] subdirectories stay live.
+    css_package_roots: Arc<RwLock<BTreeSet<PathBuf>>>,
 
     /// Absolute filesystem paths a plugin virtual-module loader registered
     /// via `addVirtualModule`'s optional `{ watchFiles }` option (issue
@@ -557,7 +567,31 @@ impl RawImportInvalidation {
     /// project, and the `CSS_SIBLING_MIRROR_SKIP_DIRS` infra-dir filter that
     /// the `@source` scan itself applies).
     pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
-        let roots = self.css_mirror_roots.read().ok()?;
+        Self::root_match(&self.css_mirror_roots, path)
+    }
+
+    /// Atomically replace the declared package-root set; replace semantics
+    /// match [`Self::replace_css_mirror_roots`].
+    pub fn replace_css_package_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = self.css_package_roots.write() {
+            *set = roots.into_iter().collect();
+        }
+    }
+
+    pub fn css_package_roots(&self) -> BTreeSet<PathBuf> {
+        self.css_package_roots
+            .read()
+            .map(|roots| roots.clone())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::css_mirror_root_match`] for the declared package roots.
+    pub fn css_package_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        Self::root_match(&self.css_package_roots, path)
+    }
+
+    fn root_match(roots: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        let roots = roots.read().ok()?;
         if roots.is_empty() {
             return None;
         }
@@ -1457,6 +1491,16 @@ impl GranularityPolicy {
     /// [`RawImportInvalidation::css_mirror_root_match`].
     pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
         self.raw_import_invalidation.css_mirror_root_match(path)
+    }
+
+    /// Snapshot the declared package-root set for recursive watching.
+    pub fn css_package_root_paths(&self) -> BTreeSet<PathBuf> {
+        self.raw_import_invalidation.css_package_roots()
+    }
+
+    /// Locate `path` inside a declared package root.
+    pub fn css_package_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        self.raw_import_invalidation.css_package_root_match(path)
     }
 
     /// Decide whether a `Module` change is inside an islands root.

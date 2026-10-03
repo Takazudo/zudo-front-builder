@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use zfb_css::{extract_candidates, PositiveRoot, SourceKind, SourcePlan};
+use zfb_css::{extract_candidates, PositiveRoot, SourceExclusion, SourceKind, SourcePlan};
 
 use super::build::root_package_css_excluded_dirs;
 use crate::config::{Config, WindSetting};
@@ -22,6 +22,8 @@ pub(crate) struct CssSourcePlanInputs {
     pub default_content_roots: Vec<PathBuf>,
     pub package_route_entrypoints: Vec<PathBuf>,
     pub sibling_mirror_roots: Vec<PathBuf>,
+    pub declared_package_roots: Vec<PathBuf>,
+    pub author_exclusions: Vec<SourceExclusion>,
     pub root_package_claimed: bool,
     pub root_package_excluded_dirs: Vec<PathBuf>,
     pub plugin_virtual_modules: BTreeMap<String, String>,
@@ -71,6 +73,7 @@ fn root(label: String, path: PathBuf, required: bool) -> PositiveRoot {
         path: PathBuf::from("."),
         required,
         exclusions: BTreeSet::new(),
+        package_root: false,
     }
 }
 
@@ -86,7 +89,21 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
         plan.exclusions.insert(absolute(&project, path));
     }
 
+    plan.author_exclusions = inputs.author_exclusions.clone();
+
     let mut seen = BTreeSet::new();
+    for path in &inputs.declared_package_roots {
+        let path = absolute(&project, path);
+        if seen.insert(path.clone()) {
+            let mut package_root = root(
+                stable_label("package-root", &first_party, &path),
+                path,
+                true,
+            );
+            package_root.package_root = true;
+            plan.roots.push(package_root);
+        }
+    }
     for path in &inputs.default_content_roots {
         let path = absolute(&project, path);
         if seen.insert(path.clone()) {
@@ -439,6 +456,90 @@ pub(crate) fn resolve_declared_manifest_watch_paths(
     resolve_declared_manifest_paths_with(project_root, config, resolve_manifest_watch_path)
 }
 
+fn resolve_source_declaring_dir(
+    project_root: &Path,
+    source_package: Option<&str>,
+) -> Result<PathBuf> {
+    match source_package {
+        Some(package) => zfb_config_loader::resolve_package_dir(package, project_root)
+            .with_context(|| format!("wind.sources declaring package {package}")),
+        None => Ok(project_root.to_path_buf()),
+    }
+}
+
+/// Resolve a validated `wind.sources.packageRoots` entry against its declaring
+/// root. A bare name follows Node's `node_modules` lookup for the package
+/// directory itself, so a package without a root export still resolves.
+fn resolve_declared_package_root(
+    project_root: &Path,
+    declaring_dir: &Path,
+    root: &str,
+) -> Result<PathBuf> {
+    let path = if root == "." || root == ".." || root.starts_with("./") || root.starts_with("../") {
+        absolute(declaring_dir, Path::new(root))
+    } else {
+        let mut parts = root.splitn(if root.starts_with('@') { 3 } else { 2 }, '/');
+        let name: PathBuf = parts
+            .by_ref()
+            .take(if root.starts_with('@') { 2 } else { 1 })
+            .collect();
+        let subpath = parts.next().unwrap_or_default();
+        let package = declaring_dir
+            .ancestors()
+            .map(|ancestor| ancestor.join("node_modules").join(&name))
+            .find(|candidate| candidate.is_dir())
+            .with_context(|| {
+                format!(
+                    "package {} is not installed in a node_modules directory above {}",
+                    name.display(),
+                    declaring_dir.display()
+                )
+            })?;
+        absolute(&package, Path::new(subpath))
+    };
+    if !path.is_dir() {
+        bail!("package root {} is not a directory", path.display());
+    }
+    // A root containing the project would scan and watch the whole project
+    // or workspace; the default roots already cover the project itself.
+    let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if project_root.starts_with(&path) || canonical(project_root).starts_with(canonical(&path)) {
+        bail!(
+            "package root {} is the project root or one of its ancestors; declare a package directory below it",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+/// Declared package roots for dev's recursive watch. A declaration that does
+/// not resolve yet is skipped; its config or install edit triggers the next pass.
+pub(crate) fn declared_package_root_watch_paths(
+    project_root: &Path,
+    config: &Config,
+) -> Vec<PathBuf> {
+    let Some(WindSetting::Enabled(wind)) = &config.wind else {
+        return Vec::new();
+    };
+    let project_root = zfb_types::normalize_path_lexical(project_root);
+    wind.source_declarations()
+        .iter()
+        .filter_map(|declaration| {
+            resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())
+                .ok()
+                .map(|dir| (dir, declaration))
+        })
+        .flat_map(|(dir, declaration)| {
+            declaration
+                .sources
+                .package_roots
+                .iter()
+                .filter_map(|root| resolve_declared_package_root(&project_root, &dir, root).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
 pub(crate) fn gather_css_source_plan_inputs(
     project_root: &Path,
@@ -456,7 +557,31 @@ pub(crate) fn gather_css_source_plan_inputs(
     let manifests =
         resolve_declared_manifest_paths_with(&project_root, config, resolve_manifest_path)?;
     let mut safelist = BTreeMap::new();
+    let mut declared_package_roots = Vec::new();
+    let mut author_exclusions = Vec::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
+        for declaration in wind.source_declarations() {
+            let origin = declaration.origin();
+            let declaring_dir =
+                resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())?;
+            for (index, root) in declaration.sources.package_roots.iter().enumerate() {
+                declared_package_roots.push(
+                    resolve_declared_package_root(&project_root, &declaring_dir, root)
+                        .with_context(|| {
+                            format!(
+                                "wind.sources.packageRoots[{index}] {root:?} declared by {origin}"
+                            )
+                        })?,
+                );
+            }
+            author_exclusions.extend(declaration.sources.exclude.iter().map(|pattern| {
+                SourceExclusion {
+                    origin: origin.clone(),
+                    declaring_dir: declaring_dir.clone(),
+                    pattern: pattern.clone(),
+                }
+            }));
+        }
         safelist = wind
             .safelist
             .iter()
@@ -485,6 +610,8 @@ pub(crate) fn gather_css_source_plan_inputs(
         first_party_root,
         package_route_entrypoints: package_route_entrypoints.to_vec(),
         sibling_mirror_roots: sibling_mirror_roots.to_vec(),
+        declared_package_roots,
+        author_exclusions,
         root_package_claimed,
         plugin_virtual_modules: plugin_virtual_modules.iter().cloned().collect(),
         role_classes,
@@ -753,6 +880,202 @@ mod tests {
         let plan = build_css_source_plan(&gathered);
         assert!(plan.exclusions.contains(&inputs.project_root.join("dist")));
         assert!(plan.exclusions.contains(&inputs.pass_output_dir));
+    }
+
+    fn sources_config(declarations: Vec<(Option<&str>, serde_json::Value)>) -> Config {
+        let mut wind = crate::config::WindConfig::default();
+        for (source_package, sources) in declarations {
+            wind.source_declarations
+                .push(crate::config::WindSourceDeclaration {
+                    source_package: source_package.map(str::to_owned),
+                    sources: serde_json::from_value(sources).unwrap(),
+                });
+        }
+        Config {
+            wind: Some(WindSetting::Enabled(Box::new(wind))),
+            ..Config::default()
+        }
+    }
+
+    fn gather(inputs: &CssSourcePlanInputs, config: &Config) -> Result<CssSourcePlanInputs> {
+        gather_css_source_plan_inputs(
+            &inputs.project_root,
+            &inputs.pass_output_dir,
+            config,
+            &[],
+            &[],
+            &[],
+            &inputs.zfb_written_roots,
+        )
+    }
+
+    fn install_package(project: &Path, name: &str) -> PathBuf {
+        let package = project.join("node_modules").join(name);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            format!("{{\"name\":\"{name}\",\"main\":\"index.js\"}}"),
+        )
+        .unwrap();
+        fs::write(package.join("index.js"), "export {};").unwrap();
+        package
+    }
+
+    #[test]
+    fn wind_sources_default_plan_is_unchanged() {
+        let (_temp, inputs) = fixture();
+        let without = gather(&inputs, &Config::default()).unwrap();
+        let with_empty = gather(&inputs, &sources_config(Vec::new())).unwrap();
+        assert_eq!(
+            build_css_source_plan(&without),
+            build_css_source_plan(&with_empty)
+        );
+        assert!(build_css_source_plan(&without).author_exclusions.is_empty());
+    }
+
+    #[test]
+    fn wind_sources_exclusions_are_scoped_to_their_declaring_root() {
+        let (_temp, inputs) = fixture();
+        let project = inputs.project_root.clone();
+        let preset = install_package(&project, "@scope/preset");
+        write(&project, "src/page.tsx", "p-1");
+        write(&project, "src/__tests__/page.test.tsx", "p-2");
+        write(&project, "src/worker/index.ts", "p-3");
+        write(&preset, "src/view.tsx", "p-4");
+        write(&preset, "fixtures/demo.tsx", "p-5");
+        let config = sources_config(vec![
+            (
+                Some("@scope/preset"),
+                serde_json::json!({ "exclude": ["fixtures/**"], "packageRoots": ["."] }),
+            ),
+            (
+                None,
+                serde_json::json!({ "exclude": ["src/**/__tests__/**", "src/worker"] }),
+            ),
+        ]);
+        let plan = build_css_source_plan(&gather(&inputs, &config).unwrap());
+        assert_eq!(
+            plan.author_exclusions
+                .iter()
+                .map(|exclusion| (exclusion.origin.as_str(), exclusion.pattern.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("preset:@scope/preset", "fixtures/**"),
+                ("project", "src/**/__tests__/**"),
+                ("project", "src/worker"),
+            ]
+        );
+        let canonical = |path: &Path| fs::canonicalize(path).unwrap();
+        assert_eq!(
+            canonical(&plan.author_exclusions[0].declaring_dir),
+            canonical(&preset)
+        );
+        assert_eq!(plan.author_exclusions[1].declaring_dir, project);
+        let candidates = live(&plan);
+        for expected in ["p-1", "p-4"] {
+            assert!(candidates.contains(expected), "{expected}");
+        }
+        for excluded in ["p-2", "p-3", "p-5"] {
+            assert!(!candidates.contains(excluded), "{excluded}");
+        }
+    }
+
+    #[test]
+    fn wind_sources_package_roots_traverse_dist_but_not_mandatory_exclusions() {
+        let (_temp, mut inputs) = fixture();
+        let project = inputs.project_root.clone();
+        let ui = install_package(&project, "@scope/ui");
+        write(&ui, "dist/route.tsx", "p-1");
+        write(&project, "packages/local/dist/view.tsx", "p-2");
+        write(&project, "packages/local/out/stale.tsx", "p-3");
+        inputs.pass_output_dir = project.join("packages/local/out");
+        let config = sources_config(vec![(
+            None,
+            serde_json::json!({ "packageRoots": ["@scope/ui", "./packages/local", "@scope/ui/dist"] }),
+        )]);
+        let gathered = gather(&inputs, &config).unwrap();
+        assert_eq!(
+            gathered.declared_package_roots,
+            [ui.clone(), project.join("packages/local"), ui.join("dist")]
+        );
+        let plan = build_css_source_plan(&gathered);
+        let labels: Vec<_> = plan
+            .roots
+            .iter()
+            .filter(|root| root.package_root)
+            .map(|root| root.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "package-root/project/node_modules/@scope/ui",
+                "package-root/project/node_modules/@scope/ui/dist",
+                "package-root/project/packages/local",
+            ]
+        );
+        let files = expand_file_set(&plan);
+        assert_eq!(
+            files
+                .files
+                .iter()
+                .filter(|file| file.path.ends_with("dist/route.tsx"))
+                .count(),
+            1,
+            "a nested duplicate package root yields its files once"
+        );
+        let candidates = live(&plan);
+        assert!(candidates.contains("p-1"));
+        assert!(candidates.contains("p-2"));
+        assert!(!candidates.contains("p-3"));
+    }
+
+    #[test]
+    fn wind_sources_reject_package_roots_containing_the_project() {
+        let (_temp, inputs) = fixture();
+        fs::create_dir_all(inputs.project_root.join("packages/ui")).unwrap();
+        for root in [".", "./", "..", "../project/.."] {
+            let config =
+                sources_config(vec![(None, serde_json::json!({ "packageRoots": [root] }))]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("wind.sources.packageRoots[0]"), "{error}");
+            assert!(error.contains("declared by project"), "{error}");
+            assert!(error.contains("ancestors"), "{error}");
+            assert!(
+                declared_package_root_watch_paths(&inputs.project_root, &config).is_empty(),
+                "{root} must never become a watch root"
+            );
+        }
+        let config = sources_config(vec![(
+            None,
+            serde_json::json!({ "packageRoots": ["./packages/ui"] }),
+        )]);
+        assert_eq!(
+            declared_package_root_watch_paths(&inputs.project_root, &config),
+            [inputs.project_root.join("packages/ui")]
+        );
+    }
+
+    #[test]
+    fn wind_sources_missing_package_roots_name_their_declaration() {
+        let (_temp, inputs) = fixture();
+        install_package(&inputs.project_root, "@scope/preset");
+        for (source_package, root, needle) in [
+            (None, "@scope/absent", "not installed"),
+            (None, "./absent", "not a directory"),
+            (Some("@scope/preset"), "./absent", "not a directory"),
+        ] {
+            let config = sources_config(vec![(
+                source_package,
+                serde_json::json!({ "packageRoots": [root] }),
+            )]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("wind.sources.packageRoots[0]"), "{error}");
+            assert!(error.contains(root), "{error}");
+            assert!(error.contains(needle), "{error}");
+            let origin =
+                source_package.map_or("project".to_owned(), |package| format!("preset:{package}"));
+            assert!(error.contains(&origin), "{error}");
+        }
     }
 
     #[test]
