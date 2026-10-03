@@ -95,10 +95,13 @@ fn npm_pack(package_dir: &Path, destination: &Path) -> PathBuf {
         .flatten()
         .map(|e| e.path())
         .collect();
+    // Packing a directory argument makes npm run its `prepare` script even
+    // with --ignore-scripts, so pack from inside the package instead.
     let packed = Command::new("npm")
         .args(["pack", "--ignore-scripts", "--pack-destination"])
         .arg(destination)
-        .arg(package_dir)
+        .current_dir(package_dir)
+        .env("npm_config_ignore_scripts", "true")
         .output()
         .expect("spawn npm pack");
     assert!(
