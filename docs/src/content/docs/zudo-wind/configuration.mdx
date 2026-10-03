@@ -107,6 +107,7 @@ The same object is valid as the value of the `wind` property in JSON:
 | `authoredClasses` | Complete candidate spellings mapped to `true`; exact matches stay authored and suppress utility validation, diagnostics, and generated CSS. Include variants when reserving a variant-bearing candidate. |
 | `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
 | `sources` | Optional `exclude` globs and `packageRoots` paths, each resolved from its declaring project or preset package. |
+| `utilities` | Optional `placement`: `"after-authored"` (the default) or `"before-authored"`. It sets whether unlayered utility rules follow or precede authored global CSS; see [Utility placement](./cascade-and-reset.mdx#utility-placement). |
 
 The dark attribute must be a lowercase HTML attribute identifier. Its value must be nonempty and contain no control characters. Owner and producer IDs use nonempty ASCII letters, digits, dots, underscores, slashes, or hyphens, and start with a letter or digit. Authored class keys must be complete, nonempty tokens without whitespace or control characters.
 

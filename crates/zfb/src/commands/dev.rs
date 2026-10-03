@@ -12277,6 +12277,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wind_utility_placement_edits_reorder_served_css() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let config_path = project.join("zfb.config.json");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("src/page.tsx"),
+            "<div className=\"card block\" />",
+        )
+        .unwrap();
+        std::fs::write(project.join("styles/global.css"), ".card { color: red; }\n").unwrap();
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let utility_first = |css: &str| {
+            css.find(".block").expect("utility emitted") < css.find(".card").expect("authored kept")
+        };
+
+        let css = wind_css_pass(&project, &mut config, &mut session, &invalidation, None).await;
+        assert!(
+            !utility_first(&css),
+            "default keeps utilities after authored CSS:\n{css}"
+        );
+
+        std::fs::write(
+            &config_path,
+            r#"{"wind":{"utilities":{"placement":"before-authored"}}}"#,
+        )
+        .unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            utility_first(&css),
+            "before-authored moves utilities first:\n{css}"
+        );
+
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            !utility_first(&css),
+            "removing the setting restores the default:\n{css}"
+        );
+    }
+
+    #[tokio::test]
     async fn wind_source_exclusion_edits_retract_and_restore_candidates() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().canonicalize().unwrap();
