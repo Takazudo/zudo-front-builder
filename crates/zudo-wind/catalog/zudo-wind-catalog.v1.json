@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 3,
+  "specRevision": 4,
   "entries": [
     {
       "id": "v1.block",
@@ -4441,7 +4441,13 @@
         "allowsFractionSlash": false,
         "allowsColorOpacity": false
       },
-      "acceptedValues": [],
+      "acceptedValues": [
+        {
+          "kind": "fallbackKeyword",
+          "suffix": "none",
+          "emittedValue": "1"
+        }
+      ],
       "tokenCategories": ["lineHeights"],
       "negativePolicy": "forbidden",
       "conflictGroup": "line-height",
@@ -4782,6 +4788,50 @@
             {
               "property": "overflow-wrap",
               "value": "break-word"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.wrap-anywhere",
+      "root": "wrap-anywhere",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "anywhere"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-layout",
+      "conflictGroupRank": 20,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["overflow-wrap"],
+      "declarationTemplates": [
+        {
+          "property": "overflow-wrap",
+          "valueKind": "fixed",
+          "fixedValue": "anywhere"
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "wrap-anywhere",
+          "declarations": [
+            {
+              "property": "overflow-wrap",
+              "value": "anywhere"
             }
           ]
         }
@@ -8248,6 +8298,76 @@
           "kind": "keyword",
           "suffix": "wait",
           "emittedValue": "wait"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "n-resize",
+          "emittedValue": "n-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "s-resize",
+          "emittedValue": "s-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "e-resize",
+          "emittedValue": "e-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "w-resize",
+          "emittedValue": "w-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "ne-resize",
+          "emittedValue": "ne-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "nw-resize",
+          "emittedValue": "nw-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "se-resize",
+          "emittedValue": "se-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "sw-resize",
+          "emittedValue": "sw-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "ew-resize",
+          "emittedValue": "ew-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "ns-resize",
+          "emittedValue": "ns-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "nesw-resize",
+          "emittedValue": "nesw-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "nwse-resize",
+          "emittedValue": "nwse-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "col-resize",
+          "emittedValue": "col-resize"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "row-resize",
+          "emittedValue": "row-resize"
         }
       ],
       "tokenCategories": [],
@@ -9717,6 +9837,181 @@
             {
               "property": "border-width",
               "value": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.color",
+      "root": "decoration",
+      "grammar": {
+        "acceptedKinds": ["keyword", "token", "arbitrary"],
+        "arbitraryProperty": "text-decoration-color",
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": true
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "transparent",
+          "emittedValue": "transparent"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "current",
+          "emittedValue": "currentColor"
+        }
+      ],
+      "tokenCategories": ["colors"],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-color",
+      "conflictGroupRank": 45,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-color"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-color",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-[red]/40",
+          "declarations": [
+            {
+              "property": "text-decoration-color",
+              "value": "color-mix(in oklab, red 40%, transparent)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.underline-offset",
+      "root": "underline-offset",
+      "grammar": {
+        "acceptedKinds": ["integer", "arbitrary"],
+        "arbitraryProperty": "text-underline-offset",
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-underline-offset",
+      "conflictGroupRank": 46,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["text-underline-offset"],
+      "declarationTemplates": [
+        {
+          "property": "text-underline-offset",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "underline-offset-4",
+          "declarations": [
+            {
+              "property": "text-underline-offset",
+              "value": "4px"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.invisible",
+      "root": "invisible",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "hidden"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "visibility",
+      "conflictGroupRank": 47,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["visibility"],
+      "declarationTemplates": [
+        {
+          "property": "visibility",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "invisible",
+          "declarations": [
+            {
+              "property": "visibility",
+              "value": "hidden"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.visible",
+      "root": "visible",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "visible"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "visibility",
+      "conflictGroupRank": 47,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["visibility"],
+      "declarationTemplates": [
+        {
+          "property": "visibility",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "visible",
+          "declarations": [
+            {
+              "property": "visibility",
+              "value": "visible"
             }
           ]
         }

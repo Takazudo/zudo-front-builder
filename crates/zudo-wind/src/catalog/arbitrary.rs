@@ -31,7 +31,12 @@ pub(super) fn validate(property: &str, input: &str) -> Result<(String, ValueStat
     let placeholder = match property {
         "z-index" | "flex-grow" | "flex-shrink" => "1",
         "grid-template-columns" | "grid-template-rows" => "1fr",
-        "color" | "background-color" | "border-color" | "outline-color" | "accent-color" => "red",
+        "color"
+        | "background-color"
+        | "border-color"
+        | "outline-color"
+        | "accent-color"
+        | "text-decoration-color" => "red",
         "font-family" => "sans-serif",
         "font-weight" => "400",
         "opacity" => "0.5",

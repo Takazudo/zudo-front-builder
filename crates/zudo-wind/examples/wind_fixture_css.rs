@@ -177,7 +177,7 @@ fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dy
         "hasErrors": result.has_errors(),
     });
 
-    if case_id == "W-A01" {
+    if matches!(case_id.as_str(), "W-A01" | "W-A09") {
         let mut reversed = candidates.clone();
         reversed.reverse();
         let reversed_result = compile(&CompileInput {

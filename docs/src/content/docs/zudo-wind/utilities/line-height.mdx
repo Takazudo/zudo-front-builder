@@ -1,11 +1,11 @@
 ---
 title: Line height
-description: Set line height from a configured token or an arbitrary CSS value.
+description: Set line height from a configured token or an arbitrary CSS value; leading-none falls back to 1 when no none token is configured.
 sidebar_position: 38
 generated: true
 ---
 
-Set line height from a configured token or an arbitrary CSS value.
+Set line height from a configured token or an arbitrary CSS value; leading-none falls back to 1 when no none token is configured.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 
@@ -16,7 +16,7 @@ Set line height from a configured token or an arbitrary CSS value.
 | Catalog identifier | `v1.leading` |
 | Class pattern | `leading-<suffix>` |
 | Grammar | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"line-height","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Accepted values | `1` |
 | Token categories | `lineHeights` |
 | Negative-value policy | `forbidden` |
 | Conflict group and rank | `line-height` (`18`) |
@@ -27,7 +27,9 @@ Set line height from a configured token or an arbitrary CSS value.
 
 ### Accepted values
 
-The catalog has no separate accepted-value records for this entry.
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `fallbackKeyword` | `"none"` | `"1"` |
 
 ### Declaration templates
 
