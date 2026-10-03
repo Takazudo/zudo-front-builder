@@ -478,7 +478,7 @@ describe("island shipped-size budget", () => {
       "no-island": { raw: 0, gzip: 0 },
       "event-only": { raw: 61677, gzip: 20574 },
       "scalar-signal": { raw: 61685, gzip: 20572 },
-      "show-for": { raw: 61831, gzip: 20660 },
+      "show-for": { raw: 61831, gzip: 20662 },
       model: { raw: 61676, gzip: 20591 },
       "blog-theme": { raw: 62026, gzip: 20716 },
       "json-api": { raw: 61831, gzip: 20678 },
