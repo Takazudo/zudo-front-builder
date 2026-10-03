@@ -245,6 +245,17 @@ impl Collector<'_> {
             .found
             .into_iter()
             .map(|(text, mut occurrences)| {
+                // A class-context pass re-records some literal spans; the
+                // class position supersedes the low-confidence one.
+                let classes: Vec<(usize, usize)> = occurrences
+                    .iter()
+                    .filter(|occurrence| occurrence.position_kind == PositionKind::Class)
+                    .map(|occurrence| (occurrence.byte_offset, occurrence.byte_length))
+                    .collect();
+                occurrences.retain(|occurrence| {
+                    occurrence.position_kind == PositionKind::Class
+                        || !classes.contains(&(occurrence.byte_offset, occurrence.byte_length))
+                });
                 occurrences.sort();
                 occurrences.dedup();
                 ExtractedCandidate { text, occurrences }
