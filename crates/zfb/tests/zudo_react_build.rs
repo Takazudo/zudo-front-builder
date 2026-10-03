@@ -272,7 +272,7 @@ fn build_only_dialect_error_reports_the_authored_element_span() {
     // The worker's structural message and generated-bundle stack follow the span.
     assert!(
         output.contains(
-            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render"
+            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root[1] in static render"
         ),
         "{output}"
     );
