@@ -1,9 +1,10 @@
 //! Deterministic, gitignore-aware expansion of declared source roots.
-use crate::{PositiveRoot, SourceId, SourcePlan};
+use crate::{ExclusionMatcher, PositiveRoot, SourceId, SourcePlan};
 use ignore::WalkBuilder;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const SKIP: &[&str] = &[
     "node_modules",
@@ -37,8 +38,37 @@ pub struct FileSet {
     pub diagnostics: Vec<WalkDiagnostic>,
 }
 
+const PACKAGE_ROOT_TRAVERSES: &[&str] = &["node_modules", "dist"];
+
 fn excluded(path: &Path, exclusions: &BTreeSet<PathBuf>) -> bool {
     exclusions.iter().any(|excluded| path.starts_with(excluded))
+}
+
+fn compile_author_exclusions(plan: &SourcePlan, out: &mut FileSet) -> Arc<Vec<ExclusionMatcher>> {
+    let mut compiled = Vec::new();
+    for exclusion in &plan.author_exclusions {
+        match exclusion.compile() {
+            Ok(matcher) => compiled.push(matcher),
+            Err(message) => out.diagnostics.push(WalkDiagnostic {
+                root_label: exclusion.origin.clone(),
+                message: format!(
+                    "invalid source exclusion {:?}: {message}",
+                    exclusion.pattern
+                ),
+            }),
+        }
+    }
+    Arc::new(compiled)
+}
+
+fn author_excluded(path: &Path, exclusions: &[ExclusionMatcher]) -> bool {
+    if exclusions.is_empty() {
+        return false;
+    }
+    let canonical = fs::canonicalize(path).ok();
+    exclusions
+        .iter()
+        .any(|exclusion| exclusion.matches_identity(path, canonical.as_deref()))
 }
 
 fn visit_root(
@@ -47,6 +77,7 @@ fn visit_root(
     out: &mut FileSet,
     seen: &mut BTreeSet<PathBuf>,
     exclusions: &BTreeSet<PathBuf>,
+    author_exclusions: &Arc<Vec<ExclusionMatcher>>,
     changed: Option<&Path>,
 ) {
     let declared = root.resolved_path();
@@ -62,7 +93,7 @@ fn visit_root(
         }
         return;
     };
-    if excluded(&resolved, exclusions) {
+    if excluded(&resolved, exclusions) || author_excluded(&resolved, author_exclusions) {
         return;
     }
     let is_file = resolved.is_file();
@@ -92,20 +123,27 @@ fn visit_root(
     builder.require_git(false).follow_links(false).hidden(true);
     let root_path = resolved.clone();
     let filter_exclusions = exclusions.clone();
+    let filter_author_exclusions = Arc::clone(author_exclusions);
+    let package_root = root.package_root;
     builder.filter_entry(move |entry| {
         if entry.depth() == 0 {
             return true;
         }
         let path = entry.path();
+        let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
         (changed
             .as_ref()
             .is_none_or(|target| path.starts_with(target) || target.starts_with(path)))
             && !(excluded(path, &filter_exclusions)
-                || entry.file_type().is_some_and(|kind| kind.is_dir())
+                || is_dir && author_excluded(path, &filter_author_exclusions)
+                || is_dir
                     && path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .is_some_and(|name| SKIP.contains(&name)))
+                        .is_some_and(|name| {
+                            SKIP.contains(&name)
+                                && !(package_root && PACKAGE_ROOT_TRAVERSES.contains(&name))
+                        }))
     });
     for entry in builder.build() {
         let entry = match entry {
@@ -122,7 +160,7 @@ fn visit_root(
             continue;
         }
         let path = entry.path();
-        if excluded(path, exclusions) {
+        if excluded(path, exclusions) || author_excluded(path, author_exclusions) {
             continue;
         }
         let extension = path.extension().and_then(|part| part.to_str());
@@ -165,6 +203,7 @@ pub fn expand_file_set(plan: &SourcePlan) -> FileSet {
         .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
         .collect();
     let mut out = FileSet::default();
+    let author_exclusions = compile_author_exclusions(plan, &mut out);
     let mut seen = BTreeSet::new();
     let mut roots: Vec<_> = plan
         .roots
@@ -181,7 +220,15 @@ pub fn expand_file_set(plan: &SourcePlan) -> FileSet {
                 fs::canonicalize(&declared).unwrap_or(declared)
             }))
             .collect();
-        visit_root(root, plan, &mut out, &mut seen, &root_exclusions, None);
+        visit_root(
+            root,
+            plan,
+            &mut out,
+            &mut seen,
+            &root_exclusions,
+            &author_exclusions,
+            None,
+        );
     }
     out.files.sort_by(|a, b| a.id.cmp(&b.id));
     out.diagnostics.sort_by(|a, b| {
@@ -202,6 +249,7 @@ pub fn expand_changed_path(plan: &SourcePlan, changed: &Path) -> FileSet {
         .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
         .collect();
     let mut out = FileSet::default();
+    let author_exclusions = compile_author_exclusions(plan, &mut out);
     let mut seen = BTreeSet::new();
     let mut roots: Vec<_> = plan
         .roots
@@ -228,6 +276,7 @@ pub fn expand_changed_path(plan: &SourcePlan, changed: &Path) -> FileSet {
             &mut out,
             &mut seen,
             &root_exclusions,
+            &author_exclusions,
             Some(changed),
         );
     }

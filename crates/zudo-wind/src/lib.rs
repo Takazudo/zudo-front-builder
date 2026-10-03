@@ -53,7 +53,10 @@ pub use layers::LAYER_ORDER;
 pub use order::SortKey;
 pub use reset::reset_css;
 pub use selector::Specificity;
-pub use source_plan::{PositiveRoot, SourceId, SourcePlan};
+pub use source_plan::{
+    compile_exclusion_pattern, ExclusionMatcher, PositiveRoot, SourceExclusion, SourceId,
+    SourcePlan,
+};
 pub use token_vars::{emit_token_variables, TokenVariable};
 pub use tokenizer::{structural_split, StructuralSplit};
 pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};

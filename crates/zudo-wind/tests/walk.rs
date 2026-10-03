@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::Path;
-use zudo_wind::{expand_file_set, PositiveRoot, SourceId, SourcePlan};
+use zudo_wind::{
+    compile_exclusion_pattern, expand_changed_path, expand_file_set, PositiveRoot, SourceExclusion,
+    SourceId, SourcePlan,
+};
 
 fn put(root: &Path, path: &str, bytes: &str) {
     let target = root.join(path);
@@ -14,7 +17,163 @@ fn root(base: &Path, label: &str, path: &str, required: bool) -> PositiveRoot {
         path: path.into(),
         required,
         exclusions: Default::default(),
+        package_root: false,
     }
+}
+
+fn exclude(origin: &str, base: &Path, pattern: &str) -> SourceExclusion {
+    SourceExclusion {
+        origin: origin.into(),
+        declaring_dir: base.into(),
+        pattern: pattern.into(),
+    }
+}
+
+fn ids(plan: &SourcePlan) -> Vec<String> {
+    let result = expand_file_set(plan);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    result.files.iter().map(|file| file.id.render()).collect()
+}
+
+#[test]
+fn author_exclusions_are_root_scoped_and_win_explicit_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let preset = base.join("node_modules/preset");
+    put(base, "src/a.tsx", "");
+    put(base, "src/__tests__/a.test.tsx", "");
+    put(base, "src/nested/__tests__/b.test.tsx", "");
+    put(base, "worker/index.ts", "");
+    put(base, "pages/index.tsx", "");
+    put(&preset, "src/__tests__/kept.tsx", "");
+    put(&preset, "src/own.tsx", "");
+    put(&preset, "fixtures/drop.tsx", "");
+
+    let mut plan = SourcePlan {
+        roots: vec![
+            root(base, "default/src", "src", false),
+            root(base, "default/worker", "worker", false),
+            root(base, "default/pages", "pages", false),
+            root(base, "explicit", "src/__tests__/a.test.tsx", true),
+            root(&preset, "package-root/preset", ".", true),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        ids(&plan),
+        [
+            "default/pages:index.tsx",
+            "default/src:__tests__/a.test.tsx",
+            "default/src:a.tsx",
+            "default/src:nested/__tests__/b.test.tsx",
+            "default/worker:index.ts",
+            "package-root/preset:fixtures/drop.tsx",
+            "package-root/preset:src/__tests__/kept.tsx",
+            "package-root/preset:src/own.tsx",
+        ],
+        "no implicit test-file filtering"
+    );
+
+    plan.author_exclusions = vec![
+        exclude("project", base, "src/**/__tests__/**"),
+        exclude("project", base, "./worker"),
+        exclude("preset:preset", &preset, "fixtures"),
+    ];
+    assert_eq!(
+        ids(&plan),
+        [
+            "default/pages:index.tsx",
+            "default/src:a.tsx",
+            "package-root/preset:src/__tests__/kept.tsx",
+            "package-root/preset:src/own.tsx",
+        ]
+    );
+
+    let changed = expand_changed_path(&plan, &base.join("src/__tests__/a.test.tsx"));
+    assert!(changed.files.is_empty());
+    let changed = expand_changed_path(&plan, &base.join("src/a.tsx"));
+    assert_eq!(changed.files[0].id.render(), "default/src:a.tsx");
+}
+
+#[test]
+fn package_root_walks_its_dist_and_node_modules_but_not_mandatory_exclusions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let package = base.join("node_modules/@scope/ui");
+    put(&package, "dist/route.js", "");
+    put(&package, "node_modules/dep/view.js", "");
+    put(&package, "dist/.cache/old.js", "");
+    put(&package, "out/old.js", "");
+    put(base, "src/dist/stale.tsx", "");
+
+    let mut package_root = root(&package, "package-root/ui", ".", true);
+    package_root.package_root = true;
+    let mut plan = SourcePlan {
+        roots: vec![package_root, root(base, "default/src", "src", false)],
+        ..Default::default()
+    };
+    plan.exclusions.insert(package.join("out"));
+    assert_eq!(
+        ids(&plan),
+        [
+            "package-root/ui:dist/route.js",
+            "package-root/ui:node_modules/dep/view.js",
+        ]
+    );
+}
+
+#[test]
+fn duplicate_origins_of_one_root_yield_each_file_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    put(base, "packages/ui/view.tsx", "");
+    let plan = SourcePlan {
+        roots: vec![
+            root(base, "package-root/a", "packages/ui", true),
+            root(&base.join("packages"), "package-root/b", "ui", true),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(ids(&plan), ["package-root/a:view.tsx"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn author_exclusion_declared_through_a_symlink_matches_canonical_files() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    put(base, "src/__tests__/a.test.tsx", "");
+    put(base, "src/a.tsx", "");
+    symlink(base.join("src"), base.join("linked")).unwrap();
+    let plan = SourcePlan {
+        roots: vec![root(base, "default/src", "src", false)],
+        author_exclusions: vec![exclude("project", &base.join("linked"), "__tests__")],
+        ..Default::default()
+    };
+    assert_eq!(ids(&plan), ["default/src:a.tsx"]);
+}
+
+#[test]
+fn malformed_author_exclusions_are_rejected_with_context() {
+    for (pattern, message) in [
+        ("", "empty"),
+        ("!src/**", "negated"),
+        ("/src", "relative"),
+        ("../src", ".."),
+        ("src/[", "unclosed"),
+    ] {
+        let error = compile_exclusion_pattern(pattern).unwrap_err();
+        assert!(error.contains(message), "{pattern:?}: {error}");
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let plan = SourcePlan {
+        author_exclusions: vec![exclude("preset:@scope/x", tmp.path(), "src/[")],
+        ..Default::default()
+    };
+    let result = expand_file_set(&plan);
+    assert_eq!(result.diagnostics[0].root_label, "preset:@scope/x");
+    assert!(result.diagnostics[0].message.contains("\"src/[\""));
 }
 
 #[test]
