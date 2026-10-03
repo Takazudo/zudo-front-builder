@@ -99,6 +99,11 @@ export type WindConfig = {
   safelist?: Record<string, string[]>;
   /** Authored class tokens that should bypass utility interpretation. */
   authoredClasses?: Record<string, true>;
+  /**
+   * Fail the build on unsupported foreign (migration-vocabulary) utilities at
+   * class positions instead of warning. Defaults to false.
+   */
+  strict?: boolean;
   /** File-backed utility manifests keyed by producer id. */
   manifests?: Record<string, { path: string }>;
   /**

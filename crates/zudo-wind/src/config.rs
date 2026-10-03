@@ -35,6 +35,8 @@ pub struct WindConfig {
     pub safelist: BTreeMap<String, Vec<String>>,
     /// Authored class keys map to `true`; false values are invalid configuration.
     pub authored_classes: BTreeMap<String, bool>,
+    /// Promotes migration-vocabulary warnings at proven class positions to errors.
+    pub strict: bool,
     /// Utility rules after (default) or before authored global CSS.
     pub utility_placement: crate::UtilityPlacement,
 }
@@ -51,6 +53,7 @@ pub struct ValidatedWindConfig {
     pub safelist: BTreeMap<String, Vec<Candidate>>,
     pub authored_classes: BTreeSet<String>,
     pub vocabulary: VariantVocabulary,
+    pub strict: bool,
 }
 
 impl Default for WindConfig {
@@ -64,6 +67,7 @@ impl Default for WindConfig {
             default_transition_timing_function: None,
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
+            strict: false,
             utility_placement: crate::UtilityPlacement::AfterAuthored,
         }
     }
@@ -134,6 +138,7 @@ impl WindConfig {
             safelist,
             authored_classes,
             vocabulary,
+            strict: self.strict,
         })
     }
 }
@@ -305,6 +310,7 @@ fn diagnostic_code_rank(code: DiagnosticCode) -> u8 {
         DiagnosticCode::Zw011 => 11,
         DiagnosticCode::Zw012 => 12,
         DiagnosticCode::Zw013 => 13,
+        DiagnosticCode::Zw014 => 14,
     }
 }
 

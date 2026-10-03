@@ -21,7 +21,7 @@ An unrelated name such as `site-header` in a class attribute remains ordinary CS
 
 | Code | Meaning and severity |
 | --- | --- |
-| ZW001 | Candidate syntax. Error for class, safelist, or strict manifest origins; audit-only information for other literals. |
+| ZW001 | Candidate syntax. Error for class, safelist, or strict manifest origins; audit-only information for other literals. An underscore in an authored name such as `card__title` or `card_title` is valid; a single `_` directly after a utility root, such as `p_4`, stays ZW001 and names `wind.authoredClasses`. |
 | ZW002 | Unknown or unconfigured variant. Uses the same origin-aware severity as ZW001. |
 | ZW003 | Duplicate or noncanonical variant chain. A sortable unique chain may include a suggestion. |
 | ZW004 | Deliberately unsupported language feature. |
@@ -34,6 +34,7 @@ An unrelated name such as `site-header` in a class attribute remains ordinary CS
 | ZW011 | Scanned source is not UTF-8; warning, skip the file, and remove its old contribution. |
 | ZW012 | Dynamic candidate construction; audit-only information, no utility is invented. |
 | ZW013 | Property conflict inside one class-list literal; audit-only information explains the deterministic winner. |
+| ZW014 | Unsupported foreign utility from the versioned migration vocabulary, such as `line-clamp-2` or `container`. No CSS is generated. Warning at a class position, error there under `wind.strict: true`, audit-only information for other literals, and an error from a safelist or manifest. |
 
 Diagnostic records retain the candidate where available, severity, code, origin, message, optional suggestion, and optional rejection ID. Origins are structured by kind:
 
@@ -49,6 +50,14 @@ Diagnostic records retain the candidate where available, severity, code, origin,
 Occurrences are retained and ordered by origin, offset or key/index, code, and candidate bytes.
 
 ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. If a utility-root name is intended as an authored class, add its exact complete spelling to `wind.authoredClasses`, for example `authoredClasses: { "text-link": true }`. This reservation suppresses utility validation, candidate diagnostics, and generated CSS for that full candidate. Otherwise, correct the utility spelling or declare the missing token. A name with no matching utility root, such as `site-header`, remains ordinary class text.
+
+## Migration warnings and strict mode
+
+zudo-wind does not implement every Tailwind utility. A bounded, versioned migration vocabulary names the common Tailwind utilities it deliberately leaves out: `table` and the other table display values, `contents`, `flow-root`, `list-item`, `container`, `not-sr-only`, `line-clamp-*`, `order-*`, `basis-*`, `fill-*`, `stroke-*`, `backdrop-blur-*`, `appearance-*`, `will-change-*`, and `content-*`. Such a name is reported as ZW014, an unsupported foreign utility, rather than silently passing as ordinary class text. The diagnostic names the declaration to author instead; no guessed CSS is ever emitted. A name that only resembles a foreign utility, such as `table-wrapper` or `order-summary`, stays ordinary.
+
+ZW014 is a warning by default, so a migrating project still builds while it lists what lost its styling. Set `wind.strict: true` to make it an error at class positions. Strict mode never promotes a lower-confidence literal: a constant that never reaches a class attribute, a test title, or a URL stays audit-only information. To keep a name because CSS you wrote styles it, reserve the exact spelling with `wind.authoredClasses`.
+
+`zfb wind explain` reports such a name with the outcome `unsupported foreign utility`.
 
 ## Explain and audit
 

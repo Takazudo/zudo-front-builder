@@ -1,6 +1,15 @@
+mod class_expression;
+
 use super::{Collector, NoteKind, PositionKind};
 
+/// Scans every literal, then upgrades the complete strings whose value
+/// provably reaches a class attribute to class positions.
 pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
+    scan_literals(source, base, out);
+    class_expression::Module::new(source, base).scan(out);
+}
+
+fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
     let bytes = source.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -43,7 +52,7 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
                     let expression_start = i + 2;
                     i = expression_end(source, expression_start);
                     if i > expression_start {
-                        scan(
+                        scan_literals(
                             &source[expression_start..i.saturating_sub(1)],
                             base + expression_start,
                             out,
