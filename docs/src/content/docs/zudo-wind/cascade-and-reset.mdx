@@ -25,9 +25,30 @@ The integrated stylesheet order is:
 7. Unlayered generated utility rules.
 8. CSS Modules output at its pipeline append position.
 
-The prelude comes before any authored layer prefix, so authored CSS cannot replace the owned order. Wind utilities are unlayered and follow authored global rules. They therefore beat normal declarations in named layers. An unlayered authored rule with greater specificity still wins; an equal-specificity authored rule that occurs later also wins. Important declarations follow normal CSS layer rules, but there is no important modifier in the wind language.
+Items 6 and 7 trade places under `wind.utilities.placement: "before-authored"`; see [Utility placement](#utility-placement).
+
+The prelude comes before any authored layer prefix, so authored CSS cannot replace the owned order. Wind utilities are unlayered and, by default, follow authored global rules. They therefore beat normal declarations in named layers. An unlayered authored rule with greater specificity still wins. Between an unlayered authored rule and a utility of equal specificity, the one that comes later wins: the utility by default, the authored rule under `before-authored` placement. Important declarations follow normal CSS layer rules, but there is no important modifier in the wind language.
 
 An entirely empty wind result emits no prelude. A selected reset can emit the prelude and reset even when no candidates resolve.
+
+## Utility placement
+
+`wind.utilities.placement` chooses where the unlayered utility rules sit relative to authored global CSS:
+
+```ts
+wind: {
+  utilities: { placement: "before-authored" }
+}
+```
+
+| Value | Order of items 6 and 7 | Equal-specificity tie |
+| --- | --- | --- |
+| `"after-authored"` (default) | Authored global CSS, then utilities | The utility wins |
+| `"before-authored"` | Utilities, then authored global CSS | The authored rule wins |
+
+Nothing else moves. The prelude, external imports, highlight block, reset, tokens, `@property` registrations, and CSS Modules output keep their places, and no utility is wrapped in a layer. External `@import` rules are hoisted above both stages either way. The setting applies to `zfb build`, `zfb dev`, and `zfb css` alike; editing it in dev rebuilds the served stylesheet.
+
+Placement only settles ties of equal specificity. It does not change any selector, so it does not restore the specificity of Tailwind's `group-*` and `peer-*` selectors; see [Relation variants](./coming-from-tailwind.mdx#relation-variant-specificity).
 
 ## Reset choices
 

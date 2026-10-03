@@ -65,7 +65,33 @@ pub struct StylesheetParts {
     pub utilities: String,
 }
 
+/// Where unlayered utility rules sit relative to authored global CSS.
+/// Layers, the reset, tokens and registrations keep their places either way.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UtilityPlacement {
+    #[default]
+    AfterAuthored,
+    BeforeAuthored,
+}
+
 impl StylesheetParts {
+    /// The integrated stylesheet with authored global CSS at its stage.
+    pub fn with_authored(&self, authored: &str, placement: UtilityPlacement) -> String {
+        let (first, second) = match placement {
+            UtilityPlacement::AfterAuthored => (authored, self.utilities.as_str()),
+            UtilityPlacement::BeforeAuthored => (self.utilities.as_str(), authored),
+        };
+        [
+            self.prelude.as_str(),
+            &self.reset,
+            &self.tokens,
+            &self.registrations,
+            first,
+            second,
+        ]
+        .concat()
+    }
+
     pub fn stylesheet(&self) -> String {
         [
             &self.prelude,

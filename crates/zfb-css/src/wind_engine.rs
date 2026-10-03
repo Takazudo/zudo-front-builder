@@ -139,13 +139,9 @@ impl CssEngine for WindEngine {
                     .join("; ")
             );
         }
-        let parts = compiled.parts;
-        let mut css = parts.prelude;
-        css.push_str(&parts.reset);
-        css.push_str(&parts.tokens);
-        css.push_str(&parts.registrations);
-        css.push_str(&self.authored.css);
-        css.push_str(&parts.utilities);
+        let css = compiled
+            .parts
+            .with_authored(&self.authored.css, self.config.utility_placement);
         let mut output = CssEngineOutput::new(
             css,
             CssEngineId::new(
@@ -227,6 +223,96 @@ mod tests {
         );
         assert!(result.provenance.as_ref().unwrap().map.is_none());
     }
+    fn placed(placement: zudo_wind::UtilityPlacement) -> String {
+        let config = WindConfig {
+            reset: zudo_wind::ResetMode::MinimalV1,
+            utility_placement: placement,
+            ..WindConfig::default()
+        };
+        let authored = AuthoredCssBundle {
+            css: "@import url(\"https://fonts.example/a.css\");\n.card { color: red; }\n".into(),
+            companions: vec![],
+            input_dependencies: vec![],
+        };
+        let css = WindEngine::new(config, ["block".to_string()].into(), authored)
+            .produce_utility_css(&[])
+            .unwrap()
+            .css;
+        crate::pipeline::combine(
+            Some("@layer zfb-hi { .hi { color: blue; } }"),
+            &css,
+            ".module_x { color: green; }",
+        )
+    }
+
+    #[test]
+    fn utility_placement_moves_only_the_utility_stage() {
+        let after = placed(zudo_wind::UtilityPlacement::AfterAuthored);
+        let before = placed(zudo_wind::UtilityPlacement::BeforeAuthored);
+        let order = |css: &str, needles: &[&str]| {
+            let positions: Vec<_> = needles
+                .iter()
+                .map(|needle| {
+                    css.find(needle)
+                        .unwrap_or_else(|| panic!("{needle}:\n{css}"))
+                })
+                .collect();
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1]),
+                "{needles:?}:\n{css}"
+            );
+        };
+        let fixed = [
+            "@layer zw-reset, zw-tokens, zfb-hi, base, components;",
+            "@import url(",
+            "@layer zfb-hi {",
+            "@layer zw-reset {",
+        ];
+        for css in [&after, &before] {
+            order(css, &fixed);
+            order(css, &["@layer zw-reset {", ".block", ".module_x"]);
+            order(css, &["@layer zw-reset {", ".card", ".module_x"]);
+        }
+        order(&after, &[".card", ".block"]);
+        order(&before, &[".block", ".card"]);
+        assert_eq!(after.matches("@import").count(), 1);
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn default_placement_matches_the_previous_stage_order() {
+        let compiled = zudo_wind::compile(&zudo_wind::CompileInput {
+            candidates: vec![OriginCandidate {
+                text: "block".into(),
+                origin: Origin::Source {
+                    source_id: "s".into(),
+                    byte_offset: 0,
+                    byte_length: 5,
+                    line: 1,
+                    byte_column: 1,
+                    literal_byte_offset: 0,
+                    literal_byte_length: 5,
+                    position_kind: zudo_wind::SourcePositionKind::Class,
+                },
+            }],
+            config: WindConfig::default(),
+        });
+        let parts = compiled.parts;
+        let previous = [
+            parts.prelude.as_str(),
+            &parts.reset,
+            &parts.tokens,
+            &parts.registrations,
+            ".card{}",
+            &parts.utilities,
+        ]
+        .concat();
+        assert_eq!(
+            parts.with_authored(".card{}", zudo_wind::UtilityPlacement::default()),
+            previous
+        );
+    }
+
     #[test]
     fn empty_output_has_no_generated_provenance() {
         let engine = WindEngine::new(

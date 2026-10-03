@@ -37,6 +37,8 @@ pub struct WindConfig {
     pub authored_classes: BTreeMap<String, bool>,
     /// Promotes migration-vocabulary warnings at proven class positions to errors.
     pub strict: bool,
+    /// Utility rules after (default) or before authored global CSS.
+    pub utility_placement: crate::UtilityPlacement,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +68,7 @@ impl Default for WindConfig {
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
             strict: false,
+            utility_placement: crate::UtilityPlacement::AfterAuthored,
         }
     }
 }

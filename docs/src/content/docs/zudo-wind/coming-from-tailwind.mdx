@@ -103,7 +103,7 @@ The default `reset` is `none`, which emits no reset declarations. Select a reset
 | `minimal-v1` | Sets border-box sizing, removes the body margin, and makes form controls inherit the font. It does not remove list markers or normalize heading sizes. |
 | `owned-v1` | Sets border-box sizing and clears margins, padding, and default border width while making borders solid. It removes list markers, gives headings inherited size and weight, and normalizes control fonts and button backgrounds. |
 
-With `owned-v1`, add list markers back where the design calls for them; the scaffold's `.prose` rules explicitly restore disc and decimal lists. Headings do not retain browser heading sizes, so set them in authored CSS or with configured font-size utilities. Bare border utilities set their own solid border under every reset choice. Controls inherit font styling, and the reset leaves native focus outlines and appearance alone. Wind utilities are unlayered and follow authored global CSS: they beat normal declarations in named layers, while an unlayered authored rule can still win by specificity or later order. The reset is an explicit zudo-wind choice, not a promise to reproduce another preflight byte for byte. See [Cascade and reset](./cascade-and-reset.mdx) for the complete declarations and layer order.
+With `owned-v1`, add list markers back where the design calls for them; the scaffold's `.prose` rules explicitly restore disc and decimal lists. Headings do not retain browser heading sizes, so set them in authored CSS or with configured font-size utilities. Bare border utilities set their own solid border under every reset choice. Controls inherit font styling, and the reset leaves native focus outlines and appearance alone. Wind utilities are unlayered and, by default, follow authored global CSS: they beat normal declarations in named layers, while an unlayered authored rule can still win by specificity or later order. See [Utility placement and ties](#utility-placement-and-ties) for the opposite order. The reset is an explicit zudo-wind choice, not a promise to reproduce another preflight byte for byte. See [Cascade and reset](./cascade-and-reset.mdx) for the complete declarations and layer order.
 
 ### Differences from Tailwind preflight
 
@@ -195,6 +195,54 @@ The table names the v1 disposition for each construct. Supported chains use the 
 | `space-*` and `divide-*` | **Adopt changed (W20).** The utilities target later visible direct-child siblings, filtered by the `hidden` attribute. Spacing sets the relevant margin; divide sets a solid left or top border. There are no reverse flags, and pseudo-element variants cannot combine with these child utilities. |
 
 The candidate grammar balances brackets, parentheses, and quotes before splitting separators, so a colon or slash inside a bracket value is not treated as a variant or modifier separator. See [Variants](./variants.mdx), [Utility grammar](./utility-grammar.mdx), and the [utility reference](./utilities/index.mdx) for the full catalog.
+
+## Utility placement and ties
+
+A Tailwind v4 entry usually imports the utilities before its own CSS, so an authored rule with the same specificity as a utility won by coming later. zudo-wind places utilities after authored global CSS by default, which flips those ties:
+
+```css
+/* authored */
+.card {
+  color: red;
+}
+```
+
+```html
+<p class="card text-accent">Card</p>
+```
+
+| Setup | Order | Color |
+| --- | --- | --- |
+| Tailwind v4, utilities imported first | utilities, `.card` | red |
+| zudo-wind default (`after-authored`) | `.card`, utilities | accent |
+| zudo-wind `before-authored` | utilities, `.card` | red |
+
+To keep Tailwind's order, set the placement:
+
+```ts
+wind: {
+  utilities: { placement: "before-authored" }
+}
+```
+
+The emitted stylesheet is then: the layer prelude, hoisted external imports, the highlight block, the reset and token layers, `@property` registrations, the unlayered utilities, the authored global CSS, and finally CSS Modules. Placement decides only ties of equal specificity between unlayered rules. Under either setting a more specific authored selector wins, an authored rule inside a layer loses to every utility, and an authored `!important` declaration wins. Breakpoint and dark variants add no specificity, so they follow the same tie rule. Emitting utilities into a named layer is not available.
+
+## Relation variant specificity
+
+Tailwind emits `group-hover:text-accent` as `.group-hover\:text-accent:is(:where(.group):hover *)`, with specificity (0,2,0). zudo-wind emits `:where(.group:hover) .group-hover\:text-accent`, with specificity (0,1,0), and `peer-*` variants likewise. Placement does not change any selector, so it does not restore that specificity. An authored (0,2,0) or (0,1,1) rule that used to lose to a group or peer state now wins under either placement:
+
+```css
+/* (0,2,0): now beats group-hover:text-accent */
+.panel .title {
+  color: red;
+}
+```
+
+Choose one of these per rule:
+
+- Lower the authored selector to the utility's specificity, for example `:where(.panel) .title`. The state then wins by order under the default placement.
+- Move the authored rule into a layer, such as `@layer components { .panel .title { color: red; } }`, so every utility beats it.
+- State the hover style in authored CSS too: `.panel:hover .title { color: var(--zw-color-accent); }`.
 
 ## Classes that used to emit nothing
 

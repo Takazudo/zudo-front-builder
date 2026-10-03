@@ -107,6 +107,13 @@ export type WindConfig = {
   /** File-backed utility manifests keyed by producer id. */
   manifests?: Record<string, { path: string }>;
   /**
+   * `placement` puts generated unlayered utility rules after (the default)
+   * or before authored global CSS. Only the order between those two stages
+   * changes: layers, the reset, tokens, highlight CSS and CSS Modules stay
+   * where they are, and selector specificity is unchanged.
+   */
+  utilities?: { placement?: "after-authored" | "before-authored" };
+  /**
    * Source controls resolved against the declaring project or preset package.
    * `exclude` globs remove matching files from every source root under that
    * root and win over explicit sources; `packageRoots` are `./` paths or

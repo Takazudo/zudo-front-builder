@@ -966,6 +966,9 @@ pub struct WindConfig {
     /// Author source exclusions and declared package roots.
     #[serde(default, skip_serializing_if = "WindSources::is_empty")]
     pub sources: WindSources,
+    /// Where generated utility rules sit relative to authored global CSS.
+    #[serde(default, skip_serializing_if = "WindUtilities::is_default")]
+    pub utilities: WindUtilities,
     /// Per-declaration provenance of `sources`, set by the preset merge.
     /// Empty means `sources` belongs to the project root.
     #[serde(skip)]
@@ -984,6 +987,31 @@ impl WindConfig {
             self.source_declarations.clone()
         }
     }
+}
+
+/// `wind.utilities`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindUtilities {
+    #[serde(default)]
+    pub placement: WindUtilityPlacement,
+}
+
+impl WindUtilities {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// `after-authored` keeps unlayered utilities after authored global CSS so
+/// they win equal-specificity ties; `before-authored` puts them first, as a
+/// Tailwind v4 entry that imports utilities before its own CSS did.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindUtilityPlacement {
+    #[default]
+    AfterAuthored,
+    BeforeAuthored,
 }
 
 /// `wind.sources`: paths are relative to the declaring project or preset package.
@@ -1035,6 +1063,7 @@ impl Default for WindConfig {
             strict: false,
             manifests: BTreeMap::new(),
             sources: WindSources::default(),
+            utilities: WindUtilities::default(),
             source_declarations: Vec::new(),
         }
     }
@@ -3664,6 +3693,56 @@ mod tests {
                 "packageRoots": ["."]
             })
         );
+    }
+
+    #[test]
+    fn wind_utility_placement_parses_defaults_and_rejects_unknown_values() {
+        let config = config_with_wind(serde_json::json!({
+            "utilities": { "placement": "before-authored" }
+        }));
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object expected")
+        };
+        assert_eq!(
+            wind.utilities.placement,
+            WindUtilityPlacement::BeforeAuthored
+        );
+        assert_eq!(
+            serde_json::to_value(&*wind).unwrap()["utilities"],
+            serde_json::json!({ "placement": "before-authored" })
+        );
+
+        let default = config_with_wind(serde_json::json!({}));
+        let Some(WindSetting::Enabled(wind)) = default.wind else {
+            panic!("wind object expected")
+        };
+        assert_eq!(
+            wind.utilities.placement,
+            WindUtilityPlacement::AfterAuthored
+        );
+        assert!(serde_json::to_value(&*wind)
+            .unwrap()
+            .get("utilities")
+            .is_none());
+
+        for (value, needle) in [
+            (
+                serde_json::json!({ "placement": "middle" }),
+                "after-authored",
+            ),
+            (
+                serde_json::json!({ "placement": "before-authored", "layer": "x" }),
+                "layer",
+            ),
+        ] {
+            let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+                "wind": { "utilities": value }
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("wind.utilities"), "{error}");
+            assert!(error.contains(needle), "{error}");
+        }
     }
 
     #[test]

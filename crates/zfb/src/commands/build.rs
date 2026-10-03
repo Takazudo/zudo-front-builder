@@ -1567,7 +1567,7 @@ fn build_css_payload_with_index(
             for (owner, candidates) in &plan.safelist {
                 index.replace_safelist(owner.clone(), candidates.iter().cloned());
             }
-            let config = map_wind_config(settings);
+            let config = crate::commands::css_support::map_wind_config(settings);
             SelectedWindEngine::Wind(Box::new(
                 zfb_css::WindEngine::new(config, index.live_set(), authored)
                     .with_diagnostics(diagnostics)
@@ -1624,68 +1624,6 @@ impl CssEngine for SelectedWindEngine {
             Self::Wind(engine) => engine.produce_utility_css(sources),
         }
     }
-}
-
-fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
-    let mut output = zfb_css::WindConfig {
-        spec: input.spec,
-        reset: match input.reset.as_str() {
-            "minimal-v1" => zfb_css::ResetMode::MinimalV1,
-            "owned-v1" => zfb_css::ResetMode::OwnedV1,
-            _ => zfb_css::ResetMode::None,
-        },
-        dark: match &input.dark {
-            crate::config::WindDarkSetting::Enabled(dark) => Some(zfb_css::DarkModeConfig {
-                attribute: dark.attribute.clone(),
-                value: dark.value.clone(),
-            }),
-            crate::config::WindDarkSetting::Disabled => None,
-        },
-        breakpoints: input
-            .breakpoints
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.clone(),
-                    zfb_css::BreakpointConfig {
-                        min_width_px: value.min_width_px as i64,
-                    },
-                )
-            })
-            .collect(),
-        safelist: input.safelist.clone(),
-        authored_classes: input.authored_classes.clone(),
-        strict: input.strict,
-        default_transition_timing_function: input.default_transition_timing_function.clone(),
-        ..Default::default()
-    };
-    output.tokens.spacing_unit = input.tokens.spacing_unit.clone();
-    output.tokens.colors = input.tokens.colors.clone();
-    output.tokens.spacing = input.tokens.spacing.clone();
-    output.tokens.sizes = input.tokens.sizes.clone();
-    output.tokens.font_sizes = input
-        .tokens
-        .font_sizes
-        .iter()
-        .map(|(key, value)| {
-            (
-                key.clone(),
-                zfb_css::FontSizeToken {
-                    size: value.size.clone(),
-                    line_height: value.line_height.clone(),
-                },
-            )
-        })
-        .collect();
-    output.tokens.font_families = input.tokens.font_families.clone();
-    output.tokens.font_weights = input.tokens.font_weights.clone();
-    output.tokens.line_heights = input.tokens.line_heights.clone();
-    output.tokens.letter_spacings = input.tokens.letter_spacings.clone();
-    output.tokens.radii = input.tokens.radii.clone();
-    output.tokens.shadows = input.tokens.shadows.clone();
-    output.tokens.z_indices = input.tokens.z_indices.clone();
-    output.tokens.easings = input.tokens.easings.clone();
-    output
 }
 
 #[cfg(test)]
@@ -8379,20 +8317,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_and_standalone_css_map_transition_timing_identically() {
+    fn build_maps_transition_timing_and_utility_placement_through_the_shared_mapper() {
         let input = crate::config::WindConfig {
             default_transition_timing_function: Some("steps(3, end)".to_owned()),
+            utilities: crate::config::WindUtilities {
+                placement: crate::config::WindUtilityPlacement::BeforeAuthored,
+            },
             ..Default::default()
         };
-        let build_config = map_wind_config(&input);
-        let css_config = crate::commands::css_support::map_wind_config(&input);
-        assert_eq!(build_config, css_config);
+        let build_config = crate::commands::css_support::map_wind_config(&input);
+        assert_eq!(
+            build_config.utility_placement,
+            zfb_css::UtilityPlacement::BeforeAuthored
+        );
         assert_eq!(
             build_config
                 .validate()
                 .unwrap()
                 .default_transition_timing_function,
             "steps(3, end)"
+        );
+        assert_eq!(
+            crate::commands::css_support::map_wind_config(&crate::config::WindConfig::default())
+                .utility_placement,
+            zfb_css::UtilityPlacement::AfterAuthored
         );
     }
 

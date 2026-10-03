@@ -58,6 +58,14 @@ pub(crate) fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::Win
         safelist: input.safelist.clone(),
         authored_classes: input.authored_classes.clone(),
         strict: input.strict,
+        utility_placement: match input.utilities.placement {
+            crate::config::WindUtilityPlacement::AfterAuthored => {
+                zfb_css::UtilityPlacement::AfterAuthored
+            }
+            crate::config::WindUtilityPlacement::BeforeAuthored => {
+                zfb_css::UtilityPlacement::BeforeAuthored
+            }
+        },
         default_transition_timing_function: input.default_transition_timing_function.clone(),
         ..Default::default()
     };

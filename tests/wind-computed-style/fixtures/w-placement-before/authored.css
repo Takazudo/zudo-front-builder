@@ -1,0 +1,12 @@
+/* Authored global CSS for the utility placement matrix (#3540). */
+@layer components {
+  .layered { color: rgb(255, 0, 0); }
+}
+.tie { color: rgb(255, 0, 0); }
+.strong.tie2 { color: rgb(255, 0, 0); }
+.forced { color: rgb(255, 0, 0) !important; }
+.hover-tie { color: rgb(255, 0, 0); }
+.panel .relation { color: rgb(255, 0, 0); }
+.media-tie { padding-left: 1px; }
+.dark-tie { color: rgb(255, 0, 0); }
+.reset-target { box-sizing: content-box; }
