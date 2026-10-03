@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::cli::{WindArgs, WindAuditFailOn, WindCommand, WindExplainArgs};
+use crate::cli::{WindArgs, WindAuditFailOn, WindAuditPlan, WindCommand, WindExplainArgs};
 use crate::commands::css_support::{
     build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
 };
@@ -14,7 +14,9 @@ use crate::commands::css_support::{
 pub async fn run(args: &WindArgs) -> Result<()> {
     match &args.command {
         WindCommand::Explain(args) => explain(args).await,
-        WindCommand::Audit(args) => audit(args.project_root.as_deref(), args.fail_on).await,
+        WindCommand::Audit(args) => {
+            audit(args.project_root.as_deref(), args.fail_on, args.plan).await
+        }
     }
 }
 
@@ -30,7 +32,11 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
     Ok(())
 }
 
-async fn audit(project_root_arg: Option<&Path>, fail_on: Option<WindAuditFailOn>) -> Result<()> {
+async fn audit(
+    project_root_arg: Option<&Path>,
+    fail_on: Option<WindAuditFailOn>,
+    plan_mode: WindAuditPlan,
+) -> Result<()> {
     let project_root = project_root(project_root_arg)?;
     let project_config = crate::config::load_from_dir(&project_root)
         .await
@@ -47,24 +53,174 @@ async fn audit(project_root_arg: Option<&Path>, fail_on: Option<WindAuditFailOn>
         return print_audit_and_apply_exit_policy(&report, fail_on);
     }
 
-    // This is the same default standalone plan as `zfb css` without explicit
-    // --source arguments. Neither command scans the build/dev package-route,
-    // mirror, or plugin roots.
-    let audit_output = project_root.join(".zfb-wind-audit-output.css");
-    let (plan, _warnings) = build_standalone_wind_source_plan(
-        &project_root,
-        &audit_output,
-        &project_config,
-        true,
-        &[],
-    )?;
+    let (plan, plugin_virtual_modules) = match plan_mode {
+        // The same default plan as `zfb css` without explicit --source
+        // arguments: no package-route, mirror, or plugin roots.
+        WindAuditPlan::Standalone => {
+            let audit_output = project_root.join(".zfb-wind-audit-output.css");
+            let (plan, _warnings) = build_standalone_wind_source_plan(
+                &project_root,
+                &audit_output,
+                &project_config,
+                true,
+                &[],
+            )?;
+            (plan, Vec::new())
+        }
+        WindAuditPlan::Build => build_audit_plan(&project_root, &project_config).await?,
+    };
+    print!(
+        "{}",
+        render_plan_coverage(plan_mode, &plan, &plugin_virtual_modules, &project_root)
+    );
     let indexed = index_standalone_wind_sources(&plan)?;
     let manifest_owners = add_manifest_candidates_to_audit_config(&mut wind_config, &plan)?;
     let mut audit_sources = indexed.audit_sources;
+    append_plugin_audit_sources(&plugin_virtual_modules, &mut audit_sources);
     append_role_class_audit_source(&plan, &mut audit_sources);
     let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
     print_audit_and_apply_exit_policy(&report, fail_on)
+}
+
+/// Discover the build/dev plan the way `zfb build` does — plugin setup,
+/// package routes, sibling mirrors, and plugin virtual modules — without
+/// running lifecycle hooks or writing build output.
+#[cfg(feature = "embed_v8")]
+async fn build_audit_plan(
+    project_root: &Path,
+    config: &crate::config::Config,
+) -> Result<(zfb_css::SourcePlan, Vec<(String, String)>)> {
+    let outdir = crate::commands::resolve::resolve_outdir(project_root, &config.out_dir);
+    let scratch =
+        crate::commands::scratch_dir::resolve_from_env(project_root, config, &outdir, None)?;
+    let plugin_host = crate::commands::plugins::maybe_spawn_host(config).await?;
+    let setup = crate::commands::plugins::run_plugin_setup(
+        &plugin_host,
+        project_root,
+        &scratch.layout().plugin_scratch_dir(),
+        config,
+        zfb_build::SetupCommand::Build,
+    )
+    .await;
+    if let Some(host) = plugin_host {
+        let _ = host.shutdown().await;
+    }
+    let setup = setup?;
+    let overlay = crate::commands::package_routes::resolve_build_pages_root(
+        &project_root.join("pages"),
+        setup.setup_registries.injected_routes.as_slice(),
+    )
+    .context("resolving package-owned routes for wind audit --plan build")?;
+    let package_route_entrypoints: Vec<PathBuf> = overlay
+        .materialized
+        .iter()
+        .map(|route| route.entrypoint.clone())
+        .collect();
+    let (_, sibling_mirror_roots) = crate::commands::build::discover_css_sibling_mirror_roots(
+        project_root,
+        config,
+        &setup.plugin_alias_entries,
+        &setup.plugin_virtual_modules,
+    )?;
+    let inputs = crate::commands::css_source_plan::gather_css_source_plan_inputs(
+        project_root,
+        &outdir,
+        config,
+        &package_route_entrypoints,
+        &sibling_mirror_roots,
+        &setup.plugin_virtual_modules,
+        &scratch.layout().written_roots(),
+    )?;
+    Ok((
+        crate::commands::css_source_plan::build_css_source_plan(&inputs),
+        setup.plugin_virtual_modules,
+    ))
+}
+
+#[cfg(not(feature = "embed_v8"))]
+async fn build_audit_plan(
+    _project_root: &Path,
+    _config: &crate::config::Config,
+) -> Result<(zfb_css::SourcePlan, Vec<(String, String)>)> {
+    anyhow::bail!(
+        "zfb was built without V8 support; `zfb wind audit --plan build` needs plugin setup \
+         to discover the build source plan. Use --plan standalone or a default build."
+    )
+}
+
+/// A human summary of what the audit covers, printed before the report.
+fn render_plan_coverage(
+    mode: WindAuditPlan,
+    plan: &zfb_css::SourcePlan,
+    plugin_virtual_modules: &[(String, String)],
+    project_root: &Path,
+) -> String {
+    let display = |path: &Path| match path.strip_prefix(project_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    };
+    let mut out = format!(
+        "wind audit plan: {}\n",
+        match mode {
+            WindAuditPlan::Standalone => "standalone",
+            WindAuditPlan::Build => "build",
+        }
+    );
+    let mut roots: Vec<_> = plan
+        .roots
+        .iter()
+        .chain(plan.package_sources.values())
+        .collect();
+    roots.sort();
+    for root in roots {
+        let kind = if root.package_root {
+            "package root"
+        } else if root.required {
+            "required"
+        } else {
+            "optional"
+        };
+        out.push_str(&format!(
+            "  root {} {} ({kind})\n",
+            root.label,
+            display(&zfb_types::normalize_path_lexical(&root.resolved_path()))
+        ));
+    }
+    for (specifier, _) in plugin_virtual_modules {
+        out.push_str(&format!("  virtual plugin/{specifier}\n"));
+    }
+    for (producer, path) in &plan.manifests {
+        out.push_str(&format!("  manifest {producer} {}\n", display(path)));
+    }
+    for path in &plan.exclusions {
+        out.push_str(&format!(
+            "  excluded {} (output or scratch)\n",
+            display(path)
+        ));
+    }
+    for exclusion in &plan.author_exclusions {
+        out.push_str(&format!(
+            "  excluded {} (wind.sources.exclude from {})\n",
+            exclusion.pattern, exclusion.origin
+        ));
+    }
+    out
+}
+
+/// Plugin virtual modules have no file; audit them under the same
+/// `plugin/<specifier>` identity the build source plan uses.
+fn append_plugin_audit_sources(
+    modules: &[(String, String)],
+    sources: &mut Vec<zfb_css::AuditSource>,
+) {
+    for (specifier, source) in modules {
+        sources.push(zfb_css::AuditSource::new(
+            format!("plugin/{specifier}"),
+            zfb_css::extract_candidates(source.as_bytes(), zfb_css::SourceKind::Tsx),
+        ));
+    }
 }
 
 fn print_audit_and_apply_exit_policy(
@@ -497,5 +653,72 @@ mod tests {
         assert_eq!(origin.role_key.as_deref(), Some("role-class"));
         assert!(origin.source_id.is_none());
         assert!(origin.position_kind.is_none());
+    }
+
+    #[test]
+    fn plan_coverage_names_mode_roots_virtual_sources_and_exclusion_reasons() {
+        let project = Path::new("/project");
+        let mut plan = zfb_css::SourcePlan::default();
+        plan.roots.push(zfb_css::PositiveRoot {
+            label: "default/src".into(),
+            declaring_dir: project.join("src"),
+            path: PathBuf::from("."),
+            required: false,
+            exclusions: BTreeSet::new(),
+            package_root: false,
+        });
+        plan.roots.push(zfb_css::PositiveRoot {
+            label: "package-root/node_modules/@x/ui".into(),
+            declaring_dir: project.join("node_modules/@x/ui"),
+            path: PathBuf::from("."),
+            required: true,
+            exclusions: BTreeSet::new(),
+            package_root: true,
+        });
+        plan.package_sources.insert(
+            "package-route/node_modules/@x/docs".into(),
+            zfb_css::PositiveRoot {
+                label: "package-route/node_modules/@x/docs".into(),
+                declaring_dir: project.join("node_modules/@x/docs"),
+                path: PathBuf::from("."),
+                required: true,
+                exclusions: BTreeSet::new(),
+                package_root: false,
+            },
+        );
+        plan.exclusions.insert(project.join("dist"));
+        plan.author_exclusions.push(zfb_css::SourceExclusion {
+            origin: "project".into(),
+            declaring_dir: project.to_path_buf(),
+            pattern: "src/**/__tests__/**".into(),
+        });
+        let modules = vec![(
+            "virtual:menu".to_owned(),
+            "<a className=\"p-1\" />".to_owned(),
+        )];
+
+        let coverage = render_plan_coverage(WindAuditPlan::Build, &plan, &modules, project);
+        assert_eq!(
+            coverage,
+            "wind audit plan: build\n\
+             \x20 root default/src src (optional)\n\
+             \x20 root package-root/node_modules/@x/ui node_modules/@x/ui (package root)\n\
+             \x20 root package-route/node_modules/@x/docs node_modules/@x/docs (required)\n\
+             \x20 virtual plugin/virtual:menu\n\
+             \x20 excluded dist (output or scratch)\n\
+             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n"
+        );
+        assert!(render_plan_coverage(
+            WindAuditPlan::Standalone,
+            &zfb_css::SourcePlan::default(),
+            &[],
+            project
+        )
+        .starts_with("wind audit plan: standalone\n"));
+
+        let mut sources = Vec::new();
+        append_plugin_audit_sources(&modules, &mut sources);
+        assert_eq!(sources[0].source_id, "plugin/virtual:menu");
+        assert_eq!(sources[0].extraction.candidates[0].text, "p-1");
     }
 }

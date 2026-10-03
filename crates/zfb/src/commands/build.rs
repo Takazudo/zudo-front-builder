@@ -1392,26 +1392,26 @@ fn build_css_payload_with_index(
 ) -> Result<CssPayloadPass> {
     let mut timings = CssPhaseTimings::default();
     let wind = config.wind.as_ref();
-    let virtual_worker_context = module_worker_build_context(
-        true,
-        config.bundle.as_ref(),
+    let (discovered_graph_files, sibling_mirror_roots) = discover_css_sibling_mirror_roots(
+        project_root,
+        config,
         plugin_alias_entries,
         plugin_virtual_modules,
-    );
-    let discovered_graph_files =
-        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+    )?;
     let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
-    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
-        project_root,
-        &zfb_types::first_party_root_for(project_root),
-        &discovered_graph_files,
-        &read_tsconfig_paths(project_root),
-        plugin_alias_entries,
-    )
-    .mirror_roots()
-    .map(Path::to_path_buf)
-    .collect();
-    on_source_plan(&sibling_mirror_roots);
+    // Declared package roots share the mirror roots' recursive watch, so a
+    // config edit that adds one starts watching it on the same pass.
+    let watched_roots: Vec<PathBuf> = sibling_mirror_roots
+        .iter()
+        .cloned()
+        .chain(
+            crate::commands::css_source_plan::declared_package_root_watch_paths(
+                project_root,
+                config,
+            ),
+        )
+        .collect();
+    on_source_plan(&watched_roots);
 
     let framework_css = resolve_framework_css(config);
     let sources =
@@ -2304,6 +2304,36 @@ pub(crate) fn discover_css_plugin_virtual_files(
         )?
         .files,
     )
+}
+
+/// The plugin virtual-module file graph and the sibling mirror roots it
+/// claims. Shared by the build/dev CSS pass and `zfb wind audit --plan
+/// build` so both scan the same roots.
+pub(crate) fn discover_css_sibling_mirror_roots(
+    project_root: &Path,
+    config: &Config,
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+) -> Result<(std::collections::BTreeSet<PathBuf>, Vec<PathBuf>)> {
+    let virtual_worker_context = module_worker_build_context(
+        true,
+        config.bundle.as_ref(),
+        plugin_alias_entries,
+        plugin_virtual_modules,
+    );
+    let discovered_graph_files =
+        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+    let sibling_mirror_roots = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &zfb_types::first_party_root_for(project_root),
+        &discovered_graph_files,
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    )
+    .mirror_roots()
+    .map(Path::to_path_buf)
+    .collect();
+    Ok((discovered_graph_files, sibling_mirror_roots))
 }
 
 fn discover_plugin_preprocessing(
@@ -19293,6 +19323,41 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(seen.borrow().is_some());
+    }
+
+    #[test]
+    fn wind_declared_package_root_is_watched_and_scanned() {
+        use std::cell::RefCell;
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let package = project.join("packages/ui");
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        std::fs::write(package.join("dist/view.js"), "export const c = \"grid\";").unwrap();
+        let wind = crate::config::WindConfig {
+            sources: crate::config::WindSources {
+                exclude: Vec::new(),
+                package_roots: vec!["./packages/ui".into()],
+            },
+            ..Default::default()
+        };
+        let cfg = Config {
+            wind: Some(crate::config::WindSetting::Enabled(Box::new(wind))),
+            ..Default::default()
+        };
+        let seen = RefCell::new(Vec::new());
+        let payload = build_default_css_payload_with_source_plan(
+            project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| *seen.borrow_mut() = roots.to_vec(),
+        )
+        .unwrap()
+        .expect("package-root candidate produces a stylesheet");
+        assert_eq!(*seen.borrow(), [package]);
+        assert!(String::from_utf8_lossy(&payload.bytes).contains(".grid"));
     }
 
     #[test]

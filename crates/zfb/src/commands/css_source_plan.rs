@@ -499,6 +499,34 @@ fn resolve_declared_package_root(declaring_dir: &Path, root: &str) -> Result<Pat
     Ok(path)
 }
 
+/// Declared package roots for dev's recursive watch. A declaration that does
+/// not resolve yet is skipped; its config or install edit triggers the next pass.
+pub(crate) fn declared_package_root_watch_paths(
+    project_root: &Path,
+    config: &Config,
+) -> Vec<PathBuf> {
+    let Some(WindSetting::Enabled(wind)) = &config.wind else {
+        return Vec::new();
+    };
+    let project_root = zfb_types::normalize_path_lexical(project_root);
+    wind.source_declarations()
+        .iter()
+        .filter_map(|declaration| {
+            resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())
+                .ok()
+                .map(|dir| (dir, declaration))
+        })
+        .flat_map(|(dir, declaration)| {
+            declaration
+                .sources
+                .package_roots
+                .iter()
+                .filter_map(|root| resolve_declared_package_root(&dir, root).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
 pub(crate) fn gather_css_source_plan_inputs(
     project_root: &Path,

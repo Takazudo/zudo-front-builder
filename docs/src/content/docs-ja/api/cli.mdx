@@ -258,12 +258,14 @@ zfb css \
 `zfb wind audit` は通常のクラス位置の名前、存在しない・使われていないユーティリティ、動的なクラス断片、単一のクラスリストリテラル内のプロパティ衝突を調べます。完全一致の `authoredClasses` と `group`/`peer` マーカーは除外されます。`wind: false` の場合、explain は生成が無効であることを報告し、audit は空の候補レポートを返します。
 
 ```sh
-zfb wind audit [--project-root <path>] [--fail-on error|warning]
+zfb wind audit [--project-root <path>] [--fail-on error|warning] [--plan standalone|build]
 ```
+
+`--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
-これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
+これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません（`--plan build` でのプラグインの `setup` を除きます）。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
 
 ## `zfb preview`
 
