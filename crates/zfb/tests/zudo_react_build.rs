@@ -298,7 +298,7 @@ fn build_only_charset_error_points_at_the_layout() {
     });
     assert!(
         output.contains(
-            "[zudo-react] ZR_PROP_DIALECT render static-render root: use `charset` instead of `charSet` — at layouts/document.tsx:5:9"
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[0][0]: use `charset` instead of `charSet` — at layouts/document.tsx:5:9"
         ),
         "{output}"
     );
