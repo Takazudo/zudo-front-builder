@@ -847,9 +847,10 @@ mod tests {
                     sources: serde_json::from_value(sources).unwrap(),
                 });
         }
-        let mut config = Config::default();
-        config.wind = Some(WindSetting::Enabled(Box::new(wind)));
-        config
+        Config {
+            wind: Some(WindSetting::Enabled(Box::new(wind))),
+            ..Config::default()
+        }
     }
 
     fn gather(inputs: &CssSourcePlanInputs, config: &Config) -> Result<CssSourcePlanInputs> {

@@ -775,12 +775,14 @@ mod tests {
         write_file(&project, "src/a.tsx");
         write_file(&project, "src/__tests__/b.test.tsx");
         write_file(&project, "packages/ui/view.tsx");
-        let mut wind = crate::config::WindConfig::default();
-        wind.sources = serde_json::from_value(serde_json::json!({
-            "exclude": ["src/**/__tests__/**"],
-            "packageRoots": ["./packages/ui"]
-        }))
-        .unwrap();
+        let wind = crate::config::WindConfig {
+            sources: serde_json::from_value(serde_json::json!({
+                "exclude": ["src/**/__tests__/**"],
+                "packageRoots": ["./packages/ui"]
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
         config.wind = Some(WindSetting::Enabled(Box::new(wind)));
 
         let message = format!(

@@ -3712,14 +3712,16 @@ mod tests {
 
     #[test]
     fn wind_validation_rejects_malformed_sources_with_their_origin() {
-        let mut wind = WindConfig::default();
-        wind.source_declarations = vec![WindSourceDeclaration {
-            source_package: Some("@example/preset".into()),
-            sources: WindSources {
-                exclude: vec!["src/**".into(), "src/[".into()],
-                package_roots: Vec::new(),
-            },
-        }];
+        let wind = WindConfig {
+            source_declarations: vec![WindSourceDeclaration {
+                source_package: Some("@example/preset".into()),
+                sources: WindSources {
+                    exclude: vec!["src/**".into(), "src/[".into()],
+                    package_roots: Vec::new(),
+                },
+            }],
+            ..Default::default()
+        };
         let error = validate_wind_config(&wind).unwrap_err().to_string();
         assert!(
             error.contains("wind.sources.exclude[1] \"src/[\" declared by preset:@example/preset"),
