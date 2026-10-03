@@ -199,3 +199,158 @@ fn literal_border_and_text_values_select_one_category() {
     assert_eq!(color.declarations[0].property, "color");
     assert_eq!(color.value_status, ValueStatus::Verified);
 }
+
+fn suggestion(text: &str) -> Option<String> {
+    match resolve(text) {
+        Resolution::Failure(diagnostic) | Resolution::Diagnostic(diagnostic) => {
+            diagnostic.suggested_spelling
+        }
+        other => panic!("{text} should fail: {other:?}"),
+    }
+}
+
+#[test]
+fn type_hints_are_reported_as_unsupported_syntax() {
+    for (candidate, hint) in [
+        ("text-[color:var(--x)]", "color"),
+        ("text-[length:var(--x)]", "length"),
+        ("bg-[color:red]", "color"),
+        ("w-[length:2rem]", "length"),
+    ] {
+        let (code, message) = failure(candidate);
+        assert_eq!(code, DiagnosticCode::Zw005, "{candidate}");
+        assert!(
+            message.contains(&format!("data-type hint `{hint}:` is not supported")),
+            "{candidate}: {message}"
+        );
+        assert!(!message.contains("font-size"), "{candidate}: {message}");
+    }
+}
+
+#[test]
+fn overloaded_roots_name_every_attempted_property() {
+    let (_, message) = failure("text-[bogus]");
+    assert!(
+        message.starts_with("value is not valid for any of ")
+            && message.contains("font-size")
+            && message.contains("color"),
+        "{message}"
+    );
+    let (_, message) = failure("border-[bogus]");
+    assert!(
+        message.contains("border-top-width") && message.contains("border-top-color"),
+        "{message}"
+    );
+    let (_, message) = failure("h-[bogus]");
+    assert_eq!(message, "value is not valid for height");
+}
+
+#[test]
+fn unspaced_calc_operators_get_a_validated_suggestion() {
+    for (candidate, expected, property) in [
+        ("w-[calc(100vw-2rem)]", "w-[calc(100vw_-_2rem)]", "width"),
+        ("h-[calc(100%-3rem)]", "h-[calc(100%_-_3rem)]", "height"),
+        (
+            "min-h-[calc(100vh-3.5rem)]",
+            "min-h-[calc(100vh_-_3.5rem)]",
+            "min-height",
+        ),
+        (
+            "ml-[calc(var(--x)+1px)]",
+            "ml-[calc(var(--x)_+_1px)]",
+            "margin-left",
+        ),
+        (
+            "w-[calc(var(--side-gap)-1px)]",
+            "w-[calc(var(--side-gap)_-_1px)]",
+            "width",
+        ),
+        (
+            "w-[calc(-1*var(--x)-2px)]",
+            "w-[calc(-1*var(--x)_-_2px)]",
+            "width",
+        ),
+        (
+            "w-[calc(var(--a,var(--b-c))-1px)]",
+            "w-[calc(var(--a,var(--b-c))_-_1px)]",
+            "width",
+        ),
+        (
+            "hover:w-[calc(100%-min(2rem,10vw))]",
+            "hover:w-[calc(100%_-_min(2rem,10vw))]",
+            "width",
+        ),
+    ] {
+        let (code, message) = failure(candidate);
+        assert_eq!(code, DiagnosticCode::Zw005, "{candidate}");
+        assert!(
+            message.contains(&format!("value is not valid for {property}"))
+                && message.contains("calc() needs spaces around + and -"),
+            "{candidate}: {message}"
+        );
+        assert_eq!(
+            suggestion(candidate).as_deref(),
+            Some(expected),
+            "{candidate}"
+        );
+        assert!(
+            matches!(resolve(expected), Resolution::Rule(_)),
+            "{expected} must resolve"
+        );
+    }
+    for candidate in [
+        "w-[calc(1px-red)]",
+        "w-[calc(100%_*_foo)]",
+        "w-[bogus-value]",
+    ] {
+        assert_eq!(suggestion(candidate), None, "{candidate}");
+    }
+    assert!(matches!(
+        resolve("w-[calc(100vw_-_2rem)]"),
+        Resolution::Rule(_)
+    ));
+}
+
+#[test]
+fn sizing_and_underline_offset_validate_against_their_own_properties() {
+    assert_rule(
+        "max-w-[none]",
+        "v1.max-w",
+        "max-width",
+        "none",
+        ValueStatus::Verified,
+    );
+    assert_rule(
+        "max-h-[none]",
+        "v1.max-h",
+        "max-height",
+        "none",
+        ValueStatus::Verified,
+    );
+    let size = rule("size-[3rem]");
+    assert_eq!(
+        size.declarations
+            .iter()
+            .map(|declaration| (declaration.property.as_str(), declaration.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("width", "3rem"), ("height", "3rem")]
+    );
+    assert_rule(
+        "underline-offset-4",
+        "v1.underline-offset",
+        "text-underline-offset",
+        "4px",
+        ValueStatus::Verified,
+    );
+    assert_rule(
+        "underline-offset-[3px]",
+        "v1.underline-offset",
+        "text-underline-offset",
+        "3px",
+        ValueStatus::Verified,
+    );
+    assert_eq!(
+        failure("underline-offset-[red]").1,
+        "arbitrary value must be a nonnegative length"
+    );
+}
