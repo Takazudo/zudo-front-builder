@@ -99,7 +99,7 @@ TypeError: ...
 - **Structural context.** The first line also carries the stable code, the component (`static-render` for a page render, otherwise the island's component name), the element path, and, for a React-style prop, the supported spelling to use instead. This part is always present.
 - **Generated stack.** The `file:///zfb/bundle.mjs:…` frames are positions in the generated server bundle. They locate zfb's renderer, not your element, so do not edit by those numbers.
 
-Elements written with `h()`, elements created inside a dependency, and code changed by a preprocessor have no reliable source position. For them zfb prints the structural context without an authored span, rather than a guessed line. It may add `— internal frame node_modules/…` as a debugging hint; that label is never your source location. The first line never contains props, raw HTML, or absolute local paths.
+Elements written with `h()`, elements created inside a dependency, and code changed by a preprocessor have no reliable source position. For them zfb prints the structural context without an authored span, rather than a guessed line. It may add an internal-frame hint such as `— internal frame node_modules/…`, `<generated>/…`, or `external/…` for debugging; that label is never your source location. The first line never contains props, raw HTML, or absolute local paths.
 
 ## See also
 
