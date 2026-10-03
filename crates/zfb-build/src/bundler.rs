@@ -5632,6 +5632,13 @@ pub fn bundle_with_session(
             );
         }
     }
+    if let Some(bytes) = metafile_bytes.as_deref() {
+        let authored = crate::metafile_deps::authored_jsx_inputs(bytes, &input.project_root);
+        crate::jsx_pragma::emit_foreign_pragma_warnings(
+            &input.project_root,
+            authored.iter().map(PathBuf::as_path),
+        );
+    }
     let emitted_wasm_assets = match metafile_path.as_deref() {
         Some(meta_path) => emitted_wasm_assets_from_metafile(
             meta_path,
@@ -14468,6 +14475,14 @@ fn run_esbuild(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // A foreign pragma surfaces as an unresolved `<pkg>/jsx-runtime`
+        // located in the pragma's own file, so name the pragma first.
+        let located: BTreeSet<&Path> = stderr
+            .lines()
+            .filter_map(esbuild_location_path)
+            .map(Path::new)
+            .collect();
+        crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
         let friendly = friendly_esbuild_error(
             stderr.trim(),
             shadow,
