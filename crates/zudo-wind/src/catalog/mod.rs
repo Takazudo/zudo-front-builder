@@ -31,6 +31,9 @@ pub enum ValueKind {
 pub struct ValueGrammar {
     pub accepted_kinds: Vec<ValueKind>,
     pub keywords: Vec<(&'static str, &'static str)>,
+    /// Keywords that apply only when no configured token of the same name
+    /// exists, so a project token keeps precedence over the constant.
+    pub fallback_keywords: Vec<(&'static str, &'static str)>,
     pub token_categories: Vec<TokenCategory>,
     pub arbitrary_property: Option<&'static str>,
     pub allows_fraction_slash: bool,
@@ -48,6 +51,7 @@ impl ValueGrammar {
         Self {
             accepted_kinds: kinds.to_vec(),
             keywords: keywords.to_vec(),
+            fallback_keywords: Vec::new(),
             token_categories: categories.to_vec(),
             arbitrary_property: arbitrary,
             allows_fraction_slash: fraction,
@@ -247,7 +251,7 @@ mod tests {
             .iter()
             .map(|entry| entry.conflict_group_rank)
             .collect();
-        assert_eq!(ranks, (1..=44).collect::<BTreeSet<u16>>());
+        assert_eq!(ranks, (1..=47).collect::<BTreeSet<u16>>());
     }
     #[test]
     fn duplicate_identifier_is_rejected() {
