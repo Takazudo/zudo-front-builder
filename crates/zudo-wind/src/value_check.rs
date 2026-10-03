@@ -122,7 +122,6 @@ const VARIABLE_STAND_INS: &[&str] = &[
     "400",
     "all",
     "0 0 red",
-    "",
 ];
 
 /// Parse the raw value for `property`. A `var()`-dependent value cannot be
