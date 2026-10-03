@@ -119,7 +119,8 @@ export const strings = {
     },
     "line-height": {
       title: "行の高さ",
-      description: "設定済みトークンまたは任意の CSS 値から行の高さを設定します。",
+      description:
+        "設定済みトークンまたは任意の CSS 値から行の高さを設定します。none トークンを設定していない場合、leading-none は 1 になります。",
     },
     tracking: {
       title: "字間",
@@ -227,6 +228,19 @@ export const strings = {
       title: "その他",
       description:
         "縦方向の整列、ボックスサイズ、オブジェクトの収まり、スクリーンリーダー専用の切り抜きを設定します。",
+    },
+    "text-decoration-color": {
+      title: "テキスト装飾の色",
+      description:
+        "色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。",
+    },
+    "text-underline-offset": {
+      title: "下線のオフセット",
+      description: "下線のオフセットを整数のピクセル値、または 0 以上の任意の長さで設定します。",
+    },
+    visibility: {
+      title: "表示状態",
+      description: "レイアウト上の位置を保ったまま、要素を表示または非表示にします。",
     },
   },
 };

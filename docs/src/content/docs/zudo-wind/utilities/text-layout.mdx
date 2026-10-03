@@ -190,6 +190,40 @@ Set text alignment, whitespace handling, wrapping, and truncation behavior.
 | --- | --- |
 | `break-words` | `overflow-wrap: break-word` |
 
+## wrap-anywhere
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.wrap-anywhere` |
+| Class pattern | `wrap-anywhere` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-layout` (`20`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `overflow-wrap` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"anywhere"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `overflow-wrap` | `fixed` | `"anywhere"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `wrap-anywhere` | `overflow-wrap: anywhere` |
+
 ## truncate
 
 | Field | Value |

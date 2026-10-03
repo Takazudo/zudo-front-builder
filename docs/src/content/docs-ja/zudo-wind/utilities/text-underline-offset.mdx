@@ -1,0 +1,42 @@
+---
+title: 下線のオフセット
+description: 下線のオフセットを整数のピクセル値、または 0 以上の任意の長さで設定します。
+sidebar_position: 66
+generated: true
+---
+
+下線のオフセットを整数のピクセル値、または 0 以上の任意の長さで設定します。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## underline-offset
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.underline-offset` |
+| クラスパターン | `underline-offset-<suffix>` |
+| 文法 | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"text-underline-offset","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-underline-offset` (`46`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-underline-offset` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-underline-offset` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `underline-offset-4` | `text-underline-offset: 4px` |
