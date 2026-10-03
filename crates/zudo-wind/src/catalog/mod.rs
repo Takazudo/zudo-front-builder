@@ -3,6 +3,7 @@
 mod arbitrary;
 pub mod export;
 mod families;
+pub mod migration;
 mod resolve;
 
 use std::collections::BTreeSet;

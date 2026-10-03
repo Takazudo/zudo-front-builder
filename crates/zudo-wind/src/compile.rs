@@ -229,9 +229,23 @@ pub fn compile_validated(
                 metadata.resolved = Some(rule);
                 rules.insert(input.text, metadata);
             }
-            Resolution::Diagnostic(diagnostic) | Resolution::Failure(diagnostic) => {
+            Resolution::Diagnostic(mut diagnostic) => {
+                if config.strict
+                    && diagnostic.code == crate::DiagnosticCode::Zw014
+                    && diagnostic.severity == Severity::Warning
+                    && matches!(
+                        input.origin,
+                        Origin::Source {
+                            position_kind: SourcePositionKind::Class,
+                            ..
+                        }
+                    )
+                {
+                    diagnostic.severity = Severity::Error;
+                }
                 result.diagnostics.push(diagnostic)
             }
+            Resolution::Failure(diagnostic) => result.diagnostics.push(diagnostic),
             Resolution::NotUtility => result.ordinary_classes.push(input),
         }
     }

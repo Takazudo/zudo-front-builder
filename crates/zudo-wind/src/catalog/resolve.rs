@@ -104,6 +104,28 @@ impl Catalog {
             return Resolution::NotUtility;
         }
         let name = &candidate.utility.named;
+        if let Some((head, rest)) = name
+            .split_once('_')
+            .filter(|_| candidate.utility.arbitrary_value.is_none())
+        {
+            // A single `_` after a root reads as a mistyped `-` (`p_4`); a BEM
+            // `__` element separator is authored naming even after `block`.
+            return if !rest.starts_with('_') && self.recognizes_root(head) {
+                invalid(
+                    candidate,
+                    origin,
+                    DiagnosticCode::Zw001,
+                    &format!(
+                        "invalid named utility characters: `_` follows the utility root in {}. If this is a genuine authored class, reserve its complete name with wind.authoredClasses: {{ {}: true }}",
+                        candidate.raw,
+                        serde_json::to_string(&candidate.raw).expect("candidate is a string")
+                    ),
+                    Some("R03"),
+                )
+            } else {
+                unknown_root(candidate, origin)
+            };
+        }
         if matches!(name.as_str(), "ring" | "animate" | "scale" | "transform") {
             return invalid(
                 candidate,
@@ -126,16 +148,9 @@ impl Catalog {
             })
             .collect();
         let Some(longest) = matching.iter().map(|(entry, _)| entry.root.len()).max() else {
-            return if strict(origin) {
-                Resolution::Failure(diagnostic(
-                    candidate,
-                    origin,
-                    DiagnosticCode::Zw008,
-                    "unknown explicit utility",
-                    None,
-                ))
-            } else {
-                Resolution::NotUtility
+            return match super::migration::foreign_family(candidate) {
+                Some(family) => foreign(candidate, origin, family),
+                None => unknown_root(candidate, origin),
             };
         };
         let mut matching: Vec<_> = matching
@@ -1023,6 +1038,74 @@ fn negate(value: &str) -> String {
         "-100%".to_owned()
     } else {
         format!("calc({value} * -1)")
+    }
+}
+
+impl Catalog {
+    /// Whether an underscore-separated head starts at a utility root: `p`,
+    /// `grid` and `text-link` do; `card` does not.
+    fn recognizes_root(&self, head: &str) -> bool {
+        let starts_at = |root: &str| {
+            head == root
+                || head
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('-'))
+        };
+        ["ring", "animate", "scale", "transform", "group", "peer"]
+            .into_iter()
+            .any(starts_at)
+            || self.entries.iter().any(|entry| starts_at(&entry.root))
+    }
+}
+
+fn unknown_root(candidate: &Candidate, origin: &Origin) -> Resolution {
+    if strict(origin) {
+        Resolution::Failure(diagnostic(
+            candidate,
+            origin,
+            DiagnosticCode::Zw008,
+            "unknown explicit utility",
+            None,
+        ))
+    } else {
+        Resolution::NotUtility
+    }
+}
+
+/// A migration-vocabulary name. Explicit origins still fail; a class position
+/// warns (compile promotes it under `wind.strict`), and a low-confidence
+/// literal stays audit information.
+fn foreign(
+    candidate: &Candidate,
+    origin: &Origin,
+    family: &super::migration::ForeignFamily,
+) -> Resolution {
+    let message = format!(
+        "unsupported foreign utility (migration vocabulary v{}): {} uses the Tailwind `{}` utility, which zudo-wind v1 does not implement, so no CSS is generated. Author {} in CSS and reserve the class with wind.authoredClasses: {{ {}: true }}",
+        super::migration::MIGRATION_VOCABULARY_VERSION,
+        candidate.raw,
+        family.root,
+        family.alternative,
+        serde_json::to_string(&candidate.raw).expect("candidate is a string")
+    );
+    match origin {
+        Origin::RoleClass { .. } => Resolution::NotUtility,
+        Origin::Safelist { .. } | Origin::Manifest { .. } => Resolution::Failure(diagnostic(
+            candidate,
+            origin,
+            DiagnosticCode::Zw014,
+            &message,
+            None,
+        )),
+        Origin::Source { .. } => {
+            let mut diagnostic =
+                diagnostic(candidate, origin, DiagnosticCode::Zw014, &message, None);
+            if diagnostic.severity == Severity::Error {
+                diagnostic.severity = Severity::Warning;
+            }
+            Resolution::Diagnostic(diagnostic)
+        }
+        Origin::Config { .. } | Origin::Stylesheet { .. } => Resolution::NotUtility,
     }
 }
 

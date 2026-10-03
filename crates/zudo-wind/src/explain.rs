@@ -14,6 +14,8 @@ pub enum ExplanationOutcome {
     ResolvedUtility,
     Marker,
     Ordinary,
+    /// A migration-vocabulary name: reported, never generated.
+    ForeignUtility,
     Invalid,
     GenerationDisabled,
 }
@@ -153,6 +155,10 @@ pub fn explain_with_generation(
             return output;
         }
     };
+    if validated.authored_classes.contains(candidate) {
+        output.outcome = ExplanationOutcome::Ordinary;
+        return output;
+    }
     let parsed = match parse_candidate(candidate, &validated.vocabulary) {
         Ok(parsed) => parsed,
         Err(mut diagnostic) => {
@@ -223,6 +229,12 @@ pub fn explain_with_generation(
         .collect();
     output.outcome = if output.diagnostics.is_empty() {
         ExplanationOutcome::Ordinary
+    } else if result
+        .diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.code == DiagnosticCode::Zw014)
+    {
+        ExplanationOutcome::ForeignUtility
     } else {
         ExplanationOutcome::Invalid
     };
@@ -642,6 +654,7 @@ fn outcome_name(outcome: ExplanationOutcome) -> &'static str {
         ExplanationOutcome::ResolvedUtility => "resolved utility",
         ExplanationOutcome::Marker => "marker",
         ExplanationOutcome::Ordinary => "ordinary class",
+        ExplanationOutcome::ForeignUtility => "unsupported foreign utility",
         ExplanationOutcome::Invalid => "recognized invalid or malformed",
         ExplanationOutcome::GenerationDisabled => "generation disabled",
     }
@@ -670,6 +683,7 @@ fn diagnostic_code_name(code: DiagnosticCode) -> &'static str {
         DiagnosticCode::Zw011 => "ZW011",
         DiagnosticCode::Zw012 => "ZW012",
         DiagnosticCode::Zw013 => "ZW013",
+        DiagnosticCode::Zw014 => "ZW014",
     }
 }
 

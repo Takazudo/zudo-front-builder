@@ -957,6 +957,9 @@ pub struct WindConfig {
     /// Authored classes that suppress utility interpretation.
     #[serde(default, rename = "authoredClasses")]
     pub authored_classes: BTreeMap<String, bool>,
+    /// Promote unsupported foreign utilities at class positions from warnings to errors.
+    #[serde(default)]
+    pub strict: bool,
     /// File-backed utility manifests keyed by producer id.
     #[serde(default)]
     pub manifests: BTreeMap<String, WindManifest>,
@@ -1029,6 +1032,7 @@ impl Default for WindConfig {
             default_transition_timing_function: None,
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
+            strict: false,
             manifests: BTreeMap::new(),
             sources: WindSources::default(),
             source_declarations: Vec::new(),
@@ -3441,6 +3445,7 @@ mod tests {
             "dark": { "attribute": "data-theme", "value": "dark" },
             "safelist": { "app": ["sm:hover:bg-panel", "rounded"] },
             "authoredClasses": { "prose": true },
+            "strict": true,
             "manifests": { "widgets": { "path": "@example/widgets/wind.json" } }
         }));
         let Some(WindSetting::Enabled(wind)) = config.wind else {
@@ -3458,6 +3463,12 @@ mod tests {
         assert_eq!(wind.breakpoints["sm"].min_width_px, 640.0);
         assert_eq!(wind.safelist["app"].len(), 2);
         assert_eq!(wind.manifests["widgets"].path, "@example/widgets/wind.json");
+        assert!(wind.strict);
+        assert!(
+            !WindConfig::default().strict,
+            "wind.strict defaults to false"
+        );
+        assert!(crate::commands::css_support::map_wind_config(&wind).strict);
     }
 
     #[test]

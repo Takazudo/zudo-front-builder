@@ -1655,6 +1655,7 @@ fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
             .collect(),
         safelist: input.safelist.clone(),
         authored_classes: input.authored_classes.clone(),
+        strict: input.strict,
         default_transition_timing_function: input.default_transition_timing_function.clone(),
         ..Default::default()
     };

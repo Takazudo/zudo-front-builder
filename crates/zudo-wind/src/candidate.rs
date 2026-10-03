@@ -202,7 +202,9 @@ pub fn parse_candidate(
         }
         Some(value.to_owned())
     } else {
-        if !valid_outer(named) {
+        // An underscore is valid in an authored CSS identifier (BEM, snake_case);
+        // the resolver applies the utility-root boundary check that keeps `p_4` invalid.
+        if !valid_outer(named) && !valid_authored_identifier(named) {
             return Err(Diagnostic::parse(
                 text,
                 DiagnosticCode::Zw001,
@@ -234,6 +236,13 @@ fn valid_outer(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+}
+
+fn valid_authored_identifier(value: &str) -> bool {
+    value.contains('_')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | '_'))
 }
 
 fn valid_decimal(value: &str) -> bool {
@@ -498,6 +507,22 @@ mod tests {
     #[test]
     fn r03_forbidden_outer_punctuation() {
         rejected("w-(10px)", DiagnosticCode::Zw001, "R03");
+    }
+
+    #[test]
+    fn underscore_identifiers_parse_but_brackets_stay_strict() {
+        for text in [
+            "card__title",
+            "card_title",
+            "block__el--mod",
+            "md:card__title",
+        ] {
+            let candidate = parse_candidate(text, &vocabulary()).unwrap();
+            assert!(candidate.utility.named.contains('_'), "{text}");
+        }
+        rejected("card__x-[1px]", DiagnosticCode::Zw005, "R15");
+        rejected("p-[", DiagnosticCode::Zw001, "R02");
+        rejected("card__tit$le", DiagnosticCode::Zw001, "R03");
     }
 
     #[test]

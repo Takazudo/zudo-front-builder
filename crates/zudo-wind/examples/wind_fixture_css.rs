@@ -280,6 +280,7 @@ fn diagnostic_json(diagnostic: &zudo_wind::Diagnostic) -> Value {
             zudo_wind::DiagnosticCode::Zw011 => "ZW011",
             zudo_wind::DiagnosticCode::Zw012 => "ZW012",
             zudo_wind::DiagnosticCode::Zw013 => "ZW013",
+            zudo_wind::DiagnosticCode::Zw014 => "ZW014",
         },
         "candidate": diagnostic.candidate,
         "origin": diagnostic.origin.as_deref().map(origin_json),

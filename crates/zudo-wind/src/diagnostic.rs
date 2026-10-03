@@ -20,6 +20,8 @@ pub enum DiagnosticCode {
     Zw011,
     Zw012,
     Zw013,
+    /// A migration-vocabulary foreign utility: reported, never generated.
+    Zw014,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
