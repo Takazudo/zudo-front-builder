@@ -1,0 +1,9 @@
+{
+  "caseId": "W-PLACEMENT",
+  "reset": "minimal-v1",
+  "spacingUnit": "0.25rem",
+  "colors": { "accent": "#00aa00" },
+  "breakpoints": { "md": 768 },
+  "dark": { "attribute": "data-theme", "value": "dark" },
+  "authoredCss": "authored.css"
+}

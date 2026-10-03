@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Utility placement: after-authored</title>
+    <link rel="stylesheet" href="../../dist/w-placement-after/wind.css" />
+  </head>
+  <body>
+    <p id="tie" class="tie text-accent">Equal-specificity tie</p>
+    <p id="stronger" class="strong tie2 text-accent">Stronger authored selector</p>
+    <p id="layered" class="layered text-accent">Layered authored rule</p>
+    <p id="forced" class="forced text-accent">Important authored rule</p>
+    <div id="group" class="group">
+      <p id="hover-tie" class="hover-tie group-hover:text-accent">Group hover tie</p>
+    </div>
+    <div class="panel group">
+      <p id="relation" class="relation group-hover:text-accent">Relation versus (0,2,0)</p>
+    </div>
+    <p id="media-tie" class="media-tie md:pl-4">Breakpoint tie</p>
+    <div data-theme="dark">
+      <p id="dark-tie" class="dark-tie dark:text-accent">Dark tie</p>
+    </div>
+    <div id="reset-target" class="reset-target">Reset versus authored</div>
+  </body>
+</html>

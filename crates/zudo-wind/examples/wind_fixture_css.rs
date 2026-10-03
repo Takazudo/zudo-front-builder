@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use zudo_wind::{
     audit, compile, explain, extract_candidates, AuditInput, AuditSource, BreakpointConfig,
     CompileInput, DarkModeConfig, Origin, OriginCandidate, PositionKind, ResetMode, SourceKind,
-    SourcePositionKind, TokenConfig, WindConfig,
+    SourcePositionKind, TokenConfig, UtilityPlacement, WindConfig,
 };
 
 #[derive(Deserialize)]
@@ -36,6 +36,28 @@ struct CaseDefinition {
     authored_classes: BTreeMap<String, bool>,
     #[serde(default)]
     explicit_candidates: Vec<String>,
+    /// Authored global CSS file, relative to the fixture, assembled with the utilities.
+    #[serde(default)]
+    authored_css: Option<String>,
+    #[serde(default)]
+    utility_placement: PlacementChoice,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PlacementChoice {
+    #[default]
+    AfterAuthored,
+    BeforeAuthored,
+}
+
+impl From<PlacementChoice> for UtilityPlacement {
+    fn from(value: PlacementChoice) -> Self {
+        match value {
+            PlacementChoice::AfterAuthored => Self::AfterAuthored,
+            PlacementChoice::BeforeAuthored => Self::BeforeAuthored,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -158,7 +180,14 @@ fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dy
     });
     let output_dir = output_root.join(directory_name);
     fs::create_dir_all(&output_dir)?;
-    fs::write(output_dir.join("wind.css"), &result.stylesheet)?;
+    let stylesheet = match &definition.authored_css {
+        Some(path) => result.parts.with_authored(
+            &fs::read_to_string(fixture_dir.join(path))?,
+            config.utility_placement,
+        ),
+        None => result.stylesheet.clone(),
+    };
+    fs::write(output_dir.join("wind.css"), &stylesheet)?;
 
     let audit_report = audit(
         &AuditInput::new(vec![AuditSource::new(source_id, extraction)]),
@@ -236,6 +265,7 @@ fn make_config(definition: &CaseDefinition) -> WindConfig {
         breakpoints,
         dark,
         authored_classes: definition.authored_classes.clone(),
+        utility_placement: definition.utility_placement.into(),
         ..WindConfig::default()
     }
 }
