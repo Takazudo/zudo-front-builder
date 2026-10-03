@@ -38,7 +38,8 @@ pub struct FileSet {
     pub diagnostics: Vec<WalkDiagnostic>,
 }
 
-const PACKAGE_ROOT_TRAVERSES: &[&str] = &["node_modules", "dist"];
+/// Skipped directory names a declared package root still walks.
+pub const PACKAGE_ROOT_TRAVERSES: &[&str] = &["node_modules", "dist"];
 
 fn excluded(path: &Path, exclusions: &BTreeSet<PathBuf>) -> bool {
     exclusions.iter().any(|excluded| path.starts_with(excluded))

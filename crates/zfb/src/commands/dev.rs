@@ -4801,6 +4801,11 @@ fn build_dev_css_and_publish_mirror_roots(
         raw_import_invalidation
             .replace_css_manifests_read_since(manifests.into_values(), read_start);
     }
+    // Published before compilation for the same reason: a config edit that
+    // adds a package root must start its watch even if this pass fails.
+    raw_import_invalidation.replace_css_package_roots(
+        crate::commands::css_source_plan::declared_package_root_watch_paths(project_root, cfg),
+    );
     let pass = crate::commands::build::build_dev_css_payload_with_index(
         project_root,
         dev_assets_root,

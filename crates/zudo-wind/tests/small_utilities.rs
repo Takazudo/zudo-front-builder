@@ -65,6 +65,11 @@ fn each_new_utility_resolves_to_its_owned_declaration() {
         ("underline-offset-4", "text-underline-offset", "4px"),
         ("underline-offset-0", "text-underline-offset", "0px"),
         ("underline-offset-[0.3em]", "text-underline-offset", "0.3em"),
+        (
+            "underline-offset-[calc(1px_+_2px)]",
+            "text-underline-offset",
+            "calc(1px + 2px)",
+        ),
     ] {
         assert_eq!(
             resolved(candidate, &config),
@@ -132,6 +137,11 @@ fn missing_tokens_and_unsupported_forms_are_rejected() {
         ("underline-offset-[auto]", "ZW005", "R15"),
         ("underline-offset-[10%]", "ZW005", "R15"),
         ("underline-offset-[-2px]", "ZW005", "R15"),
+        ("underline-offset-[red]", "ZW005", "R15"),
+        ("underline-offset-[1]", "ZW005", "R15"),
+        ("underline-offset-[1px_2px]", "ZW005", "R15"),
+        ("underline-offset-[calc(10%_+_1px)]", "ZW005", "R15"),
+        ("underline-offset-[min(-2px,0px)]", "ZW005", "R15"),
         ("underline-offset-thick", "ZW006", "R17"),
     ] {
         assert_eq!(
