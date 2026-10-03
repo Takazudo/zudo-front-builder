@@ -35,6 +35,8 @@ pub struct WindConfig {
     pub safelist: BTreeMap<String, Vec<String>>,
     /// Authored class keys map to `true`; false values are invalid configuration.
     pub authored_classes: BTreeMap<String, bool>,
+    /// Utility rules after (default) or before authored global CSS.
+    pub utility_placement: crate::UtilityPlacement,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +64,7 @@ impl Default for WindConfig {
             default_transition_timing_function: None,
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
+            utility_placement: crate::UtilityPlacement::AfterAuthored,
         }
     }
 }
