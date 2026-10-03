@@ -2,12 +2,13 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use zudo_wind::{CompileInput, Origin, OriginCandidate, Severity, WindConfig};
 
 use crate::{
-    AuthoredCssBundle, CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngine,
-    CssEngineId, CssEngineOutput, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    dedup_diagnostics, AuthoredCssBundle, CssDiagnostic, CssDiagnosticOrigin,
+    CssDiagnosticSeverity, CssEngine, CssEngineId, CssEngineOutput, CssInputDependencyKind,
+    CssProvenance, CssProvenanceKind, WindDiagnosticsError,
 };
 
 #[derive(Debug, Clone)]
@@ -81,23 +82,7 @@ impl CssEngine for WindEngine {
                 .iter()
                 .filter(|diagnostic| diagnostic.severity != Severity::AuditInfo)
                 .map(|diagnostic| {
-                    let origin = match diagnostic.origin.as_deref() {
-                        Some(Origin::Source {
-                            source_id,
-                            line,
-                            byte_column,
-                            ..
-                        }) => CssDiagnosticOrigin {
-                            path: Some(PathBuf::from(source_id)),
-                            line: Some(*line),
-                            column: Some(*byte_column),
-                        },
-                        Some(Origin::Stylesheet { path, .. }) => CssDiagnosticOrigin {
-                            path: Some(PathBuf::from(path)),
-                            ..Default::default()
-                        },
-                        _ => CssDiagnosticOrigin::default(),
-                    };
+                    let origin = diagnostic_origin(diagnostic.origin.as_deref());
                     CssDiagnostic {
                         severity: if diagnostic.severity == Severity::Error {
                             CssDiagnosticSeverity::Error
@@ -116,28 +101,17 @@ impl CssEngine for WindEngine {
                     }
                 }),
         );
-        if diagnostics
+        let diagnostics = dedup_diagnostics(diagnostics);
+        let errors: Vec<_> = diagnostics
             .iter()
-            .any(|d| d.severity == CssDiagnosticSeverity::Error)
-        {
-            bail!(
-                "wind CSS failed: {}",
-                diagnostics
-                    .iter()
-                    .filter(|d| d.severity == CssDiagnosticSeverity::Error)
-                    .map(|d| format!(
-                        "{}: {}{}{}",
-                        d.code,
-                        d.message,
-                        d.candidate
-                            .as_deref()
-                            .map(|c| format!(" ({c})"))
-                            .unwrap_or_default(),
-                        origin_suffix(&d.origin)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            );
+            .filter(|d| d.severity == CssDiagnosticSeverity::Error)
+            .cloned()
+            .collect();
+        if !errors.is_empty() {
+            return Err(WindDiagnosticsError {
+                diagnostics: errors,
+            }
+            .into());
         }
         let css = compiled
             .parts
@@ -179,13 +153,50 @@ impl CssEngine for WindEngine {
 }
 
 /// ` at <source>:<line>:<column>` so a failing candidate names its occurrence.
-fn origin_suffix(origin: &CssDiagnosticOrigin) -> String {
-    match (&origin.path, origin.line, origin.column) {
-        (Some(path), Some(line), Some(column)) => {
-            format!(" at {}:{line}:{column}", path.display())
-        }
-        (Some(path), _, _) => format!(" at {}", path.display()),
-        _ => String::new(),
+fn diagnostic_origin(origin: Option<&Origin>) -> CssDiagnosticOrigin {
+    match origin {
+        Some(Origin::Source {
+            source_id,
+            line,
+            byte_column,
+            byte_offset,
+            ..
+        }) => CssDiagnosticOrigin {
+            path: Some(PathBuf::from(source_id)),
+            line: Some(*line),
+            column: Some(*byte_column),
+            byte_offset: Some(*byte_offset),
+            label: None,
+        },
+        Some(Origin::Stylesheet {
+            path, byte_offset, ..
+        }) => CssDiagnosticOrigin {
+            path: Some(PathBuf::from(path)),
+            byte_offset: Some(*byte_offset),
+            ..Default::default()
+        },
+        Some(Origin::Manifest {
+            producer,
+            path,
+            index,
+        }) => CssDiagnosticOrigin {
+            path: Some(PathBuf::from(path)),
+            label: Some(format!("manifest {producer}[{index}]")),
+            ..Default::default()
+        },
+        Some(Origin::Safelist { owner, index }) => CssDiagnosticOrigin {
+            label: Some(format!("wind.safelist.{owner}[{index}]")),
+            ..Default::default()
+        },
+        Some(Origin::Config { key_path }) => CssDiagnosticOrigin {
+            label: Some(key_path.clone()),
+            ..Default::default()
+        },
+        Some(Origin::RoleClass { role_key }) => CssDiagnosticOrigin {
+            label: Some(format!("codeHighlight.roleClasses {role_key}")),
+            ..Default::default()
+        },
+        None => CssDiagnosticOrigin::default(),
     }
 }
 
@@ -367,6 +378,87 @@ mod tests {
             }]);
         assert!(class.produce_utility_css(&[]).is_err());
     }
+    #[test]
+    fn failures_keep_structured_deduplicated_origins() {
+        let source = |source_id: &str, line, byte_column, byte_offset| OriginCandidate {
+            text: "rounded-missing".into(),
+            origin: Origin::Source {
+                source_id: source_id.into(),
+                byte_offset,
+                byte_length: 15,
+                line,
+                byte_column,
+                literal_byte_offset: byte_offset,
+                literal_byte_length: 15,
+                position_kind: zudo_wind::SourcePositionKind::Class,
+            },
+        };
+        let origins = vec![
+            source("default/src:a.tsx", 3, 29, 70),
+            source("default/src:a.tsx", 3, 29, 70),
+            source("default/src:b.tsx", 1, 12, 11),
+            source("plugin/virtual:widgets", 2, 5, 30),
+            OriginCandidate {
+                text: "rounded-missing".into(),
+                origin: Origin::Manifest {
+                    producer: "widgets".into(),
+                    path: "node_modules/widgets/wind.json".into(),
+                    index: 2,
+                },
+            },
+        ];
+        let error = WindEngine::new(
+            WindConfig::default(),
+            ["rounded-missing".to_string()].into(),
+            AuthoredCssBundle {
+                css: String::new(),
+                companions: vec![],
+                input_dependencies: vec![],
+            },
+        )
+        .with_origins(origins)
+        .produce_utility_css(&[])
+        .unwrap_err();
+        let failure = error
+            .downcast_ref::<WindDiagnosticsError>()
+            .expect("structured wind failure");
+        let locations: Vec<_> = failure
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.origin.location().unwrap())
+            .collect();
+        assert_eq!(locations.len(), 4, "{locations:?}");
+        for expected in [
+            "default/src:a.tsx:3:29",
+            "default/src:b.tsx:1:12",
+            "plugin/virtual:widgets:2:5",
+            "node_modules/widgets/wind.json (manifest widgets[2])",
+        ] {
+            assert!(
+                locations.iter().any(|location| location == expected),
+                "{locations:?}"
+            );
+        }
+        let first = &failure.diagnostics[0];
+        assert_eq!(first.code, "ZW006");
+        assert_eq!(first.candidate.as_deref(), Some("rounded-missing"));
+        assert_eq!(first.origin.byte_offset, Some(70));
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("wind CSS failed with 4 errors:"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("\n  default/src:a.tsx:3:29: ZW006 rounded-missing: "),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.lines().count(),
+            5,
+            "one line per diagnostic: {rendered}"
+        );
+    }
+
     #[test]
     fn mixed_output_preserves_generated_and_authored_sources() {
         let authored = PathBuf::from("/project/styles/global.css");
