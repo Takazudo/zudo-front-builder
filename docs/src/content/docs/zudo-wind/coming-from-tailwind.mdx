@@ -200,6 +200,8 @@ The candidate grammar balances brackets, parentheses, and quotes before splittin
 
 Not every class-shaped string is meant to create a utility rule. A project name such as `site-header` has no matching utility root, so it remains ordinary class text in markup and wind emits no rule for it. A name such as `text-link` does match the `text` root and is validated as a utility; if its required token is missing, it receives ZW006. This strict classification preserves typo detection instead of treating every unresolved name as ordinary. A standalone `group` or `peer` marker also emits no rule, while still supplying relation metadata to matching candidates.
 
+A Tailwind utility zudo-wind does not implement, such as `line-clamp-2`, `order-1`, `basis-1/2`, or `container`, is not treated as ordinary text. It is reported as ZW014 with the declaration to author instead, as a warning by default and an error under `wind.strict: true`. Names with underscores, such as `card__title`, remain ordinary.
+
 | Candidate outcome | What happens |
 | --- | --- |
 | Resolved utility | Wind emits its rule. |

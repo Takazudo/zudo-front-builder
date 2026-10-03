@@ -1210,3 +1210,127 @@ fn wind_audit_malformed_manifest_names_its_path_on_stderr() {
         "stderr should name the malformed manifest path:\n{stderr}"
     );
 }
+
+/// One-file wind project for the #3523–#3525 classification contracts.
+fn wind_classification_fixture(wind: &str, source: &str) -> TempDir {
+    let temp = tempfile::tempdir().expect("create wind classification fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        format!(r#"{{"wind":{wind}}}"#),
+    )
+    .expect("write wind config");
+    let path = temp.path().join("src/card.tsx");
+    fs::create_dir_all(path.parent().expect("source parent")).expect("create src");
+    fs::write(path, source).expect("write source");
+    temp
+}
+
+fn run_wind_classification_css(project_root: &Path) -> Output {
+    run_css(
+        project_root,
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    )
+}
+
+#[test]
+fn css_command_bem_reset_only_project_builds() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1,"reset":"owned-v1"}"#,
+        "export const N = () => <aside class=\"admonition__title card_title block__el--mod flex\" />;\n",
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "BEM and snake_case authored classes");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(
+        css.contains(".flex"),
+        "utility beside BEM names is missing:\n{css}"
+    );
+    for authored in ["admonition__title", "card_title", "block__el--mod"] {
+        assert!(!css.contains(authored), "{authored} generated CSS:\n{css}");
+    }
+}
+
+#[test]
+fn css_command_conditional_ring_and_const_aria_fail_with_provenance() {
+    let temp = wind_classification_fixture(
+        r##"{"spec":1,"tokens":{"spacingUnit":"0.25rem","colors":{"accent":"#06c","muted":"#888","soft":"#eee"}}}"##,
+        concat!(
+            "const linkClass = \"px-3 aria-[current=page]:bg-soft\";\n",
+            "export const B = ({ on }) => (\n",
+            "  <button class={`flex border ${on ? \"border-accent ring-2\" : \"border-muted\"}`}>\n",
+            "    <a class={linkClass}>x</a>\n",
+            "  </button>\n",
+            ");\n",
+        ),
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_failure(&output, "unsupported tokens in proven class expressions");
+    let stderr = process_stderr(&output);
+    assert!(stderr.contains("ZW004"), "{stderr}");
+    assert!(
+        stderr.contains("(ring-2) at "),
+        "ring-2 lacks provenance:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("card.tsx:3:"),
+        "ring-2 must name its line:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("(aria-[current=page]:bg-soft) at ") && stderr.contains("card.tsx:1:"),
+        "const aria candidate must name its declaration:\n{stderr}"
+    );
+    assert!(
+        !temp.path().join("out.css").exists(),
+        "a failed run must not publish CSS"
+    );
+}
+
+#[test]
+fn css_command_foreign_names_warn_by_default_and_fail_under_strict() {
+    let source = "export const C = () => <p class=\"line-clamp-2 flex\" />;\n";
+    let temp = wind_classification_fixture(r#"{"spec":1}"#, source);
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "foreign utility at a class position, default");
+    let combined = combined_output(&output);
+    assert!(
+        combined.contains("ZW014") && combined.contains("line-clamp-2"),
+        "default run must warn:\n{combined}"
+    );
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "{css}");
+    assert!(
+        !css.contains("line-clamp"),
+        "no CSS for a foreign name:\n{css}"
+    );
+
+    let strict = wind_classification_fixture(r#"{"spec":1,"strict":true}"#, source);
+    let output = run_wind_classification_css(strict.path());
+    assert_failure(&output, "foreign utility at a class position, strict");
+    let stderr = process_stderr(&output);
+    assert!(
+        stderr.contains("ZW014") && stderr.contains("(line-clamp-2) at "),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn css_command_unrelated_literals_never_become_strict() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1,"strict":true}"#,
+        concat!(
+            "const unused = \"line-clamp-2 ring-2\";\n",
+            "it(\"renders container contents\", () => {});\n",
+            "export const D = () => <div class=\"flex\" />;\n",
+        ),
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "strict mode with unrelated literals");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "{css}");
+}

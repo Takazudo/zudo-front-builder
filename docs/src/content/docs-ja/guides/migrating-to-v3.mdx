@@ -51,6 +51,8 @@ export default defineConfig({
 
 スタイルシートに `--color-accent` を宣言し、使うユーティリティに必要なトークンを追加します。`site-header` のようにクラス位置の名前がどのユーティリティ基部にも一致しなければ、通常のクラステキストとして残ります。カタログの基部から始まる名前は最長一致する基部で検証されるため、色またはフォントサイズのトークンがなければ `text-link` は ZW006 になります。CSS が候補全体を所有する場合は `wind.authoredClasses: { "text-link": true }` に予約します。完全一致するとユーティリティの検証、診断、CSS 生成が抑止されます。それ以外の場合はユーティリティの綴りを直すか不足トークンを宣言します。ユーティリティ言語とリセットは Tailwind と異なります。ディレクティブ、バリアント、トークン、未対応の構文は [Tailwind からの移行表](../zudo-wind/coming-from-tailwind.mdx)を参照してください。
 
+BEM の `card__title` や snake_case の `card_title` のようにアンダースコアを使う手書きの名前は、`card-title` と同じく通常のクラステキストです。`line-clamp-2`、`contents`、`container` など zudo-wind が実装しない Tailwind ユーティリティは ZW014 の警告になり、代わりに CSS で書くべき宣言を示します。これでビルドを失敗させるには `wind.strict: true` を設定します。`const` や条件分岐に置いたクラス文字列も、`class` 属性に届けば直接書いたクラスと同じく検査されるため、そこにある未対応のユーティリティもビルドを失敗させます。[診断とツール](../zudo-wind/diagnostics-and-tools.mdx)を参照してください。
+
 ## コンポーネントと島
 
 `tsconfig.json` で `compilerOptions.jsx` を `react-jsx`、`compilerOptions.jsxImportSource` を `@takazudo/zfb/zudo-react` にします。使用中の `@takazudo/zfb` と `@takazudo/zfb-runtime` は残します。旧 zfb エンジンのためだけに追加していた `preact`、`react`、`react-dom`、`@types/react`、`@types/react-dom` は削除します。ランタイムは独立パッケージではなく、`@takazudo/zfb/zudo-react` から提供されます。

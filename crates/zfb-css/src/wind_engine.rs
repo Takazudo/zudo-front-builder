@@ -126,13 +126,14 @@ impl CssEngine for WindEngine {
                     .iter()
                     .filter(|d| d.severity == CssDiagnosticSeverity::Error)
                     .map(|d| format!(
-                        "{}: {}{}",
+                        "{}: {}{}{}",
                         d.code,
                         d.message,
                         d.candidate
                             .as_deref()
                             .map(|c| format!(" ({c})"))
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                        origin_suffix(&d.origin)
                     ))
                     .collect::<Vec<_>>()
                     .join("; ")
@@ -178,6 +179,17 @@ impl CssEngine for WindEngine {
             });
         }
         Ok(output)
+    }
+}
+
+/// ` at <source>:<line>:<column>` so a failing candidate names its occurrence.
+fn origin_suffix(origin: &CssDiagnosticOrigin) -> String {
+    match (&origin.path, origin.line, origin.column) {
+        (Some(path), Some(line), Some(column)) => {
+            format!(" at {}:{line}:{column}", path.display())
+        }
+        (Some(path), _, _) => format!(" at {}", path.display()),
+        _ => String::new(),
     }
 }
 
