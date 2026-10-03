@@ -104,9 +104,9 @@ pub(crate) fn validate_value(category: ValueCategory, value: &str) -> Result<Val
     property_value_status(category.property_name(), value, has_var)
 }
 
-/// Values tried in place of every `var()` when checking that the rest of a
-/// variable-dependent value fits the property. One must type-check; no
-/// stand-in is ever emitted.
+/// Values tried in place of each `var()` when checking that the rest of a
+/// variable-dependent value fits the property. Every `var()` gets its own
+/// stand-in; some combination must type-check. No stand-in is ever emitted.
 const VARIABLE_STAND_INS: &[&str] = &[
     "red",
     "1px",
@@ -122,7 +122,14 @@ const VARIABLE_STAND_INS: &[&str] = &[
     "400",
     "all",
     "0 0 red",
+    // Color channel lists, as in `hsl(var(--primary))` or `rgb(var(--rgb) / 0.5)`.
+    "0 0% 0%",
+    "0 0 0",
 ];
+
+/// Beyond this many `var()`s the stand-in combinations grow too large, so a
+/// value that parses is accepted as category-unverified.
+const MAX_COMBINED_VARIABLES: u32 = 3;
 
 /// Parse the raw value for `property`. A `var()`-dependent value cannot be
 /// typed until computed-value time, so it is category-unverified once its
@@ -151,9 +158,21 @@ pub(crate) fn property_value_status(
     }
     Property::parse_string(PropertyId::from(property), value, ParserOptions::default())
         .map_err(|_| invalid())?;
-    let fits = VARIABLE_STAND_INS
-        .iter()
-        .any(|stand_in| replace_variables(value, stand_in).is_some_and(|value| typed(&value)));
+    let count = variable_count(value).ok_or_else(invalid)?;
+    let fits = count > MAX_COMBINED_VARIABLES || {
+        let combinations = VARIABLE_STAND_INS.len().pow(count);
+        (0..combinations).any(|combination| {
+            let mut index = combination;
+            let stand_ins: Vec<&str> = (0..count)
+                .map(|_| {
+                    let stand_in = VARIABLE_STAND_INS[index % VARIABLE_STAND_INS.len()];
+                    index /= VARIABLE_STAND_INS.len();
+                    stand_in
+                })
+                .collect();
+            replace_variables(value, &stand_ins).is_some_and(|value| typed(&value))
+        })
+    };
     if fits {
         Ok(ValueStatus::CategoryUnverified)
     } else {
@@ -161,16 +180,30 @@ pub(crate) fn property_value_status(
     }
 }
 
-fn replace_variables(value: &str, stand_in: &str) -> Option<String> {
+fn variable_count(value: &str) -> Option<u32> {
+    let lower = value.to_ascii_lowercase();
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(offset) = lower[search..].find("var(") {
+        let start = search + offset;
+        search = find_matching_paren(value, start + 3, value.len()).ok()? + 1;
+        count += 1;
+    }
+    Some(count)
+}
+
+/// Replace the n-th outermost `var()` with `stand_ins[n]`.
+fn replace_variables(value: &str, stand_ins: &[&str]) -> Option<String> {
     let lower = value.to_ascii_lowercase();
     let mut result = String::new();
     let mut copied = 0;
     let mut search = 0;
+    let mut stand_ins = stand_ins.iter();
     while let Some(offset) = lower[search..].find("var(") {
         let start = search + offset;
         let close = find_matching_paren(value, start + 3, value.len()).ok()?;
         result.push_str(&value[copied..start]);
-        result.push_str(stand_in);
+        result.push_str(stand_ins.next()?);
         copied = close + 1;
         search = close + 1;
     }
@@ -548,6 +581,25 @@ mod tests {
         ] {
             assert!(
                 validate_value(category, value).is_err(),
+                "{category:?}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_list_and_mixed_type_variables_stay_accepted() {
+        for (category, value) in [
+            (ValueCategory::Color, "hsl(var(--primary))"),
+            (ValueCategory::Color, "rgb(var(--rgb) / 0.5)"),
+            (ValueCategory::Shadow, "0 0 0 var(--w) var(--c)"),
+            (
+                ValueCategory::Shadow,
+                "var(--a) var(--b) var(--c) var(--d) var(--e)",
+            ),
+        ] {
+            assert_eq!(
+                validate_value(category, value),
+                Ok(ValueStatus::CategoryUnverified),
                 "{category:?}: {value}"
             );
         }
