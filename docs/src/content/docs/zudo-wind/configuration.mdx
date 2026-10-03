@@ -67,7 +67,7 @@ wind: {
 
 Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root, or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
 
-Each `packageRoots` entry is either a `./` or `../` path from the declaring root, or an installed package name with an optional subpath such as `@example/widgets/dist`, found through the `node_modules` directories above the declaring root. A package root must exist as a directory, and it is scanned with its own `dist` and `node_modules`, ignoring gitignore rules. Output, `--output`, and scratch directories stay excluded inside it.
+Each `packageRoots` entry is either a `./` or `../` path from the declaring root, or an installed package name with an optional subpath such as `@example/widgets/dist`, found through the `node_modules` directories above the declaring root. A package root must be an existing directory that is neither the project root nor one of its ancestors, and it is scanned with its own `dist` and `node_modules`, ignoring gitignore rules. Output, `--output`, and scratch directories stay excluded inside it.
 
 The same object is valid as the value of the `wind` property in JSON:
 
