@@ -95,13 +95,24 @@ fn npm_pack(package_dir: &Path, destination: &Path) -> PathBuf {
         .flatten()
         .map(|e| e.path())
         .collect();
-    // Packing a directory argument makes npm run its `prepare` script even
-    // with --ignore-scripts, so pack from inside the package instead.
+    // Some npm versions run `prepare` (Preact's needs husky) even with
+    // --ignore-scripts, so pack a copy whose manifest declares no scripts.
+    let staging = tempfile::tempdir().unwrap();
+    let staged = staging.path().join("package");
+    copy_dir(package_dir, &staged);
+    let manifest_path = staged.join("package.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest.as_object_mut().unwrap().remove("scripts");
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
     let packed = Command::new("npm")
         .args(["pack", "--ignore-scripts", "--pack-destination"])
         .arg(destination)
-        .current_dir(package_dir)
-        .env("npm_config_ignore_scripts", "true")
+        .current_dir(&staged)
         .output()
         .expect("spawn npm pack");
     assert!(

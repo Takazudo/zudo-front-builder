@@ -1008,9 +1008,9 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "package-root/project/node_modules/@scope/ui",
-                "package-root/project/node_modules/@scope/ui/dist",
-                "package-root/project/packages/local",
+                "package-root/node_modules/@scope/ui",
+                "package-root/node_modules/@scope/ui/dist",
+                "package-root/packages/local",
             ]
         );
         let files = expand_file_set(&plan);
