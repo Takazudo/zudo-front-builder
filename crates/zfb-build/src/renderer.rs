@@ -78,6 +78,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bundler::BundleManifest;
+use zfb_types::{normalize_path_lexical, path_to_posix_string};
 
 /// Re-exported so consumers of [`EmbeddedV8Host`] can name the
 /// per-dispatch mode without depending on `zfb-render` directly.
@@ -625,18 +626,28 @@ pub enum RendererError {
         source: reqwest::Error,
     },
     /// The worker returned a non-2xx response. `user_location` is
-    /// populated when the source-map walk succeeded.
+    /// populated when the source-map walk reached an authored file.
     #[error("render failed for {url} (status {status}): {body}{location}",
-        location = user_location.as_ref().map(|l| format!(" — at {l}")).unwrap_or_default(),
+        location = match (user_location, internal_location) {
+            (Some(l), _) => format!(" — at {l}"),
+            (None, Some(l)) => format!(" — internal frame {l}"),
+            (None, None) => String::new(),
+        },
     )]
     RenderFailed {
         url: String,
         status: u16,
         body: String,
-        /// `Some("pages/foo.tsx:42:10")` if a sourcemap re-projection
-        /// resolved a frame in the response body. `None` when no map
-        /// was readable, or no frame in the body matched the bundle.
+        /// `Some("pages/foo.tsx:42:10")` when the failing element's call
+        /// site, or the first stack frame, maps to a project file whose
+        /// content matches the map. Never a bundle offset or a staging path.
         user_location: Option<String>,
+        /// Sanitized label of the first mapped frame that is not authored
+        /// (`node_modules/…`, `external/…`, `<generated>/…`), kept as a
+        /// debugging cause when no authored frame exists.
+        internal_location: Option<String>,
+        /// Structured zudo-react render diagnostic, when the worker emitted one.
+        diagnostic: Option<Box<RenderDiagnostic>>,
     },
     /// The in-process V8 host encountered an infrastructure-level error
     /// (isolate crash, OOM, module load failure, etc.). Non-2xx responses
@@ -644,6 +655,49 @@ pub enum RendererError {
     /// [`RendererError::RenderFailed`], not as this variant.
     #[error("embedded V8 host error: {0}")]
     EmbeddedV8(String),
+}
+
+/// Structured fields of a zudo-react render failure, emitted by the SSR
+/// router as one `[zfb-render-diagnostic] {json}` line in the debug host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RenderDiagnostic {
+    pub code: String,
+    /// Structural element/component path, independent of any source span.
+    pub path: String,
+    pub component: String,
+    #[serde(default)]
+    pub spelling: Option<PropSpelling>,
+    #[serde(default)]
+    pub site: Option<RenderSite>,
+}
+
+/// The authored prop spelling a diagnostic rejected, plus the supported
+/// spelling when one exists.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PropSpelling {
+    pub name: String,
+    #[serde(default)]
+    pub suggestion: Option<String>,
+}
+
+/// Where the failing description was created.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum RenderSite {
+    /// Compiler metadata (`jsxDEV` source), relative to the bundler's
+    /// project mirror.
+    Source {
+        file: String,
+        line: u32,
+        column: u32,
+    },
+    /// Generated-bundle position of the `jsx()` call. Authored only after
+    /// source-map projection.
+    Generated {
+        specifier: String,
+        line: u32,
+        column: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -750,7 +804,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
 /// to drive a single route, [`shutdown`] to tear down cleanly. Drop
 /// also tears down (idempotent) so a panicking dev loop still cleans up.
 pub struct RendererState {
-    sourcemap: Option<sourcemap::SourceMap>,
+    sourcemap: Option<LoadedSourceMap>,
     handle: BackendHandle,
     /// Basename of the inner bundle module (e.g. `"bundle.mjs"`), derived
     /// from `bundle_path` at [`start`]. Frame candidates whose specifier
@@ -978,7 +1032,7 @@ fn render_one_inner(
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
     project_root: &Path,
-    sourcemap: Option<&sourcemap::SourceMap>,
+    sourcemap: Option<&LoadedSourceMap>,
     expected_inner_bundle_basename: &str,
     prod_head_assets: Option<&crate::head_inject::ProdHeadAssets>,
 ) -> Result<PathBuf, RendererError> {
@@ -1048,14 +1102,38 @@ fn render_one_inner(
     let url_for_err = entry.url_path.clone();
 
     if !(200..300).contains(&status) {
-        let body_str = String::from_utf8_lossy(&body).into_owned();
-        let user_location = sourcemap
-            .and_then(|sm| reproject_first_frame(&body_str, sm, expected_inner_bundle_basename));
+        let (body_str, diagnostic) = split_render_diagnostic(&String::from_utf8_lossy(&body));
+        // A render diagnostic is thrown inside the renderer, so its stack
+        // frames never locate the authored element; only its site can. The
+        // first mapped frame stays available as the internal debugging cause.
+        let projection = sourcemap.map(|sm| {
+            reproject_first_frame(&body_str, sm, expected_inner_bundle_basename, project_root)
+        });
+        let (user_location, internal_location) = match (&diagnostic, projection) {
+            (Some(diagnostic), projection) => match diagnostic.site.as_ref().and_then(|site| {
+                authored_site(
+                    site,
+                    sourcemap,
+                    expected_inner_bundle_basename,
+                    project_root,
+                )
+            }) {
+                Some(location) => (Some(location), None),
+                None => (None, projection.and_then(|p| p.internal)),
+            },
+            (None, Some(Projection { authored, internal })) => {
+                let internal = if authored.is_some() { None } else { internal };
+                (authored, internal)
+            }
+            (None, None) => (None, None),
+        };
         return Err(RendererError::RenderFailed {
             url: url_for_err,
             status,
             body: body_str,
             user_location,
+            internal_location,
+            diagnostic,
         });
     }
     // Two host-side rewrites run here, both UTF-8-only — binary payloads
@@ -1276,9 +1354,85 @@ fn launch(
 // Internals — sourcemap re-projection
 // ---------------------------------------------------------------------------
 
-fn load_sourcemap(path: &Path) -> Option<sourcemap::SourceMap> {
+/// A parsed bundle map plus the directory its relative `sources` resolve from.
+struct LoadedSourceMap {
+    map: sourcemap::SourceMap,
+    dir: PathBuf,
+}
+
+fn load_sourcemap(path: &Path) -> Option<LoadedSourceMap> {
     let raw = fs::read(path).ok()?;
-    sourcemap::SourceMap::from_reader(raw.as_slice()).ok()
+    let map = sourcemap::SourceMap::from_reader(raw.as_slice()).ok()?;
+    let dir = absolute_path(path.parent().unwrap_or(Path::new("")));
+    Some(LoadedSourceMap { map, dir })
+}
+
+/// Line prefix the SSR router (`zfb-runtime`'s `router.ts`) uses for the
+/// structured render diagnostic it appends to a failed render's body.
+const RENDER_DIAGNOSTIC_PREFIX: &str = "[zfb-render-diagnostic] ";
+
+/// Remove the structured diagnostic line from `body` and parse it. An
+/// unparsable line stays in the body untouched.
+fn split_render_diagnostic(body: &str) -> (String, Option<Box<RenderDiagnostic>>) {
+    let marker = format!("\n{RENDER_DIAGNOSTIC_PREFIX}");
+    let Some(start) = body.rfind(&marker) else {
+        return (body.to_string(), None);
+    };
+    let json_start = start + marker.len();
+    let end = body[json_start..]
+        .find('\n')
+        .map_or(body.len(), |offset| json_start + offset);
+    match serde_json::from_str(&body[json_start..end]) {
+        Ok(diagnostic) => (
+            format!("{}{}", &body[..start], &body[end..]),
+            Some(diagnostic),
+        ),
+        Err(_) => (body.to_string(), None),
+    }
+}
+
+/// Resolve a diagnostic's site to an authored `file:line:col`, or `None`
+/// when it cannot be attributed to a verified project file.
+fn authored_site(
+    site: &RenderSite,
+    sourcemap: Option<&LoadedSourceMap>,
+    expected_inner_bundle_basename: &str,
+    project_root: &Path,
+) -> Option<String> {
+    match site {
+        RenderSite::Source { file, line, column } => {
+            if project_root.as_os_str().is_empty() {
+                return None;
+            }
+            let path = normalize_path_lexical(&absolute_path(project_root).join(file));
+            match classify_path(&path, None, project_root) {
+                FrameOrigin::Authored(rel) => Some(format!("{rel}:{line}:{column}")),
+                FrameOrigin::Internal(_) => None,
+            }
+        }
+        RenderSite::Generated {
+            specifier,
+            line,
+            column,
+        } => {
+            if specifier_basename(&percent_decode(specifier)) != expected_inner_bundle_basename {
+                return None;
+            }
+            let sm = sourcemap?;
+            let token = sm
+                .map
+                .lookup_token(line.saturating_sub(1), column.saturating_sub(1))?;
+            // A token from an earlier generated line would be a guess, not
+            // the call's own mapping.
+            if token.get_dst_line() != line.saturating_sub(1) {
+                return None;
+            }
+            match project_token(&token, sm, project_root)? {
+                FrameOrigin::Authored(location) => Some(location),
+                FrameOrigin::Internal(_) => None,
+            }
+        }
+    }
 }
 
 /// Basename of the inner bundle module (e.g. `bundle_path` =
@@ -1338,15 +1492,11 @@ fn percent_decode(s: &str) -> Cow<'_, str> {
     }
 }
 
-/// Walk the response body for the first `bundle.mjs:LINE:COL` style
-/// frame and re-project it through the source map. Returns
-/// `"<source>:line:col"` (1-based line numbers) when we find one,
-/// `None` otherwise.
-///
-/// We deliberately only project the first frame: build errors usually
-/// originate in user code and the deepest user frame is typically the
-/// first in a workerd traceback. A multi-frame walk is reserved for
-/// the more sophisticated diagnostics layer T7+ may add.
+/// Walk the response body's `bundle.mjs:LINE:COL` style frames and
+/// re-project them through the source map. `authored` is the first frame
+/// that lands in a verified project file (`"<source>:line:col"`, 1-based);
+/// `internal` is the first non-authored frame before it, sanitized so
+/// staging tempdirs and local absolute paths never reach the user.
 ///
 /// `expected_inner_bundle_basename` (see [`inner_bundle_basename`])
 /// filters candidates to those whose own specifier resolves to the
@@ -1357,33 +1507,136 @@ fn percent_decode(s: &str) -> Cow<'_, str> {
 /// mis-attributing a wrapper bug to a bogus inner-bundle location.
 fn reproject_first_frame(
     body: &str,
-    sm: &sourcemap::SourceMap,
+    sm: &LoadedSourceMap,
     expected_inner_bundle_basename: &str,
-) -> Option<String> {
+    project_root: &Path,
+) -> Projection {
     // Walk every candidate frame, not just the first parsed one: the
     // first frame in a workerd traceback is often `at fetch
     // (worker.js:1:1)` (the synthetic harness entry), not the user's
-    // code. Take the first candidate that *resolves* to a source
-    // mapping. If none resolves we return None and the caller leaves
-    // `user_location` unset.
-    find_frame_candidates(body)
-        .into_iter()
-        .filter(|cap| {
-            let decoded = percent_decode(&cap.specifier);
-            specifier_basename(&decoded) == expected_inner_bundle_basename
-        })
-        .find_map(|cap| {
-            let token = sm.lookup_token(cap.line.saturating_sub(1), cap.col.saturating_sub(1))?;
-            let source = token
-                .get_source()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "<unknown>".to_string());
-            Some(format!(
-                "{source}:{line}:{col}",
-                line = token.get_src_line() + 1,
-                col = token.get_src_col() + 1,
-            ))
-        })
+    // code.
+    let mut projection = Projection::default();
+    let frames = find_frame_candidates(body).into_iter().filter(|cap| {
+        let decoded = percent_decode(&cap.specifier);
+        specifier_basename(&decoded) == expected_inner_bundle_basename
+    });
+    for cap in frames {
+        let Some(token) = sm
+            .map
+            .lookup_token(cap.line.saturating_sub(1), cap.col.saturating_sub(1))
+        else {
+            continue;
+        };
+        match project_token(&token, sm, project_root) {
+            Some(FrameOrigin::Authored(location)) => {
+                projection.authored = Some(location);
+                break;
+            }
+            Some(FrameOrigin::Internal(location)) if projection.internal.is_none() => {
+                projection.internal = Some(location);
+            }
+            _ => {}
+        }
+    }
+    projection
+}
+
+#[derive(Debug, Default)]
+struct Projection {
+    authored: Option<String>,
+    internal: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FrameOrigin {
+    Authored(String),
+    Internal(String),
+}
+
+/// Staging-directory name prefixes the bundler mirrors project sources
+/// under; a map source inside one is a copy, never the authored file.
+const BUNDLER_STAGING_PREFIXES: [&str; 2] = [
+    crate::bundler::SHADOW_SESSION_PREFIX,
+    crate::bundler::BUNDLER_TEMPDIR_PREFIX,
+];
+
+/// Classify a mapped token and format it as `"<label>:line:col"`.
+fn project_token(
+    token: &sourcemap::Token<'_>,
+    sm: &LoadedSourceMap,
+    project_root: &Path,
+) -> Option<FrameOrigin> {
+    let source = token.get_source()?;
+    let suffix = format!(
+        ":{line}:{col}",
+        line = token.get_src_line() + 1,
+        col = token.get_src_col() + 1,
+    );
+    // Without a project root there is nothing to verify against; keep the
+    // map's own label.
+    if project_root.as_os_str().is_empty() {
+        return Some(FrameOrigin::Authored(format!("{source}{suffix}")));
+    }
+    let content = token.get_source_view().map(|view| view.source());
+    let path = normalize_path_lexical(&sm.dir.join(source));
+    Some(match classify_path(&path, content, project_root) {
+        FrameOrigin::Authored(label) => FrameOrigin::Authored(format!("{label}{suffix}")),
+        FrameOrigin::Internal(label) => FrameOrigin::Internal(format!("{label}{suffix}")),
+    })
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Decide whether `path` (absolute, lexically normalized) is an authored
+/// project file. Staged copies are traced back to the project file they
+/// mirror, and accepted only when the project file still holds the content
+/// the map was built from.
+fn classify_path(path: &Path, content: Option<&str>, project_root: &Path) -> FrameOrigin {
+    let parts: Vec<_> = path.components().collect();
+    let tail = |index: usize| path_to_posix_string(&parts[index + 1..].iter().collect::<PathBuf>());
+    if let Some(index) = parts
+        .iter()
+        .rposition(|part| part.as_os_str() == "node_modules")
+    {
+        return FrameOrigin::Internal(format!("node_modules/{}", tail(index)));
+    }
+    let staging = parts.iter().rposition(|part| {
+        part.as_os_str()
+            .to_str()
+            .is_some_and(|name| BUNDLER_STAGING_PREFIXES.iter().any(|p| name.starts_with(p)))
+    });
+    if let Some(index) = staging {
+        let staged: PathBuf = parts[index + 1..].iter().collect();
+        // The project mirror sits at the project's workspace-relative
+        // subpath inside the staging root, so try each suffix.
+        let mirrored = (0..staged.components().count())
+            .map(|skip| staged.components().skip(skip).collect::<PathBuf>())
+            .find(|rel| verified_project_file(rel, content, project_root));
+        return match mirrored {
+            Some(rel) => FrameOrigin::Authored(path_to_posix_string(&rel)),
+            None => FrameOrigin::Internal(format!("<generated>/{}", tail(index))),
+        };
+    }
+    let root = normalize_path_lexical(&absolute_path(project_root));
+    match path.strip_prefix(&root) {
+        Ok(rel) if verified_project_file(rel, content, project_root) => {
+            FrameOrigin::Authored(path_to_posix_string(rel))
+        }
+        _ => FrameOrigin::Internal(format!(
+            "external/{}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )),
+    }
+}
+
+fn verified_project_file(rel: &Path, content: Option<&str>, project_root: &Path) -> bool {
+    let file = project_root.join(rel);
+    match content {
+        Some(content) => fs::read_to_string(&file).is_ok_and(|actual| actual == content),
+        None => file.is_file(),
+    }
 }
 
 #[derive(Debug)]
@@ -1481,6 +1734,13 @@ fn find_specifier_start(body: &str, spec_end: usize) -> usize {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    fn loaded(map: sourcemap::SourceMap) -> LoadedSourceMap {
+        LoadedSourceMap {
+            map,
+            dir: PathBuf::new(),
+        }
+    }
 
     /// Build a [`Backend::Stub`] from a closure that maps URL path → response.
     /// The closure signature mirrors the public [`HttpResponseLike`] shape.
@@ -2092,7 +2352,9 @@ mod tests {
 
         // Body that mentions the bundle frame.
         let body = "TypeError: boom\n  at fetch (bundle.mjs:1:1)\n";
-        let projected = reproject_first_frame(body, &sm, "bundle.mjs").expect("reprojection");
+        let projected = reproject_first_frame(body, &loaded(sm), "bundle.mjs", Path::new(""))
+            .authored
+            .expect("reprojection");
         assert!(
             projected.starts_with("pages/error.tsx:5:"),
             "got {projected}"
@@ -2116,7 +2378,8 @@ mod tests {
 
         let body =
             "TypeError: boom\n  at wrap (file:///zfb/__zfb_dev_content_trace_wrapper.mjs:1:1)\n";
-        let projected = reproject_first_frame(body, &sm, "bundle.mjs");
+        let projected =
+            reproject_first_frame(body, &loaded(sm), "bundle.mjs", Path::new("")).authored;
         assert!(
             projected.is_none(),
             "wrapper-only frame must not be mis-reprojected, got {projected:?}"
@@ -2139,7 +2402,8 @@ mod tests {
         let sm = builder.into_sourcemap();
 
         let body = "TypeError: boom\n  at wrap (file:///zfb/__zfb_dev_content_trace_wrapper.mjs:1:1)\n  at fetch (bundle.mjs:10:5)\n";
-        let projected = reproject_first_frame(body, &sm, "bundle.mjs")
+        let projected = reproject_first_frame(body, &loaded(sm), "bundle.mjs", Path::new(""))
+            .authored
             .expect("inner-bundle frame should reproject");
         assert!(
             projected.starts_with("pages/foo.tsx:10:"),
@@ -2163,7 +2427,8 @@ mod tests {
         let sm = builder.into_sourcemap();
 
         let body = "TypeError: boom\n  at fetch (file:///zfb/bundle%20%231.mjs:1:1)\n";
-        let projected = reproject_first_frame(body, &sm, "bundle #1.mjs")
+        let projected = reproject_first_frame(body, &loaded(sm), "bundle #1.mjs", Path::new(""))
+            .authored
             .expect("percent-encoded specifier should still match the raw basename");
         assert!(projected.starts_with("pages/foo.tsx:5:"), "got {projected}");
     }
@@ -2551,5 +2816,300 @@ mod tests {
 
         let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
         assert!(written.contains("Home"), "body content must be preserved");
+    }
+
+    mod authored_spans {
+        use super::*;
+
+        const FIELD: &str =
+            "export function Field() {\n  return <input autoComplete=\"off\" />;\n}\n";
+
+        /// A project with `components/field.tsx`, and a bundle map whose
+        /// source points at the bundler's staged copy of it (`zfb-bundler-*`),
+        /// exactly as esbuild records it. Bundle line 9 col 5 maps to the
+        /// copy's line 2 col 10; bundle line 20 col 1 maps into node_modules.
+        fn fixture(staged_content: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("site");
+            fs::create_dir_all(project.join("components")).unwrap();
+            fs::write(project.join("components/field.tsx"), FIELD).unwrap();
+            let out = project.join(".zfb-build");
+            fs::create_dir_all(&out).unwrap();
+
+            let mut builder = sourcemap::SourceMapBuilder::new(None);
+            let staged = builder.add_source("../../zfb-bundler-AbC123/components/field.tsx");
+            builder.set_source_contents(staged, Some(staged_content));
+            builder.add_raw(8, 4, 1, 9, Some(staged), None, false);
+            let internal =
+                builder.add_source("../node_modules/@takazudo/zfb/src/zudo-react/render-html.ts");
+            builder.set_source_contents(internal, Some("// renderer"));
+            builder.add_raw(19, 0, 66, 8, Some(internal), None, false);
+            let mut buf = Vec::new();
+            builder.into_sourcemap().to_writer(&mut buf).unwrap();
+            let map_path = out.join("bundle.mjs.map");
+            fs::write(&map_path, buf).unwrap();
+            (tmp, project, map_path)
+        }
+
+        fn fail_with(body: String, project: &Path, map_path: PathBuf) -> RendererError {
+            let dist = tempfile::tempdir().unwrap();
+            let body = body.into_bytes();
+            render_all(RendererInput {
+                bundle_path: map_path.with_extension(""),
+                sourcemap_path: map_path,
+                manifest: dummy_manifest(),
+                dist_dir: dist.path().to_path_buf(),
+                project_root: project.to_path_buf(),
+                route_universe: vec![RouteUniverseEntry {
+                    url_path: "/".into(),
+                    output_path: PathBuf::from("index.html"),
+                    route_key: "/".into(),
+                    static_html: false,
+                    source_path: None,
+                }],
+                prerender_map: BTreeMap::new(),
+                backend: stub_backend(move |_| HttpResponseLike {
+                    status: 500,
+                    content_type: "text/plain".into(),
+                    body: body.clone(),
+                    ..Default::default()
+                }),
+                request_timeout: None,
+                prod_head_assets: None,
+            })
+            .unwrap_err()
+        }
+
+        const MESSAGE: &str = "[zfb-runtime] render threw for \"/\": ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render\nTypeError: ZR_PROP_DIALECT\n    at fail (file:///zfb/bundle.mjs:20:1)";
+
+        fn diagnostic_line(site: &str) -> String {
+            format!(
+                "\n[zfb-render-diagnostic] {{\"code\":\"ZR_PROP_DIALECT\",\"path\":\"root\",\"component\":\"static render\",\"spelling\":{{\"name\":\"autoComplete\",\"suggestion\":\"autocomplete\"}}{site}}}"
+            )
+        }
+
+        #[test]
+        fn generated_site_maps_to_the_authored_project_file() {
+            let (_tmp, project, map_path) = fixture(FIELD);
+            let site = r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":9,"column":5}"#;
+            let err = fail_with(
+                format!("{MESSAGE}{}", diagnostic_line(site)),
+                &project,
+                map_path,
+            );
+            let display = err.to_string();
+            let RendererError::RenderFailed {
+                body,
+                user_location,
+                internal_location,
+                diagnostic,
+                ..
+            } = err
+            else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location.as_deref(), Some("components/field.tsx:2:10"));
+            assert_eq!(internal_location, None);
+            assert_eq!(body, MESSAGE);
+            let diagnostic = diagnostic.expect("structured diagnostic");
+            assert_eq!(diagnostic.code, "ZR_PROP_DIALECT");
+            assert_eq!(diagnostic.path, "root");
+            assert_eq!(diagnostic.component, "static render");
+            assert_eq!(
+                diagnostic.spelling,
+                Some(PropSpelling {
+                    name: "autoComplete".into(),
+                    suggestion: Some("autocomplete".into()),
+                })
+            );
+            assert!(
+                display.ends_with(" — at components/field.tsx:2:10"),
+                "{display}"
+            );
+            assert!(!display.contains("zfb-bundler-"), "{display}");
+            assert!(!display.contains("zfb-render-diagnostic"), "{display}");
+        }
+
+        #[test]
+        fn preprocessed_copy_is_never_labelled_authored() {
+            let (_tmp, project, map_path) = fixture("// rewritten by a preprocessor\n");
+            let site = r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":9,"column":5}"#;
+            let err = fail_with(
+                format!("{MESSAGE}{}", diagnostic_line(site)),
+                &project,
+                map_path,
+            );
+            let display = err.to_string();
+            let RendererError::RenderFailed {
+                user_location,
+                internal_location,
+                diagnostic,
+                ..
+            } = err
+            else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location, None);
+            assert_eq!(
+                internal_location.as_deref(),
+                Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9")
+            );
+            assert!(diagnostic.is_some());
+            assert!(!display.contains(" — at "), "{display}");
+        }
+
+        #[test]
+        fn structural_fallback_keeps_the_throw_frame_only_as_internal_cause() {
+            let (_tmp, project, map_path) = fixture(FIELD);
+            for site in [
+                "",
+                // A site that resolves outside the project.
+                r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":20,"column":1}"#,
+            ] {
+                let err = fail_with(
+                    format!("{MESSAGE}{}", diagnostic_line(site)),
+                    &project,
+                    map_path.clone(),
+                );
+                let display = err.to_string();
+                let RendererError::RenderFailed {
+                    user_location,
+                    internal_location,
+                    diagnostic,
+                    ..
+                } = err
+                else {
+                    unreachable!("expected RenderFailed");
+                };
+                assert_eq!(user_location, None, "{site}");
+                assert_eq!(
+                    internal_location.as_deref(),
+                    Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9"),
+                    "{site}"
+                );
+                assert!(diagnostic.is_some());
+                assert!(!display.contains(" — at "), "{display}");
+                assert!(
+                    display.contains(" — internal frame node_modules/"),
+                    "{display}"
+                );
+            }
+        }
+
+        #[test]
+        fn third_party_and_offset_sites_stay_structural() {
+            let (_tmp, project, map_path) = fixture(FIELD);
+            for site in [
+                // jsx() inside node_modules.
+                r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":20,"column":1}"#,
+                // No mapping on the call's own generated line.
+                r#","site":{"kind":"generated","specifier":"file:///zfb/bundle.mjs","line":12,"column":3}"#,
+                // Another module's coordinates.
+                r#","site":{"kind":"generated","specifier":"file:///zfb/other.mjs","line":9,"column":5}"#,
+            ] {
+                let err = fail_with(
+                    format!("{MESSAGE}{}", diagnostic_line(site)),
+                    &project,
+                    map_path.clone(),
+                );
+                let RendererError::RenderFailed { user_location, .. } = err else {
+                    unreachable!("expected RenderFailed");
+                };
+                assert_eq!(user_location, None, "{site}");
+            }
+        }
+
+        #[test]
+        fn compiler_source_site_is_reported_when_the_file_exists() {
+            let (_tmp, project, map_path) = fixture(FIELD);
+            let site =
+                r#","site":{"kind":"source","file":"components/field.tsx","line":2,"column":10}"#;
+            let err = fail_with(
+                format!("{MESSAGE}{}", diagnostic_line(site)),
+                &project,
+                map_path.clone(),
+            );
+            let RendererError::RenderFailed { user_location, .. } = err else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location.as_deref(), Some("components/field.tsx:2:10"));
+
+            let missing =
+                r#","site":{"kind":"source","file":"components/gone.tsx","line":2,"column":10}"#;
+            let err = fail_with(
+                format!("{MESSAGE}{}", diagnostic_line(missing)),
+                &project,
+                map_path,
+            );
+            let RendererError::RenderFailed { user_location, .. } = err else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location, None);
+        }
+
+        #[test]
+        fn plain_errors_prefer_an_authored_frame_and_sanitize_internal_ones() {
+            let (_tmp, project, map_path) = fixture(FIELD);
+            let body = "Error: x\n    at a (file:///zfb/bundle.mjs:20:1)\n    at b (file:///zfb/bundle.mjs:9:5)";
+            let RendererError::RenderFailed {
+                user_location,
+                internal_location,
+                ..
+            } = fail_with(body.into(), &project, map_path.clone())
+            else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location.as_deref(), Some("components/field.tsx:2:10"));
+            assert_eq!(internal_location, None);
+
+            let body = "Error: x\n    at a (file:///zfb/bundle.mjs:20:1)";
+            let err = fail_with(body.into(), &project, map_path);
+            let display = err.to_string();
+            let RendererError::RenderFailed {
+                user_location,
+                internal_location,
+                ..
+            } = err
+            else {
+                unreachable!("expected RenderFailed");
+            };
+            assert_eq!(user_location, None);
+            assert_eq!(
+                internal_location.as_deref(),
+                Some("node_modules/@takazudo/zfb/src/zudo-react/render-html.ts:67:9")
+            );
+            assert!(
+                display.contains(" — internal frame node_modules/"),
+                "{display}"
+            );
+        }
+
+        #[test]
+        fn classify_path_traces_workspace_mirrors_and_rejects_unknown_files() {
+            let (_tmp, project, _map) = fixture(FIELD);
+            let staging = Path::new("/tmp/zfb-shadow-session-1/apps/site/components/field.tsx");
+            assert_eq!(
+                classify_path(staging, Some(FIELD), &project),
+                FrameOrigin::Authored("components/field.tsx".into())
+            );
+            assert_eq!(
+                classify_path(
+                    Path::new("/tmp/zfb-bundler-x/entry.mjs"),
+                    Some("x"),
+                    &project
+                ),
+                FrameOrigin::Internal("<generated>/entry.mjs".into())
+            );
+            assert_eq!(
+                classify_path(Path::new("/Users/me/lib/util.ts"), None, &project),
+                FrameOrigin::Internal("external/util.ts".into())
+            );
+        }
+
+        #[test]
+        fn unparsable_diagnostic_line_is_left_in_the_body() {
+            let body = format!("{MESSAGE}\n[zfb-render-diagnostic] {{not json");
+            assert_eq!(split_render_diagnostic(&body), (body.clone(), None));
+        }
     }
 }

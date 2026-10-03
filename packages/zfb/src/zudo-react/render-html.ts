@@ -1,5 +1,12 @@
 import { serializeStyle } from "./style.js";
-import { Fragment, isDescription, type Child, type Description } from "./description.js";
+import {
+  Fragment,
+  descriptionSite,
+  isDescription,
+  type Child,
+  type Description,
+  type DescriptionSite,
+} from "./description.js";
 import { escapeAttribute, escapeText } from "./escape.js";
 import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
@@ -52,6 +59,7 @@ interface Context {
   next: number;
   scope: RuntimeScope;
   path: string;
+  node?: Description | undefined;
   selectValue?: string | undefined;
   selectSeen?: Set<string> | undefined;
   selectMatches?: number | undefined;
@@ -63,10 +71,31 @@ interface Context {
   formId: string;
   nextFormId: number;
 }
-function fail(code: string, context: Context, detail: string): never {
-  throw new TypeError(
-    `${code}: ${detail} at ${context.path} in ${context.identity?.component ?? "static render"}`,
-  );
+export interface RenderDiagnostic {
+  readonly code: string;
+  readonly path: string;
+  readonly component: string;
+  readonly spelling?: { readonly name: string; readonly suggestion?: string };
+  readonly site?: DescriptionSite;
+}
+function fail(
+  code: string,
+  context: Context,
+  detail: string,
+  spelling?: RenderDiagnostic["spelling"],
+): never {
+  const component = context.identity?.component ?? "static render";
+  const site = context.node && descriptionSite(context.node);
+  const diagnostic: RenderDiagnostic = {
+    code,
+    path: context.path,
+    component,
+    ...(spelling && { spelling }),
+    ...(site && { site }),
+  };
+  throw Object.assign(new TypeError(`${code}: ${detail} at ${context.path} in ${component}`), {
+    diagnostic,
+  });
 }
 function reactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -135,6 +164,7 @@ function attributes(
         "ZR_PROP_DIALECT",
         context,
         `${tag}.${name}${suggestion ? ` (use \`${suggestion}\` instead of \`${name}\`)` : ""}`,
+        suggestion ? { name, suggestion } : { name },
       );
     }
     if (name.startsWith("on:")) {
@@ -170,7 +200,10 @@ function attributes(
       );
     }
     if (/^on[a-z]/.test(name) && typeof value === "function")
-      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
+      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`, {
+        name,
+        suggestion: `on:${name.slice(2)}`,
+      });
     const error = attributeError(name, value, custom);
     if (error) fail("ZR_ATTRIBUTE", context, `${tag}.${name} ${error}`);
     if (value == null) continue;
@@ -182,6 +215,14 @@ function attributes(
   return output;
 }
 function restricted(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
+  return tracked(value, context, () => restrictedValue(value, context, namespace, parent));
+}
+function restrictedValue(
   value: unknown,
   context: Context,
   namespace: Namespace,
@@ -430,7 +471,26 @@ function element(
   context.formId = previousFormId;
   return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
 }
+// A failure is attributed only to the value being rendered: a description's own site,
+// or no site at all for scalars, promises and other non-description children.
+function tracked<T>(value: unknown, context: Context, fn: () => T): T {
+  const prior = context.node;
+  context.node = isDescription(value) ? value : undefined;
+  try {
+    return fn();
+  } finally {
+    context.node = prior;
+  }
+}
 function render(value: unknown, context: Context, namespace: Namespace, parent: string): string {
+  return tracked(value, context, () => renderValue(value, context, namespace, parent));
+}
+function renderValue(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
   if (value == null || typeof value === "boolean") return "";
   if (Array.isArray(value))
     return region(context, "f", () => children(value, context, namespace, parent));
