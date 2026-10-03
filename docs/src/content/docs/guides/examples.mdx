@@ -1,28 +1,29 @@
 ---
 title: Examples
-description: A comparison matrix of the nine standalone Cloudflare Workers repositories that demonstrate zfb in real, deployable projects.
+description: A comparison matrix of the ten standalone repositories that demonstrate zfb — nine deployed Cloudflare Workers projects and one local-only example.
 sidebar_position: 5
 ---
 
-zfb ships nine standalone example repositories, each one a small, deployable
-project that demonstrates a single Cloudflare recipe end to end. Every repo is
-independently `pnpm install`-able and includes its own README with local run
-steps and Cloudflare provisioning commands — clone one to see the whole thing
-assembled rather than copying snippets piecemeal.
+zfb ships ten standalone example repositories. Nine are small, deployable
+projects that each demonstrate a single Cloudflare recipe end to end; the tenth,
+Agent Conversations, runs locally only. Every repo is independently
+`pnpm install`-able and includes its own README with local run steps, and the
+Cloudflare ones also include provisioning commands — clone one to see the whole
+thing assembled rather than copying snippets piecemeal.
 
-This page is the comparison matrix. Each listed repository pins zfb 3.0.0 and
-uses zfb's `zudo-react` JSX runtime. The styling column shows whether it uses
+This page is the comparison matrix. Each listed repository pins zfb 3.1.0 (checked on
+2026-10-03) and uses zfb's `zudo-react` JSX runtime. The styling column shows whether it uses
 zudo-wind utilities, only its reset, or authored CSS. Each row links to a full
 walkthrough under [Recipes](../recipes/index.mdx), which explains what that
 example demonstrates, how it works, and how to run it locally.
 
-All nine deploy as **Cloudflare Workers** on `takazudomodular.com` subdomains.
+The nine Cloudflare examples deploy as **Cloudflare Workers** on `takazudomodular.com` subdomains.
 Seven ship server code; two are assets-only Workers that serve a static build
 and run no Worker script at all.
 
 <Note title="password-gate answers 401 by design">
 
-Every demo below is deployed and live, with one deliberate exception:
+Every demo link below points at a deployed, live site, with one deliberate exception:
 [zfb-example-password-gate.takazudomodular.com](https://zfb-example-password-gate.takazudomodular.com/)
 answers `401 Unauthorized` with a login page instead of showing you a site.
 That is the example working — gating the content is its entire point.
@@ -59,3 +60,15 @@ the shape to copy when a site needs no server code at all.
 | --- | --- | --- | --- | --- |
 | [Blog](../recipes/blog.mdx) | Pure SSG, assets-only Worker | none | Authored CSS; zudo-wind reset only | [repo](https://github.com/Takazudo/zfb-example-blog) · [demo](https://zfb-example-blog.takazudomodular.com/) |
 | [Corporate Website](../recipes/corporate-website.mdx) | Pure SSG, assets-only Worker | none | CSS Modules; zudo-wind disabled | [repo](https://github.com/Takazudo/zfb-example-corporate-website) · [demo](https://zfb-example-corporate-website.takazudomodular.com/) |
+
+## Local-only example
+
+This one has no deployment. Its public showcase is a static zfb build, and a
+second build of the same UI talks to a loopback HTTP and SQLite server. It also
+contains a Cloudflare Worker handler factory, but no Worker, D1 database, or
+Queue has been provisioned, so do not read it as a deployed Cloudflare
+application.
+
+| Example | Rendering | Bindings and secrets | Styling | Links |
+| --- | --- | --- | --- | --- |
+| [Agent Conversations](../recipes/agent-conversations.mdx) | Pure SSG with one `<Island when="load">`, no adapter | none; synthetic provider and host, no credentials | Authored CSS; zudo-wind disabled | [repo](https://github.com/Takazudo/zfb-example-agent-convos) |
