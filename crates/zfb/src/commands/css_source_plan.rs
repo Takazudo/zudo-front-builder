@@ -470,7 +470,11 @@ fn resolve_source_declaring_dir(
 /// Resolve a validated `wind.sources.packageRoots` entry against its declaring
 /// root. A bare name follows Node's `node_modules` lookup for the package
 /// directory itself, so a package without a root export still resolves.
-fn resolve_declared_package_root(declaring_dir: &Path, root: &str) -> Result<PathBuf> {
+fn resolve_declared_package_root(
+    project_root: &Path,
+    declaring_dir: &Path,
+    root: &str,
+) -> Result<PathBuf> {
     let path = if root == "." || root == ".." || root.starts_with("./") || root.starts_with("../") {
         absolute(declaring_dir, Path::new(root))
     } else {
@@ -495,6 +499,15 @@ fn resolve_declared_package_root(declaring_dir: &Path, root: &str) -> Result<Pat
     };
     if !path.is_dir() {
         bail!("package root {} is not a directory", path.display());
+    }
+    // A root containing the project would scan and watch the whole project
+    // or workspace; the default roots already cover the project itself.
+    let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if project_root.starts_with(&path) || canonical(project_root).starts_with(canonical(&path)) {
+        bail!(
+            "package root {} is the project root or one of its ancestors; declare a package directory below it",
+            path.display()
+        );
     }
     Ok(path)
 }
@@ -521,7 +534,7 @@ pub(crate) fn declared_package_root_watch_paths(
                 .sources
                 .package_roots
                 .iter()
-                .filter_map(|root| resolve_declared_package_root(&dir, root).ok())
+                .filter_map(|root| resolve_declared_package_root(&project_root, &dir, root).ok())
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -553,9 +566,12 @@ pub(crate) fn gather_css_source_plan_inputs(
                 resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())?;
             for (index, root) in declaration.sources.package_roots.iter().enumerate() {
                 declared_package_roots.push(
-                    resolve_declared_package_root(&declaring_dir, root).with_context(|| {
-                        format!("wind.sources.packageRoots[{index}] {root:?} declared by {origin}")
-                    })?,
+                    resolve_declared_package_root(&project_root, &declaring_dir, root)
+                        .with_context(|| {
+                            format!(
+                                "wind.sources.packageRoots[{index}] {root:?} declared by {origin}"
+                            )
+                        })?,
                 );
             }
             author_exclusions.extend(declaration.sources.exclude.iter().map(|pattern| {
@@ -1011,6 +1027,32 @@ mod tests {
         assert!(candidates.contains("p-1"));
         assert!(candidates.contains("p-2"));
         assert!(!candidates.contains("p-3"));
+    }
+
+    #[test]
+    fn wind_sources_reject_package_roots_containing_the_project() {
+        let (_temp, inputs) = fixture();
+        fs::create_dir_all(inputs.project_root.join("packages/ui")).unwrap();
+        for root in [".", "./", "..", "../project/.."] {
+            let config =
+                sources_config(vec![(None, serde_json::json!({ "packageRoots": [root] }))]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("wind.sources.packageRoots[0]"), "{error}");
+            assert!(error.contains("declared by project"), "{error}");
+            assert!(error.contains("ancestors"), "{error}");
+            assert!(
+                declared_package_root_watch_paths(&inputs.project_root, &config).is_empty(),
+                "{root} must never become a watch root"
+            );
+        }
+        let config = sources_config(vec![(
+            None,
+            serde_json::json!({ "packageRoots": ["./packages/ui"] }),
+        )]);
+        assert_eq!(
+            declared_package_root_watch_paths(&inputs.project_root, &config),
+            [inputs.project_root.join("packages/ui")]
+        );
     }
 
     #[test]

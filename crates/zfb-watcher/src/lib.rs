@@ -500,6 +500,10 @@ struct RecursiveDirFilterCore {
     /// A broad dependency registration removes its parent from this set.
     exact_file_parents: BTreeSet<PathBuf>,
     exact_files: BTreeSet<PathBuf>,
+    /// Alias spellings of roots below which `traversal_names` are not
+    /// suppressed even though they are skip names.
+    traversal_roots: BTreeSet<PathBuf>,
+    traversal_names: BTreeSet<OsString>,
 }
 
 impl RecursiveDirFilterCore {
@@ -540,8 +544,19 @@ impl RecursiveDirFilterCore {
         }
         let inside_skip_dir = self.active_roots.iter().any(|root| {
             path.strip_prefix(root).is_ok_and(|rel| {
+                let mut parent = root.clone();
                 rel.components().any(|component| {
-                    matches!(component, Component::Normal(name) if self.skip_names.contains(name))
+                    let Component::Normal(name) = component else {
+                        return false;
+                    };
+                    let skipped = self.skip_names.contains(name)
+                        && !(self.traversal_names.contains(name)
+                            && self
+                                .traversal_roots
+                                .iter()
+                                .any(|traversal| parent.starts_with(traversal)));
+                    parent.push(name);
+                    skipped
                 })
             })
         });
@@ -973,6 +988,22 @@ impl Watcher {
     /// intact, and a repair `watch()` there would replace one with a
     /// freshly scanned baseline that silently absorbs its undelivered
     /// events.
+    /// Keep `names` deliverable below each of `roots` even when they are
+    /// skip names of [`Self::sync_recursive_dir_watches`]. Replace
+    /// semantics: the latest call is the whole set.
+    pub fn set_recursive_dir_traversals<I, P>(&mut self, roots: I, names: &[&str])
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+        filter.traversal_roots = roots
+            .into_iter()
+            .flat_map(|root| watch_aliases(root.as_ref()).collect::<Vec<_>>())
+            .collect();
+        filter.traversal_names = names.iter().map(OsString::from).collect();
+    }
+
     pub fn sync_recursive_dir_watches<I, P, N, S>(
         &mut self,
         desired_roots: I,
@@ -3168,6 +3199,31 @@ mod tests {
             boot_roots: BTreeSet::new(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn package_root_traversal_keeps_its_dist_and_node_modules_live() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(
+            &["/proj/packages/ui", "/proj/lib/mirror"],
+            &["dist", "node_modules", "target"],
+        );
+        filter.traversal_roots = BTreeSet::from([PathBuf::from("/proj/packages/ui")]);
+        filter.traversal_names = ["dist", "node_modules"].map(OsString::from).into();
+
+        assert!(!filter.suppresses(Path::new("/proj/packages/ui/dist/view.js"), &deps));
+        assert!(!filter.suppresses(
+            Path::new("/proj/packages/ui/node_modules/dep/dist/a.js"),
+            &deps
+        ));
+        assert!(
+            filter.suppresses(Path::new("/proj/packages/ui/target/out.js"), &deps),
+            "only the traversed names are exempt"
+        );
+        assert!(
+            filter.suppresses(Path::new("/proj/lib/mirror/dist/view.js"), &deps),
+            "a mirror root keeps pruning dist"
+        );
     }
 
     #[test]

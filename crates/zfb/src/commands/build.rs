@@ -1399,19 +1399,7 @@ fn build_css_payload_with_index(
         plugin_virtual_modules,
     )?;
     let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
-    // Declared package roots share the mirror roots' recursive watch, so a
-    // config edit that adds one starts watching it on the same pass.
-    let watched_roots: Vec<PathBuf> = sibling_mirror_roots
-        .iter()
-        .cloned()
-        .chain(
-            crate::commands::css_source_plan::declared_package_root_watch_paths(
-                project_root,
-                config,
-            ),
-        )
-        .collect();
-    on_source_plan(&watched_roots);
+    on_source_plan(&sibling_mirror_roots);
 
     let framework_css = resolve_framework_css(config);
     let sources =
@@ -19326,7 +19314,7 @@ mod tests {
     }
 
     #[test]
-    fn wind_declared_package_root_is_watched_and_scanned() {
+    fn wind_declared_package_root_is_scanned_but_not_a_mirror_root() {
         use std::cell::RefCell;
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path();
@@ -19356,8 +19344,19 @@ mod tests {
         )
         .unwrap()
         .expect("package-root candidate produces a stylesheet");
-        assert_eq!(*seen.borrow(), [package]);
+        assert!(
+            seen.borrow().is_empty(),
+            "package roots have their own watch registry, with dist traversal"
+        );
         assert!(String::from_utf8_lossy(&payload.bytes).contains(".grid"));
+    }
+
+    #[test]
+    fn package_root_traversal_names_match_the_wind_walker() {
+        assert_eq!(
+            zfb_build::PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
+            zfb_css::PACKAGE_ROOT_TRAVERSES
+        );
     }
 
     #[test]
