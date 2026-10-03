@@ -669,12 +669,24 @@ fn resolve_special_integer(
 
 /// Rejects the keyword and percentage forms the property also accepts, so an
 /// arbitrary underline offset stays a nonnegative length.
+// Lightning CSS has no typed `text-underline-offset`, so the property parse accepts any
+// tokens; check the value as a standalone `<length>` instead.
 fn validate_length(value: &str) -> Result<(), String> {
-    let lower = value.trim().to_ascii_lowercase();
-    if matches!(lower.as_str(), "auto" | "from-font") || lower.ends_with('%') {
-        return Err("arbitrary value must be a nonnegative length".to_owned());
+    use lightningcss::traits::{Parse, TrySign};
+    use lightningcss::values::length::Length;
+    let value = value.trim();
+    // Lightning CSS also reads a bare number as px; CSS only allows a unitless zero.
+    let bare_nonzero_number = value.parse::<f64>().is_ok_and(|number| number != 0.0);
+    let nonnegative = !bare_nonzero_number
+        && Length::parse_string(value)
+            .ok()
+            .and_then(|length| length.try_sign())
+            .is_some_and(|sign| sign.is_sign_positive());
+    if nonnegative {
+        Ok(())
+    } else {
+        Err("arbitrary value must be a nonnegative length".to_owned())
     }
-    Ok(())
 }
 
 fn integer_percent(value: u32) -> String {
