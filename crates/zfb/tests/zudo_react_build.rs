@@ -1,4 +1,6 @@
-//! Real owned-runtime SSR build, registered in the unlocked heavy lane.
+//! Real owned-runtime SSR builds, registered in the unlocked heavy lane. The
+//! `diagnostics` fixture checks build-only render diagnostics: authored span,
+//! structural context and generated stack, with no staging path as location.
 
 use std::fs;
 use std::path::Path;
@@ -214,4 +216,111 @@ fn owned_island_build_rejects_conflicting_display_name() {
         diagnostic.contains("ZR_ISLAND_IDENTITY") && diagnostic.contains("Wrong"),
         "{diagnostic}"
     );
+}
+
+/// Build-only (no preceding `zfb check`) run of the `diagnostics` fixture after
+/// `edit` rewrites it. Returns the CLI's combined output of the failed build.
+fn failed_diagnostics_build(edit: impl FnOnce(&Path)) -> String {
+    let esbuild = locate_esbuild().expect("render diagnostic build requires esbuild");
+    let temp = tempfile::tempdir().unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/diagnostics");
+    copy_dir(&fixture, temp.path());
+    edit(temp.path());
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build");
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "build should fail:\n{text}");
+    text
+}
+
+fn assert_no_internal_primary_location(output: &str) {
+    for leaked in [
+        "zfb-bundler-",
+        "zfb-shadow-session-",
+        "[zfb-render-diagnostic]",
+        " — internal frame zfb-",
+    ] {
+        assert!(!output.contains(leaked), "leaked {leaked:?}:\n{output}");
+    }
+}
+
+fn replace_in(root: &Path, file: &str, from: &str, to: &str) {
+    let path = root.join(file);
+    let source = fs::read_to_string(&path).unwrap();
+    assert!(source.contains(from), "{file} lacks {from:?}");
+    fs::write(&path, source.replace(from, to)).unwrap();
+}
+
+#[test]
+fn build_only_dialect_error_reports_the_authored_element_span() {
+    let output = failed_diagnostics_build(|_| {});
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7"
+        ),
+        "{output}"
+    );
+    // The worker's structural message and generated-bundle stack follow the span.
+    assert!(
+        output.contains(
+            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root[1] in static render"
+        ),
+        "{output}"
+    );
+    assert!(output.contains("file:///zfb/bundle.mjs:"), "{output}");
+    assert_no_internal_primary_location(&output);
+}
+
+#[test]
+fn build_only_charset_error_points_at_the_layout() {
+    let output = failed_diagnostics_build(|root| {
+        replace_in(
+            root,
+            "layouts/document.tsx",
+            "<meta charset=",
+            "<meta charSet=",
+        );
+        replace_in(
+            root,
+            "components/search-field.tsx",
+            "autoComplete=",
+            "autocomplete=",
+        );
+    });
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[0][0]: use `charset` instead of `charSet` — at layouts/document.tsx:5:9"
+        ),
+        "{output}"
+    );
+    assert_no_internal_primary_location(&output);
+}
+
+#[test]
+fn build_only_h_description_keeps_structural_context_without_a_span() {
+    let output = failed_diagnostics_build(|root| {
+        fs::write(
+            root.join("components/search-field.tsx"),
+            "import { h } from \"@takazudo/zfb/zudo-react\";\n\nexport function SearchField() {\n  return h(\"form\", { role: \"search\" }, h(\"input\", { name: \"q\", autoComplete: \"off\" }));\n}\n",
+        )
+        .unwrap();
+    });
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete`"
+        ),
+        "{output}"
+    );
+    assert!(!output.contains(" — at "), "{output}");
+    assert!(!output.contains("search-field.tsx:"), "{output}");
+    assert_no_internal_primary_location(&output);
 }

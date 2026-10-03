@@ -70,6 +70,8 @@ Rewrite hook components as setup-once zudo-react components. Use `signal()` for 
 
 Standard HTML and SVG markup uses the shared finite vocabulary across TypeScript, server rendering, hydration, and fresh mounts. Write Open Graph metadata such as `<meta property="og:title">`, preload links such as `<link rel="preload" as="font">`, external `<script defer>` elements, and SVG `use`/`href` markup directly in JSX. These supported attributes do not require a `rawHtml` workaround. Unknown attribute names and React-style spellings remain errors; custom-element attributes remain string-only. See [Components and JSX](../zudo-react/components-and-jsx.mdx) for value categories and SVG namespace behavior.
 
+A build or dev render that rejects a React-style spelling names the supported spelling and, for JSX, the authored file, line, and column of the element. `zfb check` is not required first. See [Read a render failure](../zudo-react/server-rendering.mdx#read-a-render-failure) for how that location differs from the structural context and the generated bundle stack.
+
 `<Island>` remains the build-time wrapper for a component. Its transport is stricter: use one component child, JSON props, and an identity that agrees with the source scanner. Hand-authored wrappers need the complete valid metadata. Hydration adopts matching server markup or fails closed per island; skipped SSR roots use `data-when` scheduling and replace fallback after a successful client mount. Review form behavior because supported controls use explicit writable models, single-select only, and the DOM value wins during hydration. See the [islands guide](../concepts/islands.mdx).
 
 ### Optional island props
