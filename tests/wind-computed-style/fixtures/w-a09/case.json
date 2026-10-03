@@ -1,0 +1,10 @@
+{
+  "caseId": "W-A09",
+  "colors": {
+    "panel": "#123456"
+  },
+  "breakpoints": {
+    "md": 768
+  },
+  "explicitCandidates": ["ring-2", "animate-spin"]
+}

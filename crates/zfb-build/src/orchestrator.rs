@@ -53,6 +53,7 @@ use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{
     classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
+    PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
 };
 
 trait DynamicWatchRegistrar: Send + 'static {
@@ -63,6 +64,9 @@ trait DynamicWatchRegistrar: Send + 'static {
         desired_roots: BTreeSet<PathBuf>,
         skip_dir_names: &[String],
     ) -> Vec<PathBuf>;
+
+    /// Roots below which `names` stay live although they are skip names.
+    fn set_recursive_dir_traversals(&mut self, _roots: BTreeSet<PathBuf>, _names: &[&str]) {}
 }
 
 impl DynamicWatchRegistrar for Watcher {
@@ -76,6 +80,10 @@ impl DynamicWatchRegistrar for Watcher {
         skip_dir_names: &[String],
     ) -> Vec<PathBuf> {
         Watcher::sync_recursive_dir_watches(self, desired_roots, skip_dir_names)
+    }
+
+    fn set_recursive_dir_traversals(&mut self, roots: BTreeSet<PathBuf>, names: &[&str]) {
+        Watcher::set_recursive_dir_traversals(self, roots, names)
     }
 }
 
@@ -141,8 +149,14 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
         one_per_parent.entry(parent).or_insert(path);
     }
     let mut newly_watched = watcher.watch_additional_files(one_per_parent.into_values().collect());
-    let newly_watched_dirs = watcher
-        .sync_recursive_dir_watches(policy.css_mirror_root_paths(), css_mirror_skip_dir_names);
+    // Declared package roots share the recursive watch but keep their own
+    // `dist`/`node_modules` live, as the wind walk does.
+    let package_roots = policy.css_package_root_paths();
+    watcher.set_recursive_dir_traversals(package_roots.clone(), PACKAGE_ROOT_TRAVERSED_DIR_NAMES);
+    let mut recursive_roots = policy.css_mirror_root_paths();
+    recursive_roots.extend(package_roots);
+    let newly_watched_dirs =
+        watcher.sync_recursive_dir_watches(recursive_roots, css_mirror_skip_dir_names);
     if dev_timing_enabled() {
         for dir in newly_watched.iter().chain(newly_watched_dirs.iter()) {
             eprintln!("[zfb-timing] watch-extra registered: {}", dir.display());
@@ -764,6 +778,27 @@ impl OrchestratorConfig {
     }
 }
 
+/// Whether a changed source is an entry to the browser-islands scan.
+///
+/// The scanner starts from script pages as well as imports under configured
+/// islands roots. Page edits can therefore add or remove boundary children even
+/// when none of their imported component files changed. Conventional client
+/// script sidecars under `pages/` are not scanner entries.
+fn is_islands_scan_input(policy: &GranularityPolicy, class: PathClass, path: &Path) -> bool {
+    match class {
+        PathClass::Page => {
+            !zfb_types::is_page_sidecar_file(path)
+                && !zfb_types::is_client_script_file(path)
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&extension))
+        }
+        PathClass::Module => policy.is_islands_candidate(path),
+        _ => false,
+    }
+}
+
 /// Pure derivation of the [`WatchOptions`] used to start the dev-loop
 /// watcher (issue #2174): the configured debounce (or
 /// [`zfb_watcher::DEFAULT_DEBOUNCE`] when absent) plus the configured
@@ -842,7 +877,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     ///   re-spelled here, so the two can never drift into different
     ///   definitions of a claimed mirror region.
     fn path_under_css_mirror_root(&self, path: &Path) -> bool {
-        let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
+        self.inside_watched_css_root(self.config.policy.css_mirror_root_match(path), &[])
+            || self.inside_watched_css_root(
+                self.config.policy.css_package_root_match(path),
+                PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
+            )
+    }
+
+    /// The two containment rules above for one matched root; `traversed`
+    /// names are skip dirs this root still walks.
+    fn inside_watched_css_root(
+        &self,
+        matched: Option<(PathBuf, PathBuf)>,
+        traversed: &[&str],
+    ) -> bool {
+        let Some((root, relative)) = matched else {
             return false;
         };
         let root_swallows_the_project =
@@ -853,11 +902,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             return false;
         }
         !relative.components().any(|component| match component {
-            std::path::Component::Normal(name) => self
-                .config
-                .css_mirror_skip_dir_names
-                .iter()
-                .any(|skip| name == std::ffi::OsStr::new(skip)),
+            std::path::Component::Normal(name) => {
+                self.config
+                    .css_mirror_skip_dir_names
+                    .iter()
+                    .any(|skip| name == std::ffi::OsStr::new(skip))
+                    && !traversed
+                        .iter()
+                        .any(|kept| name == std::ffi::OsStr::new(kept))
+            }
             _ => false,
         })
     }
@@ -1078,9 +1131,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 if self.content_under_css_mirror_root(class, &path) {
                     plan.mark_css();
                 }
-                if matches!(class, PathClass::Module)
-                    && self.config.policy.is_islands_candidate(&path)
-                {
+                if is_islands_scan_input(&self.config.policy, class, &path) {
                     plan.mark_islands();
                 }
                 if self.config.policy.is_islands_dependency(&path) {
@@ -1159,10 +1210,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // on SSR-only projects where pages is always empty (issue #807).
                     plan.mark_ssr_reload_needed();
 
-                    // Modules under an islands root re-bundle islands.
-                    if matches!(class, PathClass::Module)
-                        && self.config.policy.is_islands_candidate(&path)
-                    {
+                    // Script pages are scanner roots: editing a boundary in
+                    // the route changes the validated registry even when its
+                    // component imports are unchanged. Client-script sidecars
+                    // are excluded by `is_islands_scan_input`.
+                    if is_islands_scan_input(&self.config.policy, class, &path) {
                         plan.mark_islands();
                     }
                     // #1288 — a component (`.tsx` `Module`) edit may author a
@@ -1560,9 +1612,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
                     plan.mark_ssr_reload_needed();
-                    if matches!(class, PathClass::Module)
-                        && self.config.policy.is_islands_candidate(path)
-                    {
+                    if is_islands_scan_input(&self.config.policy, class, path) {
                         plan.mark_islands();
                     }
                 }
@@ -2366,7 +2416,10 @@ mod tests {
             other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
         assert!(!plan.rerun_css);
-        assert!(!plan.rerun_islands);
+        assert!(
+            plan.rerun_islands,
+            "editing a scanned page can change concrete boundary targets"
+        );
     }
 
     #[test]
@@ -3744,8 +3797,8 @@ mod tests {
     /// This is the BLOCKING acceptance test for the pages/ root: without the
     /// post-match `is_client_script_candidate` check in `plan_for_changes`,
     /// a `pages/*.client.ts` edit would never trigger the client-scripts
-    /// rebuild pass because the `mark_islands` gate only fires for Module
-    /// changes inside `islands_roots`.
+    /// rebuild pass. The islands scanner separately excludes these sidecars
+    /// from its page-entry triggers.
     #[test]
     fn client_script_edit_under_pages_sets_rerun_client_scripts() {
         let orch = make_orch(CountingPipeline::default());
@@ -3754,10 +3807,10 @@ mod tests {
             plan.rerun_client_scripts,
             "*.client.ts under pages/ must set rerun_client_scripts"
         );
-        // Also: the page edit path still fires.
+        // The client-script sidecar is not a scanner page entry.
         assert!(
             !plan.rerun_islands,
-            "pages/ file must NOT trigger islands rerun"
+            "pages/*.client.ts sidecars must NOT trigger islands reruns"
         );
     }
 
@@ -3837,6 +3890,32 @@ mod tests {
         assert!(
             !plan.rerun_client_scripts,
             "regular .tsx under pages/ must NOT set rerun_client_scripts"
+        );
+        assert!(
+            plan.rerun_islands,
+            "script page edits must rerun boundary discovery"
+        );
+    }
+
+    #[test]
+    fn removed_script_page_reruns_boundary_discovery() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/pages/index.tsx"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(
+            plans[0].rerun_islands,
+            "removing a script page must remove targets from the next registry"
         );
     }
 
@@ -4181,6 +4260,62 @@ mod tests {
         assert!(
             plan.pages.is_all(),
             "this epic adds a CSS-rerun signal only — page selection must be unchanged"
+        );
+    }
+
+    /// A declared package root keeps its own `dist` and `node_modules` live
+    /// (the wind walk traverses them) while a mirror root keeps pruning them,
+    /// and both roots are registered for the recursive watch.
+    #[test]
+    fn package_root_dist_edit_reruns_css_and_is_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+        let package_root = ws.join("packages/ui");
+        std::fs::create_dir_all(package_root.join("dist")).unwrap();
+        std::fs::create_dir_all(mirror_root.join("dist")).unwrap();
+        let package_dist = package_root.join("dist/notes.mdx");
+        let mirror_dist = mirror_root.join("dist/notes.mdx");
+        std::fs::write(&package_dist, "# package\n").unwrap();
+        std::fs::write(&mirror_dist, "# mirror\n").unwrap();
+        policy
+            .raw_import_invalidation
+            .replace_css_package_roots([package_root.clone()]);
+
+        struct Recorder(Vec<(BTreeSet<PathBuf>, Vec<String>)>, BTreeSet<PathBuf>);
+        impl DynamicWatchRegistrar for Recorder {
+            fn watch_additional_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                desired_roots: BTreeSet<PathBuf>,
+                skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                self.0.push((desired_roots, skip_dir_names.to_vec()));
+                Vec::new()
+            }
+            fn set_recursive_dir_traversals(&mut self, roots: BTreeSet<PathBuf>, names: &[&str]) {
+                assert_eq!(names, PACKAGE_ROOT_TRAVERSED_DIR_NAMES);
+                self.1 = roots;
+            }
+        }
+        let mut recorder = Recorder(Vec::new(), BTreeSet::new());
+        register_dynamic_dependency_watches(&mut recorder, &policy, &css_mirror_skip_dir_names());
+        assert_eq!(
+            recorder.0[0].0,
+            BTreeSet::from([mirror_root.clone(), package_root.clone()])
+        );
+        assert_eq!(recorder.1, BTreeSet::from([package_root.clone()]));
+
+        let orch = orch_for_css_mirror_root(CountingPipeline::default(), &project, policy);
+        assert!(
+            orch.plan_for_changes([package_dist]).rerun_css,
+            "an edit under a package root's dist must rerun the wind scan"
+        );
+        assert!(
+            !orch.plan_for_changes([mirror_dist]).rerun_css,
+            "a mirror root still prunes dist"
         );
     }
 

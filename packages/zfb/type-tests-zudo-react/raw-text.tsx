@@ -92,10 +92,14 @@ const undefinedChildren = (
 const untypedProps: any = { children: "unsafe", rawHtml: scriptText };
 const uncheckedSpread = <script {...untypedProps} />;
 
-const scriptRefType: Equal<JSX.IntrinsicElements["script"]["ref"], Ref<HTMLElement> | undefined> =
-  true;
-const styleRefType: Equal<JSX.IntrinsicElements["style"]["ref"], Ref<HTMLElement> | undefined> =
-  true;
+const scriptRefType: Equal<
+  JSX.IntrinsicElements["script"]["ref"],
+  Ref<HTMLScriptElement> | undefined
+> = true;
+const styleRefType: Equal<
+  JSX.IntrinsicElements["style"]["ref"],
+  Ref<HTMLStyleElement> | undefined
+> = true;
 const scriptEvent = (
   <script
     on:click={(event) => {

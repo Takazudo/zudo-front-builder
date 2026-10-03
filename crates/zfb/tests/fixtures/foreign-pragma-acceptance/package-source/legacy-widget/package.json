@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/legacy-widget",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.jsx"
+  },
+  "peerDependencies": {
+    "preact": "^10"
+  }
+}

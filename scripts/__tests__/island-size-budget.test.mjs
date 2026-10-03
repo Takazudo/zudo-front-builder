@@ -433,13 +433,13 @@ describe("island shipped-size budget", () => {
     ).not.toBe(contractHash);
   });
 
-  it("checks a later lockstep release against the reviewed size ceilings", () => {
+  it("checks the current release against the reviewed size ceilings and rejects lockfile drift", () => {
     const currentVersion = JSON.parse(
       readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
     ).version;
     const state = makeState(baseContract.platform, baseContract, currentVersion);
     expect(validate(state)).toEqual({ errors: [], passed: true });
-    state.packed.measurement.provenance.pnpmLockSha256 = baseContract.toolchain.pnpmLockSha256;
+    state.packed.measurement.provenance.pnpmLockSha256 = "0".repeat(64);
     expect(validate(state).errors).toContain(
       "packed provenance: pnpm lockfile differs from the current checkout",
     );
@@ -476,23 +476,23 @@ describe("island shipped-size budget", () => {
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 49830, gzip: 17003 },
-      "scalar-signal": { raw: 49838, gzip: 17005 },
-      "show-for": { raw: 49985, gzip: 17081 },
-      model: { raw: 49829, gzip: 17014 },
-      "blog-theme": { raw: 50180, gzip: 17138 },
-      "json-api": { raw: 49984, gzip: 17100 },
-      "multi-island": { raw: 50106, gzip: 17100 },
+      "event-only": { raw: 61677, gzip: 20574 },
+      "scalar-signal": { raw: 61685, gzip: 20572 },
+      "show-for": { raw: 61831, gzip: 20662 },
+      model: { raw: 61676, gzip: 20591 },
+      "blog-theme": { raw: 62026, gzip: 20716 },
+      "json-api": { raw: 61831, gzip: 20678 },
+      "multi-island": { raw: 61953, gzip: 20678 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 49892, gzip: 17030 },
-      "scalar-signal": { raw: 49900, gzip: 17036 },
-      "show-for": { raw: 50047, gzip: 17114 },
-      model: { raw: 49891, gzip: 17046 },
-      "blog-theme": { raw: 50242, gzip: 17169 },
-      "json-api": { raw: 50046, gzip: 17126 },
-      "multi-island": { raw: 50168, gzip: 17136 },
+      "event-only": { raw: 61739, gzip: 20587 },
+      "scalar-signal": { raw: 61747, gzip: 20592 },
+      "show-for": { raw: 61893, gzip: 20676 },
+      model: { raw: 61738, gzip: 20600 },
+      "blog-theme": { raw: 62088, gzip: 20734 },
+      "json-api": { raw: 61893, gzip: 20688 },
+      "multi-island": { raw: 62015, gzip: 20699 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });

@@ -1,9 +1,19 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Fragment, getScope, h, signal, flush } from "../../zudo-react/index.js";
 import { subscriberCount } from "../../zudo-react/reactive.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
 import * as server from "../../zudo-react/server.js";
+
+const packageJson = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../package.json"), "utf8"),
+) as {
+  exports: Record<string, { types: string; default: string }>;
+  publishConfig: { exports: Record<string, { types: string; default: string }> };
+};
 
 const identity = { component: "Demo", build: "b1" };
 function Demo() {
@@ -11,8 +21,107 @@ function Demo() {
 }
 
 describe("server renderer", () => {
+  it("renders islands from the same normalized nested props sent to the client", () => {
+    const input = {
+      missing: undefined,
+      nested: { missing: undefined, present: null },
+      records: [
+        {
+          description: undefined,
+          details: [{ description: undefined }, { description: null }],
+        },
+        { description: null, details: [] },
+      ],
+    };
+    function OwnKeys(props: typeof input) {
+      return h(
+        "p",
+        null,
+        JSON.stringify({
+          missing: Object.hasOwn(props, "missing"),
+          nested: {
+            missing: Object.hasOwn(props.nested, "missing"),
+            present: Object.hasOwn(props.nested, "present"),
+            value: props.nested.present,
+          },
+          records: props.records.map((record) => ({
+            description: Object.hasOwn(record, "description"),
+            value: Object.hasOwn(record, "description") ? record.description : "omitted",
+            details: record.details.map((detail) => ({
+              description: Object.hasOwn(detail, "description"),
+              value: Object.hasOwn(detail, "description") ? detail.description : "omitted",
+            })),
+          })),
+        }),
+      );
+    }
+    const html = renderToString(
+      islandRoot(h(OwnKeys, input), { identity: { component: "OwnKeys", build: "b1" } }),
+    );
+    expect(html).toContain(
+      'data-props="{&quot;nested&quot;:{&quot;present&quot;:null},&quot;records&quot;:[{&quot;details&quot;:[{},{&quot;description&quot;:null}]},{&quot;description&quot;:null,&quot;details&quot;:[]}]}',
+    );
+    expect(html).toContain(
+      '{"missing":false,"nested":{"missing":false,"present":true,"value":null},"records":[{"description":false,"value":"omitted","details":[{"description":false,"value":"omitted"},{"description":true,"value":null}]},{"description":true,"value":null,"details":[]}]}',
+    );
+    expect(Object.hasOwn(input, "missing")).toBe(true);
+    expect(Object.hasOwn(input.nested, "missing")).toBe(true);
+    expect(Object.hasOwn(input.records[0]!, "description")).toBe(true);
+  });
   it("exports exactly the locked server entry values", () => {
     expect(Object.keys(server).sort()).toEqual(["islandRoot", "renderToString", "serializeProps"]);
+    expect(typeof globalThis.document).toBe("undefined");
+  });
+
+  it("keeps source and published zudo-react export maps aligned", () => {
+    const entries = {
+      "./zudo-react": [
+        "./src/zudo-react/index.ts",
+        "./dist/zudo-react/index.d.ts",
+        "./dist/zudo-react/index.js",
+      ],
+      "./zudo-react/jsx-runtime": [
+        "./src/zudo-react/jsx-runtime.ts",
+        "./dist/zudo-react/jsx-runtime.d.ts",
+        "./dist/zudo-react/jsx-runtime.js",
+      ],
+      "./zudo-react/jsx-dev-runtime": [
+        "./src/zudo-react/jsx-dev-runtime.ts",
+        "./dist/zudo-react/jsx-dev-runtime.d.ts",
+        "./dist/zudo-react/jsx-dev-runtime.js",
+      ],
+      "./zudo-react/server": [
+        "./src/zudo-react/server.ts",
+        "./dist/zudo-react/server.d.ts",
+        "./dist/zudo-react/server.js",
+      ],
+      "./zudo-react/client": [
+        "./src/zudo-react/client.ts",
+        "./dist/zudo-react/client.d.ts",
+        "./dist/zudo-react/client.js",
+      ],
+      "./zudo-react/testing": [
+        "./src/zudo-react/testing.ts",
+        "./dist/zudo-react/testing.d.ts",
+        "./dist/zudo-react/testing.js",
+      ],
+    } as const;
+    const expectedSubpaths = Object.keys(entries).sort();
+    const zudoReactSubpaths = (exports: Record<string, unknown>) =>
+      Object.keys(exports)
+        .filter((subpath) => /^\.\/zudo-react(?:\/.*)?$/.test(subpath))
+        .sort();
+
+    expect(zudoReactSubpaths(packageJson.exports)).toEqual(expectedSubpaths);
+    expect(zudoReactSubpaths(packageJson.publishConfig.exports)).toEqual(expectedSubpaths);
+
+    for (const [subpath, [source, types, runtime]] of Object.entries(entries)) {
+      expect(packageJson.exports[subpath]).toEqual({ types: source, default: source });
+      expect(packageJson.publishConfig.exports[subpath]).toEqual({
+        types,
+        default: runtime,
+      });
+    }
   });
 
   it("renders a whole document with exact bytes and no static markers", () => {
@@ -33,6 +142,37 @@ describe("server renderer", () => {
     expect(renderToString(page)).toBe(expected);
     expect(renderToString(h(Fragment, null, page))).toBe(expected);
     expect(renderToString(page)).toBe(expected);
+  });
+  it("renders a complete page head and SVG with standard markup attributes", () => {
+    const page = h(
+      "html",
+      null,
+      h(
+        "head",
+        null,
+        h("meta", { property: "og:title", content: "Standard markup" }),
+        h("link", {
+          rel: "preload",
+          href: "/assets/body.woff2",
+          as: "font",
+          integrity: "sha256-x",
+        }),
+        h("script", { src: "/assets/site.js", defer: true, nonce: "page-nonce" }),
+      ),
+      h(
+        "body",
+        null,
+        h(
+          "svg",
+          { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 16 16" },
+          h("use", { href: "#shape", "xlink:href": "#shape" }),
+        ),
+      ),
+    );
+
+    expect(renderToString(page)).toBe(
+      '<html><head><meta property="og:title" content="Standard markup"><link rel="preload" href="/assets/body.woff2" as="font" integrity="sha256-x"><script src="/assets/site.js" defer nonce="page-nonce"></script></head><body><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><use href="#shape" xlink:href="#shape"></use></svg></body></html>',
+    );
   });
   it("renders SVG dimensions as strings or numbers and rejects booleans", () => {
     expect(renderToString(h("svg", { width: "16", height: 24 }))).toBe(
@@ -122,12 +262,12 @@ describe("server renderer", () => {
     expect(
       renderToString(
         h("div", {
-          style: { "font-size": 12, "--accent": "red" },
+          style: { "font-size": "12px", "--accent": "red" },
           "aria-pressed": false,
           hidden: true,
         }),
       ),
-    ).toBe('<div style="font-size:12;--accent:red;" aria-pressed="false" hidden></div>');
+    ).toBe('<div style="font-size:12px;--accent:red;" aria-pressed="false" hidden></div>');
     expect(() => renderToString(h("script", { rawHtml: "</script>" }))).toThrow("ZR_RAW_HTML");
     expect(() => renderToString(h("table", null, h("tr", null)))).toThrow("ZR_PARSER_CONTEXT");
     expect(() => renderToString(h("svg", { rawHtml: "<path/>" }))).toThrow("ZR_RAW_HTML");

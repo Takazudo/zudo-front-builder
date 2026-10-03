@@ -168,7 +168,7 @@ zfb css --input <entry.css> --output <compiled.css>
 | `--input` | path | 必須 | CSS エントリポイント。相対パスは現在の作業ディレクトリを基準に解決されます。 |
 | `--output` | path | 必須 | CSS の出力先。相対パスは現在の作業ディレクトリを基準に解決されます。入力と同じファイルに解決されるパスは指定できません。 |
 | `--project-root` | path | 現在の作業ディレクトリ | `zfb.config` の読み込みと `--source` glob の解決に使うルート。このパス自体が相対パスの場合は、現在の作業ディレクトリを基準に解決されます。 |
-| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。設定済みの `outDir` 内、`--output` のパス上、zfb のスクラッチルート内にある一致ファイルは除外されます。すべての一致が除外される指定は `ZW010` エラーで失敗し、一部だけが除外される指定は `ZW010` 警告を出して残りの一致を使います。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
+| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。設定済みの `outDir` 内、`--output` のパス上、zfb のスクラッチルート内にある一致ファイルと、`wind.sources.exclude` のパターンに一致するファイルは除外されます。すべての一致が除外される指定は `ZW010` エラーで失敗し、一部だけが除外される指定は `ZW010` 警告を出して残りの一致を使います。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
 | `--no-auto-source` | boolean flag | `false` | コマンドの慣例的なソースプランのルートを除外します。明示した `--source` と設定済みのシンタックスハイライトのロールクラスは引き続き有効です。 |
 | `--code-highlight-mode` | `class` または `inline` | config/default | zfb のシンタックスハイライト用フレームワーク CSS を含めるかどうかを決める際に、`codeHighlight.mode` を上書きします。`classPrefix` や `roleClasses` など、その他の `codeHighlight` 設定は引き続き config から読み込まれます。 |
 | `--no-default-highlight-styles` | boolean flag | `false` | class モード用の組み込み `zfb-hi.css` スタイルシートを出力しません。`codeHighlight.defaultStylesheet: true` よりも優先されます。 |
@@ -245,7 +245,7 @@ zfb css \
 
 ### 補足
 
-- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。慣例的な走査では `node_modules`、`dist`、`build`、`target`、`.git`、`.cache`、`.turbo`、`.next`、`.vercel`、`.zfb-build`、`.zfb` を除外します。パッケージのソースルートは `--source` で明示するか、パッケージ側で `wind.manifests` を使って候補を公開できます。プロジェクトの設定済み `outDir`、`--output` のパス、zfb のスクラッチルートは引き続き除外されます。明示した `--source` の一致がすべてこれらの出力ルート内にある場合、`zfb css` は `ZW010` エラーを報告します。一部だけが除外される場合は `ZW010` 警告を報告し、残りのファイルを走査します。たとえば、`dist` が設定済み `outDir` の場合、`--source 'dist/**/*.tsx'` はエラーを報告します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。慣例的なルートの走査では、`node_modules`、`dist`、`build`、`target`、`.git`、`.cache`、`.turbo`、`.next`、`.vercel`、`.zfb-build`、`.zfb` という名前のサブディレクトリをスキップします。ただし、明示的な `--source` の glob がそれらのディレクトリ内で一致したファイルは読み込みます。パッケージのソースルートは `wind.sources.packageRoots` か `--source` で宣言するか、パッケージ側で `wind.manifests` を使って候補を公開できます。すべてのルートからファイルを取り除くには `wind.sources.exclude` を使います。プロジェクトの設定済み `outDir`、`--output` のパス、zfb のスクラッチルートは引き続き除外されます。明示した `--source` の一致がすべてこれらの出力ルート内にあるか `wind.sources.exclude` のパターンに一致する場合、`zfb css` は `ZW010` エラーを報告します。一部だけが除外される場合は `ZW010` 警告を報告し、残りのファイルを走査します。たとえば、`dist` が設定済み `outDir` の場合、`--source 'dist/**/*.tsx'` はエラーを報告します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
 - **出力は決定的で、アトミックに置き換えられます。** エントリ、config、ソース一式とその指定順が同じなら、タイムスタンプ、ソースマップ、一時パスを含まない同一のバイト列が生成されます。コンパイルに成功したときだけ `--output` がアトミックに置き換えられ、失敗時には既存の出力がそのまま保たれます。
 - **グローバル CSS のみが対象です。** CSS Modules の探索や処理は行いません。パッケージ由来の `url()` によって別ファイルの出力が必要になる場合、v1 では付随アセット（companion asset）をスタイルシートの隣に書き出さず、非ゼロ終了で拒否します。
 - **config の利用範囲は限定的です。** `zfb.config.json` または `zfb.config.ts` があれば、wind のトークン、リセット、ソース、および `classPrefix` や `roleClasses` などのハイライト設定を読み込みます。CLI のハイライトフラグは対応するモードとスタイルシートの選択を上書きします。`wind: false` は wind の生成を無効にしますが、手書き CSS とハイライトの処理は続きます。キーを省略すると空の有効な wind 設定になります。
@@ -258,12 +258,14 @@ zfb css \
 `zfb wind audit` は通常のクラス位置の名前、存在しない・使われていないユーティリティ、動的なクラス断片、単一のクラスリストリテラル内のプロパティ衝突を調べます。完全一致の `authoredClasses` と `group`/`peer` マーカーは除外されます。`wind: false` の場合、explain は生成が無効であることを報告し、audit は空の候補レポートを返します。
 
 ```sh
-zfb wind audit [--project-root <path>] [--fail-on error|warning]
+zfb wind audit [--project-root <path>] [--fail-on error|warning] [--plan standalone|build]
 ```
+
+`--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
-これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
+これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません（`--plan build` でのプラグインの `setup` を除きます）。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
 
 ## `zfb preview`
 

@@ -45,6 +45,58 @@ impl Catalog {
         origin: &Origin,
         authored_classes: &BTreeSet<String>,
     ) -> Resolution {
+        let mut result = self.resolve_once(candidate, tokens, origin, authored_classes);
+        if let Resolution::Diagnostic(diagnostic) | Resolution::Failure(diagnostic) = &mut result {
+            if diagnostic.code == DiagnosticCode::Zw005 && diagnostic.suggested_spelling.is_none() {
+                if let Some(spelling) =
+                    self.calc_spacing_suggestion(candidate, tokens, origin, authored_classes)
+                {
+                    diagnostic
+                        .message
+                        .push_str("; calc() needs spaces around + and -, written as underscores");
+                    diagnostic.suggested_spelling = Some(spelling);
+                }
+            }
+        }
+        result
+    }
+
+    /// The candidate with calc() operators spaced, when that spelling alone
+    /// resolves. Tailwind inserted these spaces itself.
+    fn calc_spacing_suggestion(
+        &self,
+        candidate: &Candidate,
+        tokens: &ValidatedTokens,
+        origin: &Origin,
+        authored_classes: &BTreeSet<String>,
+    ) -> Option<String> {
+        let value = candidate.utility.arbitrary_value.as_deref()?;
+        let repaired = arbitrary::space_calc_operators(value)?;
+        let bracket = format!("[{value}]");
+        if candidate.raw.matches(&bracket).count() != 1 {
+            return None;
+        }
+        let mut retry = candidate.clone();
+        retry.raw = candidate.raw.replace(&bracket, &format!("[{repaired}]"));
+        retry.utility.named = candidate
+            .utility
+            .named
+            .replace(&bracket, &format!("[{repaired}]"));
+        retry.utility.arbitrary_value = Some(repaired);
+        matches!(
+            self.resolve_once(&retry, tokens, origin, authored_classes),
+            Resolution::Rule(_)
+        )
+        .then_some(retry.raw)
+    }
+
+    fn resolve_once(
+        &self,
+        candidate: &Candidate,
+        tokens: &ValidatedTokens,
+        origin: &Origin,
+        authored_classes: &BTreeSet<String>,
+    ) -> Resolution {
         if authored_classes.contains(&candidate.raw) {
             return Resolution::NotUtility;
         }
@@ -112,6 +164,17 @@ impl Catalog {
                 "value is ambiguous across catalog entries",
                 Some("R15"),
             );
+        }
+        if successful.is_empty() && leading.len() > 1 {
+            if let Some(message) = attempted_categories_message(&leading, candidate, tokens) {
+                return invalid(
+                    candidate,
+                    origin,
+                    DiagnosticCode::Zw005,
+                    &message,
+                    Some("R15"),
+                );
+            }
         }
         let (entry, suffix) = successful.first().copied().unwrap_or(leading[0]);
         if entry.selector_shape == SelectorShape::LaterVisibleSiblings
@@ -338,6 +401,10 @@ fn match_priority(
         .token_categories
         .iter()
         .any(|category| tokens.contains(*category, suffix))
+        || grammar
+            .fallback_keywords
+            .iter()
+            .any(|(keyword, _)| *keyword == suffix)
     {
         2
     } else if candidate.utility.slash_modifier.is_some()
@@ -419,6 +486,20 @@ fn resolve_value(
                 ));
             }
         }
+    }
+    if let Some((_, value)) = grammar
+        .fallback_keywords
+        .iter()
+        .find(|(key, _)| *key == suffix)
+    {
+        if modifier.is_some() {
+            return Err((
+                DiagnosticCode::Zw005,
+                "keyword does not accept a slash modifier".to_owned(),
+                Some("R14"),
+            ));
+        }
+        return Ok(((*value).to_owned(), ValueStatus::Verified));
     }
     if let Some(resolved) = resolve_special_integer(entry, suffix) {
         return resolved;
@@ -531,6 +612,10 @@ fn resolve_value(
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
                 value = normalize_ratio(&value);
             }
+            if entry.root == "underline-offset" && status == ValueStatus::Verified {
+                validate_length(&value)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
             if entry.root == "rotate" && value == "none" {
                 return Err((
                     DiagnosticCode::Zw005,
@@ -561,6 +646,37 @@ fn resolve_value(
     ))
 }
 
+/// When every same-priority entry of an overloaded root rejected an
+/// arbitrary value only as invalid for its property, name all of them
+/// instead of whichever entry happened to be tried first.
+fn attempted_categories_message(
+    leading: &[(&CatalogEntry, &str)],
+    candidate: &Candidate,
+    tokens: &ValidatedTokens,
+) -> Option<String> {
+    candidate.utility.arbitrary_value.as_ref()?;
+    let mut properties = Vec::new();
+    for (entry, suffix) in leading {
+        let Err((DiagnosticCode::Zw005, message, _)) =
+            entry_value(entry, suffix, candidate, tokens)
+        else {
+            return None;
+        };
+        let property = message.strip_prefix("value is not valid for ")?.to_owned();
+        if !properties.contains(&property) {
+            properties.push(property);
+        }
+    }
+    if properties.len() < 2 {
+        return None;
+    }
+    let last = properties.pop()?;
+    Some(format!(
+        "value is not valid for any of {} or {last}",
+        properties.join(", ")
+    ))
+}
+
 fn is_color_entry(entry: &CatalogEntry) -> bool {
     entry
         .grammar
@@ -579,6 +695,7 @@ fn resolve_special_integer(
         || entry.id.starts_with("v1.divide.width")
         || entry.id == "v1.outline.width"
         || entry.id == "v1.outline.offset"
+        || entry.id == "v1.underline-offset"
     {
         let canonical = match Decimal::parse(suffix) {
             Ok(value) => value.to_string(),
@@ -641,6 +758,28 @@ fn resolve_special_integer(
             }
         }
         _ => None,
+    }
+}
+
+/// Rejects the keyword and percentage forms the property also accepts, so an
+/// arbitrary underline offset stays a nonnegative length.
+// Lightning CSS has no typed `text-underline-offset`, so the property parse accepts any
+// tokens; check the value as a standalone `<length>` instead.
+fn validate_length(value: &str) -> Result<(), String> {
+    use lightningcss::traits::{Parse, TrySign};
+    use lightningcss::values::length::Length;
+    let value = value.trim();
+    // Lightning CSS also reads a bare number as px; CSS only allows a unitless zero.
+    let bare_nonzero_number = value.parse::<f64>().is_ok_and(|number| number != 0.0);
+    let nonnegative = !bare_nonzero_number
+        && Length::parse_string(value)
+            .ok()
+            .and_then(|length| length.try_sign())
+            .is_some_and(|sign| sign.is_sign_positive());
+    if nonnegative {
+        Ok(())
+    } else {
+        Err("arbitrary value must be a nonnegative length".to_owned())
     }
 }
 

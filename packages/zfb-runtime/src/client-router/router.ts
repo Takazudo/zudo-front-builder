@@ -61,7 +61,7 @@ import {
   type TransitionBeforePreparationEvent,
 } from "./events.js";
 import { safePushState, safeReplaceState } from "./history-safe.js";
-import { detectScriptExecuted } from "./swap-functions.js";
+import { assertUniquePersistKeys, detectScriptExecuted } from "./swap-functions.js";
 import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
 // mountNewIslands() is called after runScripts() and before onPageLoad().
@@ -630,6 +630,8 @@ async function updateDOM(
       // Teardown and swap are a synchronous point-of-no-return. doSwap checks
       // the signal after the animation await and invokes this callback only for
       // a navigation that still owns the commit.
+      assertUniquePersistKeys(document, "current");
+      assertUniquePersistKeys(event.newDocument, "incoming");
       currentNavigation.domCommitStarted = true;
       cancelPendingIslands();
       // Unmount mounted islands on the OLD body before the swap so component

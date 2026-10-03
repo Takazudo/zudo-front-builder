@@ -95,15 +95,16 @@ pub use url_attribution::{AttributedUrl, PackageOrigin, PackageUrlAsset, UrlOrig
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 pub use wind_engine::WindEngine;
 pub use zudo_wind::{
-    audit, audit_json, expand_changed_path, expand_file_set, explain, explain_disabled,
-    explain_with_generation, extract_candidates, render_audit, render_explanation, AuditConflict,
-    AuditInput, AuditNote, AuditOutcome, AuditReport, AuditSource, BreakpointConfig,
-    CandidateIndex, DarkModeConfig, DeadClass, DeclarationView, DiagnosticView,
-    DynamicConstruction, ExpandedFile, Explanation, ExplanationOutcome, ExtractedCandidate,
-    ExtractionNote, ExtractionResult, FileSet, FontSizeToken, InterpolatedCandidate, NoteKind,
-    Occurrence, Origin, OriginCandidate, OriginView, ParsedCandidate, PositionKind, PositiveRoot,
-    ResetMode, SortTuple, SourceId, SourceKind, SourcePlan, SourcePositionKind, TokenResolution,
-    UnrecognizedClass, WalkDiagnostic, WindConfig,
+    audit, audit_json, compile_exclusion_pattern, expand_changed_path, expand_file_set, explain,
+    explain_disabled, explain_with_generation, extract_candidates, render_audit,
+    render_explanation, AuditConflict, AuditInput, AuditNote, AuditOutcome, AuditReport,
+    AuditSource, BreakpointConfig, CandidateIndex, DarkModeConfig, DeadClass, DeclarationView,
+    DiagnosticView, DynamicConstruction, ExclusionMatcher, ExpandedFile, Explanation,
+    ExplanationOutcome, ExtractedCandidate, ExtractionNote, ExtractionResult, FileSet,
+    FontSizeToken, InterpolatedCandidate, NoteKind, Occurrence, Origin, OriginCandidate,
+    OriginView, ParsedCandidate, PositionKind, PositiveRoot, ResetMode, SortTuple, SourceExclusion,
+    SourceId, SourceKind, SourcePlan, SourcePositionKind, TokenResolution, UnrecognizedClass,
+    WalkDiagnostic, WindConfig, PACKAGE_ROOT_TRAVERSES,
 };
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's

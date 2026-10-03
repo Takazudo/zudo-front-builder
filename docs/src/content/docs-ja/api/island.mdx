@@ -47,7 +47,9 @@ import type {
 
 `data-props` を越えられるのは JSON データだけです。トップレベルの値はプレーンなレコードでなければなりません。通常のレコードと null プロトタイプのレコードを受け付けます。入れ子の値は null、boolean、string、有限の number、密な配列、プレーンなレコードを使えます。繰り返し参照は値としてシリアライズされます。getter や独自の `toJSON` は呼び出しません。
 
-シリアライザーは undefined 値、配列の穴、関数、symbol、bigint、非有限数、循環参照、クラスのインスタンス、date、map、set、DOM ノード、promise、記述、signal を拒否します。アクセサー、列挙不能または symbol のプロパティ、自身のキー `__proto__`、`prototype`、`constructor` も拒否します。入れ子の `children` プロパティは通常の JSON データです。省略されるのはラッパーのトップレベルにある空の `children` だけです。不正なサーバーペイロードはページのレンダリングを失敗させ、不正なクライアントペイロードはその島だけを失敗させます。
+レコードが自身に持つ列挙可能な文字列キーのデータプロパティで、値が `undefined` のものは再帰的に省略されます。サーバーコンポーネントと JSON transport には同じ正規化済み props が渡るため、省略された任意キーはパース後もハイドレーション中も存在しません。配列内のレコードにも同じ規則が適用されますが、配列の要素が削除されたり位置がずれたりすることはありません。
+
+明示的な `null` は、自身のプロパティとして保持されます。undefined の配列要素と配列の穴は拒否されます。関数、symbol、bigint、非有限数、循環参照、クラスのインスタンス、date、map、set、DOM ノード、promise、記述、signal も拒否されます。アクセサー、列挙不能または symbol のプロパティ、自身のキー `__proto__`、`prototype`、`constructor` も拒否します。入れ子の `children` プロパティは通常の JSON データです。省略されるのはラッパーのトップレベルにある空の `children` だけです。不正なサーバーペイロードはページのレンダリングを失敗させ、不正なクライアントペイロードはその島だけを失敗させます。
 
 ラッパー要素と `data-zfb-island*` 名は、セレクターと永続化のために維持されます。ハイドレーション用のコメント領域は島の部分ツリー内だけに発行されます。手書きの永続ラッパーも、完全なマーカー、スケジュール、transport、protocol、build、props のメタデータを持ち、内部 HTML が `renderToString(child, { island: identity })` でレンダリングされていればサポートされます。一部だけを備えた旧ラッパーには、不足するメタデータを推測して補いません。そのラッパーでは、既存の `data-zfb-transition-persist` と `data-zfb-transition-persist-props` 属性も使えます。
 
@@ -90,6 +92,18 @@ export default function Page() {
 ```
 
 セットアップが失敗するか起動が取り消された場合、フォールバックはそのまま残ります。
+
+## ナビゲーションをまたいで島を永続化する
+
+島のラッパーに安定したキーを付けるには `persist` を渡します。クライアントルーターのナビゲーションをまたいで島を維持したい各ページで、同じ空でなく前後に空白のないキーを使います。キーは各ドキュメント内で一意にしてください。SDK は所有するラッパーにキーを出力します。予約済みの transport や識別属性を呼び出し側の props として公開しません。
+
+```tsx
+<Island persist="desktop-sidebar" persistProps>
+  <SidebarTree {...props} />
+</Island>
+```
+
+デフォルトでは、props が変わると古いルートを一度破棄し、受信 props で新しいルートをマウントします。props が同じなら現在のルートと状態を維持します。受信ページの props が異なっても古い props と状態を保つには `persistProps` を `true` にします。`persistProps` のデフォルトは `false` で、`persist` が必要です。コンポーネント、ビルド、transport、protocol、ルートの種類が変わる場合は、ルートを作り直します。
 
 ## マウント後のマーカー
 

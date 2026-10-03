@@ -1,4 +1,4 @@
-import { clientScript } from "@takazudo/zfb";
+import { Island, clientScript } from "@takazudo/zfb";
 import { RerootIsland } from "../src/RerootIsland";
 
 export default function RerootHostPage() {
@@ -12,7 +12,9 @@ export default function RerootHostPage() {
       <body>
         <main>
           <h1>ZFB_REROOT_HOST_PAGE</h1>
-          <RerootIsland />
+          <Island>
+            <RerootIsland />
+          </Island>
         </main>
       </body>
     </html>

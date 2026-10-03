@@ -1,0 +1,292 @@
+---
+title: "Example: Agent Conversations"
+description: A zfb static shell with one zudo-react island driving agent conversations, queued runs, cancellation, and reviewed host changes through a framework-neutral controller, with a synthetic provider and no deployment
+sidebar_position: 9
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A zfb 3.1.0 recipe for an agent-conversation UI: conversation history, queued agent runs,
+cancellation, versioned skills, and changes to a host system that a person reviews before they
+are applied. The page is a static zfb shell whose whole interface is one zudo-react island. The
+island talks to a framework-neutral controller and client, so the same UI runs against an
+in-memory service or against a local HTTP and SQLite server.
+
+The provider and the host CMS are **synthetic**. There is no model call, no API key, no cloud
+account, and no deployment.
+
+</Info>
+
+- **Repository:** [Takazudo/zfb-example-agent-convos](https://github.com/Takazudo/zfb-example-agent-convos)
+- **Commit described here:** [`a21cc10`](https://github.com/Takazudo/zfb-example-agent-convos/tree/a21cc1081f656027d075c1e09c425e65f368f3ae) (2026-10-01, "Bump both conversation apps to zfb 3.1.0")
+- **Live demo:** none. The repository's CI runs its test gate only; it has no deployment step.
+
+## What it demonstrates
+
+- **A static shell with one island.** `apps/showcase/pages/index.tsx` renders a layout around
+  `<Island when="load"><ConvosApp /></Island>`. Everything interactive lives in that one
+  `"use client"` component — see [Islands](../concepts/islands.mdx).
+- **UI logic outside the renderer.** The island owns signals and DOM refs only. Conversation
+  state, event merging, and command retries live in a `ConversationController` that talks to a
+  `ConversationClient` interface.
+- **One client interface, two transports.** A memory-backed client runs the service in the page;
+  `HttpConversationClient` calls a `/api/v1` server. The controller cannot tell them apart.
+- **Bounded conversations.** Fixed limits on runs, messages, input size, context size, and event
+  pages, exported as one `LIMITS` object.
+- **Ordered events with resynchronization.** The controller applies events in sequence and loads a
+  fresh snapshot when it detects a gap.
+- **Cancellation that does not pretend.** Closing a view stops local waits only. An effect that the
+  host has already accepted cannot be cancelled.
+- **Reviewed host changes and uncertain effects.** A proposal is approved against an exact payload
+  hash. When the result of an apply call is lost, the run moves to reconciliation instead of
+  retrying the write.
+
+## Tech used
+
+| Piece | What the repo uses |
+| --- | --- |
+| Engine and UI | `@takazudo/zfb` **3.1.0** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **3.1.0** |
+| Config | `apps/showcase/zfb.config.ts` sets only `wind: false`: no adapter, no SSR route |
+| Rendering mode | Static. `pages/index.tsx` is SSG HTML with one `<Island when="load">` |
+| Shared logic | `packages/core`, `packages/client`, `packages/controller`: TypeScript with no framework imports |
+| Local server | `dev/server.mjs`: a Node HTTP server on `127.0.0.1`, backed by Node SQLite through the same SQL statements as the `D1Repository` |
+| Cloudflare surface | `workers/conversations/src/worker.ts`: a handler factory with injected ports. No `wrangler.toml`, no Worker, D1 database, or Queue is provisioned |
+| Toolchain | Node 22.16+, pnpm 10.12.1, TypeScript 5.8.3; Python Playwright for the browser checks |
+
+## Three modes
+
+The repository runs the same UI in three settings. They have very different evidence behind them.
+
+| Mode | Where | Persistence | What is verified |
+| --- | --- | --- | --- |
+| Public showcase | `apps/showcase`, built to `apps/showcase/dist/` | Memory only; scenarios reset on reload | Real zfb build and browser hydration. Its import graph contains no HTTP client, SQL code, or credentials |
+| Local app | `apps/local` plus `dev/server.mjs` | SQLite file `.dev-state/conversations.sqlite` | Real HTTP and SQLite, including data surviving a server restart |
+| Worker handler factory | `workers/conversations` | Expects an injected D1 database and Queue | Tested with injected ports only. Real workerd, D1, and Queue delivery are **not** exercised |
+
+The repository states the Worker boundary directly in `docs/implementation.md`: "No actual
+Wrangler project, Worker resource, D1 database, or Queue was provisioned." Treat the Worker code as a
+starting point for integration, not as a deployed application.
+
+## How it works
+
+### The page is a static shell
+
+The showcase config has nothing but `wind: false`, and the page wraps one component in an island:
+
+```ts
+// apps/showcase/zfb.config.ts
+import { defineConfig } from '@takazudo/zfb/config';
+// Static mock-only build. No SSR adapter, live API, secret, or private client is imported.
+export default defineConfig({ wind: false });
+```
+
+```tsx
+// apps/showcase/pages/index.tsx
+import { Island } from '@takazudo/zfb';
+import Layout from '../layouts/default';
+import ConvosApp from '../components/ConvosApp';
+export default function Home() { return <Layout><Island when="load"><ConvosApp /></Island></Layout>; }
+```
+
+`ConvosApp` takes no props. Its own comment explains why: "Runtime objects never cross the JSON
+Island boundary." The controller and the service are created inside the island during client
+setup, never passed in as props.
+
+The repository keeps two separate zfb build roots. `apps/showcase` is the public mock, and
+`apps/local` builds the same components with an HTTP session adapter. Staging scripts
+(`scripts/stage-*.mjs`) copy an explicit allowlist of shared sources into each app's
+`components/shared/`. This is why the public build cannot contain the HTTP or SQL code. The
+README warns never to publish the local build as the public demo.
+
+### The controller only knows a client interface
+
+`packages/client/src/port.ts` defines the contract that both transports implement. An excerpt:
+
+```ts
+/** Framework-neutral client contract shared by mock and HTTP implementations. */
+export interface ConversationClient {
+    snapshot(conversationId: Id, signal?: AbortSignal): Promise<Result<Snapshot>>;
+    events(conversationId: Id, after: number, signal?: AbortSignal): Promise<Result<EventPage>>;
+    send(conversationId: Id, input: {
+        text: string;
+        expectedRevision: number;
+    }, options: CommandOptions): Promise<Result<AcceptedRun>>;
+    cancel(conversationId: Id, runId: Id, options: CommandOptions): Promise<Result<Run>>;
+    decide(conversationId: Id, proposalId: Id, input: {
+        decision: 'approve' | 'reject';
+        payloadHash: string;
+    }, options: CommandOptions): Promise<Result<Proposal>>;
+    // …list, create, history, export, update, retry, skills, and more
+}
+```
+
+Every command carries a request key. `HttpConversationClient` sends it as an `Idempotency-Key`
+header and never retries a mutation on its own:
+
+```ts
+/** No implicit mutation retries. The caller retains the request key after an ambiguous failure. */
+export class HttpConversationClient implements ConversationClient {
+```
+
+The controller follows the same rule. When the server rejects a command explicitly, the controller
+drops the pending command. When the transport fails and the outcome is unknown, it keeps the key
+and body, and the UI shows "Response not confirmed. Check acceptance with the same key." On the
+server, a repeated key with the same input returns the recorded outcome. A repeated key with
+different input is a conflict.
+
+### Conversations are bounded
+
+`packages/core/src/validation.ts` exports the limits as one frozen object:
+
+```ts
+export const LIMITS = Object.freeze({
+    title: 120, inputBytes: 16384, skillBytes: 32768, outputBytes: 16384,
+    contextBytes: 262144, eventBytes: 131072, pageBytes: 262144,
+    listSize: 50, messagePageSize: 50, eventPageSize: 100,
+    runsPerConversation: 128, messagesPerConversation: 256, bodyBytes: 65536,
+});
+```
+
+So one conversation holds at most 128 runs and 256 messages, and one event page holds at most 100
+events or 256 KiB. The repository calls these "initial engineering limits, not load-test results."
+
+### Events are applied in order
+
+`ConversationService.send` validates the message and commits the user message, the queued run, its
+ordered events, and an outbox item together. Each event carries a sequence number. The controller
+polls for events after its current cursor and applies them in order. When the server reports that
+the cursor is no longer valid, or the controller sees a gap, it reloads a full snapshot instead of
+guessing:
+
+```ts
+if (error instanceof CommandFailure && ['RESYNC_REQUIRED', 'CURSOR_INVALID'].includes(error.code) || error instanceof Error && error.message === 'EVENT_GAP')
+    await this.loadSnapshot(cid, epoch);
+```
+
+An epoch counter fences asynchronous reads, so a response that arrives after the user has switched
+conversations is dropped.
+
+### Cancellation has two meanings
+
+Disposing the controller, for example when the island unmounts, aborts local reads and timers only:
+
+```ts
+dispose() {
+    // …
+    this.readAbort.abort();
+    // This cancels local reads only. It intentionally sends no run-cancellation command.
+}
+```
+
+Only the explicit **Stop** action sends a `cancel` command. The service then refuses to cancel a run
+whose host effect may already have happened:
+
+```ts
+if (r.status === 'applying' || r.status === 'needs_reconciliation')
+    throw new DomainError('TOOL_RESULT_UNKNOWN', 'An accepted effect cannot be cancelled as if it never happened.');
+```
+
+A queued run is cancelled at once. A running run moves to `cancel_requested`, its pending proposals
+are rejected, and any streaming message is kept as a partial response.
+
+### Proposals are approved against an exact payload
+
+A proposal is a change the agent wants to make in the host, for example saving a CMS draft. The UI
+shows the exact before and after text, and the approval names the payload it reviewed:
+
+```ts
+if (p.payloadHash !== hash(b.payloadHash))
+    throw new DomainError('STALE_PROPOSAL', 'The reviewed payload no longer matches.');
+```
+
+Approval does not mean the change succeeded. Approving moves the run to `applying` and queues an
+`apply` job. The host checks permission and the expected revision when it writes, under an effect
+key derived from the proposal. If the host revision moved in the meantime, the UI offers **Prepare a
+new proposal** instead of applying an outdated one.
+
+### Lost results go to reconciliation
+
+When the apply call's result is lost, the run enters `needs_reconciliation`, and a `reconcile` job
+asks the host about the same effect key. The run then records either "Recovered the host receipt;
+draft was saved once." or "Confirmed no host effect." The write is never retried blindly. The
+synthetic host keeps its receipts in SQLite in the local app, so they survive a restart.
+
+### User content stays text
+
+Messages render through zudo-react text bindings, so user and assistant text is never treated as
+markup:
+
+```tsx
+<div class="ac-message-text">{computed(() => item.value.parts.map(p => p.text).join(''))}</div>
+```
+
+The repository's implementation notes add the other boundaries: JSON readers are size-bounded, the
+HTTP layer does not expose internal database or provider errors, and permission checks belong to
+the host at the moment it applies a change.
+
+## Run it locally
+
+Use Node 22.16+ and pnpm 10.12.1:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev:local
+```
+
+`pnpm dev:local` compiles the core, builds both zfb apps, and starts `dev/server.mjs`. Open
+`http://127.0.0.1:8787/` for the local app backed by HTTP and SQLite, and
+`http://127.0.0.1:8787/mock` for the memory-only showcase. To change the port or database file
+after building:
+
+```sh
+PORT=8790 CONVOS_DB=.dev-state/other.sqlite node dev/server.mjs
+```
+
+The server accepts only same-origin loopback traffic and uses one fixed synthetic identity. The
+README calls it "a development harness, not a production authentication system."
+
+To work on the public static showcase alone:
+
+| Command | What it runs |
+| --- | --- |
+| `pnpm dev` | stages the showcase sources, then `zfb dev` in `apps/showcase` |
+| `pnpm build` | stages, then `zfb build`; output in `apps/showcase/dist/` |
+| `pnpm check:zfb` | stages, then `zfb check` |
+| `pnpm typecheck` | builds the core and checks both zfb apps |
+| `pnpm test` | the Node unit and contract tests |
+| `pnpm b4push` | the full gate, including Playwright browser checks against the real zfb builds |
+
+The browser checks need a Python environment:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m playwright install chromium
+PYTHON=.venv/bin/python pnpm b4push
+```
+
+## What is not covered
+
+The repository's `TEST-RESULTS.md` and `docs/implementation.md` list these as outside the
+evidence:
+
+- **No real Cloudflare runtime.** workerd, D1, and Cloudflare Queue delivery are not exercised.
+  The local app runs the D1 repository's SQL through Node SQLite, which is not proof of D1
+  compatibility. The Worker factory's `enabled` admission flag is false by default.
+- **No real provider.** Assistant output comes from a fake provider. There is no model call, cost
+  policy, or provider credential.
+- **No production authentication.** The HTTP handler requires an injected authenticator. The local
+  server's fixed identity is not an authentication product, and real host authorization is not
+  implemented.
+- **No retention or quotas.** Retention, erasure, and workspace quotas are not implemented.
+  Conversation listing loads the scoped list before paging.
+- **No device checks.** Safari, Android hardware, and a real Japanese IME were not tested.
+
+## Related docs
+
+- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx): the `"use client"` component model and JSON props
+- [zudo-react](../zudo-react/overview.mdx): signals, scopes, `Show`, `For`, and refs used by the island
+- [Forms](../zudo-react/forms.mdx): writable models and composition handling for the message composer
+- [AI Summarizer](./ai-summarizer.mdx): a deployed example that calls Workers AI from a `prerender = false` route
+- [Examples](../guides/examples.mdx): the other example repositories

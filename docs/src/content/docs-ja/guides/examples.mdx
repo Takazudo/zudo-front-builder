@@ -1,29 +1,30 @@
 ---
 title: サンプル
-description: zfb を実際にデプロイ可能なプロジェクトで示す、9 つのスタンドアロンな Cloudflare Workers リポジトリの比較表。
+description: zfb を示す 10 のスタンドアロンなリポジトリの比較表。9 つはデプロイ済みの Cloudflare Workers プロジェクトで、1 つはローカル専用のサンプルです。
 sidebar_position: 5
 ---
 
-zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属しています。それぞれが
-小さくデプロイ可能なプロジェクトで、単一の Cloudflare レシピを端から端まで示します。
-各リポジトリは独立して `pnpm install` でき、ローカルでの実行手順と Cloudflare の
-プロビジョニングコマンドを記した独自の README を備えています — スニペットを断片的に
-コピーするのではなく、いずれか 1 つをクローンして全体が組み上がった様子を確認して
-ください。
+zfb には、スタンドアロンなサンプルリポジトリが 10 個付属しています。そのうち 9 つは
+小さくデプロイ可能なプロジェクトで、それぞれ単一の Cloudflare レシピを端から端まで
+示します。10 個目の Agent Conversations はローカル専用です。各リポジトリは独立して
+`pnpm install` でき、ローカルでの実行手順を記した独自の README を備えています。
+Cloudflare のサンプルには、プロビジョニングコマンドも記されています — スニペットを
+断片的にコピーするのではなく、いずれか 1 つをクローンして全体が組み上がった様子を
+確認してください。
 
-このページは比較表です。掲載しているリポジトリはすべて zfb 3.0.0 を固定し、zfb の
+このページは比較表です。掲載しているリポジトリはすべて zfb 3.1.0 を固定し（2026-10-03 時点で確認）、zfb の
 `zudo-react` JSX ランタイムを使っています。スタイリング欄には zudo-wind のユーティリティを
 使うか、リセットだけを使うか、CSS を自分で記述するかを示しています。各行から [レシピ](/ja/docs/recipes/)
 にある詳しい解説ページへ移動でき、そのサンプルが何を示しているか、どう動くか、ローカルで
 どう実行するかを確認できます。
 
-9 つとも **Cloudflare Workers** として `takazudomodular.com` のサブドメインに
+Cloudflare の 9 つのサンプルは **Cloudflare Workers** として `takazudomodular.com` のサブドメインに
 デプロイされています。7 つはサーバーコードを持ち、残り 2 つは Worker スクリプトを
 まったく持たないアセットのみの Worker です。
 
 <Note title="password-gate は意図的に 401 を返す">
 
-以下のデモはすべて稼働中ですが、1 つだけ意図的な例外があります。
+以下のデモのリンク先はすべて稼働中ですが、1 つだけ意図的な例外があります。
 [zfb-example-password-gate.takazudomodular.com](https://zfb-example-password-gate.takazudomodular.com/)
 はサイトの内容ではなくログインページと `401 Unauthorized` を返します。これは壊れて
 いるのではなく、コンテンツをゲートすることこそがこのサンプルの目的だからです。
@@ -59,3 +60,14 @@ zfb には、スタンドアロンなサンプルリポジトリが 9 つ付属�
 | --- | --- | --- | --- | --- |
 | [Blog](/ja/docs/recipes/blog) | 純粋 SSG、アセットのみの Worker | なし | CSS を記述、zudo-wind はリセットのみ | [リポジトリ](https://github.com/Takazudo/zfb-example-blog) · [デモ](https://zfb-example-blog.takazudomodular.com/) |
 | [Corporate Website](/ja/docs/recipes/corporate-website) | 純粋 SSG、アセットのみの Worker | なし | CSS Modules、zudo-wind は無効 | [リポジトリ](https://github.com/Takazudo/zfb-example-corporate-website) · [デモ](https://zfb-example-corporate-website.takazudomodular.com/) |
+
+## ローカル専用のサンプル
+
+このサンプルにはデプロイがありません。公開用のショーケースは zfb の静的ビルドで、同じ
+UI の 2 つ目のビルドがループバックの HTTP と SQLite のサーバーと通信します。Cloudflare
+Worker のハンドラーファクトリーも含みますが、Worker、D1 データベース、Queue は用意されて
+いないため、デプロイ済みの Cloudflare アプリケーションとして読まないでください。
+
+| サンプル | レンダリング | バインディングとシークレット | スタイリング | リンク |
+| --- | --- | --- | --- | --- |
+| [Agent Conversations](/ja/docs/recipes/agent-conversations) | 純粋 SSG と `<Island when="load">` 1 つ、アダプタなし | なし。プロバイダーとホストは合成で、認証情報なし | CSS を記述、zudo-wind は無効 | [リポジトリ](https://github.com/Takazudo/zfb-example-agent-convos) |

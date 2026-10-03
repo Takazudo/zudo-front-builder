@@ -1,0 +1,14 @@
+{
+  "name": "@fixture/widgets",
+  "version": "1.0.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./conflict-one": "./dist/conflicts/one.js",
+    "./conflict-two": "./dist/conflicts/two.js",
+    "./ambiguous": "./dist/ambiguous/index.js"
+  }
+}

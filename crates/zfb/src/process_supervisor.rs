@@ -315,7 +315,10 @@ mod unix {
             }
             let socket = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = socket.local_addr().unwrap().port();
-            fs::write(info, format!("{} {port}", std::process::id())).unwrap();
+            let info_path = Path::new(&info);
+            let pending = info_path.with_extension("pending");
+            fs::write(&pending, format!("{} {port}", std::process::id())).unwrap();
+            fs::rename(pending, info_path).unwrap();
             loop {
                 std::thread::park();
             }

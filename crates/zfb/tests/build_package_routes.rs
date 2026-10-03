@@ -470,10 +470,9 @@ export default function Page() {
     let virtual_entrypoint = package_root.join("src/virtual-page.tsx");
     fs::write(
         &virtual_entrypoint,
-        r#"import { bindings } from "virtual:host-bindings";
+        r#"import { SidebarToggle } from "virtual:host-bindings";
 import { Island } from "@takazudo/zfb";
 export default function Page() {
-  const SidebarToggle = bindings.SidebarToggle;
   return <html lang="en"><body><Island><SidebarToggle /></Island></body></html>;
 }
 "#,
@@ -489,8 +488,7 @@ export default function Page() {
     let host_bindings = root.join("src/host-bindings.tsx");
     fs::write(
         &host_bindings,
-        r#"import { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
-export const bindings = { SidebarToggle };
+        r#"export { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
 "#,
     )
     .unwrap();
@@ -499,7 +497,7 @@ export const bindings = { SidebarToggle };
     let virtual_entrypoint_json =
         serde_json::to_string(&virtual_entrypoint.to_string_lossy()).unwrap();
     let virtual_module_source = format!(
-        "export {{ bindings }} from {};\n",
+        "export {{ SidebarToggle }} from {};\n",
         serde_json::to_string(&host_bindings.to_string_lossy()).unwrap()
     );
     let virtual_module_source_json = serde_json::to_string(&virtual_module_source).unwrap();
@@ -990,12 +988,13 @@ export default function Page() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Island: a "use client" package route emits the island asset.
+// 7. Island: an SDK Island boundary on a package route emits the island asset.
 // ---------------------------------------------------------------------------
 
-/// A package route reachable to a `"use client"` component must emit the
-/// islands asset — proves the islands scanner is seeded from the overlay
-/// pages root (#1193), not the hardcoded `project_root/pages`.
+/// A package route wrapping a `"use client"` component in the SDK `Island`
+/// boundary must emit the islands asset — proves the islands scanner is
+/// seeded from the overlay pages root (#1193), not the hardcoded
+/// `project_root/pages`.
 #[test]
 fn package_route_with_use_client_emits_island_asset() {
     let Some(esbuild) = locate_esbuild() else {
@@ -1012,11 +1011,10 @@ fn package_route_with_use_client_emits_island_asset() {
     let _nm = link_embedded_node_modules(root);
 
     fs::create_dir_all(root.join("pkg")).unwrap();
-    // A "use client" island component. Kept SSR-render-safe (no hooks at
-    // render time): the assertion here is that the island ASSET is emitted
-    // (scanner found `"use client"` reachable from a package route), which
-    // is independent of any client-side interactivity. A `data-island`
-    // marker keeps the SSR output deterministic.
+    // A "use client" component wrapped by the SDK Island boundary below.
+    // Kept SSR-render-safe (no hooks at render time): the assertion here is
+    // that the island asset is emitted from a package route, independent of
+    // client-side interactivity.
     fs::write(
         root.join("pkg/counter.tsx"),
         r#""use client";
@@ -1029,12 +1027,13 @@ export function Counter() {
     // The package page renders the island.
     fs::write(
         root.join("pkg/island-page.tsx"),
-        r#"import { Counter } from "./counter";
+        r#"import { Island } from "@takazudo/zfb";
+import { Counter } from "./counter";
 export default function Page() {
   return (
     <html lang="en">
       <head><title>island</title></head>
-      <body><Counter /></body>
+      <body><Island when="load"><Counter /></Island></body>
     </html>
   );
 }
@@ -1075,7 +1074,7 @@ export default function Page() {
     });
     assert!(
         has_island,
-        "a `\"use client\"` component reachable from a package route must emit \
+        "a package route's SDK `<Island>` boundary containing `Counter` must emit \
          dist/assets/islands-<hash>.js — proves the islands scanner is seeded from the \
          overlay pages root. js assets: {js_assets:#?}"
     );
@@ -1086,10 +1085,10 @@ export default function Page() {
 //     outside-`pages/` import must still ship when a package route is present.
 // ---------------------------------------------------------------------------
 
-/// Regression guard (codex P1): a USER `pages/` page whose `"use client"`
-/// island lives OUTSIDE `pages/` (e.g. `../components/Widget`) must still be
-/// discovered — and ship in the islands bundle — when ANY package route is
-/// present.
+/// Regression guard (codex P1): a USER `pages/` page whose SDK `Island`
+/// boundary wraps a `"use client"` component OUTSIDE `pages/` (e.g.
+/// `../components/Widget`) must still be discovered — and ship in the islands
+/// bundle — when ANY package route is present.
 ///
 /// Before the fix the islands scanner was seeded by walking the build pages
 /// root, which is the OVERLAY temp dir when a package route exists. The
@@ -1120,9 +1119,10 @@ fn user_page_island_outside_pages_ships_with_package_route_present() {
     let root = tmp.path();
     let _nm = link_embedded_node_modules(root);
 
-    // A "use client" island component OUTSIDE pages/ — the case the overlay
-    // strands. SSR-render-safe (no hooks at render time); the assertion is
-    // that the island ships, independent of client interactivity.
+    // A "use client" component OUTSIDE pages/ — the case the overlay
+    // strands. The user's page reaches it through the SDK Island boundary.
+    // SSR-render-safe (no hooks at render time); the assertion is that the
+    // island ships, independent of client interactivity.
     fs::create_dir_all(root.join("components")).unwrap();
     fs::write(
         root.join("components/widget.tsx"),
@@ -1137,12 +1137,13 @@ export function Widget() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(
         root.join("pages/index.tsx"),
-        r#"import { Widget } from "../components/widget";
+        r#"import { Island } from "@takazudo/zfb";
+import { Widget } from "../components/widget";
 export default function Page() {
   return (
     <html lang="en">
       <head><title>home</title></head>
-      <body><Widget /></body>
+      <body><Island when="load"><Widget /></Island></body>
     </html>
   );
 }
@@ -1188,7 +1189,7 @@ export default function Page() {
         .collect();
     assert!(
         !island_assets.is_empty(),
-        "a user page's `\"use client\"` island reached via `../components/widget` must emit \
+        "a user page's SDK `<Island>` boundary around `../components/widget` must emit \
          dist/assets/islands-<hash>.js even with a package route present. js assets: {js_assets:#?}"
     );
     // The user `Widget` island must actually be registered in the bundle —
@@ -1209,13 +1210,14 @@ export default function Page() {
 }
 
 // ---------------------------------------------------------------------------
-// 7c (#3013, #3005 repro): a `"use client"` component reachable ONLY through
-//    a registered plugin virtual module must still ship as an island.
+// 7c (#3013, #3005 repro): an SDK Island boundary whose component comes ONLY
+//    through a registered plugin virtual module must still ship as an island.
 // ---------------------------------------------------------------------------
 
-/// The core #3013/#3005 acceptance: a host page's ONLY route to a
-/// `"use client"` `Widget` is `import { Widget } from "virtual:demo"` — no
-/// relative or bare import reaches `Widget` any other way. Before issue
+/// The core #3013/#3005 acceptance: a host page's SDK `Island` boundary gets
+/// its `"use client"` `Widget` ONLY from `import { Widget } from
+/// "virtual:demo"` — no relative or bare import reaches `Widget` any other
+/// way. Before issue
 /// #3013 wired `FsResolver::with_virtual_modules` into
 /// `build_default_islands_payload_with_bundle_options`, the islands scanner
 /// never followed the `virtual:` edge, so `Widget` was invisible to the
@@ -1346,8 +1348,8 @@ export default {
         .collect();
     assert!(
         !island_assets.is_empty(),
-        "a `\"use client\"` component reachable ONLY through a registered virtual module must \
-         emit dist/assets/islands-<hash>.js. js assets: {js_assets:#?}"
+        "a `Widget` inside the host page's SDK `<Island>` boundary, reachable ONLY through a \
+         registered virtual module, must emit dist/assets/islands-<hash>.js. js assets: {js_assets:#?}"
     );
     let island_bundles: Vec<String> = island_assets
         .iter()

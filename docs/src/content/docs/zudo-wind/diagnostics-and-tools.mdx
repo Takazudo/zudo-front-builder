@@ -56,6 +56,8 @@ Run `zfb wind explain` to inspect how a candidate is parsed and resolved. Explai
 
 Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, and property conflicts within an enclosing class-list literal. It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
 
+`--plan standalone` (the default) audits the same roots as `zfb css` without `--source`: the conventional project roots plus configured `wind.sources` package roots and exclusions. `--plan build` audits the plan `zfb build` and `zfb dev` scan. It runs plugin `setup` to discover package-owned routes, sibling mirror roots, and plugin virtual modules, which are audited as `plugin/<specifier>`. It runs no `preBuild` or `postBuild` hook and writes no build output. Either mode first prints `wind audit plan: <mode>` followed by every scanned root, virtual module, manifest, and exclusion with its reason.
+
 By default, a completed audit exits with status 0 even when it reports error-severity findings; stderr then recommends `--fail-on error`. `--fail-on error` fails on error-severity diagnostics, while `--fail-on warning` also fails on warnings. `auditInfo` findings do not affect either threshold. Invalid configuration and source scan failures always exit nonzero.
 
 `codeHighlight.roleClasses` is deliberately tolerant: a valid utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. Audit may report that role as ignored. An exact match in `authoredClasses` suppresses utility validation, generation, and utility diagnostics at every candidate origin. It cannot suppress configuration errors or stylesheet checks.
@@ -70,7 +72,7 @@ The standalone `zfb css` command remains the wind compiler. When generation is e
 
 ## Generated identity
 
-Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 3. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
+Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 4. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
 
 ## See also
 

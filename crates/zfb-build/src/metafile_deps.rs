@@ -1354,6 +1354,30 @@ pub fn plain_css_inputs(
         .collect()
 }
 
+/// Project-relative `.tsx`/`.jsx` files esbuild bundled straight from the
+/// project tree: dependencies, files outside the project, synthetic inputs
+/// and staged copies without a project twin are left out.
+pub fn authored_jsx_inputs(metafile_bytes: &[u8], project_root: &Path) -> Vec<PathBuf> {
+    let Ok(meta) = serde_json::from_slice::<Metafile>(metafile_bytes) else {
+        return Vec::new();
+    };
+    meta.inputs
+        .keys()
+        .filter(|key| !is_synthetic_input(key))
+        .map(PathBuf::from)
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("tsx" | "jsx")
+            ) && path.components().all(
+                |part| matches!(part, std::path::Component::Normal(name) if name != "node_modules"),
+            ) && project_root.join(path).is_file()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Fail-closed audit: prove that no `bundle.exclude`-matched source leaked
 /// into the bundle by cross-checking esbuild's `--metafile` `inputs` record
 /// (its authoritative resolution log) against the exclude predicate.
@@ -2226,6 +2250,32 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(detected, expected);
+    }
+
+    #[test]
+    fn authored_jsx_inputs_keep_only_project_tsx_and_jsx() {
+        let project = tempfile::tempdir().unwrap();
+        write(project.path(), "pages/index.tsx", "x");
+        write(project.path(), "components/legacy.jsx", "x");
+        write(project.path(), "lib/util.ts", "x");
+        write(project.path(), "node_modules/widget/index.jsx", "x");
+        let metafile = br#"{"inputs": {
+            "pages/index.tsx": {"imports": []},
+            "components/legacy.jsx": {"imports": []},
+            "lib/util.ts": {"imports": []},
+            "node_modules/widget/index.jsx": {"imports": []},
+            "../sibling/button.tsx": {"imports": []},
+            "/abs/elsewhere/card.tsx": {"imports": []},
+            "pages/staged-only.tsx": {"imports": []},
+            "entry.mjs": {"imports": []}
+        }}"#;
+        assert_eq!(
+            authored_jsx_inputs(metafile, project.path()),
+            vec![
+                PathBuf::from("components/legacy.jsx"),
+                PathBuf::from("pages/index.tsx")
+            ]
+        );
     }
 
     #[test]

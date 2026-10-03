@@ -111,6 +111,9 @@ pub enum PluginDispatchOutcome {
 
 /// Shape implemented by adapters that own the underlying plugin host
 /// (typically the long-lived `PluginHost` from `zfb-build`).
+// async_trait generates #[must_use] on boxed futures; newer Clippy reports it
+// as redundant for these trait methods.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DevMiddlewareDispatcher: Send + Sync {
     async fn dispatch(

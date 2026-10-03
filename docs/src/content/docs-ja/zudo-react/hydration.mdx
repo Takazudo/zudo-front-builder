@@ -64,7 +64,7 @@ ZR_HYDRATION_MISMATCH、ZR_IDENTITY、ZR_PROPS、ZR_UNSUPPORTED_POSITION、ZR_DU
 
 table と select の構造規則は、島のない静的サーバーレンダリングにも適用されます。パーサーが構造を決める要素には、許可された組み込み要素を直接置きます。たとえば tbody には tr、select には option または optgroup、optgroup には option を置きます。コンポーネントや Fragment をこれらの位置の代わりにはできません。table 構造には tbody を明示し、option のラベルは静的なスカラー文字列にしてください。島の中でコメント区切りの動的領域を使えるのも、HTML 解析後にその位置が保たれる場所だけです。そのため table、tbody、tr のようなテーブル構造上の階層や、select、optgroup、option の内部では使えません。
 
-title の内容は静的なスカラーテキストです。textarea の内容はフォームアダプターが扱います。島の中では template は使えません。script と style で使えるのは、[コンポーネントと JSX](./components-and-jsx.mdx)の制約に従う静的な rawHtml だけです。パーサーに依存する noscript、xmp、iframe、noembed、noframes、plaintext の文脈では、ハイドレートされる内容と rawHtml は拒否されます。未対応の構造はブラウザのパーサーによる修復に頼らず、要素、島、パスを示す診断で失敗します。
+title の内容は静的なスカラーテキストです。textarea の内容はフォームアダプターが扱います。島の中では template は使えません。script と style で使えるのは、[コンポーネントと JSX](./components-and-jsx.mdx)の制約に従う静的な rawHtml だけです。パーサーに依存する noscript、xmp、noembed、noframes、plaintext では、ハイドレートされる内容と rawHtml は引き続き拒否されます。子を持たない `iframe` のシェルは使えますが、`src` または `srcdoc` から読み込まれる文書はブラウザーが所有し、ハイドレーションの対象外です。`srcdoc` はアプリケーションが信頼する入力であり、サニタイズされません。iframe に JSX の子や `rawHtml` を渡したり、iframe 要素のフォールバック子ノードやその中のハイドレーションマーカーを入れたりしないでください。未対応の構造はブラウザーパースによる修復に頼らず、要素、島、パスを示す診断で失敗します。
 
 ## mount はクライアントレンダリング
 
@@ -73,6 +73,7 @@ title の内容は静的なスカラーテキストです。textarea の内容�
 ## 関連ページ
 
 - [サーバーレンダリング](./server-rendering.mdx)
+- [テスト](./testing.mdx)
 - [スコープとライフサイクル](./scopes-and-lifecycle.mdx)
 - [フォーム](./forms.mdx)
 - [島](../concepts/islands.mdx)

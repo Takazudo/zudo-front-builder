@@ -190,6 +190,40 @@ generated: true
 | --- | --- |
 | `break-words` | `overflow-wrap: break-word` |
 
+## wrap-anywhere
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.wrap-anywhere` |
+| クラスパターン | `wrap-anywhere` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-layout` (`20`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `overflow-wrap` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"anywhere"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `overflow-wrap` | `fixed` | `"anywhere"` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `wrap-anywhere` | `overflow-wrap: anywhere` |
+
 ## truncate
 
 | フィールド | 値 |

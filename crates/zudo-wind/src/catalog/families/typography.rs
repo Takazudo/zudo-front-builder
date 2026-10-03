@@ -86,6 +86,8 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         "1.5",
     );
     set_id(&mut leading, "v1.leading");
+    // `leading-none` is the constant 1 unless the project configures lineHeights.none.
+    leading.grammar.fallback_keywords = vec![("none", "1")];
     entries.push(leading);
 
     let mut tracking = entry(
@@ -178,6 +180,11 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             "break-all",
             vec![fixed("word-break", "break-all")],
             vec![("word-break", "break-all")],
+        ),
+        (
+            "wrap-anywhere",
+            vec![fixed("overflow-wrap", "anywhere")],
+            vec![("overflow-wrap", "anywhere")],
         ),
     ] {
         let mut static_entry = entry(
@@ -289,4 +296,42 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         ],
     );
     entries.push(antialiased);
+
+    let mut decoration = entry(
+        "decoration",
+        "text-decoration-color",
+        45,
+        0,
+        &["text-decoration-color"],
+        &[ValueKind::Keyword, ValueKind::Token, ValueKind::Arbitrary],
+        &[("transparent", "transparent"), ("current", "currentColor")],
+        &[TokenCategory::Color],
+        Some("text-decoration-color"),
+        false,
+        false,
+        OWN,
+        Some("[red]/40"),
+        "color-mix(in oklab, red 40%, transparent)",
+    );
+    set_id(&mut decoration, "v1.decoration.color");
+    entries.push(decoration);
+
+    let mut underline_offset = entry(
+        "underline-offset",
+        "text-underline-offset",
+        46,
+        0,
+        &["text-underline-offset"],
+        &[ValueKind::Integer, ValueKind::Arbitrary],
+        &[],
+        &[],
+        Some("text-underline-offset"),
+        false,
+        false,
+        OWN,
+        Some("4"),
+        "4px",
+    );
+    set_id(&mut underline_offset, "v1.underline-offset");
+    entries.push(underline_offset);
 }

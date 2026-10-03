@@ -2,9 +2,8 @@
 //!
 //! ## Stable contract
 //!
-//! The manifest is the data structure the **islands-bundling-shim** topic
-//! consumes when generating the shared esbuild entry point and the
-//! browser runtime. Its on-disk format is a JSON object:
+//! The manifest is the flat marker-to-source shape consumed by the shared
+//! esbuild entry and browser runtime. Its serialized format is a JSON object:
 //!
 //! ```json
 //! {
@@ -13,13 +12,10 @@
 //! }
 //! ```
 //!
-//! - **Keys** are marker-name identities exactly as the scanner emits
-//!   them: the value of [`crate::Island::marker_name`]. This is the same
-//!   identity the runtime/bundling path keys on — the island marker
-//!   the SSR side writes into `data-zfb-island`. A default-export island
-//!   carries the identifier name as its `marker_name` (e.g. `"Foo"` for
-//!   `export default function Foo`), so two distinct default exports do
-//!   not collide on the literal `"default"` (their `component_name`).
+//! - **Keys** are the actual function marker names resolved by the scanner:
+//!   the value of [`crate::Island::marker_name`]. Function aliases and barrel
+//!   exports preserve the defining function's name; an anonymous literal
+//!   default function uses `"default"`.
 //! - **Values** are the resolved source path. They are written either as
 //!   the absolute path the resolver returned, or — when the caller passes a
 //!   `root` to [`Manifest::relative_to`] / [`write_manifest`] — as the
@@ -38,18 +34,17 @@
 //! - **Forward-slash paths**: relative paths use `/` even on Windows hosts
 //!   so the manifest is portable across the JS/TS bundler subprocess that
 //!   reads it. Absolute paths preserve the host separator.
-//! - **One value per key**: when two distinct source files produce the same
-//!   marker name, the entry whose `source_path` sorts first wins. This
-//!   matches the scanner's pre-existing `(source_path, name)` tie-break and
-//!   keeps the manifest a flat `marker_name → path` map. A diagnostic
-//!   helper, [`Manifest::collisions`], surfaces dropped entries so callers
-//!   that want to fail loudly can do so; [`is_same_package_duplicate`]
-//!   classifies each one so a package's own source/compiled duplicate can be
-//!   dropped without a warning the author cannot act on.
+//! - **One value per key**: this compatibility map keeps the first source
+//!   path in sorted input order and records every distinct target collision
+//!   in [`Manifest::collisions`]. Production callers must validate those
+//!   collisions before reducing targets to this flat shape. Package ownership
+//!   or byte similarity does not prove that two targets are the same function.
+//!   [`is_same_package_duplicate`] is a legacy diagnostic classifier and must
+//!   never be used to suppress registration validation.
 //!
 //! ## Downstream contract
 //!
-//! The bundling-shim topic relies on:
+//! The browser registry relies on:
 //!
 //! - JSON object shape (no nesting, string values).
 //! - The browser runtime bundled with the islands does
@@ -59,13 +54,14 @@
 //!   keys must match the values the SDK's `Island` JSX wrapper writes into
 //!   the `data-zfb-island` / `data-zfb-island-skip-ssr` attributes.
 //!
-//! Do **not** change this format without coordinating with the
-//! islands-bundling-shim topic.
+//! Do **not** change this format without coordinating with the SSR allowlist
+//! and browser registry consumers.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::scanner::IslandsSet;
+use crate::Island;
 
 /// A marker-name → resolved-source-path map.
 ///
@@ -95,6 +91,10 @@ pub struct Collision {
     pub dropped_path: PathBuf,
     /// The source path that **did** make it into the manifest.
     pub kept_path: PathBuf,
+    /// Export selected for the dropped target.
+    pub dropped_export: String,
+    /// Export selected for the kept target.
+    pub kept_export: String,
 }
 
 /// Module extensions an island can be authored or shipped in. Used when
@@ -112,42 +112,20 @@ const PACKAGE_PROBE_ENTRY_BUDGET: usize = 20_000;
 /// probe. An island module larger than this is pathological.
 const PACKAGE_PROBE_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// True when the two participants of `collision` are two spellings of the
-/// **same npm package's** module rather than two genuinely different
-/// components that happen to share a marker name (issue #2441).
+/// Legacy diagnostic classifier for whether a `collision` may be two
+/// spellings of one npm package module (issue #2441).
 ///
-/// A package that ships both its compiled `dist/` output and its sources can
-/// have the same component reach the scanner twice, through two entry graphs
-/// — zudo-doc's `packageOwnedRoutes` does exactly this: a page re-exporting
-/// `@takazudo/zudo-doc/routes/index` pulls in the compiled
-/// `dist/routes/_design-token-panel-bootstrap.js` while the routes plugin
-/// separately injects a staged copy of the package's own
-/// `routes-src/_design-token-panel-bootstrap.tsx`. Both are the same
-/// component, so hydration is correct whichever the manifest keeps, and the
-/// warning's remediation ("rename one component") is not actionable: both
-/// participants live inside a dependency.
+/// This is advisory only. It must not suppress registration validation:
+/// different defining function bindings with one public marker are ambiguous
+/// even when both definitions come from the same package or have matching
+/// source bytes.
 ///
-/// Membership is established without guessing from names or path shapes:
-///
-/// - both participants resolve inside the same `node_modules/<pkg>` root, or
-/// - one resolves inside package root `P` and the other is **byte-identical**
-///   to a file `P` ships under the same file stem — the branch that catches a
-///   staged or mirrored copy made outside `node_modules`.
-///
-/// The byte comparison is what keeps this sound. The issue #999 motivating
-/// case — a user-authored `components/theme-toggle.tsx` colliding with a
-/// package's `dist/theme-toggle.js` — is not byte-identical to anything the
-/// package ships, so it stays loud, which is right: there the advice to rename
-/// is real advice.
-///
-/// Accepted trade-off: a package that genuinely ships two DIFFERENT components
-/// under one marker name is suppressed too. That is deliberate — it is an
-/// upstream bug, and the consumer whose build log this is cannot rename either
-/// one. Suppression is about who can act, not about how confident we are that
-/// the two components match.
-///
-/// This is deliberately **not** part of [`Manifest::from_islands`], which
-/// stays a pure data transform with no filesystem access.
+/// It recognizes same-package paths or byte-identical staged copies, but this
+/// evidence cannot prove that two imported values are the same function. The
+/// classifier remains available for diagnostics that need package provenance;
+/// production builds and SSR preflight validate every distinct binding
+/// collision without consulting its result. [`Manifest::from_islands`] stays
+/// a pure data transform with no filesystem access.
 pub fn is_same_package_duplicate(collision: &Collision) -> bool {
     match (
         package_root_of(&collision.kept_path),
@@ -282,20 +260,26 @@ impl Manifest {
     /// model the runtime/bundling path uses: two valid default-export
     /// islands (both `component_name == "default"`) with distinct
     /// `marker_name`s are preserved as two entries, not collapsed.
-    pub fn from_islands(islands: &IslandsSet) -> Self {
+    pub fn from_islands(islands: &[Island]) -> Self {
         let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut selected_exports: BTreeMap<String, String> = BTreeMap::new();
         let mut collisions: Vec<Collision> = Vec::new();
         for island in islands {
             match entries.get(&island.marker_name) {
                 None => {
                     entries.insert(island.marker_name.clone(), island.source_path.clone());
+                    selected_exports
+                        .insert(island.marker_name.clone(), island.component_name.clone());
                 }
                 Some(kept) => {
-                    if kept != &island.source_path {
+                    let kept_export = &selected_exports[&island.marker_name];
+                    if kept != &island.source_path || kept_export != &island.component_name {
                         collisions.push(Collision {
                             name: island.marker_name.clone(),
                             dropped_path: island.source_path.clone(),
                             kept_path: kept.clone(),
+                            dropped_export: island.component_name.clone(),
+                            kept_export: kept_export.clone(),
                         });
                     }
                 }
@@ -329,8 +313,9 @@ impl Manifest {
 
     /// Read-only access to the collision diagnostic list.
     ///
-    /// Not every entry is actionable — run each through
-    /// [`is_same_package_duplicate`] before warning on it.
+    /// Production callers must treat every distinct target collision as
+    /// invalid. The legacy [`is_same_package_duplicate`] classifier is
+    /// informational only and cannot establish function identity.
     pub fn collisions(&self) -> &[Collision] {
         &self.collisions
     }
@@ -535,6 +520,8 @@ mod tests {
             name: "Widget".to_string(),
             kept_path: kept.to_path_buf(),
             dropped_path: dropped.to_path_buf(),
+            kept_export: "Widget".to_string(),
+            dropped_export: "Widget".to_string(),
         }
     }
 
@@ -811,6 +798,19 @@ Widget.displayName = "Widget";
         assert_eq!(c.name, "Counter");
         assert_eq!(c.kept_path, PathBuf::from("/a/counter.tsx"));
         assert_eq!(c.dropped_path, PathBuf::from("/b/counter.tsx"));
+    }
+
+    #[test]
+    fn distinct_exports_in_one_module_with_one_marker_collide() {
+        let set = vec![
+            island_marker("First", "/components/duo.tsx", "Widget"),
+            island_marker("Second", "/components/duo.tsx", "Widget"),
+        ];
+        let manifest = Manifest::from_islands(&set);
+        let collision = manifest.collisions().first().expect("collision");
+        assert_eq!(collision.kept_path, collision.dropped_path);
+        assert_eq!(collision.kept_export, "First");
+        assert_eq!(collision.dropped_export, "Second");
     }
 
     #[test]

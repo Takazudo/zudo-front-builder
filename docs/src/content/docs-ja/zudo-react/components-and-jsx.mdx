@@ -50,11 +50,37 @@ hidden 属性は真偽値だけを受け付け、until-found は使えません�
 
 `ol` の `start` には数値または文字列を指定でき、`reversed` は真偽値の属性です。
 
-SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
+有限の HTML 語彙には、`meta[property]`、`link[as]`、`integrity`、外部 script の `script[defer]` など、標準的な head とメタデータの属性が含まれます。Open Graph タグ、preload リンク、defer 付き script は通常の JSX として書けるため、`rawHtml` で囲む必要はありません。属性値の扱いは HTML の分類に従います。真偽値属性は存在の有無で表し、`spellcheck` などの列挙値は文字列または真偽値、`download` はオーバーロード属性、`ol[start]` は数値を受け付けます。未知の標準属性名は引き続きエラーになり、カスタム要素の属性は引き続き文字列のみです。
+
+SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject、pattern、filter、marker、image です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
 
 ## スタイルとイベント
 
-style prop には CSS 文字列か、CSS の表記でキーを書いた平坦なオブジェクトを渡せます。数値はそのまま出力され、ランタイムは px を追加しません。null と undefined の項目は省略され、オブジェクトの項目順は保たれます。更新時には、次のオブジェクトにない既存のスタイルプロパティが削除されます。camelCase のキー、入れ子のオブジェクト、配列、style オブジェクト内のリアクティブな値は使えません。style prop 全体をリアクティブにすることはできます。
+style prop には CSS 文字列か、対応する CSS 表記のキーを持つプレーンオブジェクトを渡せます。`CSSProperties` は `@takazudo/zfb/zudo-react` からエクスポートされています。0 以外の長さは単位を含む文字列で指定し、ランタイムは `px` を追加しません。長さの数値 `0` は使えます。`opacity` や `line-height` など単位のないプロパティには数値を、カスタムプロパティには有限の数値または文字列を指定できます。SSR、ハイドレーション、マウント、更新時にも同じ検証を行います。
+
+オブジェクト形式には通常のオブジェクトリテラルを使います。配列、クラスのインスタンス、null プロトタイプのレコード、入れ子のオブジェクト、camelCase のキー、オブジェクト内のリアクティブな値は拒否されます。null と undefined の項目は省略され、項目の順序は保たれます。更新時には次のオブジェクトにないプロパティが削除されます。style prop 全体をリアクティブにできます。
+
+```tsx
+<div
+  style={{
+    left: "1rem",
+    top: 0,
+    width: "100%",
+    "max-height": "20rem",
+    opacity: 0.5,
+    "--scale": 2,
+    "-webkit-mask-image": "linear-gradient(black, transparent)",
+  }}
+/>
+
+<iframe title="プレビュー" style={{ width: "100%", height: "480px" }} />
+```
+
+CSS 文字列は、検証対象のオブジェクト形式で表しにくい CSS 構文を使うためのエスケープ手段です。内容はそのまま出力され、対応プロパティ名や値の検証は行われません。
+
+```tsx
+<div style="left: calc(1rem + var(--offset));" />
+```
 
 関数リスナーでは on: の後に大文字小文字を区別するネイティブイベント名を指定します。末尾に :capture を付けることもできます。
 
@@ -67,6 +93,16 @@ style prop には CSS 文字列か、CSS の表記でキーを書いた平坦な
 onload など小文字の文字列イベント属性は、別形式の静的なインラインハンドラーです。ランタイムは通常の HTML 属性としてエスケープし、評価はしません。同じイベントにインライン属性と関数リスナーを両方指定しないでください。React 式の onClick と、関数値の onclick は拒否されます。
 
 ref は初期値が null の current フィールドを持つ単純なオブジェクトです。ランタイムは有効化コールバックより前にすべての ref を設定します。コールバック ref や ref ファクトリはありません。
+
+## iframe のシェル
+
+島の中では、zudo-react は子を持たない `<iframe>` 要素と、対応する属性、ref、ネイティブリスナーを所有します。`src` または `srcdoc` から読み込まれる別文書はブラウザーが所有し、zudo-react はその文書を再調整しません。シェルは子を持たない形にしてください。JSX の子や `rawHtml` は拒否され、iframe 要素内にパース後のフォールバック DOM がある場合はハイドレーションに失敗します。変更のないハイドレーションでは既存の iframe と文書を引き継ぎます。`src` または `srcdoc` を更新すると、ブラウザーがその文書をナビゲートします。
+
+`srcdoc` はアプリケーションが信頼する入力です。zudo-react は外側の HTML 属性用にエスケープしますが、文書自体はサニタイズしません。アプリケーションが管理する内容を渡し、埋め込み内容に合わせて `sandbox` と `allow` を選んでください。
+
+~~~tsx
+<iframe title="HTML preview" srcdoc={trustedDocument} sandbox="" allow="fullscreen" />
+~~~
 
 ## カスタム要素
 

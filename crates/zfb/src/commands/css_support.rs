@@ -91,8 +91,8 @@ pub(crate) fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::Win
 
 /// Build the standalone CLI source plan used by both `zfb css` and `zfb wind
 /// audit`. The build/dev plan has additional package-route, mirror and plugin
-/// roots; this command owns only its five conventional roots plus explicit
-/// CLI declarations.
+/// roots; this command owns only its five conventional roots, configured
+/// package roots and exclusions, plus explicit CLI declarations.
 pub(crate) fn build_standalone_wind_source_plan(
     project_root: &Path,
     output_path: &Path,
@@ -112,7 +112,13 @@ pub(crate) fn build_standalone_wind_source_plan(
     let exclusion_reasons = explicit_source_exclusion_reasons(&gathered);
     let build_plan = crate::commands::css_source_plan::build_css_source_plan(&gathered);
     let mut plan = SourcePlan {
+        roots: build_plan
+            .roots
+            .into_iter()
+            .filter(|root| root.package_root)
+            .collect(),
         exclusions: build_plan.exclusions,
+        author_exclusions: build_plan.author_exclusions,
         manifests: build_plan.manifests,
         safelist: build_plan.safelist,
         generated_sources: build_plan.generated_sources,
@@ -131,6 +137,7 @@ pub(crate) fn build_standalone_wind_source_plan(
                 path: PathBuf::from(name),
                 required: false,
                 exclusions: BTreeSet::new(),
+                package_root: false,
             });
         }
     }
@@ -151,6 +158,7 @@ pub(crate) fn build_standalone_wind_source_plan(
 #[derive(Clone, Debug)]
 struct ExplicitSourceExclusion {
     canonical_path: PathBuf,
+    author: Option<zfb_css::ExclusionMatcher>,
     description: String,
 }
 
@@ -164,6 +172,7 @@ fn explicit_source_exclusion_reasons(
         if seen.insert(canonical_path.clone()) {
             reasons.push(ExplicitSourceExclusion {
                 canonical_path,
+                author: None,
                 description,
             });
         }
@@ -194,6 +203,18 @@ fn explicit_source_exclusion_reasons(
             ),
         );
     }
+    for exclusion in &inputs.author_exclusions {
+        if let Ok(matcher) = exclusion.compile() {
+            reasons.push(ExplicitSourceExclusion {
+                canonical_path: PathBuf::new(),
+                author: Some(matcher),
+                description: format!(
+                    "matching the wind.sources.exclude pattern {:?} declared by {}",
+                    exclusion.pattern, exclusion.origin
+                ),
+            });
+        }
+    }
     reasons
 }
 
@@ -215,7 +236,10 @@ fn matching_exclusion<'a>(
     reasons
         .iter()
         .enumerate()
-        .find(|(_, reason)| canonical_path.starts_with(&reason.canonical_path))
+        .find(|(_, reason)| match &reason.author {
+            Some(matcher) => matcher.matches_identity(path, Some(&canonical_path)),
+            None => canonical_path.starts_with(&reason.canonical_path),
+        })
 }
 
 fn render_exclusion_counts(
@@ -256,6 +280,7 @@ fn explicit_source_roots(
                 path: PathBuf::from("."),
                 required: true,
                 exclusions: BTreeSet::new(),
+                package_root: false,
             }],
             None,
         ));
@@ -331,6 +356,7 @@ fn explicit_source_roots(
             path: PathBuf::from(name),
             required: true,
             exclusions: BTreeSet::new(),
+            package_root: false,
         });
     }
     Ok((roots, warning))
@@ -741,6 +767,52 @@ mod tests {
             message.contains("1 under the configured outDir `dist`"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn author_exclusions_win_explicit_sources_and_package_roots_are_standalone_roots() {
+        let (_temp, project, mut config) = project();
+        write_file(&project, "src/a.tsx");
+        write_file(&project, "src/__tests__/b.test.tsx");
+        write_file(&project, "packages/ui/view.tsx");
+        let wind = crate::config::WindConfig {
+            sources: serde_json::from_value(serde_json::json!({
+                "exclude": ["src/**/__tests__/**"],
+                "packageRoots": ["./packages/ui"]
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        config.wind = Some(WindSetting::Enabled(Box::new(wind)));
+
+        let message = format!(
+            "{:#}",
+            build_plan(&project, &config, "src/__tests__/b.test.tsx").unwrap_err()
+        );
+        assert!(message.contains("ZW010"), "{message}");
+        assert!(
+            message.contains(
+                "1 matching the wind.sources.exclude pattern \"src/**/__tests__/**\" declared by project"
+            ),
+            "{message}"
+        );
+
+        let (plan, warnings) = build_plan(&project, &config, "src/**/*.tsx").unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("accepted 1"), "{}", warnings[0]);
+        let roots: Vec<_> = plan
+            .roots
+            .iter()
+            .map(|root| (root.package_root, root.resolved_path()))
+            .collect();
+        assert_eq!(
+            roots,
+            [
+                (false, project.join("src/a.tsx")),
+                (true, project.join("packages/ui")),
+            ]
+        );
+        assert_eq!(plan.author_exclusions.len(), 1);
     }
 
     #[test]

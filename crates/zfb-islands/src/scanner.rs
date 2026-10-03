@@ -1,8 +1,7 @@
 //! `"use client"` AST scanner.
 //!
-//! Given a list of page entry paths and a [`Resolver`], [`scan_islands`]
-//! walks every component imported (transitively) from every page and
-//! returns the deterministic, sorted islands set.
+//! Given page entry paths and a [`Resolver`], [`scan_islands`] walks the
+//! reachable module graph and registers concrete SDK boundary children.
 //!
 //! ## Public-API contract
 //!
@@ -15,14 +14,22 @@
 //!     source reading. The default [`FsResolver`] hits the file system;
 //!     tests use [`InMemoryResolver`].
 //! - **Output**: an [`IslandsSet`] (`Vec<Island>`), sorted by
-//!   `(source_path, component_name)`. The order is byte-stable across runs
-//!   for a given input — downstream hashing (Sub 2) relies on this.
+//!   `(source_path, component_name)`, with one entry per canonical target
+//!   actually used as a reachable SDK `Island` child. Exporting or declaring
+//!   a function in a client module does not register it by itself.
+//! - **Independent graph facts**: directive-bearing client modules remain
+//!   roots for `ScanMeta`, resource edges, package edges, workers, and staging
+//!   even when they contribute no registration. A helper called by a target
+//!   stays in the normal import closure; registry membership never prunes the
+//!   module graph.
 //!
 //! ## "use client" detection
 //!
-//! A source file is an islands entry if and only if its leading directive
+//! A source file is a client-module graph root if its leading directive
 //! prologue contains a string-literal expression statement whose value
-//! equals `"use client"` — same rule Next.js uses. The rules:
+//! equals `"use client"` — same rule Next.js uses. This marks client eligibility;
+//! a function becomes a registry target only when a reachable SDK `Island`
+//! boundary resolves to it. The rules:
 //!
 //! - The prologue is the run of expression-statement string literals at
 //!   the top of the module. As soon as a non-string-literal-expr-stmt
@@ -39,36 +46,18 @@
 //!
 //! ## Component identity
 //!
-//! Each `"use client"` file contributes one [`crate::Island`] per *exported
-//! binding name*. Specifically:
-//!
-//! - `export function Foo() {}` → `"Foo"`
-//! - `export class Foo {}` → `"Foo"`
-//! - `export const Foo = …` (and `let` / `var`) → `"Foo"` when the
-//!   initialiser is component-plausible (function/arrow/call/tagged
-//!   template/identifier/…); a clearly-non-component literal value is
-//!   dropped (issue #998).
-//! - `export default …` → the literal string `"default"` (a
-//!   clearly-non-component literal default is dropped, issue #998)
-//! - `export { A, B as C }` → `"A"`, `"C"` (a local re-export resolving
-//!   to a clearly-non-component binding is dropped, issue #998)
-//! - `export d from "./mod"` (rare) → `"d"`
-//!
-//! `export * as ns from "./mod"` is NOT registered: a module-namespace
-//! object is never a mountable component (issue #998).
-//!
-//! The pair `(source_path, component_name)` is the stable identity used
-//! for dedup and ordering. Re-exports without a local declaration of the
-//! same component (e.g. `export { X } from "./other"`) do contribute their
-//! exported name; the bundler downstream sees the same file path and
-//! resolves the actual implementation through its own module resolver.
+//! The registration pass resolves SDK boundaries and their child bindings
+//! through lexical bindings, imports, exports, and finite forwarding/fixed
+//! wrapper summaries. Defining module and binding determine internal identity;
+//! the selected export is an importable client route, and the actual function
+//! name is the public marker. Aliases and re-exports preserve that marker.
+//! A conflicting marker or a demanded dynamic/opaque target is an error with
+//! its boundary location and a static rewrite hint.
 //!
 //! ## Cycles and dedup
 //!
-//! The scanner tracks a visited set keyed by the resolved path the
-//! resolver returned, so cyclic imports terminate. Dedup is performed on
-//! the `(source_path, component_name)` pair via a `BTreeMap`, which also
-//! gives us the sort order on output for free.
+//! The graph walk and export resolution terminate on cycles. Target aliases
+//! deduplicate by defining binding before marker collisions are checked.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -79,7 +68,7 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, Globals, Mark, SourceMap, SyntaxContext, GLOBALS};
 use swc_core::ecma::ast::{
     BlockStmt, Callee, Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr, ImportSpecifier, Lit,
-    Module, ModuleDecl, ModuleExportName, ModuleItem, Pat, Program, Stmt, VarDeclarator,
+    Module, ModuleDecl, ModuleExportName, ModuleItem, Pat, Program, Stmt,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver as swc_resolver;
@@ -91,6 +80,8 @@ use zfb_plugin_resolver::{
 use zfb_types::{has_node_modules_segment, normalize_path_lexical};
 
 use crate::bundler::Island;
+
+mod registration;
 
 /// Errors raised by [`scan_islands`].
 #[derive(Debug, Error)]
@@ -152,6 +143,19 @@ pub enum ScanError {
         path: PathBuf,
         /// Literal first argument passed to `new URL(...)`.
         specifier: String,
+    },
+    /// An actual boundary target could not be resolved to a supported,
+    /// unambiguous runtime function.
+    #[error("unsupported island registration at {}:{line}:{column}: {message}", path.display())]
+    Registration {
+        /// Boundary use site.
+        path: PathBuf,
+        /// One-based source line.
+        line: usize,
+        /// One-based source column.
+        column: usize,
+        /// Binding trace, reason, and supported rewrite.
+        message: String,
     },
 }
 
@@ -281,10 +285,9 @@ pub struct ScanMeta {
     /// scanner cheap.
     pub uses_client_router: bool,
 
-    /// Count of scanned modules that *look like* they intended to be a
-    /// `"use client"` island but did not register one — i.e. the source
-    /// text contains the literal substring `use client`, yet the module
-    /// contributed zero islands (issue #822).
+    /// Count of reachable modules with a malformed `"use client"` directive
+    /// (issue #822). A valid helper-only client module is not a near miss:
+    /// its graph facts are retained without registering any target.
     ///
     /// This is a cheap "near-miss" heuristic, not a precise diagnostic.
     /// It flags the two authoring mistakes the empty-islands warning is
@@ -426,6 +429,12 @@ pub trait Resolver {
     /// then skip them.
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf>;
 
+    /// Resolve a binding required by an actual boundary even when the
+    /// ordinary graph walk deliberately stops at a package traversal gate.
+    fn resolve_demanded(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        self.resolve(importer_dir, specifier)
+    }
+
     /// Resolve an exact query-free `?raw` target as a terminal asset edge.
     /// Implementations must not apply JS extension probing, TS source swaps,
     /// or `index.*` module resolution to this path.
@@ -549,6 +558,8 @@ pub struct FsResolver {
     /// `synthetic path → in-memory source`, served by [`Resolver::read`].
     /// Synthetic paths are never written to disk.
     virtual_sources: Arc<HashMap<PathBuf, String>>,
+    /// Exact plugin alias bindings used by both SSR and browser bundlers.
+    plugin_aliases: Arc<HashMap<String, PathBuf>>,
 }
 
 // TsConfigPaths and TsPathAlias are imported from zfb_plugin_resolver above.
@@ -574,6 +585,7 @@ impl Default for FsResolver {
             raw_alias_context: None,
             virtual_modules: Arc::new(HashMap::new()),
             virtual_sources: Arc::new(HashMap::new()),
+            plugin_aliases: Arc::new(HashMap::new()),
         }
     }
 }
@@ -670,6 +682,18 @@ impl FsResolver {
         }
         self.virtual_modules = Arc::new(modules);
         self.virtual_sources = Arc::new(sources);
+        self
+    }
+
+    /// Add exact plugin aliases after user tsconfig paths and before virtual
+    /// modules, matching the effective resolver's user-wins precedence.
+    pub fn with_plugin_aliases(mut self, aliases: &[(String, String)]) -> Self {
+        self.plugin_aliases = Arc::new(
+            aliases
+                .iter()
+                .map(|(from, to)| (from.clone(), PathBuf::from(to)))
+                .collect(),
+        );
         self
     }
 
@@ -1427,6 +1451,34 @@ impl Resolver for FsResolver {
             if let Some(found) = self.try_resolve_tsconfig_alias(importer_dir, specifier) {
                 return Some(canonicalize(found));
             }
+            if let Some(target) = self.plugin_aliases.get(specifier) {
+                if target.is_file() {
+                    return Some(canonicalize(target.clone()));
+                }
+                for candidate in ts_swap_candidates(target) {
+                    if candidate.is_file() {
+                        return Some(canonicalize(candidate));
+                    }
+                }
+                for ext in &self.probe_exts {
+                    let candidate = target.with_file_name(format!(
+                        "{}{}",
+                        target.file_name()?.to_string_lossy(),
+                        ext
+                    ));
+                    if candidate.is_file() {
+                        return Some(canonicalize(candidate));
+                    }
+                }
+                if target.is_dir() {
+                    for ext in &self.probe_exts {
+                        let index = target.join(format!("index{ext}"));
+                        if index.is_file() {
+                            return Some(canonicalize(index));
+                        }
+                    }
+                }
+            }
             // 2) Plugin virtual modules (issue #3005) — after the user's
             //    alias claim, before baseUrl / node_modules probing. The
             //    synthetic path does not exist, so it is not canonicalised.
@@ -1539,6 +1591,20 @@ impl Resolver for FsResolver {
         }
 
         None
+    }
+
+    fn resolve_demanded(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if let Some(path) = self.resolve(importer_dir, specifier) {
+            return Some(path);
+        }
+        if !is_bare_specifier(specifier) || !self.workspace_probe_enabled {
+            return None;
+        }
+        let (package, subpath) = Self::split_bare_specifier(specifier);
+        let package_dir = Self::locate_node_modules_pkg(importer_dir, &package)?;
+        let workspace = Self::is_workspace_package(&package_dir);
+        self.probe_package_entry(&package_dir, &subpath, workspace)
+            .map(|path| canonicalize_or_self(&path))
     }
 
     fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
@@ -1767,8 +1833,8 @@ impl Resolver for InMemoryResolver {
     }
 }
 
-/// Walk every page, resolve imports recursively, and collect every
-/// `"use client"` component reachable from any page.
+/// Walk every page, resolve imports recursively, and collect the concrete
+/// function targets used by reachable SDK `Island` boundaries.
 ///
 /// `pages` should be the path representation the caller wants reflected
 /// back in [`Island::source_path`]; whatever the resolver returns from
@@ -1776,8 +1842,9 @@ impl Resolver for InMemoryResolver {
 /// of any island found in or beyond that file.
 ///
 /// The returned vector is sorted by `(source_path, component_name)` and
-/// deduped — duplicate entries (same path + name reachable through
-/// multiple chains) collapse to one.
+/// deduped by defining function binding before marker collisions are checked.
+/// Directive-bearing helper modules remain part of the separate graph
+/// metadata even when they contribute no target.
 ///
 /// This is a thin wrapper over [`scan_islands_with_meta`] that drops the
 /// [`ScanMeta`] side-channel — kept so the long-standing
@@ -1999,9 +2066,9 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
     first_party_root: Option<&Path>,
 ) -> ScanResult<(IslandsSet, ScanMeta)> {
     let canonical_first_party_root = first_party_root.map(canonicalize_or_self);
-    // BTreeMap keyed by (path, name) gives us natural sort order on output
-    // and dedup for free.
-    let mut found: BTreeMap<(PathBuf, String), Island> = BTreeMap::new();
+    // Keep source ASTs for the separate target-registration pass. This pass
+    // never controls graph/resource reachability or directive-bearing roots.
+    let mut parsed_modules: BTreeMap<PathBuf, (Module, String)> = BTreeMap::new();
     // Visited file set so cyclic imports terminate.
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // DFS stack.
@@ -2061,6 +2128,7 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
             })?;
 
         let module = parse_module(&current, &source)?;
+        parsed_modules.insert(current.clone(), (module.clone(), source.clone()));
 
         // Directory of the importer — used to resolve this module's own
         // specifiers, both for `<ClientRouter />` fact collection below
@@ -2102,21 +2170,8 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
             // `import.meta.glob` is exactly the crash scenario #1385
             // describes.
             island_paths.insert(current.clone());
-            let records = exported_island_records(&module);
-            if records.is_empty() {
-                // Issue #822: a valid `"use client"` module that exports
-                // nothing is still a near-miss — the author flagged it as
-                // an island but gave the bundler nothing to ship. Keep the
-                // verify-hint pointing at it.
-                near_miss_candidates += 1;
-            }
-            for record in records {
-                let key = (current.clone(), record.component_name.clone());
-                let path = current.clone();
-                found.entry(key).or_insert_with(|| {
-                    Island::with_marker_name(record.component_name, path, record.marker_name)
-                });
-            }
+            // A helper-only client module is valid and stays in graph facts.
+            // Its exports do not occupy a registration slot.
         } else if has_near_miss_use_client_directive(&module) {
             // Issue #822: the module didn't register a valid directive
             // (so `has_use_client_directive` is false) yet a top-level
@@ -2272,20 +2327,65 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
     raw_import_edges_from_islands.extend(worker_discovery.raw_import_edges);
     workspace_package_edges_from_islands.extend(worker_discovery.workspace_package_edges);
 
-    Ok((
-        found.into_values().collect(),
-        ScanMeta {
-            uses_client_router: resolve_client_router_usage(&client_router_facts),
-            near_miss_candidates,
-            glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
-            island_reachable_modules,
-            raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
-            module_worker_edges_from_islands: worker_discovery.worker_edges,
-            workspace_package_edges_from_islands: workspace_package_edges_from_islands
-                .into_iter()
-                .collect(),
-        },
-    ))
+    let (targets, demanded_paths) = registration::discover(resolver, parsed_modules)?;
+    let mut meta = ScanMeta {
+        uses_client_router: resolve_client_router_usage(&client_router_facts),
+        near_miss_candidates,
+        glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
+        island_reachable_modules,
+        raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
+        module_worker_edges_from_islands: worker_discovery.worker_edges,
+        workspace_package_edges_from_islands: workspace_package_edges_from_islands
+            .into_iter()
+            .collect(),
+    };
+    if !demanded_paths.is_empty() {
+        // A demanded target can cross the ordinary package traversal gate.
+        // Its imported helper/resource closure still belongs to ScanMeta.
+        let extra = scan_reachable_modules_with_meta_and_first_party_root(
+            &demanded_paths,
+            resolver,
+            first_party_root,
+        )?;
+        for path in &extra.modules {
+            if is_scannable_source(path) {
+                let source = resolver.read(path).map_err(|message| ScanError::Resolver {
+                    path: path.clone(),
+                    message,
+                })?;
+                let module = parse_module(path, &source)?;
+                let importer_dir = path.parent().unwrap_or_else(|| Path::new("."));
+                client_router_facts.insert(
+                    path.clone(),
+                    collect_client_router_facts(&module, |spec| {
+                        resolver.resolve(importer_dir, spec)
+                    }),
+                );
+                if contains_import_meta_glob(&module) {
+                    meta.glob_reachable_from_islands.push(path.clone());
+                }
+            }
+        }
+        meta.island_reachable_modules.extend(extra.modules);
+        meta.raw_import_edges_from_islands
+            .extend(extra.raw_import_edges);
+        meta.module_worker_edges_from_islands
+            .extend(extra.module_worker_edges);
+        meta.workspace_package_edges_from_islands
+            .extend(extra.workspace_package_edges);
+        meta.island_reachable_modules.sort();
+        meta.island_reachable_modules.dedup();
+        meta.glob_reachable_from_islands.sort();
+        meta.glob_reachable_from_islands.dedup();
+        meta.raw_import_edges_from_islands.sort();
+        meta.raw_import_edges_from_islands.dedup();
+        meta.module_worker_edges_from_islands.sort();
+        meta.module_worker_edges_from_islands.dedup();
+        meta.workspace_package_edges_from_islands.sort();
+        meta.workspace_package_edges_from_islands.dedup();
+        meta.uses_client_router = resolve_client_router_usage(&client_router_facts);
+    }
+    Ok((targets, meta))
 }
 
 /// Return `true` iff `module`'s source contains at least one
@@ -3535,487 +3635,6 @@ fn collect_dynamic_import_specifiers(module: &Module) -> Vec<String> {
     collector.out
 }
 
-/// One exported binding paired with its SSR-marker name.
-///
-/// Returned by [`exported_island_records`] so the scanner can hand the
-/// bundler both the export-side identity (`component_name`, used as the
-/// dedup key) and the SSR-side identity (`marker_name`, used as the
-/// hydration-manifest key in the production shared bundle).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct IslandRecord {
-    component_name: String,
-    marker_name: String,
-}
-
-/// Return `true` when an initialiser expression is *clearly* a
-/// non-component value that must NOT be registered as a mountable island
-/// (issue #998).
-///
-/// The rule is deliberately CONSERVATIVE — it drops only shapes that can
-/// never be a component:
-///
-/// - primitive/literal values (`'foo'`, `42`, `true`, `null`, `/re/`, `1n`)
-/// - untagged template strings (`` `foo${x}` ``)
-/// - array literals
-/// - object literals
-///
-/// Everything else is treated as component-plausible and KEPT: function
-/// expressions, arrow functions, ANY call expression (`memo(...)`,
-/// `forwardRef(...)`, `lazy(...)`, `styled(...)`, `connect(...)(...)` — no
-/// callee whitelist), tagged templates (`` styled.div`…` `` parse as
-/// `Expr::TaggedTpl`, distinct from `Expr::Tpl`), bare identifiers,
-/// conditional expressions, `as`-casts / `satisfies`, member access, and
-/// anything else. When in doubt, keep.
-///
-/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'` — the
-/// repro from #998 — is a string literal and gets dropped here.
-fn init_is_clearly_non_component(init: &Expr) -> bool {
-    match init {
-        Expr::Lit(_) | Expr::Tpl(_) | Expr::Array(_) | Expr::Object(_) => true,
-        // Peel a redundant wrapping paren and re-test. TS casts
-        // (`x as T`, `x satisfies T`, `x!`) are intentionally NOT peeled:
-        // the spec treats them as ambiguous and keeps them.
-        Expr::Paren(p) => init_is_clearly_non_component(&p.expr),
-        _ => false,
-    }
-}
-
-/// `true` when a single `const`/`let`/`var` declarator's initialiser is a
-/// clearly-non-component value. A declarator with no initialiser
-/// (`let Foo;`) is ambiguous → kept.
-fn var_declarator_is_clearly_non_component(d: &VarDeclarator) -> bool {
-    match d.init.as_ref() {
-        Some(init) => init_is_clearly_non_component(init),
-        None => false,
-    }
-}
-
-/// Collect the names of module-local `const`/`let`/`var` bindings whose
-/// initialiser is a clearly-non-component value (see
-/// [`init_is_clearly_non_component`]).
-///
-/// Used to drop *local* named re-exports — `const KEY = 'x'; export { KEY }`
-/// — that resolve to a non-component binding (issue #998). Bindings that
-/// are functions, classes, component-shaped initialisers, OR imported from
-/// another module are absent from this set, so a re-export of such a
-/// binding stays registered (resolving cross-module re-exports is out of
-/// scope; those are kept permissively).
-fn collect_non_component_local_bindings(module: &Module) -> HashSet<String> {
-    let mut out: HashSet<String> = HashSet::new();
-    for item in &module.body {
-        let decl = match item {
-            ModuleItem::Stmt(Stmt::Decl(decl)) => decl,
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ed)) => &ed.decl,
-            _ => continue,
-        };
-        if let Decl::Var(v) = decl {
-            for d in &v.decls {
-                if let Pat::Ident(bi) = &d.name {
-                    if var_declarator_is_clearly_non_component(d) {
-                        out.insert(bi.id.sym.to_string());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Walk the module's exports and pair each one with its SSR-marker name.
-///
-/// The marker name is what the SSR side will write into the
-/// `data-zfb-island` / `data-zfb-island-skip-ssr` attribute (see
-/// `packages/zfb/src/island.ts::captureComponentName`). The shared-bundle
-/// hydration manifest is keyed on this name; using the export-side name
-/// directly would mis-key every host-shape default-export island as
-/// `"default"` (issue #149 Gap B) and every SSR-skip wrapper as the
-/// wrapper's identifier instead of its placeholder marker (Gap A).
-///
-/// Resolution rules:
-///
-/// - `export default function Foo()` / `export default class Foo` →
-///   `component_name = "default"`, `marker_name = "Foo"` (the identifier
-///   name; matches `function.name` at SSR time before minification).
-/// - `export default function ()` / `export default <anon-expr>` →
-///   `component_name = "default"`, `marker_name = "default"` (no
-///   recoverable identity; the bundler still registers the entry, but
-///   the SSR side will need [`ANONYMOUS_COMPONENT_NAME`] to match).
-/// - `export function Foo()` / `export class Foo` /
-///   `export const Foo = …` → `component_name = "Foo"`,
-///   `marker_name = "Foo"`.
-/// - `export { A, B as C }` → `(A, A)`, `(C, C)` — re-exports don't
-///   carry an inline body, so the wrapper detection below does not apply.
-///
-/// Then each function body is scanned for a top-level
-/// `renderSsrSkipPlaceholder("X", …)` call (the host-side SSR-skip
-/// wrapper convention, see
-/// `packages/zudo-doc-v2/src/ssr-skip/types.ts::renderSsrSkipPlaceholder`).
-/// When found, the literal first-argument string overrides the
-/// rule-based `marker_name` so the manifest key matches
-/// `data-zfb-island-skip-ssr="X"` rather than the wrapper's identifier.
-///
-/// ## Component filtering (issue #998)
-///
-/// Clearly-non-component exports are dropped so they never become
-/// mountable-island registry entries — a string/number/object/array
-/// literal export of a `"use client"` module (e.g.
-/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'`) is not
-/// a component. The filter is conservative (see
-/// [`init_is_clearly_non_component`]): only literal-shaped values, untagged
-/// template strings, `export * as ns from "…"` namespace re-exports, and
-/// local re-exports resolving to such values are dropped; everything
-/// ambiguous is kept. Re-exports from another module
-/// (`export { Foo } from "./x"`) are kept permissively.
-fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
-    // 1. Build a side-table of `local_ident -> renderSsrSkipPlaceholder
-    //    first-arg literal` for every function/variable declaration in
-    //    the module body. Used below to override marker_name on the
-    //    matching exported declaration.
-    let body_markers = collect_body_markers(module);
-
-    // Names of module-local bindings whose value is clearly a
-    // non-component (issue #998) so local named re-exports of them can be
-    // dropped below.
-    let non_component_locals = collect_non_component_local_bindings(module);
-
-    let mut out: Vec<IslandRecord> = Vec::new();
-    for item in &module.body {
-        let ModuleItem::ModuleDecl(decl) = item else {
-            continue;
-        };
-        match decl {
-            ModuleDecl::ExportDecl(ed) => match &ed.decl {
-                Decl::Class(c) => {
-                    let name = c.ident.sym.to_string();
-                    let marker = body_markers
-                        .get(&name)
-                        .cloned()
-                        .unwrap_or_else(|| name.clone());
-                    out.push(IslandRecord {
-                        component_name: name,
-                        marker_name: marker,
-                    });
-                }
-                Decl::Fn(f) => {
-                    let name = f.ident.sym.to_string();
-                    let marker_from_body = marker_from_function_body(f.function.body.as_ref());
-                    let marker = marker_from_body
-                        .or_else(|| body_markers.get(&name).cloned())
-                        .unwrap_or_else(|| name.clone());
-                    out.push(IslandRecord {
-                        component_name: name,
-                        marker_name: marker,
-                    });
-                }
-                Decl::Var(v) => {
-                    for d in &v.decls {
-                        if let Pat::Ident(bi) = &d.name {
-                            // Issue #998: drop clearly-non-component exports
-                            // (`export const KEY = 'x'`) so a string / number /
-                            // object literal never becomes a mountable island.
-                            if var_declarator_is_clearly_non_component(d) {
-                                continue;
-                            }
-                            let name = bi.id.sym.to_string();
-                            let marker_from_init = marker_from_var_initialiser(d);
-                            let marker = marker_from_init
-                                .or_else(|| body_markers.get(&name).cloned())
-                                .unwrap_or_else(|| name.clone());
-                            out.push(IslandRecord {
-                                component_name: name,
-                                marker_name: marker,
-                            });
-                        }
-                    }
-                }
-                _ => {}
-            },
-            ModuleDecl::ExportDefaultDecl(ed) => match &ed.decl {
-                DefaultDecl::Fn(fexp) => {
-                    let ident_name = fexp.ident.as_ref().map(|i| i.sym.to_string());
-                    let marker = marker_from_function_body(fexp.function.body.as_ref())
-                        .or_else(|| ident_name.clone())
-                        .unwrap_or_else(|| "default".to_string());
-                    out.push(IslandRecord {
-                        component_name: "default".to_string(),
-                        marker_name: marker,
-                    });
-                }
-                DefaultDecl::Class(cexp) => {
-                    let ident_name = cexp.ident.as_ref().map(|i| i.sym.to_string());
-                    let marker = ident_name.unwrap_or_else(|| "default".to_string());
-                    out.push(IslandRecord {
-                        component_name: "default".to_string(),
-                        marker_name: marker,
-                    });
-                }
-                DefaultDecl::TsInterfaceDecl(_) => {
-                    // Type-only export — no runtime value, but keep the
-                    // historical "default" emission so dedup behaviour is
-                    // unchanged. The bundler will see no usable component
-                    // and skip it at register time.
-                    out.push(IslandRecord {
-                        component_name: "default".to_string(),
-                        marker_name: "default".to_string(),
-                    });
-                }
-            },
-            ModuleDecl::ExportDefaultExpr(ee) => {
-                // Issue #998: `export default 'foo'` / `export default { … }`
-                // — a clearly-non-component default is not a mountable island.
-                if init_is_clearly_non_component(&ee.expr) {
-                    continue;
-                }
-                // `export default <expr>` — try to recover an identifier
-                // from common shapes (`export default Foo`,
-                // `export default forwardRef(Foo)`). Otherwise fall back
-                // to "default".
-                let marker =
-                    marker_from_default_expr(&ee.expr).unwrap_or_else(|| "default".to_string());
-                out.push(IslandRecord {
-                    component_name: "default".to_string(),
-                    marker_name: marker,
-                });
-            }
-            ModuleDecl::ExportNamed(named) => {
-                // `export type { … }` is compile-time-erased — skip the
-                // entire declaration (mirrors collect_client_router_facts).
-                if named.type_only {
-                    continue;
-                }
-                for spec in &named.specifiers {
-                    match spec {
-                        ExportSpecifier::Named(n) => {
-                            // Per-specifier `{ type Foo, Bar }` — Foo is
-                            // erased; skip it (mirrors collect_client_router_facts).
-                            if n.is_type_only {
-                                continue;
-                            }
-                            let pick = n.exported.as_ref().unwrap_or(&n.orig);
-                            let name = module_export_name(pick);
-                            // For named re-exports the local ident is
-                            // `n.orig` — that's what the body-marker
-                            // table is keyed on.
-                            let local = module_export_name(&n.orig);
-                            // Issue #998: a *local* named re-export whose
-                            // binding resolves to a clearly-non-component
-                            // value (`const KEY = 'x'; export { KEY }`) must
-                            // not be registered. Re-exports from another
-                            // module (`export { Foo } from './x'`) carry a
-                            // `src` and are kept permissively — resolving the
-                            // other module is out of scope.
-                            if named.src.is_none() && non_component_locals.contains(&local) {
-                                continue;
-                            }
-                            let marker = body_markers.get(&local).cloned().unwrap_or_else(|| {
-                                // `export { Foo as default }` — the exported alias
-                                // is "default" but the SSR side uses
-                                // `displayName ?? name`, which resolves to the
-                                // local identifier ("Foo").  Fall back to `local`
-                                // so the manifest key matches the runtime marker.
-                                if name == "default" {
-                                    local.clone()
-                                } else {
-                                    name.clone()
-                                }
-                            });
-                            out.push(IslandRecord {
-                                component_name: name,
-                                marker_name: marker,
-                            });
-                        }
-                        ExportSpecifier::Default(d) => {
-                            let name = d.exported.sym.to_string();
-                            out.push(IslandRecord {
-                                component_name: name.clone(),
-                                marker_name: name,
-                            });
-                        }
-                        ExportSpecifier::Namespace(_n) => {
-                            // Issue #998: `export * as ns from "…"` binds a
-                            // module-namespace object, which is never a
-                            // mountable component — drop it.
-                            continue;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Walk every top-level function and variable declaration in the module
-/// body and record the `renderSsrSkipPlaceholder("X", …)` literal each
-/// one carries (if any). Returned as `local_ident -> marker_name` so the
-/// caller can override the marker name on the matching exported
-/// declaration.
-///
-/// This catches the host-shape pattern where a wrapper is declared at
-/// module level and exported separately, e.g.
-///
-/// ```ignore
-/// function AiChatModalIsland(props) {
-///   return renderSsrSkipPlaceholder("AiChatModal", …);
-/// }
-/// export { AiChatModalIsland };
-/// ```
-///
-/// The inline-export case (`export function AiChatModalIsland(…) { … }`)
-/// is handled directly by [`exported_island_records`] reading the
-/// function body of the matched export.
-fn collect_body_markers(module: &Module) -> HashMap<String, String> {
-    let mut out: HashMap<String, String> = HashMap::new();
-    for item in &module.body {
-        match item {
-            ModuleItem::Stmt(Stmt::Decl(decl)) => match decl {
-                Decl::Fn(f) => {
-                    if let Some(marker) = marker_from_function_body(f.function.body.as_ref()) {
-                        out.insert(f.ident.sym.to_string(), marker);
-                    }
-                }
-                Decl::Var(v) => {
-                    for d in &v.decls {
-                        if let Pat::Ident(bi) = &d.name {
-                            if let Some(marker) = marker_from_var_initialiser(d) {
-                                out.insert(bi.id.sym.to_string(), marker);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ed)) => match &ed.decl {
-                // `export function Foo(…) { … }` declarations also
-                // populate the table so `Foo` resolves correctly when
-                // later re-exported via `export { Foo as default }`.
-                Decl::Fn(f) => {
-                    if let Some(marker) = marker_from_function_body(f.function.body.as_ref()) {
-                        out.insert(f.ident.sym.to_string(), marker);
-                    }
-                }
-                Decl::Var(v) => {
-                    for d in &v.decls {
-                        if let Pat::Ident(bi) = &d.name {
-                            if let Some(marker) = marker_from_var_initialiser(d) {
-                                out.insert(bi.id.sym.to_string(), marker);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-    out
-}
-
-/// If `init` of a variable declarator is a function expression / arrow
-/// function whose body contains a top-level
-/// `renderSsrSkipPlaceholder("X", …)` call, return `"X"`.
-fn marker_from_var_initialiser(d: &VarDeclarator) -> Option<String> {
-    let init = d.init.as_ref()?;
-    match init.as_ref() {
-        Expr::Fn(f) => marker_from_function_body(f.function.body.as_ref()),
-        Expr::Arrow(a) => match &*a.body {
-            swc_core::ecma::ast::BlockStmtOrExpr::BlockStmt(b) => marker_from_block(b),
-            swc_core::ecma::ast::BlockStmtOrExpr::Expr(e) => marker_from_expr(e),
-        },
-        _ => None,
-    }
-}
-
-/// Pull a marker literal out of a function body if it contains a
-/// top-level `renderSsrSkipPlaceholder("X", …)` call.
-fn marker_from_function_body(body: Option<&BlockStmt>) -> Option<String> {
-    marker_from_block(body?)
-}
-
-/// Walk a `BlockStmt`'s top-level statements looking for a
-/// `return <expr>;` or `<expr>;` that is a
-/// `renderSsrSkipPlaceholder("X", …)` call; return `"X"`.
-fn marker_from_block(block: &BlockStmt) -> Option<String> {
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::Return(r) => {
-                if let Some(arg) = r.arg.as_ref() {
-                    if let Some(s) = marker_from_expr(arg) {
-                        return Some(s);
-                    }
-                }
-            }
-            Stmt::Expr(es) => {
-                if let Some(s) = marker_from_expr(&es.expr) {
-                    return Some(s);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// If `expr` is a `renderSsrSkipPlaceholder("X", …)` call (or a
-/// parenthesised / type-asserted version of one), return `"X"`.
-fn marker_from_expr(expr: &Expr) -> Option<String> {
-    let inner = unwrap_expr(expr);
-    let call = match inner {
-        Expr::Call(c) => c,
-        _ => return None,
-    };
-    let Callee::Expr(callee) = &call.callee else {
-        return None;
-    };
-    let callee_inner = unwrap_expr(callee);
-    let is_target = match callee_inner {
-        Expr::Ident(id) => id.sym == *RENDER_SSR_SKIP_PLACEHOLDER_NAME,
-        // Member expressions like `helpers.renderSsrSkipPlaceholder(…)` —
-        // unusual, but conservative to support.
-        Expr::Member(m) => match &m.prop {
-            swc_core::ecma::ast::MemberProp::Ident(id) => {
-                id.sym == *RENDER_SSR_SKIP_PLACEHOLDER_NAME
-            }
-            _ => false,
-        },
-        _ => false,
-    };
-    if !is_target {
-        return None;
-    }
-    let first = call.args.first()?;
-    if first.spread.is_some() {
-        return None;
-    }
-    let lit_expr = unwrap_expr(&first.expr);
-    let Expr::Lit(Lit::Str(s)) = lit_expr else {
-        return None;
-    };
-    Some(atom_to_string(&s.value))
-}
-
-/// `export default <expr>` recovery. Handles `export default Foo` and
-/// `export default forwardRef(Foo)` shapes.
-fn marker_from_default_expr(expr: &Expr) -> Option<String> {
-    match unwrap_expr(expr) {
-        Expr::Ident(id) => Some(id.sym.to_string()),
-        Expr::Call(c) => {
-            // `forwardRef(Foo)` / `memo(Foo)` style — first ident arg.
-            for arg in &c.args {
-                if arg.spread.is_some() {
-                    continue;
-                }
-                if let Expr::Ident(id) = unwrap_expr(&arg.expr) {
-                    return Some(id.sym.to_string());
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
 /// Strip wrapping `(expr)` and TS `expr as T` / `<T>expr` /
 /// `expr satisfies T` so identifier matching is robust.
 fn unwrap_expr(expr: &Expr) -> &Expr {
@@ -4032,15 +3651,6 @@ fn unwrap_expr(expr: &Expr) -> &Expr {
         }
     }
 }
-
-/// Name of the host-side SSR-skip placeholder helper that the scanner
-/// recognises as a marker-name source. See the doc on
-/// [`exported_island_records`] for the contract.
-///
-/// Defined as a `'static` slice so future scanner extensions can share
-/// the recognition table (e.g. accept additional names) without making
-/// each call-site re-spell the string.
-const RENDER_SSR_SKIP_PLACEHOLDER_NAME: &str = "renderSsrSkipPlaceholder";
 
 #[cfg(test)]
 mod tests {
@@ -4095,6 +3705,10 @@ mod tests {
                 r#""use client";
                 import { useState } from "vendor-lib/hooks";
                 export function Counter() { return null; }
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4121,6 +3735,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#"'use client';
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4169,6 +3787,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4678,7 +4300,7 @@ mod tests {
     }
 
     #[test]
-    fn use_client_module_with_multiple_exports_emits_one_island_per_name() {
+    fn client_module_registers_only_concrete_boundary_targets() {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -4695,26 +4317,31 @@ mod tests {
                 export { Baz as RenamedBaz };
                 export const Qux = 1;
                 export default function Defaulted() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Foo, {}) });
+                Island({ children: h(Baz, {}) });
+                Island({ children: h(Defaulted, {}) });
                 "#,
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
         let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
-        // Sorted lexicographically by component name for the same source
-        // path: Bar, Foo, RenamedBaz, default.
-        //
-        // Issue #998: `export const Qux = 1` is a number-literal export —
-        // never a component — and is now dropped from the registry rather
-        // than registered as a mountable island.
+        // The class and literal helper are unused; only the three concrete
+        // function children register. Alias spelling is an access route.
         assert_eq!(
             names,
             vec![
-                "Bar".to_string(),
                 "Foo".to_string(),
                 "RenamedBaz".to_string(),
                 "default".to_string(),
             ]
         );
+        let markers: Vec<_> = islands
+            .iter()
+            .map(|island| island.marker_name.as_str())
+            .collect();
+        assert_eq!(markers, ["Foo", "Baz", "Defaulted"]);
         // All point at the same source path.
         for island in &islands {
             assert_eq!(island.source_path, root().join("components/cluster.tsx"));
@@ -4735,6 +4362,10 @@ mod tests {
                 r#""use strict";
                 "use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4778,6 +4409,10 @@ mod tests {
                 /* This file runs in the browser. */
                 "use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4800,12 +4435,18 @@ mod tests {
                 root().join("components/zeta.tsx"),
                 r#""use client";
                 export function A() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(A, {}) });
                 "#,
             )
             .with_file(
                 root().join("components/alpha.tsx"),
                 r#""use client";
                 export function B() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(B, {}) });
                 "#,
             );
 
@@ -4874,6 +4515,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4896,6 +4541,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4925,6 +4574,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -4958,7 +4611,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5012,7 +4669,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5042,10 +4703,11 @@ mod tests {
 
         fs::write(
             pages.join("home.tsx"),
-            r#"import { A } from "../components/a.jsx";
+            r#"import { Island } from "@takazudo/zfb";
+            import { A } from "../components/a.jsx";
             import { B } from "../components/b.mjs";
             import { C } from "../components/c.cjs";
-            export default function Home() {}
+            export default function Home() { return <><Island><A/></Island><Island><B/></Island><Island><C/></Island></>; }
             "#,
         )
         .unwrap();
@@ -5096,6 +4758,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -5130,7 +4796,11 @@ mod tests {
         .unwrap();
         fs::write(
             comps.join("counter.js"),
-            r#""use client"; export function Counter() {}"#,
+            r#""use client"; export function Counter() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
         // No counter.ts / counter.tsx — must fall back to the literal .js.
@@ -5169,7 +4839,11 @@ mod tests {
         // Both siblings exist; the .tsx is the live source.
         fs::write(
             comps.join("counter.tsx"),
-            r#""use client"; export function Counter() {}"#,
+            r#""use client"; export function Counter() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
         fs::write(
@@ -5292,7 +4966,11 @@ mod tests {
             pkg_src.join("index.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5337,7 +5015,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5384,7 +5066,11 @@ mod tests {
             pkg_src.join("index.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5421,7 +5107,11 @@ mod tests {
             pkg_src.join("index.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5519,7 +5209,11 @@ mod tests {
             pkg_src.join("index.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5559,7 +5253,11 @@ mod tests {
             components.join("index.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5620,7 +5318,11 @@ mod tests {
             pkg_src_doclayout.join("index.ts"),
             r#""use client";
             export function DocLayoutWithDefaults() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(DocLayoutWithDefaults, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5654,8 +5356,9 @@ mod tests {
 
         fs::write(
             pages.join("home.tsx"),
-            r#"import { Counter } from "ws-pkg/sub";
-            export default function Home() {}
+            r#"import { Island } from "@takazudo/zfb";
+            import { Counter } from "ws-pkg/sub";
+            export default function Home() { return <Island><Counter/></Island>; }
             "#,
         )
         .unwrap();
@@ -5673,7 +5376,11 @@ mod tests {
             pkg_src_sub.join("index.ts"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -5706,8 +5413,9 @@ mod tests {
 
         fs::write(
             pages.join("home.tsx"),
-            r#"import { Counter } from "ws-pkg/sub";
-            export default function Home() {}
+            r#"import { Island } from "@takazudo/zfb";
+            import { Counter } from "ws-pkg/sub";
+            export default function Home() { return <Island><Counter/></Island>; }
             "#,
         )
         .unwrap();
@@ -5777,8 +5485,9 @@ mod tests {
 
         fs::write(
             pages.join("home.tsx"),
-            r#"import { Foo } from "ws-pkg/components/foo";
-            export default function Home() {}
+            r#"import { Island } from "@takazudo/zfb";
+            import { Foo } from "ws-pkg/components/foo";
+            export default function Home() { return <Island><Foo/></Island>; }
             "#,
         )
         .unwrap();
@@ -6173,8 +5882,9 @@ mod tests {
         fs::write(
             pages.join("home.tsx"),
             r#"import { useState } from "vendor-lib/hooks";
+            import { Island } from "@takazudo/zfb";
             import { WorkspaceCounter } from "ws-pkg";
-            export default function Home() {}
+            export default function Home() { return <Island><WorkspaceCounter/></Island>; }
             "#,
         )
         .unwrap();
@@ -6233,7 +5943,7 @@ mod tests {
         fs::create_dir_all(&pages).unwrap();
         fs::write(
             pages.join("home.tsx"),
-            "import { FromExports } from \"@acme/widgets\";\nexport default function Home() {}\n",
+            "import { Island } from \"@takazudo/zfb\";\nimport { FromExports } from \"@acme/widgets\";\nexport default function Home() { return <Island><FromExports/></Island>; }\n",
         )
         .unwrap();
 
@@ -6276,7 +5986,7 @@ mod tests {
         .unwrap();
         fs::write(
             ws_src.join("index.tsx"),
-            "\"use client\";\nimport { Widget } from \"@acme/widgets\";\nexport function WsIsland() {}\n",
+            "\"use client\";\nimport { Island } from \"@takazudo/zfb\";\nimport { h } from \"@takazudo/zfb/zudo-react\";\nimport { Widget } from \"@acme/widgets\";\nexport function WsIsland() {}\nIsland({ children: h(Widget, {}) });\n",
         )
         .unwrap();
 
@@ -6315,7 +6025,7 @@ mod tests {
         fs::create_dir_all(&pages).unwrap();
         fs::write(
             pages.join("home.tsx"),
-            "import { WsIsland } from \"ws-pkg\";\nexport default function Home() {}\n",
+            "import { Island } from \"@takazudo/zfb\";\nimport { WsIsland } from \"ws-pkg\";\nexport default function Home() { return <Island><WsIsland/></Island>; }\n",
         )
         .unwrap();
 
@@ -6373,8 +6083,8 @@ mod tests {
         // and reaches the island ONLY through a bare `@takazudo/zfb` import.
         fs::write(
             routes.join("chrome.tsx"),
-            "import { Island } from \"@takazudo/zfb\";\n\
-             export function Chrome() { return null; }\n",
+            "import { Island, Counter } from \"@takazudo/zfb\";\n\
+             export function Chrome() { return <Island><Counter/></Island>; }\n",
         )
         .unwrap();
 
@@ -6392,7 +6102,7 @@ mod tests {
         .unwrap();
         fs::write(
             zfb.join("dist/index.js"),
-            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Island() {}\n",
+            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Counter() {}\n",
         )
         .unwrap();
 
@@ -6437,7 +6147,7 @@ mod tests {
         let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["Island"],
+            vec!["Counter"],
             "the transitively-reached `@takazudo/zfb` island must register via the \
              injected-route honorary-source exemption, and ONLY that single hop — \
              vendor-lib (one further bare hop, from inside node_modules) must not be \
@@ -6462,12 +6172,19 @@ mod tests {
         // under node_modules, so its chrome's bare `@takazudo/zfb` import is
         // hard-stopped.
         let resolver = FsResolver::new();
-        let islands = scan_islands(&[route], &resolver).unwrap();
+        let graph = scan_reachable_modules(std::slice::from_ref(&route), &resolver).unwrap();
         assert!(
-            islands.is_empty(),
-            "without the injected-route exemption, a bare import from inside a \
-             node_modules package must not be walked; no island should register: \
-             {islands:?}",
+            !graph.iter().any(|path| path.ends_with("@takazudo/zfb/dist/index.js")),
+            "without the injected-route exemption, the ordinary graph must stop before the package: {graph:?}",
+        );
+        let islands = scan_islands(&[route], &resolver).unwrap();
+        assert_eq!(
+            islands
+                .iter()
+                .map(|island| island.component_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Counter"],
+            "the explicitly demanded boundary target must still resolve: {islands:?}",
         );
     }
 
@@ -6498,8 +6215,8 @@ mod tests {
         .unwrap();
         fs::write(
             routes.join("chrome.tsx"),
-            "import { Island } from \"@takazudo/zfb\";\n\
-             export function Chrome() { return null; }\n",
+            "import { Island, Counter } from \"@takazudo/zfb\";\n\
+             export function Chrome() { return <Island><Counter/></Island>; }\n",
         )
         .unwrap();
 
@@ -6514,7 +6231,7 @@ mod tests {
         .unwrap();
         fs::write(
             zfb.join("dist/index.js"),
-            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Island() {}\n",
+            "\"use client\";\nimport { signal } from \"vendor-lib\";\nexport function Counter() {}\n",
         )
         .unwrap();
 
@@ -6558,7 +6275,7 @@ mod tests {
         let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["Island"],
+            vec!["Counter"],
             "the chrome→island hop registers, but the island's nested-node_modules \
              `import \"vendor-lib\"` is a second hop that must STILL stop — vendor-lib's \
              sneaky island must not surface: {islands:?}",
@@ -6660,7 +6377,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -6713,7 +6434,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -6761,7 +6486,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -6809,7 +6538,11 @@ mod tests {
             lib.join("theme.tsx"),
             r#""use client";
             export function Theme() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Theme, {}) });
+                "#,
         )
         .unwrap();
 
@@ -6956,7 +6689,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -7020,8 +6757,9 @@ mod tests {
         .unwrap();
         fs::write(
             pages.join("home.tsx"),
-            r#"import { Narrow } from "@/components/button";
-            export default function Home() {}
+            r#"import { Island } from "@takazudo/zfb";
+            import { Narrow } from "@/components/button";
+            export default function Home() { return <Island><Narrow/></Island>; }
             "#,
         )
         .unwrap();
@@ -7111,7 +6849,11 @@ mod tests {
             leaf_components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -7217,7 +6959,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -7341,6 +7087,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             )
             // Populated JSON (multiple keys). Empty `{}` parses as a
@@ -7412,7 +7162,11 @@ mod tests {
             components.join("counter.tsx"),
             r#""use client";
             export function Counter() {}
-            "#,
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
+                "#,
         )
         .unwrap();
 
@@ -7424,14 +7178,12 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Issue #149 — SSR-marker name extraction
+    // Function-name markers for concrete SDK boundary children
     //
     // The shared-bundle hydration manifest is keyed on the SSR-marker
-    // name (`Island::marker_name`), which the scanner derives from the
-    // island's source file. The bundler bakes the marker name as a
-    // static literal in the synthesised entry's `__zfb_register(...)`
-    // call, bypassing runtime `displayName ?? name` introspection (which
-    // esbuild minification breaks).
+    // name (`Island::marker_name`), derived from the defining function.
+    // The bundler bakes the marker name as a static literal in the
+    // synthesised entry's `__zfb_register(...)` call.
     //
     // The tests below pin the marker-name derivation rules end-to-end
     // through `scan_islands`.
@@ -7442,8 +7194,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import { Counter } from "../components/counter";
-                export default function Home() { return <Counter/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import { Counter } from "../components/counter";
+                export default function Home() { return <Island><Counter/></Island>; }
                 "#,
             )
             .with_file(
@@ -7464,8 +7217,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import { Toggle } from "../components/toggle";
-                export default function Home() { return <Toggle/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import { Toggle } from "../components/toggle";
+                export default function Home() { return <Island><Toggle/></Island>; }
                 "#,
             )
             .with_file(
@@ -7491,8 +7245,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import SidebarToggle from "../components/sidebar-toggle";
-                export default function Home() { return <SidebarToggle/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import SidebarToggle from "../components/sidebar-toggle";
+                export default function Home() { return <Island><SidebarToggle/></Island>; }
                 "#,
             )
             .with_file(
@@ -7512,12 +7267,13 @@ mod tests {
     }
 
     #[test]
-    fn marker_name_for_default_export_named_class_uses_class_identifier() {
+    fn class_boundary_target_is_rejected_with_function_rewrite() {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import Counter from "../components/counter";
-                export default function Home() { return <Counter/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import Counter from "../components/counter";
+                export default function Home() { return <Island><Counter/></Island>; }
                 "#,
             )
             .with_file(
@@ -7527,10 +7283,9 @@ mod tests {
                 "#,
             );
 
-        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].component_name, "default");
-        assert_eq!(islands[0].marker_name, "Counter");
+        let error = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap_err();
+        assert!(error.to_string().contains("class target"), "{error}");
+        assert!(error.to_string().contains("named function"), "{error}");
     }
 
     #[test]
@@ -7544,8 +7299,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import Anon from "../components/anon";
-                export default function Home() { return <Anon/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import Anon from "../components/anon";
+                export default function Home() { return <Island><Anon/></Island>; }
                 "#,
             )
             .with_file(
@@ -7573,8 +7329,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import SidebarToggle from "../components/sidebar-toggle";
-                export default function Home() { return <SidebarToggle/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import SidebarToggle from "../components/sidebar-toggle";
+                export default function Home() { return <Island><SidebarToggle/></Island>; }
                 "#,
             )
             .with_file(
@@ -7601,8 +7358,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import Counter from "../components/counter";
-                export default function Home() { return <Counter/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import Counter from "../components/counter";
+                export default function Home() { return <Island><Counter/></Island>; }
                 "#,
             )
             .with_file(
@@ -7624,17 +7382,14 @@ mod tests {
 
     #[test]
     fn marker_name_for_mixed_named_and_default_alias_export() {
-        // `export { Foo, Foo as default }` — a module that exports the same
-        // function under both its own name and as the default.  The scanner
-        // emits two IslandRecords (component_name "Foo" and "default"), both
-        // with marker_name "Foo".  Manifest::from_islands keys on marker_name
-        // and keeps same-source duplicates silently (no collision), so the
-        // manifest ends up with a single "Foo" entry.
+        // Both access routes resolve to one defining function and occupy one
+        // marker slot. The selected export route is deterministic.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import Foo, { Foo as FooNamed } from "../components/foo";
-                export default function Home() { return <Foo/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import Foo, { Foo as FooNamed } from "../components/foo";
+                export default function Home() { return <><Island><Foo/></Island><Island><FooNamed/></Island></>; }
                 "#,
             )
             .with_file(
@@ -7646,41 +7401,20 @@ mod tests {
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        // Both the named and the default export are emitted as separate
-        // IslandRecords (different component_name), but both share
-        // marker_name = "Foo".
-        assert!(
-            islands
-                .iter()
-                .any(|i| i.component_name == "Foo" && i.marker_name == "Foo"),
-            "named export Foo must be emitted with marker_name Foo; got {islands:?}"
-        );
-        assert!(
-            islands
-                .iter()
-                .any(|i| i.component_name == "default" && i.marker_name == "Foo"),
-            "default alias must be emitted with marker_name Foo; got {islands:?}"
-        );
+        assert_eq!(islands.len(), 1, "aliases must deduplicate: {islands:?}");
+        assert_eq!(islands[0].marker_name, "Foo");
     }
 
     #[test]
     fn marker_name_for_reexport_alias_as_default_defers_to_source_module() {
-        // `export { Foo as default } from './x'` — a re-export from another
-        // module.  collect_import_specifiers DFS-follows './x' and if it
-        // carries "use client" it self-registers there.  The re-export
-        // specifier in the barrel also produces an IslandRecord
-        // (component_name "default", marker_name "Foo") pointing at the
-        // barrel's path, not the source module's path; the manifest will have
-        // two entries (barrel and source) both keyed on "Foo" — the one from
-        // the actual "use client" source wins via insertion order.
-        // This test documents the resulting behavior rather than asserting a
-        // precise number of records; the key invariant is that at least one
-        // island with marker_name "Foo" is emitted.
+        // A barrel re-export preserves the defining function marker. The
+        // concrete boundary picks the re-export's default access route.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import Foo from "../components/index";
-                export default function Home() { return <Foo/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import Foo from "../components/index";
+                export default function Home() { return <Island><Foo/></Island>; }
                 "#,
             )
             .with_file(
@@ -7703,14 +7437,9 @@ mod tests {
     }
 
     #[test]
-    fn marker_name_extracts_render_ssr_skip_placeholder_first_arg_inline_export() {
-        // Issue #149 Gap A: SSR-skip wrapper functions (the
-        // `*-island.tsx` shims under `packages/zudo-doc-v2/src/ssr-skip/`)
-        // are exported under their wrapper name (e.g. AiChatModalIsland)
-        // but emit `data-zfb-island-skip-ssr="AiChatModal"` via
-        // `renderSsrSkipPlaceholder("AiChatModal", …)`. The scanner must
-        // extract the literal first argument so the bundle's manifest
-        // key matches the SSR-side marker, NOT the wrapper's identifier.
+    fn legacy_placeholder_extracts_render_ssr_skip_placeholder_first_arg_inline_export() {
+        // A textual legacy placeholder call is not an SDK boundary and
+        // cannot claim a registry marker by naming one in a string.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -7729,21 +7458,15 @@ mod tests {
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].component_name, "AiChatModalIsland");
-        assert_eq!(
-            islands[0].marker_name, "AiChatModal",
-            "issue #149 Gap A: marker name must come from \
-             renderSsrSkipPlaceholder's first arg literal"
+        assert!(
+            islands.is_empty(),
+            "legacy textual placeholder calls are not SDK boundary registrations: {islands:?}"
         );
     }
 
     #[test]
-    fn marker_name_extracts_render_ssr_skip_placeholder_first_arg_re_export() {
-        // Variant of the previous test where the wrapper is declared
-        // at module level and re-exported via `export { Foo }` rather
-        // than as an inline `export function Foo()`. The scanner's
-        // body-scan path covers this case via `collect_body_markers`.
+    fn legacy_placeholder_extracts_render_ssr_skip_placeholder_first_arg_re_export() {
+        // The same negative control through a local re-export.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -7763,16 +7486,15 @@ mod tests {
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].component_name, "ImageEnlargeIsland");
-        assert_eq!(islands[0].marker_name, "ImageEnlarge");
+        assert!(
+            islands.is_empty(),
+            "legacy textual placeholder calls are not SDK boundary registrations: {islands:?}"
+        );
     }
 
     #[test]
-    fn marker_name_extracts_render_ssr_skip_placeholder_for_arrow_function_const() {
-        // Variant: wrapper authored as `export const Foo = (...) => …`
-        // with the helper call as the arrow-function body. The scanner
-        // covers this via `marker_from_var_initialiser`.
+    fn legacy_placeholder_extracts_render_ssr_skip_placeholder_for_arrow_function_const() {
+        // The same negative control through an arrow binding.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -7790,17 +7512,16 @@ mod tests {
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].component_name, "MockInitIsland");
-        assert_eq!(islands[0].marker_name, "MockInit");
+        assert!(
+            islands.is_empty(),
+            "legacy textual placeholder calls are not SDK boundary registrations: {islands:?}"
+        );
     }
 
     #[test]
-    fn marker_name_render_ssr_skip_placeholder_overrides_default_export_function_name() {
-        // Edge case: a default export whose body calls
-        // `renderSsrSkipPlaceholder`. The helper-call extraction wins
-        // over the function identifier (because the helper call is the
-        // direct authority on the marker name).
+    fn legacy_placeholder_render_ssr_skip_placeholder_overrides_default_export_function_name() {
+        // A default export does not make a textual placeholder call an
+        // owned boundary either.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -7819,9 +7540,10 @@ mod tests {
             );
 
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].component_name, "default");
-        assert_eq!(islands[0].marker_name, "DesignTokenTweakPanel");
+        assert!(
+            islands.is_empty(),
+            "legacy textual placeholder calls are not SDK boundary registrations: {islands:?}"
+        );
     }
 
     #[test]
@@ -7833,8 +7555,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import { NotAWrapper } from "../components/not-a-wrapper";
-                export default function Home() { return <NotAWrapper/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import { NotAWrapper } from "../components/not-a-wrapper";
+                export default function Home() { return <Island><NotAWrapper/></Island>; }
                 "#,
             )
             .with_file(
@@ -7970,6 +7693,10 @@ mod tests {
                 root().join("components/counter.tsx"),
                 r#""use client";
                 export function Counter() {}
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Counter, {}) });
                 "#,
             );
 
@@ -8003,6 +7730,9 @@ mod tests {
                 r#""use client";
                 export type { Foo } from "./types";
                 export function Widget() {}
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Widget, {}) });
                 "#,
             );
 
@@ -8039,6 +7769,9 @@ mod tests {
                 export function Bar() {}
                 function Foo() {}
                 export { type Foo, Bar };
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(Bar, {}) });
                 "#,
             );
 
@@ -8209,9 +7942,9 @@ mod tests {
     }
 
     #[test]
-    fn valid_directive_with_no_exports_counts_as_near_miss() {
-        // A valid `"use client"` module that exports nothing: flagged as
-        // an island by the author but giving the bundler nothing to ship.
+    fn valid_helper_only_client_module_is_not_a_near_miss() {
+        // A valid helper-only client module retains graph facts without
+        // occupying a registry slot or triggering a directive warning.
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
@@ -8230,12 +7963,15 @@ mod tests {
             scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
         assert!(
             islands.is_empty(),
-            "no exported island expected: {islands:?}"
+            "no concrete boundary target expected: {islands:?}"
         );
         assert_eq!(
-            meta.near_miss_candidates, 1,
-            "a valid directive with no exported component is a near-miss"
+            meta.near_miss_candidates, 0,
+            "a valid helper-only directive is not a near-miss"
         );
+        assert!(meta
+            .island_reachable_modules
+            .contains(&root().join("components/counter.tsx")));
     }
 
     #[test]
@@ -8245,8 +7981,9 @@ mod tests {
         let resolver = InMemoryResolver::new()
             .with_file(
                 root().join("pages/home.tsx"),
-                r#"import { Counter } from "../components/counter";
-                export default function Home() { return <Counter/>; }
+                r#"import { Island } from "@takazudo/zfb";
+                import { Counter } from "../components/counter";
+                export default function Home() { return <Island><Counter/></Island>; }
                 "#,
             )
             .with_file(
@@ -8690,6 +8427,10 @@ mod tests {
                 root().join("components/lazy-counter.tsx"),
                 r#""use client";
                 export function LazyCounter() { return null; }
+
+                import { Island } from "@takazudo/zfb";
+                import { h } from "@takazudo/zfb/zudo-react";
+                Island({ children: h(LazyCounter, {}) });
                 "#,
             );
 
@@ -10014,8 +9755,9 @@ mod tests {
         fs::create_dir_all(project.join("pages")).unwrap();
         fs::write(
             project.join("pages/home.tsx"),
-            r#"import { Widget } from "virtual:demo";
-               export default function Home() { return <Widget/>; }"#,
+            r#"import { Island } from "@takazudo/zfb";
+               import { Widget } from "virtual:demo";
+               export default function Home() { return <Island><Widget/></Island>; }"#,
         )
         .unwrap();
         fs::write(
@@ -10191,7 +9933,15 @@ mod tests {
         .unwrap();
         let reexports = r#"export { WsIsland } from "ws-pkg";
                            export { NpmIsland } from "npm-pkg";"#;
-        fs::write(project.join("pages/direct.tsx"), reexports).unwrap();
+        fs::write(
+            project.join("pages/direct.tsx"),
+            r#"import { Island } from "@takazudo/zfb";
+               import { WsIsland } from "ws-pkg";
+               import { NpmIsland } from "npm-pkg";
+               <Island><WsIsland/></Island>;
+               <Island><NpmIsland/></Island>;"#,
+        )
+        .unwrap();
         fs::write(
             project.join("pages/home.tsx"),
             r#"import "virtual:demo"; export default function Home() {}"#,
@@ -10234,7 +9984,7 @@ mod tests {
         let (islands, meta) =
             scan_islands_with_meta(&[project.join("pages/home.tsx")], &resolver).unwrap();
         assert!(islands.is_empty(), "got {islands:?}");
-        assert!(meta.island_reachable_modules.is_empty());
+        assert_no_virtual_paths(&meta);
         assert_eq!(meta.near_miss_candidates, 0);
     }
 
@@ -10255,7 +10005,9 @@ mod tests {
         .unwrap();
         fs::write(
             project.join("pages/home.tsx"),
-            r#"import { Out } from "virtual:escape"; export default function Home() {}"#,
+            r#"import { Island } from "@takazudo/zfb";
+               import { Out } from "virtual:escape";
+               export default function Home() { return <Island><Out/></Island>; }"#,
         )
         .unwrap();
         let resolver = FsResolver::new().with_virtual_modules(
@@ -10304,8 +10056,13 @@ mod tests {
                 resolver.workspace_package_root(project, "virtual:demo"),
                 None
             );
-            let islands = scan_islands(&[project.join("pages/home.tsx")], resolver).unwrap();
-            assert!(islands.is_empty(), "got {islands:?}");
+            let error = scan_islands(&[project.join("pages/home.tsx")], resolver).unwrap_err();
+            assert!(
+                error.to_string().contains(
+                    "demanded import \"Widget\" from \"virtual:demo\" could not be resolved"
+                ),
+                "{error}"
+            );
         }
     }
 

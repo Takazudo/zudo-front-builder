@@ -3,10 +3,10 @@
 //!
 //! Responsibilities (Epic 6 / issue #6):
 //!
-//! 1. Scan project sources for components carrying the `"use client"`
-//!    directive and produce a deterministic, sorted islands set keyed by
-//!    stable component-name identity (file path + exported name). See
-//!    [`scanner`] (Sub 1).
+//! 1. Keep the reachable module/resource graph and discover the concrete
+//!    functions used by SDK `Island` boundaries in client-eligible modules.
+//!    Return a deterministic target set with binding-based alias dedup and
+//!    public-marker collision checks. See [`scanner`].
 //!
 //! 2. Define the public [`ClientBundler`] trait — the contract the islands
 //!    bundler implements — and provide the production

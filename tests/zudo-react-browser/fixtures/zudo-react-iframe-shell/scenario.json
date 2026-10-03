@@ -1,0 +1,23 @@
+{
+  "page": "zudo-react-iframe-shell",
+  "assets": ["src-one.html", "src-two.html"],
+  "roots": [
+    {
+      "component": "component.tsx",
+      "props": { "id": "frame-hydrate" },
+      "mode": "hydrate"
+    },
+    {
+      "component": "component.tsx",
+      "props": { "id": "frame-mount" },
+      "mode": "mount",
+      "skipSsr": true
+    },
+    {
+      "component": "component.tsx",
+      "props": { "id": "frame-markers" },
+      "mode": "hydrate",
+      "mutate": { "type": "iframe-fallback-markers" }
+    }
+  ]
+}

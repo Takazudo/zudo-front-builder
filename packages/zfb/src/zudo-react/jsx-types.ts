@@ -1,4 +1,6 @@
-import type { Child, Component, Key } from "./description.js";
+import type { CSSProperties } from "./style.js";
+export type { CSSProperties, CssProperty } from "./style.js";
+import type { Child, Component, Description, Key } from "./description.js";
 import type { Listener, Ref } from "./index.js";
 import type { ReadonlySignal, Signal } from "./reactive-types.js";
 
@@ -7,32 +9,6 @@ type ScalarAttribute = Value<string | number | boolean | null>;
 type DimensionAttribute = Value<string | number | null>;
 type StringAttribute = Value<string | null>;
 type BooleanAttribute = Value<boolean | null>;
-type CssProperty =
-  | `--${string}`
-  | `${string}-${string}`
-  | "color"
-  | "display"
-  | "opacity"
-  | "width"
-  | "height"
-  | "margin"
-  | "padding"
-  | "border"
-  | "background"
-  | "position"
-  | "top"
-  | "right"
-  | "bottom"
-  | "left"
-  | "overflow"
-  | "transform"
-  | "transition"
-  | "animation"
-  | "font"
-  | "flex"
-  | "grid"
-  | "gap";
-type CssStyle = Readonly<Partial<Record<CssProperty, string | number | null | undefined>>>;
 // The custom-name index must also accept every mapped listener under strict function variance.
 type AnyListener = Listener<any>;
 type EventProps<TEl extends Element, TMap extends Record<keyof TMap, Event>> = {
@@ -63,12 +39,12 @@ interface CommonAttributes<T extends Element = Element> extends ReservedProps<T>
   dir?: StringAttribute;
   slot?: StringAttribute;
   role?: StringAttribute;
-  style?: Value<string | CssStyle | null>;
+  style?: Value<string | CSSProperties | null>;
   hidden?: BooleanAttribute;
   inert?: BooleanAttribute;
-  contenteditable?: StringAttribute;
-  draggable?: StringAttribute;
-  spellcheck?: StringAttribute;
+  contenteditable?: Value<string | boolean | null>;
+  draggable?: Value<string | boolean | null>;
+  spellcheck?: Value<string | boolean | null>;
   tabindex?: Value<number | null>;
   accesskey?: StringAttribute;
   translate?: StringAttribute;
@@ -77,11 +53,32 @@ interface CommonAttributes<T extends Element = Element> extends ReservedProps<T>
   onerror?: string | undefined;
 }
 
-interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttributes<T> {
+interface HtmlBaseAttributes<T extends HTMLElement = HTMLElement> extends CommonAttributes<T> {
   href?: StringAttribute;
   target?: StringAttribute;
   rel?: StringAttribute;
-  download?: StringAttribute;
+  download?: Value<string | boolean | null>;
+  property?: StringAttribute;
+  itemprop?: StringAttribute;
+  hreflang?: StringAttribute;
+  as?: StringAttribute;
+  integrity?: StringAttribute;
+  async?: BooleanAttribute;
+  defer?: BooleanAttribute;
+  nonce?: StringAttribute;
+  popover?: StringAttribute;
+  popovertarget?: StringAttribute;
+  popovertargetaction?: StringAttribute;
+  srcdoc?: StringAttribute;
+  fetchpriority?: StringAttribute;
+  inputmode?: StringAttribute;
+  autocapitalize?: StringAttribute;
+  form?: StringAttribute;
+  label?: StringAttribute;
+  preload?: StringAttribute;
+  playsinline?: BooleanAttribute;
+  wrap?: StringAttribute;
+  closedby?: StringAttribute;
   src?: StringAttribute;
   alt?: StringAttribute;
   width?: Value<string | number | null>;
@@ -142,26 +139,31 @@ interface HtmlAttributes<T extends Element = HTMLElement> extends CommonAttribut
   allowfullscreen?: BooleanAttribute;
 }
 
-type HtmlProps<
-  TRef extends Element = HTMLElement,
-  TEvent extends HTMLElement = HTMLElement,
-> = HtmlAttributes<TRef> & DataAria & EventProps<TEvent, HTMLElementEventMap>;
-type RawTextProps<TEvent extends HTMLElement = HTMLElement> = Omit<
-  HtmlAttributes<HTMLElement>,
+export type HTMLAttributes<T extends HTMLElement = HTMLElement> = HtmlBaseAttributes<T> &
+  DataAria &
+  EventProps<T, HTMLElementEventMap>;
+type RawTextProps<T extends HTMLElement = HTMLElement> = Omit<
+  HtmlBaseAttributes<T>,
   "children" | "rawHtml"
 > &
   DataAria &
-  EventProps<TEvent, HTMLElementEventMap> & {
+  EventProps<T, HTMLElementEventMap> & {
     children?: never;
     rawHtml?: string | undefined;
   };
-type InputBase = Omit<HtmlAttributes<HTMLInputElement>, "type"> &
+type IframeProps = Omit<HtmlBaseAttributes<HTMLIFrameElement>, "children" | "rawHtml"> &
+  DataAria &
+  EventProps<HTMLIFrameElement, HTMLElementEventMap> & {
+    children?: never;
+    rawHtml?: never;
+  };
+type InputBase = Omit<HtmlBaseAttributes<HTMLInputElement>, "type"> &
   DataAria &
   EventProps<HTMLInputElement, HTMLElementEventMap> & {
     defaultValue?: string | undefined;
     defaultChecked?: boolean | undefined;
   };
-type InputProps = InputBase &
+export type InputProps = InputBase &
   (
     | {
         type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
@@ -186,16 +188,16 @@ type InputProps = InputBase &
         modelChecked?: never;
       }
   );
-type TextareaProps = HtmlProps<HTMLTextAreaElement, HTMLTextAreaElement> & {
+export type TextareaProps = HTMLAttributes<HTMLTextAreaElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;
 };
-type SelectProps = HtmlProps<HTMLSelectElement, HTMLSelectElement> & {
+export type SelectProps = HTMLAttributes<HTMLSelectElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;
 };
 
-interface SvgAttributes extends CommonAttributes<SVGElement> {
+interface SvgBaseAttributes<T extends SVGElement = SVGElement> extends CommonAttributes<T> {
   width?: DimensionAttribute;
   height?: DimensionAttribute;
   viewBox?: StringAttribute;
@@ -208,6 +210,10 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   refY?: ScalarAttribute;
   "xlink:href"?: StringAttribute;
   "xml:lang"?: StringAttribute;
+  xmlns?: StringAttribute;
+  "xmlns:xlink"?: StringAttribute;
+  href?: StringAttribute;
+  focusable?: StringAttribute;
   "stroke-width"?: ScalarAttribute;
   "fill-rule"?: StringAttribute;
   "clip-rule"?: StringAttribute;
@@ -215,6 +221,9 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   "stroke-linejoin"?: StringAttribute;
   "stop-color"?: StringAttribute;
   "stop-opacity"?: ScalarAttribute;
+  "fill-opacity"?: ScalarAttribute;
+  "stroke-dasharray"?: StringAttribute;
+  "text-anchor"?: StringAttribute;
   fill?: StringAttribute;
   stroke?: StringAttribute;
   d?: StringAttribute;
@@ -236,9 +245,9 @@ interface SvgAttributes extends CommonAttributes<SVGElement> {
   id?: StringAttribute;
 }
 
-type SvgProps<TEvent extends SVGElement = SVGElement> = SvgAttributes &
+export type SVGAttributes<T extends SVGElement = SVGElement> = SvgBaseAttributes<T> &
   DataAria &
-  EventProps<TEvent, SVGElementEventMap>;
+  EventProps<T, SVGElementEventMap>;
 type CustomProps = ReservedProps &
   EventProps<HTMLElement, GlobalEventHandlersEventMap> & {
     value?: string | null | undefined;
@@ -269,6 +278,9 @@ type HtmlTag =
   | "section"
   | "article"
   | "aside"
+  | "search"
+  | "hgroup"
+  | "menu"
   | "h1"
   | "h2"
   | "h3"
@@ -379,10 +391,28 @@ type SvgTag =
   | "radialGradient"
   | "stop"
   | "desc"
-  | "foreignObject";
+  | "foreignObject"
+  | "pattern"
+  | "filter"
+  | "marker"
+  | "image";
+
+/** DOM element corresponding to an owned intrinsic tag. */
+export type ElementForTag<Tag extends HtmlTag | SvgTag> = Tag extends HtmlTag
+  ? Tag extends keyof HTMLElementTagNameMap
+    ? HTMLElementTagNameMap[Tag]
+    : HTMLElement
+  : Tag extends keyof SVGElementTagNameMap
+    ? SVGElementTagNameMap[Tag]
+    : SVGElement;
 
 export namespace JSX {
-  export type Element = Child;
+  export type Element = Description;
+  export type HTMLAttributes<T extends HTMLElement = HTMLElement> =
+    import("./jsx-types.js").HTMLAttributes<T>;
+  export type SVGAttributes<T extends SVGElement = SVGElement> =
+    import("./jsx-types.js").SVGAttributes<T>;
+  export type CSSProperties = import("./jsx-types.js").CSSProperties;
   export type ElementType =
     | string
     | Component<any>
@@ -395,18 +425,13 @@ export namespace JSX {
         ? TextareaProps
         : K extends "select"
           ? SelectProps
-          : K extends "script" | "style"
-            ? RawTextProps<
-                K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
-              >
-            : HtmlProps<
-                HTMLElement,
-                K extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[K] : HTMLElement
-              >;
+          : K extends "iframe"
+            ? IframeProps
+            : K extends "script" | "style"
+              ? RawTextProps<ElementForTag<K>>
+              : HTMLAttributes<ElementForTag<K>>;
   } & {
-    [K in SvgTag]: SvgProps<
-      K extends keyof SVGElementTagNameMap ? SVGElementTagNameMap[K] : SVGElement
-    >;
+    [K in SvgTag]: SVGAttributes<ElementForTag<K>>;
   } & {
     [K in `${string}-${string}`]: CustomProps;
   };
