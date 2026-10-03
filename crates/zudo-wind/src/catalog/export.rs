@@ -118,6 +118,17 @@ fn export_entry(entry: &super::CatalogEntry) -> CatalogEntryExport {
             emitted_value: Some((*value).to_owned()),
         }
     }));
+    accepted_values.extend(
+        entry
+            .grammar
+            .fallback_keywords
+            .iter()
+            .map(|(suffix, value)| AcceptedValueExport {
+                kind: "fallbackKeyword".to_owned(),
+                suffix: Some((*suffix).to_owned()),
+                emitted_value: Some((*value).to_owned()),
+            }),
+    );
 
     CatalogEntryExport {
         id: entry.id.clone(),
