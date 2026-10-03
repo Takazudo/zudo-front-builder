@@ -265,14 +265,14 @@ fn build_only_dialect_error_reports_the_authored_element_span() {
     let output = failed_diagnostics_build(|_| {});
     assert!(
         output.contains(
-            "[zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7"
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7"
         ),
         "{output}"
     );
     // The worker's structural message and generated-bundle stack follow the span.
     assert!(
         output.contains(
-            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render"
+            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root[1] in static render"
         ),
         "{output}"
     );
@@ -316,7 +316,7 @@ fn build_only_h_description_keeps_structural_context_without_a_span() {
     });
     assert!(
         output.contains(
-            "[zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete`"
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete`"
         ),
         "{output}"
     );
