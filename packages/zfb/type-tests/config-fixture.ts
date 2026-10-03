@@ -49,6 +49,7 @@ export const windAcceptsFullConfiguration = defineConfig({
     safelist: { app: ["sm:hover:bg-panel", "rounded"] },
     authoredClasses: { prose: true },
     manifests: { widgets: { path: "@example/widgets/wind.json" } },
+    sources: { exclude: ["src/**/__tests__/**"], packageRoots: ["@example/widgets"] },
   },
 });
 

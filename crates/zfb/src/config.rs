@@ -960,6 +960,62 @@ pub struct WindConfig {
     /// File-backed utility manifests keyed by producer id.
     #[serde(default)]
     pub manifests: BTreeMap<String, WindManifest>,
+    /// Author source exclusions and declared package roots.
+    #[serde(default, skip_serializing_if = "WindSources::is_empty")]
+    pub sources: WindSources,
+    /// Per-declaration provenance of `sources`, set by the preset merge.
+    /// Empty means `sources` belongs to the project root.
+    #[serde(skip)]
+    pub(crate) source_declarations: Vec<WindSourceDeclaration>,
+}
+
+impl WindConfig {
+    /// Each `sources` declaration with the package that anchors its paths.
+    pub(crate) fn source_declarations(&self) -> Vec<WindSourceDeclaration> {
+        if self.source_declarations.is_empty() && !self.sources.is_empty() {
+            vec![WindSourceDeclaration {
+                source_package: None,
+                sources: self.sources.clone(),
+            }]
+        } else {
+            self.source_declarations.clone()
+        }
+    }
+}
+
+/// `wind.sources`: paths are relative to the declaring project or preset package.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindSources {
+    /// Globs excluded from every source root under the declaring root.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Package directories scanned as roots, including their `dist` and `node_modules`.
+    #[serde(default)]
+    pub package_roots: Vec<String>,
+}
+
+impl WindSources {
+    fn is_empty(&self) -> bool {
+        self.exclude.is_empty() && self.package_roots.is_empty()
+    }
+}
+
+/// One `wind.sources` object and the package that declared it. `None` means
+/// the project root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WindSourceDeclaration {
+    pub source_package: Option<String>,
+    pub sources: WindSources,
+}
+
+impl WindSourceDeclaration {
+    pub(crate) fn origin(&self) -> String {
+        match &self.source_package {
+            Some(package) => format!("preset:{package}"),
+            None => "project".into(),
+        }
+    }
 }
 
 impl Default for WindConfig {
@@ -974,6 +1030,8 @@ impl Default for WindConfig {
             safelist: BTreeMap::new(),
             authored_classes: BTreeMap::new(),
             manifests: BTreeMap::new(),
+            sources: WindSources::default(),
+            source_declarations: Vec::new(),
         }
     }
 }
@@ -1995,6 +2053,9 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         let mut cfg: Config = if let Some(mut presets) = presets {
             annotate_wind_manifest_sources(&mut user_value, false)
                 .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+            let user_sources = take_wind_sources(&mut user_value, false)
+                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+            let mut source_declarations = Vec::new();
             // Validate each preset as a `Config` fragment BEFORE merging so an
             // invalid preset field surfaces even when the user also sets that
             // key (all `Config` fields are `#[serde(default)]`, so a partial
@@ -2008,6 +2069,14 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
                         json_path.display()
                     )
                 })?;
+                source_declarations.extend(take_wind_sources(preset_value, false).map_err(
+                    |e| {
+                        anyhow!(
+                            "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                            json_path.display()
+                        )
+                    },
+                )?);
                 let mut validation_value = preset_value.clone();
                 take_wind_manifest_sources(&mut validation_value).map_err(|e| {
                     anyhow!(
@@ -2032,6 +2101,8 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
             let mut config: Config = serde_path_to_error::deserialize(merged_value)
                 .with_context(|| format!("{}: invalid zfb config", json_path.display()))?;
             apply_wind_manifest_sources(&mut config, manifest_sources);
+            source_declarations.extend(user_sources);
+            apply_wind_sources(&mut config, source_declarations);
             config
         } else {
             let mut deserializer = serde_json::Deserializer::from_str(&text);
@@ -2325,7 +2396,7 @@ fn parse_loaded_config(
             e
         )
     })?;
-    let (merged_value, manifest_sources) = if let Some(mut presets) = presets {
+    let (merged_value, manifest_sources, source_declarations) = if let Some(mut presets) = presets {
         had_presets = true;
         annotate_wind_manifest_sources(&mut value, false).map_err(|e| {
             anyhow!(
@@ -2333,6 +2404,13 @@ fn parse_loaded_config(
                 ts_path.display()
             )
         })?;
+        let user_sources = take_wind_sources(&mut value, false).map_err(|e| {
+            anyhow!(
+                "{}: failed to parse the default export: {e}",
+                ts_path.display()
+            )
+        })?;
+        let mut source_declarations = Vec::new();
         for (i, preset_value) in presets.iter_mut().enumerate() {
             reject_removed_top_level_keys(preset_value)
                 .map_err(|e| anyhow!("{}: presets[{i}]: {e}", ts_path.display()))?;
@@ -2342,6 +2420,12 @@ fn parse_loaded_config(
                     ts_path.display()
                 )
             })?;
+            source_declarations.extend(take_wind_sources(preset_value, true).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    ts_path.display()
+                )
+            })?);
             let mut validation_value = preset_value.clone();
             take_wind_manifest_sources(&mut validation_value).map_err(|e| {
                 anyhow!(
@@ -2365,14 +2449,15 @@ fn parse_loaded_config(
                 ts_path.display()
             )
         })?;
-        (merged_value, manifest_sources)
+        source_declarations.extend(user_sources);
+        (merged_value, manifest_sources, Some(source_declarations))
     } else {
         // Still strip a `presets: []` / `presets: null` key before the final
         // deserialize so it never reaches `Config`.
         if let Some(map) = value.as_object_mut() {
             map.remove("presets");
         }
-        (value, BTreeMap::new())
+        (value, BTreeMap::new(), None)
     };
 
     // serde_path_to_error wraps the deserialize with the field path that
@@ -2389,6 +2474,9 @@ fn parse_loaded_config(
         )
         })?;
     apply_wind_manifest_sources(&mut config, manifest_sources);
+    if let Some(source_declarations) = source_declarations {
+        apply_wind_sources(&mut config, source_declarations);
+    }
 
     // Resolve any plugin entries that still have `resolved_module = None`
     // (i.e. those contributed by presets). Mirrors the JSON-load path
@@ -2624,6 +2712,63 @@ fn apply_wind_manifest_sources(config: &mut Config, sources: BTreeMap<String, Op
     }
 }
 
+/// Remove `wind.sources` before the preset merge, which would otherwise let
+/// one declaration replace another. Each declaration keeps its own root.
+fn take_wind_sources(
+    value: &mut serde_json::Value,
+    allow_preset_source: bool,
+) -> Result<Option<WindSourceDeclaration>, String> {
+    let Some(mut sources) = value
+        .as_object_mut()
+        .and_then(|root| root.get_mut("wind"))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|wind| wind.remove("sources"))
+    else {
+        return Ok(None);
+    };
+    let source_package = match sources
+        .as_object_mut()
+        .and_then(|sources| sources.remove(WIND_MANIFEST_SOURCE_PACKAGE_KEY))
+    {
+        None => None,
+        Some(serde_json::Value::String(package)) if allow_preset_source => Some(package),
+        Some(_) => {
+            return Err(format!(
+                "wind.sources.{WIND_MANIFEST_SOURCE_PACKAGE_KEY} is reserved for preset provenance"
+            ));
+        }
+    };
+    let sources: WindSources =
+        serde_path_to_error::deserialize(sources).map_err(|e| format!("wind.sources: {e}"))?;
+    Ok(Some(WindSourceDeclaration {
+        source_package,
+        sources,
+    }))
+}
+
+/// Presets contribute in declared order, then the project; every
+/// declaration is kept so its paths resolve against its own root.
+fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclaration>) {
+    let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() else {
+        return;
+    };
+    let declarations: Vec<_> = declarations
+        .into_iter()
+        .filter(|declaration| !declaration.sources.is_empty())
+        .collect();
+    wind.sources = WindSources {
+        exclude: declarations
+            .iter()
+            .flat_map(|declaration| declaration.sources.exclude.iter().cloned())
+            .collect(),
+        package_roots: declarations
+            .iter()
+            .flat_map(|declaration| declaration.sources.package_roots.iter().cloned())
+            .collect(),
+    };
+    wind.source_declarations = declarations;
+}
+
 /// Phase 1 of the two-phase preset fold (#1196): build `preset_defaults` by
 /// folding the declared presets in DECLARED order. An already-folded
 /// (earlier-declared) key wins over a later preset, and the four top-level
@@ -2820,6 +2965,51 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
         if manifest.path.is_empty() {
             bail!("wind.manifests.{producer}.path must not be empty");
         }
+    }
+
+    for declaration in wind.source_declarations() {
+        let origin = declaration.origin();
+        for (index, pattern) in declaration.sources.exclude.iter().enumerate() {
+            if let Err(message) = zfb_css::compile_exclusion_pattern(pattern) {
+                bail!("wind.sources.exclude[{index}] {pattern:?} declared by {origin}: {message}");
+            }
+        }
+        for (index, root) in declaration.sources.package_roots.iter().enumerate() {
+            if let Err(message) = validate_wind_package_root(root) {
+                bail!(
+                    "wind.sources.packageRoots[{index}] {root:?} declared by {origin}: {message}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A package root is `./` or `../` relative to its declaring root, or a bare
+/// package name with an optional subpath found through `node_modules`.
+fn validate_wind_package_root(root: &str) -> Result<(), &'static str> {
+    if root.is_empty() {
+        return Err("must not be empty");
+    }
+    if root.contains('\\') {
+        return Err("must use `/` separators");
+    }
+    if Path::new(root).is_absolute() || root.as_bytes().get(1) == Some(&b':') {
+        return Err("must be relative to the declaring root or a package name");
+    }
+    if root.starts_with("./") || root.starts_with("../") || root == "." || root == ".." {
+        return Ok(());
+    }
+    let mut parts = root.split('/');
+    let scope_valid = match parts.next() {
+        Some(scope) if scope.starts_with('@') => {
+            scope.len() > 1 && parts.next().is_some_and(|name| !name.is_empty())
+        }
+        Some(name) => !name.is_empty(),
+        None => false,
+    };
+    if !scope_valid || parts.any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err("must be a package name such as `@scope/ui` with an optional subpath");
     }
     Ok(())
 }
@@ -3159,12 +3349,19 @@ mod tests {
         }
         annotate_wind_manifest_sources(&mut user, false)
             .expect("user config cannot set internal manifest provenance");
+        let mut source_declarations: Vec<_> = presets
+            .iter_mut()
+            .filter_map(|preset| take_wind_sources(preset, true).expect("preset sources are valid"))
+            .collect();
+        source_declarations
+            .extend(take_wind_sources(&mut user, false).expect("user sources are valid"));
         let preset_defaults = build_preset_defaults(presets);
         let mut merged = merge_user_over_presets(preset_defaults, user);
         let manifest_sources =
             take_wind_manifest_sources(&mut merged).expect("manifest sources are valid");
         let mut config = serde_json::from_value(merged).expect("merged preset config deserializes");
         apply_wind_manifest_sources(&mut config, manifest_sources);
+        apply_wind_sources(&mut config, source_declarations);
         config
     }
 
@@ -3405,6 +3602,158 @@ mod tests {
         };
         assert_eq!(wind.manifests["widgets"].path, "./user-wind.json");
         assert_eq!(wind.manifests["widgets"].source_package, None);
+    }
+
+    #[test]
+    fn wind_sources_keep_each_declaration_and_its_provenance() {
+        let config = merge_presets_to_config(
+            vec![
+                serde_json::json!({
+                    "wind": { "sources": {
+                        "exclude": ["fixtures/**"],
+                        "packageRoots": ["."],
+                        "__zfb_source_package": "@example/preset-a"
+                    } }
+                }),
+                serde_json::json!({
+                    "wind": { "sources": { "exclude": ["src/**"] } }
+                }),
+            ],
+            serde_json::json!({
+                "wind": { "sources": { "exclude": ["src/**/__tests__/**"] } }
+            }),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object expected")
+        };
+        let declarations = wind.source_declarations();
+        assert_eq!(
+            declarations
+                .iter()
+                .map(|declaration| (declaration.origin(), declaration.sources.exclude.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "preset:@example/preset-a".to_owned(),
+                    vec!["fixtures/**".to_owned()]
+                ),
+                ("project".to_owned(), vec!["src/**".to_owned()]),
+                ("project".to_owned(), vec!["src/**/__tests__/**".to_owned()]),
+            ]
+        );
+        assert_eq!(
+            wind.sources.exclude,
+            ["fixtures/**", "src/**", "src/**/__tests__/**"]
+        );
+        assert_eq!(wind.sources.package_roots, ["."]);
+        assert_eq!(
+            serde_json::to_value(&wind.sources).unwrap(),
+            serde_json::json!({
+                "exclude": ["fixtures/**", "src/**", "src/**/__tests__/**"],
+                "packageRoots": ["."]
+            })
+        );
+    }
+
+    #[test]
+    fn wind_sources_without_presets_belong_to_the_project() {
+        let config = config_with_wind(serde_json::json!({
+            "sources": { "exclude": ["src/**"] }
+        }));
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object expected")
+        };
+        assert_eq!(
+            wind.source_declarations(),
+            [WindSourceDeclaration {
+                source_package: None,
+                sources: WindSources {
+                    exclude: vec!["src/**".into()],
+                    package_roots: Vec::new(),
+                },
+            }]
+        );
+        let default = config_with_wind(serde_json::json!({}));
+        let Some(WindSetting::Enabled(wind)) = default.wind else {
+            panic!("wind object expected")
+        };
+        assert!(wind.source_declarations().is_empty());
+        assert!(serde_json::to_value(&*wind)
+            .unwrap()
+            .get("sources")
+            .is_none());
+    }
+
+    #[test]
+    fn wind_sources_reject_user_provenance_and_unknown_fields() {
+        let mut user = serde_json::json!({
+            "wind": { "sources": { "__zfb_source_package": "@example/fake" } }
+        });
+        assert!(take_wind_sources(&mut user, false)
+            .unwrap_err()
+            .contains("reserved for preset provenance"));
+        let mut user = serde_json::json!({
+            "wind": { "sources": { "include": ["src/**"] } }
+        });
+        let error = take_wind_sources(&mut user, true).unwrap_err();
+        assert!(
+            error.contains("wind.sources") && error.contains("include"),
+            "{error}"
+        );
+        let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+            "wind": { "sources": { "exclude": "src/**" } }
+        }))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("wind.sources.exclude"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn wind_validation_rejects_malformed_sources_with_their_origin() {
+        let mut wind = WindConfig::default();
+        wind.source_declarations = vec![WindSourceDeclaration {
+            source_package: Some("@example/preset".into()),
+            sources: WindSources {
+                exclude: vec!["src/**".into(), "src/[".into()],
+                package_roots: Vec::new(),
+            },
+        }];
+        let error = validate_wind_config(&wind).unwrap_err().to_string();
+        assert!(
+            error.contains("wind.sources.exclude[1] \"src/[\" declared by preset:@example/preset"),
+            "{error}"
+        );
+        for (pattern, needle) in [("!src/**", "negated"), ("../x", ".."), ("/abs", "relative")] {
+            let config = config_with_wind(serde_json::json!({
+                "sources": { "exclude": [pattern] }
+            }));
+            let Some(WindSetting::Enabled(wind)) = config.wind else {
+                panic!("wind object expected")
+            };
+            let error = validate_wind_config(&wind).unwrap_err().to_string();
+            assert!(
+                error.contains("declared by project") && error.contains(needle),
+                "{error}"
+            );
+        }
+        for root in ["", "/abs", "@scope", "pkg/../x", "C:/x"] {
+            let config = config_with_wind(serde_json::json!({
+                "sources": { "packageRoots": [root] }
+            }));
+            let Some(WindSetting::Enabled(wind)) = config.wind else {
+                panic!("wind object expected")
+            };
+            let error = validate_wind_config(&wind).unwrap_err().to_string();
+            assert!(
+                error.contains("wind.sources.packageRoots[0]"),
+                "{root}: {error}"
+            );
+        }
+        for root in [".", "./packages/ui", "../shared", "@scope/ui", "ui/dist"] {
+            assert_eq!(validate_wind_package_root(root), Ok(()), "{root}");
+        }
     }
 
     #[test]
