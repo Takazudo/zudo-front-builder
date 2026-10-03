@@ -324,3 +324,67 @@ fn build_only_h_description_keeps_structural_context_without_a_span() {
     assert!(!output.contains("search-field.tsx:"), "{output}");
     assert_no_internal_primary_location(&output);
 }
+
+const PREACT_PRAGMA_WARNING: &str = "zfb warn: components/search-field.tsx:1:5: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
+
+fn add_preact_pragma(root: &Path) {
+    replace_in(
+        root,
+        "components/search-field.tsx",
+        "export function SearchField",
+        "/** @jsxImportSource preact */\nexport function SearchField",
+    );
+    replace_in(
+        root,
+        "components/search-field.tsx",
+        "autoComplete=",
+        "autocomplete=",
+    );
+}
+
+#[test]
+fn foreign_pragma_without_preact_is_named_before_the_unresolved_runtime() {
+    let output = failed_diagnostics_build(add_preact_pragma);
+    let warning = output
+        .find(PREACT_PRAGMA_WARNING)
+        .unwrap_or_else(|| panic!("missing pragma warning:\n{output}"));
+    assert!(
+        output.contains(
+            "Remove the pragma, or change it to `@jsxImportSource @takazudo/zfb/zudo-react`"
+        ),
+        "{output}"
+    );
+    let unresolved = output
+        .find("Could not resolve \"preact/jsx-runtime\"")
+        .unwrap_or_else(|| panic!("expected the esbuild failure:\n{output}"));
+    assert!(warning < unresolved, "{output}");
+    assert_eq!(output.matches(PREACT_PRAGMA_WARNING).count(), 1, "{output}");
+}
+
+#[test]
+fn foreign_pragma_with_a_resolvable_runtime_is_named_before_the_render_failure() {
+    // Stand-in for a still-installed Preact: the pragma's runtime resolves and
+    // returns objects the owned renderer rejects.
+    let output = failed_diagnostics_build(|root| {
+        add_preact_pragma(root);
+        fs::create_dir_all(root.join("shim")).unwrap();
+        fs::write(
+            root.join("shim/preact-jsx-runtime.js"),
+            "export function jsx(type, props) {\n  return { type, props };\n}\nexport const jsxs = jsx;\nexport const Fragment = \"fragment\";\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"jsxImportSource\": \"@takazudo/zfb/zudo-react\",\n    \"baseUrl\": \".\",\n    \"paths\": { \"preact/jsx-runtime\": [\"./shim/preact-jsx-runtime.js\"] }\n  }\n}\n",
+        )
+        .unwrap();
+    });
+    let warning = output
+        .find(PREACT_PRAGMA_WARNING)
+        .unwrap_or_else(|| panic!("missing pragma warning:\n{output}"));
+    let render = output
+        .find("ZR_")
+        .unwrap_or_else(|| panic!("expected a render diagnostic:\n{output}"));
+    assert!(warning < render, "{output}");
+    assert!(!output.contains("Could not resolve"), "{output}");
+}

@@ -60,6 +60,7 @@ pub mod content_provenance;
 pub mod etxtbsy;
 pub mod glob_expand;
 pub mod head_inject;
+pub mod jsx_pragma;
 pub mod link_base_rewrite;
 pub mod metafile_deps;
 pub mod module_worker;
