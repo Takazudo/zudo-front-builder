@@ -1,0 +1,289 @@
+---
+title: "サンプル: Agent Conversations"
+description: zfb の静的なシェルと 1 つの zudo-react アイランドで、エージェントとの会話、キューに入る実行、キャンセル、レビュー済みのホスト変更を、フレームワークに依存しないコントローラー経由で扱う例。プロバイダーは合成で、デプロイはない
+sidebar_position: 9
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+エージェント会話 UI の zfb 3.1.0 レシピです。会話履歴、キューに入るエージェントの実行、キャンセル、
+バージョン管理されたスキル、そして人がレビューしてから適用するホストシステムへの変更を扱います。
+ページは zfb の静的なシェルで、インターフェース全体が 1 つの zudo-react アイランドです。アイランドは
+フレームワークに依存しないコントローラーとクライアントを介して通信するため、同じ UI がメモリ上の
+サービスでも、ローカルの HTTP と SQLite のサーバーでも動きます。
+
+プロバイダーとホスト CMS は **合成** です。モデル呼び出し、API キー、クラウドアカウント、デプロイは
+いずれもありません。
+
+</Info>
+
+- **リポジトリ:** [Takazudo/zfb-example-agent-convos](https://github.com/Takazudo/zfb-example-agent-convos)
+- **このページが対象とするコミット:** [`a21cc10`](https://github.com/Takazudo/zfb-example-agent-convos/tree/a21cc1081f656027d075c1e09c425e65f368f3ae)（2026-10-01、"Bump both conversation apps to zfb 3.1.0"）
+- **ライブデモ:** ありません。リポジトリの CI はテストゲートを実行するだけで、デプロイの手順は含みません。
+
+## 何を示すか
+
+- **アイランドが 1 つだけの静的なシェル。** `apps/showcase/pages/index.tsx` はレイアウトで
+  `<Island when="load"><ConvosApp /></Island>` を包みます。インタラクティブな部分はすべてこの
+  `"use client"` なコンポーネントにあります。[アイランド](/ja/docs/concepts/islands) を参照してください。
+- **UI ロジックをレンダラーの外に置く。** アイランドが持つのはシグナルと DOM の ref だけです。
+  会話の状態、イベントのマージ、コマンドの再試行は `ConversationController` が持ち、
+  `ConversationClient` インターフェースを通じて通信します。
+- **1 つのクライアントインターフェースと 2 つの通信方式。** メモリ版のクライアントはページ内で
+  サービスを動かし、`HttpConversationClient` は `/api/v1` のサーバーを呼びます。コントローラーから
+  両者は区別できません。
+- **上限のある会話。** 実行数、メッセージ数、入力サイズ、コンテキストサイズ、イベントページに固定の
+  上限があり、1 つの `LIMITS` オブジェクトとして公開されています。
+- **順序どおりのイベントと再同期。** コントローラーはイベントを順番に適用し、欠落を検出すると
+  スナップショットを読み直します。
+- **ごまかさないキャンセル。** ビューを閉じても止まるのはローカルの待機だけです。ホストがすでに
+  受け付けた効果はキャンセルできません。
+- **レビュー済みのホスト変更と不確かな効果。** 提案は正確なペイロードハッシュに対して承認されます。
+  適用呼び出しの結果が失われた場合、実行は書き込みを再試行せずに照合（reconciliation）へ移ります。
+
+## 使用技術
+
+| 要素 | このリポジトリでの実際 |
+| --- | --- |
+| エンジンと UI | `@takazudo/zfb` **3.1.0** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **3.1.0** |
+| 設定 | `apps/showcase/zfb.config.ts` は `wind: false` だけを設定。アダプターも SSR ルートもない |
+| レンダリングモード | 静的。`pages/index.tsx` は `<Island when="load">` を 1 つ含む SSG の HTML |
+| 共有ロジック | `packages/core`・`packages/client`・`packages/controller`。フレームワークを import しない TypeScript |
+| ローカルサーバー | `dev/server.mjs`。`127.0.0.1` で待ち受ける Node の HTTP サーバーで、`D1Repository` と同じ SQL 文を Node の SQLite で実行する |
+| Cloudflare 関連 | `workers/conversations/src/worker.ts`。ポートを注入するハンドラーファクトリー。`wrangler.toml` はなく、Worker、D1 データベース、Queue は用意されていない |
+| ツールチェーン | Node 22.16 以上、pnpm 10.12.1、TypeScript 5.8.3。ブラウザーチェックには Python 版 Playwright |
+
+## 3 つのモード
+
+リポジトリは同じ UI を 3 つの環境で動かします。それぞれの裏付けは大きく異なります。
+
+| モード | 場所 | 永続化 | 検証されている内容 |
+| --- | --- | --- | --- |
+| 公開ショーケース | `apps/showcase`。`apps/showcase/dist/` にビルド | メモリのみ。シナリオは再読み込みでリセット | zfb の実際のビルドとブラウザーでのハイドレーション。import グラフに HTTP クライアント、SQL のコード、認証情報を含まない |
+| ローカルアプリ | `apps/local` と `dev/server.mjs` | SQLite ファイル `.dev-state/conversations.sqlite` | 実際の HTTP と SQLite。サーバーを再起動してもデータが残ること |
+| Worker ハンドラーファクトリー | `workers/conversations` | 注入された D1 データベースと Queue を前提とする | 注入したポートでのテストのみ。実際の workerd、D1、Queue の配信は **検証されていない** |
+
+Worker の範囲について、リポジトリの `docs/implementation.md` は「No actual Wrangler project, Worker
+resource, D1 database, or Queue was provisioned.」と明記しています。Worker のコードはデプロイ済みの
+アプリケーションではなく、統合作業の出発点として扱ってください。
+
+## しくみ
+
+### ページは静的なシェル
+
+ショーケースの設定は `wind: false` だけで、ページは 1 つのコンポーネントをアイランドで包みます。
+
+```ts
+// apps/showcase/zfb.config.ts
+import { defineConfig } from '@takazudo/zfb/config';
+// Static mock-only build. No SSR adapter, live API, secret, or private client is imported.
+export default defineConfig({ wind: false });
+```
+
+```tsx
+// apps/showcase/pages/index.tsx
+import { Island } from '@takazudo/zfb';
+import Layout from '../layouts/default';
+import ConvosApp from '../components/ConvosApp';
+export default function Home() { return <Layout><Island when="load"><ConvosApp /></Island></Layout>; }
+```
+
+`ConvosApp` は props を受け取りません。その理由はコンポーネント自身のコメントにある
+「Runtime objects never cross the JSON Island boundary.」です。コントローラーとサービスは props として
+渡されるのではなく、クライアントのセットアップ中にアイランドの中で作られます。
+
+リポジトリは zfb のビルドルートを 2 つに分けています。`apps/showcase` は公開用のモックで、
+`apps/local` は同じコンポーネントを HTTP のセッションアダプターと組み合わせてビルドします。
+ステージングスクリプト（`scripts/stage-*.mjs`）は、共有ソースのうち明示的に許可したものだけを各アプリの
+`components/shared/` にコピーします。そのため公開ビルドに HTTP や SQL のコードは入りません。README は、
+ローカルのビルドを公開デモとして公開しないよう注意しています。
+
+### コントローラーが知るのはクライアントインターフェースだけ
+
+`packages/client/src/port.ts` が、2 つの通信方式が実装する契約を定義しています。抜粋です。
+
+```ts
+/** Framework-neutral client contract shared by mock and HTTP implementations. */
+export interface ConversationClient {
+    snapshot(conversationId: Id, signal?: AbortSignal): Promise<Result<Snapshot>>;
+    events(conversationId: Id, after: number, signal?: AbortSignal): Promise<Result<EventPage>>;
+    send(conversationId: Id, input: {
+        text: string;
+        expectedRevision: number;
+    }, options: CommandOptions): Promise<Result<AcceptedRun>>;
+    cancel(conversationId: Id, runId: Id, options: CommandOptions): Promise<Result<Run>>;
+    decide(conversationId: Id, proposalId: Id, input: {
+        decision: 'approve' | 'reject';
+        payloadHash: string;
+    }, options: CommandOptions): Promise<Result<Proposal>>;
+    // …list, create, history, export, update, retry, skills, and more
+}
+```
+
+すべてのコマンドはリクエストキーを持ちます。`HttpConversationClient` はそれを `Idempotency-Key`
+ヘッダーとして送り、変更系のリクエストを自分から再試行することはありません。
+
+```ts
+/** No implicit mutation retries. The caller retains the request key after an ambiguous failure. */
+export class HttpConversationClient implements ConversationClient {
+```
+
+コントローラーも同じ規則に従います。サーバーがコマンドを明示的に拒否した場合、コントローラーは
+保留中のコマンドを破棄します。通信が失敗して結果がわからない場合はキーと本文を保持し、UI は
+「Response not confirmed. Check acceptance with the same key.」と表示します。サーバー側では、同じ
+キーと同じ入力の繰り返しは記録済みの結果を返し、同じキーで入力が異なる場合は競合になります。
+
+### 会話には上限がある
+
+`packages/core/src/validation.ts` は上限を 1 つの凍結オブジェクトとして公開しています。
+
+```ts
+export const LIMITS = Object.freeze({
+    title: 120, inputBytes: 16384, skillBytes: 32768, outputBytes: 16384,
+    contextBytes: 262144, eventBytes: 131072, pageBytes: 262144,
+    listSize: 50, messagePageSize: 50, eventPageSize: 100,
+    runsPerConversation: 128, messagesPerConversation: 256, bodyBytes: 65536,
+});
+```
+
+つまり 1 つの会話が持てるのは最大 128 回の実行と 256 件のメッセージで、1 つのイベントページは最大
+100 件または 256 KiB です。リポジトリはこれらを「initial engineering limits, not load-test results」と
+説明しています。
+
+### イベントは順番に適用される
+
+`ConversationService.send` はメッセージを検証し、ユーザーのメッセージ、キューに入った実行、その順序
+付きイベント、outbox の項目をまとめてコミットします。各イベントは連番を持ちます。コントローラーは
+現在のカーソル以降のイベントをポーリングし、順番に適用します。カーソルが無効になったとサーバーが
+返した場合や、コントローラーが欠落に気づいた場合は、推測せずにスナップショット全体を読み直します。
+
+```ts
+if (error instanceof CommandFailure && ['RESYNC_REQUIRED', 'CURSOR_INVALID'].includes(error.code) || error instanceof Error && error.message === 'EVENT_GAP')
+    await this.loadSnapshot(cid, epoch);
+```
+
+エポックのカウンターが非同期の読み込みを区切るため、ユーザーが別の会話へ切り替えた後に届いた
+レスポンスは破棄されます。
+
+### キャンセルには 2 つの意味がある
+
+アイランドのアンマウントなどでコントローラーを破棄しても、止まるのはローカルの読み込みとタイマー
+だけです。
+
+```ts
+dispose() {
+    // …
+    this.readAbort.abort();
+    // This cancels local reads only. It intentionally sends no run-cancellation command.
+}
+```
+
+`cancel` コマンドを送るのは明示的な **Stop** 操作だけです。さらにサービスは、ホストでの効果がすでに
+起きた可能性のある実行のキャンセルを拒否します。
+
+```ts
+if (r.status === 'applying' || r.status === 'needs_reconciliation')
+    throw new DomainError('TOOL_RESULT_UNKNOWN', 'An accepted effect cannot be cancelled as if it never happened.');
+```
+
+キューに入っただけの実行はすぐにキャンセルされます。実行中の実行は `cancel_requested` に移り、保留中の
+提案は却下され、ストリーミング中のメッセージは途中までの応答として残ります。
+
+### 提案は正確なペイロードに対して承認される
+
+提案とは、エージェントがホストで行いたい変更のことで、たとえば CMS の下書きの保存です。UI は変更前と
+変更後のテキストをそのまま表示し、承認はレビューしたペイロードを指定します。
+
+```ts
+if (p.payloadHash !== hash(b.payloadHash))
+    throw new DomainError('STALE_PROPOSAL', 'The reviewed payload no longer matches.');
+```
+
+承認は変更の成功を意味しません。承認すると実行は `applying` に移り、`apply` ジョブがキューに入ります。
+ホストは書き込みの時点で、提案から導いた効果キーのもとで権限と期待するリビジョンを確認します。その間に
+ホストのリビジョンが進んでいた場合、UI は古い提案を適用する代わりに **Prepare a new proposal** を
+提示します。
+
+### 失われた結果は照合に回る
+
+適用呼び出しの結果が失われると、実行は `needs_reconciliation` に入り、`reconcile` ジョブが同じ効果キーに
+ついてホストに問い合わせます。その後、実行には「Recovered the host receipt; draft was saved once.」か
+「Confirmed no host effect.」のどちらかが記録されます。書き込みを盲目的に再試行することはありません。
+ローカルアプリでは合成ホストが受領記録を SQLite に保存するため、再起動しても残ります。
+
+### ユーザーの内容はテキストのまま
+
+メッセージは zudo-react のテキストバインディングで描画されるため、ユーザーやアシスタントのテキストが
+マークアップとして扱われることはありません。
+
+```tsx
+<div class="ac-message-text">{computed(() => item.value.parts.map(p => p.text).join(''))}</div>
+```
+
+リポジトリの実装メモは、ほかの境界も挙げています。JSON の読み取りはサイズに上限があり、HTTP 層は
+データベースやプロバイダーの内部エラーを公開せず、権限の確認はホストが変更を適用する時点の責任です。
+
+## ローカルで動かす
+
+Node 22.16 以上と pnpm 10.12.1 を使います。
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev:local
+```
+
+`pnpm dev:local` はコアをコンパイルし、2 つの zfb アプリをビルドしてから `dev/server.mjs` を起動します。
+HTTP と SQLite を使うローカルアプリは `http://127.0.0.1:8787/`、メモリのみのショーケースは
+`http://127.0.0.1:8787/mock` で開きます。ビルド後にポートやデータベースファイルを変えるには次のように
+します。
+
+```sh
+PORT=8790 CONVOS_DB=.dev-state/other.sqlite node dev/server.mjs
+```
+
+サーバーは同一オリジンのループバック通信だけを受け付け、固定の合成アイデンティティを 1 つ使います。
+README はこれを「a development harness, not a production authentication system」と説明しています。
+
+公開用の静的ショーケースだけを扱う場合は次のコマンドを使います。
+
+| コマンド | 実行内容 |
+| --- | --- |
+| `pnpm dev` | ショーケースのソースをステージングしてから、`apps/showcase` で `zfb dev` |
+| `pnpm build` | ステージングしてから `zfb build`。出力は `apps/showcase/dist/` |
+| `pnpm check:zfb` | ステージングしてから `zfb check` |
+| `pnpm typecheck` | コアをビルドし、2 つの zfb アプリをチェック |
+| `pnpm test` | Node のユニットテストと契約テスト |
+| `pnpm b4push` | 実際の zfb ビルドに対する Playwright のブラウザーチェックを含む全体のゲート |
+
+ブラウザーチェックには Python の環境が必要です。
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m playwright install chromium
+PYTHON=.venv/bin/python pnpm b4push
+```
+
+## 扱っていないこと
+
+リポジトリの `TEST-RESULTS.md` と `docs/implementation.md` は、次の点を検証の範囲外としています。
+
+- **実際の Cloudflare ランタイムはない。** workerd、D1、Cloudflare Queue の配信は検証されていません。
+  ローカルアプリは D1 リポジトリの SQL を Node の SQLite で実行しますが、これは D1 との互換性の証明では
+  ありません。Worker ファクトリーの `enabled` 受け付けフラグは既定で false です。
+- **実際のプロバイダーはない。** アシスタントの出力は偽のプロバイダーによるものです。モデル呼び出し、
+  コストの方針、プロバイダーの認証情報はありません。
+- **本番用の認証はない。** HTTP ハンドラーは認証の仕組みの注入を必須とします。ローカルサーバーの固定
+  アイデンティティは認証の製品ではなく、ホストでの実際の認可も実装されていません。
+- **保持期間やクォータはない。** 保持期間、削除、ワークスペースのクォータは実装されていません。会話の
+  一覧はページングの前に対象の一覧全体を読み込みます。
+- **実機での確認はない。** Safari、Android の実機、実際の日本語 IME は試されていません。
+
+## 関連ドキュメント
+
+- [アイランド](/ja/docs/concepts/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルと JSON の props
+- [zudo-react](/ja/docs/zudo-react/overview) — アイランドが使うシグナル、スコープ、`Show`、`For`、ref
+- [フォーム](/ja/docs/zudo-react/forms) — メッセージ入力欄の書き込み可能なモデルと変換入力（composition）の扱い
+- [AI Summarizer](/ja/docs/recipes/ai-summarizer) — `prerender = false` のルートから Workers AI を呼ぶ、デプロイ済みのサンプル
+- [サンプル集](/ja/docs/guides/examples) — 他のサンプルリポジトリ
