@@ -11634,6 +11634,7 @@ mod tests {
             path: PathBuf::from("src"),
             required: false,
             exclusions: Default::default(),
+            package_root: false,
         });
         plan
     }

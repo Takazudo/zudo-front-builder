@@ -16,29 +16,43 @@
 //
 // SYNC REQUIREMENT: keep definePreset here behaviourally identical to
 // packages/zfb/src/config.ts. The `source_package` plugin field matches the
-// Rust `PluginConfig`; `__zfb_source_package` on wind manifests is stripped by
-// the Rust config loader before strict public-schema deserialization.
+// Rust `PluginConfig`; `__zfb_source_package` on wind manifests and
+// `wind.sources` is stripped by the Rust config loader before strict
+// public-schema deserialization.
 
 export function defineConfig(config) {
   return config;
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function definePreset(sourcePackage, config) {
   let sourceStampedConfig = config;
   const wind = config.wind;
-  if (wind && wind !== false && wind.manifests) {
-    const manifests = Object.fromEntries(
-      Object.entries(wind.manifests).map(([producer, manifest]) => {
-        if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
-          // Default first so a composed inner preset's source marker wins.
-          return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
-        }
-        return [producer, manifest];
-      }),
-    );
+  if (wind && wind !== false && (wind.manifests || isPlainObject(wind.sources))) {
+    const manifests =
+      wind.manifests &&
+      Object.fromEntries(
+        Object.entries(wind.manifests).map(([producer, manifest]) => {
+          if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)) {
+            // Default first so a composed inner preset's source marker wins.
+            return [producer, { __zfb_source_package: sourcePackage, ...manifest }];
+          }
+          return [producer, manifest];
+        }),
+      );
     sourceStampedConfig = {
       ...config,
-      wind: { ...wind, manifests },
+      wind: {
+        ...wind,
+        ...(manifests && { manifests }),
+        ...(isPlainObject(wind.sources) && {
+          // Default first so a composed inner preset's source marker wins.
+          sources: { __zfb_source_package: sourcePackage, ...wind.sources },
+        }),
+      },
     };
   }
 
