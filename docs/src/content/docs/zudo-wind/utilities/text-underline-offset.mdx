@@ -1,0 +1,42 @@
+---
+title: Underline offset
+description: Set the underline offset in whole pixels or as an arbitrary nonnegative length.
+sidebar_position: 66
+generated: true
+---
+
+Set the underline offset in whole pixels or as an arbitrary nonnegative length.
+
+**Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+## underline-offset
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.underline-offset` |
+| Class pattern | `underline-offset-<suffix>` |
+| Grammar | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"text-underline-offset","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-underline-offset` (`46`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-underline-offset` |
+
+### Accepted values
+
+The catalog has no separate accepted-value records for this entry.
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-underline-offset` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `underline-offset-4` | `text-underline-offset: 4px` |

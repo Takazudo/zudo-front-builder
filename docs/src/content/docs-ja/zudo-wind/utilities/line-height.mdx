@@ -1,11 +1,11 @@
 ---
 title: 行の高さ
-description: 設定済みトークンまたは任意の CSS 値から行の高さを設定します。
+description: 設定済みトークンまたは任意の CSS 値から行の高さを設定します。none トークンを設定していない場合、leading-none は 1 になります。
 sidebar_position: 38
 generated: true
 ---
 
-設定済みトークンまたは任意の CSS 値から行の高さを設定します。
+設定済みトークンまたは任意の CSS 値から行の高さを設定します。none トークンを設定していない場合、leading-none は 1 になります。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
 
@@ -16,7 +16,7 @@ generated: true
 | カタログ識別子 | `v1.leading` |
 | クラスパターン | `leading-<suffix>` |
 | 文法 | `{"acceptedKinds":["token","arbitrary"],"arbitraryProperty":"line-height","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| 受け入れる値 | `1` |
 | トークンカテゴリ | `lineHeights` |
 | 負の値の規則 | `forbidden` |
 | 競合グループと順位 | `line-height` (`18`) |
@@ -27,7 +27,9 @@ generated: true
 
 ### 受け入れる値
 
-この項目には独立した値の定義がありません。
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `fallbackKeyword` | `"none"` | `"1"` |
 
 ### 宣言テンプレート
 
