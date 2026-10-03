@@ -150,6 +150,11 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
             source_plan,
         })
         .context("wind CSS compilation failed")?;
+    for diagnostic in &emitted.diagnostics {
+        if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+            crate::output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+        }
+    }
 
     let mut output_errors = Vec::new();
     if !emitted.companions.is_empty() {

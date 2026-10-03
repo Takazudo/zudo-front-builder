@@ -105,6 +105,7 @@ The same object is valid as the value of the `wind` property in JSON:
 | `dark` | Either `false` (the default) or an object with required `attribute` and `value` strings. |
 | `safelist` | Owner IDs mapped to arrays of complete candidates. Each owner supplies its full set. |
 | `authoredClasses` | Complete candidate spellings mapped to `true`; exact matches stay authored and suppress utility validation, diagnostics, and generated CSS. Include variants when reserving a variant-bearing candidate. |
+| `strict` | `false` by default. When `true`, an unsupported foreign utility (ZW014) at a class position is a build error instead of a warning. Lower-confidence literals are never promoted. |
 | `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
 | `sources` | Optional `exclude` globs and `packageRoots` paths, each resolved from its declaring project or preset package. |
 | `utilities` | Optional `placement`: `"after-authored"` (the default) or `"before-authored"`. It sets whether unlayered utility rules follow or precede authored global CSS; see [Utility placement](./cascade-and-reset.mdx#utility-placement). |

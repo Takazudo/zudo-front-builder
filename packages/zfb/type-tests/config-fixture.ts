@@ -48,6 +48,7 @@ export const windAcceptsFullConfiguration = defineConfig({
     dark: { attribute: "data-theme", value: "dark" },
     safelist: { app: ["sm:hover:bg-panel", "rounded"] },
     authoredClasses: { prose: true },
+    strict: true,
     manifests: { widgets: { path: "@example/widgets/wind.json" } },
     sources: { exclude: ["src/**/__tests__/**"], packageRoots: ["@example/widgets"] },
     utilities: { placement: "before-authored" },

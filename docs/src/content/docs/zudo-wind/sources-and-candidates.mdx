@@ -29,6 +29,28 @@ Both `text-muted` and `text-accent` are present as complete literals and can be 
 
 At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
 
+## Class positions and confidence
+
+A candidate's position decides how strictly it is checked. Text written directly in a `class` or `className` attribute is a class position. So is a complete string whose value provably reaches such an attribute:
+
+- a branch of a conditional, or the operand after `&&`, `||`, or `??`;
+- a static part of a template literal used as a class value, including strings inside its interpolations;
+- an argument, array element, or object key of the class helpers `clsx`, `cn`, `cx`, `classNames`, and `classnames`;
+- the initializer of a same-module `const` referenced from a class expression, through aliases too.
+
+```tsx
+const linkClass = "px-3 text-ink"; // class position: referenced below
+const label = "ring-2"; // literal: never reaches a class attribute
+
+export const Link = ({ active }) => (
+  <a class={`flex ${active ? "border-accent" : "border-muted"}`}>
+    <span class={linkClass}>{label}</span>
+  </a>
+);
+```
+
+A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. Every other complete string, such as an unrelated constant, a test title, an import path, or a URL, is a lower-confidence literal. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+
 ## Adding explicit candidates
 
 A `safelist` entry is an owner ID mapped to an array of full candidates. There is no regular-expression, brace-expansion, or interpolation syntax. Each listed entry must be a utility candidate or a supported marker, unless the exact full string appears in `authoredClasses`.
