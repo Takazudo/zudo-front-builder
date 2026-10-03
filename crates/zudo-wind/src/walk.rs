@@ -121,6 +121,16 @@ fn visit_root(
     // descending, rather than walking the entire project.
     let mut builder = WalkBuilder::new(&resolved);
     builder.require_git(false).follow_links(false).hidden(true);
+    if root.package_root {
+        // Projects and workspace packages commonly gitignore `node_modules`
+        // and `dist`, which are exactly what a package root must reach.
+        builder
+            .parents(false)
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    }
     let root_path = resolved.clone();
     let filter_exclusions = exclusions.clone();
     let filter_author_exclusions = Arc::clone(author_exclusions);

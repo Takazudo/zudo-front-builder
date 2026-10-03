@@ -150,6 +150,12 @@ pub fn compile_exclusion_pattern(pattern: &str) -> Result<globset::GlobMatcher, 
     if relative.starts_with('/') || relative.as_bytes().get(1) == Some(&b':') {
         return Err("must be relative to the declaring root".into());
     }
+    // A gitignore-style `dir/` names the directory; ancestor matching then
+    // covers everything below it.
+    let relative = relative.strip_suffix('/').unwrap_or(relative);
+    if relative.is_empty() || relative == "." {
+        return Err("must name a path below the declaring root".into());
+    }
     if relative.split('/').any(|part| part == "..") {
         return Err("must not contain `..`; it is matched only under the declaring root".into());
     }
