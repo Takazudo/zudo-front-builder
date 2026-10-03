@@ -104,7 +104,7 @@ pub use zudo_wind::{
     FontSizeToken, InterpolatedCandidate, NoteKind, Occurrence, Origin, OriginCandidate,
     OriginView, ParsedCandidate, PositionKind, PositiveRoot, ResetMode, SortTuple, SourceExclusion,
     SourceId, SourceKind, SourcePlan, SourcePositionKind, TokenResolution, UnrecognizedClass,
-    WalkDiagnostic, WindConfig,
+    WalkDiagnostic, WindConfig, PACKAGE_ROOT_TRAVERSES,
 };
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's

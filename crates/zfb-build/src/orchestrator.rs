@@ -53,6 +53,7 @@ use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{
     classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
+    PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
 };
 
 trait DynamicWatchRegistrar: Send + 'static {
@@ -63,6 +64,9 @@ trait DynamicWatchRegistrar: Send + 'static {
         desired_roots: BTreeSet<PathBuf>,
         skip_dir_names: &[String],
     ) -> Vec<PathBuf>;
+
+    /// Roots below which `names` stay live although they are skip names.
+    fn set_recursive_dir_traversals(&mut self, _roots: BTreeSet<PathBuf>, _names: &[&str]) {}
 }
 
 impl DynamicWatchRegistrar for Watcher {
@@ -76,6 +80,10 @@ impl DynamicWatchRegistrar for Watcher {
         skip_dir_names: &[String],
     ) -> Vec<PathBuf> {
         Watcher::sync_recursive_dir_watches(self, desired_roots, skip_dir_names)
+    }
+
+    fn set_recursive_dir_traversals(&mut self, roots: BTreeSet<PathBuf>, names: &[&str]) {
+        Watcher::set_recursive_dir_traversals(self, roots, names)
     }
 }
 
@@ -141,8 +149,14 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
         one_per_parent.entry(parent).or_insert(path);
     }
     let mut newly_watched = watcher.watch_additional_files(one_per_parent.into_values().collect());
-    let newly_watched_dirs = watcher
-        .sync_recursive_dir_watches(policy.css_mirror_root_paths(), css_mirror_skip_dir_names);
+    // Declared package roots share the recursive watch but keep their own
+    // `dist`/`node_modules` live, as the wind walk does.
+    let package_roots = policy.css_package_root_paths();
+    watcher.set_recursive_dir_traversals(package_roots.clone(), PACKAGE_ROOT_TRAVERSED_DIR_NAMES);
+    let mut recursive_roots = policy.css_mirror_root_paths();
+    recursive_roots.extend(package_roots);
+    let newly_watched_dirs =
+        watcher.sync_recursive_dir_watches(recursive_roots, css_mirror_skip_dir_names);
     if dev_timing_enabled() {
         for dir in newly_watched.iter().chain(newly_watched_dirs.iter()) {
             eprintln!("[zfb-timing] watch-extra registered: {}", dir.display());
@@ -863,7 +877,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     ///   re-spelled here, so the two can never drift into different
     ///   definitions of a claimed mirror region.
     fn path_under_css_mirror_root(&self, path: &Path) -> bool {
-        let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
+        self.inside_watched_css_root(self.config.policy.css_mirror_root_match(path), &[])
+            || self.inside_watched_css_root(
+                self.config.policy.css_package_root_match(path),
+                PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
+            )
+    }
+
+    /// The two containment rules above for one matched root; `traversed`
+    /// names are skip dirs this root still walks.
+    fn inside_watched_css_root(
+        &self,
+        matched: Option<(PathBuf, PathBuf)>,
+        traversed: &[&str],
+    ) -> bool {
+        let Some((root, relative)) = matched else {
             return false;
         };
         let root_swallows_the_project =
@@ -874,11 +902,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             return false;
         }
         !relative.components().any(|component| match component {
-            std::path::Component::Normal(name) => self
-                .config
-                .css_mirror_skip_dir_names
-                .iter()
-                .any(|skip| name == std::ffi::OsStr::new(skip)),
+            std::path::Component::Normal(name) => {
+                self.config
+                    .css_mirror_skip_dir_names
+                    .iter()
+                    .any(|skip| name == std::ffi::OsStr::new(skip))
+                    && !traversed
+                        .iter()
+                        .any(|kept| name == std::ffi::OsStr::new(kept))
+            }
             _ => false,
         })
     }
@@ -4228,6 +4260,62 @@ mod tests {
         assert!(
             plan.pages.is_all(),
             "this epic adds a CSS-rerun signal only — page selection must be unchanged"
+        );
+    }
+
+    /// A declared package root keeps its own `dist` and `node_modules` live
+    /// (the wind walk traverses them) while a mirror root keeps pruning them,
+    /// and both roots are registered for the recursive watch.
+    #[test]
+    fn package_root_dist_edit_reruns_css_and_is_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+        let package_root = ws.join("packages/ui");
+        std::fs::create_dir_all(package_root.join("dist")).unwrap();
+        std::fs::create_dir_all(mirror_root.join("dist")).unwrap();
+        let package_dist = package_root.join("dist/notes.mdx");
+        let mirror_dist = mirror_root.join("dist/notes.mdx");
+        std::fs::write(&package_dist, "# package\n").unwrap();
+        std::fs::write(&mirror_dist, "# mirror\n").unwrap();
+        policy
+            .raw_import_invalidation
+            .replace_css_package_roots([package_root.clone()]);
+
+        struct Recorder(Vec<(BTreeSet<PathBuf>, Vec<String>)>, BTreeSet<PathBuf>);
+        impl DynamicWatchRegistrar for Recorder {
+            fn watch_additional_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                desired_roots: BTreeSet<PathBuf>,
+                skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                self.0.push((desired_roots, skip_dir_names.to_vec()));
+                Vec::new()
+            }
+            fn set_recursive_dir_traversals(&mut self, roots: BTreeSet<PathBuf>, names: &[&str]) {
+                assert_eq!(names, PACKAGE_ROOT_TRAVERSED_DIR_NAMES);
+                self.1 = roots;
+            }
+        }
+        let mut recorder = Recorder(Vec::new(), BTreeSet::new());
+        register_dynamic_dependency_watches(&mut recorder, &policy, &css_mirror_skip_dir_names());
+        assert_eq!(
+            recorder.0[0].0,
+            BTreeSet::from([mirror_root.clone(), package_root.clone()])
+        );
+        assert_eq!(recorder.1, BTreeSet::from([package_root.clone()]));
+
+        let orch = orch_for_css_mirror_root(CountingPipeline::default(), &project, policy);
+        assert!(
+            orch.plan_for_changes([package_dist]).rerun_css,
+            "an edit under a package root's dist must rerun the wind scan"
+        );
+        assert!(
+            !orch.plan_for_changes([mirror_dist]).rerun_css,
+            "a mirror root still prunes dist"
         );
     }
 

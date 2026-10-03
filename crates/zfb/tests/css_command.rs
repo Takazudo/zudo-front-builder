@@ -882,6 +882,48 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
 }
 
 #[test]
+fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let fixture = temp.path().join("src/__tests__/a.test.tsx");
+    fs::create_dir_all(fixture.parent().expect("fixture parent")).expect("create fixture dir");
+    fs::write(
+        &fixture,
+        "export default () => <div class=\"bg-missing\" />;\n",
+    )
+    .expect("write excluded fixture");
+
+    for (flags, mode) in [
+        (&[][..], "standalone"),
+        (&["--plan", "standalone"][..], "standalone"),
+        (&["--plan", "build"][..], "build"),
+    ] {
+        let output = run_wind_audit(temp.path(), flags);
+        let stdout = process_stdout(&output);
+        let stderr = process_stderr(&output);
+        assert!(
+            output.status.success(),
+            "{mode} audit should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("wind audit plan: {mode}\n")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("  root default/src src "), "{stdout}");
+        assert!(
+            stdout.contains("  excluded src/**/__tests__/** (wind.sources.exclude from project)"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("bg-missing"),
+            "an excluded source reached the {mode} audit:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn wind_audit_clean_project_succeeds_with_complete_report() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,

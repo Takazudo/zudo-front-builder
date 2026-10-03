@@ -103,12 +103,23 @@ pub struct WindAuditArgs {
     /// Fail when diagnostics meet this severity threshold.
     #[arg(long, value_enum)]
     pub fail_on: Option<WindAuditFailOn>,
+
+    /// Source plan to audit: the `zfb css` roots, or the full build/dev
+    /// discovery including package routes, mirrors, and plugin modules.
+    #[arg(long, value_enum, default_value_t = WindAuditPlan::Standalone)]
+    pub plan: WindAuditPlan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WindAuditFailOn {
     Error,
     Warning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WindAuditPlan {
+    Standalone,
+    Build,
 }
 
 /// Arguments for `zfb css`.
@@ -1283,6 +1294,7 @@ mod tests {
                 WindCommand::Audit(audit) => {
                     assert_eq!(audit.project_root, Some(PathBuf::from("project")));
                     assert_eq!(audit.fail_on, None);
+                    assert_eq!(audit.plan, WindAuditPlan::Standalone);
                 }
                 other => panic!("expected wind audit, got {other:?}"),
             },
@@ -1304,6 +1316,26 @@ mod tests {
                 other => panic!("expected wind command, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn wind_audit_plan_parses() {
+        for (value, expected) in [
+            ("standalone", WindAuditPlan::Standalone),
+            ("build", WindAuditPlan::Build),
+        ] {
+            match Cli::try_parse_from(["zfb", "wind", "audit", "--plan", value])
+                .expect("wind audit plan parses")
+                .command
+            {
+                Command::Wind(args) => match args.command {
+                    WindCommand::Audit(audit) => assert_eq!(audit.plan, expected),
+                    other => panic!("expected wind audit, got {other:?}"),
+                },
+                other => panic!("expected wind command, got {other:?}"),
+            }
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--plan", "dev"]).is_err());
     }
 
     #[test]
