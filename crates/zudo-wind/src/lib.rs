@@ -37,7 +37,7 @@ pub use catalog::{
 };
 pub use compile::{
     compile, compile_validated, CompileInput, CompileResult, GeneratedProvenance, OriginCandidate,
-    ProvenanceKind, RuleKind, RuleMetadata, StylesheetParts,
+    ProvenanceKind, RuleKind, RuleMetadata, StylesheetParts, UtilityPlacement,
 };
 pub use config::{DarkModeConfig, ResetMode, ValidatedWindConfig, WindConfig};
 pub use decimal::{Decimal, DecimalDimension, DecimalError};
