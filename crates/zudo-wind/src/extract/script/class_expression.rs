@@ -289,6 +289,7 @@ impl Bindings {
             }
             index += 1;
         }
+        untraceable.extend(pattern_bindings(text, tokens));
         let traceable = consts
             .into_iter()
             .filter(|(name, ranges)| ranges.len() == 1 && !untraceable.contains(name))
@@ -296,6 +297,74 @@ impl Bindings {
             .collect();
         Self { traceable }
     }
+}
+
+/// Every identifier inside a parameter list, a single arrow parameter, a
+/// `catch` binding, or a destructuring declaration. Defaults and type names
+/// are included too; over-collecting only leaves a constant untraced.
+fn pattern_bindings(text: &str, tokens: &[Token]) -> BTreeSet<String> {
+    let word = |token: &Token| &text[token.start..token.end];
+    let mut bound = BTreeSet::new();
+    let mark = |from: usize, to: usize, bound: &mut BTreeSet<String>| {
+        for token in &tokens[from..to.min(tokens.len())] {
+            if token.kind == Kind::Ident {
+                bound.insert(word(token).to_owned());
+            }
+        }
+    };
+    for (index, token) in tokens.iter().enumerate() {
+        let spelling = word(token);
+        let next = tokens.get(index + 1).map(word);
+        if token.kind == Kind::Ident && next == Some("=>") {
+            bound.insert(spelling.to_owned());
+            continue;
+        }
+        if matches!(spelling, "const" | "let" | "var") && matches!(next, Some("{" | "[")) {
+            mark(index + 1, matching(text, tokens, index + 1), &mut bound);
+            continue;
+        }
+        if spelling != "(" {
+            continue;
+        }
+        let close = matching(text, tokens, index);
+        let after = tokens.get(close + 1).map(word);
+        let before = index.checked_sub(1).map(|at| &tokens[at]);
+        let before_word = before.map(word);
+        let declares = matches!(after, Some("=>"))
+            || matches!(before_word, Some("function" | "catch"))
+            || index >= 2 && word(&tokens[index - 2]) == "function"
+            // A method shorthand `name(params) {`, but not a control statement.
+            || (matches!(after, Some("{" | ":"))
+                && before.is_some_and(|token| {
+                    token.kind == Kind::Ident
+                        && !matches!(
+                            word(token),
+                            "if" | "for" | "while" | "switch" | "with" | "return"
+                        )
+                }));
+        if declares {
+            mark(index + 1, close, &mut bound);
+        }
+    }
+    bound
+}
+
+/// The index of the bracket closing the one at `open`.
+fn matching(text: &str, tokens: &[Token], open: usize) -> usize {
+    let mut depth = 0;
+    for (offset, token) in tokens[open..].iter().enumerate() {
+        match &text[token.start..token.end] {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return open + offset;
+                }
+            }
+            _ => {}
+        }
+    }
+    tokens.len()
 }
 
 /// The initializer token range of `const NAME [: Type] = <initializer>`.
@@ -407,20 +476,7 @@ impl<'a> Module<'a> {
     }
 
     fn matching(&self, open: usize) -> usize {
-        let mut depth = 0;
-        for (offset, token) in self.tokens[open..].iter().enumerate() {
-            match self.word(token) {
-                "(" | "[" | "{" => depth += 1,
-                ")" | "]" | "}" => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return open + offset;
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.tokens.len()
+        matching(self.text, &self.tokens, open)
     }
 
     /// Tokens of one expression in class context.
@@ -446,6 +502,15 @@ impl<'a> Module<'a> {
                         Some(p)
                             if matches!(p.kind, Kind::Ident | Kind::Str | Kind::Template)
                                 || matches!(self.word(&p), ")" | "]") =>
+                        {
+                            Container::Opaque
+                        }
+                        // A group whose result is compared is a condition,
+                        // not a class value: `(v || "a") === b ? ...`.
+                        _ if previous.is_some_and(|p| self.compares(&p))
+                            || tokens
+                                .get(matching(self.text, tokens, index) + 1)
+                                .is_some_and(|n| self.compares(n)) =>
                         {
                             Container::Opaque
                         }
@@ -496,6 +561,13 @@ impl<'a> Module<'a> {
                 _ => {}
             }
         }
+    }
+
+    fn compares(&self, token: &Token) -> bool {
+        matches!(
+            self.word(token),
+            "===" | "!==" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "in" | "instanceof"
+        )
     }
 
     fn value_position(&self, previous: Option<Token>, next: Option<Token>) -> bool {

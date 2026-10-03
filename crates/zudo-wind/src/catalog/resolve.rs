@@ -171,6 +171,13 @@ impl Catalog {
             .filter(|(entry, suffix)| entry_value(entry, suffix, candidate, tokens).is_ok())
             .copied()
             .collect();
+        if successful.is_empty() {
+            // A vocabulary name can share a catalog root's prefix
+            // (`inline-table` under `inline`); it is foreign, not a bad value.
+            if let Some(family) = super::migration::foreign_family(candidate) {
+                return foreign(candidate, origin, family);
+            }
+        }
         if successful.len() > 1 {
             return invalid(
                 candidate,

@@ -206,6 +206,18 @@ fn exact_authored_suppression_wins_before_parsing() {
 }
 
 const FOREIGN: &[&str] = &[
+    // These share a prefix with a catalog root (`inline`, `list`, ...), so
+    // the vocabulary must win when the root cannot resolve the suffix.
+    "inline-table",
+    "list-item",
+    "table-row",
+    "table-auto",
+    "order-first",
+    "fill-none",
+    "stroke-2",
+    "backdrop-blur",
+    "appearance-auto",
+    "will-change-scroll",
     "table",
     "contents",
     "flow-root",

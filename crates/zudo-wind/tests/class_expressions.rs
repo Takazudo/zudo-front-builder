@@ -209,3 +209,35 @@ const A = ({ on }) => <div class={`flex ${on ? "ring-2" : ""}`}><i class={ringCl
         .iter()
         .all(|diagnostic| diagnostic.code == "ZW004" && diagnostic.severity == "error"));
 }
+
+#[test]
+fn parameters_and_destructured_bindings_shadow_constants() {
+    let result = extract(
+        r#"const tone = "table-row";
+const size = "p-6";
+const width = "w-4";
+export function A({ tone }) {
+  return <td className={tone} />;
+}
+const B = (size) => <p class={size} />;
+const C = () => {
+  const { width } = props;
+  return <i class={width} />;
+};"#,
+    );
+    for text in ["table-row", "p-6", "w-4"] {
+        assert_literal(&result, text);
+    }
+}
+
+#[test]
+fn compared_groups_are_conditions_not_class_values() {
+    let result = extract(
+        r#"const A = ({ v }) => (
+  <div class={(v || "order-first") === "a" ? "flex" : "grid"} />
+);"#,
+    );
+    assert_literal(&result, "order-first");
+    assert_class(&result, "flex");
+    assert_class(&result, "grid");
+}
