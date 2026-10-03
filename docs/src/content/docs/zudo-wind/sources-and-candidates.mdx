@@ -8,6 +8,8 @@ sidebar_position: 4
 
 The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
 
+`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources` package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
+
 Build and dev scan these case-sensitive extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`. The standalone `zfb css --source` path can also process `.html` and `.mjs`; these two extensions are not automatically scanned in build or dev. There is no public extension override.
 
 ## What the extractor reads
@@ -52,7 +54,13 @@ The allowlist is exact: it does not accept prefixes, patterns, or partial names.
 
 ## Exclusions and updates
 
-Previous output is never scanned. Exclusions include `node_modules` unless the package root was explicitly declared, `dist`, `build`, `target`, `.git`, `.cache`, `.zfb-build`, `.zfb`, and configured output or cache directories. The consuming project's current output and cache paths remain excluded even if someone declares them as roots. A declared package root may traverse that package's `node_modules` and published `dist` directory, and it is walked without gitignore rules, since projects commonly ignore exactly those directories. Gitignore rules apply under every other declared root. Directory symlinks are not followed. Author exclusions from `wind.sources.exclude` remove matching files under their declaring root from every root, including explicit `--source` files; they cannot re-include anything excluded above. Package roots are declared with `wind.sources.packageRoots`; see [Configuration](./configuration.mdx#the-wind-key-source-exclusions-and-package-roots). An explicit `--source` declaration whose matches are all excluded fails with `ZW010`; one with both excluded and accepted matches warns and scans the accepted files.
+Previous output is never scanned. Three kinds of exclusion apply, with different reach:
+
+- **Output and scratch paths.** The configured `outDir` (`dist` by default), the `zfb css --output` file, and zfb's own scratch and cache directories are excluded from every root, including explicit `--source` files and package roots. Nothing can re-include them. With a different `outDir`, explicit `--source` files under a `dist` that is not the project's output are scanned.
+- **Skipped directory names.** While walking a directory root, subdirectories named `node_modules`, `dist`, `build`, `target`, `.turbo`, `.next`, `.vercel`, `.zfb-build`, or `.zfb` are skipped, as are hidden directories such as `.git` and `.cache`. This prunes the walk only: a root that is itself such a directory, or a file an explicit `--source` glob matched, is still scanned, so `--source 'build/**/*.tsx'` reads those files. A declared package root also walks its own `node_modules` and `dist`.
+- **Ignore files.** Gitignore rules apply under each root except a declared package root, which is walked without them because projects commonly ignore exactly the `node_modules` and `dist` it must reach.
+
+Directory symlinks are not followed. Author exclusions from `wind.sources.exclude` remove matching files under their declaring root from every root, including explicit `--source` files; they cannot re-include anything excluded above. Package roots are declared with `wind.sources.packageRoots`; see [Configuration](./configuration.mdx#the-wind-key-source-exclusions-and-package-roots). An explicit `--source` declaration whose matches are all excluded fails with `ZW010`; one with both excluded and accepted matches warns and scans the accepted files.
 
 The source index tracks which owners supplied each candidate. Additions, removals, renames, manifest changes, and source-plan changes replace the relevant owner's set, so removing a file or declaration removes its candidates. No removed candidate is kept as a safety net. A missing conventional root is skipped; a required root, missing manifest, or explicit CLI glob with no matches is an error.
 
