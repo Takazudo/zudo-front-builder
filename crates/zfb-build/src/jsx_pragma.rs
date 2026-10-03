@@ -19,7 +19,7 @@ use swc_core::ecma::ast::{EsVersion, JSXText};
 use swc_core::ecma::parser::{lexer::Lexer, EsSyntax, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::visit::{Visit, VisitWith};
 
-use zfb_types::{owned_runtime::JSX_IMPORT_SOURCE, path_to_posix_string};
+use zfb_types::{has_node_modules_segment, owned_runtime::JSX_IMPORT_SOURCE, path_to_posix_string};
 
 /// The effective `@jsxImportSource` pragma of one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,9 +170,10 @@ pub fn foreign_pragma_warnings<'a>(
     files
         .into_iter()
         .filter_map(|file| {
-            if !file
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            if has_node_modules_segment(file)
+                || !file
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
             {
                 return None;
             }
@@ -308,6 +309,10 @@ mod tests {
         );
         write("components/plain.tsx", "export const C = () => <p />;\n");
         write(
+            "node_modules/widget/legacy.jsx",
+            "/** @jsxImportSource preact */\nexport const E = () => <p />;\n",
+        );
+        write(
             "lib/widget.ts",
             "// @jsxImportSource preact\nexport const D = 1;\n",
         );
@@ -319,6 +324,7 @@ mod tests {
             Path::new("lib/widget.ts"),
             Path::new("components/missing.tsx"),
             Path::new("../outside/legacy.tsx"),
+            Path::new("node_modules/widget/legacy.jsx"),
         ];
         let warnings = foreign_pragma_warnings(project.path(), files);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
