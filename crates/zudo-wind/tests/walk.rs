@@ -76,7 +76,7 @@ fn author_exclusions_are_root_scoped_and_win_explicit_roots() {
 
     plan.author_exclusions = vec![
         exclude("project", base, "src/**/__tests__/**"),
-        exclude("project", base, "./worker"),
+        exclude("project", base, "./worker/"),
         exclude("preset:preset", &preset, "fixtures"),
     ];
     assert_eq!(
@@ -100,6 +100,8 @@ fn package_root_walks_its_dist_and_node_modules_but_not_mandatory_exclusions() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     let package = base.join("node_modules/@scope/ui");
+    put(base, ".gitignore", "node_modules\ndist\n");
+    put(&package, ".gitignore", "dist\n");
     put(&package, "dist/route.js", "");
     put(&package, "node_modules/dep/view.js", "");
     put(&package, "dist/.cache/old.js", "");
@@ -161,6 +163,7 @@ fn malformed_author_exclusions_are_rejected_with_context() {
         ("!src/**", "negated"),
         ("/src", "relative"),
         ("../src", ".."),
+        ("./", "below the declaring root"),
         ("src/[", "unclosed"),
     ] {
         let error = compile_exclusion_pattern(pattern).unwrap_err();

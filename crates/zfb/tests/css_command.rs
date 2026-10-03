@@ -423,6 +423,7 @@ fn css_command_wind_sources_exclude_tests_and_scan_declared_package_root() {
     let temp = tempfile::tempdir().expect("create wind sources fixture tempdir");
     fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
     fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(temp.path().join(".gitignore"), "node_modules\ndist\n").expect("write .gitignore");
     fs::write(
         temp.path().join("zfb.config.json"),
         r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"],"packageRoots":["@fixture/ui"]}}}"#,
