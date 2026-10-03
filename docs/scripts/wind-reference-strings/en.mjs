@@ -121,7 +121,8 @@ export const strings = {
     },
     "line-height": {
       title: "Line height",
-      description: "Set line height from a configured token or an arbitrary CSS value.",
+      description:
+        "Set line height from a configured token or an arbitrary CSS value; leading-none falls back to 1 when no none token is configured.",
     },
     tracking: {
       title: "Letter spacing",
@@ -233,6 +234,20 @@ export const strings = {
       title: "Miscellaneous",
       description:
         "Set vertical alignment, box sizing, object fitting, and screen-reader-only clipping.",
+    },
+    "text-decoration-color": {
+      title: "Text decoration color",
+      description:
+        "Set the text decoration color from a color token, a keyword, or an arbitrary color, with optional opacity.",
+    },
+    "text-underline-offset": {
+      title: "Underline offset",
+      description:
+        "Set the underline offset in whole pixels or as an arbitrary nonnegative length.",
+    },
+    visibility: {
+      title: "Visibility",
+      description: "Show or hide an element while it keeps its place in the layout.",
     },
   },
 };

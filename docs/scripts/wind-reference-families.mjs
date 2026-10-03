@@ -117,6 +117,7 @@ export const WIND_REFERENCE_FAMILIES = Object.freeze([
       "v1.break-all",
       "v1.break-normal",
       "v1.break-words",
+      "v1.wrap-anywhere",
       "v1.truncate",
     ]),
   }),
@@ -266,4 +267,7 @@ export const WIND_REFERENCE_FAMILIES = Object.freeze([
       "v1.sr-only",
     ]),
   }),
+  Object.freeze({ id: "text-decoration-color", entries: Object.freeze(["v1.decoration.color"]) }),
+  Object.freeze({ id: "text-underline-offset", entries: Object.freeze(["v1.underline-offset"]) }),
+  Object.freeze({ id: "visibility", entries: Object.freeze(["v1.invisible", "v1.visible"]) }),
 ]);

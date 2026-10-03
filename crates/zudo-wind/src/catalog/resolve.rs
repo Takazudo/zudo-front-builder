@@ -338,6 +338,10 @@ fn match_priority(
         .token_categories
         .iter()
         .any(|category| tokens.contains(*category, suffix))
+        || grammar
+            .fallback_keywords
+            .iter()
+            .any(|(keyword, _)| *keyword == suffix)
     {
         2
     } else if candidate.utility.slash_modifier.is_some()
@@ -419,6 +423,20 @@ fn resolve_value(
                 ));
             }
         }
+    }
+    if let Some((_, value)) = grammar
+        .fallback_keywords
+        .iter()
+        .find(|(key, _)| *key == suffix)
+    {
+        if modifier.is_some() {
+            return Err((
+                DiagnosticCode::Zw005,
+                "keyword does not accept a slash modifier".to_owned(),
+                Some("R14"),
+            ));
+        }
+        return Ok(((*value).to_owned(), ValueStatus::Verified));
     }
     if let Some(resolved) = resolve_special_integer(entry, suffix) {
         return resolved;
@@ -531,6 +549,10 @@ fn resolve_value(
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
                 value = normalize_ratio(&value);
             }
+            if entry.root == "underline-offset" && status == ValueStatus::Verified {
+                validate_length(&value)
+                    .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
+            }
             if entry.root == "rotate" && value == "none" {
                 return Err((
                     DiagnosticCode::Zw005,
@@ -579,6 +601,7 @@ fn resolve_special_integer(
         || entry.id.starts_with("v1.divide.width")
         || entry.id == "v1.outline.width"
         || entry.id == "v1.outline.offset"
+        || entry.id == "v1.underline-offset"
     {
         let canonical = match Decimal::parse(suffix) {
             Ok(value) => value.to_string(),
@@ -641,6 +664,28 @@ fn resolve_special_integer(
             }
         }
         _ => None,
+    }
+}
+
+/// Rejects the keyword and percentage forms the property also accepts, so an
+/// arbitrary underline offset stays a nonnegative length.
+// Lightning CSS has no typed `text-underline-offset`, so the property parse accepts any
+// tokens; check the value as a standalone `<length>` instead.
+fn validate_length(value: &str) -> Result<(), String> {
+    use lightningcss::traits::{Parse, TrySign};
+    use lightningcss::values::length::Length;
+    let value = value.trim();
+    // Lightning CSS also reads a bare number as px; CSS only allows a unitless zero.
+    let bare_nonzero_number = value.parse::<f64>().is_ok_and(|number| number != 0.0);
+    let nonnegative = !bare_nonzero_number
+        && Length::parse_string(value)
+            .ok()
+            .and_then(|length| length.try_sign())
+            .is_some_and(|sign| sign.is_sign_positive());
+    if nonnegative {
+        Ok(())
+    } else {
+        Err("arbitrary value must be a nonnegative length".to_owned())
     }
 }
 
