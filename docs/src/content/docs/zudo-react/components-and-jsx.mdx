@@ -123,7 +123,7 @@ In an island, raw HTML occupies one opaque region. Hydration checks its boundari
 
 For a `pre` whose rendered children begin with a newline, the renderer adds a compensating newline so HTML parsing preserves the intended first newline. A `rawHtml` payload is emitted as-is, without that compensation.
 
-Inside `script` and `style`, children are rejected. Inline raw text requires a static string in `rawHtml`; a childless external script may instead use `src`. Reactive payloads and internal comment markers are not supported. A case-insensitive closing script or style sequence for the current element is rejected. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
+Inside `script` and `style`, children are rejected. Inline raw text requires a static string in `rawHtml`; a childless external script may instead use `src`. Reactive payloads and internal comment markers are not supported. A case-insensitive closing script or style sequence for the current element is rejected. Script payloads are also rejected when HTML parsing would consume the renderer's closing `</script>` tag, such as `<!--<script>`. Harmless forms including `<!--`, `<!-- <script> -->`, and ordinary `<script>` text remain accepted. This check follows the HTML script tokenizer, including its escaped and double-escaped states; `style` uses RAWTEXT rules. Rejected payloads report `ZR_RAW_HTML` in server and client rendering. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
 
 Move text children from an inline style element into `rawHtml`:
 
