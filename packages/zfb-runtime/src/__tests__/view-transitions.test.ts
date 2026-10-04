@@ -13,7 +13,7 @@
 // deleted IIFE. They are gone — the click/submit intercept is now exercised
 // by `__tests__/client-router/router.test.ts`.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { ViewTransitions, type ViewTransitionsElement } from "../view-transitions.js";
 

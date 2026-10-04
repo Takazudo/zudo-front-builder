@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { h, signal, type Child, type Diagnostic } from "../../zudo-react/index.js";
 import { mount } from "../../zudo-react/client.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
+import type { RenderDiagnostic } from "../../zudo-react/render-html.js";
 
 const identity = { component: "DialectDiagnostics", build: "b1" };
 
@@ -298,6 +299,24 @@ function mountCase(node: Child) {
   return handle;
 }
 
+// The client's default reporter (#3378) prints one searchable line before the object.
+function defaultReporterLine(node: Child): string {
+  let child: Child = h("div");
+  function DialectDiagnostics() {
+    return child;
+  }
+  const host = document.createElement("div");
+  host.innerHTML = renderToString(islandRoot(h(DialectDiagnostics, {}), { identity }));
+  document.body.append(host);
+  child = node;
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    mount(h(DialectDiagnostics, {}), host.firstElementChild!, { identity });
+    return String(spy.mock.calls[0]?.[0]);
+  } finally {
+    spy.mockRestore();
+  }
+}
 beforeEach(() => {
   document.body.replaceChildren();
   diagnostics = [];
@@ -308,17 +327,33 @@ describe("SSR and client attribute diagnostics", () => {
     const serverNode = testCase.build();
     if (testCase.error) {
       let message = "";
+      let diagnostic: RenderDiagnostic | undefined;
       try {
         renderToString(serverNode);
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
+        diagnostic = (error as { diagnostic?: RenderDiagnostic }).diagnostic;
       }
       expect(message).toContain(`${testCase.error.code}:`);
+      // Hand-authored h() descriptions keep the structural fallback without invented coordinates.
+      expect(diagnostic).toMatchObject({ code: testCase.error.code, path: "root" });
+      expect(diagnostic).not.toHaveProperty("site");
+      if (testCase.error.code === "ZR_PROP_DIALECT")
+        expect(diagnostic?.spelling).toEqual(
+          testCase.error.clientExpected === "HTML-spelled prop"
+            ? { name: testCase.error.authored }
+            : { name: testCase.error.authored, suggestion: testCase.error.clientExpected },
+        );
       expect(message).toContain(testCase.error.serverDetail);
       expect(message).toContain(testCase.error.authored);
 
       const handle = mountCase(testCase.build());
       expect(handle).toBeNull();
+      expect(defaultReporterLine(testCase.build())).toMatch(
+        new RegExp(
+          `^\\[zudo-react\\] ${testCase.error.code} (setup|preflight) DialectDiagnostics /[^\\s]+: root (setup|validation) failed$`,
+        ),
+      );
       expect(diagnostics).toHaveLength(1);
       expect(diagnostics[0]).toMatchObject({
         code: testCase.error.code,

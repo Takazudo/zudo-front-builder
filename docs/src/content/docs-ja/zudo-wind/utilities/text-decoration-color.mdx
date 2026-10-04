@@ -1,0 +1,45 @@
+---
+title: テキスト装飾の色
+description: 色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。
+sidebar_position: 65
+generated: true
+---
+
+色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+## decoration
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.color` |
+| クラスパターン | `decoration-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","token","arbitrary"],"arbitraryProperty":"text-decoration-color","allowsFractionSlash":false,"allowsColorOpacity":true}` |
+| 受け入れる値 | `2` |
+| トークンカテゴリ | `colors` |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-color` (`45`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-color` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"transparent"` | `"transparent"` |
+| `keyword` | `"current"` | `"currentColor"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-color` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-[red]/40` | `text-decoration-color: color-mix(in oklab, red 40%, transparent)` |

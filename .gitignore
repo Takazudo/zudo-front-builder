@@ -106,3 +106,4 @@ doc-history-out/
 
 # scripts/supervisor-watch.mjs default output tree (harvested CI job logs)
 supervisor-watch-out/
+.vitest/

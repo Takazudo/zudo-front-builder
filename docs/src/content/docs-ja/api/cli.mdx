@@ -154,7 +154,7 @@ zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.
 
 ```sh
 zfb css --input <entry.css> --output <compiled.css>
-        [--project-root <dir>]
+        [--project-root <dir>] [--config <file>]
         [--source <glob> ...]
         [--no-auto-source]
         [--code-highlight-mode <class|inline>]
@@ -167,8 +167,9 @@ zfb css --input <entry.css> --output <compiled.css>
 |---|---|---|---|
 | `--input` | path | 必須 | CSS エントリポイント。相対パスは現在の作業ディレクトリを基準に解決されます。 |
 | `--output` | path | 必須 | CSS の出力先。相対パスは現在の作業ディレクトリを基準に解決されます。入力と同じファイルに解決されるパスは指定できません。 |
-| `--project-root` | path | 現在の作業ディレクトリ | `zfb.config` の読み込みと `--source` glob の解決に使うルート。このパス自体が相対パスの場合は、現在の作業ディレクトリを基準に解決されます。 |
-| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。設定済みの `outDir` 内、`--output` のパス上、zfb のスクラッチルート内にある一致ファイルは除外されます。すべての一致が除外される指定は `ZW010` エラーで失敗し、一部だけが除外される指定は `ZW010` 警告を出して残りの一致を使います。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
+| `--project-root` | path | `--config` ファイルのディレクトリ。なければ現在の作業ディレクトリ | `--config` を省略したときの `zfb.config` の探索と、`--source` glob および慣例的なソースルートの解決に使うルート。このパス自体が相対パスの場合は、現在の作業ディレクトリを基準に解決されます。 |
+| `--config` | path | なし | プロジェクトルートで `zfb.config.ts` や `zfb.config.json` を探す代わりに読み込む zfb の config ファイル（`.ts`、`.mts`、`.js`、`.mjs`、`.json`）。相対パスは現在の作業ディレクトリを基準に解決されます。[明示的な config ファイル](#明示的な-config-ファイル) を参照してください。 |
+| `--source` | glob（複数指定可） | なし | zudo-wind のクラス候補を読み取る明示的なソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。設定済みの `outDir` 内、`--output` のパス上、zfb のスクラッチルート内にある一致ファイルと、`wind.sources.exclude` のパターンに一致するファイルは除外されます。すべての一致が除外される指定は `ZW010` エラーで失敗し、一部だけが除外される指定は `ZW010` 警告を出して残りの一致を使います。指定順は保たれ、同じ指定が重複した場合は最初のものだけが使われます。単独コマンドでは build/dev の対象拡張子に加え、`.html` と `.mjs` も指定できます。 |
 | `--no-auto-source` | boolean flag | `false` | コマンドの慣例的なソースプランのルートを除外します。明示した `--source` と設定済みのシンタックスハイライトのロールクラスは引き続き有効です。 |
 | `--code-highlight-mode` | `class` または `inline` | config/default | zfb のシンタックスハイライト用フレームワーク CSS を含めるかどうかを決める際に、`codeHighlight.mode` を上書きします。`classPrefix` や `roleClasses` など、その他の `codeHighlight` 設定は引き続き config から読み込まれます。 |
 | `--no-default-highlight-styles` | boolean flag | `false` | class モード用の組み込み `zfb-hi.css` スタイルシートを出力しません。`codeHighlight.defaultStylesheet: true` よりも優先されます。 |
@@ -245,25 +246,95 @@ zfb css \
 
 ### 補足
 
-- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。慣例的な走査では `node_modules`、`dist`、`build`、`target`、`.git`、`.cache`、`.turbo`、`.next`、`.vercel`、`.zfb-build`、`.zfb` を除外します。パッケージのソースルートは `--source` で明示するか、パッケージ側で `wind.manifests` を使って候補を公開できます。プロジェクトの設定済み `outDir`、`--output` のパス、zfb のスクラッチルートは引き続き除外されます。明示した `--source` の一致がすべてこれらの出力ルート内にある場合、`zfb css` は `ZW010` エラーを報告します。一部だけが除外される場合は `ZW010` 警告を報告し、残りのファイルを走査します。たとえば、`dist` が設定済み `outDir` の場合、`--source 'dist/**/*.tsx'` はエラーを報告します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+- **ソースは設定済みのソースプランに従います。** `--source` は明示的な入力を追加します。`--no-auto-source` は慣例的なルートを除外しますが、明示的な入力と `codeHighlight.roleClasses` のクラスは維持します。慣例的なルートの走査では、`node_modules`、`dist`、`build`、`target`、`.git`、`.cache`、`.turbo`、`.next`、`.vercel`、`.zfb-build`、`.zfb` という名前のサブディレクトリをスキップします。ただし、明示的な `--source` の glob がそれらのディレクトリ内で一致したファイルは読み込みます。パッケージのソースルートは `wind.sources.packageRoots` か `--source` で宣言するか、パッケージ側で `wind.manifests` を使って候補を公開できます。すべてのルートからファイルを取り除くには `wind.sources.exclude` を使います。プロジェクトの設定済み `outDir`、`--output` のパス、zfb のスクラッチルートは引き続き除外されます。明示した `--source` の一致がすべてこれらの出力ルート内にあるか `wind.sources.exclude` のパターンに一致する場合、`zfb css` は `ZW010` エラーを報告します。一部だけが除外される場合は `ZW010` 警告を報告し、残りのファイルを走査します。たとえば、`dist` が設定済み `outDir` の場合、`--source 'dist/**/*.tsx'` はエラーを報告します。build と dev はデフォルトで `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` を走査します。単独コマンドの明示的な入力では `.html` と `.mjs` も使えます。詳しくは [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
 - **出力は決定的で、アトミックに置き換えられます。** エントリ、config、ソース一式とその指定順が同じなら、タイムスタンプ、ソースマップ、一時パスを含まない同一のバイト列が生成されます。コンパイルに成功したときだけ `--output` がアトミックに置き換えられ、失敗時には既存の出力がそのまま保たれます。
 - **グローバル CSS のみが対象です。** CSS Modules の探索や処理は行いません。パッケージ由来の `url()` によって別ファイルの出力が必要になる場合、v1 では付随アセット（companion asset）をスタイルシートの隣に書き出さず、非ゼロ終了で拒否します。
-- **config の利用範囲は限定的です。** `zfb.config.json` または `zfb.config.ts` があれば、wind のトークン、リセット、ソース、および `classPrefix` や `roleClasses` などのハイライト設定を読み込みます。CLI のハイライトフラグは対応するモードとスタイルシートの選択を上書きします。`wind: false` は wind の生成を無効にしますが、手書き CSS とハイライトの処理は続きます。キーを省略すると空の有効な wind 設定になります。
+- **config の利用範囲は限定的です。** `--config` のファイル、またはプロジェクトの `zfb.config.json` か `zfb.config.ts` があれば、wind のトークン、リセット、ソース、および `classPrefix` や `roleClasses` などのハイライト設定を読み込みます。CLI のハイライトフラグは対応するモードとスタイルシートの選択を上書きします。`wind: false` は wind の生成を無効にしますが、手書き CSS とハイライトの処理は続きます。キーを省略すると空の有効な wind 設定になります。
 - **v1 の wind 出力はミニファイされません。** 生成 CSS には [カスケードとリセット](../zudo-wind/cascade-and-reset.mdx) で説明する固定のプリンタを使います。
+
+## 明示的な config ファイル
+
+スタイルシートを配布するパッケージには自身のサイト config がありませんが、そのクラスは利用側が実行する設定のトークンを使います。`--config <file>` を使うと、パッケージをサイトに見せかけることなく、プリセットを含めて通常の config ローダーでその設定を読み込めます。
+
+```sh
+cd packages/ui
+zfb css \
+  --input src/styles/entry.css \
+  --output dist/ui.css \
+  --config ../../site/zfb.config.ts \
+  --project-root . \
+  --source 'src/**/*.tsx' \
+  --no-auto-source
+```
+
+基準となるディレクトリは 2 つあります。
+
+- **config ファイルのディレクトリ**は、config に書かれたすべての参照の基準です。相対パスの `wind.manifests`、`wind.sources.packageRoots`、`wind.sources.exclude` のパターンが該当します。プリセットが宣言する参照は引き続きそのパッケージのディレクトリを基準にし、プリセットのパッケージ自体は config ファイルのディレクトリから解決されます。
+- **プロジェクトルート**は、コマンド自身の入力の基準です。`--source` の glob、慣例的なソースルート、設定済み `outDir` の除外が該当します。`--project-root` を省略すると、config ファイルのディレクトリになります。
+
+`zfb wind explain` と `zfb wind audit` も同じ `--config` フラグを受け付けるため、1 つの config ファイルでコンパイル、監査、候補の確認を行えます。`--config` を指定しない場合、どのコマンドも従来どおりプロジェクトルートで `zfb.config.ts` または `zfb.config.json` を探します。
 
 ## `zfb wind`
 
 `zfb wind explain` は候補の解析、解決、出力を調べます。カタログ項目、トークンとの結び付き、宣言、セレクタ、条件、順序の情報を表示します。
 
+```sh
+zfb wind explain [--project-root <path>] [--config <file>] [--json] <candidate>
+zfb wind explain [--project-root <path>] [--config <file>] [--json] --stdin
+zfb wind explain -- -mt-4
+```
+
+`--config <file>` は、[明示的な config ファイル](#明示的な-config-ファイル) で説明するとおり、プロジェクトルートで探す代わりに zfb の config ファイルを読み込みます。負の値のユーティリティのようにダッシュで始まる候補は、オプションとして解釈されないよう `--` の後に書きます。`--stdin` は空でない行ごとに 1 つの完全な候補を読み、設定を 1 回だけ読み込んで、入力順に重複も残したまますべてを説明します。`--json` は標準出力に `{ "schemaVersion": 1, "command": "explain", "explanations": [...] }` だけを出力します。
+
 `zfb wind audit` は通常のクラス位置の名前、存在しない・使われていないユーティリティ、動的なクラス断片、単一のクラスリストリテラル内のプロパティ衝突を調べます。完全一致の `authoredClasses` と `group`/`peer` マーカーは除外されます。`wind: false` の場合、explain は生成が無効であることを報告し、audit は空の候補レポートを返します。
 
 ```sh
-zfb wind audit [--project-root <path>] [--fail-on error|warning]
+zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
+               [--plan standalone|build]
+               [--severity error|warning|auditInfo] [--json]
 ```
+
+`--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
+
+`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
-これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
+これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません（`--plan build` でのプラグインの `setup` を除きます）。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
+
+## `zfb wind manifest`
+
+パッケージが利用側に公開する候補マニフェストを、`zfb css` と同じソースプラン、抽出器、コンパイラで生成します。
+
+```sh
+zfb wind manifest --producer <id> --output <file>
+                  [--source <glob> ...] [--no-auto-source]
+                  [--project-root <dir>] [--config <file>] [--json]
+```
+
+`--producer` はマニフェストの producer ID（`[A-Za-z0-9][A-Za-z0-9._/-]*`）で、利用側はこのキーで `wind.manifests` にファイルを宣言します。`--output` は現在の作業ディレクトリを基準に解決されます。`--source`、`--no-auto-source`、`--project-root`、`--config` は `zfb css` と同じように動作します。[明示的な config ファイル](#明示的な-config-ファイル) を参照してください。
+
+走査したソース内の候補の出現はすべて、1 回のコンパイルで分類されます。
+
+- **解決されたユーティリティと `group`/`peer` マーカー**がマニフェストになります。バイト順に並べ、重複は除きます。
+- **`authoredClasses` に一致するクラスと通常の単語**は含めず、レポートで件数を示します。
+- 文字列リテラルの位置にあり解決できない**低信頼の単語**も含めず、件数を示します。
+- クラスの位置にある未知のトークンなどの**エラー**があるとコマンドは失敗します。何も書き込まず、既存の `--output` ファイルは内容を保つため、パッケージに必要なスタイルが黙ってマニフェストから抜け落ちることはありません。
+
+設定済みの `wind.manifests` の項目は、このコマンド自身の出力を指すものも含めて、読み込みもコピーもしません。`wind.safelist` の項目やハイライトのロールクラスも同様です。マニフェストに入るのは走査したソースの候補だけです。`--output` のパスはソースプランから除外されます。成功すると既存のマニフェストスキーマをアトミックに書き込み、ソースと config が同じなら同じバイト列になります。
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "ui",
+  "candidates": ["bg-surface", "group", "p-hsp-sm"]
+}
+```
+
+テキストのレポートは標準出力に出ます。内容はプラン、候補とマーカーの件数、除外した件数、各エラーと警告とそのソース位置です。`--json` を付けると代わりに `{ "schemaVersion": 1, "command": "manifest", "producer", "output", "written", "coverage", "planDiagnostics", "classification" }` を出力します。`classification` には候補、マーカー、除外した authored クラスと通常の単語とその由来、すべての診断が入ります。マニフェストを書き込まなかった場合は非ゼロで終了します。
+
+**マニフェストは、検証に使ったトークンの契約を前提にしています。** 分類には選択した config のトークン、ブレークポイント、ダークモードを使います。利用側は各マニフェスト項目を自身の config で厳密に検証するため、それらの候補が使うトークンとブレークポイントをすべて設定する必要があります（たとえば `bg-surface` には `colors` の `surface`）。パッケージの config で通るマニフェストでも、そのトークンを持たない利用側の config で解決できるとは限りません。必要なトークンはパッケージと一緒に文書化するか、プリセットとして配布してください。
 
 ## `zfb preview`
 

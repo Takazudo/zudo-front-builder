@@ -11,8 +11,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
+import { resolvePackageTsc } from "../../../../scripts/package-tsc.mjs";
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 import { createWasmApi } from "../src/runtime.js";
 
@@ -125,12 +126,21 @@ describe("packed browser conditional entry", () => {
   });
 
   it("resolves every public declaration from a tarball-only isolated consumer", () => {
+    // The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+    // keep supporting while contributor builds use TypeScript 7 (#3544).
+    const compilers = [
+      resolvePackageTsc(packageRoot),
+      resolvePackageTsc(packageRoot, "typescript-6.0"),
+      resolvePackageTsc(packageRoot, "typescript-5.9"),
+    ];
     const fixtureRoot = installTarballConsumer(packedPackage());
     copyPackedConsumerFixtures(fixtureRoot);
-    execFileSync(resolve(packageRoot, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], {
-      cwd: fixtureRoot,
-      stdio: "pipe",
-    });
+    for (const tsc of compilers) {
+      execFileSync(tsc.command, [...tsc.args, "-p", "tsconfig.json"], {
+        cwd: fixtureRoot,
+        stdio: "pipe",
+      });
+    }
   });
 
   it("runs all four direct Node ESM calls from the unpacked tarball", () => {

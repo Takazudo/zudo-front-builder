@@ -22,7 +22,7 @@
 //     disk). The router only needs `mountNewIslands` and
 //     `cancelPendingIslands` to be callable functions.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";

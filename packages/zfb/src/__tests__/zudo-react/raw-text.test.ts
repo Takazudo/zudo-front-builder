@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { computed, h, signal } from "../../zudo-react/index.js";
 import { renderToString } from "../../zudo-react/server.js";
 

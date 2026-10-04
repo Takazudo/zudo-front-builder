@@ -46,12 +46,20 @@ test("loads the packed core after observing the server-rendered counter", async 
 
   try {
     await expect.poll(heldModule.requested).toBe(true);
-    const importMapEntries = await page
+    const importMap = await page
       .locator('script[type="importmap"]')
-      .evaluate(
-        (script) => Object.keys(JSON.parse(script.textContent ?? "{}").imports ?? {}).length,
-      );
-    expect(importMapEntries).toBe(5);
+      .evaluate((script) => JSON.parse(script.textContent ?? "{}").imports ?? {});
+    expect(Object.keys(importMap).sort()).toEqual(
+      [
+        "@takazudo/zfb",
+        "@takazudo/zfb/zudo-react",
+        "@takazudo/zfb/zudo-react/client",
+        "@takazudo/zfb/zudo-react/jsx-dev-runtime",
+        "@takazudo/zfb/zudo-react/jsx-runtime",
+        "@takazudo/zfb/zudo-react/server",
+        "@takazudo/zfb/zudo-react/testing",
+      ].sort(),
+    );
     await expect(page.locator("#counter")).toHaveText("Count: 0");
 
     heldModule.release();

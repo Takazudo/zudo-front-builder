@@ -101,22 +101,146 @@ pub(crate) fn validate_value(category: ValueCategory, value: &str) -> Result<Val
         return Err("easing token values must contain one timing function".to_owned());
     }
 
-    let parsed = Property::parse_string(
-        PropertyId::from(category.property_name()),
-        value,
-        ParserOptions::default(),
-    )
-    .map_err(|_| format!("value is not valid for {}", category.property_name()))?;
+    property_value_status(category.property_name(), value, has_var)
+}
 
-    match parsed {
-        Property::Unparsed(_) if has_var => Ok(ValueStatus::CategoryUnverified),
-        Property::Unparsed(_) => Err(format!(
-            "value is not valid for {}",
-            category.property_name()
-        )),
-        _ if has_var => Ok(ValueStatus::CategoryUnverified),
-        _ => Ok(ValueStatus::Verified),
+/// Values tried in place of each `var()` when checking that the rest of a
+/// variable-dependent value fits the property. Every `var()` gets its own
+/// stand-in; some combination must type-check. No stand-in is ever emitted.
+const VARIABLE_STAND_INS: &[&str] = &[
+    "red",
+    "1px",
+    "0",
+    "1",
+    "none",
+    "auto",
+    "1fr",
+    "0deg",
+    "150ms",
+    "ease",
+    "sans-serif",
+    "400",
+    "all",
+    "0 0 red",
+    // Color channel lists, as in `hsl(var(--primary))` or `rgb(var(--rgb) / 0.5)`.
+    "0 0% 0%",
+    "0 0 0",
+];
+
+/// Beyond this many `var()`s the stand-in combinations grow too large, so a
+/// value that parses is accepted as category-unverified.
+const MAX_COMBINED_VARIABLES: u32 = 3;
+
+/// Parse the raw value for `property`. A `var()`-dependent value cannot be
+/// typed until computed-value time, so it is category-unverified once its
+/// raw form parses and its non-variable parts fit the property for some
+/// variable value; garbage around a `var()` is still rejected.
+pub(crate) fn property_value_status(
+    property: &str,
+    value: &str,
+    has_var: bool,
+) -> Result<ValueStatus, String> {
+    let invalid = || format!("value is not valid for {property}");
+    let typed = |candidate: &str| {
+        Property::parse_string(
+            PropertyId::from(property),
+            candidate,
+            ParserOptions::default(),
+        )
+        .is_ok_and(|parsed| !matches!(parsed, Property::Unparsed(_)))
+    };
+    if !has_var {
+        return if typed(value) {
+            Ok(ValueStatus::Verified)
+        } else {
+            Err(invalid())
+        };
     }
+    Property::parse_string(PropertyId::from(property), value, ParserOptions::default())
+        .map_err(|_| invalid())?;
+    let count = variable_count(value).ok_or_else(invalid)?;
+    let fits = count > MAX_COMBINED_VARIABLES || {
+        let combinations = VARIABLE_STAND_INS.len().pow(count);
+        (0..combinations).any(|combination| {
+            let mut index = combination;
+            let stand_ins: Vec<&str> = (0..count)
+                .map(|_| {
+                    let stand_in = VARIABLE_STAND_INS[index % VARIABLE_STAND_INS.len()];
+                    index /= VARIABLE_STAND_INS.len();
+                    stand_in
+                })
+                .collect();
+            replace_variables(value, &stand_ins).is_some_and(|value| typed(&value))
+        })
+    };
+    if fits {
+        Ok(ValueStatus::CategoryUnverified)
+    } else {
+        Err(invalid())
+    }
+}
+
+fn variable_count(value: &str) -> Option<u32> {
+    let lower = value.to_ascii_lowercase();
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(offset) = lower[search..].find("var(") {
+        let start = search + offset;
+        search = find_matching_paren(value, start + 3, value.len()).ok()? + 1;
+        count += 1;
+    }
+    Some(count)
+}
+
+/// Replace the n-th outermost `var()` with `stand_ins[n]`.
+fn replace_variables(value: &str, stand_ins: &[&str]) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    let mut result = String::new();
+    let mut copied = 0;
+    let mut search = 0;
+    let mut stand_ins = stand_ins.iter();
+    while let Some(offset) = lower[search..].find("var(") {
+        let start = search + offset;
+        let close = find_matching_paren(value, start + 3, value.len()).ok()?;
+        result.push_str(&value[copied..start]);
+        result.push_str(stand_ins.next()?);
+        copied = close + 1;
+        search = close + 1;
+    }
+    result.push_str(&value[copied..]);
+    Some(result)
+}
+
+/// Check every `var()` reference in a value: balanced arguments and a
+/// custom property name first. Returns whether the value references any
+/// variable. Arbitrary values may name zudo-wind's own `--zw-` variables;
+/// only token values reject that namespace.
+pub(crate) fn check_variable_references(value: &str) -> Result<bool, String> {
+    let lower = value.to_ascii_lowercase();
+    let bytes = value.as_bytes();
+    let mut found = false;
+    let mut search = 0;
+    while let Some(offset) = lower[search..].find("var(") {
+        let start = search + offset;
+        search = start + 4;
+        let preceded_by_ident = start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || bytes[start - 1] == b'-'
+                || bytes[start - 1] == b'_');
+        if preceded_by_ident {
+            continue;
+        }
+        found = true;
+        let open = start + 3;
+        let close = find_matching_paren(value, open, value.len())
+            .map_err(|_| "var() is not balanced".to_owned())?;
+        let arguments = value[open + 1..close].trim_start();
+        parse_identifier(arguments, 0, arguments.len())
+            .ok()
+            .filter(|(name, _)| name.starts_with("--") && name.len() > 2)
+            .ok_or_else(|| "var() must name a custom property such as --name".to_owned())?;
+    }
+    Ok(found)
 }
 
 #[derive(Clone, Debug)]
@@ -435,6 +559,61 @@ mod tests {
             validate_value(ValueCategory::FontFamily, "var(--project-font), sans-serif"),
             Ok(ValueStatus::CategoryUnverified)
         );
+    }
+
+    #[test]
+    fn variable_values_must_fit_the_property_around_the_variable() {
+        assert_eq!(
+            validate_value(
+                ValueCategory::Shadow,
+                "0 1px 3px color-mix(in srgb, var(--color-fg) 8%, transparent)"
+            ),
+            Ok(ValueStatus::CategoryUnverified)
+        );
+        assert_eq!(
+            validate_value(ValueCategory::Shadow, "var(--shadow)"),
+            Ok(ValueStatus::CategoryUnverified)
+        );
+        for (category, value) in [
+            (ValueCategory::Size, "red var(--x)"),
+            (ValueCategory::Size, "var(--x) garbage"),
+            (ValueCategory::Color, "var(--x) 1px 2px 3px 4px"),
+        ] {
+            assert!(
+                validate_value(category, value).is_err(),
+                "{category:?}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_list_and_mixed_type_variables_stay_accepted() {
+        for (category, value) in [
+            (ValueCategory::Color, "hsl(var(--primary))"),
+            (ValueCategory::Color, "rgb(var(--rgb) / 0.5)"),
+            (ValueCategory::Shadow, "0 0 0 var(--w) var(--c)"),
+            (
+                ValueCategory::Shadow,
+                "var(--a) var(--b) var(--c) var(--d) var(--e)",
+            ),
+        ] {
+            assert_eq!(
+                validate_value(category, value),
+                Ok(ValueStatus::CategoryUnverified),
+                "{category:?}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn variable_references_must_be_balanced_custom_properties() {
+        use super::check_variable_references;
+        assert_eq!(check_variable_references("1px solid red"), Ok(false));
+        assert_eq!(check_variable_references("var(--a, var(--b))"), Ok(true));
+        assert_eq!(check_variable_references("somevar(1)"), Ok(false));
+        for value in ["var(x)", "var()", "var(--)", "var(--a", "calc(var(1px))"] {
+            assert!(check_variable_references(value).is_err(), "{value}");
+        }
     }
 
     #[test]

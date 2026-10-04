@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { For, Show, computed, flush, getScope, h, signal } from "../../zudo-react/index.js";
 import type { Diagnostic } from "../../zudo-react/index.js";
 import { hydrate } from "../../zudo-react/client.js";

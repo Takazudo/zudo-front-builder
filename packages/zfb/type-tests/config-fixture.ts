@@ -48,7 +48,10 @@ export const windAcceptsFullConfiguration = defineConfig({
     dark: { attribute: "data-theme", value: "dark" },
     safelist: { app: ["sm:hover:bg-panel", "rounded"] },
     authoredClasses: { prose: true },
+    strict: true,
     manifests: { widgets: { path: "@example/widgets/wind.json" } },
+    sources: { exclude: ["src/**/__tests__/**"], packageRoots: ["@example/widgets"] },
+    utilities: { placement: "before-authored" },
   },
 });
 
@@ -67,4 +70,9 @@ export const windRejectsTrueShorthand = defineConfig({
 export const tailwindKeyIsRejected = defineConfig({
   // @ts-expect-error Tailwind configuration was removed in zfb 3.
   tailwind: { enabled: false },
+});
+
+export const windRejectsUnknownPlacement = defineConfig({
+  // @ts-expect-error placement is after-authored or before-authored.
+  wind: { utilities: { placement: "middle" } },
 });

@@ -50,11 +50,37 @@ The hidden attribute accepts booleans only, not until-found, and inert is boolea
 
 An `ol` accepts a numeric or string `start` value and a boolean `reversed` attribute.
 
-SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, and foreignObject. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
+The finite HTML vocabulary includes standard head and metadata attributes such as `meta[property]`, `link[as]`, `integrity`, and external `script[defer]`. Write Open Graph tags, preload links, and deferred scripts as ordinary JSX; these do not need a `rawHtml` wrapper. Attribute values keep their HTML categories: true booleans use presence, enumerated values such as `spellcheck` accept strings or booleans, `download` is overloaded, and `ol[start]` is numeric. Unknown standard names remain errors, and custom elements keep their string-only attribute contract.
+
+SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, foreignObject, pattern, filter, marker, and image. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
 
 ## Styles and events
 
-The style prop accepts a CSS string or a flat object with CSS-spelled keys. A numeric value is emitted as written; the runtime does not add px. Null and undefined entries are skipped, and object entries keep their insertion order. On update, a previously owned style property missing from the next object is removed. CamelCase keys, nested objects, arrays, and reactive values inside the style object are rejected. The entire style prop may be reactive.
+The style prop accepts a CSS string or a plain object with supported CSS-spelled keys. `CSSProperties` is exported from `@takazudo/zfb/zudo-react`. Nonzero lengths must include their units as strings; the runtime never adds `px`. Numeric zero remains valid for lengths, unitless properties such as `opacity` and `line-height` accept numbers, and custom properties accept finite numbers or strings. The runtime applies the same checks during SSR, hydration, mount, and updates.
+
+Use a plain object literal for object styles. Arrays, class instances, null-prototype records, nested objects, camelCase keys, and reactive values inside the object are rejected. Null and undefined entries are skipped, entries keep their insertion order, and an update removes properties omitted from the next object. The whole style prop may be reactive.
+
+```tsx
+<div
+  style={{
+    left: "1rem",
+    top: 0,
+    width: "100%",
+    "max-height": "20rem",
+    opacity: 0.5,
+    "--scale": 2,
+    "-webkit-mask-image": "linear-gradient(black, transparent)",
+  }}
+/>
+
+<iframe title="Preview" style={{ width: "100%", height: "480px" }} />
+```
+
+A CSS string is an escape hatch for valid CSS syntax that does not fit the checked object form. Its contents are emitted as authored and are not checked for supported property names or values:
+
+```tsx
+<div style="left: calc(1rem + var(--offset));" />
+```
 
 Function listeners use a native, case-sensitive event name after on:, with an optional final :capture suffix:
 
@@ -67,6 +93,16 @@ For a known `on:<name>` prop, the handler receives that name's native event type
 Lowercase string event attributes such as onload are a separate, static inline-handler form. The runtime escapes them as ordinary HTML attributes and never evaluates them. Do not supply both an inline attribute and a function listener for the same event. The React-style onClick spelling and function-valued onclick are rejected.
 
 Refs are simple objects with a current field, initially null. The runtime assigns all refs before activation callbacks. There are no callback refs or ref factories.
+
+## Iframe shells
+
+Inside an island, zudo-react owns a childless `<iframe>` element, its supported attributes, refs, and native listeners. The browser owns the foreign document loaded through `src` or `srcdoc`; zudo-react does not reconcile that document. Keep the shell childless: JSX children and `rawHtml` are rejected, and hydration fails if nonempty fallback DOM appears in the iframe element. An unchanged hydrate adopts the existing iframe and document. Updating `src` or `srcdoc` asks the browser to navigate that document.
+
+`srcdoc` is trusted application input. zudo-react escapes it for the outer HTML attribute but does not sanitize the document. Keep it under application control, and choose `sandbox` and `allow` for the embedded content.
+
+~~~tsx
+<iframe title="HTML preview" srcdoc={trustedDocument} sandbox="" allow="fullscreen" />
+~~~
 
 ## Custom elements
 

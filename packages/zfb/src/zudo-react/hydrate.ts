@@ -14,12 +14,14 @@ import {
 import type { ReadonlySignal } from "./reactive-types.js";
 import { subscribe } from "./reactive.js";
 import { batch } from "./scheduler.js";
+import { rawHtmlReserved } from "./raw-html.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
 import {
-  booleanAttrs,
+  attributeError,
   commonAttrs,
   dialectSuggestion,
+  emptyIframeChildren,
   formProps,
   htmlAttrs,
   htmlTags,
@@ -32,7 +34,7 @@ import {
 
 const HTML = "http://www.w3.org/1999/xhtml";
 const SVG = "http://www.w3.org/2000/svg";
-const sensitive = new Set("template noscript xmp iframe noembed noframes plaintext".split(" "));
+const sensitive = new Set("template noscript xmp noembed noframes plaintext".split(" "));
 const tableChildren: Record<string, Set<string>> = {
   table: new Set("caption colgroup thead tbody tfoot".split(" ")),
   thead: new Set(["tr"]),
@@ -233,7 +235,7 @@ function scalar(value: unknown, path: string): string {
 function validateRawHtml(value: unknown, tag: string, path: string): asserts value is string {
   if (
     typeof value !== "string" ||
-    /<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(value) ||
+    rawHtmlReserved(value, tag) ||
     (tag === "script" && /<\/script/i.test(value)) ||
     (tag === "style" && /<\/style/i.test(value))
   )
@@ -282,6 +284,12 @@ function element(
   const childNamespace = tag === "foreignObject" ? HTML : ownNamespace;
   const element = context.document.createElementNS(ownNamespace, tag);
   const props = desc.props;
+  if (tag === "iframe") {
+    if (Object.hasOwn(props, "rawHtml"))
+      fail("ZR_RAW_HTML", "preflight", "iframe without rawHtml", "rawHtml", path);
+    if (!emptyIframeChildren(props.children))
+      fail("ZR_UNSUPPORTED_POSITION", "preflight", "empty iframe children", "children", path);
+  }
   if (tag === "select" && read(props.multiple) === true)
     fail("ZR_MODEL_UNSUPPORTED", "preflight", "single select", "multiple", path);
   if (voidTags.has(tag) && ("children" in props || "rawHtml" in props))
@@ -402,29 +410,10 @@ function element(
       fail("ZR_ATTRIBUTE", "setup", "custom element string attribute", name, path);
     if (/^on[a-z]/.test(name) && typeof initial === "function")
       fail("ZR_PROP_DIALECT", "setup", "on:event", name, path);
+    const initialError = attributeError(name, initial, custom);
+    if (initialError) fail("ZR_ATTRIBUTE", "setup", initialError, name, path);
     if (initial != null) {
-      if (
-        name === "start" &&
-        typeof initial !== "string" &&
-        !(typeof initial === "number" && Number.isFinite(initial))
-      )
-        fail("ZR_ATTRIBUTE", "setup", "string or finite number", typeof initial, path);
-      else if (
-        ownNamespace === SVG &&
-        (name === "width" || name === "height") &&
-        typeof initial !== "string" &&
-        !(typeof initial === "number" && Number.isFinite(initial))
-      )
-        fail("ZR_ATTRIBUTE", "setup", "SVG dimension string or number", typeof initial, path);
       if (name === "style") styleText(initial);
-      else if (booleanAttrs.has(name) && typeof initial !== "boolean")
-        fail("ZR_ATTRIBUTE", "setup", "boolean", typeof initial, path);
-      else if (
-        typeof initial !== "string" &&
-        typeof initial !== "number" &&
-        typeof initial !== "boolean"
-      )
-        fail("ZR_ATTRIBUTE", "setup", "scalar", typeof initial, path);
       setAttribute(element, name, initial);
     }
     if (isReactive(original)) {
@@ -438,23 +427,8 @@ function element(
           context.container,
           path,
           (value) => {
-            if (
-              name === "start" &&
-              value != null &&
-              typeof value !== "string" &&
-              !(typeof value === "number" && Number.isFinite(value))
-            )
-              throw new TypeError("ZR_ATTRIBUTE: start requires a string or finite number");
-            if (
-              ownNamespace === SVG &&
-              (name === "width" || name === "height") &&
-              value != null &&
-              typeof value !== "string" &&
-              !(typeof value === "number" && Number.isFinite(value))
-            )
-              throw new TypeError(
-                `ZR_ATTRIBUTE: SVG dimension ${name} requires a string or number`,
-              );
+            const error = attributeError(name, value, custom);
+            if (error) throw new TypeError(`ZR_ATTRIBUTE: ${name} ${error}`);
             setAttribute(node, name, value);
           },
           initial,
@@ -507,6 +481,8 @@ function element(
         cleanups.push(() => subscription.dispose());
       });
     }
+  } else if (tag === "iframe") {
+    // The iframe document and fallback content are outside owned reconciliation.
   } else if (
     tag === "textarea" &&
     (props.modelValue !== undefined || props.defaultValue !== undefined)
@@ -1088,7 +1064,7 @@ function execute(
       );
     scope = createScope({
       component: options.identity.component,
-      ...(options.report ? { reporter: options.report } : {}),
+      reporter: (value) => report(options, value),
       protocol,
       build: options.identity.build,
       path: rootPath(container),

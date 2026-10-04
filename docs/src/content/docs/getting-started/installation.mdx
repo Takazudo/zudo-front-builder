@@ -31,6 +31,19 @@ You will need:
 | macOS | arm64 (Apple Silicon) | `@takazudo/zfb-darwin-arm64` |
 | Windows | x64 | `@takazudo/zfb-win32-x64-msvc` |
 
+<Note title="Linux needs glibc 2.34 or newer">
+
+The Linux binaries are linked against glibc 2.34, so they run on Amazon Linux
+2023 (the default AWS Amplify Hosting and CodeBuild image), RHEL / Rocky /
+AlmaLinux 9, Ubuntu 22.04 or newer, and Debian 12 or newer. Older distros
+(Ubuntu 20.04, Debian 11) fail at startup with `` version `GLIBC_2.34' not found ``.
+Releases up to and including 3.1.0 required glibc 2.35, which excluded Amazon
+Linux 2023 — see
+[Troubleshooting](../guides/troubleshooting.mdx#glibc-not-found-on-linux) if you
+are pinned to one of those versions.
+
+</Note>
+
 <Note title="musl/Alpine Linux is not supported yet">
 
 No `@takazudo/zfb-linux-*-musl` package exists. On Alpine (or another

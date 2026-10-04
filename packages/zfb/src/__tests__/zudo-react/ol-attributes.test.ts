@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { h } from "../../zudo-react/index.js";
 import { hydrate, mount } from "../../zudo-react/client.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";

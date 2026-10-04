@@ -80,35 +80,122 @@ pub enum WindCommand {
     Explain(WindExplainArgs),
     /// Audit candidate sources and utility conflicts.
     Audit(WindAuditArgs),
+    /// Generate a package candidate manifest from its sources.
+    Manifest(WindManifestArgs),
 }
 
 /// Arguments for `zfb wind explain`.
 #[derive(Debug, Args)]
 pub struct WindExplainArgs {
-    /// Candidate class to explain.
-    pub candidate: String,
+    /// Candidate class to explain. Put `--` first for a candidate that
+    /// starts with a dash: `zfb wind explain -- -mt-4`.
+    #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+    pub candidate: Option<String>,
 
-    /// Project root used for config loading. Defaults to the current directory.
+    /// Read candidates from stdin, one per nonempty line, in order.
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Print a versioned JSON document instead of text.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+/// Arguments for `zfb wind manifest`.
+#[derive(Debug, Args)]
+pub struct WindManifestArgs {
+    /// Producer id written into the manifest; consumers declare the file
+    /// under this key in `wind.manifests`.
+    #[arg(long)]
+    pub producer: String,
+
+    /// Manifest file to write. Relative paths are resolved from the current directory.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
+    #[arg(long)]
+    pub source: Vec<String>,
+
+    /// Omit the five default content roots; explicit --source values remain active.
+    #[arg(long)]
+    pub no_auto_source: bool,
+
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Print a versioned JSON report instead of text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `zfb wind audit`.
 #[derive(Debug, Args)]
 pub struct WindAuditArgs {
-    /// Project root used for config loading. Defaults to the current directory.
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Fail when diagnostics meet this severity threshold.
     #[arg(long, value_enum)]
     pub fail_on: Option<WindAuditFailOn>,
+
+    /// Source plan to audit: the `zfb css` roots, or the full build/dev
+    /// discovery including package routes, mirrors, and plugin modules.
+    #[arg(long, value_enum, default_value_t = WindAuditPlan::Standalone)]
+    pub plan: WindAuditPlan,
+
+    /// Print a versioned JSON document on stdout instead of text.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Show diagnostics at or above this severity. Display only: the exit
+    /// status still follows the complete report and --fail-on.
+    #[arg(long, value_enum)]
+    pub severity: Option<WindAuditSeverity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum WindAuditSeverity {
+    #[value(name = "auditInfo")]
+    AuditInfo,
+    Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WindAuditFailOn {
     Error,
     Warning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WindAuditPlan {
+    Standalone,
+    Build,
 }
 
 /// Arguments for `zfb css`.
@@ -125,10 +212,15 @@ pub struct CssArgs {
     #[arg(long, required = true)]
     pub output: PathBuf,
 
-    /// Project root used for config loading and source-glob resolution.
-    /// Defaults to the current directory.
+    /// Project root used for config discovery and source-glob resolution.
+    /// Defaults to the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
     #[arg(long)]
@@ -1267,7 +1359,7 @@ mod tests {
         {
             Command::Wind(args) => match args.command {
                 WindCommand::Explain(explain) => {
-                    assert_eq!(explain.candidate, "sm:hover:bg-panel");
+                    assert_eq!(explain.candidate.as_deref(), Some("sm:hover:bg-panel"));
                     assert_eq!(explain.project_root, Some(PathBuf::from("project")));
                 }
                 other => panic!("expected wind explain, got {other:?}"),
@@ -1283,6 +1375,7 @@ mod tests {
                 WindCommand::Audit(audit) => {
                     assert_eq!(audit.project_root, Some(PathBuf::from("project")));
                     assert_eq!(audit.fail_on, None);
+                    assert_eq!(audit.plan, WindAuditPlan::Standalone);
                 }
                 other => panic!("expected wind audit, got {other:?}"),
             },
@@ -1304,6 +1397,105 @@ mod tests {
                 other => panic!("expected wind command, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn wind_audit_plan_parses() {
+        for (value, expected) in [
+            ("standalone", WindAuditPlan::Standalone),
+            ("build", WindAuditPlan::Build),
+        ] {
+            match Cli::try_parse_from(["zfb", "wind", "audit", "--plan", value])
+                .expect("wind audit plan parses")
+                .command
+            {
+                Command::Wind(args) => match args.command {
+                    WindCommand::Audit(audit) => assert_eq!(audit.plan, expected),
+                    other => panic!("expected wind audit, got {other:?}"),
+                },
+                other => panic!("expected wind command, got {other:?}"),
+            }
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--plan", "dev"]).is_err());
+    }
+
+    #[test]
+    fn wind_explain_stdin_json_and_leading_dash_candidates_parse() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args)
+            .expect("wind explain parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Explain(explain) => explain,
+                other => panic!("expected wind explain, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        };
+        let batch = parse(&["zfb", "wind", "explain", "--stdin", "--json"]);
+        assert!(batch.stdin && batch.json && batch.candidate.is_none());
+        let dashed = parse(&["zfb", "wind", "explain", "--", "-mt-hsp-md"]);
+        assert_eq!(dashed.candidate.as_deref(), Some("-mt-hsp-md"));
+        assert!(Cli::try_parse_from(["zfb", "wind", "explain", "p-4", "--stdin"]).is_err());
+        assert!(Cli::try_parse_from(["zfb", "wind", "explain", "-mt-hsp-md"]).is_err());
+    }
+
+    #[test]
+    fn wind_audit_json_and_severity_parse() {
+        match Cli::try_parse_from(["zfb", "wind", "audit", "--json", "--severity", "auditInfo"])
+            .expect("wind audit parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Audit(audit) => {
+                    assert!(audit.json);
+                    assert_eq!(audit.severity, Some(WindAuditSeverity::AuditInfo));
+                }
+                other => panic!("expected wind audit, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--severity", "info"]).is_err());
+    }
+
+    #[test]
+    fn wind_manifest_parses_repeatable_sources_and_requires_producer_and_output() {
+        match Cli::try_parse_from([
+            "zfb",
+            "wind",
+            "manifest",
+            "--producer",
+            "ui",
+            "--output",
+            "dist/wind.json",
+            "--source",
+            "src/**/*.tsx",
+            "--source",
+            "lib",
+            "--no-auto-source",
+            "--config",
+            "../site/zfb.config.ts",
+            "--json",
+        ])
+        .expect("wind manifest parses")
+        .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Manifest(manifest) => {
+                    assert_eq!(manifest.producer, "ui");
+                    assert_eq!(manifest.output, PathBuf::from("dist/wind.json"));
+                    assert_eq!(manifest.source, ["src/**/*.tsx", "lib"]);
+                    assert!(manifest.no_auto_source && manifest.json);
+                    assert_eq!(
+                        manifest.config,
+                        Some(PathBuf::from("../site/zfb.config.ts"))
+                    );
+                }
+                other => panic!("expected wind manifest, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "manifest", "--output", "w.json"]).is_err());
+        assert!(Cli::try_parse_from(["zfb", "wind", "manifest", "--producer", "ui"]).is_err());
     }
 
     #[test]

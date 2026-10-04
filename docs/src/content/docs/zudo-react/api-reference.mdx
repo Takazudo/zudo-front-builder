@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: The frozen zudo-react v1 exports grouped by their five package entry points.
+description: The frozen zudo-react v1 exports grouped by their six package entry points.
 sidebar_position: 9
 ---
 
@@ -396,7 +396,7 @@ islandRoot creates the explicit zfb-facing island wrapper description; see [Serv
 export function serializeProps(props: Record<string, unknown>): string;
 ~~~
 
-serializeProps validates strict JSON data and returns JSON text for the wrapper attribute; see [Server rendering](./server-rendering.mdx).
+serializeProps validates JSON transport data and returns JSON text for the wrapper attribute. Own enumerable string data properties on records are omitted recursively when their value is undefined; explicit `null` stays present, while undefined array entries and holes remain invalid. See [Server rendering](./server-rendering.mdx).
 
 ## Client: @takazudo/zfb/zudo-react/client
 
@@ -452,6 +452,33 @@ export function parseProps(json: string): Record<string, unknown>;
 
 parseProps parses and validates the strict island props record, throwing a named transport error for invalid input; see [Hydration](./hydration.mdx).
 
+## Testing: @takazudo/zfb/zudo-react/testing
+
+The testing entry renders an island through the real server renderer, parses it with a caller-provided document, and exposes activation, diagnostics, flush, and disposal helpers. It is intended for test environments and is separate from the DOM-free server entry.
+
+### createIslandTest
+
+~~~ts
+export function createIslandTest<P extends Record<string, unknown>>(
+  component: Component<P>,
+  props: P,
+  options: { document: Document; identity?: IslandIdentity },
+): IslandTest;
+~~~
+
+The returned `IslandTest` provides serialized `html`, the parsed `host`, mutable `identity`, a diagnostics array, `hydrate()`, `mount()`, `flush()`, and idempotent `dispose()`. See [Testing](./testing.mdx).
+
+### withIslandTestContext
+
+~~~ts
+export function withIslandTestContext<T>(
+  options: { components: Readonly<Record<string, Component<any>>> | readonly Component<any>[]; build?: string },
+  callback: () => T,
+): T;
+~~~
+
+withIslandTestContext supplies actual component names to SDK `Island` rendering for a synchronous callback, then restores the previous `globalThis.__zfb` metadata. It rejects async callbacks. See [Testing](./testing.mdx).
+
 ## See also
 
 - [Overview](./overview.mdx)
@@ -459,3 +486,4 @@ parseProps parses and validates the strict island props record, throwing a named
 - [Reactivity](./reactivity.mdx)
 - [Server rendering](./server-rendering.mdx)
 - [Hydration](./hydration.mdx)
+- [Testing](./testing.mdx)

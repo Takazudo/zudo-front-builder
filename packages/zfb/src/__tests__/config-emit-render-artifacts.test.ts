@@ -1,7 +1,7 @@
 // Smoke tests for the `emitRenderArtifacts` config type and `defineConfig`
 // identity round-trip (Render Artifact Export epic #2421, sub-issue #2422).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { defineConfig } from "../config.js";
 import type { ZfbConfig } from "../config.js";
 

@@ -1,38 +1,93 @@
 //! Candidate inspection commands for zudo-wind.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
-use crate::cli::{WindArgs, WindAuditFailOn, WindCommand, WindExplainArgs};
+use serde::Serialize;
+
+use crate::cli::{
+    WindArgs, WindAuditArgs, WindAuditFailOn, WindAuditPlan, WindAuditSeverity, WindCommand,
+    WindExplainArgs, WindManifestArgs,
+};
 use crate::commands::css_support::{
-    build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
+    build_standalone_wind_source_plan, command_project_root, configured_wind,
+    index_standalone_wind_sources, load_command_config,
 };
 
 /// Dispatch the zudo-wind command family.
 pub async fn run(args: &WindArgs) -> Result<()> {
     match &args.command {
         WindCommand::Explain(args) => explain(args).await,
-        WindCommand::Audit(args) => audit(args.project_root.as_deref(), args.fail_on).await,
+        WindCommand::Audit(args) => audit(args).await,
+        WindCommand::Manifest(args) => manifest(args).await,
     }
 }
 
+/// Version of the `--json` documents printed by `zfb wind explain` and audit.
+const WIND_JSON_SCHEMA_VERSION: u32 = 1;
+
 async fn explain(args: &WindExplainArgs) -> Result<()> {
-    let project_root = project_root(args.project_root.as_deref())?;
-    let config = crate::config::load_from_dir(&project_root)
+    let candidates = match &args.candidate {
+        Some(candidate) => vec![candidate.clone()],
+        None => stdin_candidates(
+            &std::io::read_to_string(std::io::stdin()).context("failed to read stdin")?,
+        ),
+    };
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind explain")?;
     let (generation_enabled, wind_config) = configured_wind(&config);
-    let explanation =
-        zfb_css::explain_with_generation(&args.candidate, &wind_config, generation_enabled);
-    print!("{}", zfb_css::render_explanation(&explanation));
+    let explanations: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            zfb_css::explain_with_generation(candidate, &wind_config, generation_enabled)
+        })
+        .collect();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": WIND_JSON_SCHEMA_VERSION,
+                "command": "explain",
+                "explanations": explanations,
+            }))?
+        );
+    } else {
+        let rendered: Vec<_> = explanations
+            .iter()
+            .map(zfb_css::render_explanation)
+            .collect();
+        print!("{}", rendered.join("\n"));
+    }
     Ok(())
 }
 
-async fn audit(project_root_arg: Option<&Path>, fail_on: Option<WindAuditFailOn>) -> Result<()> {
-    let project_root = project_root(project_root_arg)?;
-    let project_config = crate::config::load_from_dir(&project_root)
+/// One complete candidate per nonempty line, in order, duplicates kept.
+fn stdin_candidates(input: &str) -> Vec<String> {
+    input
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn audit(args: &WindAuditArgs) -> Result<()> {
+    let fail_on = args.fail_on;
+    let plan_mode = args.plan;
+    let output = AuditOutput {
+        json: args.json,
+        severity: args.severity,
+    };
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let project_config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind audit")?;
     let (generation_enabled, mut wind_config) = configured_wind(&project_config);
@@ -44,34 +99,458 @@ async fn audit(project_root_arg: Option<&Path>, fail_on: Option<WindAuditFailOn>
             },
             &wind_config,
         );
-        return print_audit_and_apply_exit_policy(&report, fail_on);
+        return print_audit_and_apply_exit_policy(&report, None, output, fail_on);
     }
 
-    // This is the same default standalone plan as `zfb css` without explicit
-    // --source arguments. Neither command scans the build/dev package-route,
-    // mirror, or plugin roots.
-    let audit_output = project_root.join(".zfb-wind-audit-output.css");
-    let (plan, _warnings) = build_standalone_wind_source_plan(
-        &project_root,
-        &audit_output,
-        &project_config,
-        true,
-        &[],
-    )?;
+    let (plan, plugin_virtual_modules) = match plan_mode {
+        // The same default plan as `zfb css` without explicit --source
+        // arguments: no package-route, mirror, or plugin roots.
+        WindAuditPlan::Standalone => {
+            let audit_output = project_root.join(".zfb-wind-audit-output.css");
+            let (plan, _warnings) = build_standalone_wind_source_plan(
+                &project_root,
+                &audit_output,
+                &project_config,
+                true,
+                &[],
+            )?;
+            (plan, Vec::new())
+        }
+        WindAuditPlan::Build => build_audit_plan(&project_root, &project_config).await?,
+    };
+    let coverage = plan_coverage(plan_mode, &plan, &plugin_virtual_modules, &project_root);
     let indexed = index_standalone_wind_sources(&plan)?;
     let manifest_owners = add_manifest_candidates_to_audit_config(&mut wind_config, &plan)?;
     let mut audit_sources = indexed.audit_sources;
+    append_plugin_audit_sources(&plugin_virtual_modules, &mut audit_sources);
     append_role_class_audit_source(&plan, &mut audit_sources);
     let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
-    print_audit_and_apply_exit_policy(&report, fail_on)
+    print_audit_and_apply_exit_policy(&report, Some(&coverage), output, fail_on)
+}
+
+/// Classify a package's source candidates against the selected config and
+/// atomically write the resolved utilities and markers as a manifest that
+/// consumers declare under `wind.manifests`.
+async fn manifest(args: &WindManifestArgs) -> Result<()> {
+    if !crate::config::is_wind_owner_id(&args.producer) {
+        bail!(
+            "invalid --producer {:?}: a producer id must match [A-Za-z0-9][A-Za-z0-9._/-]*",
+            args.producer
+        );
+    }
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let output = zfb_types::normalize_path_lexical(&cwd.join(&args.output));
+    let mut config = load_command_config(&cwd, &project_root, args.config.as_deref())
+        .await
+        .context("failed to load project configuration for wind manifest")?;
+    let (generation_enabled, wind_config) = configured_wind(&config);
+    if !generation_enabled {
+        bail!("wind is disabled (`wind: false`); a candidate manifest needs an enabled wind configuration");
+    }
+    // Configured manifests belong to other producers, and a previous run's
+    // output must never feed the next one.
+    if let Some(crate::config::WindSetting::Enabled(wind)) = &mut config.wind {
+        wind.manifests.clear();
+    }
+    let explicit_sources =
+        crate::commands::css::resolve_explicit_sources(&project_root, &args.source);
+    let source_errors = crate::commands::css::explicit_source_errors(&explicit_sources);
+    if !source_errors.is_empty() {
+        bail!(
+            "wind manifest validation failed:\n- {}",
+            source_errors.join("\n- ")
+        );
+    }
+    let (plan, warnings) = build_standalone_wind_source_plan(
+        &project_root,
+        &output,
+        &config,
+        !args.no_auto_source,
+        &explicit_sources,
+    )?;
+    for warning in warnings {
+        crate::output::warn(warning);
+    }
+    let coverage = plan_coverage(WindAuditPlan::Standalone, &plan, &[], &project_root);
+    let indexed = index_standalone_wind_sources(&plan)?;
+    let occurrences: Vec<_> = indexed
+        .origins
+        .into_iter()
+        .filter(|candidate| matches!(candidate.origin, zfb_css::Origin::Source { .. }))
+        .collect();
+    let classification = zfb_css::classify_manifest_candidates(&occurrences, &wind_config);
+    let plan_errors = indexed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == zfb_css::CssDiagnosticSeverity::Error)
+        .count();
+    let errors = classification.error_count() + plan_errors;
+
+    if errors == 0 {
+        let document = serde_json::json!({
+            "schemaVersion": MANIFEST_SCHEMA_VERSION,
+            "specVersion": zfb_css::SPEC_VERSION,
+            "producer": args.producer,
+            "candidates": classification.candidates,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&document)?;
+        bytes.push(b'\n');
+        zfb_build::atomic::atomic_write(&output, &bytes)
+            .with_context(|| format!("failed to write wind manifest {}", output.display()))?;
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": WIND_JSON_SCHEMA_VERSION,
+                "command": "manifest",
+                "producer": args.producer,
+                "output": output.display().to_string(),
+                "written": errors == 0,
+                "coverage": coverage,
+                "planDiagnostics": indexed
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| serde_json::json!({
+                        "severity": match diagnostic.severity {
+                            zfb_css::CssDiagnosticSeverity::Error => "error",
+                            zfb_css::CssDiagnosticSeverity::Warning => "warning",
+                        },
+                        "code": diagnostic.code,
+                        "message": diagnostic.message,
+                    }))
+                    .collect::<Vec<_>>(),
+                "classification": classification,
+            }))?
+        );
+    } else {
+        print!("{}", render_plan_coverage("manifest", &coverage));
+        print!(
+            "{}",
+            render_manifest_report(&args.producer, &output, &classification, errors == 0)
+        );
+        for diagnostic in &indexed.diagnostics {
+            println!("  {}", diagnostic.render());
+        }
+    }
+    if errors > 0 {
+        bail!(
+            "wind manifest {} found {errors} error(s); {} was not written",
+            args.producer,
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+/// Version of the candidate manifest schema the consumer-side reader accepts.
+const MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+fn render_manifest_report(
+    producer: &str,
+    output: &Path,
+    classification: &zfb_css::ManifestClassification,
+    written: bool,
+) -> String {
+    let mut out = format!(
+        "wind manifest {producer}: {} candidates ({} markers) {}\n",
+        classification.candidates.len(),
+        classification.markers.len(),
+        if written {
+            format!("written to {}", output.display())
+        } else {
+            format!(
+                "not written; {} keeps its previous contents",
+                output.display()
+            )
+        }
+    );
+    let low_confidence = classification
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "auditInfo")
+        .count();
+    out.push_str(&format!(
+        "  excluded {} authored classes, {} ordinary words, {} low-confidence words\n",
+        classification.authored_classes.len(),
+        classification.ordinary_classes.len(),
+        low_confidence
+    ));
+    for diagnostic in &classification.diagnostics {
+        if diagnostic.severity == "auditInfo" {
+            continue;
+        }
+        let location = diagnostic
+            .origin
+            .as_ref()
+            .map(origin_view_location)
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  {} {location}: {} {}: {}\n",
+            diagnostic.severity,
+            diagnostic.code,
+            diagnostic.candidate.as_deref().unwrap_or_default(),
+            diagnostic.message
+        ));
+    }
+    out
+}
+
+fn origin_view_location(origin: &zfb_css::OriginView) -> String {
+    match (&origin.source_id, origin.line, origin.byte_column) {
+        (Some(source), Some(line), Some(column)) => format!("{source}:{line}:{column}"),
+        _ => origin
+            .key_path
+            .clone()
+            .unwrap_or_else(|| origin.kind.clone()),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AuditOutput {
+    json: bool,
+    severity: Option<WindAuditSeverity>,
+}
+
+/// Discover the build/dev plan the way `zfb build` does — plugin setup,
+/// package routes, sibling mirrors, and plugin virtual modules — without
+/// running lifecycle hooks or writing build output.
+#[cfg(feature = "embed_v8")]
+async fn build_audit_plan(
+    project_root: &Path,
+    config: &crate::config::Config,
+) -> Result<(zfb_css::SourcePlan, Vec<(String, String)>)> {
+    let outdir = crate::commands::resolve::resolve_outdir(project_root, &config.out_dir);
+    let scratch =
+        crate::commands::scratch_dir::resolve_from_env(project_root, config, &outdir, None)?;
+    let plugin_host = crate::commands::plugins::maybe_spawn_host(config).await?;
+    let setup = crate::commands::plugins::run_plugin_setup(
+        &plugin_host,
+        project_root,
+        &scratch.layout().plugin_scratch_dir(),
+        config,
+        zfb_build::SetupCommand::Build,
+    )
+    .await;
+    if let Some(host) = plugin_host {
+        let _ = host.shutdown().await;
+    }
+    let setup = setup?;
+    let overlay = crate::commands::package_routes::resolve_build_pages_root(
+        &project_root.join("pages"),
+        setup.setup_registries.injected_routes.as_slice(),
+    )
+    .context("resolving package-owned routes for wind audit --plan build")?;
+    let package_route_entrypoints: Vec<std::path::PathBuf> = overlay
+        .materialized
+        .iter()
+        .map(|route| route.entrypoint.clone())
+        .collect();
+    let (_, sibling_mirror_roots) = crate::commands::build::discover_css_sibling_mirror_roots(
+        project_root,
+        config,
+        &setup.plugin_alias_entries,
+        &setup.plugin_virtual_modules,
+    )?;
+    let inputs = crate::commands::css_source_plan::gather_css_source_plan_inputs(
+        project_root,
+        &outdir,
+        config,
+        &package_route_entrypoints,
+        &sibling_mirror_roots,
+        &setup.plugin_virtual_modules,
+        &scratch.layout().written_roots(),
+    )?;
+    Ok((
+        crate::commands::css_source_plan::build_css_source_plan(&inputs),
+        setup.plugin_virtual_modules,
+    ))
+}
+
+#[cfg(not(feature = "embed_v8"))]
+async fn build_audit_plan(
+    _project_root: &Path,
+    _config: &crate::config::Config,
+) -> Result<(zfb_css::SourcePlan, Vec<(String, String)>)> {
+    anyhow::bail!(
+        "zfb was built without V8 support; `zfb wind audit --plan build` needs plugin setup \
+         to discover the build source plan. Use --plan standalone or a default build."
+    )
+}
+
+/// What an audit scanned: mode, roots, virtual modules, manifests and exclusions.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanCoverage {
+    mode: &'static str,
+    roots: Vec<CoverageRoot>,
+    virtual_modules: Vec<String>,
+    manifests: Vec<CoverageManifest>,
+    exclusions: Vec<CoverageExclusion>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverageRoot {
+    label: String,
+    path: String,
+    kind: &'static str,
+}
+
+#[derive(Serialize)]
+struct CoverageManifest {
+    producer: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverageExclusion {
+    pattern: String,
+    reason: &'static str,
+    origin: Option<String>,
+}
+
+fn plan_coverage(
+    mode: WindAuditPlan,
+    plan: &zfb_css::SourcePlan,
+    plugin_virtual_modules: &[(String, String)],
+    project_root: &Path,
+) -> PlanCoverage {
+    let display = |path: &Path| match path.strip_prefix(project_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    };
+    let mut roots: Vec<_> = plan
+        .roots
+        .iter()
+        .chain(plan.package_sources.values())
+        .collect();
+    roots.sort();
+    PlanCoverage {
+        mode: match mode {
+            WindAuditPlan::Standalone => "standalone",
+            WindAuditPlan::Build => "build",
+        },
+        roots: roots
+            .into_iter()
+            .map(|root| CoverageRoot {
+                label: root.label.clone(),
+                path: display(&zfb_types::normalize_path_lexical(&root.resolved_path())),
+                kind: if root.package_root {
+                    "packageRoot"
+                } else if root.required {
+                    "required"
+                } else {
+                    "optional"
+                },
+            })
+            .collect(),
+        virtual_modules: plugin_virtual_modules
+            .iter()
+            .map(|(specifier, _)| format!("plugin/{specifier}"))
+            .collect(),
+        manifests: plan
+            .manifests
+            .iter()
+            .map(|(producer, path)| CoverageManifest {
+                producer: producer.clone(),
+                path: display(path),
+            })
+            .collect(),
+        exclusions: plan
+            .exclusions
+            .iter()
+            .map(|path| CoverageExclusion {
+                pattern: display(path),
+                reason: "outputOrScratch",
+                origin: None,
+            })
+            .chain(
+                plan.author_exclusions
+                    .iter()
+                    .map(|exclusion| CoverageExclusion {
+                        pattern: exclusion.pattern.clone(),
+                        reason: "windSourcesExclude",
+                        origin: Some(exclusion.origin.clone()),
+                    }),
+            )
+            .collect(),
+    }
+}
+
+/// A human summary of what the audit covers, printed before the report.
+fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
+    let mut out = format!("wind {command} plan: {}\n", coverage.mode);
+    for root in &coverage.roots {
+        let kind = match root.kind {
+            "packageRoot" => "package root",
+            other => other,
+        };
+        out.push_str(&format!("  root {} {} ({kind})\n", root.label, root.path));
+    }
+    for module in &coverage.virtual_modules {
+        out.push_str(&format!("  virtual {module}\n"));
+    }
+    for manifest in &coverage.manifests {
+        out.push_str(&format!(
+            "  manifest {} {}\n",
+            manifest.producer, manifest.path
+        ));
+    }
+    for exclusion in &coverage.exclusions {
+        let reason = match &exclusion.origin {
+            Some(origin) => format!("wind.sources.exclude from {origin}"),
+            None => "output or scratch".to_owned(),
+        };
+        out.push_str(&format!("  excluded {} ({reason})\n", exclusion.pattern));
+    }
+    out
+}
+
+/// Plugin virtual modules have no file; audit them under the same
+/// `plugin/<specifier>` identity the build source plan uses.
+fn append_plugin_audit_sources(
+    modules: &[(String, String)],
+    sources: &mut Vec<zfb_css::AuditSource>,
+) {
+    for (specifier, source) in modules {
+        sources.push(zfb_css::AuditSource::new(
+            format!("plugin/{specifier}"),
+            zfb_css::extract_candidates(source.as_bytes(), zfb_css::SourceKind::Tsx),
+        ));
+    }
 }
 
 fn print_audit_and_apply_exit_policy(
     report: &zfb_css::AuditReport,
+    coverage: Option<&PlanCoverage>,
+    output: AuditOutput,
     fail_on: Option<WindAuditFailOn>,
 ) -> Result<()> {
-    print!("{}", zfb_css::render_audit(report));
+    let shown = filter_report(report, output.severity);
+    if output.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": WIND_JSON_SCHEMA_VERSION,
+                "command": "audit",
+                "severity": output.severity.map(severity_name),
+                "coverage": coverage,
+                "report": shown,
+            }))?
+        );
+    } else {
+        if let Some(coverage) = coverage {
+            print!("{}", render_plan_coverage("audit", coverage));
+        }
+        print!("{}", zfb_css::render_audit(&shown));
+    }
     match audit_exit(report, fail_on) {
         Ok(Some(note)) => {
             eprintln!("{note}");
@@ -80,6 +559,42 @@ fn print_audit_and_apply_exit_policy(
         Ok(None) => Ok(()),
         Err(summary) => Err(anyhow::Error::msg(summary)),
     }
+}
+
+fn severity_name(severity: WindAuditSeverity) -> &'static str {
+    match severity {
+        WindAuditSeverity::AuditInfo => "auditInfo",
+        WindAuditSeverity::Warning => "warning",
+        WindAuditSeverity::Error => "error",
+    }
+}
+
+fn severity_rank(severity: &str) -> Option<WindAuditSeverity> {
+    match severity {
+        "auditInfo" => Some(WindAuditSeverity::AuditInfo),
+        "warning" => Some(WindAuditSeverity::Warning),
+        "error" => Some(WindAuditSeverity::Error),
+        _ => None,
+    }
+}
+
+/// The report with diagnostics below `minimum` hidden. Display only; the
+/// exit verdict always reads the complete report.
+fn filter_report(
+    report: &zfb_css::AuditReport,
+    minimum: Option<WindAuditSeverity>,
+) -> zfb_css::AuditReport {
+    let mut shown = report.clone();
+    if let Some(minimum) = minimum {
+        let keep = |severity: &str| severity_rank(severity).is_none_or(|rank| rank >= minimum);
+        shown
+            .diagnostics
+            .retain(|diagnostic| keep(&diagnostic.severity));
+        shown
+            .dead_classes
+            .retain(|dead| keep(&dead.diagnostic.severity));
+    }
+    shown
 }
 
 fn audit_exit(
@@ -121,17 +636,6 @@ fn audit_exit(
         ))),
         _ => Ok(None),
     }
-}
-
-fn project_root(root: Option<&Path>) -> Result<PathBuf> {
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
-    let root = root.unwrap_or(Path::new("."));
-    let root = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        cwd.join(root)
-    };
-    Ok(zfb_types::normalize_path_lexical(&root))
 }
 
 #[derive(Clone)]
@@ -319,6 +823,7 @@ fn rewrite_role_class_view(origin: &mut zfb_css::OriginView, candidate: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn audit_report(outcome: zfb_css::AuditOutcome, severities: &[&str]) -> zfb_css::AuditReport {
         zfb_css::AuditReport {
@@ -497,5 +1002,129 @@ mod tests {
         assert_eq!(origin.role_key.as_deref(), Some("role-class"));
         assert!(origin.source_id.is_none());
         assert!(origin.position_kind.is_none());
+    }
+
+    #[test]
+    fn plan_coverage_names_mode_roots_virtual_sources_and_exclusion_reasons() {
+        let project = Path::new("/project");
+        let mut plan = zfb_css::SourcePlan::default();
+        plan.roots.push(zfb_css::PositiveRoot {
+            label: "default/src".into(),
+            declaring_dir: project.join("src"),
+            path: PathBuf::from("."),
+            required: false,
+            exclusions: BTreeSet::new(),
+            package_root: false,
+        });
+        plan.roots.push(zfb_css::PositiveRoot {
+            label: "package-root/node_modules/@x/ui".into(),
+            declaring_dir: project.join("node_modules/@x/ui"),
+            path: PathBuf::from("."),
+            required: true,
+            exclusions: BTreeSet::new(),
+            package_root: true,
+        });
+        plan.package_sources.insert(
+            "package-route/node_modules/@x/docs".into(),
+            zfb_css::PositiveRoot {
+                label: "package-route/node_modules/@x/docs".into(),
+                declaring_dir: project.join("node_modules/@x/docs"),
+                path: PathBuf::from("."),
+                required: true,
+                exclusions: BTreeSet::new(),
+                package_root: false,
+            },
+        );
+        plan.exclusions.insert(project.join("dist"));
+        plan.author_exclusions.push(zfb_css::SourceExclusion {
+            origin: "project".into(),
+            declaring_dir: project.to_path_buf(),
+            pattern: "src/**/__tests__/**".into(),
+        });
+        let modules = vec![(
+            "virtual:menu".to_owned(),
+            "<a className=\"p-1\" />".to_owned(),
+        )];
+
+        let structured = plan_coverage(WindAuditPlan::Build, &plan, &modules, project);
+        assert_eq!(
+            serde_json::to_value(&structured).unwrap()["roots"][1],
+            serde_json::json!({
+                "label": "package-root/node_modules/@x/ui",
+                "path": "node_modules/@x/ui",
+                "kind": "packageRoot"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&structured).unwrap()["exclusions"][1],
+            serde_json::json!({
+                "pattern": "src/**/__tests__/**",
+                "reason": "windSourcesExclude",
+                "origin": "project"
+            })
+        );
+        let coverage = render_plan_coverage("audit", &structured);
+        assert_eq!(
+            coverage,
+            "wind audit plan: build\n\
+             \x20 root default/src src (optional)\n\
+             \x20 root package-root/node_modules/@x/ui node_modules/@x/ui (package root)\n\
+             \x20 root package-route/node_modules/@x/docs node_modules/@x/docs (required)\n\
+             \x20 virtual plugin/virtual:menu\n\
+             \x20 excluded dist (output or scratch)\n\
+             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n"
+        );
+        assert!(render_plan_coverage(
+            "audit",
+            &plan_coverage(
+                WindAuditPlan::Standalone,
+                &zfb_css::SourcePlan::default(),
+                &[],
+                project
+            )
+        )
+        .starts_with("wind audit plan: standalone\n"));
+
+        let mut sources = Vec::new();
+        append_plugin_audit_sources(&modules, &mut sources);
+        assert_eq!(sources[0].source_id, "plugin/virtual:menu");
+        assert_eq!(sources[0].extraction.candidates[0].text, "p-1");
+    }
+
+    #[test]
+    fn severity_filter_hides_lower_diagnostics_without_changing_the_verdict() {
+        let report = audit_report(
+            zfb_css::AuditOutcome::Complete,
+            &["auditInfo", "warning", "error", "auditInfo"],
+        );
+        let names = |report: &zfb_css::AuditReport| {
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.severity.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&filter_report(&report, None)).len(), 4);
+        assert_eq!(
+            names(&filter_report(&report, Some(WindAuditSeverity::Warning))),
+            ["warning", "error"]
+        );
+        assert_eq!(
+            names(&filter_report(&report, Some(WindAuditSeverity::Error))),
+            ["error"]
+        );
+        // The CLI always passes the complete report to the exit policy;
+        // filtering to errors alone must not hide the warning verdict.
+        assert!(audit_exit(&report, Some(WindAuditFailOn::Warning))
+            .unwrap_err()
+            .contains("2 error- or warning-severity"));
+    }
+
+    #[test]
+    fn stdin_candidates_keep_order_and_duplicates() {
+        assert_eq!(
+            stdin_candidates("  p-4\r\n\n-mt-2\np-4\n   \nhover:block"),
+            ["p-4", "-mt-2", "p-4", "hover:block"]
+        );
     }
 }

@@ -40,7 +40,10 @@ function childBlock(lines, start, end, indent, name) {
 
 export function readLockImporterDependency(lockText, importer, dependency) {
   const lines = lockText.split(/\r?\n/);
-  const importerBlock = childBlock(lines, 0, lines.length, 2, importer);
+  // pnpm 12 prepends an env-lockfile document (its own `.` importer holding
+  // packageManagerDependencies); the dependency graph is the last document.
+  const mainDocumentStart = lines.lastIndexOf("---") + 1;
+  const importerBlock = childBlock(lines, mainDocumentStart, lines.length, 2, importer);
   if (!importerBlock) return undefined;
   const devDependencies = childBlock(
     lines,

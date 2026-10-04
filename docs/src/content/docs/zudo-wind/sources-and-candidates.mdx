@@ -8,6 +8,8 @@ sidebar_position: 4
 
 The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
 
+`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources` package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
+
 Build and dev scan these case-sensitive extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`. The standalone `zfb css --source` path can also process `.html` and `.mjs`; these two extensions are not automatically scanned in build or dev. There is no public extension override.
 
 ## What the extractor reads
@@ -27,6 +29,28 @@ Both `text-muted` and `text-accent` are present as complete literals and can be 
 
 At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
 
+## Class positions and confidence
+
+A candidate's position decides how strictly it is checked. Text written directly in a `class` or `className` attribute is a class position. So is a complete string whose value provably reaches such an attribute:
+
+- a branch of a conditional, or the operand after `&&`, `||`, or `??`;
+- a static part of a template literal used as a class value, including strings inside its interpolations;
+- an argument, array element, or object key of the class helpers `clsx`, `cn`, `cx`, `classNames`, and `classnames`;
+- the initializer of a same-module `const` referenced from a class expression, through aliases too.
+
+```tsx
+const linkClass = "px-3 text-ink"; // class position: referenced below
+const label = "ring-2"; // literal: never reaches a class attribute
+
+export const Link = ({ active }) => (
+  <a class={`flex ${active ? "border-accent" : "border-muted"}`}>
+    <span class={linkClass}>{label}</span>
+  </a>
+);
+```
+
+A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. Every other complete string, such as an unrelated constant, a test title, an import path, or a URL, is a lower-confidence literal. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+
 ## Adding explicit candidates
 
 A `safelist` entry is an owner ID mapped to an array of full candidates. There is no regular-expression, brace-expansion, or interpolation syntax. Each listed entry must be a utility candidate or a supported marker, unless the exact full string appears in `authoredClasses`.
@@ -44,6 +68,21 @@ A package can publish a versioned JSON manifest. The consumer declares its path 
 
 The schema version is separate from the language version. A manifest contains candidates only: it cannot define tokens, run code, or be found through ambient dependency discovery. The consumer must configure any tokens used by manifest candidates. Manifest paths resolve from their declaring config or package. Missing files, invalid JSON or schema, and unsupported source extensions are errors. Unknown or invalid explicit entries retain their candidate diagnostics and manifest index. Duplicate strings are deduplicated. If two declared origins claim the same producer, the conflict is an error rather than a traversal-order choice; replacing or removing a producer retracts its previous candidates.
 
+### Publishing candidates from a package
+
+A package needs no site config or pages to ship styles. Keep the token configuration its classes are written against in an ordinary zfb config file, such as `wind.config.json` beside `package.json`, and pass it with `--config`; without a `zfb.config.*` file the package never looks like a site. The config file's directory is the default project root, so these commands run from the package directory:
+
+```sh
+zfb css --input src/styles.css --output dist/ui.css \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind manifest --producer ui --output dist/wind.json \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+```
+
+`zfb wind manifest` runs the build's extractor and compiler over every source in one process, writes only resolved utilities and markers, and fails without touching `dist/wind.json` when a class-position candidate does not resolve. The configured `outDir` and the `--output` path stay out of the scan, so a previous `dist/` build never feeds the next manifest. Export both files from `package.json`, for example `"./ui.css": "./dist/ui.css"` and `"./wind.json": "./dist/wind.json"`.
+
+A consumer declares the manifest in `wind.manifests` and configures every token its candidates use. A preset is the simplest way to ship both: `definePreset("@example/ui", { wind: { tokens, manifests: { ui: { path: "./dist/wind.json" } } } })` resolves `./dist/wind.json` from the installed preset package, wherever the consumer installed it. A consumer without those tokens fails its own build on the first unresolved manifest entry, so treat the token set as part of the package's public contract. See [`zfb wind manifest`](../api/cli.mdx#zfb-wind-manifest).
+
 ## Authored classes
 
 Use `authoredClasses` to reserve exact complete candidate spellings for rules you write in CSS. Each key maps to `true`; include a variant chain when the whole variant-bearing candidate should stay authored. A match suppresses utility validation, emission, generated CSS, and candidate diagnostics at every origin. This lets a class remain in markup for an authored selector without being interpreted as a utility.
@@ -52,7 +91,13 @@ The allowlist is exact: it does not accept prefixes, patterns, or partial names.
 
 ## Exclusions and updates
 
-Previous output is never scanned. Exclusions include `node_modules` unless the package root was explicitly declared, `dist`, `build`, `target`, `.git`, `.cache`, `.zfb-build`, `.zfb`, and configured output or cache directories. The consuming project's current output and cache paths remain excluded even if someone declares them as roots. A declared package root may traverse that package's `node_modules` and published `dist` directory. Gitignore rules apply under each declared root. Directory symlinks are not followed. An explicit `--source` declaration whose matches are all excluded fails with `ZW010`; one with both excluded and accepted matches warns and scans the accepted files.
+Previous output is never scanned. Three kinds of exclusion apply, with different reach:
+
+- **Output and scratch paths.** The configured `outDir` (`dist` by default), the `zfb css --output` file, and zfb's own scratch and cache directories are excluded from every root, including explicit `--source` files and package roots. Nothing can re-include them. With a different `outDir`, explicit `--source` files under a `dist` that is not the project's output are scanned.
+- **Skipped directory names.** While walking a directory root, subdirectories named `node_modules`, `dist`, `build`, `target`, `.turbo`, `.next`, `.vercel`, `.zfb-build`, or `.zfb` are skipped, as are hidden directories such as `.git` and `.cache`. This prunes the walk only: a root that is itself such a directory, or a file an explicit `--source` glob matched, is still scanned, so `--source 'build/**/*.tsx'` reads those files. A declared package root also walks its own `node_modules` and `dist`.
+- **Ignore files.** Gitignore rules apply under each root except a declared package root, which is walked without them because projects commonly ignore exactly the `node_modules` and `dist` it must reach.
+
+Directory symlinks are not followed. Author exclusions from `wind.sources.exclude` remove matching files under their declaring root from every root, including explicit `--source` files; they cannot re-include anything excluded above. Package roots are declared with `wind.sources.packageRoots`; see [Configuration](./configuration.mdx#the-wind-key-source-exclusions-and-package-roots). An explicit `--source` declaration whose matches are all excluded fails with `ZW010`; one with both excluded and accepted matches warns and scans the accepted files.
 
 The source index tracks which owners supplied each candidate. Additions, removals, renames, manifest changes, and source-plan changes replace the relevant owner's set, so removing a file or declaration removes its candidates. No removed candidate is kept as a safety net. A missing conventional root is skipped; a required root, missing manifest, or explicit CLI glob with no matches is an error.
 

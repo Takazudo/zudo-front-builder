@@ -11,7 +11,7 @@
 // All of it runs offline against hand-built packuments — a real regression is
 // not something you can conjure on the live registry to test against.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { checkAll, classifyPackage, fetchPackument, report } from "../check-provenance-drift.mjs";
 

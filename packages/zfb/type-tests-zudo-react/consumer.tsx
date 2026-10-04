@@ -17,11 +17,22 @@ import {
 } from "@takazudo/zfb/zudo-react/server";
 // @ts-expect-error The internal island marker is not part of the public server API.
 import { islandRootType } from "@takazudo/zfb/zudo-react/server";
+import {
+  createIslandTest,
+  withIslandTestContext,
+  type IslandTest,
+} from "@takazudo/zfb/zudo-react/testing";
 
 const serverRenderOptions: RenderOptions = {};
 const serverIslandOptions: IslandOptions = { identity: { component: "Example", build: "b1" } };
 void [islandRoot, renderToString, serializeProps, serverRenderOptions, serverIslandOptions];
 void islandRootType;
+const islandTest: IslandTest = createIslandTest(ExampleIsland, {}, { document });
+islandTest.identity = { component: "ExampleIsland", build: "negative-test" };
+void islandTest.hydrate();
+void islandTest.mount();
+void islandTest.flush();
+islandTest.dispose();
 
 const name = {
   value: "ok",
@@ -33,7 +44,7 @@ const view = (
       class="box"
       data-state={true}
       aria-label={name}
-      style={{ "font-size": 12, "--accent": "red" }}
+      style={{ "font-size": "12px", "--accent": "red" }}
     >
       {name}
       <svg viewBox="0 0 10 10">
@@ -64,6 +75,9 @@ function ExampleIsland() {
   return <span>example</span>;
 }
 void island;
+withIslandTestContext({ components: { ExampleIsland }, build: "test" }, () =>
+  renderToString(island),
+);
 // Island now returns an owned branded description directly.
 const assumedOwned: Description = Island({ children: <ExampleIsland /> });
 void assumedOwned;
@@ -116,6 +130,23 @@ const badClass = <div className="box" />;
 const badDanger = <div dangerouslySetInnerHTML={{ __html: "x" }} />;
 // @ts-expect-error rawHtml accepts trusted strings, not objects.
 const badRaw = <div rawHtml={{ __html: "x" }} />;
+const iframeSrcdoc = signal("<p>trusted</p>");
+const frameRef = { current: null as HTMLIFrameElement | null };
+const iframeShell = (
+  <iframe
+    src="/embed"
+    srcdoc={iframeSrcdoc}
+    sandbox="allow-scripts"
+    allow="fullscreen"
+    ref={frameRef}
+    on:load={() => {}}
+  />
+);
+// @ts-expect-error Iframe fallback children are outside the owned shell contract.
+const iframeChildren = <iframe>fallback</iframe>;
+// @ts-expect-error Iframe rawHtml is outside the owned shell contract.
+const iframeRawHtml = <iframe rawHtml="" />;
+void [iframeShell, iframeChildren, iframeRawHtml];
 // @ts-expect-error Object style keys use CSS spelling.
 const badStyle = <div style={{ backgroundColor: "red" }} />;
 // @ts-expect-error A ref is an object, not a callback.

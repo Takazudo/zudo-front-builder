@@ -1,4 +1,60 @@
 //! Token-aware detection of legacy Tailwind syntax in authored CSS.
+use std::path::PathBuf;
+
+use crate::{CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, WindDiagnosticsError};
+
+/// Legacy Tailwind at-rules and functions zudo-wind rejects in authored CSS.
+pub const FORBIDDEN_WIND_DIRECTIVES: &[&str] = &[
+    "import",
+    "tailwind",
+    "theme",
+    "source",
+    "custom-variant",
+    "apply",
+    "utility",
+    "variant",
+    "plugin",
+    "config",
+    "reference",
+    "--spacing",
+    "--alpha",
+    "--value",
+];
+
+/// Every forbidden directive in every stylesheet, as one ZW009 error, so a
+/// migration sees all of them in one run instead of one per run.
+pub fn check_forbidden_directives(
+    stylesheets: &[(PathBuf, String)],
+) -> Result<(), WindDiagnosticsError> {
+    let diagnostics: Vec<_> = stylesheets
+        .iter()
+        .flat_map(|(path, css)| {
+            scan_leftover_directives(css, FORBIDDEN_WIND_DIRECTIVES)
+                .into_iter()
+                .map(move |directive| CssDiagnostic {
+                    severity: CssDiagnosticSeverity::Error,
+                    code: "ZW009".into(),
+                    message: format!(
+                        "forbidden {}; migrate this stylesheet to zudo-wind: /docs/zudo-wind/coming-from-tailwind/",
+                        directive.name
+                    ),
+                    origin: CssDiagnosticOrigin {
+                        path: Some(path.clone()),
+                        line: Some(directive.line),
+                        column: Some(directive.column),
+                        byte_offset: Some(directive.offset),
+                        label: None,
+                    },
+                    candidate: None,
+                })
+        })
+        .collect();
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(WindDiagnosticsError { diagnostics })
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftoverDirective {
     pub name: String,
@@ -203,5 +259,50 @@ mod tests {
         let result =
             scan_leftover_directives("@import /* note */ url( /* x */ tailwindcss);", &["import"]);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn every_forbidden_directive_in_every_stylesheet_is_reported() {
+        let error = check_forbidden_directives(&[
+            (
+                PathBuf::from("entry.css"),
+                "@theme {}\n@theme static {}\n@source \"x\";\n".into(),
+            ),
+            (
+                PathBuf::from("imported.css"),
+                ".a { color: red; }\n@apply p-1;\n".into(),
+            ),
+            (PathBuf::from("clean.css"), ".b { color: blue; }\n".into()),
+        ])
+        .unwrap_err();
+        let locations: Vec<_> = error
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.origin.location().unwrap())
+            .collect();
+        assert_eq!(
+            locations,
+            [
+                "entry.css:1:1",
+                "entry.css:2:1",
+                "entry.css:3:1",
+                "imported.css:2:1"
+            ]
+        );
+        assert!(error.diagnostics.iter().all(|d| d.code == "ZW009"));
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("wind CSS failed with 4 errors:"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("entry.css:2:1: ZW009: forbidden @theme"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("imported.css:2:1: ZW009: forbidden @apply"),
+            "{rendered}"
+        );
+        assert!(check_forbidden_directives(&[(PathBuf::from("clean.css"), ".b{}".into())]).is_ok());
     }
 }

@@ -92,6 +92,9 @@ pub type RenderOnRequestHandle = Arc<RwLock<Option<Arc<dyn RenderOnRequestHook>>
 /// it simply falls through to the next leg. This matches the spirit of
 /// the hook: "make the disk fresh as a best effort; serve whatever is
 /// there."
+// async_trait generates #[must_use] on boxed futures; newer Clippy reports it
+// as redundant for this trait method.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait RenderOnRequestHook: Send + Sync {
     /// Optionally trigger a render for `url_path`.

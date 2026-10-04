@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 
 // Tests run against the BUILT package (`dist/`), not `src/`: this is what
 // `pnpm build && pnpm test` (and `prepublishOnly`) exercise, and it is the

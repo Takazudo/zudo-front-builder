@@ -445,12 +445,18 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<LoadedTsConfig> {
     let config: serde_json::Value = serde_json::from_str(json).map_err(|e| {
         anyhow!(
             "{}: failed to parse the default export as JSON \
-             (line {}, column {}): {}\n--- received ---\n{}",
+             (line {}, column {}): {}\n--- received line {} ---\n{}",
             ts_path.display(),
             e.line(),
             e.column(),
             e,
-            json
+            e.line(),
+            json.lines()
+                .nth(e.line().saturating_sub(1))
+                .unwrap_or_default()
+                .chars()
+                .take(240)
+                .collect::<String>()
         )
     })?;
     Ok(LoadedTsConfig {

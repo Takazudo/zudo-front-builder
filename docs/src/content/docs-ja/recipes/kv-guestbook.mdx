@@ -37,8 +37,8 @@ Cloudflare のバインディングに対する「読み取り」だけでなく
 
 | 項目 | リポジトリでの実際の値 |
 | --- | --- |
-| フレームワーク | zfb **3.0.0** の zudo-react JSX ランタイム。Preact / React への依存はありません |
-| zfb パッケージ | `@takazudo/zfb`、`@takazudo/zfb-runtime`、`@takazudo/zfb-adapter-cloudflare` はすべて **3.0.0** に固定 |
+| フレームワーク | zfb **3.1.0** の zudo-react JSX ランタイム。Preact / React への依存はありません |
+| zfb パッケージ | `@takazudo/zfb`、`@takazudo/zfb-runtime`、`@takazudo/zfb-adapter-cloudflare` はすべて **3.1.0** に固定 |
 | アダプター | `@takazudo/zfb-adapter-cloudflare` — 導入済みかつ必須 |
 | スタイリング | `layouts/default.tsx` が手書きのクリティカル CSS をインライン化します。事前レンダリングされる `404.html` には `zudo-wind` の `owned-v1` リセットが適用され、ページは生成ユーティリティではなく手書きのクラス名を使います |
 | レンダリング方式 | 静的サイトではありません。`pages/index.tsx`、`pages/api/entries.tsx`、`pages/api/entries/[key].tsx` がいずれも `prerender = false` を export しています。事前レンダリングされるのは `pages/404.tsx` だけです |

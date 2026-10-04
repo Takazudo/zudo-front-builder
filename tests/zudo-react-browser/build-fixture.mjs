@@ -4,13 +4,16 @@
  * Scenario contract for #3280: each directory in fixtures/ contains a
  * scenario.json with `page` and either the legacy single-root fields
  * (`component`, `props`, `mode`) or a `roots` array. Root entries may point at
- * different TSX modules and may request a pre-commit abort or a deliberate
- * post-SSR mutation. Set a root's `static` flag to true with `mode: "none"` to
- * render its component directly, without an island boundary; the harness adds
- * a plain container around that output for root lookup. `mode: "none"` without
- * `static: true` keeps the usual island SSR markup while disabling activation.
- * An optional fixture `page.css` can be loaded with the scenario's
- * `stylesheet` field. The generated bootstrap stores `{ roots,
+ * different TSX modules and may request a pre-commit abort, a deliberate
+ * post-SSR mutation, skip-SSR mounting, or `undefinedProps` paths that add own
+ * undefined record members JSON cannot express. Set a root's `static` flag to true
+ * with `mode: "none"` to render its component directly, without an island
+ * boundary; the harness adds a plain container around that output for root
+ * lookup. `mode: "none"` without `static: true` keeps the usual island SSR
+ * markup while disabling activation. Optional HTML resources named in the
+ * scenario's `assets` field are served under `/fixtures/<page>/`; an optional
+ * fixture stylesheet can be loaded with the `stylesheet` field. The generated
+ * bootstrap stores `{ roots,
  * root, flush, result, mode, identity, client, h }` on
  * `globalThis.__zudoReactBrowser`; its URL under /generated/ can be held with
  * `page.route` to inspect SSR DOM before the module executes.
@@ -31,6 +34,7 @@ const PACKED_SDK_SCRIPT = join(REPO_ROOT, "packages/zfb/scripts/zudo-react-packe
 const IMPORT_MAP_PREFIX = "/zfb-dist/";
 const BUILD_ID = "zudo-react-browser-harness-v1";
 const MODES = new Set(["hydrate", "mount", "none"]);
+const FORBIDDEN_PROP_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function run(binary, args, cwd) {
   execFileSync(binary, args, { cwd, stdio: "inherit" });
@@ -41,6 +45,59 @@ function assertInside(root, target, label) {
   if (path === "" || path === ".." || path.startsWith(`..${sep}`)) {
     throw new Error(`${label} escapes its fixture directory: ${target}`);
   }
+}
+
+function addUndefinedProps(props, paths, label) {
+  if (!Array.isArray(paths)) throw new Error(`${label} undefinedProps must be an array of paths`);
+  const result = structuredClone(props);
+  for (const [pathIndex, path] of paths.entries()) {
+    if (
+      !Array.isArray(path) ||
+      path.length === 0 ||
+      path.some((part) =>
+        typeof part === "number"
+          ? !Number.isInteger(part) || part < 0
+          : typeof part !== "string" || FORBIDDEN_PROP_KEYS.has(part),
+      ) ||
+      typeof path.at(-1) !== "string"
+    ) {
+      throw new Error(`${label} undefinedProps path ${pathIndex} must end in a record key`);
+    }
+
+    let parent = result;
+    for (const part of path.slice(0, -1)) {
+      if (Array.isArray(parent)) {
+        if (typeof part !== "number" || part >= parent.length || !Object.hasOwn(parent, part)) {
+          throw new Error(`${label} undefinedProps path ${pathIndex} has an invalid array index`);
+        }
+      } else if (
+        parent === null ||
+        typeof parent !== "object" ||
+        typeof part !== "string" ||
+        !Object.hasOwn(parent, part)
+      ) {
+        throw new Error(`${label} undefinedProps path ${pathIndex} has an invalid record path`);
+      }
+      parent = parent[part];
+    }
+
+    const key = path.at(-1);
+    if (
+      parent === null ||
+      typeof parent !== "object" ||
+      Array.isArray(parent) ||
+      Object.hasOwn(parent, key)
+    ) {
+      throw new Error(`${label} undefinedProps path ${pathIndex} must target a missing record key`);
+    }
+    Object.defineProperty(parent, key, {
+      value: undefined,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
 }
 
 function inlineJson(value) {
@@ -94,15 +151,39 @@ function readScenarios() {
             `Scenario ${config.page} root ${index} may use static rendering only with mode: "none"`,
           );
         }
+        if (root.skipSsr !== undefined && typeof root.skipSsr !== "boolean") {
+          throw new Error(`Scenario ${config.page} root ${index} skipSsr must be a boolean`);
+        }
+        if (root.skipSsr === true && root.mode !== "mount") {
+          throw new Error(
+            `Scenario ${config.page} root ${index} may use skipSsr only with mode: "mount"`,
+          );
+        }
         if (root.props === null || typeof root.props !== "object" || Array.isArray(root.props)) {
           throw new Error(`Scenario ${config.page} root ${index} props must be an object`);
         }
+        const label = `Scenario ${config.page} root ${index}`;
+        const props = addUndefinedProps(root.props, root.undefinedProps ?? [], label);
         const componentPath = resolve(directory, root.component);
         assertInside(directory, componentPath, `Scenario ${config.page} root ${index} component`);
         if (!statSync(componentPath).isFile()) {
           throw new Error(`Scenario ${config.page} component is not a file: ${componentPath}`);
         }
-        return { ...root, props: root.props, componentPath, index };
+        return { ...root, props, componentPath, index };
+      });
+      const assets = config.assets ?? [];
+      if (!Array.isArray(assets))
+        throw new Error(`Scenario ${config.page} assets must be an array`);
+      const normalizedAssets = assets.map((asset, index) => {
+        if (typeof asset !== "string" || extname(asset) !== ".html") {
+          throw new Error(`Scenario ${config.page} asset ${index} must name an HTML file`);
+        }
+        const assetPath = resolve(directory, asset);
+        assertInside(directory, assetPath, `Scenario ${config.page} asset ${index}`);
+        if (!statSync(assetPath).isFile()) {
+          throw new Error(`Scenario ${config.page} asset is not a file: ${assetPath}`);
+        }
+        return assetPath;
       });
       let stylesheetPath;
       if (config.stylesheet !== undefined) {
@@ -113,7 +194,27 @@ function readScenarios() {
         if (!statSync(stylesheetPath).isFile())
           throw new Error(`Scenario ${config.page} stylesheet is not a file: ${stylesheetPath}`);
       }
-      return { config, directory, roots: normalizedRoots, stylesheetPath };
+      let headComponentPath;
+      if (config.headComponent !== undefined) {
+        if (typeof config.headComponent !== "string" || extname(config.headComponent) !== ".tsx") {
+          throw new Error(`Scenario ${config.page} headComponent must name a .tsx component`);
+        }
+        headComponentPath = resolve(directory, config.headComponent);
+        assertInside(directory, headComponentPath, `Scenario ${config.page} head component`);
+        if (!statSync(headComponentPath).isFile()) {
+          throw new Error(
+            `Scenario ${config.page} head component is not a file: ${headComponentPath}`,
+          );
+        }
+      }
+      return {
+        config,
+        directory,
+        roots: normalizedRoots,
+        stylesheetPath,
+        headComponentPath,
+        assets: normalizedAssets,
+      };
     });
 }
 
@@ -126,13 +227,19 @@ function createImportMap(stagedPackage) {
   const runtimeExports = Object.entries(exportsMap).filter(([subpath]) =>
     /^\.\/zudo-react(?:\/.*)?$/.test(subpath),
   );
-  if (runtimeExports.length !== 5) {
+  if (runtimeExports.length !== 6) {
     throw new Error(
-      `Expected five zudo-react exports in staged package, found ${runtimeExports.length}`,
+      `Expected six zudo-react exports in staged package, found ${runtimeExports.length}`,
     );
   }
 
-  const imports = {};
+  const root = exportsMap["."];
+  const rootTarget = typeof root === "string" ? root : root?.default;
+  if (typeof rootTarget !== "string" || !rootTarget.startsWith("./dist/")) {
+    throw new Error(`Staged package root does not point into dist/: ${rootTarget}`);
+  }
+
+  const imports = { "@takazudo/zfb": IMPORT_MAP_PREFIX + rootTarget.slice("./dist/".length) };
   for (const [subpath, conditions] of runtimeExports) {
     const target = typeof conditions === "string" ? conditions : conditions?.default;
     if (typeof target !== "string" || !target.startsWith("./dist/")) {
@@ -218,6 +325,12 @@ function mutateServerHtml(html, mutation) {
     }
     case "malformed-props":
       return html.replace(/data-props="[^"]*"/, 'data-props="{"');
+    case "iframe-fallback-markers": {
+      const iframe = /(<iframe\b[^>]*>)(<\/iframe>)/.exec(html);
+      if (!iframe) throw new Error("Iframe fallback mutation requires a childless iframe");
+      const markers = "<!--zr:1:0:c-->ZFB_IFRAME_FALLBACK_MARKER<!--/zr:1:0-->";
+      return html.replace(iframe[0], `${iframe[1]}${markers}${iframe[2]}`);
+    }
     default:
       throw new Error(`Unsupported server HTML mutation: ${mutation.type}`);
   }
@@ -235,11 +348,15 @@ async function main() {
   const importMap = createImportMap(stagedPackage);
   const { h } = await import("@takazudo/zfb/zudo-react");
   const { islandRoot, renderToString } = await import("@takazudo/zfb/zudo-react/server");
+  writeFileSync(
+    join(GENERATED_DIR, "standard-head.js"),
+    "globalThis.__standardHeadDeferredLoaded = true;\n",
+  );
   const scenarios = readScenarios();
   if (scenarios.length === 0) throw new Error("No scenario directories found");
   const pageNames = new Set();
 
-  for (const { config, roots, stylesheetPath } of scenarios) {
+  for (const { config, directory, roots, stylesheetPath, headComponentPath, assets } of scenarios) {
     if (pageNames.has(config.page)) throw new Error(`Duplicate scenario page name: ${config.page}`);
     pageNames.add(config.page);
 
@@ -258,7 +375,7 @@ async function main() {
       const identity = { component: component.name, build: BUILD_ID };
       const serverTree = root.static
         ? h(component, root.props)
-        : islandRoot(h(component, root.props), { identity });
+        : islandRoot(h(component, root.props), { identity, skipSsr: root.skipSsr });
       let html = renderToString(serverTree);
       if (root.static) {
         html = `<div data-zudo-browser-root="root-${root.index}">${html}</div>`;
@@ -282,6 +399,21 @@ async function main() {
       return html;
     });
     const renderedRootHtml = (await Promise.all(serverHtml)).join("");
+    let headComponentHtml = "";
+    if (headComponentPath) {
+      if (/\brawHtml\b/.test(readFileSync(headComponentPath, "utf8"))) {
+        throw new Error(
+          `Scenario ${config.page} head component must render standard markup directly`,
+        );
+      }
+      const compiledRelative = relative(FIXTURES_DIR, headComponentPath).replace(/\.tsx$/, ".js");
+      const compiledPath = join(GENERATED_DIR, "compiled", compiledRelative);
+      const headModule = await import(pathToFileURL(compiledPath).href);
+      if (typeof headModule.default !== "function") {
+        throw new Error(`Scenario ${config.page} head component must default-export a function`);
+      }
+      headComponentHtml = renderToString(h(headModule.default, config.headProps ?? {}));
+    }
     const bootstrapPath = join(GENERATED_DIR, "generated", `${config.page}.js`);
     mkdirSync(dirname(bootstrapPath), { recursive: true });
     writeFileSync(bootstrapPath, createBootstrap(generatedRoots));
@@ -295,6 +427,7 @@ async function main() {
   <head>
     <meta charset="utf-8">
     <title>${escapeHtml(config.page)}</title>
+    ${headComponentHtml}
     ${style}
     <script type="importmap">${inlineJson({ imports: importMap })}</script>
   </head>
@@ -310,6 +443,16 @@ async function main() {
       const outputStylesheet = join(GENERATED_DIR, "fixtures", config.page, config.stylesheet);
       mkdirSync(dirname(outputStylesheet), { recursive: true });
       writeFileSync(outputStylesheet, readFileSync(stylesheetPath));
+    }
+    for (const assetPath of assets) {
+      const outputAsset = join(
+        GENERATED_DIR,
+        "fixtures",
+        config.page,
+        relative(directory, assetPath),
+      );
+      mkdirSync(dirname(outputAsset), { recursive: true });
+      writeFileSync(outputAsset, readFileSync(assetPath));
     }
   }
 

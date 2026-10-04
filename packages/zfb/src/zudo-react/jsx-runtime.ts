@@ -1,4 +1,4 @@
-import { createDescription } from "./description.js";
+import { createDescription, recordSite } from "./description.js";
 import type { Description, ElementType, Key } from "./description.js";
 
 export { Fragment } from "./index.js";
@@ -9,7 +9,7 @@ export function jsx(
   props: Record<string, unknown> | null,
   key?: Key | undefined,
 ): Description {
-  return createDescription(type, props, key);
+  return recordSite(createDescription(type, props, key), undefined, jsx);
 }
 
 export const jsxs: typeof jsx = jsx;

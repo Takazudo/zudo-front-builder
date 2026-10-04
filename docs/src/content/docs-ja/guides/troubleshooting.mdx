@@ -45,6 +45,25 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **対処:** Alpine の代わりに glibc ベースの Linux ベースイメージ（Debian、Ubuntu）を使ってください。Dockerfile でも、CI ランナーでも、任意のコンテナイメージでも同様です。今日、musl 上でネイティブに zfb を動かす回避策はありません。サポートされるプラットフォームのマトリクスは [インストール](../getting-started/installation.mdx#サポートされているプラットフォーム) と [Node なしでインストール](../install/node-free.mdx#サポートされているプラットフォーム) を参照してください。
 
+## Linux で GLIBC が見つからない
+
+**症状:** Linux バイナリが起動を拒否する。典型的には AWS Amplify Hosting、CodeBuild、あるいは RHEL 9 系のホストで発生します。
+
+```
+.../@takazudo/zfb-linux-x64-gnu/zfb: /lib64/libm.so.6: version `GLIBC_2.35' not found (required by .../@takazudo/zfb-linux-x64-gnu/zfb)
+```
+
+**原因:** プリビルドの Linux バイナリは glibc に動的リンクされているため、バイナリがリンクされた glibc より古い glibc を持つホストではロードできません。メッセージに出ているバージョンが、そのバイナリに必要なものです。
+
+- **3.1.0 までの** リリースは Ubuntu 22.04 上でリンクされており、**glibc 2.35** を必要とします。Amazon Linux 2023（AWS Amplify Hosting と CodeBuild のデフォルトビルドイメージ）および RHEL / Rocky / AlmaLinux 9 は glibc **2.34** なので、これらのリリースでは `zfb build` を起動できません。
+- **それ以降の** リリースは Amazon Linux 2023 コンテナ内でリンクされており、必要なのは **glibc 2.34** です。上記のディストリビューションはこれを満たします。Ubuntu 22.04 以降と Debian 12 以降は引き続き動作します。Ubuntu 20.04 と Debian 11（glibc 2.31）は引き続き未対応です。
+
+**対処:**
+
+- `@takazudo/zfb` を 3.1.0 より新しいリリースに更新してください。Linux パッケージはそのまま Amazon Linux 2023 と RHEL 9 系ホストで動作します。バイナリが参照する最大バージョンを確認したい場合は、`node_modules/@takazudo/zfb-linux-x64-gnu/` のバイナリに対して `strings zfb | grep GLIBC_2.3` を実行してください。
+- 3.1.0 以前に固定していて **AWS Amplify Hosting** を使っている場合は、アプリの [カスタムビルドイメージ](https://docs.aws.amazon.com/amplify/latest/userguide/custom-build-image.html) を glibc 2.35 以降のものに切り替えてください（例: `public.ecr.aws/docker/library/node:24-bookworm`、Debian 12、glibc 2.36）。このイメージには Amplify の `nvm` が入っていないため、`amplify.yml` から `nvm use` / `nvm install` の行を削除してください。イメージ自身の Node がすでに `PATH` 上にあります。
+- glibc 2.34 未満のその他のホストでは、代わりに Debian 12 / Ubuntu 22.04 コンテナ内でビルドしてください。
+
 ## 2.12.0 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
 
 **症状:** pnpm のオプトイン設定 [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) を `no-downgrade` にしていると、`@takazudo/zfb*` のいずれかを `2.12.0` でインストール／アップグレードする際に失敗します。

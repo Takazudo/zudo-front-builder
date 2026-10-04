@@ -15,7 +15,7 @@
 // So this dedicated spec defines document.startViewTransition BEFORE the late
 // router import (mirroring how router.test.ts primes the opt-in meta first).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";

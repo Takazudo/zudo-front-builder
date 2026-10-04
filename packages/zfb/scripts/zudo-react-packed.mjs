@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePackageTsc } from "../../../scripts/package-tsc.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -39,6 +40,51 @@ function stage(tarball, directory) {
   console.log("stage: PASS");
 }
 
+function assertPackedExports(directory) {
+  const packageRoot = join(directory, "node_modules", "@takazudo", "zfb");
+  const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  const expected = {
+    "./zudo-react": ["./dist/zudo-react/index.d.ts", "./dist/zudo-react/index.js"],
+    "./zudo-react/jsx-runtime": [
+      "./dist/zudo-react/jsx-runtime.d.ts",
+      "./dist/zudo-react/jsx-runtime.js",
+    ],
+    "./zudo-react/jsx-dev-runtime": [
+      "./dist/zudo-react/jsx-dev-runtime.d.ts",
+      "./dist/zudo-react/jsx-dev-runtime.js",
+    ],
+    "./zudo-react/server": ["./dist/zudo-react/server.d.ts", "./dist/zudo-react/server.js"],
+    "./zudo-react/client": ["./dist/zudo-react/client.d.ts", "./dist/zudo-react/client.js"],
+    "./zudo-react/testing": ["./dist/zudo-react/testing.d.ts", "./dist/zudo-react/testing.js"],
+  };
+  const actualSubpaths = Object.keys(packageJson.exports ?? {})
+    .filter((subpath) => /^\.\/zudo-react(?:\/.*)?$/.test(subpath))
+    .sort();
+  if (JSON.stringify(actualSubpaths) !== JSON.stringify(Object.keys(expected).sort())) {
+    throw new Error(
+      `Packed package has unexpected zudo-react exports: ${actualSubpaths.join(", ")}`,
+    );
+  }
+
+  for (const [subpath, [types, runtime]] of Object.entries(expected)) {
+    const entry = packageJson.exports[subpath];
+    if (entry?.types !== types || entry?.default !== runtime) {
+      throw new Error(`Packed ${subpath} must point to ${types} and ${runtime}`);
+    }
+    if (!existsSync(join(packageRoot, types)) || !existsSync(join(packageRoot, runtime))) {
+      throw new Error(`Packed ${subpath} has a missing declaration or runtime target`);
+    }
+  }
+
+  const probe = join(directory, "server-import-probe.mjs");
+  writeFileSync(
+    probe,
+    `if (typeof globalThis.document !== "undefined") throw new Error("unexpected DOM global");\nconst server = await import("@takazudo/zfb/zudo-react/server");\nif (Object.keys(server).sort().join(",") !== "islandRoot,renderToString,serializeProps") throw new Error("unexpected server entry exports");\nif (typeof globalThis.document !== "undefined") throw new Error("server entry touched the DOM");\n`,
+  );
+  run(process.execPath, [probe], directory);
+  console.log("packed exports and DOM-free server import: PASS");
+}
+
 function writeConsumer(directory) {
   const fixtures = readdirSync(join(packageDir, "type-tests-zudo-react")).filter((name) =>
     name.endsWith(".tsx"),
@@ -50,18 +96,28 @@ function writeConsumer(directory) {
     readFileSync(join(packageDir, "tsconfig.zudo-react-fixture.json"), "utf8"),
   );
   config.include = fixtures;
+  // The repo fixture loads the workspace's @types/node; an isolated packed consumer has none.
+  config.compilerOptions.types = [];
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify(config));
   config.compilerOptions.jsx = "react-jsxdev";
   writeFileSync(join(directory, "tsconfig.dev.json"), JSON.stringify(config));
 }
 
 function checkTypes(directory) {
+  // The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+  // keep supporting while contributor builds use TypeScript 7 (#3544).
+  const compilers = [
+    resolvePackageTsc(packageDir),
+    resolvePackageTsc(packageDir, "typescript-6.0"),
+    resolvePackageTsc(packageDir, "typescript-5.9"),
+  ];
   writeConsumer(directory);
-  const tsc = join(packageDir, "node_modules", "typescript", "bin", "tsc");
-  run(process.execPath, [tsc, "-p", "tsconfig.json"], directory);
-  console.log("packed types production: PASS");
-  run(process.execPath, [tsc, "-p", "tsconfig.dev.json"], directory);
-  console.log("packed types development: PASS");
+  for (const tsc of compilers) {
+    run(tsc.command, [...tsc.args, "-p", "tsconfig.json"], directory);
+    console.log(`packed types production (tsc ${tsc.version}): PASS`);
+    run(tsc.command, [...tsc.args, "-p", "tsconfig.dev.json"], directory);
+    console.log(`packed types development (tsc ${tsc.version}): PASS`);
+  }
 }
 
 function esbuildProbe(directory, kind, esbuild) {
@@ -97,6 +153,7 @@ try {
       : mkdtempSync(join(tmpdir(), "zudo-react-consumer-"));
   stage(tarball, directory);
   if (command === "check") {
+    assertPackedExports(directory);
     checkTypes(directory);
     const sourceDir = mkdtempSync(join(tmpdir(), "zudo-react-source-"));
     const link = join(sourceDir, "node_modules", "@takazudo", "zfb");

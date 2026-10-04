@@ -13,7 +13,7 @@
 // lives in `client-router-split.test.ts` (happy-dom).
 
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const indexSource = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
 const componentSource = readFileSync(

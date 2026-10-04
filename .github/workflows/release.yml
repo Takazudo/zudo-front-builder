@@ -427,12 +427,16 @@ jobs:
           ALL='[
             {"host":"macos-latest","target":"aarch64-apple-darwin","platform":"darwin-arm64","binary":"zfb","archive_ext":"tar.gz"},
             {"host":"macos-15-intel","target":"x86_64-apple-darwin","platform":"darwin-x64","binary":"zfb","archive_ext":"tar.gz"},
-            {"host":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","platform":"linux-x64-gnu","binary":"zfb","archive_ext":"tar.gz"},
-            {"host":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-arm64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true},
+            {"host":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true},
+            {"host":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-arm64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true,"qemu":true},
             {"host":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"win32-x64-msvc","binary":"zfb.exe","archive_ext":"zip"}
           ]'
-          # TODO when ubuntu-22.04 GitHub Actions runner is deprecated: switch to a
-          # manylinux_2_28 container or zig-cc cross-compile to maintain the GLIBC 2.35 floor.
+          # Both Linux legs build inside cross containers pinned in Cross.toml so the
+          # binaries never require more than GLIBC_2.34 (#3623: Amazon Linux 2023 /
+          # RHEL 9-class distros). The host runner's glibc no longer matters for the
+          # x86_64 leg, so it is not tied to a specific ubuntu-* label. `qemu` marks
+          # the leg whose binary cannot execute on the host and is verified under
+          # QEMU instead.
           # x86_64-apple-darwin runs on macos-15-intel, NOT macos-13: the macOS 13
           # image was retired 2025-12-04 and a job requesting it queues forever
           # rather than failing fast — which would hang `publish` (it needs `build`)
@@ -468,10 +472,10 @@ jobs:
           ref: ${{ needs.release-context.outputs.checkout_sha }}
 
       # pnpm version is read from package.json's "packageManager" field
-      # (pnpm@11.3.0). action-setup@v4 errors out if BOTH "version:" here
+      # (pnpm@12.8.2). action-setup@v4 errors out if BOTH "version:" here
       # and "packageManager:" in package.json are set — pick one. We pick
       # package.json so the version is single-source-of-truth.
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -487,11 +491,12 @@ jobs:
         with:
           targets: ${{ matrix.settings.target }}
 
-      # Install cross-rs for the linux-arm64 cross-compile target.
-      # cross wraps `cargo build` inside a Docker container that provides the correct
-      # aarch64-unknown-linux-gnu linker; the host workspace (including node_modules)
-      # is mounted as a volume so build.rs can embed Hono.
-      - name: Install cross (linux-arm64 only)
+      # Install cross-rs for both Linux legs.
+      # cross wraps `cargo build` inside a Docker container pinned in Cross.toml:
+      # the aarch64 image provides the cross linker, and the x86_64 image (Amazon
+      # Linux 2023) fixes the GLIBC ceiling at 2.34. The host workspace (including
+      # node_modules) is mounted as a volume so build.rs can embed Hono.
+      - name: Install cross (Linux only)
         if: ${{ matrix.settings.use_cross == true }}
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
@@ -521,12 +526,13 @@ jobs:
           ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cargo build -p zfb --release --target ${{ matrix.settings.target }}
 
-      - name: Build zfb binary (cross — linux-arm64)
+      - name: Build zfb binary (cross — Linux)
         if: ${{ matrix.settings.use_cross == true }}
         shell: bash
         # ZFB_RELEASE_VERSION is passed into the cross Docker container via Cross.toml
         # [build.env] passthrough — without that entry, cross drops host env vars at the
-        # container boundary.
+        # container boundary. The x86_64 leg builds its container image from
+        # docker/x86_64-unknown-linux-gnu.Dockerfile on the fly (cross does this itself).
         env:
           ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cross build -p zfb --release --target ${{ matrix.settings.target }}
@@ -535,13 +541,13 @@ jobs:
       # Satisfies acceptance criterion: "linux-arm64 binary runs ./zfb --version correctly
       # under QEMU verification step in workflow logs."
       - name: Set up QEMU (linux-arm64 only)
-        if: ${{ matrix.settings.use_cross == true }}
+        if: ${{ matrix.settings.qemu == true }}
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
         with:
           platforms: arm64
 
       - name: QEMU smoke test — run arm64 binary
-        if: ${{ matrix.settings.use_cross == true }}
+        if: ${{ matrix.settings.qemu == true }}
         shell: bash
         run: |
           docker run --rm --platform linux/arm64 \
@@ -554,7 +560,7 @@ jobs:
       # is the stable one-line CLI version contract used for exact comparison.
       # This catches a missed ZFB_RELEASE_VERSION injection on any platform.
       - name: Assert -V equals release semver (Unix)
-        if: ${{ matrix.settings.archive_ext == 'tar.gz' && matrix.settings.use_cross != true }}
+        if: ${{ matrix.settings.archive_ext == 'tar.gz' && matrix.settings.qemu != true }}
         shell: bash
         run: |
           BINARY="target/${{ matrix.settings.target }}/release/zfb"
@@ -570,7 +576,7 @@ jobs:
       # Per-platform version guard for linux-arm64 (QEMU): runs the arm64
       # binary inside the same QEMU-enabled container used for the smoke test.
       - name: Assert -V equals release semver (linux-arm64 QEMU)
-        if: ${{ matrix.settings.use_cross == true }}
+        if: ${{ matrix.settings.qemu == true }}
         shell: bash
         run: |
           ACTUAL=$(docker run --rm --platform linux/arm64 \
@@ -600,7 +606,11 @@ jobs:
             exit 1
           }
 
-      - name: Enforce GLIBC 2.35 floor on the built binary
+      # GLIBC 2.34 = Amazon Linux 2023 / RHEL 9-class (#3623). The x86_64 leg
+      # links inside an AL2023 container, so 2.34 is its ceiling by construction;
+      # the aarch64 leg measures 2.30. Lower this value only with a measured
+      # objdump result; never raise it without an issue.
+      - name: Enforce GLIBC 2.34 floor on the built binary
         if: ${{ contains(matrix.settings.target, 'linux-gnu') }}
         shell: bash
         run: |
@@ -614,9 +624,9 @@ jobs:
             echo "::error::No GLIBC symbols found via objdump — binary inspection failed."
             exit 1
           fi
-          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.35" | sort -V | tail -1)
-          if [[ "$WORST" != "GLIBC_2.35" ]]; then
-            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.35 floor."
+          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.34" | sort -V | tail -1)
+          if [[ "$WORST" != "GLIBC_2.34" ]]; then
+            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.34 floor."
             exit 1
           fi
 
@@ -706,7 +716,7 @@ jobs:
         with:
           ref: ${{ needs.release-context.outputs.checkout_sha }}
 
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -937,10 +947,10 @@ jobs:
           path: .release-control
 
       # pnpm version is read from package.json's "packageManager" field
-      # (pnpm@11.3.0). action-setup@v4 errors out if BOTH "version:" here
+      # (pnpm@12.8.2). action-setup@v4 errors out if BOTH "version:" here
       # and "packageManager:" in package.json are set — pick one. We pick
       # package.json so the version is single-source-of-truth.
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:

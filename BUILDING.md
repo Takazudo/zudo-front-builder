@@ -9,10 +9,10 @@ This document covers the toolchain and one-time setup needed to build, test, and
 | Tool   | Version            | Notes                                             |
 | ------ | ------------------ | ------------------------------------------------- |
 | Rust   | stable             | `rustup install stable && rustup default stable`  |
-| Node   | ≥ 22.16.0          | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. Node 22.16.0 is the effective floor on the 22.x line (`html-validate` requires `^20.19.0 || ^22.16.0 || >=24.0.0`); earlier 22.x versions will fail `pnpm install`. |
+| Node   | `^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0` | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. The root `engines.node` declares the range Vite+ (`vp test`, the contributor test runner) requires; other versions fail `pnpm install`. |
 | pnpm   | as pinned          | The repo declares `packageManager` in `package.json`; use Corepack (`corepack enable`) or install the matching pnpm version directly. |
 
-CI uses Node 22 and Rust stable on `ubuntu-latest`.
+CI uses Node 22 (setup-node resolves the newest 22.x; 22.23.3 when #3557 checked) and Rust stable on `ubuntu-latest`.
 
 ## First build is slow
 
@@ -104,7 +104,7 @@ The zudo-wind engine runs in-process and does not require a staged CLI binary.
 ## Format / lint
 
 ```sh
-pnpm format:check         # check (TS/MD/MDX, runs in CI)
+pnpm format:check         # check (Oxfmt for JS/TS/JSON/YAML, mdx-formatter for MD/MDX; runs in CI)
 pnpm format               # apply
 ```
 

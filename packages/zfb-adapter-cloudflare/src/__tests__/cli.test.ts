@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../build.js";
 // CLI helper is a sibling .mjs — Node 22 resolves the .mjs ESM directly.
@@ -155,6 +155,34 @@ describe("CLI / emitWorker", () => {
     // Byte-exact: excludes the wrapper and inner bundle from the asset
     // upload so only the Worker's module graph can reach them.
     expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
+  });
+
+  it("never leaves a sourceMappingURL reference to a map that is not emitted", async () => {
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle-runtime.mjs");
+    await writeFile(
+      inputPath,
+      `export default { fetch: async () => new Response("hello") };\n//# sourceMappingURL=bundle-runtime.mjs.map\n`,
+      "utf8",
+    );
+
+    const out = await emitWorker({ inputBundlePath: inputPath, outdir: join(dir, "dist") });
+
+    const innerBody = await readFile(out.innerBundlePath, "utf8");
+    expect(innerBody).toBe(`export default { fetch: async () => new Response("hello") };\n`);
+    expect(innerBody).not.toContain("sourceMappingURL");
+    await expect(readFile(join(dir, "dist", "bundle-runtime.mjs.map"), "utf8")).rejects.toThrow();
+  });
+
+  it("keeps an inline data: source map, which cannot dangle", async () => {
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle.mjs");
+    const body = `export default {};\n//# sourceMappingURL=data:application/json;base64,e30=\n`;
+    await writeFile(inputPath, body, "utf8");
+
+    const out = await emitWorker({ inputBundlePath: inputPath, outdir: join(dir, "dist") });
+
+    expect(await readFile(out.innerBundlePath, "utf8")).toBe(body);
   });
 
   it("copies bundle-relative Wasm assets and merges an existing .assetsignore", async () => {

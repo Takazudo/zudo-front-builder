@@ -1,8 +1,9 @@
 # pnpm-workspace-consumer fixture
 
 Regression fixture for issue #122 / #117. A consumer project's `pages/`
-imports a workspace package by its scoped name. The package's source
-`.tsx` file carries `"use client"`.
+imports a workspace package by its scoped name and places its components
+inside SDK `Island` boundaries. The package's source `.tsx` file carries
+`"use client"`.
 
 The on-disk layout mirrors what pnpm produces in a real consumer:
 
@@ -33,8 +34,8 @@ The scanner must:
    `node_modules/@takazudo/zfb-blog-islands/`, recognise the symlink
    shape as a workspace package, read `package.json` and honour its
    `source` field.
-3. Reach `src/index.tsx`, detect `"use client"`, and yield one island
-   for each exported component.
+3. Reach `src/index.tsx`, detect `"use client"`, and register the two
+   concrete boundary children.
 
 Without the fix from #122, scanning this fixture returned an empty set
 — which downstream means production builds shipped `data-zfb-island`

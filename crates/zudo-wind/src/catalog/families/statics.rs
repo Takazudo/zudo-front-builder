@@ -211,4 +211,23 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         ],
     );
     entries.push(sr_only);
+
+    for (root, value) in [("visible", "visible"), ("invisible", "hidden")] {
+        entries.push(entry(
+            root,
+            "visibility",
+            47,
+            0,
+            &["visibility"],
+            STATIC,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            OWN,
+            None,
+            value,
+        ));
+    }
 }

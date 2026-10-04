@@ -54,6 +54,9 @@ pub enum NoteKind {
 pub struct ExtractionNote {
     pub kind: NoteKind,
     pub byte_offset: usize,
+    /// One-based line and byte column of `byte_offset` in the original source.
+    pub line: usize,
+    pub byte_column: usize,
     pub text: String,
 }
 
@@ -69,6 +72,8 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
             notes: vec![ExtractionNote {
                 kind: NoteKind::InvalidUtf8,
                 byte_offset: 0,
+                line: 1,
+                byte_column: 1,
                 text: "source is not UTF-8".into(),
             }],
             ..Default::default()
@@ -78,6 +83,7 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
         source,
         found: BTreeMap::new(),
         notes: Vec::new(),
+        frames: Vec::new(),
     };
     match kind {
         SourceKind::Tsx | SourceKind::Ts | SourceKind::Jsx | SourceKind::Js | SourceKind::Mjs => {
@@ -95,13 +101,64 @@ pub(super) struct Collector<'a> {
     source: &'a str,
     found: BTreeMap<String, Vec<Occurrence>>,
     notes: Vec<ExtractionNote>,
+    /// Decoded texts being scanned in place of their raw spelling, innermost
+    /// last: each maps a byte offset of its decoded text to `base` plus a
+    /// byte offset into the enclosing coordinate space.
+    frames: Vec<Frame>,
+}
+
+struct Frame {
+    base: usize,
+    map: Vec<usize>,
 }
 
 impl Collector<'_> {
+    /// Scans `decoded` (whose `map` has one entry per decoded byte plus the
+    /// end) as if it sat at `base`, reporting every position in raw-source
+    /// coordinates.
+    pub(super) fn within_decoded(
+        &mut self,
+        base: usize,
+        map: Vec<usize>,
+        scan: impl FnOnce(&mut Self),
+    ) {
+        self.frames.push(Frame { base, map });
+        scan(self);
+        self.frames.pop();
+    }
+
+    /// The raw-source offset of an offset in the current scan coordinates.
+    fn resolve(&self, mut at: usize) -> usize {
+        for frame in self.frames.iter().rev() {
+            at = frame.base + frame.map[at.min(frame.map.len() - 1)];
+        }
+        at
+    }
+
+    /// One-based line and byte column of a raw-source offset. Every mapped
+    /// offset lands on a char boundary; an offset that does not is reported
+    /// at the start of its character rather than panicking.
+    fn line_column(&self, at: usize) -> (usize, usize, usize) {
+        let mut at = at.min(self.source.len());
+        while !self.source.is_char_boundary(at) {
+            at -= 1;
+        }
+        let prefix = &self.source.as_bytes()[..at];
+        let line_start = prefix
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |i| i + 1);
+        let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
+        (at, line, at - line_start + 1)
+    }
+
     pub(super) fn note(&mut self, kind: NoteKind, at: usize, text: impl Into<String>) {
+        let (byte_offset, line, byte_column) = self.line_column(self.resolve(at));
         self.notes.push(ExtractionNote {
             kind,
-            byte_offset: at,
+            byte_offset,
+            line,
+            byte_column,
             text: text.into(),
         });
     }
@@ -176,19 +233,19 @@ impl Collector<'_> {
                                 token,
                             );
                         }
-                        let mapped_start = source_map.map_or(start, |map| map[start]);
-                        let mapped_end = source_map.map_or(i, |map| map[i]);
-                        let offset = at + mapped_start;
-                        let prefix = &self.source[..offset.min(self.source.len())];
-                        let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
-                        let byte_column = prefix.rsplit('\n').next().map_or(1, |s| s.len() + 1);
+                        let mapped_start =
+                            self.resolve(at + source_map.map_or(start, |map| map[start]));
+                        let mapped_end = self.resolve(at + source_map.map_or(i, |map| map[i]));
+                        let (byte_offset, line, byte_column) = self.line_column(mapped_start);
+                        let literal_start = self.resolve(span.0);
+                        let literal_end = self.resolve(span.0 + span.1);
                         let occurrence = Occurrence {
-                            byte_offset: offset,
-                            byte_length: mapped_end - mapped_start,
+                            byte_offset,
+                            byte_length: mapped_end.saturating_sub(byte_offset),
                             line,
                             byte_column,
-                            literal_byte_offset: span.0,
-                            literal_byte_length: span.1,
+                            literal_byte_offset: literal_start,
+                            literal_byte_length: literal_end.saturating_sub(literal_start),
                             position_kind,
                             adjacent_interpolation: left || right,
                         };
@@ -202,49 +259,22 @@ impl Collector<'_> {
             }
         }
     }
-    pub(super) fn occurrence_counts(&self) -> BTreeMap<String, usize> {
-        self.found
-            .iter()
-            .map(|(key, values)| (key.clone(), values.len()))
-            .collect()
-    }
-
-    pub(super) fn remap_new_occurrences(
-        &mut self,
-        counts: &BTreeMap<String, usize>,
-        base: usize,
-        source_map: &[usize],
-    ) {
-        for (name, occurrences) in &mut self.found {
-            for occurrence in occurrences.iter_mut().skip(*counts.get(name).unwrap_or(&0)) {
-                let start = occurrence
-                    .byte_offset
-                    .saturating_sub(base)
-                    .min(source_map.len() - 1);
-                let end = (start + occurrence.byte_length).min(source_map.len() - 1);
-                let literal_start = occurrence
-                    .literal_byte_offset
-                    .saturating_sub(base)
-                    .min(source_map.len() - 1);
-                let literal_end =
-                    (literal_start + occurrence.literal_byte_length).min(source_map.len() - 1);
-                occurrence.byte_offset = base + source_map[start];
-                occurrence.byte_length = source_map[end] - source_map[start];
-                occurrence.literal_byte_offset = base + source_map[literal_start];
-                occurrence.literal_byte_length =
-                    source_map[literal_end] - source_map[literal_start];
-                let prefix = &self.source[..occurrence.byte_offset];
-                occurrence.line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
-                occurrence.byte_column = prefix.rsplit('\n').next().map_or(1, |s| s.len() + 1);
-            }
-        }
-    }
-
     fn finish(mut self) -> ExtractionResult {
         let candidates = self
             .found
             .into_iter()
             .map(|(text, mut occurrences)| {
+                // A class-context pass re-records some literal spans; the
+                // class position supersedes the low-confidence one.
+                let classes: Vec<(usize, usize)> = occurrences
+                    .iter()
+                    .filter(|occurrence| occurrence.position_kind == PositionKind::Class)
+                    .map(|occurrence| (occurrence.byte_offset, occurrence.byte_length))
+                    .collect();
+                occurrences.retain(|occurrence| {
+                    occurrence.position_kind == PositionKind::Class
+                        || !classes.contains(&(occurrence.byte_offset, occurrence.byte_length))
+                });
                 occurrences.sort();
                 occurrences.dedup();
                 ExtractedCandidate { text, occurrences }

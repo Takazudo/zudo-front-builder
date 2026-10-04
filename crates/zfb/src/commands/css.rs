@@ -8,8 +8,9 @@ use zfb_css::{AuthoredCssEngine, CssEmitterOutput, CssEngine, CssEngineOutput, W
 
 use crate::cli::{CssArgs, CssCodeHighlightMode};
 use crate::commands::css_support::{
-    build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
-    resolve_framework_css_with_options, run_css_emitter_without_modules,
+    build_standalone_wind_source_plan, command_project_root, configured_wind,
+    index_standalone_wind_sources, load_command_config, resolve_framework_css_with_options,
+    run_css_emitter_without_modules,
 };
 use crate::config::CodeHighlightMode;
 
@@ -58,7 +59,8 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     let cwd = absolute_path(cwd, cwd);
     let input = absolute_path(&cwd, &args.input);
     let output = absolute_path(&cwd, &args.output);
-    let project_root = absolute_path(&cwd, args.project_root.as_deref().unwrap_or(Path::new(".")));
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
 
     let mut validation_errors = Vec::new();
     if let Err(error) = std::fs::read(&input) {
@@ -86,26 +88,14 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     // particular, this does not discover pages/content and never starts the
     // plugin host. A config-less directory returns Config::default() without
     // evaluating TypeScript or booting V8.
-    let config = crate::config::load_from_dir(&project_root)
+    let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for CSS compilation")?;
     let (generation_enabled, wind_config) = configured_wind(&config);
 
     let (engine, source_plan) = if generation_enabled {
         let explicit_sources = resolve_explicit_sources(&project_root, &args.source);
-        for (authored, absolute) in &explicit_sources {
-            match source_glob_matches_file(absolute) {
-                Ok(true) => {}
-                Ok(false) => validation_errors.push(format!(
-                    "--source glob {authored:?} matched zero files (resolved as {})",
-                    absolute.display()
-                )),
-                Err(error) => validation_errors.push(format!(
-                    "invalid --source glob {authored:?} (resolved as {}): {error:#}",
-                    absolute.display()
-                )),
-            }
-        }
+        validation_errors.extend(explicit_source_errors(&explicit_sources));
         bail_collected(validation_errors)?;
         let authored = authored_css_bundle(&input, &project_root)?;
         let (plan, warnings) = build_standalone_wind_source_plan(
@@ -150,6 +140,11 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
             source_plan,
         })
         .context("wind CSS compilation failed")?;
+    for diagnostic in &emitted.diagnostics {
+        if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+            crate::output::warn(diagnostic.render());
+        }
+    }
 
     let mut output_errors = Vec::new();
     if !emitted.companions.is_empty() {
@@ -242,7 +237,10 @@ fn absolute_path(base: &Path, path: &Path) -> PathBuf {
     normalized
 }
 
-fn resolve_explicit_sources(project_root: &Path, sources: &[String]) -> Vec<(String, PathBuf)> {
+pub(crate) fn resolve_explicit_sources(
+    project_root: &Path,
+    sources: &[String],
+) -> Vec<(String, PathBuf)> {
     let mut seen = HashSet::new();
     sources
         .iter()
@@ -254,6 +252,25 @@ fn resolve_explicit_sources(project_root: &Path, sources: &[String]) -> Vec<(Str
             )
         })
         .collect()
+}
+
+/// One message per explicit `--source` that is invalid or matches no file.
+pub(crate) fn explicit_source_errors(explicit_sources: &[(String, PathBuf)]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (authored, absolute) in explicit_sources {
+        match source_glob_matches_file(absolute) {
+            Ok(true) => {}
+            Ok(false) => errors.push(format!(
+                "--source glob {authored:?} matched zero files (resolved as {})",
+                absolute.display()
+            )),
+            Err(error) => errors.push(format!(
+                "invalid --source glob {authored:?} (resolved as {}): {error:#}",
+                absolute.display()
+            )),
+        }
+    }
+    errors
 }
 
 fn contains_glob_meta(component: &std::ffi::OsStr) -> bool {
@@ -336,30 +353,13 @@ fn paths_resolve_same(input: &Path, output: &Path) -> bool {
     input.is_some() && input == output
 }
 
-const FORBIDDEN_WIND_DIRECTIVES: &[&str] = &[
-    "import",
-    "tailwind",
-    "theme",
-    "source",
-    "custom-variant",
-    "apply",
-    "utility",
-    "variant",
-    "plugin",
-    "config",
-    "reference",
-    "--spacing",
-    "--alpha",
-    "--value",
-];
-
 fn authored_css_bundle(entry: &Path, project_root: &Path) -> Result<zfb_css::AuthoredCssBundle> {
     let raw = std::fs::read_to_string(entry)
         .with_context(|| format!("failed to read CSS input {}", entry.display()))?;
-    check_leftover_directives(&raw, entry)?;
     // Inspect the entry before resolving any imports. The shared resolver
     // skips Tailwind's virtual import by design; the token-aware scan must
     // reject it first, including on wind:false.
+    let mut stylesheets = vec![(entry.to_path_buf(), raw.clone())];
     for stylesheet in zfb_css::resolve_css_imports(entry, project_root) {
         let css = std::fs::read_to_string(&stylesheet).with_context(|| {
             format!(
@@ -367,24 +367,10 @@ fn authored_css_bundle(entry: &Path, project_root: &Path) -> Result<zfb_css::Aut
                 stylesheet.display()
             )
         })?;
-        check_leftover_directives(&css, &stylesheet)?;
+        stylesheets.push((stylesheet, css));
     }
+    zfb_css::check_forbidden_directives(&stylesheets)?;
     zfb_css::bundle_authored_css_with_assets(entry, project_root, &raw)
-}
-
-fn check_leftover_directives(css: &str, path: &Path) -> Result<()> {
-    let leftover = zfb_css::scan_leftover_directives(css, FORBIDDEN_WIND_DIRECTIVES);
-    if let Some(directive) = leftover.first() {
-        bail!(
-            "ZW009: forbidden {} at {}:{}:{}; migrate this stylesheet to zudo-wind: {}",
-            directive.name,
-            path.display(),
-            directive.line,
-            directive.column,
-            "/docs/zudo-wind/coming-from-tailwind/"
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -407,6 +393,7 @@ mod tests {
             input: PathBuf::from("entry.css"),
             output: PathBuf::from("dist/out.css"),
             project_root: None,
+            config: None,
             source: Vec::new(),
             no_auto_source: false,
             code_highlight_mode: None,

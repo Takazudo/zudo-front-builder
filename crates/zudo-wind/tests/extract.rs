@@ -263,3 +263,85 @@ fn page_and_toggle_fixtures_keep_arbitrary_and_variant_candidates() {
         assert!(toggle.contains(&item.to_owned()));
     }
 }
+
+#[test]
+fn module_specifiers_urls_and_non_class_attributes_are_not_candidates() {
+    let source = br#"import "../styles/global.css";
+import { useState } from "preact/hooks";
+import path from "node:path";
+export { thing } from "./types.js";
+const lazy = await import("virtual:widgets");
+const legacy = require("./legacy.cjs");
+const svg = "http://www.w3.org/2000/svg";
+const name = "flex";
+export const Page = () => (
+  <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <link rel="stylesheet" href="/assets/app.css" />
+    </head>
+    <body className="grid gap-2">
+      <a href="/">Back to checks</a>
+      <img src="./logo.svg" alt="block" />
+      <p className={cx("p-4", active && "text-accent")}>x</p>
+    </body>
+  </html>
+);
+"#;
+    let found = names(source, SourceKind::Tsx);
+    for noise in [
+        "../styles/global.css",
+        "preact/hooks",
+        "node:path",
+        "./types.js",
+        "virtual:widgets",
+        "./legacy.cjs",
+        "http://www.w3.org/2000/svg",
+        "viewport",
+        "width=device-width,",
+        "initial-scale=1",
+        "stylesheet",
+        "/assets/app.css",
+        "/",
+        "./logo.svg",
+    ] {
+        assert!(!found.contains(&noise.to_owned()), "{noise}: {found:?}");
+    }
+    for kept in ["grid", "gap-2", "p-4", "text-accent", "flex", "block"] {
+        assert!(found.contains(&kept.to_owned()), "{kept}: {found:?}");
+    }
+}
+
+#[test]
+fn style_element_css_and_hidden_inputs_are_not_candidates() {
+    let source = br#"const critical = `.x { display: grid }`;
+export const Layout = () => (
+  <>
+    <style>{`.card { display: flex }`}</style>
+    <style rawHtml={`.box { position: absolute }`} />
+    <input type="hidden" name="token" className="sr-only" />
+  </>
+);
+"#;
+    let found = names(source, SourceKind::Tsx);
+    for noise in ["flex", "absolute", "hidden", "token"] {
+        assert!(!found.contains(&noise.to_owned()), "{noise}: {found:?}");
+    }
+    assert!(found.contains(&"sr-only".to_owned()), "{found:?}");
+    assert!(
+        found.contains(&"grid".to_owned()),
+        "an unattributed template stays conservative: {found:?}"
+    );
+}
+
+#[test]
+fn unknown_template_text_stays_conservatively_scanned() {
+    let found = names(
+        b"const css = `.a { display: flex }`;\nconst key = `user-${id}-hidden`;",
+        SourceKind::Ts,
+    );
+    assert!(
+        found.contains(&"flex;".to_owned()) || found.contains(&"flex".to_owned()),
+        "{found:?}"
+    );
+}

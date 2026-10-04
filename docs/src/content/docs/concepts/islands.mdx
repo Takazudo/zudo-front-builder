@@ -28,7 +28,32 @@ export default function Counter() {
 }
 ```
 
-That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
+`"use client"` makes a module's exports eligible as island targets. A function is registered for hydration only when a reachable page uses it as the single component child of the SDK's `<Island>` boundary. A client module may re-export a function defined elsewhere; imports and resources used by a registered function still reach the browser through the normal bundle graph.
+
+## Boundary discovery and migration
+
+Only concrete targets of reachable `<Island>` boundaries receive public markers. Exporting a function from a client module, capitalizing its name, or returning JSX does not register it by itself. Unused helpers can keep the same name in multiple modules; they do not need renaming.
+
+The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
+
+For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child:
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import { Counter } from "./counter";
+
+<Island><Counter /></Island>;
+```
+
+Dynamic child selection is rejected during a production build. Put the condition around separate concrete boundaries instead of choosing one function inside a boundary:
+
+```tsx
+{showCounter
+  ? <Island><Counter /></Island>
+  : <Island><Summary /></Island>}
+```
+
+If a collision diagnostic identifies two different target functions, rename one defining function, or fix an import or package export that resolves to the wrong definition. Import and re-export aliases do not change a function's marker. `displayName` may be absent or match the function's real name; it cannot rename a target. For a default target that needs a stable name, use `export default function Counter() { ... }`.
 
 `components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed. This shortened illustration shows the pattern; the shipped template also uses `Show` for its icon and includes utility classes and SVG markup:
 
@@ -160,7 +185,7 @@ On builds that include at least one island, **one `<script>` tag** is injected p
 <script type="module" src="/assets/islands-<hash>.js"></script>
 ```
 
-The shared islands bundle (`islands-<hash>.js`) contains all island components. It registers each one by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which checks wrapper metadata, reads the JSON `data-props`, and adopts the existing child DOM when the scheduled entry runs.
+The shared islands bundle (`islands-<hash>.js`) contains registered island targets and their required bundle dependencies. It registers each target by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which checks wrapper metadata, reads the JSON `data-props`, and adopts the existing child DOM when the scheduled entry runs.
 
 ### Observing mount state
 
@@ -515,6 +540,8 @@ export default function Layout({ children }) {
 This is the right tool for synchronous pre-hydration work that must run before the stylesheet parses (FOUC prevention, theme init, analytics setup).
 
 **External scripts** — reference any `.js` file from `public/` or a CDN:
+
+Standard script attributes such as `defer`, `async`, and `nonce` are supported directly in JSX. Keep external scripts as ordinary elements; `rawHtml` is for trusted inline script text.
 
 ```tsx
 <script src="/scripts/analytics.js" defer />

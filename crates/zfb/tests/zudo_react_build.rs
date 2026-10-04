@@ -1,4 +1,6 @@
-//! Real owned-runtime SSR build, registered in the unlocked heavy lane.
+//! Real owned-runtime SSR builds, registered in the unlocked heavy lane. The
+//! `diagnostics` fixture checks build-only render diagnostics: authored span,
+//! structural context and generated stack, with no staging path as location.
 
 use std::fs;
 use std::path::Path;
@@ -98,6 +100,19 @@ fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
         "highlight markup missing or escaped: {mdx}"
     );
     assert!(!mdx.contains("data-zfb-content-fallback"), "{mdx}");
+    // #3621: a highlighted line quoting an island marker stays display-only text.
+    assert!(
+        mdx.contains("data-zfb-island=&quot;[^&quot;]*&quot;"),
+        "quoted island marker missing from highlighted code: {mdx}"
+    );
+    assert!(
+        mdx.contains("&lt;div data-zfb-island=&quot;Demo&quot;&gt;"),
+        "escaped island tag missing from highlighted code: {mdx}"
+    );
+    assert!(
+        !mdx.contains("data-zfb-island=\"") && !mdx.contains("<!--zr:1:"),
+        "highlighted code created a reserved boundary: {mdx}"
+    );
 }
 
 #[test]
@@ -214,4 +229,175 @@ fn owned_island_build_rejects_conflicting_display_name() {
         diagnostic.contains("ZR_ISLAND_IDENTITY") && diagnostic.contains("Wrong"),
         "{diagnostic}"
     );
+}
+
+/// Build-only (no preceding `zfb check`) run of the `diagnostics` fixture after
+/// `edit` rewrites it. Returns the CLI's combined output of the failed build.
+fn failed_diagnostics_build(edit: impl FnOnce(&Path)) -> String {
+    let esbuild = locate_esbuild().expect("render diagnostic build requires esbuild");
+    let temp = tempfile::tempdir().unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/diagnostics");
+    copy_dir(&fixture, temp.path());
+    edit(temp.path());
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build");
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "build should fail:\n{text}");
+    text
+}
+
+fn assert_no_internal_primary_location(output: &str) {
+    for leaked in [
+        "zfb-bundler-",
+        "zfb-shadow-session-",
+        "[zfb-render-diagnostic]",
+        " — internal frame zfb-",
+    ] {
+        assert!(!output.contains(leaked), "leaked {leaked:?}:\n{output}");
+    }
+}
+
+fn replace_in(root: &Path, file: &str, from: &str, to: &str) {
+    let path = root.join(file);
+    let source = fs::read_to_string(&path).unwrap();
+    assert!(source.contains(from), "{file} lacks {from:?}");
+    fs::write(&path, source.replace(from, to)).unwrap();
+}
+
+#[test]
+fn build_only_dialect_error_reports_the_authored_element_span() {
+    let output = failed_diagnostics_build(|_| {});
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7"
+        ),
+        "{output}"
+    );
+    // The worker's structural message and generated-bundle stack follow the span.
+    assert!(
+        output.contains(
+            "ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root[1] in static render"
+        ),
+        "{output}"
+    );
+    assert!(output.contains("file:///zfb/bundle.mjs:"), "{output}");
+    assert_no_internal_primary_location(&output);
+}
+
+#[test]
+fn build_only_charset_error_points_at_the_layout() {
+    let output = failed_diagnostics_build(|root| {
+        replace_in(
+            root,
+            "layouts/document.tsx",
+            "<meta charset=",
+            "<meta charSet=",
+        );
+        replace_in(
+            root,
+            "components/search-field.tsx",
+            "autoComplete=",
+            "autocomplete=",
+        );
+    });
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[0][0]: use `charset` instead of `charSet` — at layouts/document.tsx:5:9"
+        ),
+        "{output}"
+    );
+    assert_no_internal_primary_location(&output);
+}
+
+#[test]
+fn build_only_h_description_keeps_structural_context_without_a_span() {
+    let output = failed_diagnostics_build(|root| {
+        fs::write(
+            root.join("components/search-field.tsx"),
+            "import { h } from \"@takazudo/zfb/zudo-react\";\n\nexport function SearchField() {\n  return h(\"form\", { role: \"search\" }, h(\"input\", { name: \"q\", autoComplete: \"off\" }));\n}\n",
+        )
+        .unwrap();
+    });
+    assert!(
+        output.contains(
+            "[zudo-react] ZR_PROP_DIALECT render static-render root[1]: use `autocomplete` instead of `autoComplete`"
+        ),
+        "{output}"
+    );
+    assert!(!output.contains(" — at "), "{output}");
+    assert!(!output.contains("search-field.tsx:"), "{output}");
+    assert_no_internal_primary_location(&output);
+}
+
+const PREACT_PRAGMA_WARNING: &str = "zfb warn: components/search-field.tsx:1:5: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
+
+fn add_preact_pragma(root: &Path) {
+    replace_in(
+        root,
+        "components/search-field.tsx",
+        "export function SearchField",
+        "/** @jsxImportSource preact */\nexport function SearchField",
+    );
+    replace_in(
+        root,
+        "components/search-field.tsx",
+        "autoComplete=",
+        "autocomplete=",
+    );
+}
+
+#[test]
+fn foreign_pragma_without_preact_is_named_before_the_unresolved_runtime() {
+    let output = failed_diagnostics_build(add_preact_pragma);
+    let warning = output
+        .find(PREACT_PRAGMA_WARNING)
+        .unwrap_or_else(|| panic!("missing pragma warning:\n{output}"));
+    assert!(
+        output.contains(
+            "Remove the pragma, or change it to `@jsxImportSource @takazudo/zfb/zudo-react`"
+        ),
+        "{output}"
+    );
+    let unresolved = output
+        .find("Could not resolve \"preact/jsx-runtime\"")
+        .unwrap_or_else(|| panic!("expected the esbuild failure:\n{output}"));
+    assert!(warning < unresolved, "{output}");
+    assert_eq!(output.matches(PREACT_PRAGMA_WARNING).count(), 1, "{output}");
+}
+
+#[test]
+fn foreign_pragma_with_a_resolvable_runtime_is_named_before_the_render_failure() {
+    // Stand-in for a still-installed Preact: the pragma's runtime resolves and
+    // returns objects the owned renderer rejects.
+    let output = failed_diagnostics_build(|root| {
+        add_preact_pragma(root);
+        fs::create_dir_all(root.join("shim")).unwrap();
+        fs::write(
+            root.join("shim/preact-jsx-runtime.js"),
+            "export function jsx(type, props) {\n  return { type, props };\n}\nexport const jsxs = jsx;\nexport const Fragment = \"fragment\";\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"jsxImportSource\": \"@takazudo/zfb/zudo-react\",\n    \"baseUrl\": \".\",\n    \"paths\": { \"preact/jsx-runtime\": [\"./shim/preact-jsx-runtime.js\"] }\n  }\n}\n",
+        )
+        .unwrap();
+    });
+    let warning = output
+        .find(PREACT_PRAGMA_WARNING)
+        .unwrap_or_else(|| panic!("missing pragma warning:\n{output}"));
+    let render = output
+        .find("ZR_")
+        .unwrap_or_else(|| panic!("expected a render diagnostic:\n{output}"));
+    assert!(warning < render, "{output}");
+    assert!(!output.contains("Could not resolve"), "{output}");
 }

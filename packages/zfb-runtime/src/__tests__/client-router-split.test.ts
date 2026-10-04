@@ -14,7 +14,7 @@
 //      Proven here as a cheap unit test rather than relying primarily on
 //      the env-gated e2e for this contract.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./client-router/_helpers.js";
 

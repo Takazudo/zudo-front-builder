@@ -17,7 +17,7 @@
 // opted into view transitions AND has no existing history.state, so both
 // preconditions are set up explicitly before each exercise.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 

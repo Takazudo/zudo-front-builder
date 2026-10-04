@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 
@@ -32,7 +32,10 @@ function unpackPackage(name: string): string {
   const packDir = join(root, "pack");
   mkdirSync(packDir, { recursive: true });
   execFileSync("pnpm", ["pack", "--pack-destination", packDir], { cwd: packageRoot });
-  const archive = join(packDir, readdirSync(packDir).find((name) => name.endsWith(".tgz"))!);
+  const archive = join(
+    packDir,
+    readdirSync(packDir).find((name) => name.endsWith(".tgz"))!,
+  );
   assertPackedArchive(archive);
   const unpacked = join(root, "unpacked");
   mkdirSync(unpacked);

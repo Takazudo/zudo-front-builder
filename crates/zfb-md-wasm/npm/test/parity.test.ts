@@ -52,7 +52,7 @@
 //      are plain JSON-shaped values (strings/numbers/booleans/null/arrays/
 //      objects with a fixed key set). `JSON.parse` then `JSON.stringify`
 //      normalizes away source formatting (the committed oracle files are
-//      prettier-formatted multi-line JSON; the wasm wire string is compact)
+//      Oxfmt-formatted multi-line JSON; the wasm wire string is compact)
 //      while preserving key order, so comparing the re-serialized strings
 //      is an exact value-identity check. The oracle and the wasm build run
 //      the identical Rust serialization code (serde_json, same struct
@@ -83,7 +83,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 
 import { compile, renderHtml } from "../dist/index.js";
 import type { ZfbMdWasmOptions } from "../dist/index.js";

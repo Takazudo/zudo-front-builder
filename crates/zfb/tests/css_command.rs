@@ -2,8 +2,9 @@
 //!
 //! The tests inspect the bytes and diagnostics from the built CLI. Fixtures
 //! live below `tests/fixtures/css-*` and are copied to isolated projects before
-//! each invocation. Only the build-parity case needs esbuild; CSS-only cases
-//! run without external binaries or skip paths.
+//! each invocation. Only the build-parity case and the packed library
+//! consumer (which also needs npm) use esbuild; CSS-only cases run without
+//! external binaries or skip paths.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -419,6 +420,73 @@ fn css_command_partial_explicit_source_exclusion_warns_and_keeps_accepted_classe
 }
 
 #[test]
+fn css_command_wind_sources_exclude_tests_and_scan_declared_package_root() {
+    let temp = tempfile::tempdir().expect("create wind sources fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(temp.path().join(".gitignore"), "node_modules\ndist\n").expect("write .gitignore");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"],"packageRoots":["@fixture/ui"]}}}"#,
+    )
+    .expect("write wind sources config");
+    for (relative, class_name) in [
+        ("src/a.tsx", "flex"),
+        ("src/__tests__/a.test.tsx", "grid"),
+        ("node_modules/@fixture/ui/dist/route.js", "block"),
+    ] {
+        let path = temp.path().join(relative);
+        fs::create_dir_all(path.parent().expect("source file parent"))
+            .expect("create source directory");
+        fs::write(path, format!("export const c = \"{class_name}\";\n"))
+            .expect("write source file");
+    }
+
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&output, "wind.sources exclusion and package root");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "project utility is missing:\n{css}");
+    assert!(
+        css.contains(".block"),
+        "package-root utility is missing:\n{css}"
+    );
+    assert!(
+        !css.contains(".grid"),
+        "excluded test utility was emitted:\n{css}"
+    );
+
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/__tests__/a.test.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&output, "explicit source excluded by wind.sources");
+    let stderr = process_stderr(&output);
+    assert!(stderr.contains("ZW010"), "{stderr}");
+    assert!(stderr.contains("src/**/__tests__/**"), "{stderr}");
+}
+
+#[test]
+fn css_command_rejects_malformed_wind_source_exclusion() {
+    let temp = explicit_source_exclusion_fixture();
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"sources":{"exclude":["src/["]}}}"#,
+    )
+    .expect("write malformed wind sources config");
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&output, "malformed wind.sources.exclude");
+    let stderr = process_stderr(&output);
+    assert!(
+        stderr.contains("wind.sources.exclude[0] \"src/[\" declared by project"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn css_command_custom_out_dir_allows_dist_as_an_explicit_source() {
     let temp = explicit_source_exclusion_fixture();
     fs::write(
@@ -815,6 +883,48 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
 }
 
 #[test]
+fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let fixture = temp.path().join("src/__tests__/a.test.tsx");
+    fs::create_dir_all(fixture.parent().expect("fixture parent")).expect("create fixture dir");
+    fs::write(
+        &fixture,
+        "export default () => <div class=\"bg-missing\" />;\n",
+    )
+    .expect("write excluded fixture");
+
+    for (flags, mode) in [
+        (&[][..], "standalone"),
+        (&["--plan", "standalone"][..], "standalone"),
+        (&["--plan", "build"][..], "build"),
+    ] {
+        let output = run_wind_audit(temp.path(), flags);
+        let stdout = process_stdout(&output);
+        let stderr = process_stderr(&output);
+        assert!(
+            output.status.success(),
+            "{mode} audit should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("wind audit plan: {mode}\n")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("  root default/src src "), "{stdout}");
+        assert!(
+            stdout.contains("  excluded src/**/__tests__/** (wind.sources.exclude from project)"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("bg-missing"),
+            "an excluded source reached the {mode} audit:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn wind_audit_clean_project_succeeds_with_complete_report() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,
@@ -1100,4 +1210,871 @@ fn wind_audit_malformed_manifest_names_its_path_on_stderr() {
         stderr.contains(&manifest_path.display().to_string()),
         "stderr should name the malformed manifest path:\n{stderr}"
     );
+}
+
+/// One-file wind project for the #3523–#3525 classification contracts.
+fn wind_classification_fixture(wind: &str, source: &str) -> TempDir {
+    let temp = tempfile::tempdir().expect("create wind classification fixture tempdir");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write project package.json");
+    fs::write(temp.path().join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        format!(r#"{{"wind":{wind}}}"#),
+    )
+    .expect("write wind config");
+    let path = temp.path().join("src/card.tsx");
+    fs::create_dir_all(path.parent().expect("source parent")).expect("create src");
+    fs::write(path, source).expect("write source");
+    temp
+}
+
+fn run_wind_classification_css(project_root: &Path) -> Output {
+    run_css(
+        project_root,
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    )
+}
+
+#[test]
+fn css_command_bem_reset_only_project_builds() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1,"reset":"owned-v1"}"#,
+        "export const N = () => <aside class=\"admonition__title card_title block__el--mod flex\" />;\n",
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "BEM and snake_case authored classes");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(
+        css.contains(".flex"),
+        "utility beside BEM names is missing:\n{css}"
+    );
+    for authored in ["admonition__title", "card_title", "block__el--mod"] {
+        assert!(!css.contains(authored), "{authored} generated CSS:\n{css}");
+    }
+}
+
+#[test]
+fn css_command_conditional_ring_and_const_aria_fail_with_provenance() {
+    let temp = wind_classification_fixture(
+        r##"{"spec":1,"tokens":{"spacingUnit":"0.25rem","colors":{"accent":"#06c","muted":"#888","soft":"#eee"}}}"##,
+        concat!(
+            "const linkClass = \"px-3 aria-[current=page]:bg-soft\";\n",
+            "export const B = ({ on }) => (\n",
+            "  <button class={`flex border ${on ? \"border-accent ring-2\" : \"border-muted\"}`}>\n",
+            "    <a class={linkClass}>x</a>\n",
+            "  </button>\n",
+            ");\n",
+        ),
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_failure(&output, "unsupported tokens in proven class expressions");
+    let stderr = process_stderr(&output);
+    assert!(stderr.contains("ZW004"), "{stderr}");
+    let diagnostic_at = |location: &str, diagnostic: &str| {
+        stderr
+            .lines()
+            .any(|line| line.contains(location) && line.contains(diagnostic))
+    };
+    assert!(
+        diagnostic_at("card.tsx:3:", "ZW004 ring-2: "),
+        "ring-2 must name its own line:\n{stderr}"
+    );
+    assert!(
+        diagnostic_at("card.tsx:1:", "ZW004 aria-[current=page]:bg-soft: "),
+        "const aria candidate must name its declaration:\n{stderr}"
+    );
+    assert!(
+        !temp.path().join("out.css").exists(),
+        "a failed run must not publish CSS"
+    );
+}
+
+#[test]
+fn css_command_foreign_names_warn_by_default_and_fail_under_strict() {
+    let source = "export const C = () => <p class=\"line-clamp-2 flex\" />;\n";
+    let temp = wind_classification_fixture(r#"{"spec":1}"#, source);
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "foreign utility at a class position, default");
+    let combined = combined_output(&output);
+    assert!(
+        combined.contains("ZW014") && combined.contains("line-clamp-2"),
+        "default run must warn:\n{combined}"
+    );
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "{css}");
+    assert!(
+        !css.contains("line-clamp"),
+        "no CSS for a foreign name:\n{css}"
+    );
+
+    let strict = wind_classification_fixture(r#"{"spec":1,"strict":true}"#, source);
+    let output = run_wind_classification_css(strict.path());
+    assert_failure(&output, "foreign utility at a class position, strict");
+    let stderr = process_stderr(&output);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("card.tsx:1:") && line.contains("ZW014 line-clamp-2: ")),
+        "strict foreign name must keep its location:\n{stderr}"
+    );
+}
+
+#[test]
+fn css_command_unrelated_literals_never_become_strict() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1,"strict":true}"#,
+        concat!(
+            "const unused = \"line-clamp-2 ring-2\";\n",
+            "it(\"renders container contents\", () => {});\n",
+            "export const D = () => <div class=\"flex\" />;\n",
+        ),
+    );
+    let output = run_wind_classification_css(temp.path());
+    assert_success(&output, "strict mode with unrelated literals");
+    let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
+    assert!(css.contains(".flex"), "{css}");
+}
+
+fn run_wind_explain_stdin(project_root: &Path, input: &str, flags: &[&str]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(zfb_binary!())
+        .args(["wind", "explain", "--stdin", "--project-root"])
+        .arg(project_root)
+        .args(flags)
+        .current_dir(project_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn `zfb wind explain --stdin`");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write candidates");
+    child
+        .wait_with_output()
+        .expect("wait for `zfb wind explain`")
+}
+
+#[test]
+fn css_command_failures_list_each_location_once_on_stderr() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1}"#,
+        "// 日本語\r\nexport const A = () => <div class=\"rounded-missing\" />;\r\nexport const B = () => <p class=\"rounded-missing\" />;\r\n",
+    );
+    let other = temp.path().join("src/other.tsx");
+    fs::write(
+        &other,
+        "export const C = () => <i class=\"rounded-missing\" />;\n",
+    )
+    .expect("write second source");
+    let output = run_wind_classification_css(temp.path());
+    assert_failure(&output, "unknown token in two files");
+    assert!(
+        process_stdout(&output).is_empty(),
+        "failures stay off stdout"
+    );
+    let stderr = process_stderr(&output);
+    let lines: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("ZW006 rounded-missing: "))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "one line per distinct occurrence:\n{stderr}"
+    );
+    let column = "export const A = () => <div class=\"".len() + 1;
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&format!("card.tsx:2:{column}: "))),
+        "{stderr}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("other.tsx:1:")),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("; ZW006"),
+        "no semicolon-joined list:\n{stderr}"
+    );
+}
+
+#[test]
+fn css_command_reports_every_forbidden_directive_in_one_run() {
+    let temp = tempfile::tempdir().expect("create directive fixture");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write package.json");
+    fs::write(
+        temp.path().join("entry.css"),
+        "@import \"./theme.css\";\n@theme {}\n@theme static {}\n@source \"x\";\n",
+    )
+    .expect("write entry");
+    fs::write(
+        temp.path().join("theme.css"),
+        ".a { color: red; }\n@apply p-1;\n",
+    )
+    .expect("write imported stylesheet");
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&output, "several forbidden directives");
+    let stderr = process_stderr(&output);
+    for location in [
+        "entry.css:2:1",
+        "entry.css:3:1",
+        "entry.css:4:1",
+        "theme.css:2:1",
+    ] {
+        assert!(
+            stderr.contains(&format!("{location}: ZW009")),
+            "{location}:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn wind_audit_json_is_stable_and_severity_never_changes_the_verdict() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "import { h } from \"preact/hooks\";\nexport default () => <div class=\"rounded-missing\" />;\n",
+    );
+    let full = run_wind_audit(temp.path(), &["--json"]);
+    assert!(full.status.success(), "{}", combined_output(&full));
+    let stdout = process_stdout(&full);
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("{error}:\n{stdout}"));
+    assert_eq!(document["schemaVersion"], 1);
+    assert_eq!(document["command"], "audit");
+    assert_eq!(document["coverage"]["mode"], "standalone");
+    let diagnostic = document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["candidate"] == "rounded-missing")
+        .expect("diagnostic for the unknown token");
+    let origin = &diagnostic["origin"];
+    assert_eq!(origin["line"], 2);
+    assert!(origin["byteColumn"].as_u64().unwrap() > 1);
+    assert!(origin["byteOffset"].as_u64().unwrap() > origin["byteColumn"].as_u64().unwrap());
+    assert!(
+        !stdout.contains("preact/hooks"),
+        "module specifier noise:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("wind audit plan:"),
+        "no prose on stdout:\n{stdout}"
+    );
+    assert_eq!(run_wind_audit(temp.path(), &["--json"]).stdout, full.stdout);
+
+    for (severity, expected_info) in [("auditInfo", true), ("warning", false), ("error", false)] {
+        let filtered = run_wind_audit(temp.path(), &["--json", "--severity", severity]);
+        let value: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
+        let has_info = value["report"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["severity"] == "auditInfo");
+        assert!(!has_info || expected_info, "{severity}: {value}");
+        let strict = run_wind_audit(temp.path(), &["--fail-on", "error", "--severity", severity]);
+        assert!(
+            !strict.status.success(),
+            "{severity} filter must not hide the verdict"
+        );
+    }
+}
+
+#[test]
+fn wind_explain_batch_keeps_order_duplicates_and_leading_dashes() {
+    let temp = wind_audit_fixture(r#"{"wind":{"spec":1}}"#, "export default () => null;\n");
+    let output = run_wind_explain_stdin(
+        temp.path(),
+        "block\n\n-mt-px\nblock\nnot-a-utility\n",
+        &["--json"],
+    );
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schemaVersion"], 1);
+    let candidates: Vec<_> = document["explanations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|explanation| explanation["candidate"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(candidates, ["block", "-mt-px", "block", "not-a-utility"]);
+
+    let single = Command::new(zfb_binary!())
+        .args(["wind", "explain", "--project-root"])
+        .arg(temp.path())
+        .args(["--", "-mt-px"])
+        .output()
+        .expect("spawn explain");
+    assert!(single.status.success(), "{}", combined_output(&single));
+    assert!(process_stdout(&single).contains("-mt-px"));
+}
+
+#[test]
+fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"reset":"owned-v1"}}"#,
+        concat!(
+            "import \"../styles/global.css\";\n",
+            "export default () => (\n",
+            "  <html>\n",
+            "    <head>\n",
+            "      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n",
+            "      <style>{`.card { display: flex; }`}</style>\n",
+            "    </head>\n",
+            "    <body>\n",
+            "      <a href=\"/\">Back to checks</a>\n",
+            "      <input type=\"hidden\" name=\"token\" />\n",
+            "    </body>\n",
+            "  </html>\n",
+            ");\n",
+        ),
+    );
+    let output = run_wind_audit(temp.path(), &["--json"]);
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        document["report"]["diagnostics"],
+        serde_json::json!([]),
+        "standard markup must not produce audit noise"
+    );
+
+    fs::write(temp.path().join("entry.css"), "").expect("write entry");
+    let css = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&css, "markup without utilities");
+    let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap_or_default();
+    for selector in [".flex", ".hidden"] {
+        assert!(!emitted.contains(selector), "{selector} leaked:\n{emitted}");
+    }
+}
+
+/// A package with no site config or pages, plus a sibling directory holding
+/// the zfb config its consumers use (#3531).
+fn package_with_external_config_fixture() -> TempDir {
+    let temp = tempfile::tempdir().expect("create package fixture");
+    let package = temp.path().join("pkg");
+    let shared = temp.path().join("shared");
+    fs::create_dir_all(package.join("src")).expect("create package src");
+    fs::create_dir_all(&shared).expect("create shared config dir");
+    fs::write(package.join("package.json"), "{}\n").expect("write package.json");
+    fs::write(package.join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(
+        package.join("src/a.tsx"),
+        "export const A = () => <div class=\"bg-surface p-hsp-sm\" />;\n",
+    )
+    .expect("write package source");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"manifests":{"widgets":{"path":"./widgets.json"}}}}"##,
+    )
+    .expect("write shared config");
+    fs::write(
+        shared.join("widgets.json"),
+        r#"{"schemaVersion":1,"specVersion":1,"producer":"widgets","candidates":["m-hsp-sm"]}"#,
+    )
+    .expect("write shared manifest");
+    temp
+}
+
+#[test]
+fn css_command_compiles_a_package_with_an_explicit_config_file() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+
+    let without = run_css(
+        &package,
+        "entry.css",
+        "dist/pkg.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&without, "package tokens without --config");
+    assert!(
+        process_stderr(&without).contains("ZW006"),
+        "{}",
+        combined_output(&without)
+    );
+
+    let output = run_css(
+        &package,
+        "entry.css",
+        "dist/pkg.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source", "--config", "../shared/zfb.config.json"],
+    );
+    assert_success(&output, "package compiled against an explicit config");
+    let css = fs::read_to_string(package.join("dist/pkg.css")).expect("read package CSS");
+    for selector in [".bg-surface", ".p-hsp-sm", ".m-hsp-sm"] {
+        assert!(css.contains(selector), "{selector} missing:\n{css}");
+    }
+}
+
+#[test]
+fn wind_explain_and_audit_load_an_explicit_config_file() {
+    use std::io::Write;
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+
+    let mut child = Command::new(zfb_binary!())
+        .args([
+            "wind",
+            "explain",
+            "--stdin",
+            "--json",
+            "--config",
+            "../shared/zfb.config.json",
+        ])
+        .current_dir(&package)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn `zfb wind explain --config`");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"bg-surface\np-hsp-sm\nrounded-missing\n")
+        .expect("write candidates");
+    let output = child.wait_with_output().expect("wait for explain");
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let outcomes: Vec<_> = document["explanations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|explanation| explanation["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["resolved_utility", "resolved_utility", "invalid"]
+    );
+
+    let audit = Command::new(zfb_binary!())
+        .args([
+            "wind",
+            "audit",
+            "--json",
+            "--project-root",
+            ".",
+            "--config",
+            "../shared/zfb.config.json",
+            "--fail-on",
+            "error",
+        ])
+        .current_dir(&package)
+        .output()
+        .expect("spawn `zfb wind audit --config`");
+    assert!(audit.status.success(), "{}", combined_output(&audit));
+    let document: serde_json::Value = serde_json::from_slice(&audit.stdout).unwrap();
+    let manifests = document["coverage"]["manifests"].to_string();
+    assert!(manifests.contains("widgets"), "{manifests}");
+}
+
+fn run_wind_manifest(package: &Path, flags: &[&str]) -> Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "manifest"])
+        .args(flags)
+        .current_dir(package)
+        .output()
+        .expect("spawn `zfb wind manifest`")
+}
+
+const MANIFEST_FLAGS: &[&str] = &[
+    "--producer",
+    "ui",
+    "--output",
+    "dist/wind.json",
+    "--config",
+    "../shared/zfb.config.json",
+    "--project-root",
+    ".",
+    "--no-auto-source",
+    "--source",
+    "src/**/*.tsx",
+];
+
+#[test]
+fn wind_manifest_is_deterministic_and_keeps_only_resolved_candidates() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let shared = temp.path().join("shared");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"authoredClasses":{"widget":true},"safelist":{"app":["m-hsp-sm"]},"manifests":{"widgets":{"path":"./widgets.json"}}}}"##,
+    )
+    .expect("write shared config");
+    fs::write(
+        package.join("src/a.tsx"),
+        concat!(
+            "const tone = \"bg-missing\";\n",
+            "export const A = () => <div class=\"widget group p-hsp-sm bg-surface hello flex flex\" />;\n",
+        ),
+    )
+    .expect("write package source");
+
+    let first = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(first.status.success(), "{}", combined_output(&first));
+    let bytes = fs::read(package.join("dist/wind.json")).expect("read manifest");
+    let second = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(second.status.success(), "{}", combined_output(&second));
+    assert_eq!(
+        fs::read(package.join("dist/wind.json")).expect("reread manifest"),
+        bytes,
+        "repeated runs must write identical bytes"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        document,
+        serde_json::json!({
+            "schemaVersion": 1,
+            "specVersion": 1,
+            "producer": "ui",
+            "candidates": ["bg-surface", "flex", "group", "p-hsp-sm"],
+        })
+    );
+    let report = process_stdout(&first);
+    assert!(
+        report.contains("wind manifest plan: standalone"),
+        "{report}"
+    );
+    assert!(
+        report.contains("wind manifest ui: 4 candidates (1 markers)"),
+        "{report}"
+    );
+    assert!(
+        report.contains("excluded 1 authored classes, 1 ordinary words, 1 low-confidence words"),
+        "{report}"
+    );
+
+    let json = run_wind_manifest(&package, &[MANIFEST_FLAGS, &["--json"]].concat());
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report["command"], "manifest");
+    assert_eq!(report["written"], true);
+    assert_eq!(
+        report["classification"]["ordinaryClasses"][0]["candidate"],
+        "hello"
+    );
+    assert_eq!(
+        report["classification"]["authoredClasses"][0]["candidate"],
+        "widget"
+    );
+    assert!(report["coverage"]["manifests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn wind_manifest_class_position_invalid_fails_and_preserves_previous_output() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let output = package.join("dist/wind.json");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::write(&output, "previous\n").unwrap();
+    fs::write(
+        package.join("src/a.tsx"),
+        "export const A = () => <div class=\"bg-surface bg-missing\" />;\n",
+    )
+    .expect("write package source");
+
+    let result = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert_failure(&result, "class-position invalid candidate");
+    let stdout = process_stdout(&result);
+    assert!(
+        stdout.lines().any(|line| line.contains("error ")
+            && line.contains("a.tsx:1:")
+            && line.contains("bg-missing")),
+        "{stdout}"
+    );
+    assert!(process_stderr(&result).contains("was not written"));
+    assert_eq!(fs::read_to_string(&output).unwrap(), "previous\n");
+
+    let empty = tempfile::tempdir().unwrap();
+    fs::write(
+        empty.path().join("zfb.config.json"),
+        r#"{"wind":{"spec":1}}"#,
+    )
+    .unwrap();
+    let config = empty.path().join("zfb.config.json");
+    let no_tokens = run_wind_manifest(
+        &package,
+        &[
+            "--producer",
+            "ui",
+            "--output",
+            "dist/wind.json",
+            "--config",
+            config.to_str().unwrap(),
+            "--project-root",
+            ".",
+            "--no-auto-source",
+            "--source",
+            "src/**/*.tsx",
+        ],
+    );
+    assert_failure(&no_tokens, "token utilities without tokens");
+    assert!(process_stdout(&no_tokens).contains("bg-surface"));
+    assert_eq!(fs::read_to_string(&output).unwrap(), "previous\n");
+}
+
+#[test]
+fn wind_manifest_rejects_invalid_producer_and_ignores_its_previous_output() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let mut flags = MANIFEST_FLAGS.to_vec();
+    flags[1] = "bad producer";
+    let invalid = run_wind_manifest(&package, &flags);
+    assert_failure(&invalid, "invalid producer id");
+    assert!(process_stderr(&invalid).contains("invalid --producer"));
+    assert!(!package.join("dist/wind.json").exists());
+
+    // The package declares its own previous output; a stale or invalid file
+    // there must neither fail the run nor feed it.
+    let shared = temp.path().join("shared");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"manifests":{"ui":{"path":"../pkg/dist/wind.json"}}}}"##,
+    )
+    .unwrap();
+    fs::create_dir_all(package.join("dist")).unwrap();
+    fs::write(
+        package.join("dist/wind.json"),
+        r#"{"schemaVersion":2,"candidates":["stale-entry"]}"#,
+    )
+    .unwrap();
+    let output = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(package.join("dist/wind.json")).unwrap()).unwrap();
+    assert_eq!(
+        document["candidates"],
+        serde_json::json!(["bg-surface", "p-hsp-sm"])
+    );
+}
+
+/// A package with no site config or pages: its styles compile against
+/// `wind.config.json`, and its preset ships the same tokens plus a manifest
+/// path relative to the package (#3533).
+fn wind_library_fixture(root: &Path) -> PathBuf {
+    let library = root.join("library");
+    fs::create_dir_all(library.join("src")).expect("create library src");
+    fs::create_dir_all(library.join("dist")).expect("create library dist");
+    fs::write(
+        library.join("package.json"),
+        r#"{
+  "name": "@fixture/wind-ui",
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["dist", "preset.mjs"],
+  "exports": {
+    "./ui.css": "./dist/ui.css",
+    "./wind.json": "./dist/wind.json",
+    "./preset": "./preset.mjs"
+  }
+}
+"#,
+    )
+    .expect("write library package.json");
+    let tokens =
+        r##"{"colors":{"surface":"#fff","accent":"#2563eb"},"spacing":{"hsp-sm":"0.5rem"}}"##;
+    fs::write(
+        library.join("wind.config.json"),
+        format!(r#"{{"wind":{{"spec":1,"tokens":{tokens},"authoredClasses":{{"card":true}}}}}}"#),
+    )
+    .expect("write library wind config");
+    fs::write(
+        library.join("preset.mjs"),
+        format!(
+            "import {{ definePreset }} from \"zfb/config\";\n\nexport default definePreset(\"@fixture/wind-ui\", {{\n  wind: {{\n    tokens: {tokens},\n    authoredClasses: {{ card: true }},\n    manifests: {{ \"wind-ui\": {{ path: \"./dist/wind.json\" }} }},\n  }},\n}});\n"
+        ),
+    )
+    .expect("write library preset");
+    fs::write(
+        library.join("src/card.tsx"),
+        "export const Card = () => <div class=\"card group bg-surface p-hsp-sm hover:bg-accent\" />;\n",
+    )
+    .expect("write library component");
+    fs::write(
+        library.join("src/styles.css"),
+        ".card { border: 1px solid var(--zw-color-accent); }\n",
+    )
+    .expect("write library stylesheet");
+    // A stale build artifact under the default outDir: scanning it would
+    // fail the manifest on an unknown token.
+    fs::write(
+        library.join("dist/legacy.tsx"),
+        "export const Legacy = () => <div class=\"bg-retired\" />;\n",
+    )
+    .expect("write stale dist source");
+    library
+}
+
+#[test]
+fn wind_library_manifest_reaches_a_packed_consumer() {
+    let npm = Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let Some(esbuild) = locate_esbuild().filter(|_| npm) else {
+        eprintln!("[wind_library_consumer] esbuild or npm unavailable; skipping");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("create library tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let library = wind_library_fixture(&root);
+    let library_flags = ["--config", "wind.config.json", "--source", "**/*.tsx"];
+
+    let css = run_css(
+        &library,
+        "src/styles.css",
+        "dist/ui.css",
+        None,
+        &[],
+        &library_flags,
+    );
+    assert_success(&css, "library CSS with an explicit config");
+    let library_css = fs::read_to_string(library.join("dist/ui.css")).expect("read library CSS");
+    for needle in [".bg-surface", ".p-hsp-sm", ".card"] {
+        assert!(library_css.contains(needle), "{needle}:\n{library_css}");
+    }
+    assert!(!library_css.contains("bg-retired"), "{library_css}");
+
+    let manifest = run_wind_manifest(
+        &library,
+        &[
+            &["--producer", "wind-ui", "--output", "dist/wind.json"][..],
+            &library_flags[..],
+        ]
+        .concat(),
+    );
+    assert!(manifest.status.success(), "{}", combined_output(&manifest));
+    assert!(
+        process_stderr(&manifest).contains("ZW010"),
+        "the stale dist/ match is reported as excluded:\n{}",
+        combined_output(&manifest)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(library.join("dist/wind.json")).unwrap()).unwrap();
+    assert_eq!(
+        document["candidates"],
+        serde_json::json!(["bg-surface", "group", "hover:bg-accent", "p-hsp-sm"])
+    );
+
+    fs::remove_file(library.join("dist/legacy.tsx")).expect("drop stale source before packing");
+    let tarballs = root.join("tarballs");
+    fs::create_dir_all(&tarballs).unwrap();
+    let packed = Command::new("npm")
+        .args(["pack", "--ignore-scripts", "--pack-destination"])
+        .arg(&tarballs)
+        .current_dir(&library)
+        .output()
+        .expect("spawn npm pack");
+    assert!(packed.status.success(), "{}", combined_output(&packed));
+    let tarball = fs::read_dir(&tarballs)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "tgz"))
+        .expect("npm pack created a tarball");
+
+    let consumer = root.join("consumer");
+    fs::create_dir_all(consumer.join("src")).unwrap();
+    fs::write(
+        consumer.join("package.json"),
+        r#"{"name":"consumer","private":true,"type":"module"}"#,
+    )
+    .unwrap();
+    let installed = Command::new("npm")
+        .args([
+            "install",
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--no-save",
+            "--package-lock=false",
+        ])
+        .arg(&tarball)
+        .current_dir(&consumer)
+        .output()
+        .expect("spawn npm install");
+    assert!(
+        installed.status.success(),
+        "{}",
+        combined_output(&installed)
+    );
+    fs::write(
+        consumer.join("zfb.config.ts"),
+        "import { defineConfig } from \"zfb/config\";\nimport ui from \"@fixture/wind-ui/preset\";\n\nexport default defineConfig({ presets: [ui] });\n",
+    )
+    .unwrap();
+    fs::write(consumer.join("entry.css"), "").unwrap();
+    fs::write(
+        consumer.join("with-ui.css"),
+        "@import \"@fixture/wind-ui/ui.css\";\n",
+    )
+    .unwrap();
+    fs::write(
+        consumer.join("src/app.tsx"),
+        "export const App = () => <main class=\"flex\" />;\n",
+    )
+    .unwrap();
+    let consumer_css = |input: &str| {
+        Command::new(zfb_binary!())
+            .args(["css", "--input", input, "--output", "dist/app.css"])
+            .args(["--no-auto-source", "--source", "src/**/*.tsx"])
+            .current_dir(&consumer)
+            .env("ZFB_ESBUILD_BIN", &esbuild)
+            .output()
+            .expect("spawn consumer `zfb css`")
+    };
+    // No authored CSS from the package: every package utility here comes
+    // from the manifest the installed preset declares.
+    let output = consumer_css("entry.css");
+    assert_success(&output, "consumer CSS through the installed preset");
+    let emitted = fs::read_to_string(consumer.join("dist/app.css")).unwrap();
+    for needle in [".flex", ".bg-surface", ".p-hsp-sm", "hover\\:bg-accent"] {
+        assert!(emitted.contains(needle), "{needle} missing:\n{emitted}");
+    }
+    assert!(!emitted.contains(".card"), "{emitted}");
+
+    let output = consumer_css("with-ui.css");
+    assert_success(&output, "consumer importing the package stylesheet export");
+    let emitted = fs::read_to_string(consumer.join("dist/app.css")).unwrap();
+    assert!(
+        emitted.contains("var(--zw-color-accent)"),
+        "the exported ui.css is imported:\n{emitted}"
+    );
+
+    // The token contract: the same manifest without the preset's tokens fails
+    // the consumer on its manifest entries instead of dropping them.
+    fs::remove_file(consumer.join("zfb.config.ts")).unwrap();
+    fs::write(
+        consumer.join("zfb.config.json"),
+        r#"{"wind":{"spec":1,"manifests":{"wind-ui":{"path":"@fixture/wind-ui/wind.json"}}}}"#,
+    )
+    .unwrap();
+    let no_tokens = run_css(
+        &consumer,
+        "entry.css",
+        "dist/app.css",
+        None,
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&no_tokens, "consumer without the package's tokens");
+    let stderr = process_stderr(&no_tokens);
+    assert!(stderr.contains("ZW006"), "{stderr}");
+    assert!(stderr.contains("manifest wind-ui"), "{stderr}");
 }

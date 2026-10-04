@@ -107,10 +107,16 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) {
         let value_end = i.min(bytes.len());
         if name == "class" || name == "className" {
             let (decoded, source_map) = entities(&tag[value_start..value_end]);
+            // An unterminated value has no closing quote inside the tag.
+            let close = if value_end < bytes.len() {
+                value_end + 1
+            } else {
+                value_end
+            };
             out.tokens(
                 &decoded,
                 base + value_start,
-                (base + open, value_end + 1 - open),
+                (base + open, close - open),
                 PositionKind::Class,
                 false,
                 false,

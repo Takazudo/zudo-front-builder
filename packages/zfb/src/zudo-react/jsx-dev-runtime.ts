@@ -1,5 +1,5 @@
-import { createDescription } from "./description.js";
-import type { Description, ElementType, Key } from "./description.js";
+import { createDescription, recordSite } from "./description.js";
+import type { CompilerSource, Description, ElementType, Key } from "./description.js";
 
 export { Fragment } from "./index.js";
 export type { JSX } from "./jsx-types.js";
@@ -9,8 +9,8 @@ export function jsxDEV(
   props: Record<string, unknown> | null,
   key: Key | undefined,
   _isStaticChildren: boolean,
-  _source: { fileName: string; lineNumber: number; columnNumber: number } | undefined,
+  source: CompilerSource | undefined,
   _self: unknown,
 ): Description {
-  return createDescription(type, props, key);
+  return recordSite(createDescription(type, props, key), source, jsxDEV);
 }

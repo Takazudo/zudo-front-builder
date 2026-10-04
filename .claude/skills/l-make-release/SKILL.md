@@ -386,7 +386,7 @@ pnpm install --lockfile-only
 
 This regenerates `pnpm-lock.yaml` (so CI's `pnpm install --frozen-lockfile` succeeds) **without touching `node_modules`**. Use `--lockfile-only` rather than a plain `pnpm install`: bumping the workspace versions makes pnpm consider `node_modules` stale, so a full install wants to **purge and relink it** — and under a non-interactive shell (no TTY) that aborts with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. For a version-only bump the lockfile diff is just the `specifier: workspace:<old>` → `<new>` lines (a registry-sourced `deprecated:` annotation on an unrelated transitive dep may also appear — benign; keep it, a fresh resolve produces it too).
 
-If a later step needs a consistent `node_modules` (the commit hook's `pnpm exec prettier`, or the Step 5 tests), do one full sync with the purge auto-confirmed: `CI=1 pnpm install`.
+If a later step needs a consistent `node_modules` (the commit hook's `pnpm exec vp fmt` and `pnpm exec mdx-formatter`, or the Step 5 tests), do one full sync with the purge auto-confirmed: `CI=1 pnpm install`.
 
 **Lockfile drift heuristic** — before staging, run (the goal is to surface added/removed lines that are NOT simple two-space-indented entries; `grep -E` cannot do a negative lookahead, so use `grep -P` where available, else the awk fallback):
 

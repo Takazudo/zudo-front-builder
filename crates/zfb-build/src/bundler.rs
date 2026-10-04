@@ -7,7 +7,8 @@
 //!
 //! `zfb-islands` already wraps esbuild for the *client-side* island
 //! bundle (`{outdir}/assets/islands-{hash}.js`). That work targets the
-//! browser and is keyed on `"use client"` components only.
+//! browser and registers concrete boundary targets imported through
+//! `"use client"` modules.
 //!
 //! This module targets the *server side*: every page module the router
 //! can serve, every layout/component they transitively pull in, plus the
@@ -17,6 +18,12 @@
 //! in the browser" with "what runs on the worker"; keeping them in
 //! sibling crates is cleaner and matches how the dev pipeline already
 //! splits CSS / islands / pages.
+//!
+//! For owned islands, `BundlerInput::zudo_react_island_names` is the exact
+//! marker allowlist from the scanner's validated target set. The CLI validates
+//! collisions before creating that name-only value, then the browser bundler
+//! receives the same target set. Keeping SSR metadata and the client registry
+//! aligned lets both sides enforce the same function name and build token.
 //!
 //! ## Pipeline
 //!
@@ -344,7 +351,9 @@ pub struct BundlerInput {
     pub components_dir: PathBuf,
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
-    /// Static scanner marker names available before owned page evaluation.
+    /// Validated scanner marker names available before owned page evaluation.
+    /// This is the exact SSR allowlist shared with the client registry; the CLI
+    /// checks distinct target bindings for collisions before projecting names.
     pub zudo_react_island_names: Option<Vec<String>>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string
@@ -1477,6 +1486,9 @@ fn bundler_timing_enabled() -> bool {
 /// Prefix every [`ShadowSession`] tempdir carries — also the name filter
 /// [`reap_stale_shadow_sessions`] uses to recognize a sibling session dir.
 pub(crate) const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
+
+/// Prefix of the sessionless (prod) bundler shadow tempdir.
+pub(crate) const BUNDLER_TEMPDIR_PREFIX: &str = "zfb-bundler-";
 
 /// Reserved lock-file name at a shadow session dir's root (issue #2257) —
 /// zfb-namespaced (mirrors the watcher-liveness probe's per-session
@@ -3432,7 +3444,7 @@ pub fn bundle_with_session(
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
             let work = allocate_bundler_tempdir(
-                "zfb-bundler-",
+                BUNDLER_TEMPDIR_PREFIX,
                 Some(&parent),
                 keep_build_shadow_enabled(),
                 "bundler shadow root",
@@ -3886,6 +3898,7 @@ pub fn bundle_with_session(
     // The dev session's cross-call scan cache (#3178); `None` for a
     // sessionless build, which therefore always rescans.
     let mut session_guard = writer.session.as_ref().map(RefCell::borrow_mut);
+    let mut pnpm_owner_staging_active = false;
     let node_modules_staging_stats = extend_node_modules_dependency_staging(
         session_guard
             .as_mut()
@@ -3895,6 +3908,10 @@ pub fn bundle_with_session(
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
         bundle_exclude.is_empty() && !input.node_modules_preserve_symlinks,
+        // Canonical esbuild resolution already sees pnpm's physical sibling
+        // links. Only the automatic preserve-symlinks path needs an owned
+        // staged view; explicit vendored preserve-symlinks keeps its contract.
+        esbuild_will_preserve_symlinks(&input) && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
         &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
@@ -3902,6 +3919,7 @@ pub fn bundle_with_session(
         &input.external,
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
+        &mut pnpm_owner_staging_active,
     );
     drop(session_guard);
     node_modules_staging_stats.emit_if_enabled();
@@ -3928,20 +3946,21 @@ pub fn bundle_with_session(
     //   node_modules paths to their in-place shadow location) with NO separate
     //   isolation writer, so the main session-aware `ShadowWriter` materialises
     //   them (and the prune pass keeps them correct across session ticks).
-    let workspace_package_staging_active = exact_target_staging_alias_dirs
-        .values()
-        .chain(
-            exact_target_staging_dirs
-                .iter()
-                .filter(|path| project_path_is_inside_node_modules(path, &project_root)),
-        )
-        .any(|source_root| {
-            source_root.canonicalize().is_ok_and(|canonical| {
-                canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
-            })
-        });
+    let isolated_dependency_view_active = pnpm_owner_staging_active
+        || exact_target_staging_alias_dirs
+            .values()
+            .chain(
+                exact_target_staging_dirs
+                    .iter()
+                    .filter(|path| project_path_is_inside_node_modules(path, &project_root)),
+            )
+            .any(|source_root| {
+                source_root.canonicalize().is_ok_and(|canonical| {
+                    canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+                })
+            });
     let needs_tempdir_isolation = bundle_exclude.is_empty()
-        && !workspace_package_staging_active
+        && !isolated_dependency_view_active
         && exact_target_staging_files
             .iter()
             .chain(exact_target_staging_dirs.iter())
@@ -3969,7 +3988,7 @@ pub fn bundle_with_session(
         .as_ref()
         .map(|isolation| isolation.path());
     let node_modules_isolation_root: Option<&Path> =
-        if bundle_exclude.is_empty() && !workspace_package_staging_active {
+        if bundle_exclude.is_empty() && !isolated_dependency_view_active {
             tempdir_isolation_root
         } else {
             Some(shadow)
@@ -4555,7 +4574,7 @@ pub fn bundle_with_session(
     //     session later returns to an empty exclude the branch below re-creates it.
     if let Some(ref nm_dir) = input.node_modules_dir {
         let shadow_nm = shadow.join("node_modules");
-        if bundle_exclude.is_empty() && !workspace_package_staging_active {
+        if bundle_exclude.is_empty() && !isolated_dependency_view_active {
             #[cfg(unix)]
             {
                 // Session mode (#993) reuses the persistent shadow across
@@ -4943,7 +4962,7 @@ pub fn bundle_with_session(
             node_modules_isolation_root,
         );
         if bundle_exclude.is_empty()
-            && workspace_package_staging_active
+            && isolated_dependency_view_active
             && !esbuild_will_preserve_symlinks(&input)
             && link_ordinary_dependency_to_canonical_source(
                 logical_root,
@@ -4987,7 +5006,7 @@ pub fn bundle_with_session(
             node_modules_isolation_root,
         );
         if bundle_exclude.is_empty()
-            && workspace_package_staging_active
+            && isolated_dependency_view_active
             && !esbuild_will_preserve_symlinks(&input)
             && link_ordinary_dependency_to_canonical_source(
                 logical_root,
@@ -5612,6 +5631,13 @@ pub fn bundle_with_session(
                 work,
             );
         }
+    }
+    if let Some(bytes) = metafile_bytes.as_deref() {
+        let authored = crate::metafile_deps::authored_jsx_inputs(bytes, &input.project_root);
+        crate::jsx_pragma::emit_foreign_pragma_warnings(
+            &input.project_root,
+            authored.iter().map(PathBuf::as_path),
+        );
     }
     let emitted_wasm_assets = match metafile_path.as_deref() {
         Some(meta_path) => emitted_wasm_assets_from_metafile(
@@ -11911,6 +11937,7 @@ fn extend_node_modules_dependency_staging(
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
     allow_workspace_physical_fallback: bool,
+    allow_pnpm_owner_staging: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
     root_entry_dependency_logical_importers: &BTreeMap<PathBuf, PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
@@ -11918,6 +11945,7 @@ fn extend_node_modules_dependency_staging(
     external_specifiers: &[String],
     staging_dirs: &mut BTreeSet<PathBuf>,
     staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
+    pnpm_owner_staging_active: &mut bool,
 ) -> NodeModulesStagingStats {
     let mut stats = NodeModulesStagingStats::default();
     let canonical_project_root = project_root
@@ -12001,7 +12029,14 @@ fn extend_node_modules_dependency_staging(
         } else {
             continue;
         };
-        if bundle_exclude.is_empty() {
+        // A pnpm store package resolves its own dependencies from links beside
+        // its physical directory. Preserve-symlinks hides those links from
+        // esbuild, so scan this root and stage an owned dependency view.
+        let pnpm_store_root = allow_pnpm_owner_staging
+            && source_dependency
+                .canonicalize()
+                .is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".pnpm"));
+        if bundle_exclude.is_empty() && !pnpm_store_root {
             deferred_live_dependencies.push((
                 synthetic_importer.clone(),
                 package_name,
@@ -12083,7 +12118,12 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
+            let pnpm_store_root = allow_pnpm_owner_staging
+                && source_dependency
+                    .canonicalize()
+                    .is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".pnpm"));
             if bundle_exclude.is_empty()
+                && !pnpm_store_root
                 && !source_dependency.canonicalize().is_ok_and(|canonical| {
                     canonical_workspace_package_logical_path(&canonical, project_root).is_some()
                 })
@@ -12180,8 +12220,15 @@ fn extend_node_modules_dependency_staging(
                     if package_is_external(&package_name, external_specifiers) {
                         continue;
                     }
+                    let pnpm_owner = allow_pnpm_owner_staging
+                        && package_was_symlinked
+                        && physical_root
+                            .components()
+                            .any(|part| part.as_os_str() == ".pnpm");
                     let physical_dependency = (package_was_symlinked
-                        && (resolve_from_canonical_package || allow_workspace_physical_fallback))
+                        && (resolve_from_canonical_package
+                            || allow_workspace_physical_fallback
+                            || pnpm_owner))
                         .then(|| {
                             resolve_installed_package_dir(
                                 &physical_importer,
@@ -12191,10 +12238,13 @@ fn extend_node_modules_dependency_staging(
                         })
                         .flatten();
                     let (mut logical_dependency, source_dependency) = if let Some(dependency) =
-                        resolve_from_canonical_package
+                        (resolve_from_canonical_package || pnpm_owner)
                             .then(|| physical_dependency.clone())
                             .flatten()
                     {
+                        if pnpm_owner {
+                            *pnpm_owner_staging_active = true;
+                        }
                         (
                             logical_root.join("node_modules").join(&package_name),
                             dependency,
@@ -12289,7 +12339,7 @@ fn extend_node_modules_dependency_staging(
                 })
             });
         stats.workspace_staging_activated = workspace_staging_active;
-        if !workspace_staging_active {
+        if !workspace_staging_active && !*pnpm_owner_staging_active {
             break;
         }
         for (
@@ -14425,6 +14475,14 @@ fn run_esbuild(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // A foreign pragma surfaces as an unresolved `<pkg>/jsx-runtime`
+        // located in the pragma's own file, so name the pragma first.
+        let located: BTreeSet<&Path> = stderr
+            .lines()
+            .filter_map(esbuild_location_path)
+            .map(Path::new)
+            .collect();
+        crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
         let friendly = friendly_esbuild_error(
             stderr.trim(),
             shadow,
@@ -14873,6 +14931,162 @@ mod tests {
             ),
         );
         scan_cache_write(&dir.join("index.js"), index_body);
+    }
+
+    /// #3473: a static page's generated runtime import reaches a pnpm store
+    /// package whose own dependency is absent from the consumer's root links.
+    /// A different version at that root must never satisfy the runtime import.
+    #[cfg(unix)]
+    #[test]
+    fn strict_pnpm_runtime_uses_its_own_transitive_version() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("site");
+        let store = project.join("node_modules/.pnpm");
+        let runtime = store.join("runtime@1/node_modules/@takazudo/zfb-runtime");
+        let hono = store.join("hono@1/node_modules/hono");
+        let owned = store.join("owned@1/node_modules/owned");
+        let unrelated = store.join("owned@2/node_modules/owned");
+        scan_cache_write_package(
+            &runtime,
+            "@takazudo/zfb-runtime",
+            "import value from 'hono'; export function createPageRouter() { return { fetch() { return new Response(value); } }; }\n",
+        );
+        scan_cache_write(
+            &runtime.join("package.json"),
+            r#"{"name":"@takazudo/zfb-runtime","version":"1.0.0","type":"module","exports":{"./server":"./index.js"},"dependencies":{"hono":"1.0.0"}}"#,
+        );
+        scan_cache_write_package(
+            &hono,
+            "hono",
+            "import value from 'owned'; export default value;\n",
+        );
+        scan_cache_write_package(&owned, "owned", "export default 'RUNTIME_OWNER_V1';\n");
+        scan_cache_write_package(&unrelated, "owned", "export default 'UNRELATED_V2';\n");
+        fs::create_dir_all(store.join("runtime@1/node_modules")).unwrap();
+        symlink(&hono, store.join("runtime@1/node_modules/hono")).unwrap();
+        symlink(&owned, store.join("hono@1/node_modules/owned")).unwrap();
+        fs::create_dir_all(project.join("node_modules/@takazudo")).unwrap();
+        symlink(&runtime, project.join("node_modules/@takazudo/zfb-runtime")).unwrap();
+        symlink(&unrelated, project.join("node_modules/owned")).unwrap();
+        assert!(!project.join("node_modules/hono").exists());
+        scan_cache_write(
+            &project.join("pages/index.tsx"),
+            "export default function Index() { return 'static page'; }\n",
+        );
+
+        let matcher = BundleExcludeMatcher::new(&[]).unwrap();
+        // With tsconfig paths, esbuild canonicalises the runtime symlink and
+        // reaches Hono beside the physical package itself. Keep the existing
+        // zero-scan contract instead of staging every pnpm package eagerly.
+        let canonical_input = BundlerInput {
+            node_modules_dir: Some(project.join("node_modules")),
+            tsconfig_paths: BTreeMap::from([(
+                "@/unused".to_string(),
+                vec!["./unused".to_string()],
+            )]),
+            ..BundlerInput::for_project(
+                project.clone(),
+                BundleMode::Production,
+                project.join("dist"),
+                None,
+            )
+        };
+        assert!(!esbuild_will_preserve_symlinks(&canonical_input));
+        let mut canonical_dirs = BTreeSet::new();
+        let mut canonical_alias_dirs = BTreeMap::new();
+        let mut canonical_pnpm_staging = false;
+        let canonical_stats = extend_node_modules_dependency_staging(
+            None,
+            &project,
+            canonical_input.node_modules_dir.as_deref(),
+            &matcher,
+            !esbuild_will_preserve_symlinks(&canonical_input),
+            true,
+            esbuild_will_preserve_symlinks(&canonical_input)
+                && !canonical_input.node_modules_preserve_symlinks,
+            &BTreeSet::from([project.join("pages/index.tsx")]),
+            &BTreeMap::new(),
+            &BTreeSet::from(["@takazudo/zfb-runtime/server".to_string()]),
+            &BTreeSet::new(),
+            &[],
+            &mut canonical_dirs,
+            &mut canonical_alias_dirs,
+            &mut canonical_pnpm_staging,
+        );
+        assert_eq!(canonical_stats, NodeModulesStagingStats::default());
+        assert!(canonical_dirs.is_empty());
+        assert!(canonical_alias_dirs.is_empty());
+        assert!(!canonical_pnpm_staging);
+
+        let mut staging_dirs = BTreeSet::new();
+        let mut staging_alias_dirs = BTreeMap::new();
+        let mut pnpm_owner_staging_active = false;
+        extend_node_modules_dependency_staging(
+            None,
+            &project,
+            Some(&project.join("node_modules")),
+            &matcher,
+            false,
+            true,
+            true,
+            &BTreeSet::from([project.join("pages/index.tsx")]),
+            &BTreeMap::new(),
+            &BTreeSet::from(["@takazudo/zfb-runtime/server".to_string()]),
+            &BTreeSet::new(),
+            &[],
+            &mut staging_dirs,
+            &mut staging_alias_dirs,
+            &mut pnpm_owner_staging_active,
+        );
+        assert!(
+            pnpm_owner_staging_active,
+            "pnpm owner must activate the isolated view"
+        );
+        assert!(staging_dirs.contains(&project.join("node_modules/@takazudo/zfb-runtime")));
+        assert_eq!(
+            staging_alias_dirs
+                .get(&project.join("node_modules/@takazudo/zfb-runtime/node_modules/hono")),
+            Some(&store.join("runtime@1/node_modules/hono")),
+            "the runtime's physical Hono link must be staged without a root Hono link"
+        );
+        assert_eq!(
+            staging_alias_dirs.get(
+                &project.join(
+                    "node_modules/@takazudo/zfb-runtime/node_modules/hono/node_modules/owned"
+                )
+            ),
+            Some(&store.join("hono@1/node_modules/owned")),
+            "Hono's own version must win over the unrelated root version"
+        );
+
+        if let Some(bin) = locate_real_esbuild() {
+            let input = BundlerInput {
+                esbuild_binary: Some(bin),
+                node_modules_dir: Some(project.join("node_modules")),
+                zudo_react_island_names: Some(vec![]),
+                ..BundlerInput::for_project(
+                    project.clone(),
+                    BundleMode::Production,
+                    project.join("dist"),
+                    None,
+                )
+            };
+            let output = bundle(input)
+                .expect("static no-island SSR bundle must resolve runtime-owned dependency");
+            assert_eq!(output.manifest.routes.len(), 1);
+            assert_eq!(output.manifest.routes[0].route, "/");
+            let js = fs::read_to_string(output.bundle_path).unwrap();
+            assert!(
+                js.contains("RUNTIME_OWNER_V1"),
+                "runtime's own version is bundled"
+            );
+            assert!(
+                !js.contains("UNRELATED_V2"),
+                "unrelated root version must not leak into runtime"
+            );
+        }
     }
 
     /// A nested pnpm-workspace host (`<ws>/apps/site`) whose page imports the

@@ -18,7 +18,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { cleanupFixtures, makeRun, readCalls, setupFixtures } from "./fixtures/gh-fixture-tree.mjs";
 import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";

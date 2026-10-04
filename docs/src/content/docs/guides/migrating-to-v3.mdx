@@ -28,7 +28,7 @@ An absent `wind` key enables an empty v1 configuration with reset `none` and no 
 
 ## Stylesheets
 
-Remove `@import "tailwindcss"`, its preflight and utilities imports, and Tailwind directives such as `@theme`, `@source`, `@apply`, `@utility`, and `@plugin` from the entry sheet and imported sheets. Remaining directives fail with diagnostic `ZW009`, including under `wind: false`. Put custom selectors and declarations in authored CSS; put utility values in `wind.tokens`.
+Remove `@import "tailwindcss"`, its preflight and utilities imports, and Tailwind directives such as `@theme`, `@source`, `@apply`, `@utility`, and `@plugin` from the entry sheet and imported sheets. Remaining directives fail with diagnostic `ZW009`, including under `wind: false`; one run lists every remaining directive with its `file:line:column`. Put custom selectors and declarations in authored CSS; put utility values in `wind.tokens`.
 
 Version 3 supplies no implicit palette, spacing unit, named scales, or breakpoints. Select `none`, `minimal-v1`, or `owned-v1` explicitly for `wind.reset`; `none` is the default. The new basic-blog scaffold chooses `owned-v1` and defines its palette and `spacingUnit`, then restores prose list styling in authored CSS. Check headings, lists, borders, form controls, font stacks (`html` and `code`/`pre`), `sub`/`sup`, `::placeholder`, `::file-selector-button`, and `[hidden]` when choosing a reset. A pixel diff of a page without those elements cannot catch their differences. See [Differences from Tailwind preflight](../zudo-wind/coming-from-tailwind.mdx#reset-differences-from-tailwind-preflight).
 
@@ -51,6 +51,8 @@ export default defineConfig({
 
 Declare `--color-accent` in your stylesheet, and add tokens for every utility your project uses. A class-position name with no matching utility root, such as `site-header`, remains ordinary class text. A name that starts with a catalog root is validated using the longest matching root, so `text-link` receives ZW006 if its color/font-size token is missing. If CSS owns that complete candidate, reserve it with `wind.authoredClasses: { "text-link": true }`; an exact match suppresses utility validation, diagnostics, and generated CSS. Otherwise correct the utility spelling or declare its missing token. Utility language and reset choices differ from Tailwind. Use the [Tailwind migration map](../zudo-wind/coming-from-tailwind.mdx) for directives, variants, tokens, and unsupported constructs.
 
+Authored names that use underscores, such as BEM `card__title` or snake_case `card_title`, are ordinary class text like `card-title`. A Tailwind utility that zudo-wind does not implement, such as `line-clamp-2`, `contents`, or `container`, produces a ZW014 warning naming the declaration to write in CSS instead; set `wind.strict: true` to fail the build on it. A class string kept in a `const` or a conditional branch is checked like a direct class once it reaches a `class` attribute, so an unsupported utility there also fails the build. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx#migration-warnings-and-strict-mode).
+
 ## Components and islands
 
 Set `compilerOptions.jsx` to `react-jsx` and `compilerOptions.jsxImportSource` to `@takazudo/zfb/zudo-react` in `tsconfig.json`. Keep `@takazudo/zfb` and `@takazudo/zfb-runtime` where the project uses them; remove direct `preact`, `react`, `react-dom`, `@types/react`, and `@types/react-dom` dependencies when they were present only for zfb's old engines. The runtime is shipped through `@takazudo/zfb/zudo-react`, not a separate package.
@@ -64,11 +66,40 @@ Set `compilerOptions.jsx` to `react-jsx` and `compilerOptions.jsxImportSource` t
 }
 ```
 
-Search for leftover per-file `/** @jsxImportSource preact */` or `/** @jsxImportSource react */` pragmas, for example with `grep -rln "@jsxImportSource" src pages components`, and remove them from components rendered by zudo-react. A per-file pragma overrides `tsconfig.json`: without Preact installed, a Preact pragma fails the build with `Could not resolve "preact/jsx-runtime"`; with Preact still installed (for example as a widget peer), static rendering fails with a `ZR_CHILD` diagnostic.
+Search for leftover per-file `/** @jsxImportSource preact */` or `/** @jsxImportSource react */` pragmas, for example with `grep -rln "@jsxImportSource" src pages components`, and remove them from components rendered by zudo-react. A per-file pragma overrides `tsconfig.json`: without Preact installed, a Preact pragma fails the build with `Could not resolve "preact/jsx-runtime"`; with Preact still installed (for example as a widget peer), static rendering fails with a `ZR_CHILD` diagnostic. Before either failure, `zfb build` and `zfb dev` print a `zfb warn:` line naming the project file, line and column of each such pragma in a page or a module the page imports. The warning only reports; it does not change the exit status. Files in dependencies are not scanned, so a Preact widget package that is lazily mounted behind a DOM host, as in [Embedding a third-party widget](../concepts/islands.mdx#embedding-a-third-party-widget), builds without a warning. `zfb check` does not report these pragmas.
 
 Rewrite hook components as setup-once zudo-react components. Use `signal()` for writable state and form models, `computed()` for readonly derivations, `getScope()` and `scope.effect()` for lifecycle work, and `Show` or `For` for owned conditional and keyed regions. Readonly or computed signals cannot serve as writable models. JSX uses HTML and CSS spellings such as `class`, `for`, and `style={{ "background-color": "red" }}`, with native `on:click` listeners. Replace React-style props and unbranded element literals with zudo-react JSX or `h()`. Use `rawHtml` only for trusted content; it cannot have children. Text children on `<script>` and `<style>` are rejected: pass a trusted static string with `<style rawHtml={CSS} />` or `<script rawHtml={JS} />`, or use a childless external `<script src="/assets/app.js" />`. Those raw-text strings are emitted verbatim and are not escaped or sanitized. This specific rule does not apply to `<title>` or `<textarea>`, which keep their normal text-child behavior. The [Preact hooks migration map](../zudo-react/coming-from-preact-hooks.mdx) gives the conversion patterns.
 
+Standard HTML and SVG markup uses the shared finite vocabulary across TypeScript, server rendering, hydration, and fresh mounts. Write Open Graph metadata such as `<meta property="og:title">`, preload links such as `<link rel="preload" as="font">`, external `<script defer>` elements, and SVG `use`/`href` markup directly in JSX. These supported attributes do not require a `rawHtml` workaround. Unknown attribute names and React-style spellings remain errors; custom-element attributes remain string-only. See [Components and JSX](../zudo-react/components-and-jsx.mdx) for value categories and SVG namespace behavior.
+
+A build or dev render that rejects a React-style spelling names the supported spelling and, for JSX, the authored file, line, and column of the element. `zfb check` is not required first. See [Read a render failure](../zudo-react/server-rendering.mdx#read-a-render-failure) for how that location differs from the structural context and the generated bundle stack.
+
 `<Island>` remains the build-time wrapper for a component. Its transport is stricter: use one component child, JSON props, and an identity that agrees with the source scanner. Hand-authored wrappers need the complete valid metadata. Hydration adopts matching server markup or fails closed per island; skipped SSR roots use `data-when` scheduling and replace fallback after a successful client mount. Review form behavior because supported controls use explicit writable models, single-select only, and the DOM value wins during hydration. See the [islands guide](../concepts/islands.mdx).
+
+### Optional island props
+
+For optional island props, own enumerable string data properties on records
+whose value is `undefined` are omitted recursively before SSR and JSON
+transport, including properties in records inside arrays. The server component
+and the client receive the same normalized keys, so `Object.hasOwn` checks
+agree. An explicit `null` remains a present property:
+
+This matches v2's omission of undefined-valued record members. Arrays stay
+strict: an undefined array entry or a hole is an error rather than a value to
+coerce. Use `null` when an array value should remain present.
+
+~~~ts
+import { serializeProps } from "@takazudo/zfb/zudo-react/server";
+
+serializeProps({
+  currentSlug: undefined,
+  nodes: [{ slug: "a", description: undefined }, { slug: "b", description: null }],
+});
+// {"nodes":[{"slug":"a"},{"slug":"b","description":null}]}
+~~~
+
+See [Server rendering](../zudo-react/server-rendering.mdx) for the full
+transport contract.
 
 The zudo-react client runtime has no promise to match Preact's bundle size, and no fixed byte budget has been selected. A separate follow-up will measure production island output, evaluate safe optimizations, and set any regression budget from those results. That work does not block the v3 migration. This guide makes no project-specific size claim.
 
@@ -84,7 +115,7 @@ Remove `ZFB_TAILWIND_BIN` and `ZFB_TAILWIND_OXIDE_WARMUP` from scripts and CI. T
 
 ## Packages that ship classes or components
 
-A package that previously relied on a shipped safelist should publish complete candidates in a versioned JSON manifest. The consumer declares the file under its producer key; distinct producers survive preset and app merging. Every manifest entry is validated strictly, and the consumer must configure its tokens. A manifest does not define tokens or discover itself automatically.
+A package that previously relied on a shipped safelist should publish complete candidates in a versioned JSON manifest. The consumer declares the file under its producer key; distinct producers survive preset and app merging. Every manifest entry is validated strictly, and the consumer must configure its tokens. A manifest does not define tokens or discover itself automatically. Generate it with `zfb wind manifest --producer <id> --output <file> --config <consumer config>` instead of maintaining it by hand; see [`zfb wind manifest`](../api/cli.mdx#zfb-wind-manifest).
 
 ```json
 {
@@ -106,7 +137,7 @@ export default defineConfig({
 });
 ```
 
-The `widgets` package must export `./wind.json`. A bare specifier resolves through its package exports; a `./` path resolves from the project root (or from the declaring preset package). See [manifest path resolution](../zudo-wind/configuration.mdx#the-wind-key-manifest-path-resolution).
+The `widgets` package must export `./wind.json`. A bare specifier resolves through its package exports; a `./` path resolves from the directory of the config that declares it (or from the declaring preset package). See [manifest path resolution](../zudo-wind/configuration.mdx#the-wind-key-manifest-path-resolution).
 
 Ship package components using imports from `@takazudo/zfb/zudo-react` and the same JSX import source. Do not ship Preact or React JSX runtime imports in components rendered by zudo-react. An opaque self-mounting widget with its own framework can be lazily loaded from an island; see [Embedding a third-party widget](../concepts/islands.mdx#embedding-a-third-party-widget). See [sources and candidates](../zudo-wind/sources-and-candidates.mdx) for manifest validation and root rules.
 
@@ -117,5 +148,5 @@ Ship package components using imports from `@takazudo/zfb/zudo-react` and the sa
 3. Remove Tailwind imports and directives, set tokens and a reset, then check font stacks on `html` and `code`/`pre`, `sub`/`sup`, `::placeholder`, `::file-selector-button`, and `[hidden]` on representative pages. Run `zfb css --input <entry.css> --output <output.css>` using your project's entry and output paths.
 4. Change the JSX import source, remove per-file `@jsxImportSource` pragmas, and update dependencies, components, islands, and form models; run `zfb check` and fix type errors.
 5. Remove `jsxRuntime` from md-wasm calls and update compiled-output consumers; run your package's TypeScript check.
-6. Replace finite dynamic classes with complete literals or a manifest; use `zfb wind audit --fail-on error` as a CI or pre-push gate, and run `zfb wind explain <candidate>` on representative classes.
+6. Replace finite dynamic classes with complete literals or a manifest; use `zfb wind audit --fail-on error` as a CI or pre-push gate, and run `zfb wind explain <candidate>` on representative classes. For a large inventory, `zfb wind audit --json --severity warning` and `zfb wind explain --stdin --json` give machine-readable results in one process.
 7. Remove Tailwind environment overrides from build scripts; run `zfb build` and compare key pages, islands, controls, and styles in a browser.

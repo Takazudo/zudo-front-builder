@@ -10,7 +10,7 @@
 // because that's the contract `router.ts` depends on; covering each independently
 // keeps a regression localised when one part shifts.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { drainHappyDom, htmlDoc, installHappyDomShim, resetDocument } from "./_helpers.js";
 
@@ -193,6 +193,19 @@ describe("swapHeadElements — head dedup", () => {
 });
 
 describe("swapBodyElement — persist lift", () => {
+  it.each(["current", "incoming"])("rejects duplicate %s keys before moving nodes", (side) => {
+    const duplicate = `<div ${PERSIST_ATTR}="same"></div><div ${PERSIST_ATTR}="same"></div>`;
+    document.body.innerHTML = side === "current" ? duplicate : `<div ${PERSIST_ATTR}="same"></div>`;
+    const oldBody = document.body;
+    const first = oldBody.firstElementChild;
+    const incoming = htmlDoc(
+      `<!doctype html><html><body>${side === "incoming" ? duplicate : `<div ${PERSIST_ATTR}="same"></div>`}</body></html>`,
+    );
+    expect(() => swapBodyElement(incoming.body, oldBody)).toThrow(/ZFB_PERSIST_DUPLICATE.*same/);
+    expect(document.body).toBe(oldBody);
+    expect(oldBody.firstElementChild).toBe(first);
+  });
+
   it("preserves a persist-id'd element across body replacement", () => {
     document.body.innerHTML = `
       <header><h1>Old Title</h1></header>
@@ -620,6 +633,17 @@ describe("swapRootAttributes", () => {
 });
 
 describe("swap() composition", () => {
+  it("rejects duplicate incoming keys across head and body before changing the current document", () => {
+    document.head.innerHTML = "<title>Old</title>";
+    document.body.innerHTML = "<main>old</main>";
+    const newDoc = htmlDoc(
+      `<!doctype html><html><head><meta ${PERSIST_ATTR}="same"></head><body><div ${PERSIST_ATTR}="same"></div></body></html>`,
+    );
+    expect(() => swap(newDoc)).toThrow(/ZFB_PERSIST_DUPLICATE.*incoming.*same/);
+    expect(document.title).toBe("Old");
+    expect(document.querySelector("main")?.textContent).toBe("old");
+  });
+
   it("runs deselect + root + head + body + restoreFocus end-to-end", () => {
     document.documentElement.setAttribute("lang", "en");
     document.head.innerHTML = `<title>Old</title>`;

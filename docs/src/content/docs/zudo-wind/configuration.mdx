@@ -50,7 +50,24 @@ Manifest paths are resolved from a base directory. A bare package specifier such
 }
 ```
 
-Paths beginning with `./` or `../` resolve from the project root, meaning the directory that contains `zfb.config.ts` or `zfb.config.json`, regardless of the current working directory. When a manifest declaration comes from a preset built with `definePreset()`, zfb records the preset package as its source, so both relative paths and bare package specifiers resolve from that preset package's directory instead.
+Paths beginning with `./` or `../` resolve from the project root, meaning the directory that contains `zfb.config.ts` or `zfb.config.json`, regardless of the current working directory. When `zfb css` or `zfb wind` loads a file selected with `--config`, that file's directory takes this role (see [Explicit config files](../api/cli.mdx#explicit-config-files)). When a manifest declaration comes from a preset built with `definePreset()`, zfb records the preset package as its source, so both relative paths and bare package specifiers resolve from that preset package's directory instead.
+
+### Source exclusions and package roots
+
+`sources` adjusts the source plan. Both lists are optional and default to empty, so an unset `sources` keeps the default plan.
+
+```ts
+wind: {
+  sources: {
+    exclude: ["src/**/__tests__/**", "worker"],
+    packageRoots: ["@example/widgets", "./packages/ui"]
+  }
+}
+```
+
+Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root (the `--config` file's directory when one is selected), or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
+
+Each `packageRoots` entry is either a `./` or `../` path from the declaring root, or an installed package name with an optional subpath such as `@example/widgets/dist`, found through the `node_modules` directories above the declaring root. A package root must be an existing directory that is neither the project root nor one of its ancestors, and it is scanned with its own `dist` and `node_modules`, ignoring gitignore rules. Output, `--output`, and scratch directories stay excluded inside it.
 
 The same object is valid as the value of the `wind` property in JSON:
 
@@ -88,7 +105,10 @@ The same object is valid as the value of the `wind` property in JSON:
 | `dark` | Either `false` (the default) or an object with required `attribute` and `value` strings. |
 | `safelist` | Owner IDs mapped to arrays of complete candidates. Each owner supplies its full set. |
 | `authoredClasses` | Complete candidate spellings mapped to `true`; exact matches stay authored and suppress utility validation, diagnostics, and generated CSS. Include variants when reserving a variant-bearing candidate. |
+| `strict` | `false` by default. When `true`, an unsupported foreign utility (ZW014) at a class position is a build error instead of a warning. Lower-confidence literals are never promoted. |
 | `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
+| `sources` | Optional `exclude` globs and `packageRoots` paths, each resolved from its declaring project or preset package. |
+| `utilities` | Optional `placement`: `"after-authored"` (the default) or `"before-authored"`. It sets whether unlayered utility rules follow or precede authored global CSS; see [Utility placement](./cascade-and-reset.mdx#utility-placement). |
 
 The dark attribute must be a lowercase HTML attribute identifier. Its value must be nonempty and contain no control characters. Owner and producer IDs use nonempty ASCII letters, digits, dots, underscores, slashes, or hyphens, and start with a letter or digit. Authored class keys must be complete, nonempty tokens without whitespace or control characters.
 
@@ -98,7 +118,7 @@ The dark attribute must be a lowercase HTML attribute identifier. Its value must
 
 Every nested config object has a closed set of field names. Unknown fields, nulls, wrong value types, unsupported versions or reset names, duplicate breakpoint widths, and invalid token data fail validation. A partial object is allowed because omitted optional objects receive their documented empty defaults.
 
-When preset and user configuration are merged, objects merge recursively with user values taking precedence. Distinct safelist owners and manifest producers remain distinct. For the same safelist owner, the user's array replaces the preset array; arrays are not concatenated. Authored class maps merge by key with user values taking precedence. There is no per-entry deletion marker in v1, and setting `wind` to false disables the whole system.
+When preset and user configuration are merged, objects merge recursively with user values taking precedence. Distinct safelist owners and manifest producers remain distinct. Every `sources` declaration is kept with its own declaring root: preset entries come first in preset order, followed by the user's, and a user declaration does not replace a preset's. For the same safelist owner, the user's array replaces the preset array; arrays are not concatenated. Authored class maps merge by key with user values taking precedence. There is no per-entry deletion marker in v1, and setting `wind` to false disables the whole system.
 
 A leftover top-level `tailwind` key is a hard error with a named migration message. Follow [the v3 migration guide](../guides/migrating-to-v3.mdx) to update it.
 

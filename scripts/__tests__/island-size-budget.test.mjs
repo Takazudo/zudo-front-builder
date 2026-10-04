@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -433,13 +433,13 @@ describe("island shipped-size budget", () => {
     ).not.toBe(contractHash);
   });
 
-  it("checks a later lockstep release against the reviewed size ceilings", () => {
+  it("checks the current release against the reviewed size ceilings and rejects lockfile drift", () => {
     const currentVersion = JSON.parse(
       readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
     ).version;
     const state = makeState(baseContract.platform, baseContract, currentVersion);
     expect(validate(state)).toEqual({ errors: [], passed: true });
-    state.packed.measurement.provenance.pnpmLockSha256 = baseContract.toolchain.pnpmLockSha256;
+    state.packed.measurement.provenance.pnpmLockSha256 = "0".repeat(64);
     expect(validate(state).errors).toContain(
       "packed provenance: pnpm lockfile differs from the current checkout",
     );
@@ -476,23 +476,23 @@ describe("island shipped-size budget", () => {
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 49830, gzip: 17003 },
-      "scalar-signal": { raw: 49838, gzip: 17005 },
-      "show-for": { raw: 49985, gzip: 17081 },
-      model: { raw: 49829, gzip: 17014 },
-      "blog-theme": { raw: 50180, gzip: 17138 },
-      "json-api": { raw: 49984, gzip: 17100 },
-      "multi-island": { raw: 50106, gzip: 17100 },
+      "event-only": { raw: 63209, gzip: 21137 },
+      "scalar-signal": { raw: 63217, gzip: 21133 },
+      "show-for": { raw: 63363, gzip: 21214 },
+      model: { raw: 63208, gzip: 21144 },
+      "blog-theme": { raw: 63558, gzip: 21279 },
+      "json-api": { raw: 63363, gzip: 21228 },
+      "multi-island": { raw: 63485, gzip: 21236 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 49892, gzip: 17030 },
-      "scalar-signal": { raw: 49900, gzip: 17036 },
-      "show-for": { raw: 50047, gzip: 17114 },
-      model: { raw: 49891, gzip: 17046 },
-      "blog-theme": { raw: 50242, gzip: 17169 },
-      "json-api": { raw: 50046, gzip: 17126 },
-      "multi-island": { raw: 50168, gzip: 17136 },
+      "event-only": { raw: 63271, gzip: 21156 },
+      "scalar-signal": { raw: 63279, gzip: 21159 },
+      "show-for": { raw: 63425, gzip: 21243 },
+      model: { raw: 63270, gzip: 21166 },
+      "blog-theme": { raw: 63620, gzip: 21298 },
+      "json-api": { raw: 63425, gzip: 21253 },
+      "multi-island": { raw: 63547, gzip: 21262 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });

@@ -18,6 +18,17 @@ Node なしでも、コンテンツサイト向けの Markdown、MDX、HTML ペ�
 | macOS | arm64（Apple Silicon） | `aarch64-apple-darwin` |
 | Windows | x64 | `x86_64-pc-windows-msvc` |
 
+<Note title="Linux には glibc 2.34 以降が必要です">
+
+2 つの Linux バイナリは glibc 2.34 に対してリンクされています。Amazon Linux 2023、
+RHEL / Rocky / AlmaLinux 9、Ubuntu 22.04 以降、Debian 12 以降はいずれも動作します。
+それより古い glibc では起動時に `` version `GLIBC_2.34' not found `` で失敗します。
+3.1.0 までのリリースは代わりに glibc 2.35 を必要としていました。詳しくは
+[トラブルシューティング](../guides/troubleshooting.mdx#linux-で-glibc-が見つからない)
+を参照してください。
+
+</Note>
+
 <Note title="musl / Alpine Linux は未対応です">
 
 musl リンクのバイナリは存在しません。`install.sh` は OS とアーキテクチャのみを検出し、

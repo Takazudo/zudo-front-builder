@@ -955,7 +955,7 @@ function tarOctal(header, start, length) {
 function readArchivePackageManifest(tarballPath) {
   const archive = gunzipSync(readFileSync(tarballPath));
   let found = null;
-  for (let offset = 0; offset + 512 <= archive.length; ) {
+  for (let offset = 0; offset + 512 <= archive.length;) {
     const header = archive.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
     const storedChecksum = tarOctal(header, 148, 8);

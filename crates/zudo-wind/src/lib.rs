@@ -13,6 +13,7 @@ mod escape;
 mod explain;
 mod index;
 mod layers;
+mod manifest;
 mod order;
 mod reset;
 mod selector;
@@ -37,7 +38,7 @@ pub use catalog::{
 };
 pub use compile::{
     compile, compile_validated, CompileInput, CompileResult, GeneratedProvenance, OriginCandidate,
-    ProvenanceKind, RuleKind, RuleMetadata, StylesheetParts,
+    ProvenanceKind, RuleKind, RuleMetadata, StylesheetParts, UtilityPlacement,
 };
 pub use config::{DarkModeConfig, ResetMode, ValidatedWindConfig, WindConfig};
 pub use decimal::{Decimal, DecimalDimension, DecimalError};
@@ -50,20 +51,27 @@ pub use explain::{
 };
 pub use index::CandidateIndex;
 pub use layers::LAYER_ORDER;
+pub use manifest::{classify_manifest_candidates, ExcludedCandidate, ManifestClassification};
 pub use order::SortKey;
 pub use reset::reset_css;
 pub use selector::Specificity;
-pub use source_plan::{PositiveRoot, SourceId, SourcePlan};
+pub use source_plan::{
+    compile_exclusion_pattern, ExclusionMatcher, PositiveRoot, SourceExclusion, SourceId,
+    SourcePlan,
+};
 pub use token_vars::{emit_token_variables, TokenVariable};
 pub use tokenizer::{structural_split, StructuralSplit};
 pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};
 pub use value_check::ValueStatus;
 pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
-pub use walk::{expand_changed_path, expand_file_set, ExpandedFile, FileSet, WalkDiagnostic};
+pub use walk::{
+    expand_changed_path, expand_file_set, ExpandedFile, FileSet, WalkDiagnostic,
+    PACKAGE_ROOT_TRAVERSES,
+};
 
 pub const SPEC_VERSION: u32 = 1;
 
-pub const SPEC_REVISION: u32 = 3;
+pub const SPEC_REVISION: u32 = 4;
 
 pub mod extract;
 pub use extract::{

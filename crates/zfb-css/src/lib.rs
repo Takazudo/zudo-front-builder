@@ -81,10 +81,14 @@ pub use css_imports::{
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::CssEngine;
 pub use engine_output::{
-    CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId, CssEngineOutput,
-    CssInputDependency, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    dedup_diagnostics, CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId,
+    CssEngineOutput, CssInputDependency, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    WindDiagnosticsError,
 };
-pub use leftover_directives::{scan_leftover_directives, LeftoverDirective};
+pub use leftover_directives::{
+    check_forbidden_directives, scan_leftover_directives, LeftoverDirective,
+    FORBIDDEN_WIND_DIRECTIVES,
+};
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
 pub use scanner::{
@@ -95,15 +99,17 @@ pub use url_attribution::{AttributedUrl, PackageOrigin, PackageUrlAsset, UrlOrig
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 pub use wind_engine::WindEngine;
 pub use zudo_wind::{
-    audit, audit_json, expand_changed_path, expand_file_set, explain, explain_disabled,
-    explain_with_generation, extract_candidates, render_audit, render_explanation, AuditConflict,
-    AuditInput, AuditNote, AuditOutcome, AuditReport, AuditSource, BreakpointConfig,
-    CandidateIndex, DarkModeConfig, DeadClass, DeclarationView, DiagnosticView,
-    DynamicConstruction, ExpandedFile, Explanation, ExplanationOutcome, ExtractedCandidate,
-    ExtractionNote, ExtractionResult, FileSet, FontSizeToken, InterpolatedCandidate, NoteKind,
-    Occurrence, Origin, OriginCandidate, OriginView, ParsedCandidate, PositionKind, PositiveRoot,
-    ResetMode, SortTuple, SourceId, SourceKind, SourcePlan, SourcePositionKind, TokenResolution,
-    UnrecognizedClass, WalkDiagnostic, WindConfig,
+    audit, audit_json, classify_manifest_candidates, compile_exclusion_pattern,
+    expand_changed_path, expand_file_set, explain, explain_disabled, explain_with_generation,
+    extract_candidates, render_audit, render_explanation, AuditConflict, AuditInput, AuditNote,
+    AuditOutcome, AuditReport, AuditSource, BreakpointConfig, CandidateIndex, DarkModeConfig,
+    DeadClass, DeclarationView, DiagnosticView, DynamicConstruction, ExcludedCandidate,
+    ExclusionMatcher, ExpandedFile, Explanation, ExplanationOutcome, ExtractedCandidate,
+    ExtractionNote, ExtractionResult, FileSet, FontSizeToken, InterpolatedCandidate,
+    ManifestClassification, NoteKind, Occurrence, Origin, OriginCandidate, OriginView,
+    ParsedCandidate, PositionKind, PositiveRoot, ResetMode, SortTuple, SourceExclusion, SourceId,
+    SourceKind, SourcePlan, SourcePositionKind, TokenResolution, UnrecognizedClass,
+    UtilityPlacement, WalkDiagnostic, WindConfig, PACKAGE_ROOT_TRAVERSES, SPEC_VERSION,
 };
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's

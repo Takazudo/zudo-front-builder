@@ -12,7 +12,7 @@
 //   - arity is preserved: a 2-arg call reaches the native method as a 2-arg
 //     call, not a 3-arg call with an explicit `undefined` url.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 

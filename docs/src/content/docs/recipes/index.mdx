@@ -8,7 +8,7 @@ category: Recipes
 A maintainer-curated section holding two kinds of page:
 
 - **Focused recipes** compose zfb's primitives — `addVirtualModule`, `postBuild` plugins, `ctx.routes`, non-HTML pages, MDX components — into one concrete solution you can adapt.
-- **Worked example sites** take a whole deployable project and explain it end to end. Each has a public repository you can clone and a live deployment you can open.
+- **Worked example sites** take a whole project and explain it end to end. Each has a public repository you can clone, and all but one have a live deployment you can open.
 
 Either way, a page here is:
 
@@ -16,7 +16,7 @@ Either way, a page here is:
 - Written as an explanation, not a code dump — the _why_ matters as much as the _how_
 - Anchored to a specific zfb version range, so you know what state of the engine it assumes
 
-The external example repositories now pin zfb 3.0.0 and use zudo-react; their styling uses zudo-wind utilities where configured and authored CSS throughout.
+The external example repositories pin zfb 3.1.0 (checked on 2026-10-03) and use zudo-react; their styling uses zudo-wind utilities where configured and authored CSS throughout.
 
 ## Recipes
 
@@ -25,8 +25,9 @@ The external example repositories now pin zfb 3.0.0 and use zudo-react; their st
 
 ## Example sites
 
-Nine standalone repositories, each a complete zfb project deployed and running on Cloudflare. Every page below covers one of them — what it demonstrates, the exact stack it uses, how it works, and how to run it locally — and links to the repository so you can clone it. [Examples](../guides/examples.mdx) puts the same nine side by side as a comparison matrix.
+Ten standalone repositories, each a complete zfb project. Nine are deployed and running on Cloudflare; Agent Conversations has no deployment and runs locally. Every page below covers one of them — what it demonstrates, the exact stack it uses, how it works, and how to run it locally — and links to the repository so you can clone it. [Examples](../guides/examples.mdx) puts the same ten side by side as a comparison matrix.
 
+- [Agent Conversations](./agent-conversations.mdx) — a static shell with one zudo-react island over a framework-neutral conversation controller: queued runs, cancellation, and reviewed host changes, backed by a memory-only service or a local HTTP and SQLite server. The provider is synthetic and nothing is deployed.
 - [AI Summarizer](./ai-summarizer.mdx) — one zudo-react island posting to a `prerender = false` route backed by a Workers AI binding, with a deterministic fallback so the endpoint still answers with no Cloudflare account.
 - [Blog](./blog.mdx) — a pure-SSG Markdown and MDX blog: three dynamic-route shapes, `paginate()`, one zudo-react theme-toggle island, and an authored CSS design system. zudo-wind supplies only its `owned-v1` reset. No SSR, no adapter.
 - [Corporate Website](./corporate-website.mdx) — a static zudo-react marketing site styled entirely with CSS Modules. It sets `wind: false`, so zudo-wind is disabled and the site uses only authored CSS.

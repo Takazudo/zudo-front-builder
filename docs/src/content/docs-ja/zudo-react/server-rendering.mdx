@@ -60,9 +60,40 @@ const inner = renderToString(<Counter />, { island: identity });
 
 ## Props は JSON で転送する
 
-**serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。複数回参照される値は値としてシリアライズされます。undefined、循環参照、関数、symbol、bigint、非有限数、クラスインスタンス、ランタイムの記述、signal、computed 値は拒否されます。
+**serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。自身が持つ列挙可能な文字列キーのデータプロパティで、値が `undefined` のものはどの階層でも省略されます。明示的な `null` は保持されます。
+
+~~~ts
+import { serializeProps } from "@takazudo/zfb/zudo-react/server";
+
+serializeProps({
+  locale: undefined,
+  currentSlug: undefined,
+  metadata: { title: "Card", description: undefined },
+  records: [{ description: undefined }, { description: null }],
+});
+// {"metadata":{"title":"Card"},"records":[{},{"description":null}]}
+~~~
+
+サーバーコンポーネントにはシリアライズされるものと同じ正規化済み props が渡るため、SSR とハイドレーション時の `Object.hasOwn` の結果は一致します。配列内のレコードにも同じ省略規則を適用しますが、配列要素を削除したり移動したりしません。undefined の配列要素と配列の穴はエラーです。`null` は値として保持されます。複数回参照される値は値としてシリアライズされます。循環参照、関数、symbol、bigint、非有限数、クラスインスタンス、ランタイムの記述、signal、computed 値も拒否されます。
 
 検証は JSON シリアライズより前に行われます。配列には欠けがなく、追加の名前付きプロパティや symbol プロパティも付けられません。レコードは通常のものでも null プロトタイプでもよく、自身が持つ列挙可能な文字列キーのデータプロパティだけが許可されます。アクセサー、列挙不可のフィールド、独自の toJSON、symbol、プロトタイプに影響するキーは、呼び出されることなく拒否されます。props は境界を越えて生きた signal の同一性を運びません。クライアントのセットアップ中に signal を作ってください。
+
+## レンダリング失敗の読み方
+
+`zfb build` や `zfb dev` のサーバーレンダリングが要素を拒否すると、エラーには 3 種類の情報が含まれます。次の順に読んでください。
+
+~~~text
+[zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7
+[zfb-runtime] render threw for "/": ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render
+TypeError: ...
+    at fail (file:///zfb/bundle.mjs:3505:23)
+~~~
+
+- **記述した位置。** `— at components/search-field.tsx:4:7` は、失敗した JSX 要素のソースファイル上の行と列です。要素の呼び出しを、ビルドのソースマップと内容が一致するプロジェクトのファイルまで戻せた場合にだけ表示します。事前に `zfb check` を実行する必要はありません。
+- **構造上の文脈。** 1 行目には安定したコード、コンポーネント（ページのレンダリングでは `static-render`、それ以外は島のコンポーネント名）、要素のパスも含まれます。React 形式の prop では、代わりに使う綴りも示します。この部分は常に表示されます。
+- **生成されたスタック。** `file:///zfb/bundle.mjs:…` のフレームは、生成されたサーバーバンドル内の位置です。これは zfb のレンダラーの位置であり、要素の位置ではありません。この番号を頼りに編集しないでください。
+
+`h()` で書いた要素、依存パッケージ内で作られた要素、プリプロセッサーが書き換えたコードには、信頼できるソース位置がありません。これらについては推測した行を出さず、記述した位置なしで構造上の文脈を表示します。デバッグの手がかりとして `— internal frame node_modules/…`、`<generated>/…`、`external/…` のような内部フレームを付けることがありますが、これはあなたのソースの位置ではありません。1 行目には props、raw HTML、ローカルの絶対パスは含まれません。
 
 ## 関連ページ
 

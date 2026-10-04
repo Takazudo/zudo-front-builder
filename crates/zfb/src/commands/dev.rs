@@ -2437,7 +2437,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 alias_entries: plugin_alias_entries_for_islands.clone(),
                 virtual_modules: plugin_virtual_module_store_for_islands.snapshot_pairs(),
             };
-            rebundle_islands(
+            let result = rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
                 bundle_config.as_ref(),
@@ -2447,7 +2447,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &companion_ledger,
                 &raw_invalidation,
                 &package_route_entrypoints,
-            )
+            );
+            if let Err(error) = &result {
+                // The orchestrator intentionally keeps running after a
+                // failed rebuild, but reports tick errors through
+                // `tracing::warn!` only. A normal `zfb dev` session has no
+                // tracing subscriber, so registration failures were
+                // invisible even though the previous published registry
+                // remained intact. The deferred boot caller has its own
+                // visible warning; this is the watcher-tick diagnostic.
+                output::warn(format!(
+                    "islands rebuild failed; keeping the last successful registry: {error:#}"
+                ));
+            }
+            result
         }))
     };
 
@@ -4788,6 +4801,11 @@ fn build_dev_css_and_publish_mirror_roots(
         raw_import_invalidation
             .replace_css_manifests_read_since(manifests.into_values(), read_start);
     }
+    // Published before compilation for the same reason: a config edit that
+    // adds a package root must start its watch even if this pass fails.
+    raw_import_invalidation.replace_css_package_roots(
+        crate::commands::css_source_plan::declared_package_root_watch_paths(project_root, cfg),
+    );
     let pass = crate::commands::build::build_dev_css_payload_with_index(
         project_root,
         dev_assets_root,
@@ -4822,7 +4840,7 @@ fn build_dev_css_and_publish_mirror_roots(
     }
     for diagnostic in &pass.diagnostics {
         if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-            output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+            output::warn(diagnostic.render());
         }
     }
     if cfg.wind.is_some() {
@@ -11621,6 +11639,7 @@ mod tests {
             path: PathBuf::from("src"),
             required: false,
             exclusions: Default::default(),
+            package_root: false,
         });
         plan
     }
@@ -12233,6 +12252,196 @@ mod tests {
             session,
             Some(changes),
         )
+    }
+
+    async fn wind_css_pass(
+        project: &Path,
+        config: &mut DevCssConfig,
+        session: &mut Option<crate::commands::build::WindSessionIndex>,
+        invalidation: &zfb_build::RawImportInvalidation,
+        changed: Option<&Path>,
+    ) -> String {
+        let mut changes = zfb_build::CssChangeSet::default();
+        if let Some(path) = changed {
+            if path.exists() {
+                changes.record_upsert(path.to_path_buf());
+            } else {
+                changes.record_removal(path.to_path_buf());
+            }
+        }
+        let payload = refresh_wind_test_payload(project, config, session, invalidation, &changes)
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&payload.bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn wind_utility_placement_edits_reorder_served_css() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let config_path = project.join("zfb.config.json");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("styles")).unwrap();
+        std::fs::write(
+            project.join("src/page.tsx"),
+            "<div className=\"card block\" />",
+        )
+        .unwrap();
+        std::fs::write(project.join("styles/global.css"), ".card { color: red; }\n").unwrap();
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let utility_first = |css: &str| {
+            css.find(".block").expect("utility emitted") < css.find(".card").expect("authored kept")
+        };
+
+        let css = wind_css_pass(&project, &mut config, &mut session, &invalidation, None).await;
+        assert!(
+            !utility_first(&css),
+            "default keeps utilities after authored CSS:\n{css}"
+        );
+
+        std::fs::write(
+            &config_path,
+            r#"{"wind":{"utilities":{"placement":"before-authored"}}}"#,
+        )
+        .unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            utility_first(&css),
+            "before-authored moves utilities first:\n{css}"
+        );
+
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            !utility_first(&css),
+            "removing the setting restores the default:\n{css}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wind_source_exclusion_edits_retract_and_restore_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let config_path = project.join("zfb.config.json");
+        let page = project.join("src/page.tsx");
+        let fixture = project.join("src/__tests__/page.test.tsx");
+        std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+        std::fs::write(&page, "<div className=\"block flex\" />").unwrap();
+        std::fs::write(&fixture, "<div className=\"block grid\" />").unwrap();
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+        let live = |session: &Option<crate::commands::build::WindSessionIndex>| {
+            session.as_ref().unwrap().live_set()
+        };
+
+        let css = wind_css_pass(&project, &mut config, &mut session, &invalidation, None).await;
+        for selector in [".block", ".flex", ".grid"] {
+            assert!(css.contains(selector), "{selector} missing:\n{css}");
+        }
+
+        std::fs::write(
+            &config_path,
+            r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
+        )
+        .unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            !css.contains(".grid"),
+            "excluded candidate survived:\n{css}"
+        );
+        assert!(!live(&session).contains("grid"));
+        assert!(
+            css.contains(".block"),
+            "shared candidate was dropped:\n{css}"
+        );
+        assert!(css.contains(".flex"));
+
+        std::fs::write(&fixture, "<div className=\"grid hidden\" />").unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&fixture),
+        )
+        .await;
+        assert!(
+            !css.contains(".hidden"),
+            "an edit under an exclusion leaked:\n{css}"
+        );
+
+        std::fs::write(&page, "<div className=\"block\" />").unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&page),
+        )
+        .await;
+        assert!(
+            !css.contains(".flex"),
+            "last occurrence was not retracted:\n{css}"
+        );
+        assert!(!live(&session).contains("flex"));
+        assert!(css.contains(".block"));
+
+        std::fs::write(&page, "<div className=\"block flex\" />").unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&page),
+        )
+        .await;
+        assert!(
+            css.contains(".flex"),
+            "recreated occurrence did not return:\n{css}"
+        );
+
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            css.contains(".grid"),
+            "unexcluded candidate did not return:\n{css}"
+        );
+        assert!(css.contains(".hidden"));
+        assert!(live(&session).contains("hidden"));
     }
 
     #[tokio::test]

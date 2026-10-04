@@ -3,7 +3,7 @@
  * Render-region sentinel bytes through the owned zudo-react server renderer.
  * Vitest resolves the SDK factory alias to the same entry as the owned bundler.
  */
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 import { renderToString } from "../zudo-react/server.js";
 import { Fragment as OwnedFragment } from "../zudo-react/jsx-runtime.js";

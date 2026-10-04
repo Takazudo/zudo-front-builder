@@ -1,10 +1,19 @@
-import { Fragment, isDescription, type Child, type Description } from "./description.js";
+import { serializeStyle } from "./style.js";
+import {
+  Fragment,
+  descriptionSite,
+  isDescription,
+  type Child,
+  type Description,
+  type DescriptionSite,
+} from "./description.js";
 import { escapeAttribute, escapeText } from "./escape.js";
+import { rawHtmlReserved } from "./raw-html.js";
 import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
-import { serializeProps } from "./props-transport.js";
+import { emptyChildren, normalizeProps } from "./props-transport.js";
 import { islandRootType } from "./island-root-type.js";
 import type { IslandOptions, RenderOptions } from "./server.js";
 import {
@@ -17,9 +26,12 @@ import {
   view,
 } from "./structure.js";
 import {
+  attributeError,
+  attributeText,
   booleanAttrs,
   commonAttrs,
   dialectSuggestion,
+  emptyIframeChildren,
   formProps,
   htmlAttrs,
   htmlTags,
@@ -48,6 +60,7 @@ interface Context {
   next: number;
   scope: RuntimeScope;
   path: string;
+  node?: Description | undefined;
   selectValue?: string | undefined;
   selectSeen?: Set<string> | undefined;
   selectMatches?: number | undefined;
@@ -59,10 +72,31 @@ interface Context {
   formId: string;
   nextFormId: number;
 }
-function fail(code: string, context: Context, detail: string): never {
-  throw new TypeError(
-    `${code}: ${detail} at ${context.path} in ${context.identity?.component ?? "static render"}`,
-  );
+export interface RenderDiagnostic {
+  readonly code: string;
+  readonly path: string;
+  readonly component: string;
+  readonly spelling?: { readonly name: string; readonly suggestion?: string };
+  readonly site?: DescriptionSite;
+}
+function fail(
+  code: string,
+  context: Context,
+  detail: string,
+  spelling?: RenderDiagnostic["spelling"],
+): never {
+  const component = context.identity?.component ?? "static render";
+  const site = context.node && descriptionSite(context.node);
+  const diagnostic: RenderDiagnostic = {
+    code,
+    path: context.path,
+    component,
+    ...(spelling && { spelling }),
+    ...(site && { site }),
+  };
+  throw Object.assign(new TypeError(`${code}: ${detail} at ${context.path} in ${component}`), {
+    diagnostic,
+  });
 }
 function reactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -106,24 +140,13 @@ function renderText(value: unknown, context: Context): string {
   fail("ZR_CHILD", context, `invalid scalar ${typeof value}`);
 }
 function style(value: unknown, context: Context): string {
-  if (typeof value === "string") return value;
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    fail("ZR_STYLE", context, "style must be a string or flat object");
-  let result = "";
-  for (const [name, entry] of Object.entries(value)) {
-    if (!/^(--[a-zA-Z0-9_-]+|[a-z][a-z0-9-]*)$/.test(name) || /[A-Z]/.test(name))
-      fail("ZR_STYLE", context, `invalid property ${name}`);
-    if (entry == null) continue;
-    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry)))
-      fail("ZR_STYLE", context, `invalid value for ${name}`);
-    result += `${name}:${entry};`;
+  try {
+    return serializeStyle(value);
+  } catch (error) {
+    if (error instanceof TypeError)
+      fail("ZR_STYLE", context, error.message.replace(/^ZR_STYLE: /, ""));
+    throw error;
   }
-  return result;
 }
 function attributes(
   tag: string,
@@ -142,6 +165,7 @@ function attributes(
         "ZR_PROP_DIALECT",
         context,
         `${tag}.${name}${suggestion ? ` (use \`${suggestion}\` instead of \`${name}\`)` : ""}`,
+        suggestion ? { name, suggestion } : { name },
       );
     }
     if (name.startsWith("on:")) {
@@ -176,33 +200,30 @@ function attributes(
         `${tag}.${name} requires ${suggestion ?? "a static value"}`,
       );
     }
-    if (value == null) continue;
     if (/^on[a-z]/.test(name) && typeof value === "function")
-      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`);
-    if (custom && typeof value !== "string")
-      fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-    if (name === "style") output += ` style="${escapeAttribute(style(value, context))}"`;
-    else if (booleanAttrs.has(name)) {
-      if (typeof value !== "boolean")
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a boolean`);
-      if (value) output += ` ${name}`;
-    } else {
-      if (
-        typeof value !== "string" &&
-        typeof value !== "boolean" &&
-        !(typeof value === "number" && Number.isFinite(value))
-      )
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a scalar`);
-      if (typeof value === "boolean" && !name.startsWith("aria-") && !name.startsWith("data-"))
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-      if (/^on[a-z]/.test(name) && typeof value !== "string")
-        fail("ZR_ATTRIBUTE", context, `${tag}.${name} requires a string`);
-      output += ` ${name}="${escapeAttribute(String(value))}"`;
-    }
+      fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`, {
+        name,
+        suggestion: `on:${name.slice(2)}`,
+      });
+    const error = attributeError(name, value, custom);
+    if (error) fail("ZR_ATTRIBUTE", context, `${tag}.${name} ${error}`);
+    if (value == null) continue;
+    const text = name === "style" ? style(value, context) : attributeText(name, value);
+    if (text === null) continue;
+    output +=
+      booleanAttrs.has(name) && value === true ? ` ${name}` : ` ${name}="${escapeAttribute(text)}"`;
   }
   return output;
 }
 function restricted(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
+  return tracked(value, context, () => restrictedValue(value, context, namespace, parent));
+}
+function restrictedValue(
   value: unknown,
   context: Context,
   namespace: Namespace,
@@ -238,7 +259,7 @@ function element(
   const childNamespace = tag === "foreignObject" ? "html" : elementNamespace;
   if (elementNamespace === "svg" ? !svgTags.has(tag) : !custom && !htmlTags.has(tag))
     fail("ZR_TAG", context, tag);
-  if (context.identity && (tag === "template" || sensitive.has(tag)))
+  if (context.identity && (tag === "template" || (tag !== "iframe" && sensitive.has(tag))))
     fail("ZR_PARSER_CONTEXT", context, tag);
   if (parent in tableChildren && !tableChildren[parent]?.has(tag))
     fail("ZR_PARSER_CONTEXT", context, `${parent} > ${tag}`);
@@ -255,6 +276,11 @@ function element(
         : `form:${context.nextFormId++}`;
   const source = description.props;
   const props: Record<string, unknown> = { ...source };
+  if (tag === "iframe") {
+    if (Object.hasOwn(props, "rawHtml")) fail("ZR_RAW_HTML", context, "iframe forbids rawHtml");
+    if (!emptyIframeChildren(props.children))
+      fail("ZR_PARSER_CONTEXT", context, "iframe requires empty children");
+  }
   const hasValue = source.modelValue !== undefined;
   const hasChecked = source.modelChecked !== undefined;
   if (
@@ -398,8 +424,7 @@ function element(
       fail("ZR_RAW_HTML", context, `${tag} requires static rawHtml`);
     const payload = read(raw);
     if (typeof payload !== "string") fail("ZR_RAW_HTML", context, `${tag} requires string rawHtml`);
-    if (/<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(payload))
-      fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
+    if (rawHtmlReserved(payload, tag)) fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
     if (
       (tag === "script" && /<\/script/i.test(payload)) ||
       (tag === "style" && /<\/style/i.test(payload))
@@ -410,6 +435,8 @@ function element(
     const value = read(source.modelValue ?? source.defaultValue);
     if (typeof value !== "string") fail("ZR_MODEL_VALUE", context, "textarea requires string");
     content = `${value.startsWith("\n") ? "\n" : ""}${escapeText(value)}`;
+  } else if (tag === "iframe") {
+    // The shell has no owned children; srcdoc belongs to the browser's foreign document.
   } else if (tag === "script" || tag === "style") {
     if (hasChildren) fail("ZR_RAW_HTML", context, `${tag} requires rawHtml`);
   } else if (
@@ -444,7 +471,26 @@ function element(
   context.formId = previousFormId;
   return `<${tag}${attrs}>${voidTags.has(tag) ? "" : `${content}</${tag}>`}`;
 }
+// A failure is attributed only to the value being rendered: a description's own site,
+// or no site at all for scalars, promises and other non-description children.
+function tracked<T>(value: unknown, context: Context, fn: () => T): T {
+  const prior = context.node;
+  context.node = isDescription(value) ? value : undefined;
+  try {
+    return fn();
+  } finally {
+    context.node = prior;
+  }
+}
 function render(value: unknown, context: Context, namespace: Namespace, parent: string): string {
+  return tracked(value, context, () => renderValue(value, context, namespace, parent));
+}
+function renderValue(
+  value: unknown,
+  context: Context,
+  namespace: Namespace,
+  parent: string,
+): string {
   if (value == null || typeof value === "boolean") return "";
   if (Array.isArray(value))
     return region(context, "f", () => children(value, context, namespace, parent));
@@ -541,11 +587,6 @@ function render(value: unknown, context: Context, namespace: Namespace, parent: 
     context.scope = prior;
   }
 }
-function empty(value: unknown): boolean {
-  return (
-    value == null || typeof value === "boolean" || (Array.isArray(value) && value.every(empty))
-  );
-}
 function island(
   description: Description,
   context: Context,
@@ -565,13 +606,13 @@ function island(
     (child.type as typeof child.type & { displayName?: string }).displayName ?? child.type.name;
   if (component !== options.identity.component)
     fail("ZR_ISLAND_IDENTITY", context, `expected ${options.identity.component}, got ${component}`);
-  if (Object.hasOwn(child.props, "children") && !empty(child.props.children))
+  if (Object.hasOwn(child.props, "children") && !emptyChildren(child.props.children))
     fail("ZR_ISLAND_CHILD", context, "nonempty children");
-  const props = { ...child.props };
-  delete props.children;
+  let props: Record<string, unknown>;
   let payload: string;
   try {
-    payload = serializeProps(props);
+    props = normalizeProps(child.props);
+    payload = JSON.stringify(props);
   } catch (error) {
     throw new TypeError(
       `ZR_ISLAND_PROPS ${component}: ${error instanceof Error ? error.message : String(error)}`,
@@ -584,8 +625,24 @@ function island(
     (when !== "media" && options.media !== undefined)
   )
     fail("ZR_ISLAND_WHEN", context, when);
+  if (
+    options.persist !== undefined &&
+    (typeof options.persist !== "string" ||
+      !options.persist.trim() ||
+      options.persist !== options.persist.trim() ||
+      /[\u0000-\u001f\u007f]/.test(options.persist))
+  )
+    fail(
+      "ZR_ISLAND_PERSIST",
+      context,
+      "persist must be a nonempty string without surrounding whitespace or control characters",
+    );
+  if (options.persistProps !== undefined && typeof options.persistProps !== "boolean")
+    fail("ZR_ISLAND_PERSIST", context, "persistProps must be a boolean");
+  if (options.persistProps !== undefined && options.persist === undefined)
+    fail("ZR_ISLAND_PERSIST", context, "persistProps requires persist");
   const marker = options.skipSsr ? "data-zfb-island-skip-ssr" : "data-zfb-island";
-  const attrs = ` ${marker}="${escapeAttribute(options.identity.component)}" data-when="${when}"${when === "media" ? ` data-media="${escapeAttribute(options.media!)}"` : ""} data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${escapeAttribute(options.identity.build)}" data-props="${escapeAttribute(payload)}"`;
+  const attrs = ` ${marker}="${escapeAttribute(options.identity.component)}" data-when="${when}"${when === "media" ? ` data-media="${escapeAttribute(options.media!)}"` : ""} data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="${escapeAttribute(options.identity.build)}" data-props="${escapeAttribute(payload)}"${options.persist === undefined ? "" : ` data-zfb-transition-persist="${escapeAttribute(options.persist)}"`}${options.persistProps === true ? ' data-zfb-transition-persist-props="true"' : ""}`;
   const local: Context = {
     radioGroups: new Map(),
     radioNames: new Map(),

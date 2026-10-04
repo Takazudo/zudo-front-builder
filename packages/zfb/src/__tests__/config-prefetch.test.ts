@@ -5,7 +5,7 @@
 // runtime identity of `defineConfig` — if the field name is misspelled or the
 // type changes shape, the test fails.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { defineConfig } from "../config.js";
 import type { PrefetchConfig, ZfbConfig } from "../config.js";
 

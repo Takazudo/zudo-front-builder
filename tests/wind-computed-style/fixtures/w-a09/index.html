@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>W-A09 six bounded utility additions</title>
+    <link rel="stylesheet" href="../../dist/w-a09/wind.css" />
+    <style>
+      :where(#wrap) {
+        width: 4ch;
+      }
+
+      :where(#leading, #offset) {
+        font-size: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <p id="wrap" class="wrap-anywhere">averyveryverylongunbrokenword</p>
+    <a id="decoration" href="#" class="underline decoration-panel hover:decoration-[#ff0000]">
+      Decorated link
+    </a>
+    <p id="leading" class="leading-none">Line height one</p>
+    <div id="visibility" class="invisible md:visible">Shown from md</div>
+    <button id="cursor" class="cursor-col-resize focus:cursor-row-resize">Resize handle</button>
+    <a id="offset" href="#" class="underline underline-offset-4 hover:underline-offset-[6px]">
+      Offset link
+    </a>
+  </body>
+</html>

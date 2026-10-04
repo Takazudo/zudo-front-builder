@@ -1173,3 +1173,199 @@ fn sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan() {
         truncate(&css_body, 1200),
     );
 }
+
+/// Epic #3515: one workspace member whose utility candidates arrive through
+/// every build discovery channel — its own `pages/`, a package-owned route
+/// (`injectRoute`), a sibling mirror root reached only through a plugin
+/// virtual module, and the virtual module's own source — while
+/// `wind.sources.exclude` removes a hand-written Worker under `src/`.
+/// Each file origin carries one ordinary marker class so the audit report
+/// names the source that scanned it.
+fn write_wind_origin_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
+    fs::write(
+        ws_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'sub-packages/*'\n",
+    )
+    .unwrap();
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, ws_root.join("node_modules"))
+        .expect("symlink workspace node_modules");
+
+    let project = ws_root.join("sub-packages/whost");
+    for dir in ["pages", "pkg", "src/worker"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{
+  "plugins": [{ "name": "./preset.mjs" }],
+  "wind": { "sources": { "exclude": ["src/worker/"] } }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("preset.mjs"),
+        r#"import path from "node:path";
+
+export default {
+  name: "wind-origin-preset",
+  setup({ projectRoot, addVirtualModule, injectRoute }) {
+    injectRoute("/package-route", "./pkg/route.tsx");
+    const sibling = path.join(projectRoot, "../../lib/wshared/Panel.tsx");
+    addVirtualModule(
+      "virtual:wind-panel",
+      () => `export { default } from ${JSON.stringify(sibling)};\nexport const tone = "italic";\n`,
+    );
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"import Panel from "virtual:wind-panel";
+
+export default function HomePage() {
+  return (
+    <main class="block origin-page">
+      <Panel />
+    </main>
+  );
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pkg/route.tsx"),
+        r#"export default function PackageRoute() {
+  return (
+    <html lang="en">
+      <body class="flex origin-route">package route</body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+    // A Worker zfb never builds, plus its test: both must stay out of CSS
+    // and out of the audit. `block` is shared with the page and must remain.
+    fs::write(
+        project.join("src/worker/index.ts"),
+        "export const html = `<div class=\"absolute block origin-worker\"></div>`;\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/worker/index.test.ts"),
+        "it(\"rejects a relative URL\", () => { expect(\"relative\").toBe(\"relative\"); });\n",
+    )
+    .unwrap();
+
+    let sibling = ws_root.join("lib/wshared");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(
+        sibling.join("Panel.tsx"),
+        r#"export default function Panel() {
+  return <section class="grid origin-mirror">panel</section>;
+}
+"#,
+    )
+    .unwrap();
+
+    (project, nm_handle)
+}
+
+/// The utilities `zfb build` emits and the sources `zfb wind audit --plan
+/// build` scans come from the same discovery: package route, mirror root,
+/// virtual module, and project pages are in both; the excluded Worker is
+/// in neither, while a candidate it shares with a kept page survives.
+#[test]
+fn wind_build_and_audit_build_plan_cover_the_same_origins() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[wind_build_and_audit_build_plan] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (project, _nm_handle) = write_wind_origin_fixture(tmp.path());
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+    assert!(
+        build.status.success(),
+        "zfb build failed: status={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        build.status,
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+    let css = collect_files(&project.join("dist/assets"), "css")
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (selector, origin) in [
+        (".block", "project page (shared with the excluded Worker)"),
+        (".flex", "package route"),
+        (".grid", "sibling mirror root"),
+        (".italic", "plugin virtual module"),
+    ] {
+        assert!(
+            css.contains(selector),
+            "{selector} from the {origin} is missing:\n{}",
+            truncate(&css, 2_000)
+        );
+    }
+    for selector in [".absolute", ".relative"] {
+        assert!(
+            !css.contains(selector),
+            "{selector} leaked from the excluded Worker:\n{}",
+            truncate(&css, 2_000)
+        );
+    }
+
+    let audit = Command::new(zfb_binary!())
+        .args(["wind", "audit", "--plan", "build", "--project-root"])
+        .arg(&project)
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb wind audit --plan build`");
+    let stdout = String::from_utf8_lossy(&audit.stdout);
+    assert!(
+        audit.status.success(),
+        "zfb wind audit --plan build failed: status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+        audit.status,
+        String::from_utf8_lossy(&audit.stderr),
+    );
+    assert!(stdout.contains("wind audit plan: build\n"), "{stdout}");
+    assert!(
+        stdout.contains("  virtual plugin/virtual:wind-panel\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("  excluded src/worker/ (wind.sources.exclude from project)"),
+        "{stdout}"
+    );
+    let line_for = |marker: &str| {
+        stdout
+            .lines()
+            .find(|line| line.contains(&format!("{marker} at ")))
+            .unwrap_or_else(|| panic!("audit never scanned the {marker} source:\n{stdout}"))
+            .to_owned()
+    };
+    assert!(line_for("origin-page").contains("default/"), "{stdout}");
+    assert!(
+        line_for("origin-route").contains("package-route/"),
+        "{stdout}"
+    );
+    assert!(line_for("origin-mirror").contains("mirror/"), "{stdout}");
+    assert!(
+        !stdout.contains("origin-worker"),
+        "the audit scanned the excluded Worker:\n{stdout}"
+    );
+}

@@ -146,10 +146,11 @@ echo "    Target ${target} is ready."
 # build.rs embeds the Hono router package from node_modules at compile time.
 
 echo "==> Installing node dependencies (pnpm install --frozen-lockfile)"
-# CI=true so pnpm runs non-interactively. pnpm 11 (#440) purges a node_modules
+# CI=true so pnpm runs non-interactively. pnpm 11 (#440) purged a node_modules
 # left by an incompatible pnpm version and would otherwise prompt for
-# confirmation — which aborts under no-TTY. The GHA runner gets CI=true for
-# free; set it here to replicate that environment for local builds.
+# confirmation — which aborted under no-TTY. pnpm 12 purges without a prompt,
+# but the GHA runner gets CI=true for free, so set it here to replicate that
+# environment for local builds.
 CI=true pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────

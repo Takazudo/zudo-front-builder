@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { createScope, getScope, withScope } from "../../zudo-react/scope.js";
 import { signal } from "../../zudo-react/reactive.js";
 import { flush } from "../../zudo-react/scheduler.js";
