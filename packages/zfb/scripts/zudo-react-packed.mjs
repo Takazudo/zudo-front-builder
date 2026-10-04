@@ -104,10 +104,11 @@ function writeConsumer(directory) {
 }
 
 function checkTypes(directory) {
-  // The package's own compiler, plus the TS 5.9 consumer floor the published declarations keep
-  // supporting while contributor builds move to newer compilers (#3544).
+  // The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+  // keep supporting while contributor builds use TypeScript 7 (#3544).
   const compilers = [
     resolvePackageTsc(packageDir),
+    resolvePackageTsc(packageDir, "typescript-6.0"),
     resolvePackageTsc(packageDir, "typescript-5.9"),
   ];
   writeConsumer(directory);

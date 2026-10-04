@@ -80,8 +80,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "typescript-5.9": "npm:typescript@5.9.3",
+    "typescript-6.0": "npm:typescript@6.0.3",
     "vite-plus": "catalog:"
   }
 }

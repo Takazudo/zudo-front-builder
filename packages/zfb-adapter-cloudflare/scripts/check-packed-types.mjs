@@ -7,9 +7,13 @@ import { resolvePackageTsc } from "../../../scripts/package-tsc.mjs";
 
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
-// The package's own compiler, plus the TS 5.9 consumer floor the published declarations keep
-// supporting while contributor builds move to newer compilers (#3544).
-const compilers = [resolvePackageTsc(packageDir), resolvePackageTsc(packageDir, "typescript-5.9")];
+// The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+// keep supporting while contributor builds use TypeScript 7 (#3544).
+const compilers = [
+  resolvePackageTsc(packageDir),
+  resolvePackageTsc(packageDir, "typescript-6.0"),
+  resolvePackageTsc(packageDir, "typescript-5.9"),
+];
 const tempDir = await mkdtemp(join(tmpdir(), "zfb-adapter-cloudflare-packed-types-"));
 const tarballDir = join(tempDir, "tarballs");
 const installDir = join(tempDir, "node_modules", "@takazudo", "zfb-adapter-cloudflare");
