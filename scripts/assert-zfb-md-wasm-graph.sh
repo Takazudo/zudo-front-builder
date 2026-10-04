@@ -9,10 +9,10 @@ set -euo pipefail
 # make an incomplete edge look valid.
 #
 # Usage:
-#   scripts/assert-zfb-md-wasm-graph.sh [default|none|highlight|render|parse|pipeline]
+#   scripts/assert-zfb-md-wasm-graph.sh [default|none|compile|highlight|render|parse|pipeline]
 #   scripts/assert-zfb-md-wasm-graph.sh --self-test
 #
-# With no argument, all six supported health configurations are checked. The
+# With no argument, all seven supported health configurations are checked. The
 # `none` configuration is the still-supported bare --no-default-features
 # surface; it intentionally has no zfb-content dependency.
 
@@ -22,7 +22,7 @@ TARGET="wasm32-unknown-unknown"
 PACKAGE="zfb-md-wasm"
 
 usage() {
-  echo "usage: $0 [default|none|highlight|render|parse|pipeline]" >&2
+  echo "usage: $0 [default|none|compile|highlight|render|parse|pipeline]" >&2
   exit 2
 }
 
@@ -30,6 +30,7 @@ config_args() {
   case "$1" in
     default) ;;
     none) printf '%s\n' --no-default-features ;;
+    compile) printf '%s\n' --no-default-features --features compile ;;
     highlight | render | parse)
       printf '%s\n' --no-default-features --features "$1"
       ;;
@@ -43,6 +44,11 @@ assert_config_args() {
   expected="$(printf '%s\n' --no-default-features --features pipeline)"
   if [[ "$(config_args pipeline)" != "$expected" ]]; then
     echo 'ERROR: pipeline config must pass --no-default-features --features pipeline' >&2
+    exit 1
+  fi
+  expected="$(printf '%s\n' --no-default-features --features compile)"
+  if [[ "$(config_args compile)" != "$expected" ]]; then
+    echo 'ERROR: compile config must pass --no-default-features --features compile' >&2
     exit 1
   fi
   expected="$(printf '%s\n' --no-default-features --features highlight)"
@@ -95,7 +101,7 @@ assert_graph() {
   assert_absent "$config" "$tree" '(rusty_)?v8'
 
   case "$config" in
-    default | pipeline)
+    default | compile | pipeline)
       for package in zfb-render swc_core swc_ecma_parser swc_ecma_transforms_base swc_ecma_codegen syntect; do
         assert_present "$config" "$tree" "$package"
       done
@@ -157,6 +163,7 @@ run_config() {
   case "$1" in
     default) assert_graph default ;;
     none) assert_graph none --no-default-features ;;
+    compile) assert_graph compile --no-default-features --features compile ;;
     highlight) assert_graph highlight --no-default-features --features highlight ;;
     render) assert_graph render --no-default-features --features render ;;
     parse) assert_graph parse --no-default-features --features parse ;;
@@ -176,7 +183,7 @@ main() {
 
   if [[ "$#" -eq 0 ]]; then
     assert_config_args
-    for config in default none highlight render parse pipeline; do
+    for config in default none compile highlight render parse pipeline; do
       run_config "$config"
     done
     assert_compiler_boundaries

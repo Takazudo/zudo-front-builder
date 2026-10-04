@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "a3b2679ee246539a032286bbd9a6c712880a71d7",
+  "baselineSourceSha": "69030f99a4105957bdda0ffdb3a3a26381d739ec",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -23,13 +23,13 @@
     "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
   },
   "toolchain": {
-    "packageVersion": "3.1.0",
+    "packageVersion": "3.2.0",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "af4dc9f5a8bd02096ffaea0998067f3898469a78930af35e69a99e5085c956b5",
-    "cargoLockSha256": "62cb06933c5048c43f20ed696f53dfc5ba57b444876396e3822b860b2bc0b21d"
+    "pnpmLockSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
+    "cargoLockSha256": "695094eb4031b7e0578130ce339ab7cac6c66aedbb0bfb219640a0112d3cc75e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 61007,
-        "gzip": 20295
+        "raw": 63209,
+        "gzip": 21133
       },
       "scalar-signal": {
-        "raw": 61015,
-        "gzip": 20294
+        "raw": 63217,
+        "gzip": 21133
       },
       "show-for": {
-        "raw": 61162,
-        "gzip": 20379
+        "raw": 63363,
+        "gzip": 21213
       },
       "model": {
-        "raw": 61006,
-        "gzip": 20305
+        "raw": 63208,
+        "gzip": 21138
       },
       "blog-theme": {
-        "raw": 61357,
-        "gzip": 20438
+        "raw": 63558,
+        "gzip": 21278
       },
       "json-api": {
-        "raw": 61161,
-        "gzip": 20401
+        "raw": 63363,
+        "gzip": 21227
       },
       "multi-island": {
-        "raw": 61283,
-        "gzip": 20392
+        "raw": 63485,
+        "gzip": 21239
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 61069,
-        "gzip": 20311
+        "raw": 63271,
+        "gzip": 21156
       },
       "scalar-signal": {
-        "raw": 61077,
-        "gzip": 20321
+        "raw": 63279,
+        "gzip": 21160
       },
       "show-for": {
-        "raw": 61224,
-        "gzip": 20396
+        "raw": 63425,
+        "gzip": 21244
       },
       "model": {
-        "raw": 61068,
-        "gzip": 20327
+        "raw": 63270,
+        "gzip": 21168
       },
       "blog-theme": {
-        "raw": 61419,
-        "gzip": 20447
+        "raw": 63620,
+        "gzip": 21297
       },
       "json-api": {
-        "raw": 61223,
-        "gzip": 20407
+        "raw": 63425,
+        "gzip": 21253
       },
       "multi-island": {
-        "raw": 61345,
-        "gzip": 20412
+        "raw": 63547,
+        "gzip": 21258
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.1.0 ceilings measured after concrete island boundary registration; Linux x64 uses its separately measured contract.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.2.0 ceilings measured locally after SWC 74; the terminal sweep epic will remeasure after later product changes. Linux x64 uses its separately measured contract.",
   "baselineEvidence": {
     "event": "local",
-    "sourceSha": "a3b2679ee246539a032286bbd9a6c712880a71d7",
-    "workspaceReport": "research/v3-island-size/results/scanner-darwin-a3b2679ee246539a032286bbd9a6c712880a71d7/real-workspace/report.md",
-    "packedReport": "research/v3-island-size/results/scanner-darwin-a3b2679ee246539a032286bbd9a6c712880a71d7/real-packed/report.md",
-    "note": "Both complete real matrices passed on Darwin arm64. Concrete island boundary registration increased every nonempty fixture by 205 raw bytes; ceilings equal exact current measurements, no-island remains zero, and allowance remains zero."
+    "sourceSha": "69030f99a4105957bdda0ffdb3a3a26381d739ec",
+    "workspaceReport": "worktrees/_manager/darwin-size-69030f99/real-workspace/report.md",
+    "packedReport": "worktrees/_manager/darwin-size-69030f99/real-packed/report.md",
+    "note": "Full real workspace and packed eight-fixture matrices passed with two identical inventories each; modeled workspace and packed sidecars were also saved. Exact raw and gzip totals were remeasured after SWC 74, and allowance remains zero. The earlier Darwin contract remains in git history."
   }
 }
