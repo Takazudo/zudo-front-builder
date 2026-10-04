@@ -2500,11 +2500,11 @@ fn parse_loaded_config(
     let mut config: Config =
         serde_path_to_error::deserialize(merged_value.clone()).map_err(|e| {
             anyhow!(
-            "{}: failed to parse the default export as zfb config JSON: {}\n--- received ---\n{}",
-            ts_path.display(),
-            e,
-            merged_value
-        )
+                "{}: failed to parse the default export as zfb config JSON: {}{}",
+                ts_path.display(),
+                e,
+                received_config_context(&merged_value, e.path())
+            )
         })?;
     apply_wind_manifest_sources(&mut config, manifest_sources);
     if let Some(source_declarations) = source_declarations {
@@ -2525,6 +2525,44 @@ fn parse_loaded_config(
     }
 
     Ok(config)
+}
+
+/// Environment variable that restores the full evaluated config in a parse error.
+const CONFIG_DEBUG_ENV: &str = "ZFB_DEBUG_CONFIG";
+const RECEIVED_EXCERPT_LIMIT: usize = 240;
+
+/// The value at the failing field, bounded, instead of the whole evaluated
+/// config (preset-heavy configs bury the error). `ZFB_DEBUG_CONFIG=1` prints
+/// everything.
+fn received_config_context(value: &serde_json::Value, path: &serde_path_to_error::Path) -> String {
+    if std::env::var_os(CONFIG_DEBUG_ENV).is_some_and(|flag| !flag.is_empty()) {
+        return format!("\n--- received ---\n{value}");
+    }
+    let mut found = Some(value);
+    for segment in path.iter() {
+        found = match segment {
+            serde_path_to_error::Segment::Map { key } => found.and_then(|value| value.get(key)),
+            serde_path_to_error::Segment::Seq { index } => {
+                found.and_then(|value| value.get(*index))
+            }
+            _ => None,
+        };
+    }
+    let Some(found) = found else {
+        return format!("\n(set {CONFIG_DEBUG_ENV}=1 to print the full evaluated config)");
+    };
+    let mut excerpt = found.to_string();
+    if excerpt.len() > RECEIVED_EXCERPT_LIMIT {
+        let mut end = RECEIVED_EXCERPT_LIMIT;
+        while !excerpt.is_char_boundary(end) {
+            end -= 1;
+        }
+        excerpt.truncate(end);
+        excerpt.push('…');
+    }
+    format!(
+        "\n--- received at {path} ---\n{excerpt}\n(set {CONFIG_DEBUG_ENV}=1 to print the full evaluated config)"
+    )
 }
 
 /// Top-level config keys whose arrays are *additive* across presets and the
@@ -3743,6 +3781,22 @@ mod tests {
             assert!(error.contains("wind.utilities"), "{error}");
             assert!(error.contains(needle), "{error}");
         }
+    }
+
+    #[test]
+    fn config_parse_errors_show_the_failing_value_not_the_whole_config() {
+        let value = serde_json::json!({
+            "collections": [{ "name": "docs", "path": "content/docs", "marker": "collection-dump-marker" }],
+            "wind": { "tokens": { "zIndices": { "content": 0 } } }
+        });
+        let error = serde_path_to_error::deserialize::<_, Config>(value.clone()).unwrap_err();
+        let context = received_config_context(&value, error.path());
+        assert!(
+            context.contains("--- received at wind.tokens.zIndices.content ---\n0"),
+            "{context}"
+        );
+        assert!(!context.contains("collection-dump-marker"), "{context}");
+        assert!(context.contains(CONFIG_DEBUG_ENV), "{context}");
     }
 
     #[test]

@@ -4840,7 +4840,7 @@ fn build_dev_css_and_publish_mirror_roots(
     }
     for diagnostic in &pass.diagnostics {
         if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-            output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+            output::warn(diagnostic.render());
         }
     }
     if cfg.wind.is_some() {

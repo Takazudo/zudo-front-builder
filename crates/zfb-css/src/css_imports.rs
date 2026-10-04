@@ -543,18 +543,27 @@ fn reject_forbidden_imports(css: &str, source: &Path) -> anyhow::Result<()> {
             source.display()
         )
     })?;
-    for rule in &stylesheet.rules.0 {
-        if let CssRule::Import(import) = rule {
-            let specifier = import.url.as_ref();
-            if is_virtual_specifier(specifier) {
-                return Err(anyhow::anyhow!(
-                    "ZW009: forbidden @import {specifier:?} in {}; see /docs/zudo-wind/coming-from-tailwind/",
-                    source.display()
-                ));
-            }
-        }
+    let forbidden: Vec<_> = stylesheet
+        .rules
+        .0
+        .iter()
+        .filter_map(|rule| match rule {
+            CssRule::Import(import) if is_virtual_specifier(import.url.as_ref()) => Some(format!(
+                "ZW009: forbidden @import {:?} in {}",
+                import.url.as_ref(),
+                source.display()
+            )),
+            _ => None,
+        })
+        .collect();
+    if forbidden.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "{}; see /docs/zudo-wind/coming-from-tailwind/",
+            forbidden.join("\n")
+        ))
     }
-    Ok(())
 }
 
 fn is_external_import(specifier: &str) -> bool {

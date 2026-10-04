@@ -49,6 +49,14 @@ Diagnostic records retain the candidate where available, severity, code, origin,
 
 Occurrences are retained and ordered by origin, offset or key/index, code, and candidate bytes.
 
+## Reading diagnostic output
+
+`zfb build`, `zfb dev`, and `zfb css` print one diagnostic per line as `source:line:column: CODE candidate: message`. The line is one-based, and the column is a one-based byte column, so a non-ASCII character earlier on the line counts by its UTF-8 bytes; a CRLF line ending counts as one line break. A candidate without a source position names its owner instead, such as `node_modules/widgets/wind.json (manifest widgets[2])` or `wind.safelist.app[0]`. When errors stop a pass, every distinct error is listed: the same candidate at two places is reported twice, and an exact repeat of one place once. Every leftover directive in the entry stylesheet and its imports is reported in the same run.
+
+`zfb wind audit` uses the same `source:line:column` locations; the byte offset appears only as `byteOffset` in `--json` output. A configuration error names the failing field and shows its value, bounded, instead of the whole evaluated configuration; set `ZFB_DEBUG_CONFIG=1` to print all of it.
+
+Candidate extraction skips string literals that cannot be classes, for build and audit alike: module specifiers in `import`, `export … from`, `import()`, and `require()`; literals that are only a URL or a relative path; the values of `href`, `src`, `content`, `name`, `rel`, and `type` attributes; and the CSS text of a `<style>` element. Class attributes, class helpers, and every other literal are still read, so a template constant that is not provably CSS can still contribute a candidate.
+
 ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. If a utility-root name is intended as an authored class, add its exact complete spelling to `wind.authoredClasses`, for example `authoredClasses: { "text-link": true }`. This reservation suppresses utility validation, candidate diagnostics, and generated CSS for that full candidate. Otherwise, correct the utility spelling or declare the missing token. A name with no matching utility root, such as `site-header`, remains ordinary class text.
 
 ## Migration warnings and strict mode

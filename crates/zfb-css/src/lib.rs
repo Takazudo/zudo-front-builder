@@ -81,10 +81,14 @@ pub use css_imports::{
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::CssEngine;
 pub use engine_output::{
-    CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId, CssEngineOutput,
-    CssInputDependency, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    dedup_diagnostics, CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngineId,
+    CssEngineOutput, CssInputDependency, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    WindDiagnosticsError,
 };
-pub use leftover_directives::{scan_leftover_directives, LeftoverDirective};
+pub use leftover_directives::{
+    check_forbidden_directives, scan_leftover_directives, LeftoverDirective,
+    FORBIDDEN_WIND_DIRECTIVES,
+};
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
 pub use scanner::{

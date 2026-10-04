@@ -85,8 +85,18 @@ pub enum WindCommand {
 /// Arguments for `zfb wind explain`.
 #[derive(Debug, Args)]
 pub struct WindExplainArgs {
-    /// Candidate class to explain.
-    pub candidate: String,
+    /// Candidate class to explain. Put `--` first for a candidate that
+    /// starts with a dash: `zfb wind explain -- -mt-4`.
+    #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+    pub candidate: Option<String>,
+
+    /// Read candidates from stdin, one per nonempty line, in order.
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Print a versioned JSON document instead of text.
+    #[arg(long)]
+    pub json: bool,
 
     /// Project root used for config loading. Defaults to the current directory.
     #[arg(long)]
@@ -108,6 +118,23 @@ pub struct WindAuditArgs {
     /// discovery including package routes, mirrors, and plugin modules.
     #[arg(long, value_enum, default_value_t = WindAuditPlan::Standalone)]
     pub plan: WindAuditPlan,
+
+    /// Print a versioned JSON document on stdout instead of text.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Show diagnostics at or above this severity. Display only: the exit
+    /// status still follows the complete report and --fail-on.
+    #[arg(long, value_enum)]
+    pub severity: Option<WindAuditSeverity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum WindAuditSeverity {
+    #[value(name = "auditInfo")]
+    AuditInfo,
+    Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1278,7 +1305,7 @@ mod tests {
         {
             Command::Wind(args) => match args.command {
                 WindCommand::Explain(explain) => {
-                    assert_eq!(explain.candidate, "sm:hover:bg-panel");
+                    assert_eq!(explain.candidate.as_deref(), Some("sm:hover:bg-panel"));
                     assert_eq!(explain.project_root, Some(PathBuf::from("project")));
                 }
                 other => panic!("expected wind explain, got {other:?}"),
@@ -1336,6 +1363,44 @@ mod tests {
             }
         }
         assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--plan", "dev"]).is_err());
+    }
+
+    #[test]
+    fn wind_explain_stdin_json_and_leading_dash_candidates_parse() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args)
+            .expect("wind explain parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Explain(explain) => explain,
+                other => panic!("expected wind explain, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        };
+        let batch = parse(&["zfb", "wind", "explain", "--stdin", "--json"]);
+        assert!(batch.stdin && batch.json && batch.candidate.is_none());
+        let dashed = parse(&["zfb", "wind", "explain", "--", "-mt-hsp-md"]);
+        assert_eq!(dashed.candidate.as_deref(), Some("-mt-hsp-md"));
+        assert!(Cli::try_parse_from(["zfb", "wind", "explain", "p-4", "--stdin"]).is_err());
+        assert!(Cli::try_parse_from(["zfb", "wind", "explain", "-mt-hsp-md"]).is_err());
+    }
+
+    #[test]
+    fn wind_audit_json_and_severity_parse() {
+        match Cli::try_parse_from(["zfb", "wind", "audit", "--json", "--severity", "auditInfo"])
+            .expect("wind audit parses")
+            .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Audit(audit) => {
+                    assert!(audit.json);
+                    assert_eq!(audit.severity, Some(WindAuditSeverity::AuditInfo));
+                }
+                other => panic!("expected wind audit, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--severity", "info"]).is_err());
     }
 
     #[test]

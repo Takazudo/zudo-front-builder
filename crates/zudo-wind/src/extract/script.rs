@@ -26,6 +26,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
         if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
             let quote = bytes[i];
             let class = class_context(&source[..i]);
+            let known_non_class = !class && known_non_class_context(&source[..i]);
             let open = i;
             i += 1;
             let mut segment = i;
@@ -36,19 +37,21 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     continue;
                 }
                 if quote == b'`' && bytes[i..].starts_with(b"${") {
-                    emit(
-                        source,
-                        base,
-                        out,
-                        segment,
-                        i,
-                        open,
-                        i + 2,
-                        class,
-                        false,
-                        true,
-                        left,
-                    );
+                    if !known_non_class {
+                        emit(
+                            source,
+                            base,
+                            out,
+                            segment,
+                            i,
+                            open,
+                            i + 2,
+                            class,
+                            false,
+                            true,
+                            left,
+                        );
+                    }
                     let expression_start = i + 2;
                     i = expression_end(source, expression_start);
                     if i > expression_start {
@@ -63,19 +66,24 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     continue;
                 }
                 if bytes[i] == quote {
-                    emit(
-                        source,
-                        base,
-                        out,
-                        segment,
-                        i,
-                        open,
-                        i + 1,
-                        class,
-                        quote != b'`',
-                        source[i + 1..].trim_start().starts_with('+'),
-                        left || source[..open].trim_end().ends_with('+'),
-                    );
+                    let right = source[i + 1..].trim_start().starts_with('+');
+                    let left = left || source[..open].trim_end().ends_with('+');
+                    let whole_url = !class && !left && !right && is_pure_url(&source[segment..i]);
+                    if !known_non_class && !whole_url {
+                        emit(
+                            source,
+                            base,
+                            out,
+                            segment,
+                            i,
+                            open,
+                            i + 1,
+                            class,
+                            quote != b'`',
+                            right,
+                            left,
+                        );
+                    }
                     i += 1;
                     break;
                 }
@@ -143,6 +151,78 @@ fn class_context(prefix: &str) -> bool {
         .next()
         .unwrap_or("");
     !matches!(preceding_word, "const" | "let" | "var")
+}
+
+/// Attributes whose value is never a class list: links, sources, metadata
+/// and input types (`type="hidden"` is not the `hidden` utility).
+const NON_CLASS_ATTRIBUTES: &[&str] = &["href", "src", "content", "name", "rel", "type"];
+
+/// A literal that is a module specifier (`import`/`export … from`,
+/// `import()`, `require()`) or an intrinsic non-class attribute value.
+fn known_non_class_context(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    let word = |text: &str| {
+        text.rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+            .next()
+            .unwrap_or("")
+            .to_owned()
+    };
+    if let Some(call) = trimmed.strip_suffix('(') {
+        let callee = word(call.trim_end());
+        return callee == "require"
+            || (callee == "import" && !call.trim_end().ends_with(".import"));
+    }
+    if matches!(word(trimmed).as_str(), "from" | "import") {
+        return true;
+    }
+    if style_text_context(trimmed) {
+        return true;
+    }
+    let attribute = trimmed.strip_suffix('{').unwrap_or(trimmed).trim_end();
+    let Some(before) = attribute.strip_suffix('=') else {
+        return false;
+    };
+    let before = before.trim_end();
+    let name = word(before);
+    if !NON_CLASS_ATTRIBUTES.contains(&name.as_str()) {
+        return false;
+    }
+    // `const name = "..."` is a variable, not an attribute.
+    let preceding = word(before.strip_suffix(name.as_str()).unwrap_or("").trim_end());
+    !matches!(preceding.as_str(), "const" | "let" | "var")
+}
+
+/// CSS text of a `<style>` element: `<style>{`…`}</style>` or the
+/// `rawHtml` attribute of a `<style>` tag.
+fn style_text_context(trimmed: &str) -> bool {
+    let tag_start = |text: &str| {
+        text.rfind('<')
+            .is_some_and(|open| text[open + 1..].trim_start().starts_with("style"))
+    };
+    if let Some(child) = trimmed.strip_suffix('{') {
+        let child = child.trim_end();
+        if let Some(tag) = child.strip_suffix('>') {
+            return tag_start(tag) && !tag.ends_with('/');
+        }
+        if let Some(attribute) = child.strip_suffix('=') {
+            return attribute.trim_end().ends_with("rawHtml")
+                && tag_start(attribute)
+                && !attribute[attribute.rfind('<').unwrap_or(0)..].contains('>');
+        }
+    }
+    false
+}
+
+/// A whole literal that is only a URL or a relative path.
+fn is_pure_url(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains(char::is_whitespace)
+        && [
+            "http://", "https://", "//", "mailto:", "tel:", "data:", "blob:", "file:", "node:",
+            "./", "../",
+        ]
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
 }
 
 fn regex_context(prefix: &str) -> bool {
