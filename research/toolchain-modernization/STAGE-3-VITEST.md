@@ -169,7 +169,7 @@ root suites now fail once they pass 5 s wall-clock.
 The tests are no slower. Concurrent workspace runs on a loaded host have always pushed them past 5
 s, and Vitest 2 hid that. The timeouts stay at their contract values (root 5 s, subprocess 90 s,
 adapter 19 s, md-wasm 15 s). Under repository rule 8, raising one needs a linked issue and a value
-taken from a measured distribution, so this stage leaves the decision to the manager. CI (Linux x64,
+taken from a measured distribution, so the timeouts stay unchanged here and #3630 (deferred-verification) re-measures the root budget under Vitest 4+. CI (Linux x64,
 root project 9.14 s total at the baseline) has more headroom but can see the same failure. The
 config comment and `CLAUDE.md` now state the Vitest 4+ semantics, and `CLAUDE.md`'s stale "60 s"
 now reads 90 s.
@@ -234,7 +234,7 @@ one.
 
 ## Regressions versus the baseline
 
-- **The root 5 s timeout now binds synchronous suites** (section above). It is reported as a risk,
+- **The root 5 s timeout now binds synchronous suites** (section above). It is tracked by #3630 as a risk,
   not fixed by raising a gate.
 - No suite, case or environment was lost or duplicated, and no skip was added. Mock and timer
   defaults are pinned to their earlier behavior.
