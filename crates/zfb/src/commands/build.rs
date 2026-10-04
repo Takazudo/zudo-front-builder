@@ -969,7 +969,7 @@ impl BuildRunner for DefaultRunner {
         emit_build_phase_timing("css", css_started);
         for diagnostic in &css_pass.diagnostics {
             if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-                output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+                output::warn(diagnostic.render());
             }
         }
         let _css_input_dependencies = &css_pass.input_dependencies;
@@ -1410,22 +1410,7 @@ fn build_css_payload_with_index(
             .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
         let mut stylesheets = vec![path.clone()];
         stylesheets.extend(zfb_css::resolve_css_imports(&path, project_root));
-        const FORBIDDEN: &[&str] = &[
-            "import",
-            "tailwind",
-            "theme",
-            "source",
-            "custom-variant",
-            "apply",
-            "utility",
-            "variant",
-            "plugin",
-            "config",
-            "reference",
-            "--spacing",
-            "--alpha",
-            "--value",
-        ];
+        let mut contents = Vec::with_capacity(stylesheets.len());
         for stylesheet in stylesheets {
             let css = if stylesheet == path {
                 raw.clone()
@@ -1433,14 +1418,9 @@ fn build_css_payload_with_index(
                 std::fs::read_to_string(&stylesheet)
                     .with_context(|| format!("failed to read {}", stylesheet.display()))?
             };
-            if let Some(directive) = zfb_css::scan_leftover_directives(&css, FORBIDDEN)
-                .into_iter()
-                .next()
-            {
-                anyhow::bail!("ZW009: forbidden Tailwind {} at {}:{}:{}; see /docs/zudo-wind/coming-from-tailwind/",
-                    directive.name, stylesheet.display(), directive.line, directive.column);
-            }
+            contents.push((stylesheet, css));
         }
+        zfb_css::check_forbidden_directives(&contents)?;
         zfb_css::bundle_authored_css_with_assets(&path, project_root, &raw)?
     } else {
         zfb_css::AuthoredCssBundle {

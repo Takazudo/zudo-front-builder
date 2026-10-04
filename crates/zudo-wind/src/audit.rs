@@ -112,6 +112,8 @@ pub struct AuditConflict {
 pub struct DynamicConstruction {
     pub source_id: String,
     pub byte_offset: usize,
+    pub line: usize,
+    pub byte_column: usize,
     pub text: String,
 }
 
@@ -127,6 +129,8 @@ pub struct InterpolatedCandidate {
 pub struct AuditNote {
     pub source_id: String,
     pub byte_offset: usize,
+    pub line: usize,
+    pub byte_column: usize,
     pub kind: String,
     pub text: String,
 }
@@ -264,26 +268,21 @@ pub fn render_audit(report: &AuditReport) -> String {
     render_section(
         &mut output,
         "unrecognized classes",
-        report.unrecognized_classes.iter().map(|entry| {
-            format!(
-                "{} at {}:{}",
-                entry.candidate,
-                entry.origin.source_id.as_deref().unwrap_or("?"),
-                entry.origin.byte_offset.unwrap_or_default()
-            )
-        }),
+        report
+            .unrecognized_classes
+            .iter()
+            .map(|entry| format!("{} at {}", entry.candidate, origin_location(&entry.origin))),
     );
     render_section(
         &mut output,
         "conflicts",
         report.conflicts.iter().map(|conflict| {
             format!(
-                "{} / {} overlap [{}] at {}:{}",
+                "{} / {} overlap [{}] at {}",
                 conflict.first_candidate,
                 conflict.second_candidate,
                 conflict.overlapping_properties.join(", "),
-                conflict.origin.source_id.as_deref().unwrap_or("?"),
-                conflict.origin.literal_byte_offset.unwrap_or_default()
+                origin_location(&conflict.origin)
             )
         }),
     );
@@ -295,8 +294,7 @@ pub fn render_audit(report: &AuditReport) -> String {
                 .diagnostic
                 .origin
                 .as_ref()
-                .and_then(|origin| origin.source_id.as_deref().zip(origin.byte_offset))
-                .map(|(source, offset)| format!(" at {source}:{offset}"))
+                .map(|origin| format!(" at {}", origin_location(origin)))
                 .unwrap_or_default();
             format!("{} [{}]{}", dead.candidate, dead.diagnostic.code, location)
         }),
@@ -306,22 +304,18 @@ pub fn render_audit(report: &AuditReport) -> String {
         "dynamic constructions",
         report.dynamic_constructions.iter().map(|dynamic| {
             format!(
-                "{} at {}:{}",
-                dynamic.text, dynamic.source_id, dynamic.byte_offset
+                "{} at {}:{}:{}",
+                dynamic.text, dynamic.source_id, dynamic.line, dynamic.byte_column
             )
         }),
     );
     render_section(
         &mut output,
         "tokens adjacent to interpolation",
-        report.adjacent_interpolations.iter().map(|item| {
-            format!(
-                "{} at {}:{}",
-                item.candidate,
-                item.origin.source_id.as_deref().unwrap_or("?"),
-                item.origin.byte_offset.unwrap_or_default()
-            )
-        }),
+        report
+            .adjacent_interpolations
+            .iter()
+            .map(|item| format!("{} at {}", item.candidate, origin_location(&item.origin))),
     );
     render_section(
         &mut output,
@@ -330,8 +324,12 @@ pub fn render_audit(report: &AuditReport) -> String {
             let location = diagnostic
                 .origin
                 .as_ref()
-                .and_then(|origin| origin.source_id.as_deref().zip(origin.byte_offset))
-                .map(|(source, offset)| format!(" at {source}:{offset}"))
+                .map(|origin| format!(" at {}", origin_location(origin)))
+                .unwrap_or_default();
+            let candidate = diagnostic
+                .candidate
+                .as_deref()
+                .map(|candidate| format!("{candidate}: "))
                 .unwrap_or_default();
             let suggestion = diagnostic
                 .suggestion
@@ -339,8 +337,13 @@ pub fn render_audit(report: &AuditReport) -> String {
                 .map(|spelling| format!("; suggested spelling: {spelling}"))
                 .unwrap_or_default();
             format!(
-                "{} {}{}: {}{}",
-                diagnostic.code, diagnostic.severity, location, diagnostic.message, suggestion
+                "{} {}{}: {}{}{}",
+                diagnostic.code,
+                diagnostic.severity,
+                location,
+                candidate,
+                diagnostic.message,
+                suggestion
             )
         }),
     );
@@ -349,12 +352,37 @@ pub fn render_audit(report: &AuditReport) -> String {
         "extraction notes",
         report.extraction_notes.iter().map(|note| {
             format!(
-                "{} at {}:{}: {}",
-                note.kind, note.source_id, note.byte_offset, note.text
+                "{} at {}:{}:{}: {}",
+                note.kind, note.source_id, note.line, note.byte_column, note.text
             )
         }),
     );
     output
+}
+
+/// `source:line:column` for a source origin, the manifest or other owner
+/// otherwise. Byte offsets stay in the structured report, never in place of a line.
+fn origin_location(origin: &OriginView) -> String {
+    match (&origin.source_id, origin.line, origin.byte_column) {
+        (Some(source), Some(line), Some(column)) => format!("{source}:{line}:{column}"),
+        (Some(source), _, _) => source.clone(),
+        _ => match (&origin.producer, &origin.path, origin.index) {
+            (Some(producer), _, Some(index)) => format!("manifest {producer}[{index}]"),
+            (_, Some(path), _) => path.clone(),
+            _ => origin
+                .owner
+                .as_ref()
+                .map(|owner| format!("{} {owner}", origin.kind))
+                .or_else(|| origin.key_path.clone())
+                .or_else(|| {
+                    origin
+                        .role_key
+                        .as_ref()
+                        .map(|key| format!("roleClass {key}"))
+                })
+                .unwrap_or_else(|| origin.kind.clone()),
+        },
+    }
 }
 
 pub fn audit_json(report: &AuditReport) -> Result<String, serde_json::Error> {
@@ -382,6 +410,8 @@ fn append_notes(source: &AuditSource, report: &mut AuditReport) {
         report.extraction_notes.push(AuditNote {
             source_id: source.source_id.clone(),
             byte_offset: note.byte_offset,
+            line: note.line,
+            byte_column: note.byte_column,
             kind: note_kind.to_owned(),
             text: note.text.clone(),
         });
@@ -389,6 +419,8 @@ fn append_notes(source: &AuditSource, report: &mut AuditReport) {
             report.dynamic_constructions.push(DynamicConstruction {
                 source_id: source.source_id.clone(),
                 byte_offset: note.byte_offset,
+                line: note.line,
+                byte_column: note.byte_column,
                 text: note.text.clone(),
             });
         }
@@ -432,6 +464,8 @@ fn note_origin_view(source_id: &str, note: &crate::ExtractionNote) -> OriginView
         kind: "source".to_owned(),
         source_id: Some(source_id.to_owned()),
         byte_offset: Some(note.byte_offset),
+        line: Some(note.line),
+        byte_column: Some(note.byte_column),
         ..OriginView::default()
     }
 }
@@ -949,5 +983,40 @@ mod tests {
         assert_eq!(report.dead_classes.len(), 1);
         assert_eq!(report.dead_classes[0].candidate, "sm:block");
         assert_eq!(report.dead_classes[0].diagnostic.code, "ZW002");
+    }
+
+    #[test]
+    fn audit_locations_are_lines_and_byte_columns_not_offsets() {
+        let source = "// 日本語のコメント\r\nconst a = 1;\r\nexport const x = <div class=\"rounded-lg md:block\" />;\r\nconst t = `${a}-suffix`;\r\n";
+        let extraction = crate::extract_candidates(source.as_bytes(), crate::SourceKind::Tsx);
+        let report = audit(
+            &AuditInput::new(vec![AuditSource::new("default/src:a.tsx", extraction)]),
+            &WindConfig::default(),
+        );
+        let rendered = render_audit(&report);
+        let column = "export const x = <div class=\"".len() + 1;
+        assert!(
+            rendered.contains(&format!("default/src:a.tsx:3:{column}: rounded-lg: ")),
+            "{rendered}"
+        );
+        let offset = source.find("rounded-lg").unwrap();
+        assert!(!rendered.contains(&format!("a.tsx:{offset}")), "{rendered}");
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.candidate.as_deref() == Some("rounded-lg"))
+            .unwrap();
+        let origin = diagnostic.origin.as_ref().unwrap();
+        assert_eq!((origin.line, origin.byte_column), (Some(3), Some(column)));
+        assert_eq!(origin.byte_offset, Some(offset));
+        for note in &report.extraction_notes {
+            assert!(note.line >= 1 && note.byte_column >= 1, "{note:?}");
+            let line_start = source[..note.byte_offset].rfind('\n').map_or(0, |i| i + 1);
+            assert_eq!(
+                note.byte_column,
+                note.byte_offset - line_start + 1,
+                "{note:?}"
+            );
+        }
     }
 }

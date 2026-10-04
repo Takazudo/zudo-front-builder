@@ -1273,16 +1273,17 @@ fn css_command_conditional_ring_and_const_aria_fail_with_provenance() {
     assert_failure(&output, "unsupported tokens in proven class expressions");
     let stderr = process_stderr(&output);
     assert!(stderr.contains("ZW004"), "{stderr}");
+    let diagnostic_at = |location: &str, diagnostic: &str| {
+        stderr
+            .lines()
+            .any(|line| line.contains(location) && line.contains(diagnostic))
+    };
     assert!(
-        stderr.contains("(ring-2) at "),
-        "ring-2 lacks provenance:\n{stderr}"
+        diagnostic_at("card.tsx:3:", "ZW004 ring-2: "),
+        "ring-2 must name its own line:\n{stderr}"
     );
     assert!(
-        stderr.contains("card.tsx:3:"),
-        "ring-2 must name its line:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("(aria-[current=page]:bg-soft) at ") && stderr.contains("card.tsx:1:"),
+        diagnostic_at("card.tsx:1:", "ZW004 aria-[current=page]:bg-soft: "),
         "const aria candidate must name its declaration:\n{stderr}"
     );
     assert!(
@@ -1314,8 +1315,10 @@ fn css_command_foreign_names_warn_by_default_and_fail_under_strict() {
     assert_failure(&output, "foreign utility at a class position, strict");
     let stderr = process_stderr(&output);
     assert!(
-        stderr.contains("ZW014") && stderr.contains("(line-clamp-2) at "),
-        "{stderr}"
+        stderr
+            .lines()
+            .any(|line| line.contains("card.tsx:1:") && line.contains("ZW014 line-clamp-2: ")),
+        "strict foreign name must keep its location:\n{stderr}"
     );
 }
 
@@ -1333,4 +1336,220 @@ fn css_command_unrelated_literals_never_become_strict() {
     assert_success(&output, "strict mode with unrelated literals");
     let css = fs::read_to_string(temp.path().join("out.css")).expect("read CSS output");
     assert!(css.contains(".flex"), "{css}");
+}
+
+fn run_wind_explain_stdin(project_root: &Path, input: &str, flags: &[&str]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(zfb_binary!())
+        .args(["wind", "explain", "--stdin", "--project-root"])
+        .arg(project_root)
+        .args(flags)
+        .current_dir(project_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn `zfb wind explain --stdin`");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write candidates");
+    child
+        .wait_with_output()
+        .expect("wait for `zfb wind explain`")
+}
+
+#[test]
+fn css_command_failures_list_each_location_once_on_stderr() {
+    let temp = wind_classification_fixture(
+        r#"{"spec":1}"#,
+        "// 日本語\r\nexport const A = () => <div class=\"rounded-missing\" />;\r\nexport const B = () => <p class=\"rounded-missing\" />;\r\n",
+    );
+    let other = temp.path().join("src/other.tsx");
+    fs::write(
+        &other,
+        "export const C = () => <i class=\"rounded-missing\" />;\n",
+    )
+    .expect("write second source");
+    let output = run_wind_classification_css(temp.path());
+    assert_failure(&output, "unknown token in two files");
+    assert!(
+        process_stdout(&output).is_empty(),
+        "failures stay off stdout"
+    );
+    let stderr = process_stderr(&output);
+    let lines: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("ZW006 rounded-missing: "))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "one line per distinct occurrence:\n{stderr}"
+    );
+    let column = "export const A = () => <div class=\"".len() + 1;
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&format!("card.tsx:2:{column}: "))),
+        "{stderr}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("other.tsx:1:")),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("; ZW006"),
+        "no semicolon-joined list:\n{stderr}"
+    );
+}
+
+#[test]
+fn css_command_reports_every_forbidden_directive_in_one_run() {
+    let temp = tempfile::tempdir().expect("create directive fixture");
+    fs::write(temp.path().join("package.json"), "{}\n").expect("write package.json");
+    fs::write(
+        temp.path().join("entry.css"),
+        "@import \"./theme.css\";\n@theme {}\n@theme static {}\n@source \"x\";\n",
+    )
+    .expect("write entry");
+    fs::write(
+        temp.path().join("theme.css"),
+        ".a { color: red; }\n@apply p-1;\n",
+    )
+    .expect("write imported stylesheet");
+    let output = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&output, "several forbidden directives");
+    let stderr = process_stderr(&output);
+    for location in [
+        "entry.css:2:1",
+        "entry.css:3:1",
+        "entry.css:4:1",
+        "theme.css:2:1",
+    ] {
+        assert!(
+            stderr.contains(&format!("{location}: ZW009")),
+            "{location}:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn wind_audit_json_is_stable_and_severity_never_changes_the_verdict() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "import { h } from \"preact/hooks\";\nexport default () => <div class=\"rounded-missing\" />;\n",
+    );
+    let full = run_wind_audit(temp.path(), &["--json"]);
+    assert!(full.status.success(), "{}", combined_output(&full));
+    let stdout = process_stdout(&full);
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("{error}:\n{stdout}"));
+    assert_eq!(document["schemaVersion"], 1);
+    assert_eq!(document["command"], "audit");
+    assert_eq!(document["coverage"]["mode"], "standalone");
+    let diagnostic = document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["candidate"] == "rounded-missing")
+        .expect("diagnostic for the unknown token");
+    let origin = &diagnostic["origin"];
+    assert_eq!(origin["line"], 2);
+    assert!(origin["byteColumn"].as_u64().unwrap() > 1);
+    assert!(origin["byteOffset"].as_u64().unwrap() > origin["byteColumn"].as_u64().unwrap());
+    assert!(
+        !stdout.contains("preact/hooks"),
+        "module specifier noise:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("wind audit plan:"),
+        "no prose on stdout:\n{stdout}"
+    );
+    assert_eq!(run_wind_audit(temp.path(), &["--json"]).stdout, full.stdout);
+
+    for (severity, expected_info) in [("auditInfo", true), ("warning", false), ("error", false)] {
+        let filtered = run_wind_audit(temp.path(), &["--json", "--severity", severity]);
+        let value: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
+        let has_info = value["report"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["severity"] == "auditInfo");
+        assert!(!has_info || expected_info, "{severity}: {value}");
+        let strict = run_wind_audit(temp.path(), &["--fail-on", "error", "--severity", severity]);
+        assert!(
+            !strict.status.success(),
+            "{severity} filter must not hide the verdict"
+        );
+    }
+}
+
+#[test]
+fn wind_explain_batch_keeps_order_duplicates_and_leading_dashes() {
+    let temp = wind_audit_fixture(r#"{"wind":{"spec":1}}"#, "export default () => null;\n");
+    let output = run_wind_explain_stdin(
+        temp.path(),
+        "block\n\n-mt-px\nblock\nnot-a-utility\n",
+        &["--json"],
+    );
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schemaVersion"], 1);
+    let candidates: Vec<_> = document["explanations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|explanation| explanation["candidate"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(candidates, ["block", "-mt-px", "block", "not-a-utility"]);
+
+    let single = Command::new(zfb_binary!())
+        .args(["wind", "explain", "--project-root"])
+        .arg(temp.path())
+        .args(["--", "-mt-px"])
+        .output()
+        .expect("spawn explain");
+    assert!(single.status.success(), "{}", combined_output(&single));
+    assert!(process_stdout(&single).contains("-mt-px"));
+}
+
+#[test]
+fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"reset":"owned-v1"}}"#,
+        concat!(
+            "import \"../styles/global.css\";\n",
+            "export default () => (\n",
+            "  <html>\n",
+            "    <head>\n",
+            "      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n",
+            "      <style>{`.card { display: flex; }`}</style>\n",
+            "    </head>\n",
+            "    <body>\n",
+            "      <a href=\"/\">Back to checks</a>\n",
+            "      <input type=\"hidden\" name=\"token\" />\n",
+            "    </body>\n",
+            "  </html>\n",
+            ");\n",
+        ),
+    );
+    let output = run_wind_audit(temp.path(), &["--json"]);
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        document["report"]["diagnostics"],
+        serde_json::json!([]),
+        "standard markup must not produce audit noise"
+    );
+
+    fs::write(temp.path().join("entry.css"), "").expect("write entry");
+    let css = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&css, "markup without utilities");
+    let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap_or_default();
+    for selector in [".flex", ".hidden"] {
+        assert!(!emitted.contains(selector), "{selector} leaked:\n{emitted}");
+    }
 }

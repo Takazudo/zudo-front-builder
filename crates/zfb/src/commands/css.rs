@@ -152,7 +152,7 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
         .context("wind CSS compilation failed")?;
     for diagnostic in &emitted.diagnostics {
         if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-            crate::output::warn(format!("{}: {}", diagnostic.code, diagnostic.message));
+            crate::output::warn(diagnostic.render());
         }
     }
 
@@ -341,30 +341,13 @@ fn paths_resolve_same(input: &Path, output: &Path) -> bool {
     input.is_some() && input == output
 }
 
-const FORBIDDEN_WIND_DIRECTIVES: &[&str] = &[
-    "import",
-    "tailwind",
-    "theme",
-    "source",
-    "custom-variant",
-    "apply",
-    "utility",
-    "variant",
-    "plugin",
-    "config",
-    "reference",
-    "--spacing",
-    "--alpha",
-    "--value",
-];
-
 fn authored_css_bundle(entry: &Path, project_root: &Path) -> Result<zfb_css::AuthoredCssBundle> {
     let raw = std::fs::read_to_string(entry)
         .with_context(|| format!("failed to read CSS input {}", entry.display()))?;
-    check_leftover_directives(&raw, entry)?;
     // Inspect the entry before resolving any imports. The shared resolver
     // skips Tailwind's virtual import by design; the token-aware scan must
     // reject it first, including on wind:false.
+    let mut stylesheets = vec![(entry.to_path_buf(), raw.clone())];
     for stylesheet in zfb_css::resolve_css_imports(entry, project_root) {
         let css = std::fs::read_to_string(&stylesheet).with_context(|| {
             format!(
@@ -372,24 +355,10 @@ fn authored_css_bundle(entry: &Path, project_root: &Path) -> Result<zfb_css::Aut
                 stylesheet.display()
             )
         })?;
-        check_leftover_directives(&css, &stylesheet)?;
+        stylesheets.push((stylesheet, css));
     }
+    zfb_css::check_forbidden_directives(&stylesheets)?;
     zfb_css::bundle_authored_css_with_assets(entry, project_root, &raw)
-}
-
-fn check_leftover_directives(css: &str, path: &Path) -> Result<()> {
-    let leftover = zfb_css::scan_leftover_directives(css, FORBIDDEN_WIND_DIRECTIVES);
-    if let Some(directive) = leftover.first() {
-        bail!(
-            "ZW009: forbidden {} at {}:{}:{}; migrate this stylesheet to zudo-wind: {}",
-            directive.name,
-            path.display(),
-            directive.line,
-            directive.column,
-            "/docs/zudo-wind/coming-from-tailwind/"
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

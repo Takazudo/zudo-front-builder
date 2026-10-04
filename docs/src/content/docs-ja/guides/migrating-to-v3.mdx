@@ -28,7 +28,7 @@ the tailwind key was removed in zfb 3; utilities are compiled by the built-in zu
 
 ## スタイルシート
 
-エントリーとそのインポート先から、`@import "tailwindcss"`、preflight と utilities のインポート、および `@theme`、`@source`、`@apply`、`@utility`、`@plugin` などの Tailwind ディレクティブを削除します。`wind: false` でも、残ったディレクティブは診断 `ZW009` で失敗します。独自のセレクターと宣言は手書き CSS に、ユーティリティの値は `wind.tokens` に移します。
+エントリーとそのインポート先から、`@import "tailwindcss"`、preflight と utilities のインポート、および `@theme`、`@source`、`@apply`、`@utility`、`@plugin` などの Tailwind ディレクティブを削除します。`wind: false` でも、残ったディレクティブは診断 `ZW009` で失敗します。1 回の実行で、残ったディレクティブをすべて `file:line:column` 付きで列挙します。独自のセレクターと宣言は手書き CSS に、ユーティリティの値は `wind.tokens` に移します。
 
 v3 はパレット、間隔の単位、名前付きスケール、ブレークポイントを暗黙には提供しません。`wind.reset` に `none`、`minimal-v1`、`owned-v1` から選んでください。既定は `none` です。新しい basic-blog の雛形は `owned-v1` を選び、パレットと `spacingUnit` を宣言し、記事のリスト表示を手書き CSS で戻しています。リセットを選ぶ際は見出し、リスト、境界線、フォームに加え、`html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認してください。これらを含まないページのピクセル差分では差を検出できません。[Tailwind preflight との違い](../zudo-wind/coming-from-tailwind.mdx#リセット-tailwind-preflight-との違い)も参照してください。
 
@@ -141,5 +141,5 @@ export default defineConfig({
 3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定したうえで、代表的なページの `html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
 4. JSX import source を変更し、ファイル単位の `@jsxImportSource` pragma を削除して、依存関係、コンポーネント、島、フォームモデルを更新します。`zfb check` を実行し、型エラーを修正します。
 5. md-wasm 呼び出しから `jsxRuntime` を削除し、コンパイル済み出力の利用側を更新します。パッケージの TypeScript チェックを実行します。
-6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。
+6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。多数の候補を調べるときは、`zfb wind audit --json --severity warning` と `zfb wind explain --stdin --json` で、機械可読な結果を 1 回のプロセスで得られます。
 7. ビルドスクリプトから Tailwind の環境変数を削除します。`zfb build` を実行し、主要ページ、島、フォーム、スタイルをブラウザーで比較します。

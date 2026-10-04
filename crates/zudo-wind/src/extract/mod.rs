@@ -54,6 +54,9 @@ pub enum NoteKind {
 pub struct ExtractionNote {
     pub kind: NoteKind,
     pub byte_offset: usize,
+    /// One-based line and byte column of `byte_offset` in the original source.
+    pub line: usize,
+    pub byte_column: usize,
     pub text: String,
 }
 
@@ -69,6 +72,8 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
             notes: vec![ExtractionNote {
                 kind: NoteKind::InvalidUtf8,
                 byte_offset: 0,
+                line: 1,
+                byte_column: 1,
                 text: "source is not UTF-8".into(),
             }],
             ..Default::default()
@@ -99,9 +104,16 @@ pub(super) struct Collector<'a> {
 
 impl Collector<'_> {
     pub(super) fn note(&mut self, kind: NoteKind, at: usize, text: impl Into<String>) {
+        let prefix = &self.source.as_bytes()[..at.min(self.source.len())];
+        let line_start = prefix
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |i| i + 1);
         self.notes.push(ExtractionNote {
             kind,
             byte_offset: at,
+            line: prefix.iter().filter(|&&byte| byte == b'\n').count() + 1,
+            byte_column: prefix.len() - line_start + 1,
             text: text.into(),
         });
     }
