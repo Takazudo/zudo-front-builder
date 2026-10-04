@@ -29,6 +29,16 @@ and authored-stylesheet contract.
 | macOS | arm64 (Apple Silicon) | `aarch64-apple-darwin` |
 | Windows | x64 | `x86_64-pc-windows-msvc` |
 
+<Note title="Linux needs glibc 2.34 or newer">
+
+The two Linux binaries are linked against glibc 2.34: Amazon Linux 2023,
+RHEL / Rocky / AlmaLinux 9, Ubuntu 22.04+, and Debian 12+ all work. On an
+older glibc the binary fails at startup with `` version `GLIBC_2.34' not found ``.
+Releases up to and including 3.1.0 required glibc 2.35 instead — see
+[Troubleshooting](../guides/troubleshooting.mdx#glibc-not-found-on-linux).
+
+</Note>
+
 <Note title="musl/Alpine Linux is not supported">
 
 There is no musl-linked binary. `install.sh` detects OS and CPU architecture
