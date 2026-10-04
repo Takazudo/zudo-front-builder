@@ -83,6 +83,7 @@ jobs:
               - 'scripts/assert-zfb-md-wasm-exports.sh'
               - 'scripts/assert-zfb-md-wasm-budgets.mjs'
               - 'scripts/assert-zfb-md-wasm-release.mjs'
+              - 'scripts/package-tsc.mjs'
               - 'crates/zfb-md-wasm/npm/scripts/**'
               - 'crates/zfb-md-wasm/npm/test/**'
               - 'tests/md-wasm-browser-smoke/**'
