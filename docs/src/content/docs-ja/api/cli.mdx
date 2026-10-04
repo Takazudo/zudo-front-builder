@@ -252,7 +252,7 @@ zfb css \
 - **config の利用範囲は限定的です。** `--config` のファイル、またはプロジェクトの `zfb.config.json` か `zfb.config.ts` があれば、wind のトークン、リセット、ソース、および `classPrefix` や `roleClasses` などのハイライト設定を読み込みます。CLI のハイライトフラグは対応するモードとスタイルシートの選択を上書きします。`wind: false` は wind の生成を無効にしますが、手書き CSS とハイライトの処理は続きます。キーを省略すると空の有効な wind 設定になります。
 - **v1 の wind 出力はミニファイされません。** 生成 CSS には [カスケードとリセット](../zudo-wind/cascade-and-reset.mdx) で説明する固定のプリンタを使います。
 
-### 明示的な config ファイル
+## 明示的な config ファイル
 
 スタイルシートを配布するパッケージには自身のサイト config がありませんが、そのクラスは利用側が実行する設定のトークンを使います。`--config <file>` を使うと、パッケージをサイトに見せかけることなく、プリセットを含めて通常の config ローダーでその設定を読み込めます。
 
@@ -302,7 +302,7 @@ zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warnin
 
 これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません（`--plan build` でのプラグインの `setup` を除きます）。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
 
-### `zfb wind manifest`
+## `zfb wind manifest`
 
 パッケージが利用側に公開する候補マニフェストを、`zfb css` と同じソースプラン、抽出器、コンパイラで生成します。
 

@@ -259,7 +259,7 @@ The `@import` paths resolve as authored CSS. zudo-wind gets utility values from 
 - **Config use is narrow.** When present, the `--config` file or the project's `zfb.config.json` or `zfb.config.ts` supplies wind tokens, reset, sources, and syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. `wind: false` disables wind generation while authored CSS and highlight processing continue. An omitted key uses the empty enabled wind config.
 - **V1 wind output is not minified.** Generated wind CSS uses the fixed printer described in [Cascade and reset](../zudo-wind/cascade-and-reset.mdx).
 
-### Explicit config files
+## Explicit config files
 
 A package that ships a stylesheet has no site config of its own, but its classes use the tokens of the configuration its consumers run. `--config <file>` loads that configuration with the normal config loader, including presets, without making the package look like a site:
 
@@ -309,7 +309,7 @@ A complete audit exits with status 0 by default, including when it reports error
 
 These commands inspect the configured project; they do not execute application code to discover class candidates, apart from plugin `setup` under `--plan build`. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx) for outcome and origin details.
 
-### `zfb wind manifest`
+## `zfb wind manifest`
 
 Generate the candidate manifest a package publishes for its consumers, using the same source plan, extractor, and compiler as `zfb css`:
 
