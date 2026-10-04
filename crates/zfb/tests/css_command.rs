@@ -1273,16 +1273,17 @@ fn css_command_conditional_ring_and_const_aria_fail_with_provenance() {
     assert_failure(&output, "unsupported tokens in proven class expressions");
     let stderr = process_stderr(&output);
     assert!(stderr.contains("ZW004"), "{stderr}");
+    let diagnostic_at = |location: &str, diagnostic: &str| {
+        stderr
+            .lines()
+            .any(|line| line.contains(location) && line.contains(diagnostic))
+    };
     assert!(
-        stderr.contains("card.tsx:3:") && stderr.contains("ZW004 ring-2: "),
-        "ring-2 lacks provenance:\n{stderr}"
+        diagnostic_at("card.tsx:3:", "ZW004 ring-2: "),
+        "ring-2 must name its own line:\n{stderr}"
     );
     assert!(
-        stderr.contains("card.tsx:3:"),
-        "ring-2 must name its line:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("ZW004 aria-[current=page]:bg-soft: ") && stderr.contains("card.tsx:1:"),
+        diagnostic_at("card.tsx:1:", "ZW004 aria-[current=page]:bg-soft: "),
         "const aria candidate must name its declaration:\n{stderr}"
     );
     assert!(
@@ -1313,7 +1314,12 @@ fn css_command_foreign_names_warn_by_default_and_fail_under_strict() {
     let output = run_wind_classification_css(strict.path());
     assert_failure(&output, "foreign utility at a class position, strict");
     let stderr = process_stderr(&output);
-    assert!(stderr.contains("ZW014 line-clamp-2: "), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("card.tsx:1:") && line.contains("ZW014 line-clamp-2: ")),
+        "strict foreign name must keep its location:\n{stderr}"
+    );
 }
 
 #[test]
