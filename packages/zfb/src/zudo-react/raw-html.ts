@@ -15,9 +15,9 @@
 // `zr:1:` occurrence: `noscript`/`xmp`/`noembed`/`noframes`/`plaintext` hosts,
 // and payloads naming a RAWTEXT/RCDATA/script/PLAINTEXT element (its end tag may
 // also close a raw-text ancestor) or a CDATA section (foreign content).
-// `script`/`style` hosts are raw text: their payload cannot form markup, and
-// they keep the documented contract (no protocol comment or island attribute
-// text; the callers reject `</script` / `</style`).
+// `script`/`style` hosts keep the documented marker and closing-tag rules.
+// Script additionally checks whether HTML tokenization consumes its renderer
+// closing tag; style is RAWTEXT and has no script escape states.
 
 const reservedAttributes = new Set(["data-zfb-island", "data-zfb-island-skip-ssr"]);
 const rawTextHosts = new Set(["noscript", "xmp", "noembed", "noframes", "plaintext"]);
@@ -29,7 +29,10 @@ const unquotedEnd = /[\t\n\f\r >]/;
 
 export function rawHtmlReserved(payload: string, tag: string): boolean {
   if (tag === "script" || tag === "style")
-    return /<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(payload);
+    return (
+      /\x3c!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(payload) ||
+      (tag === "script" && scriptConsumesClosingTag(payload))
+    );
   if (rawTextHosts.has(tag) || unmodeled.test(payload))
     return /data-zfb-island|zr:1:/i.test(payload);
   let i = 0;
@@ -74,6 +77,143 @@ export function rawHtmlReserved(payload: string, tag: string): boolean {
     if (end < 0 || payload.slice(start, end).includes("zr:1:")) return true;
     i = end;
   }
+}
+
+// Walk the WHATWG script-data escape states with the exact suffix emitted by
+// the renderer. A `</script>` in double-escaped text only exits that state;
+// it does not close the element. Incomplete names and `<!--` tails must be
+// evaluated with the suffix attached, rather than classified by payload alone.
+function scriptConsumesClosingTag(payload: string): boolean {
+  // The HTML input stream normalizes CR and CRLF to LF before tokenization.
+  const source = `${payload.replace(/\r\n?/g, "\n")}</script>`;
+  type State =
+    | "data"
+    | "less"
+    | "endOpen"
+    | "endName"
+    | "escapeStart"
+    | "escapeStartDash"
+    | "escaped"
+    | "escapedDash"
+    | "escapedDashDash"
+    | "escapedLess"
+    | "doubleStart"
+    | "double"
+    | "doubleDash"
+    | "doubleDashDash"
+    | "doubleLess"
+    | "doubleEnd";
+  let state: State = "data";
+  let endFallback: "data" | "escaped" = "data";
+  let buffer = "";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    const alpha = /[a-zA-Z]/.test(c);
+    const delimiter = c === "/" || c === ">" || /[\t\n\f ]/.test(c);
+    switch (state) {
+      case "data":
+        if (c === "<") state = "less";
+        break;
+      case "less":
+        if (c === "/") {
+          endFallback = "data";
+          state = "endOpen";
+        } else if (c === "!") state = "escapeStart";
+        else {
+          state = "data";
+          i--;
+        }
+        break;
+      case "escapeStart":
+        if (c === "-") state = "escapeStartDash";
+        else {
+          state = "data";
+          i--;
+        }
+        break;
+      case "escapeStartDash":
+        if (c === "-") state = "escapedDashDash";
+        else {
+          state = "data";
+          i--;
+        }
+        break;
+      case "escaped":
+      case "escapedDash":
+      case "escapedDashDash":
+        if (c === "<") state = "escapedLess";
+        else if (state === "escapedDashDash" && c === ">") state = "data";
+        else if (c === "-") state = state === "escaped" ? "escapedDash" : "escapedDashDash";
+        else state = "escaped";
+        break;
+      case "escapedLess":
+        if (c === "/") {
+          endFallback = "escaped";
+          state = "endOpen";
+        } else if (alpha) {
+          buffer = "";
+          state = "doubleStart";
+          i--;
+        } else {
+          state = "escaped";
+          i--;
+        }
+        break;
+      case "endOpen":
+        if (alpha) {
+          buffer = "";
+          state = "endName";
+          i--;
+        } else {
+          state = endFallback;
+          i--;
+        }
+        break;
+      case "endName":
+        if (alpha) buffer = buffer.length < 7 ? buffer + c.toLowerCase() : "!";
+        else if (delimiter && buffer === "script" && c === ">") return false;
+        else {
+          state = endFallback;
+          i--;
+        }
+        break;
+      case "doubleStart":
+      case "doubleEnd":
+        if (alpha) buffer = buffer.length < 7 ? buffer + c.toLowerCase() : "!";
+        else if (delimiter)
+          state =
+            buffer === "script"
+              ? state === "doubleStart"
+                ? "double"
+                : "escaped"
+              : state === "doubleStart"
+                ? "escaped"
+                : "double";
+        else {
+          state = state === "doubleStart" ? "escaped" : "double";
+          i--;
+        }
+        break;
+      case "double":
+      case "doubleDash":
+      case "doubleDashDash":
+        if (c === "<") state = "doubleLess";
+        else if (state === "doubleDashDash" && c === ">") state = "data";
+        else if (c === "-") state = state === "double" ? "doubleDash" : "doubleDashDash";
+        else state = "double";
+        break;
+      case "doubleLess":
+        if (c === "/") {
+          buffer = "";
+          state = "doubleEnd";
+        } else {
+          state = "double";
+          i--;
+        }
+        break;
+    }
+  }
+  return true;
 }
 
 // Returns the index just past the tag's `>`, or -1 when the tag is unterminated

@@ -2,6 +2,49 @@
 import { describe, expect, it } from "vite-plus/test";
 import { computed, h, signal } from "../../zudo-react/index.js";
 import { renderToString } from "../../zudo-react/server.js";
+import { rawHtmlReserved } from "../../zudo-react/raw-html.js";
+
+const scriptBoundaryCases = [
+  ["plain JavaScript string", `window.template = "<script>";`, true],
+  ["ordinary script-looking text", `<script>`, true],
+  ["comment opener", `<!--`, true],
+  ["closed escape", `<!-- <script> -->`, true],
+  ["escape with a near-miss name", `<!--<scripture>`, true],
+  ["escape with a non-ASCII name", `<!--<scrıpt>`, true],
+  ["escape with a script name and space", `<!--<ScRiPt >`, false],
+  ["escape with a script name and tab", `<!--<SCRIPT\t>`, false],
+  ["escape with a script name and LF", `<!--<script\n>`, false],
+  ["escape with a script name and form feed", `<!--<script\f>`, false],
+  ["escape with a script name and slash", `<!--<script/>`, false],
+  ["escape with a script name and CR", `<!--<script\r>`, false],
+  ["escape with a script name and equals", `<!--<script=>`, true],
+  ["double escape exits then reenters", `<!--<script></script><script>`, false],
+  ["double escape dash-dash exits at greater-than", `<!--<script>-->`, true],
+  ["incomplete escape start", `<!`, true],
+  ["incomplete double escape name", `<!--<script`, true],
+  ["incomplete double escape exit", `<!--<script></scr`, false],
+  ["incomplete near-miss exit", `<!--<script></scripture`, false],
+  ["ordinary JavaScript comment syntax", `const x = "<!--";`, true],
+] as const;
+
+describe("script rawHtml closing boundary", () => {
+  it.each(scriptBoundaryCases)("%s", (_, payload, accepted) => {
+    expect(rawHtmlReserved(payload, "script")).toBe(!accepted);
+    const render = () => renderToString(h("script", { rawHtml: payload }));
+    if (accepted) expect(render()).toBe(`<script>${payload}</script>`);
+    else expect(render).toThrow("ZR_RAW_HTML: reserved boundary in rawHtml");
+    // Style is RAWTEXT: script's comment and double-escape states do not apply.
+    expect(rawHtmlReserved(payload, "style")).toBe(false);
+  });
+
+  it("keeps the existing closing-tag rejection even when double escape would exit", () => {
+    const payload = "<!--<script></SCRIPT>";
+    expect(rawHtmlReserved(payload, "script")).toBe(false);
+    expect(() => renderToString(h("script", { rawHtml: payload }))).toThrow(
+      "ZR_RAW_HTML: closing script in rawHtml",
+    );
+  });
+});
 
 describe.each([
   ["script", `window.label = "A & B <tag>";`],
