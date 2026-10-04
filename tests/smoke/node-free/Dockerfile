@@ -20,9 +20,11 @@
 #   zfb-bin   real binary (local mode) or placeholder (released mode)
 #   run.sh    assertion script
 #
-# Released binary targets GLIBC 2.35 (ubuntu-22.04 baseline). Smoke runs against
-# bookworm (Debian 12, GLIBC 2.36) to lock that floor in. Forward compatibility
-# to newer GLIBC is a property of glibc itself — no separate trixie smoke needed.
+# Released binary targets GLIBC 2.34 (linked inside an Amazon Linux 2023 cross
+# container, #3623). Smoke runs against bookworm (Debian 12, GLIBC 2.36) for
+# the Debian/Ubuntu path; the floor itself is proven by the amazonlinux:2023
+# smoke job in node-free-smoke.yml. Forward compatibility to newer GLIBC is a
+# property of glibc itself — no separate trixie smoke needed.
 FROM debian:bookworm-slim
 
 ARG ZFB_SMOKE_MODE=local

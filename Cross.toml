@@ -1,36 +1,44 @@
 # Cross.toml — configuration for cross-rs (https://github.com/cross-rs/cross)
 #
-# Pins the aarch64-unknown-linux-gnu cross-compilation image so the built
-# binary's required GLIBC stays inside [2.27, 2.35] — high enough for V8's
-# memfd_create reference (introduced in glibc 2.27, Ubuntu 18.04), low
-# enough to honour the project's ≤ 2.35 floor.
+# Both Linux release binaries are built inside cross containers so their
+# required GLIBC stays at or below the project's floor of **2.34** (#3623 —
+# Amazon Linux 2023 / RHEL 9-class distros ship 2.34; the previous 2.35 floor
+# from #395 locked them out). The floor is enforced by the `objdump -T`
+# assertion in release.yml and node-free-smoke.yml, and the AL2023 container
+# smoke in node-free-smoke.yml proves the x86_64 binary actually runs there.
 #
-# Verified: cross-rs's `main`-branch Dockerfile
-# (docker/Dockerfile.aarch64-unknown-linux-gnu) is FROM ubuntu:20.04 →
-# GLIBC 2.31. That window covers memfd_create AND keeps us under the floor.
+# Lower bound: the embedded V8 prebuilt (rusty_v8 static archive) references
+# memfd_create (glibc 2.27) and, through its bundled libc++, symbols versioned
+# GLIBC_2.30 — the published arm64 binary measures GLIBC_2.30 as its highest
+# required symbol. So the build image must have glibc ≥ 2.30; manylinux_2_28
+# cannot link it. Why not 0.2.5: ghcr.io/cross-rs/*:0.2.5 is Ubuntu 16.04
+# (GLIBC 2.23), which fails with "undefined reference to `memfd_create'".
 #
-# Why not 0.2.5: ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5 is Ubuntu
-# 16.04 (GLIBC 2.23) — too old. V8's wasm-objects.cc references memfd_create
-# directly, which is unresolved at link time on 2.23, producing
-# "undefined reference to `memfd_create'" from collect2.
-#
-# Reproducibility: the `main` tag is mutable, so the image is pinned by SHA
-# digest rather than by tag. To roll forward, run
-#   docker pull ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
-#   docker inspect --format='{{index .RepoDigests 0}}' \
-#     ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
-# verify the new image is still Ubuntu 20.04-based (GLIBC ≤ 2.35), and
-# update the digest below.
-#
-# TODO when ubuntu-22.04 GitHub Actions runner is deprecated: revisit in case
-# cross-rs publishes an Ubuntu 22.04-based image by then.
+# Reproducibility: every image below is pinned by SHA digest. The cross-rs
+# `main` tag is mutable and has since moved to an Ubuntu 24.04 base
+# (GLIBC 2.39) — pulling `:main` fresh would silently break the floor, which
+# is why the x86_64 target uses a repo-owned Dockerfile instead of a cross-rs
+# image. Do not roll the aarch64 digest forward to the current `:main`.
 
 [build.env]
-# Pass ZFB_RELEASE_VERSION into the cross Docker container so the linux-arm64
-# cross-compile leg stamps the correct release version into --version output.
-# Without this, cross would drop the env var at the container boundary and
-# produce a binary that reports 0.0.0 regardless of the release version.
+# Pass ZFB_RELEASE_VERSION into the cross Docker container so both Linux legs
+# stamp the correct release version into --version output. Without this,
+# cross would drop the env var at the container boundary and produce a binary
+# that reports 0.0.0 regardless of the release version.
 passthrough = ["ZFB_RELEASE_VERSION"]
 
+# x86_64: a repo-owned image based on Amazon Linux 2023 (GLIBC 2.34), the
+# exact distro the floor exists for. See the Dockerfile header for the
+# rationale and the roll-forward procedure. `context` is set explicitly:
+# cross otherwise sends the whole workspace (node_modules, target/) to the
+# Docker daemon as the build context.
+[target.x86_64-unknown-linux-gnu.dockerfile]
+file = "docker/x86_64-unknown-linux-gnu.Dockerfile"
+context = "docker"
+
+# aarch64: a cross-rs `main` build from when that branch was still Ubuntu 20.04
+# (GLIBC 2.31) — the published arm64 binary built from it measures GLIBC_2.30.
+# To change it, verify the replacement image's glibc is within [2.30, 2.34]
+# via `docker run --rm <image> ldd --version` before updating the digest.
 [target.aarch64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1811a69aab16f39de09df72a991b4d7b33a0337686a827bea4890ccc399ff8f0"

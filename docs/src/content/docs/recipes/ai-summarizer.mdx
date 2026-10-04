@@ -39,8 +39,8 @@ endpoint still answers, with no Cloudflare account at all.
 
 | Piece | What the repo uses |
 | --- | --- |
-| Engine and UI | `@takazudo/zfb` **3.0.0** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **3.0.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0**, set as `adapter` in `zfb.config.ts` |
+| Engine and UI | `@takazudo/zfb` **3.1.0** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **3.1.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0**, set as `adapter` in `zfb.config.ts` |
 | Styling | zudo-wind with `reset: "owned-v1"`; component classes and styles are authored in `styles/global.css`, with no utility classes |
 | Rendering mode | SSG for `pages/index.tsx` and `pages/404.tsx`; only `pages/api/summarize.tsx` exports `prerender = false` |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"`, `[assets]` on `./dist` with the `ASSETS` binding, `not_found_handling = "404-page"`, `run_worker_first = false` |

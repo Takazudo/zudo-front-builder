@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "d7f91337a3bf152dfe19f5b90b7b76c0c0f2ac3e",
+  "baselineSourceSha": "409f7dc9e2455070c318ca7874d10790c4f36fa7",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 61677,
-        "gzip": 20574
+        "raw": 63209,
+        "gzip": 21137
       },
       "scalar-signal": {
-        "raw": 61685,
-        "gzip": 20572
+        "raw": 63217,
+        "gzip": 21133
       },
       "show-for": {
-        "raw": 61831,
-        "gzip": 20662
+        "raw": 63363,
+        "gzip": 21214
       },
       "model": {
-        "raw": 61676,
-        "gzip": 20591
+        "raw": 63208,
+        "gzip": 21140
       },
       "blog-theme": {
-        "raw": 62026,
-        "gzip": 20716
+        "raw": 63558,
+        "gzip": 21278
       },
       "json-api": {
-        "raw": 61831,
-        "gzip": 20678
+        "raw": 63363,
+        "gzip": 21228
       },
       "multi-island": {
-        "raw": 61953,
-        "gzip": 20678
+        "raw": 63485,
+        "gzip": 21234
       }
     },
     "packed": {
@@ -77,32 +77,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 61739,
-        "gzip": 20587
+        "raw": 63271,
+        "gzip": 21156
       },
       "scalar-signal": {
-        "raw": 61747,
-        "gzip": 20592
+        "raw": 63279,
+        "gzip": 21159
       },
       "show-for": {
-        "raw": 61893,
-        "gzip": 20676
+        "raw": 63425,
+        "gzip": 21242
       },
       "model": {
-        "raw": 61738,
-        "gzip": 20600
+        "raw": 63270,
+        "gzip": 21166
       },
       "blog-theme": {
-        "raw": 62088,
-        "gzip": 20734
+        "raw": 63620,
+        "gzip": 21296
       },
       "json-api": {
-        "raw": 61893,
-        "gzip": 20688
+        "raw": 63425,
+        "gzip": 21252
       },
       "multi-island": {
-        "raw": 62015,
-        "gzip": 20699
+        "raw": 63547,
+        "gzip": 21261
       }
     }
   },

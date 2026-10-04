@@ -42,9 +42,9 @@ The demo ships **zero client-side JavaScript**. Every button is a `<form method=
 
 | Piece | What the repo actually uses |
 | --- | --- |
-| Framework | zfb **3.0.0** with its zudo-react JSX runtime; `lib/render.ts` uses `renderToString` for HTML responses |
-| zfb version | `@takazudo/zfb` **3.0.0**, `@takazudo/zfb-runtime` **3.0.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — present, and load-bearing |
+| Framework | zfb **3.1.0** with its zudo-react JSX runtime; `lib/render.ts` uses `renderToString` for HTML responses |
+| zfb version | `@takazudo/zfb` **3.1.0**, `@takazudo/zfb-runtime` **3.1.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — present, and load-bearing |
 | Styling | zudo-wind tokens in `zfb.config.ts`; `styles/global.css` authors oklch colour custom properties and component rules |
 | Rendering mode | `export const prerender = false` on **every** route — no SSG pages exist |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"` plus an `[assets]` block in `wrangler.toml` |

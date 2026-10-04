@@ -57,8 +57,8 @@ SSR ルートで構成されています。`[...path]` ルートでの `export c
 
 | 項目 | リポジトリでの内容 |
 | --- | --- |
-| フレームワーク | zudo-react を使う `@takazudo/zfb` と `@takazudo/zfb-runtime` **3.0.0**。Preact / React への依存はありません |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0**（`zfb.config.ts` の `adapter` に指定） |
+| フレームワーク | zudo-react を使う `@takazudo/zfb` と `@takazudo/zfb-runtime` **3.1.0**。Preact / React への依存はありません |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.1.0**（`zfb.config.ts` の `adapter` に指定） |
 | スタイリング | `styles/global.css` の手書き CSS。zudo-wind は `owned-v1` リセットだけを提供し、ユーティリティクラスやトークンは使いません |
 | レンダリング | `/` と `/404` は SSG。SSR ルートは 1 つだけで、`export const prerender = false` を持つ `pages/proxy/[...path].tsx` |
 | Cloudflare 面 | Workers Static Assets とカスタムドメイン。`main = "./cloudflare/worker-entry.mjs"` がアダプター生成の `dist/_worker.js` に処理を渡します |

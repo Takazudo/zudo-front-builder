@@ -48,6 +48,25 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Fix:** use a glibc-based Linux base image (Debian, Ubuntu) instead of Alpine — in a Dockerfile, a CI runner, or any container image. There is no workaround that runs zfb natively on musl today; see [Installation](../getting-started/installation.mdx#supported-platforms) and [Install without Node](../install/node-free.mdx#supported-platforms) for the supported platform matrix.
 
+## GLIBC not found on Linux
+
+**Symptom:** the Linux binary refuses to start, typically on AWS Amplify Hosting, CodeBuild, or a RHEL 9-class host:
+
+```
+.../@takazudo/zfb-linux-x64-gnu/zfb: /lib64/libm.so.6: version `GLIBC_2.35' not found (required by .../@takazudo/zfb-linux-x64-gnu/zfb)
+```
+
+**Cause:** the prebuilt Linux binaries are dynamically linked against glibc, so a host whose glibc is older than the one the binary was linked against cannot load it. The version named in the message is the one the binary needs.
+
+- Releases **up to and including 3.1.0** were linked on Ubuntu 22.04 and require **glibc 2.35**. Amazon Linux 2023 — the default AWS Amplify Hosting and CodeBuild build image — and RHEL / Rocky / AlmaLinux 9 ship glibc **2.34**, so `zfb build` cannot start there with those releases.
+- **Later releases** are linked inside an Amazon Linux 2023 container and require **glibc 2.34**, which those distros satisfy. Ubuntu 22.04+ and Debian 12+ keep working. Ubuntu 20.04 and Debian 11 (glibc 2.31) remain unsupported.
+
+**Fix:**
+
+- Upgrade `@takazudo/zfb` to a release newer than 3.1.0. The Linux packages then run on Amazon Linux 2023 and RHEL 9-class hosts as-is; check with `strings zfb | grep GLIBC_2.3` on the binary from `node_modules/@takazudo/zfb-linux-x64-gnu/` if you want to confirm the highest version it references.
+- If you are pinned to 3.1.0 or older on **AWS Amplify Hosting**, switch the app to a [custom build image](https://docs.aws.amazon.com/amplify/latest/userguide/custom-build-image.html) whose glibc is 2.35 or newer, e.g. `public.ecr.aws/docker/library/node:24-bookworm` (Debian 12, glibc 2.36). That image does not ship Amplify's `nvm`, so remove `nvm use` / `nvm install` lines from `amplify.yml` — the image's own Node is already on `PATH`.
+- For other hosts on glibc < 2.34, build in a Debian 12 / Ubuntu 22.04 container instead.
+
 ## `ERR_PNPM_TRUST_DOWNGRADE` installing 2.12.0
 
 **Symptom:** installing or upgrading any `@takazudo/zfb*` package at `2.12.0` fails under pnpm's opt-in [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) set to `no-downgrade`:

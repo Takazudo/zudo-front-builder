@@ -51,9 +51,9 @@ the route answers `501` with `cache_context_unavailable` rather than pretending 
 
 | Area | Choice |
 | --- | --- |
-| Framework | zfb **3.0.0** with zudo-react; `lib/http.tsx` renders HTML with `renderToString` |
-| zfb version | `@takazudo/zfb` 3.0.0, `@takazudo/zfb-runtime` 3.0.0 |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` 3.0.0 — present and required |
+| Framework | zfb **3.1.0** with zudo-react; `lib/http.tsx` renders HTML with `renderToString` |
+| zfb version | `@takazudo/zfb` 3.1.0, `@takazudo/zfb-runtime` 3.1.0 |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` 3.1.0 — present and required |
 | Styling | `wind: false`; `components/recipe-page.tsx` inlines authored CSS, with no utility generation |
 | Rendering | Pure SSR — all four routes are `prerender = false`; the build emits the Worker bundle and one stylesheet — no HTML pages |
 | Cloudflare surface | Workers Static Assets (`[assets]`) plus Workers Cache (`[cache] enabled = true`) |

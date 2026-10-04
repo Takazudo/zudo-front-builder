@@ -100,6 +100,19 @@ fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
         "highlight markup missing or escaped: {mdx}"
     );
     assert!(!mdx.contains("data-zfb-content-fallback"), "{mdx}");
+    // #3621: a highlighted line quoting an island marker stays display-only text.
+    assert!(
+        mdx.contains("data-zfb-island=&quot;[^&quot;]*&quot;"),
+        "quoted island marker missing from highlighted code: {mdx}"
+    );
+    assert!(
+        mdx.contains("&lt;div data-zfb-island=&quot;Demo&quot;&gt;"),
+        "escaped island tag missing from highlighted code: {mdx}"
+    );
+    assert!(
+        !mdx.contains("data-zfb-island=\"") && !mdx.contains("<!--zr:1:"),
+        "highlighted code created a reserved boundary: {mdx}"
+    );
 }
 
 #[test]

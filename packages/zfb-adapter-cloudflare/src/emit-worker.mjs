@@ -70,6 +70,21 @@ async function resolveAssets(inputBundlePath, assetPaths) {
   return resolvedAssets;
 }
 
+// The adapter never emits source maps (they are not published and would leak
+// local source paths), so a trailing external `sourceMappingURL` reference in
+// the copied bundle would dangle and make source-map-aware tools (Vite Workers
+// integration) fail with ENOENT. Inline `data:` maps are self-contained and kept.
+const TRAILING_EXTERNAL_SOURCE_MAP =
+  /(?:\r?\n)?[ \t]*\/\/[#@][ \t]*sourceMappingURL=(?!data:)\S*\s*$/;
+
+export function stripDanglingSourceMapReference(source) {
+  const stripped = source.replace(TRAILING_EXTERNAL_SOURCE_MAP, "");
+  if (stripped === source) {
+    return source;
+  }
+  return stripped.endsWith("\n") || stripped.length === 0 ? stripped : stripped + "\n";
+}
+
 async function pathExists(path) {
   try {
     await lstat(path);
@@ -112,7 +127,8 @@ function mergeAssetsIgnore(existing, requiredEntries) {
  * more copied Wasm assets in `outdir`):
  *
  *   _worker.js       — Worker entry point (`main` in wrangler.toml)
- *   _zfb_inner.mjs   — the input bundle, copied verbatim
+ *   _zfb_inner.mjs   — the input bundle, copied with any trailing external
+ *                      `sourceMappingURL` comment removed (no map is emitted)
  *   <asset>.wasm     — each bundle-relative Wasm input, copied by basename
  *   .assetsignore    — excludes every generated JavaScript and Wasm basename
  *                      from the asset upload
@@ -136,7 +152,8 @@ export async function emitWorker({ inputBundlePath, outdir, assets = [], workerW
   }
 
   const innerBundlePath = join(outdirAbs, "_zfb_inner.mjs");
-  await copyFile(inputAbs, innerBundlePath);
+  const inputSource = await readFile(inputAbs, "utf8");
+  await writeFile(innerBundlePath, stripDanglingSourceMapReference(inputSource), "utf8");
 
   const workerPath = join(outdirAbs, "_worker.js");
   await writeFile(workerPath, workerWrapperSource, "utf8");

@@ -69,7 +69,7 @@ export interface EmitWorkerOutput {
  * more copied Wasm assets in `outdir`):
  *
  *   _worker.js       — Worker entry point (`main` in wrangler.toml)
- *   _zfb_inner.mjs   — the input bundle, copied verbatim
+ *   _zfb_inner.mjs   — the input bundle, minus any trailing external `sourceMappingURL` comment
  *   <asset>.wasm     — each bundle-relative Wasm input, copied by basename
  *   .assetsignore    — excludes every generated JavaScript and Wasm basename
  *                      from the asset upload so they are only reachable
