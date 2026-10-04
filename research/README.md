@@ -24,6 +24,7 @@ findings are no longer load-bearing.
 | `3242-v3-release-notes-material.md` | `referenced-from` | Breaking-change and migration material; referenced by epic #3242 and sub-issue #3305. |
 | `3242-owned-engines-completion-report.md` | `referenced-from` | Owned-engine completion record; referenced by epic #3242 and sub-issue #3306. |
 | `3318-scratch-dir-design.md` | `referenced-from` | Scratch-dir + per-invocation `--define` contract; locks epic #3339's sub-issues #3341-#3348. |
+| `swc-smartstring-verification.md` | `referenced-from` | SWC 74 migration verification evidence for issue #3636. |
 
 ## Purgeable one-shots
 
