@@ -39,8 +39,8 @@ Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカ�
 
 | 要素 | このリポジトリでの実際 |
 | --- | --- |
-| エンジンと UI | `@takazudo/zfb` **3.0.0** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **3.0.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0** を `zfb.config.ts` の `adapter` に指定 |
+| エンジンと UI | `@takazudo/zfb` **3.1.0** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **3.1.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.1.0** を `zfb.config.ts` の `adapter` に指定 |
 | スタイリング | `reset: "owned-v1"` の zudo-wind。コンポーネントクラスとスタイルは `styles/global.css` に手書きし、ユーティリティクラスは使いません |
 | レンダリングモード | `pages/index.tsx` と `pages/404.tsx` は SSG。`prerender = false` を書き出すのは `pages/api/summarize.tsx` だけ |
 | Cloudflare 側の形 | Workers Static Assets — `main = "./dist/_worker.js"`、`./dist` に対する `[assets]` と `ASSETS` バインディング、`not_found_handling = "404-page"`、`run_worker_first = false` |

@@ -51,8 +51,8 @@ deliberately open too, so a visitor can exercise the whole post-and-delete loop.
 
 | Aspect | What the repo uses |
 | --- | --- |
-| Framework | zfb **3.0.0** with its zudo-react JSX runtime; no Preact or React dependency |
-| zfb packages | `@takazudo/zfb`, `@takazudo/zfb-runtime`, and `@takazudo/zfb-adapter-cloudflare` are all pinned to **3.0.0** |
+| Framework | zfb **3.1.0** with its zudo-react JSX runtime; no Preact or React dependency |
+| zfb packages | `@takazudo/zfb`, `@takazudo/zfb-runtime`, and `@takazudo/zfb-adapter-cloudflare` are all pinned to **3.1.0** |
 | Adapter | `@takazudo/zfb-adapter-cloudflare` — present and required |
 | Styling | Authored critical CSS is inlined by `layouts/default.tsx`. `zudo-wind` supplies the `owned-v1` reset for the prerendered `404.html`; the pages use authored class names, not generated utilities |
 | Rendering | Not a static site: `pages/index.tsx`, `pages/api/entries.tsx`, and `pages/api/entries/[key].tsx` all export `prerender = false`. Only `pages/404.tsx` is prerendered |

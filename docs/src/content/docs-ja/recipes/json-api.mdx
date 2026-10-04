@@ -31,8 +31,8 @@ category: Recipes
 | 項目 | リポジトリでの内容 |
 |---|---|
 | フレームワーク | zfb 組み込みの zudo-react JSX ランタイム |
-| zfb のバージョン | `@takazudo/zfb` **3.0.0**、`@takazudo/zfb-runtime` **3.0.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — 導入済みで、Worker ルートに必要 |
+| zfb のバージョン | `@takazudo/zfb` **3.1.0**、`@takazudo/zfb-runtime` **3.1.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — 導入済みで、Worker ルートに必要 |
 | スタイリング | `reset: "owned-v1"` の zudo-wind。`styles/global.css` に手書きのセマンティッククラスを定義し、`item-card__meta` と `text-link` は `authoredClasses` に登録 |
 | レンダリング | 混在。`/` と `/404` はプリレンダリング、`/api/items` と `/api/search` は `prerender = false` |
 | Cloudflare 側の形態 | Workers Static Assets。`main = "./dist/_worker.js"`、`[assets]` に `binding = "ASSETS"`、`not_found_handling = "404-page"`、`run_worker_first = false` |
