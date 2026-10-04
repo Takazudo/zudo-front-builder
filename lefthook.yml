@@ -1,11 +1,16 @@
 pre-commit:
   parallel: true
   commands:
+    # The two globs are disjoint: Oxfmt (vite.config.mjs `fmt`) never sees
+    # .md/.mdx, and mdx-formatter is their only formatter. Staged files that
+    # Oxfmt's ignorePatterns exclude (pnpm-lock.yaml, protected goldens) are
+    # skipped, and --no-error-on-unmatched-pattern keeps a commit that stages
+    # only such files from failing.
     format-ts:
       glob: "*.{js,mjs,cjs,ts,tsx,json,yml,yaml}"
-      run: "pnpm exec prettier --write {staged_files}"
+      run: "pnpm exec vp fmt --write --no-error-on-unmatched-pattern {staged_files}"
       stage_fixed: true
     format-mdx:
       glob: "*.{md,mdx}"
-      run: "pnpm dlx @takazudo/mdx-formatter@1.2.1 --write {staged_files}"
+      run: "pnpm exec mdx-formatter --write {staged_files}"
       stage_fixed: true

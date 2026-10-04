@@ -180,15 +180,15 @@ importers:
       '@playwright/test':
         specifier: ^1.49.0
         version: 1.61.0
+      '@takazudo/mdx-formatter':
+        specifier: 1.2.1
+        version: 1.2.1
       html-validate:
         specifier: 10.17.0
         version: 10.17.0(vitest@5.0.1)
       lefthook:
         specifier: ^2.1.6
         version: 2.1.6
-      prettier:
-        specifier: ^3.8.3
-        version: 3.8.3
       vite-plus:
         specifier: 'catalog:'
         version: 1.0.0(@types/node@22.19.17)(@vitest/ui@5.0.1)(esbuild@0.28.1)(happy-dom@15.11.7)(tsx@4.23.1)(typescript@6.0.3)(yaml@2.9.0)
@@ -1560,6 +1560,32 @@ packages:
   '@tailwindcss/browser@4.3.2':
     resolution: {integrity: sha512-R6hewP9HHwLAY88bFkgAYFIQMRGi9bqx6sR1anI3IThTJtwhPlAm4aHIzDKrnJ8Ct4M3d5A9PCsah8Z5+EjLiQ==}
 
+  '@takazudo/mdx-formatter-darwin-arm64@1.2.1':
+    resolution: {integrity: sha512-6p2bIGfSQAaDldQwnTsFJKUsiEkMbd7ccZWTITxYym5RPuG46hL/Si2VVuIw3vfwciRbqkxN8k7zkrFSLmgMPA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@takazudo/mdx-formatter-darwin-x64@1.2.1':
+    resolution: {integrity: sha512-1Q6xqzdda8RtAM/LZSRof2L0ggShGjGWGO0zAEb+Kvq3HA3RwNMt7fXr/hEFtn8UarOkvxYAH5puRsJco8JL9g==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@takazudo/mdx-formatter-linux-x64-gnu@1.2.1':
+    resolution: {integrity: sha512-qkNufO/xT8o3/BantkemXGkCBcDqzfjfiHLOCcVvQabzhbIVaf7m6ReMRlsXAv/AaZLS3/uPaTBziL75lPysVg==}
+    cpu: [x64]
+    os: [linux]
+
+  '@takazudo/mdx-formatter-win32-x64-msvc@1.2.1':
+    resolution: {integrity: sha512-lmd81nM6+9BmEIUDDrrsR2rvCK01APex8Y5uVZ2xdc4xZagQBRVD2Z2HPCaW3yvoy/jIYmBdRjri84AWZgmadA==}
+    cpu: [x64]
+    os: [win32]
+
+  '@takazudo/mdx-formatter@1.2.1':
+    resolution: {integrity: sha512-voMOJFXGvtOMO+lEzkEbqkz9ZEGNYv2UBtmzvIJ+y328XlUK5xcNgWgHQjEpkTu7G4hdz/X8aBoqy4ZvDiYwHA==}
+    engines: {node: '>=18.0.0'}
+    deprecated: use @latest
+    hasBin: true
+
   '@takazudo/zdtp@0.8.2':
     resolution: {integrity: sha512-uALWw9P7pOf5Caf9Tss6IATu53ur0+JWhiGPBJaimdZ1fKijm69WDstBaG5ruekNCMG4zbGoSx1qRgLY/70R5w==}
     engines: {node: '>=22.0.0', pnpm: '>=10.0.0'}
@@ -2024,6 +2050,9 @@ packages:
     resolution: {integrity: sha512-Cxwpt2SfTzTtXcfOlzGEee8O+c+MmUgGrNiBcXnuWxuFJHe6a5Hz7qwhwe5OgaSYI0IJvkLqWX1ASG+cJOkEiA==}
     engines: {node: '>=10'}
 
+  argparse@2.0.1:
+    resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
+
   aria-query@5.3.0:
     resolution: {integrity: sha512-b0P0sZPKtyu8HkeRAfCq0IfURZK+SuwMjY1UXGBU27wpAiTwQAIlq56IbIO+ytk/JjS1fMR14ee5WBBfKi5J6A==}
 
@@ -2056,6 +2085,10 @@ packages:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
 
+  chalk@5.6.2:
+    resolution: {integrity: sha512-7NzBL0rN6fMUW+f7A6Io4h40qQlG+xGmtMxfbnH/K7TAtt8JQWVQK+6g0UXKMeVJoyV5EkkNsErQ8pVD3bLHbA==}
+    engines: {node: ^12.17.0 || ^14.13 || >=16.0.0}
+
   character-entities-html4@2.1.0:
     resolution: {integrity: sha512-1v7fgQRj6hnSwFpq1Eu0ynr/CDEw0rXo2B61qXrLNdHZmPKgb7fqS1a2JwF0rISo9q77jDI8VMEHoApn8qDoZA==}
 
@@ -2074,6 +2107,10 @@ packages:
   cli-width@4.1.0:
     resolution: {integrity: sha512-ouuZd4/dm2Sw5Gmqy6bGyNNNe1qt9RpmxveLSO7KcgsTnU7RXfsw+/bukWGo1abgBiMAic068rclZsO4IWmmxQ==}
     engines: {node: '>= 12'}
+
+  commander@14.0.3:
+    resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
+    engines: {node: '>=20'}
 
   commander@8.3.0:
     resolution: {integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==}
@@ -2272,6 +2309,10 @@ packages:
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
+
+  js-yaml@4.3.2:
+    resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
+    hasBin: true
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
@@ -2713,11 +2754,6 @@ packages:
 
   preact@10.29.1:
     resolution: {integrity: sha512-gQCLc/vWroE8lIpleXtdJhTFDogTdZG9AjMUpVkDf2iTCNwYNWA+u16dL41TqUDJO4gm2IgrcMv3uTpjd4Pwmg==}
-
-  prettier@3.8.3:
-    resolution: {integrity: sha512-7igPTM53cGHMW8xWuVTydi2KO233VFiTNyF5hLJqpilHfmn8C8gPf+PS7dUT64YcXFbiMGZxS9pCSxL/Dxm/Jw==}
-    engines: {node: '>=14'}
-    hasBin: true
 
   pretty-format@27.5.1:
     resolution: {integrity: sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==}
@@ -3700,6 +3736,30 @@ snapshots:
 
   '@tailwindcss/browser@4.3.2': {}
 
+  '@takazudo/mdx-formatter-darwin-arm64@1.2.1':
+    optional: true
+
+  '@takazudo/mdx-formatter-darwin-x64@1.2.1':
+    optional: true
+
+  '@takazudo/mdx-formatter-linux-x64-gnu@1.2.1':
+    optional: true
+
+  '@takazudo/mdx-formatter-win32-x64-msvc@1.2.1':
+    optional: true
+
+  '@takazudo/mdx-formatter@1.2.1':
+    dependencies:
+      chalk: 5.6.2
+      commander: 14.0.3
+      glob: 13.0.6
+      js-yaml: 4.3.2
+    optionalDependencies:
+      '@takazudo/mdx-formatter-darwin-arm64': 1.2.1
+      '@takazudo/mdx-formatter-darwin-x64': 1.2.1
+      '@takazudo/mdx-formatter-linux-x64-gnu': 1.2.1
+      '@takazudo/mdx-formatter-win32-x64-msvc': 1.2.1
+
   '@takazudo/zdtp@0.8.2(preact@10.29.1)':
     dependencies:
       '@tailwindcss/browser': 4.3.2
@@ -4194,6 +4254,8 @@ snapshots:
 
   ansi-styles@5.2.0: {}
 
+  argparse@2.0.1: {}
+
   aria-query@5.3.0:
     dependencies:
       dequal: 2.0.3
@@ -4216,6 +4278,8 @@ snapshots:
 
   chai@6.3.0: {}
 
+  chalk@5.6.2: {}
+
   character-entities-html4@2.1.0: {}
 
   character-entities-legacy@3.0.0: {}
@@ -4227,6 +4291,8 @@ snapshots:
   chardet@2.2.0: {}
 
   cli-width@4.1.0: {}
+
+  commander@14.0.3: {}
 
   commander@8.3.0: {}
 
@@ -4451,6 +4517,10 @@ snapshots:
   is-plain-obj@4.1.0: {}
 
   js-tokens@4.0.0: {}
+
+  js-yaml@4.3.2:
+    dependencies:
+      argparse: 2.0.1
 
   json-schema-traverse@1.0.0: {}
 
@@ -5210,8 +5280,6 @@ snapshots:
       preact: 10.29.1
 
   preact@10.29.1: {}
-
-  prettier@3.8.3: {}
 
   pretty-format@27.5.1:
     dependencies:
