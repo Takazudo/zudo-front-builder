@@ -126,10 +126,11 @@ describe("packed browser conditional entry", () => {
   });
 
   it("resolves every public declaration from a tarball-only isolated consumer", () => {
-    // The package's own compiler, plus the TS 5.9 consumer floor the published declarations keep
-    // supporting while contributor builds move to newer compilers (#3544).
+    // The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+    // keep supporting while contributor builds use TypeScript 7 (#3544).
     const compilers = [
       resolvePackageTsc(packageRoot),
+      resolvePackageTsc(packageRoot, "typescript-6.0"),
       resolvePackageTsc(packageRoot, "typescript-5.9"),
     ];
     const fixtureRoot = installTarballConsumer(packedPackage());

@@ -134,14 +134,16 @@ describe("resolvePackageTsc", () => {
     expect(() => resolvePackageTsc(consumer)).toThrow(/cannot resolve typescript\/package\.json/);
   });
 
-  it("finds each workspace package's pinned compiler and its TS 5.9 probe", () => {
+  it("finds each workspace package's pinned compiler and its TS 6.0 and TS 5.9 probes", () => {
     const adapter = join(repoRoot, "packages", "zfb-adapter-cloudflare");
     const primary = resolvePackageTsc(adapter);
-    const probe = resolvePackageTsc(adapter, "typescript-5.9");
+    const probe60 = resolvePackageTsc(adapter, "typescript-6.0");
+    const probe59 = resolvePackageTsc(adapter, "typescript-5.9");
     expect(primary.version).toBe(
       createRequire(join(adapter, "package.json"))("./package.json").devDependencies.typescript,
     );
-    expect(probe.version).toBe("5.9.3");
-    expect(primary.binPath).not.toBe(probe.binPath);
+    expect(probe60.version).toBe("6.0.3");
+    expect(probe59.version).toBe("5.9.3");
+    expect(new Set([primary.binPath, probe60.binPath, probe59.binPath]).size).toBe(3);
   });
 });
