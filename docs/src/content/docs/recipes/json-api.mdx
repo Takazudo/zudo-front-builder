@@ -46,8 +46,8 @@ long as the isolate does — with **no Cloudflare bindings to provision**.
 | Area | What the repo uses |
 | --- | --- |
 | Framework | zfb with its built-in zudo-react JSX runtime |
-| zfb version | `@takazudo/zfb` **3.0.0**, `@takazudo/zfb-runtime` **3.0.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0** — present and required for Worker routes |
+| zfb version | `@takazudo/zfb` **3.1.0**, `@takazudo/zfb-runtime` **3.1.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — present and required for Worker routes |
 | Styling | zudo-wind with `reset: "owned-v1"`; authored semantic classes in `styles/global.css`, with `authoredClasses` entries for `item-card__meta` and `text-link` |
 | Rendering | Mixed. `/` and `/404` prerender; `/api/items` and `/api/search` are `prerender = false` |
 | Cloudflare surface | Workers Static Assets. `main = "./dist/_worker.js"`, `[assets]` with `binding = "ASSETS"`, `not_found_handling = "404-page"`, `run_worker_first = false` |

@@ -59,8 +59,8 @@ in intent:
 
 | Piece | What the repo uses |
 | --- | --- |
-| Framework | `@takazudo/zfb` and `@takazudo/zfb-runtime` **3.0.0**, using zudo-react; no Preact or React dependency |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.0.0**, set as `adapter` in `zfb.config.ts` |
+| Framework | `@takazudo/zfb` and `@takazudo/zfb-runtime` **3.1.0**, using zudo-react; no Preact or React dependency |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0**, set as `adapter` in `zfb.config.ts` |
 | Styling | Authored CSS in `styles/global.css`; zudo-wind supplies only the `owned-v1` reset, with no utility classes or tokens |
 | Rendering | SSG for `/` and `/404`; one SSR route — `pages/proxy/[...path].tsx` with `export const prerender = false` |
 | Cloudflare surface | Workers Static Assets and a custom domain. `main = "./cloudflare/worker-entry.mjs"` delegates to the adapter-generated `dist/_worker.js` |

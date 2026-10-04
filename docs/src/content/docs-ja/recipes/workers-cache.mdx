@@ -37,9 +37,9 @@ Cloudflare 系サンプルの中でも最小構成で、KV 名前空間も D1 �
 
 | 項目 | 内容 |
 | --- | --- |
-| フレームワーク | zudo-react を使う zfb **3.0.0**。`lib/http.tsx` が `renderToString` で HTML を描画 |
-| zfb バージョン | `@takazudo/zfb` 3.0.0、`@takazudo/zfb-runtime` 3.0.0 |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` 3.0.0 — 使用しており、必須 |
+| フレームワーク | zudo-react を使う zfb **3.1.0**。`lib/http.tsx` が `renderToString` で HTML を描画 |
+| zfb バージョン | `@takazudo/zfb` 3.1.0、`@takazudo/zfb-runtime` 3.1.0 |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` 3.1.0 — 使用しており、必須 |
 | スタイリング | `wind: false`。`components/recipe-page.tsx` に手書き CSS をインライン化し、ユーティリティは生成しません |
 | レンダリング | 完全な SSR。4 ルートすべてが `prerender = false` で、ビルド成果物は Worker バンドルとスタイルシート 1 本のみ、HTML ページは出力されません |
 | Cloudflare 面 | Workers Static Assets（`[assets]`）と Workers Cache（`[cache] enabled = true`） |
