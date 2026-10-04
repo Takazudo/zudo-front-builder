@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/zudo-slack-notify
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `cbc6c5b`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `cbc6c5b`; the audit used the zfb 3.1.0 CLI. zfb 3.2.0 shipped on 2026-10-04 15:30 UTC while this guide was being written, so the version labels and pins below were updated to it (https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/); the audit result (0 host-owned candidates) is not affected by 3.2.0 and was not re-run. Counts come from the commands listed; re-run them locally before relying on them.
 
 ## Verdict
 
@@ -18,7 +18,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps (`grep -rn "zfb
 
 ## Sequencing and blockers
 
-1. **zudo-doc 6.0.0** — zudolab/zudo-doc#4430 (epic), #4477 (root PR, draft), #4473 (consumer migration guide, planned). Its integration floor was blocked on zfb bugs Takazudo/zudo-front-builder#3569/#3570; both are fixed on zfb `main` (2026-10-04) but **unreleased**; the epic's round-2 lock is exact 3.1.0 / peer `^3.1.0` (R2-DD3), so expect 6.0.0 to re-lock on the **next zfb release**. Pin whatever 6.0.0's peer range names.
+1. **zudo-doc 6.0.0** — zudolab/zudo-doc#4430 (epic), #4477 (root PR, draft), #4473 (consumer migration guide, planned). Its integration floor was blocked on zfb bugs Takazudo/zudo-front-builder#3569/#3570; both shipped in **zfb 3.2.0 (released 2026-10-04)**, so the zudo-doc side is unblocked on zfb (its `base/zfb3-migration` branch is pushed @ `70e0875`, PR #4477 has 102 commits; only the #4467 integration topic is still local) but 6.0.0 itself is not published. The epic's round-2 lock was exact 3.1.0 / peer `^3.1.0` (R2-DD3); expect 6.0.0 to re-lock on exact 3.2.0 / peer `^3.2.0` (`^3.1.0` would still admit the 3.1.0 build panic, #3569). Pin whatever 6.0.0's peer range names, never below 3.2.0.
 2. **This repo** (S): bump pins, re-copy the four generated files (`doc/pages/docs/[[...slug]].tsx`, `doc/pages/index.tsx`, `doc/tsconfig.json`, `doc/src/styles/global.css`) from `create-zudo-doc@6`, drop `preact`/`preact-render-to-string`, rewrite `doc/CLAUDE.md` tech-stack lines, rebuild, let `deploy-doc.yml` ship it.
 3. **Possible now**: nothing load-bearing. The `^5.28.2` carets cannot float into 6.x, zfb is pinned exactly, and CI uses `pnpm install --frozen-lockfile` (`.github/actions/setup/action.yml:24-26`), so the site cannot break by accident. Do **not** bump `@takazudo/zfb` to 3.x ahead of the preset. Optionally pre-write the `doc/CLAUDE.md` edit (below) in a draft PR.
 
@@ -26,7 +26,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps (`grep -rn "zfb
 
 ### 1. Dependencies, config, tsconfig, env
 
-- `doc/package.json:22-24` — zfb family to the exact version zudo-doc 6.0.0 pins (`zfb --version` on v3 prints only the release and `embedded esbuild`; https://zfb.takazudomodular.com/guides/migrating-to-v3/#cli-and-environment). One root `pnpm-lock.yaml` covers `app/` and `doc/` (`pnpm-workspace.yaml`); there is no separate `doc/` lockfile.
+- `doc/package.json:22-24` — zfb family to the exact version zudo-doc 6.0.0 pins — expected `3.2.0` (released 2026-10-04), the release carrying #3569/#3570; never 3.1.0 (`zfb --version` on v3 prints only the release and `embedded esbuild`; https://zfb.takazudomodular.com/guides/migrating-to-v3/#cli-and-environment). One root `pnpm-lock.yaml` covers `app/` and `doc/` (`pnpm-workspace.yaml`); there is no separate `doc/` lockfile.
 - `doc/package.json:25,30` — `@takazudo/zudo-doc` and `@takazudo/zudo-doc-history-server` → `^6.0.0` (lockstep release; keep the caret style the file already uses).
 - `doc/package.json:27-28` — delete `preact` and `preact-render-to-string`: present only for zfb's removed engine (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Nothing in `doc/` imports them except the generator stub's `import type { JSX } from "preact"`, which the 6.0.0 stub replaces.
 - `doc/package.json:35` — `wrangler` `4.143.0` is unrelated to zfb; leave it.
@@ -34,7 +34,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps (`grep -rn "zfb
   ```jsonc
   // doc/package.json after the bump
   "dependencies": {
-    "@takazudo/zfb": "<zfb version pinned by zudo-doc 6.0.0>",
+    "@takazudo/zfb": "3.2.0", // or the exact version zudo-doc 6.0.0 pins; floor 3.2.0
     "@takazudo/zfb-runtime": "<same>",
     "@takazudo/zfb-md-wasm": "<same>",
     "@takazudo/zudo-doc": "^6.0.0",
@@ -67,7 +67,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps (`grep -rn "zfb
 
   ```text
   outcome: complete
-  spec: 1 revision 3
+  spec: 1 revision 3        # the 3.2.0 CLI prints `revision 4` (six new utility groups)
   unrecognized classes: (none)
   conflicts: (none)
   dead classes: (none)
@@ -76,7 +76,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps (`grep -rn "zfb
   diagnostics: 8 x auditInfo (ZW002 x2, ZW005 x5, ZW012 x1) — import specifiers in pages/docs/[[...slug]].tsx and pages/index.tsx + the template literal
   ```
 
-  16 MDX files: 0 `class=`/`className=`. The `auditInfo` lines sit at import specifiers (`@takazudo/zudo-doc/...`, `virtual:zudo-doc-*`), not in comments. 3.1.0 prints byte offsets; `file:line:col` locations, `--json`, `--severity` and `--plan` for the audit are **next zfb release** (https://zfb.takazudomodular.com/api/cli/#zfb-wind).
+  16 MDX files: 0 `class=`/`className=`. The `auditInfo` lines sit at import specifiers (`@takazudo/zudo-doc/...`, `virtual:zudo-doc-*`), not in comments. 3.1.0 prints byte offsets; `file:line:col` locations, `--json`, `--severity` and `--plan` for the audit shipped in zfb 3.2.0 (released 2026-10-04; https://zfb.takazudomodular.com/api/cli/#zfb-wind).
 
 ### 3. Components and islands
 
@@ -141,7 +141,7 @@ Adapted from the 7-step checklist (https://zfb.takazudomodular.com/guides/migrat
 
 ## Risks and open questions
 
-- **Single upstream dependency.** Everything waits on zudo-doc 6.0.0, which itself waits on the next zfb release (#3569/#3570 fixed on `main` only). No host-side work can be verified before that.
+- **Single upstream dependency.** Everything waits on zudo-doc 6.0.0; its own zfb blockers (#3569/#3570) shipped in zfb 3.2.0 on 2026-10-04, so what remains is zudo-doc's release itself (base branch pushed as PR #4477, #4467 integration topic still local, 6.0.0 unpublished). No host-side work can be verified before that.
 - **Reset differences** are the only visual risk: this site has no custom CSS to protect, but preflight → `owned-v1` (plus whatever the planned authored preflight patch restores, DD4 in #4430) changes form controls, `sub`/`sup`, `[hidden]` (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#reset). Check the search box and tabs.
 - **Caret ranges** (`^5.28.2`) are safe today (exclude 6.x) but mean a future `^6.0.0` will float within 6.x; keep `pnpm-lock.yaml` committed (it is) and CI frozen (it is).
 - Not verified here: `zfb check` cannot run on the clone (preset imports need `node_modules`); the audit used a stand-in `wind: { spec: 1 }` config, so package-owned classes were not evaluated.
@@ -151,7 +151,7 @@ Adapted from the 7-step checklist (https://zfb.takazudomodular.com/guides/migrat
 - https://zfb.takazudomodular.com/guides/migrating-to-v3/ (checklist; config keys; pragmas; CLI/env)
 - https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/ (directives → ZW009; reset differences)
 - https://zfb.takazudomodular.com/zudo-wind/configuration/ , https://zfb.takazudomodular.com/zudo-wind/diagnostics-and-tools/
-- https://zfb.takazudomodular.com/concepts/islands/ , https://zfb.takazudomodular.com/api/cli/ (`zfb wind audit`; `--json`/`--severity`/`--plan` are next zfb release)
-- https://zfb.takazudomodular.com/changelog/zfb/v3.0.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.1.0/
-- zudolab/zudo-doc#4430 (epic), #4477 (root PR), #4473 (consumer migration guide, planned); Takazudo/zudo-front-builder#3569, #3570 (fixed on main, unreleased)
+- https://zfb.takazudomodular.com/concepts/islands/ , https://zfb.takazudomodular.com/api/cli/ (`zfb wind audit`; `--json`/`--severity`/`--plan` shipped in 3.2.0)
+- https://zfb.takazudomodular.com/changelog/zfb/v3.0.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.1.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/ (released 2026-10-04)
+- zudolab/zudo-doc#4430 (epic), #4477 (root PR), #4473 (consumer migration guide, planned); Takazudo/zudo-front-builder#3569, #3570 (shipped in zfb 3.2.0)
 - This repo: `doc/zfb.config.ts`, `doc/package.json`, `doc/tsconfig.json`, `doc/src/styles/global.css`, `doc/pages/docs/[[...slug]].tsx`, `doc/CLAUDE.md`, `.github/workflows/ci.yml`, `.github/workflows/deploy-doc.yml`, `scripts/run-b4push.sh`, `scripts/smoke.sh`

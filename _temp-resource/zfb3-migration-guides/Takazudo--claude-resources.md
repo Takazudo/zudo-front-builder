@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/claude-resources
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `8eb08d1`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `8eb08d1`. Counts come from the commands listed; re-run them locally before relying on them. No `zfb wind audit` ran here (the repo has no zfb project dir), so the zfb 3.1.0 CLI staged for this diagnosis was not used; zfb 3.2.0 was released on 2026-10-04 15:30 UTC while the guide was being written, and every version label and pin below was updated to 3.2.0 afterwards.
 
 `claude-resources` is the **public mirror** of the private `Takazudo/claude-settings` repo. Its copy of `skills/dev-basic-cloudflare-webapp/` is byte-identical to the private source (`diff -r` → no output) and is overwritten on every `/claude-resources-share` run (one-direction rsync of `$HOME/.claude/skills/` → `skills/`, see `claude-settings/skills/claude-resources-share/SKILL.md`). **Do not edit this repo directly**; apply the sibling guide `Takazudo--claude-settings.md` to the source and re-share. This guide records what is wrong here, why it matters more here than in the private repo, and the exact re-sync procedure.
 
@@ -148,4 +148,5 @@ From `claude-settings/skills/claude-resources-share/SKILL.md`, the steps that ma
 - Migration guide: https://zfb.takazudomodular.com/docs/guides/migrating-to-v3/ · Tailwind map: https://zfb.takazudomodular.com/docs/zudo-wind/coming-from-tailwind/ · Preact map: https://zfb.takazudomodular.com/docs/zudo-react/coming-from-preact-hooks/
 - Config: https://zfb.takazudomodular.com/docs/api/define-config/ · wind config: https://zfb.takazudomodular.com/docs/zudo-wind/configuration/ · CLI: https://zfb.takazudomodular.com/docs/api/cli/ · testing: https://zfb.takazudomodular.com/docs/zudo-react/testing/ · adapter: https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/
 - v3 scaffold: `crates/zfb/templates/basic-blog` (Takazudo/zudo-front-builder), `pnpm create zfb@latest`, https://create-zfb.takazudomodular.com
-- zudo-doc 6.0.0: zudolab/zudo-doc#4430, #4477, #4473
+- zfb 3.2.0 changelog (released 2026-10-04): https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/
+- zudo-doc 6.0.0: zudolab/zudo-doc#4430, #4477 (branch `base/zfb3-migration` pushed @ `70e0875`, 102 commits; only the #4467 integration topic is still local), #4473

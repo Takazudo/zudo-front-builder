@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/zudo-scope10
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `2c78610`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `2c78610`, audited with the zfb 3.1.0 CLI. zfb 3.2.0 shipped during the diagnosis (2026-10-04 15:30 UTC; https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/), so every release label below was checked against its notes. Counts come from the commands listed; re-run them locally before relying on them.
 
 ## Verdict
 
@@ -36,7 +36,7 @@ Optional, not required: stepping 2.20.2 -> 2.22.1 / 5.27.0 -> 5.28.2 first. `gre
 
 ### 1. Dependencies, config, tsconfig, env
 
-- **`doc/package.json`** (`dependencies`/`devDependencies`): when 6.0.0 ships, set `@takazudo/zfb`, `@takazudo/zfb-runtime`, `@takazudo/zfb-md-wasm` to the zfb version zudo-doc 6.0.0 pins (lockstep, exact), `@takazudo/zudo-doc` to `6.x`; remove `preact`, `preact-render-to-string` and `tailwindcss` (the runtime ships inside `@takazudo/zfb/zudo-react`, https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Keep `zfb-md-wasm` only if zudo-doc 6 still lists it as a peer.
+- **`doc/package.json`** (`dependencies`/`devDependencies`): when 6.0.0 ships, set `@takazudo/zfb`, `@takazudo/zfb-runtime`, `@takazudo/zfb-md-wasm` to the zfb version zudo-doc 6.0.0 pins (lockstep, exact; expected `3.2.0`, released 2026-10-04 — not a `^3.1.0` floor, which would still admit the 3.1.0 Wind extractor panic Takazudo/zudo-front-builder#3569), `@takazudo/zudo-doc` to `6.x`; remove `preact`, `preact-render-to-string` and `tailwindcss` (the runtime ships inside `@takazudo/zfb/zudo-react`, https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Keep `zfb-md-wasm` only if zudo-doc 6 still lists it as a peer.
 - **`doc/zfb.config.ts`** (lines 1-15): the host adds no `framework`/`tailwind`/`wind` keys itself, so nothing is deleted here. zudo-doc 6.0.0 is planned to carry a package-owned `wind` fragment (tokens, `reset`, a candidate manifest exported by the package) inside `zudoDoc()`; if you need host tokens, the planned shape is a `wind` override merged user-wins (https://zfb.takazudomodular.com/zudo-wind/configuration/#strict-validation-and-merging). Confirm the exact override key in zudolab/zudo-doc#4473 before writing it.
 - **`doc/tsconfig.json`**: delete the three `paths` entries `react`, `react/jsx-runtime`, `react-dom` (lines 8-10; line 7 is the `@/*` alias, keep it). `jsx`/`jsxImportSource` come from `@takazudo/zudo-doc/tsconfig.base.json`, which 6.0.0 is planned to switch to `@takazudo/zfb/zudo-react`; if the shipped base does not, add `"jsx": "react-jsx", "jsxImportSource": "@takazudo/zfb/zudo-react"` locally (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands).
 - **Env**: no `ZFB_TAILWIND_BIN`/`ZFB_TAILWIND_OXIDE_WARMUP` anywhere (`grep -rn ZFB_TAILWIND .` -> 0). Nothing to remove.

@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/case-estimate
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `49fe131`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `49fe131`; the `zfb wind audit` census used the zfb 3.1.0 CLI. zfb 3.2.0 was released (npm `latest`, https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/) while this diagnosis was being written, so every pin and label below targets 3.2.0. Counts come from the commands listed; re-run them locally before relying on them.
 
 ## Verdict
 
@@ -182,6 +182,6 @@ Not used (`grep -rn zfb-md-wasm . → 0`). `sub-packages/md-formatter` is a rema
 - Islands and `<Island>`: https://zfb.takazudomodular.com/concepts/islands/ · https://zfb.takazudomodular.com/api/island/
 - Page module exports (`getStaticProps`, `paths`): https://zfb.takazudomodular.com/api/meta-export/ · collections: https://zfb.takazudomodular.com/api/get-collection/ · MDX component map: https://zfb.takazudomodular.com/concepts/mdx-components/
 - Config: https://zfb.takazudomodular.com/api/define-config/ · CLI (`zfb css`, `zfb wind explain|audit`, `zfb check`, `zfb preview`): https://zfb.takazudomodular.com/api/cli/
-- Breaking notes between next.16 and 2.22.1: https://zfb.takazudomodular.com/changelog/zfb/v0.1.0-next.25/ · /v0.1.0-next.38/ · /v0.1.0-next.90/ · /v0.1.0-next.91/ · /v2.0.0/ · v3: /v3.0.0/ · /v3.1.0/ · /v3.2.0/ (2026-10-04: `wind.sources`, `wind.strict`/ZW014, `wind.utilities.placement`, `--json`, `file:line:col` diagnostics, six new utilities)
+- Breaking notes between next.16 and 2.22.1: https://zfb.takazudomodular.com/changelog/zfb/v0.1.0-next.25/ · /v0.1.0-next.38/ · /v0.1.0-next.90/ · /v0.1.0-next.91/ · /v2.0.0/ · v3: /v3.0.0/ · /v3.1.0/ · https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/ (2026-10-04: `wind.sources`, `wind.strict`/ZW014, `wind.utilities.placement`, `--json`, `file:line:col` diagnostics, six new utilities)
 - Audit commands used (zfb 3.1.0 binary, no `pnpm install`; its `file:NNN` positions are byte offsets, not lines — 3.2.0 prints `file:line:col`):
   `cp zfb-app/zfb.config.ts /tmp/bak && printf 'import { defineConfig } from "zfb/config";\nexport default defineConfig({ wind: { spec: 1 } });\n' > zfb-app/zfb.config.ts && zfb wind audit --project-root zfb-app; cp /tmp/bak zfb-app/zfb.config.ts` (run 1) and the same with a temporary `zfb.config.ts` at the repo root (run 2, file removed afterwards; `git status --short` clean).

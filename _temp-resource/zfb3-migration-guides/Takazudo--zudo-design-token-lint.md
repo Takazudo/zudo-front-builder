@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/zudo-design-token-lint
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `b697003`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `b697003`; the `zfb wind audit` census used the zfb 3.1.0 CLI. zfb 3.2.0 was released (npm `latest`, https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/) while this diagnosis was being written, so every pin and label below targets 3.2.0. Counts come from the commands listed; re-run them locally before relying on them.
 
 ## Verdict
 
@@ -38,7 +38,7 @@ Measured facts (clone root unless noted):
 ### 1. Dependencies, config, tsconfig, env
 
 - **`doc/package.json`**
-  - zfb family x4 -> the exact version zudo-doc 6.0.0 pins (`check-pin-parity.mjs` checks `@takazudo/zfb`, `zfb-runtime`, `zfb-adapter-cloudflare`; **add `@takazudo/zfb-md-wasm`** to its `ZFB_PACKAGES`, it is currently missing from the lockstep check).
+  - zfb family x4 -> the exact version zudo-doc 6.0.0 pins, never below 3.2.0 (3.2.0 is a minor, so a `^3.1.0` range would still admit the 3.1.0 build-panic bug Takazudo/zudo-front-builder#3569 that blocked zudo-doc's own integration) (`check-pin-parity.mjs` checks `@takazudo/zfb`, `zfb-runtime`, `zfb-adapter-cloudflare`; **add `@takazudo/zfb-md-wasm`** to its `ZFB_PACKAGES`, it is currently missing from the lockstep check).
   - `@takazudo/zudo-doc`, `zudo-doc-history-server`, `create-zudo-doc` -> 6.x (the script strips `^`/`~` and compares bases).
   - remove `preact`, `preact-render-to-string` **only if** zdtp's 6.0-era peer no longer needs them (today zdtp peers `preact ^10.29.1`); otherwise keep `preact` and drop only `preact-render-to-string`.
   - remove `@tailwindcss/vite`, `tailwindcss` (nothing in `doc/` runs Vite; zfb 2.x bundled its own Tailwind), `@types/react` (the scaffold omits it on purpose: `jsx: react-jsx` + `jsxImportSource` provides JSX types).

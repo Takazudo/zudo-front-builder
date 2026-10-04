@@ -1,10 +1,10 @@
 # zfb v3 migration guide: zudolab/zudo-panel-designer
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `85f6ef0` (merge of #239, 2026-07-27). Counts come from the commands listed; re-run them locally before relying on them. The clone is shallow (depth 1), so `doc/` history was read through the GitHub REST API (`gh api repos/zudolab/zudo-panel-designer/commits?path=doc`), not `git log`.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `85f6ef0` (merge of #239, 2026-07-27). Counts come from the commands listed; re-run them locally before relying on them. The clone is shallow (depth 1), so `doc/` history was read through the GitHub REST API (`gh api repos/zudolab/zudo-panel-designer/commits?path=doc`), not `git log`. The `zfb wind audit` census below was taken with the zfb 3.1.0 CLI and re-run with 3.2.0; zfb 3.2.0 shipped on npm `latest` at 15:30 UTC on 2026-10-04 while this guide was being written, so every item formerly labelled "next zfb release" now reads "zfb 3.2.0".
 
 ## Verdict
 
-**Blocked, effort S.** The only zfb consumer is `doc/`, a `create-zudo-doc` 4.x scaffold (commit `c20fce6` "scaffold zudo-doc v4 documentation sub-project", 2026-07-17; 42 commits touched `doc/`, last `4b19ce1` 2026-07-25) pinning `@takazudo/zfb 0.1.0-next.89` (86th of the 140 `@takazudo/zfb` versions on npm; 54 behind 3.1.0) and `@takazudo/zudo-doc ^4.1.0` (locked 4.1.0; 57th of 129 published versions, 72 behind 5.28.2). Every host file except `zfb.config.ts` and the MDX content is byte-identical to today's `create-zudo-doc` 5.28.2 templates (`global.css`, `tsconfig.json`, `pages/index.tsx`) or differs only in comment text (both route stubs). There are **zero** host components, islands, authored CSS rules or utility classes (`zfb wind audit`: 0 unrecognized, 0 dead, 0 conflicts). The app itself, `packages/app`, is a Vite 7 + React 19 SPA that uses Tailwind 4 through `@tailwindcss/vite` and never goes through zfb — **unaffected by zfb 3**. The doc migration is a **re-scaffold** with `create-zudo-doc` 6 plus a 1:1 port of the 14 `zudoDoc()` fields and a copy of 72 MDX files (EN + JA); the real work is link/anchor verification across the two locales (266 relative `.mdx` links, 121 with anchors). What gates the start: zudo-doc 6.0.0 (zudolab/zudo-doc#4430, root PR #4477), which waits for the zfb release after 3.1.0 carrying Takazudo/zudo-front-builder#3569/#3570 (fixed on `main` 3981f6e, unreleased).
+**Blocked, effort S.** The only zfb consumer is `doc/`, a `create-zudo-doc` 4.x scaffold (commit `c20fce6` "scaffold zudo-doc v4 documentation sub-project", 2026-07-17; 42 commits touched `doc/`, last `4b19ce1` 2026-07-25) pinning `@takazudo/zfb 0.1.0-next.89` (86th of the 141 `@takazudo/zfb` versions on npm; 55 behind 3.2.0) and `@takazudo/zudo-doc ^4.1.0` (locked 4.1.0; 57th of 129 published versions, 72 behind 5.28.2). Every host file except `zfb.config.ts` and the MDX content is byte-identical to today's `create-zudo-doc` 5.28.2 templates (`global.css`, `tsconfig.json`, `pages/index.tsx`) or differs only in comment text (both route stubs). There are **zero** host components, islands, authored CSS rules or utility classes (`zfb wind audit`: 0 unrecognized, 0 dead, 0 conflicts). The app itself, `packages/app`, is a Vite 7 + React 19 SPA that uses Tailwind 4 through `@tailwindcss/vite` and never goes through zfb — **unaffected by zfb 3**. The doc migration is a **re-scaffold** with `create-zudo-doc` 6 plus a 1:1 port of the 14 `zudoDoc()` fields and a copy of 72 MDX files (EN + JA); the real work is link/anchor verification across the two locales (266 relative `.mdx` links, 121 with anchors). What gates the start: zudo-doc 6.0.0 (zudolab/zudo-doc#4430, root PR #4477), whose zfb blockers (Takazudo/zudo-front-builder#3569/#3570) shipped in zfb 3.2.0 on 2026-10-04 — zfb no longer gates it, but 6.0.0 itself is unpublished (`@takazudo/zudo-doc` `latest` is 5.28.2).
 
 ## Current state
 
@@ -18,7 +18,7 @@ Audit-free facts: no `tailwind.config.*`, no `ZFB_TAILWIND*` in tracked files, n
 
 Content census: 72 MDX files, 5,567 lines, EN/JA mirrored 36/36. Package MDX globals used (no imports): `<CategoryNav>` ×12, `<Note>` ×8, `<Info>` ×4, `<Warning>` ×4, `<Tip>` ×2 (JSX admonitions — still registered in zudo-doc 5.28.2 `packages/zudo-doc/src/mdx-components/index.ts:457-460`), directives `:::note` ×20, `:::tip` ×6, `:::warning` ×4. Links: 58 in-page `](#…)`, 266 relative `.mdx` links of which **121 carry anchors**; JA pages use Japanese anchors (`#ダウンロードトリガー`). Frontmatter keys: `title`, `description`, `sidebar_position` only. No inline HTML, no `class=`/`style=` in MDX. The repo's own `.claude/skills/l-lessons-doc-site-authoring/SKILL.md` records the authoring traps (build is the gate, `broken link:` grep, hierarchical slugs, EN/JA anchor behaviour differs) — reuse it as the acceptance method for the migration PR.
 
-### `zfb wind audit` (zfb 3.1.0, `wind: { spec: 1 }` temporary config, `--project-root doc`)
+### `zfb wind audit` (zfb 3.1.0, re-run with 3.2.0; `wind: { spec: 1 }` temporary config, `--project-root doc`)
 
 ```
 outcome: complete / spec: 1 revision 3
@@ -30,11 +30,20 @@ diagnostics: 11, all auditInfo, none strict:
   ZW012 ×2  the two routeSig template literals
 ```
 
-Reading: no host utility candidates exist, so there are **no tokens to declare**; every finding is a string-literal import specifier at a lower-confidence origin, which never fails a build (https://zfb.takazudomodular.com/zudo-wind/diagnostics-and-tools/). The default audit scans the standalone plan only (`pages components layouts content src`), never `node_modules/@takazudo/zudo-doc` (https://zfb.takazudomodular.com/zudo-wind/sources-and-candidates/). 3.1.0 prints byte offsets; `file:line:col`, `--json`, `--severity` and `--plan build` are documented on `main` but absent from 3.1.0's `--help` — **next zfb release**. `zfb check` was not run (preset import needs `node_modules`).
+Re-run with zfb 3.2.0 (same temporary config, exit 0):
+
+```
+outcome: complete / spec: 1 revision 4
+unrecognized classes: (none)   conflicts: (none)   dead classes: (none)
+dynamic constructions: 2  — `docs;${locale}` (pages/docs/[[...slug]].tsx:50:16), `locale-docs;${locale}` (pages/[locale]/docs/[[...slug]].tsx:61:18)
+diagnostics: 2, both ZW012 auditInfo (the two routeSig template literals); the 9 ZW002/ZW005 import-specifier findings are gone — 3.2.0 skips module specifiers during extraction and prints `file:line:col`
+```
+
+Reading: no host utility candidates exist, so there are **no tokens to declare**; every finding is a string-literal import specifier at a lower-confidence origin, which never fails a build (https://zfb.takazudomodular.com/zudo-wind/diagnostics-and-tools/). The default audit scans the standalone plan only (`pages components layouts content src`), never `node_modules/@takazudo/zudo-doc` (https://zfb.takazudomodular.com/zudo-wind/sources-and-candidates/). 3.1.0 prints byte offsets; `file:line:col`, `--json`, `--severity` and `--plan build` are absent from 3.1.0's `--help` and shipped in **zfb 3.2.0 (released 2026-10-04)**. `zfb check` was not run (preset import needs `node_modules`).
 
 ## Sequencing and blockers
 
-1. **zudo-doc 6.0.0 is the gate.** All zfb usage runs through the `zudoDoc()` preset; a preset that still emits `framework`/`tailwind` fails v3 config loading even after the host removes its own keys (https://zfb.takazudomodular.com/guides/migrating-to-v3/#before-you-start). 6.0.0 is in flight (epic zudolab/zudo-doc#4430, draft PR #4477, 39/51 topics merged locally on 2026-10-02) and blocked on the next zfb release after 3.1.0 (#3569, #3570 fixed on `main`, unreleased). See `zudolab--zudo-doc.md` §"What downstream zudo-doc hosts should expect from 6.0.0".
+1. **zudo-doc 6.0.0 is the gate.** All zfb usage runs through the `zudoDoc()` preset; a preset that still emits `framework`/`tailwind` fails v3 config loading even after the host removes its own keys (https://zfb.takazudomodular.com/guides/migrating-to-v3/#before-you-start). 6.0.0 is in flight (epic zudolab/zudo-doc#4430, draft PR #4477 — `base/zfb3-migration` pushed at `70e0875`, 102 commits; only the #4467 integration topic is still local) and no longer blocked on zfb: #3569 and #3570 shipped in zfb 3.2.0 on 2026-10-04 (https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/). The remaining gate is zudo-doc's own release. See `zudolab--zudo-doc.md` §"What downstream zudo-doc hosts should expect from 6.0.0".
 2. **create-zudo-doc 6 is the tool.** 5.x generator releases are frozen (DD8, `check-scaffold-pin-freshness` red on zudo-doc `main`).
 3. **Nothing in this repo blocks the host.** No custom components/CSS/islands, no md-wasm calls, no `ZFB_TAILWIND` env; node 22 + `pnpm@11.5.2` already satisfy zfb 3 (`node >=22`, `pnpm >=10`).
 4. **i18n is the only feature that needs care.** `locales: { ja: { label: "JA", dir: "src/content/docs-ja" } }` and the `[locale]` route stub are both current in 5.28.2 (`guides/i18n.mdx`, `templates/features/i18n/`); the risk is anchor/link parity, not the engine.
@@ -44,7 +53,7 @@ Reading: no host utility candidates exist, so there are **no tokens to declare**
 
 ### 1. Dependencies, config, tsconfig, env
 
-- **`doc/package.json`** (`:16-19`) — move all four `0.1.0-next.89` pins to the zfb release zudo-doc 6.0.0 declares as peer (**not 3.1.0**; 6.0.0's floor will be the release carrying #3569/#3570). Keep `@takazudo/zfb-adapter-cloudflare` (the site is SSR-on-a-Worker by config; adapter 3.x exists, lockstep). `:20` `@takazudo/zudo-doc` → `^6.0.0`. Delete `:22-23` `preact`, `preact-render-to-string` and `:40` `@types/react` (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Delete `:36-37` `@tailwindcss/vite`, `tailwindcss`. Delete `:32` `@takazudo/zdtp 0.4.9` unless `designTokenPanel` is enabled (then `preact` stays as zdtp's peer — zdtp stays a Preact widget, zudo-doc decision DD3). `wrangler ^4.110.0` stays.
+- **`doc/package.json`** (`:16-19`) — move all four `0.1.0-next.89` pins to the zfb release zudo-doc 6.0.0 declares as peer (**3.2.0 or later, not 3.1.0** — 3.2.0, released 2026-10-04, is the first release carrying #3569/#3570; 3.2.0 is a minor, so a `^3.1.0` floor would still admit the 3.1.0 build panic). Keep `@takazudo/zfb-adapter-cloudflare` (the site is SSR-on-a-Worker by config; adapter 3.x exists, lockstep). `:20` `@takazudo/zudo-doc` → `^6.0.0`. Delete `:22-23` `preact`, `preact-render-to-string` and `:40` `@types/react` (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Delete `:36-37` `@tailwindcss/vite`, `tailwindcss`. Delete `:32` `@takazudo/zdtp 0.4.9` unless `designTokenPanel` is enabled (then `preact` stays as zdtp's peer — zdtp stays a Preact widget, zudo-doc decision DD3). `wrangler ^4.110.0` stays.
 - **`doc/pnpm-workspace.yaml`** — delete the 11 stale `minimumReleaseAgeExclude` entries (`:14-25`; they name `0.1.0-next.89` and `zudo-doc@4.0.0/4.1.0`); keep `minimumReleaseAge: 0` and `allowBuilds` (esbuild, sharp, workerd).
 - **`doc/zfb.config.ts`** — keep `defineConfig(zudoDoc({...}))`; it has no `framework`/`tailwind` key (both are hard errors in v3, https://zfb.takazudomodular.com/api/define-config/). All 14 fields (`port`, `adapter`, `siteName`, `siteUrl`, `locales`, `githubUrl`, `llmsTxt`, `sidebarResizer`, `sidebarToggle`, `imageEnlarge`, `dynamicPageTransition`, `footer{links,copyright}`, `headerNav` ×6, `headerRightItems` ×4 incl. `language-switcher`) exist in zudo-doc 5.28.2 (`packages/zudo-doc/src/config.ts`, `settings.ts:49`); re-verify against the 6.0 consumer guide (zudolab/zudo-doc#4473). `port: 15210` keeps the repo's 152xx convention.
 - **`doc/tsconfig.json`** — keep `extends: "@takazudo/zudo-doc/tsconfig.base.json"`; delete the three `paths` aliases `react`, `react/jsx-runtime`, `react-dom` (`:8-10`); keep `"@/*"`.
@@ -64,7 +73,7 @@ Reading: no host utility candidates exist, so there are **no tokens to declare**
 | 20–22 | `@source` ×3 | **delete** (ZW009) |
 | 26 | `@theme { }` | **delete** (ZW009); overrides go to `zudoDoc({ wind: { tokens } })` or `:root { --… }` |
 
-No host utilities exist, so no `wind.tokens`/`authoredClasses`/`safelist`/ZW014 work. If authored CSS is ever added, remember utilities now follow authored CSS by default (equal-specificity ties flip); `wind.utilities.placement: "before-authored"` restores Tailwind's order and is a **next zfb release** feature (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties).
+No host utilities exist, so no `wind.tokens`/`authoredClasses`/`safelist`/ZW014 work. If authored CSS is ever added, remember utilities now follow authored CSS by default (equal-specificity ties flip); `wind.utilities.placement: "before-authored"` restores Tailwind's order and shipped in **zfb 3.2.0 (released 2026-10-04)** (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties).
 
 ### 3. Components and islands
 
@@ -83,7 +92,7 @@ No host utilities exist, so no `wind.tokens`/`authoredClasses`/`safelist`/ZW014 
 
 - `.github/workflows/pr-checks.yml` job `preview` (l.107–240) already installs and builds `doc/` on every PR and uploads a preview — this is the migration PR's gate. Add `cd doc && pnpm check` and `npx zfb wind audit --fail-on error` steps after `Build doc` (https://zfb.takazudomodular.com/api/cli/#zfb-wind). Keep the `broken link:` grep from the lessons skill as a step, since the build exits 0 on broken links.
 - `.github/workflows/production-deploy.yml` job `deploy-doc` (l.83–154): unchanged. The `Write dist/.assetsignore` step (`_worker.js`, `_zfb_inner.mjs`) is redundant — the Cloudflare adapter has emitted `.assetsignore` itself since zfb 0.1.0-next.74 and still does on 3.x (https://zfb.takazudomodular.com/guides/ssr-and-cloudflare-bindings/) — but harmless; keep or drop. Smoke URLs stay valid (`/`, `/docs/overview/`, `/ja/docs/overview/`).
-- `doc/wrangler.toml`: unchanged (`main = "./dist/_worker.js"` + `nodejs_compat` remain the adapter contract; the next zfb release also removes the dangling `bundle-runtime.mjs.map` reference from the emitted Worker (#3480) and lowers the Linux binary's glibc requirement from 2.35 to 2.34 (#3584; releases up to 3.1.0 need 2.35, which `ubuntu-latest` already satisfies — only Amazon Linux 2023 / RHEL 9-class hosts were affected).
+- `doc/wrangler.toml`: unchanged (`main = "./dist/_worker.js"` + `nodejs_compat` remain the adapter contract; zfb 3.2.0 (released 2026-10-04) also removes the dangling `bundle-runtime.mjs.map` reference from the emitted Worker (#3480) and lowers the Linux binary's glibc requirement from 2.35 to 2.34 (#3584; releases up to 3.1.0 need 2.35, which `ubuntu-latest` already satisfies — only Amazon Linux 2023 / RHEL 9-class hosts were affected).
 - `doc/.gitignore`: keep `.zfb*`, `.zudo-doc/`, `.wrangler/`; v3 still writes `.zfb-build/` and `.zfb/graph.bin` (https://zfb.takazudomodular.com/api/cli/#scratch-dirs).
 - No dependabot config exists; consider adding one for `/doc` after 6.0.0 so zudo-doc patches arrive.
 
@@ -117,7 +126,7 @@ In-place alternative to 3–8: bump pins, apply §1–§3 edits by hand, and man
 
 ## Risks and open questions
 
-- **Upstream timing is the whole risk.** Nothing can go green before `@takazudo/zudo-doc@6.0.0`, whose gate is the next zfb release after 3.1.0.
+- **Upstream timing is the whole risk.** Nothing can go green before `@takazudo/zudo-doc@6.0.0`; its zfb floor (3.2.0) is already released, so the only remaining gate is zudo-doc's own release.
 - **Link/anchor regressions across 72 pages** are the realistic failure mode, not the engine. The repo's own lessons skill documents that EN and JA differ in how a wrong anchor surfaces; budget the verification, not the port.
 - **Cascade flip and bundle growth** (utilities after authored CSS; ~2.2× island bundle per zudo-doc #3383) are package-level behaviour changes you inherit; no host CSS exists to break today.
 - **`zfb check` not run** on the clone; config typing gaps surface only at step 4.
@@ -133,12 +142,12 @@ In-place alternative to 3–8: bump pins, apply §1–§3 edits by hand, and man
 - Diagnostics ZW001–ZW014: https://zfb.takazudomodular.com/zudo-wind/diagnostics-and-tools/
 - Source plan: https://zfb.takazudomodular.com/zudo-wind/sources-and-candidates/
 - Cloudflare adapter output (`_worker.js`, `_zfb_inner.mjs`, `.assetsignore`): https://zfb.takazudomodular.com/guides/ssr-and-cloudflare-bindings/
-- zfb release notes: https://zfb.takazudomodular.com/changelog/zfb/v3.0.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.1.0/
+- zfb release notes: https://zfb.takazudomodular.com/changelog/zfb/v3.0.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.1.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/
 - zudo-doc i18n contract: https://zudo-doc.takazudomodular.com/docs/guides/i18n/
 - zudo-doc 6.0.0 status: zudolab/zudo-doc#4430 (epic), #4477 (root PR), #4473 (consumer migration guide), and `zudolab--zudo-doc.md` in this directory
-- zfb fixes zudo-doc waits on: Takazudo/zudo-front-builder#3569, #3570 (on `main`, unreleased); also #3480, #3584
+- zfb fixes zudo-doc waits on: Takazudo/zudo-front-builder#3569, #3570, and also #3480, #3584 — all shipped in zfb 3.2.0 (2026-10-04)
 - Repo facts: `doc/package.json`, `doc/zfb.config.ts`, `doc/pnpm-workspace.yaml`, `doc/src/styles/global.css`, `doc/pages/**/[[...slug]].tsx`, `doc/wrangler.toml`, `.github/workflows/{pr-checks,production-deploy}.yml`, `README.md` §Deployment, `.claude/skills/l-lessons-doc-site-authoring/SKILL.md`, `packages/app/vite.config.ts`
-- Commands used: `zfb wind audit --project-root doc` (zfb 3.1.0, temp `wind:{spec:1}` config, restored), the briefing's Tailwind/Preact/hooks/md-wasm greps, `diff` against `zudo-doc/packages/create-zudo-doc/templates/{base,features/i18n}/**`, `gh api repos/zudolab/zudo-panel-designer/{commits?path=doc,issues,pulls}`
+- Commands used: `zfb wind audit --project-root doc` (zfb 3.1.0, re-run with 3.2.0; temp `wind:{spec:1}` config, restored), the briefing's Tailwind/Preact/hooks/md-wasm greps, `diff` against `zudo-doc/packages/create-zudo-doc/templates/{base,features/i18n}/**`, `gh api repos/zudolab/zudo-panel-designer/{commits?path=doc,issues,pulls}`
 
 ### Re-run this census
 

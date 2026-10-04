@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/zudo-blanks
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `b1a3ef9`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `b1a3ef9`, audited with the zfb 3.1.0 CLI. zfb 3.2.0 shipped during the diagnosis (2026-10-04 15:30 UTC; https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/), so every release label below was checked against its notes. Counts come from the commands listed; re-run them locally before relying on them.
 
 ## Verdict
 
@@ -36,7 +36,7 @@ Measured facts:
 
 ### 1. Dependencies, config, tsconfig, env
 
-- **`doc/package.json`**: move the three `@takazudo/zfb*` pins to the version zudo-doc 6.0.0 pins (lockstep, exact as today), `@takazudo/zudo-doc` and `@takazudo/zudo-doc-history-server` to 6.x in lockstep, drop `preact` and `preact-render-to-string` (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Keep `zod`, `diff` (docHistory) as the 6.x scaffold lists them. `packageManager: pnpm@10.28.1` and `doc/pnpm-workspace.yaml` (`minimumReleaseAge: 0`) are unaffected. The only lockfile is `doc/pnpm-lock.yaml` (there is no root workspace); regenerate and commit it, because `.github/actions/build-zudo-doc/action.yml:39` installs with `--frozen-lockfile`.
+- **`doc/package.json`**: move the three `@takazudo/zfb*` pins to the version zudo-doc 6.0.0 pins (lockstep, exact as today; expected `3.2.0`, released 2026-10-04 — never a `^3.1.0`-style floor, which would still admit the 3.1.0 Wind extractor panic Takazudo/zudo-front-builder#3569), `@takazudo/zudo-doc` and `@takazudo/zudo-doc-history-server` to 6.x in lockstep, drop `preact` and `preact-render-to-string` (https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands). Keep `zod`, `diff` (docHistory) as the 6.x scaffold lists them. `packageManager: pnpm@10.28.1` and `doc/pnpm-workspace.yaml` (`minimumReleaseAge: 0`) are unaffected. The only lockfile is `doc/pnpm-lock.yaml` (there is no root workspace); regenerate and commit it, because `.github/actions/build-zudo-doc/action.yml:39` installs with `--frozen-lockfile`.
 - **`doc/zfb.config.ts`**: the spread form `{ ...zudoDoc({...}), copyPublicWithBase: false }` stays valid; the host adds no removed key. If 6.0.0 exposes a host `wind` override (planned user-wins merge, https://zfb.takazudomodular.com/zudo-wind/configuration/#strict-validation-and-merging), you will not need it: the audit shows zero host utility candidates.
 - **`doc/tsconfig.json`**: delete the `react`, `react/jsx-runtime`, `react-dom` path entries; keep `@/*`. `jsx: react-jsx` + `jsxImportSource: @takazudo/zfb/zudo-react` should come from the 6.x base; add them locally if it does not.
 - **Env/CI vars**: none to remove (`ZFB_TAILWIND*` absent).

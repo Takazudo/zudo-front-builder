@@ -1,6 +1,6 @@
 # zfb v3 migration guide: Takazudo/claude-settings
 
-Generated 2026-10-04 by an automated diagnosis of `main` @ `939a657`. Counts come from the commands listed; re-run them locally before relying on them.
+Generated 2026-10-04 by an automated diagnosis of `main` @ `939a657`, made against the zfb 3.1.0 CLI and docs (no `zfb wind audit` could run here: the repo has no zfb project dir). zfb 3.2.0 shipped on 2026-10-04 15:30 UTC while this guide was being written; the pins and version labels below were updated to it (https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/). Counts come from the commands listed; re-run them locally before relying on them.
 
 This repo is the **source of truth** for the `dev-basic-cloudflare-webapp` skill. Two other repos carry copies of the same skill and are covered by sibling guides: `Takazudo/claude-resources` (public mirror, byte-identical, refreshed by `/claude-resources-share`) and `Takazudo/cloudflare-app-bootstrap-skill` (standalone Japanese translation, hand-ported). Fix it here first, then propagate.
 
@@ -185,7 +185,7 @@ Prose only — the template ships no components.
 - Tailwind map: https://zfb.takazudomodular.com/docs/zudo-wind/coming-from-tailwind/ · config: https://zfb.takazudomodular.com/docs/zudo-wind/configuration/ · tokens: https://zfb.takazudomodular.com/docs/zudo-wind/tokens/ · diagnostics: https://zfb.takazudomodular.com/docs/zudo-wind/diagnostics-and-tools/
 - Preact hooks map: https://zfb.takazudomodular.com/docs/zudo-react/coming-from-preact-hooks/ · testing: https://zfb.takazudomodular.com/docs/zudo-react/testing/ · islands / widget embedding: https://zfb.takazudomodular.com/docs/concepts/islands/#embedding-a-third-party-widget
 - CLI: https://zfb.takazudomodular.com/docs/api/cli/ (#zfb-new, #zfb-check, #zfb-wind) · config: https://zfb.takazudomodular.com/docs/api/define-config/ · styling: https://zfb.takazudomodular.com/docs/concepts/styling/ · md-wasm: https://zfb.takazudomodular.com/docs/api/md-wasm/
-- Cloudflare adapter: https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/ · changelogs: https://zfb.takazudomodular.com/docs/changelog/zfb/v3.0.0/, https://zfb.takazudomodular.com/docs/changelog/zfb/v3.1.0/, https://zfb.takazudomodular.com/docs/changelog/zfb-adapter-cloudflare/v3.0.0/
+- Cloudflare adapter: https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/ · changelogs: https://zfb.takazudomodular.com/docs/changelog/zfb/v3.0.0/, https://zfb.takazudomodular.com/docs/changelog/zfb/v3.1.0/, https://zfb.takazudomodular.com/changelog/zfb/v3.2.0/ (released 2026-10-04), https://zfb.takazudomodular.com/docs/changelog/zfb-adapter-cloudflare/v3.0.0/
 - v3 scaffold: `crates/zfb/templates/basic-blog` in Takazudo/zudo-front-builder; `pnpm create zfb@latest` (https://zfb.takazudomodular.com/docs/getting-started/your-first-site/); live output https://create-zfb.takazudomodular.com
 - zudo-doc 6.0.0: zudolab/zudo-doc#4430 (epic), #4477 (root PR), #4473 (consumer migration guide); zdtp: Takazudo/zudo-design-token-panel#1002
 - Sibling guides: `Takazudo--claude-resources.md`, `Takazudo--cloudflare-app-bootstrap-skill.md` (same template, propagation only)
