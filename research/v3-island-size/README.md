@@ -82,4 +82,6 @@ The TypeScript 6.0.3 checkpoint (#3556) changes `pnpm-lock.yaml` again: the work
 
 The Vitest 4.1.11 checkpoint (#3557) changes `pnpm-lock.yaml` again: the workspace test runner moves from Vitest 2.1.9 on Vite 5.4.21 to Vitest 4.1.11 on Vite 8.3.2. Both contracts record the new lockfile SHA-256. The test runner is a development dependency of the workspace and no package or Hono byte the guard measures changes, so the size totals are unchanged.
 
+The Vite+ 1.0.0 migration (#3557) changes `pnpm-lock.yaml` once more: `vite-plus` replaces the direct `vitest` dependency, bundles Vitest 5.0.1, and a workspace override points `vite` at its core alias. Both contracts record the new lockfile SHA-256. Only contributor test tooling moves, so the size totals are unchanged.
+
 The guard records and validates `process.platform` and `process.arch` along with Node, zlib, esbuild, Hono, package, fixture, runner, and lockfile provenance. It supports only Darwin arm64 and Linux x64. The CI health job runs the strict gate on Linux x64 after the pinned Node 24.14.0 setup and both complete real matrices. Linux evidence covers the pinned hosted-runner lane; it does not establish parity for other Linux architectures or different toolchains. Modeled sidecar output remains diagnostic and is not part of CI enforcement.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
 
 import { createPageRouter, type PageModule } from "../router.js";

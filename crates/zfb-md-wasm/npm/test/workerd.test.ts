@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 

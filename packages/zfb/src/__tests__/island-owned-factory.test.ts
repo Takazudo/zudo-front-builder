@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { Window } from "happy-dom";
 import { jsx } from "../zudo-react/jsx-runtime.js";
 import { isDescription } from "../zudo-react/index.js";

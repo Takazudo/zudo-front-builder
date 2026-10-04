@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { batch, computed, h, signal, type ReadonlySignal } from "../../zudo-react/index.js";
 import { subscribe, subscriberCount } from "../../zudo-react/reactive.js";

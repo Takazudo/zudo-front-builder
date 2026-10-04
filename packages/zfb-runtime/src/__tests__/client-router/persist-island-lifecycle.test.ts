@@ -14,7 +14,7 @@
 // contract the pre-#1389 code silently violated (it unmounted every island,
 // emptied the container, then re-hydrated against nothing).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 // @takazudo/zfb is a workspace dependency of @takazudo/zfb-runtime; the runtime
 // island map (mounted/pending/capturedManifest) is a module-level singleton

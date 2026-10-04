@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Island } from "../../island.js";
 import { h, signal } from "../../zudo-react/index.js";
 import { createIslandTest, withIslandTestContext } from "../../zudo-react/testing.js";

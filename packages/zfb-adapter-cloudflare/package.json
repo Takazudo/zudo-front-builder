@@ -72,9 +72,9 @@
   "scripts": {
     "build": "tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs && cp src/emit-worker.mjs dist/emit-worker.mjs",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "pnpm typecheck:consumer && vitest run && pnpm test:packed-types",
+    "test": "pnpm typecheck:consumer && vp test run && pnpm test:packed-types",
     "test:packed-types": "pnpm build && node scripts/check-packed-types.mjs",
-    "test:watch": "vitest",
+    "test:watch": "vp test",
     "typecheck": "tsc --noEmit && pnpm typecheck:consumer",
     "typecheck:consumer": "tsc --project tsconfig.consumer.json --noEmit"
   },
@@ -82,6 +82,6 @@
     "@types/node": "^22.0.0",
     "typescript": "6.0.3",
     "typescript-5.9": "npm:typescript@5.9.3",
-    "vitest": "4.1.11"
+    "vite-plus": "catalog:"
   }
 }

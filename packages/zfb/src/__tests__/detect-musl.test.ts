@@ -5,7 +5,7 @@
 // (readdirSyncFn / getReportFn / platform) so these tests never touch the
 // real filesystem or process.report, and importing this module has no
 // exec/spawn side effects (unlike importing bin/zfb.mjs directly).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { detectMuslLinux } from "../../bin/detect-musl.mjs";
 

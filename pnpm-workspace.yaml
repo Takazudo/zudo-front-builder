@@ -43,6 +43,10 @@ overrides:
   # the time — and decayed when next.51 published the patched range hours
   # later. Keep it in sync with reality per SECURITY-DEPS.md.)
   hono: ">=4.12.25"
+  # Vite+ (#3557): every `vite` in the graph resolves to the Vite+ core alias
+  # from the catalog below, so the bundled Vitest and any Vite consumer share
+  # one copy. Written by `vp migrate`; the `@*` key form is its pnpm rule.
+  vite@*: "catalog:"
 
 # pnpm 11 replaces the legacy `onlyBuiltDependencies` list with `allowBuilds`,
 # a per-package true/false map. Each entry is a deliberate decision to allow
@@ -54,3 +58,18 @@ allowBuilds:
   lefthook: true
   sharp: true
   workerd: true
+
+# Contributor tooling only (#3557): `vite-plus` owns `vp test` and bundles
+# Vitest 5.0.1. Both entries move together; `vp migrate` pins them to one
+# Vite+ release.
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
+  vite-plus: 1.0.0
+
+# The core alias reports version 1.0.0, outside the `vite` peer ranges that
+# Vite-ecosystem packages declare; `vp migrate` accepts any `vite` peer for it.
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: "*"

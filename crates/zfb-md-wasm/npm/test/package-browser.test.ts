@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { resolvePackageTsc } from "../../../../scripts/package-tsc.mjs";
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";

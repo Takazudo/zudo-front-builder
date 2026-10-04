@@ -36,13 +36,13 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vp test run",
+    "test:watch": "vp test"
   },
   "dependencies": {
     "@takazudo/zfb": "workspace:3.1.0"
   },
   "devDependencies": {
-    "vitest": "4.1.11"
+    "vite-plus": "catalog:"
   }
 }

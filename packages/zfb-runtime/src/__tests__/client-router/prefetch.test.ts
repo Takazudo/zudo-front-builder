@@ -21,7 +21,7 @@
 //   12. ClientRouter without prefetchAll does NOT call prefetchInit
 //   13. link method: <link rel=prefetch> used when supported
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 
 installHappyDomShim();

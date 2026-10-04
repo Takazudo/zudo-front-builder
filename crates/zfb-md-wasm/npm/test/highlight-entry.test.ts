@@ -4,7 +4,7 @@
 // round-trips end to end against its OWN wasm-highlight artifact (not the
 // default one -- see highlight-parity.test.ts for the byte-for-byte parity
 // gate between the two), and that it exposes no `compile`/`renderHtml`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import * as highlightEntry from "../dist/highlight.js";
 import {

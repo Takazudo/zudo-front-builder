@@ -1,4 +1,4 @@
-import { defaultExclude, defineConfig } from "vitest/config";
+import { defaultExclude, defineConfig } from "vite-plus";
 
 // Root-level config for tests over root-level scripts/** (e.g.
 // scripts/showcase-inject-banner.mjs, issue #2282). Every other package in
@@ -30,16 +30,36 @@ const SUBPROCESS_SUITES = [
   "scripts/__tests__/supervisor-watch.test.mjs",
 ];
 
-// The projects are inline and do not inherit this root config, so each owns
-// its include/exclude outright: nothing is merged or concatenated into them,
-// and `scripts` excludes exactly the list `scripts-subprocess` includes.
-// defaultExclude must be re-stated because vitest drops its defaults once the
-// key is present at all.
+// The projects are inline and (`extends: false`) do not inherit this root
+// config, so each owns its include/exclude outright: nothing is merged or
+// concatenated into them, and `scripts` excludes exactly the list
+// `scripts-subprocess` includes. defaultExclude must be re-stated because
+// vitest drops its defaults once the key is present at all.
 export default defineConfig({
   test: {
+    // Vitest v4 compatibility: preserve mock call history.
+    // Remove after tests no longer rely on calls from setup or earlier tests.
+    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+    // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
+    clearMocks: false,
+    // Vitest v4 compatibility: keep separate Vite servers for inline projects.
+    // Remove when plugins and config hooks can run once for shared projects.
+    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+    // https://vitest.dev/guide/migration/#inline-projects-share-the-vite-server-by-default
+    sharedViteServer: false,
     projects: [
       {
+        // Vitest v4 compatibility: keep this inline project independent of the root config.
+        // Remove to inherit root options, including plugins and setup files.
+        // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+        // https://vitest.dev/guide/migration/#inline-projects-inherit-the-root-config-by-default
+        extends: false,
         test: {
+          // Vitest v4 compatibility: preserve mock call history.
+          // Remove after tests no longer rely on calls from setup or earlier tests.
+          // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+          // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
+          clearMocks: false,
           name: "scripts",
           environment: "node",
           include: ["scripts/**/__tests__/**/*.test.mjs"],
@@ -47,7 +67,17 @@ export default defineConfig({
         },
       },
       {
+        // Vitest v4 compatibility: keep this inline project independent of the root config.
+        // Remove to inherit root options, including plugins and setup files.
+        // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+        // https://vitest.dev/guide/migration/#inline-projects-inherit-the-root-config-by-default
+        extends: false,
         test: {
+          // Vitest v4 compatibility: preserve mock call history.
+          // Remove after tests no longer rely on calls from setup or earlier tests.
+          // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+          // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
+          clearMocks: false,
           name: "scripts-subprocess",
           environment: "node",
           include: SUBPROCESS_SUITES,

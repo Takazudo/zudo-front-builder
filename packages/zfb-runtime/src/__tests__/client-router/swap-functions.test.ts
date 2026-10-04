@@ -10,7 +10,7 @@
 // because that's the contract `router.ts` depends on; covering each independently
 // keeps a regression localised when one part shifts.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { drainHappyDom, htmlDoc, installHappyDomShim, resetDocument } from "./_helpers.js";
 
