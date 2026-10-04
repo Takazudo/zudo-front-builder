@@ -309,6 +309,40 @@ A complete audit exits with status 0 by default, including when it reports error
 
 These commands inspect the configured project; they do not execute application code to discover class candidates, apart from plugin `setup` under `--plan build`. See [Diagnostics and tools](../zudo-wind/diagnostics-and-tools.mdx) for outcome and origin details.
 
+### `zfb wind manifest`
+
+Generate the candidate manifest a package publishes for its consumers, using the same source plan, extractor, and compiler as `zfb css`:
+
+```sh
+zfb wind manifest --producer <id> --output <file>
+                  [--source <glob> ...] [--no-auto-source]
+                  [--project-root <dir>] [--config <file>] [--json]
+```
+
+`--producer` is the manifest's producer id (`[A-Za-z0-9][A-Za-z0-9._/-]*`); consumers declare the file under this key in `wind.manifests`. `--output` resolves from the current working directory. `--source`, `--no-auto-source`, `--project-root`, and `--config` work as they do for `zfb css`; see [Explicit config files](#explicit-config-files).
+
+Every candidate occurrence in the scanned sources is classified in one compile:
+
+- **Resolved utilities and `group`/`peer` markers** form the manifest, sorted by byte order and deduplicated.
+- **`authoredClasses` matches and ordinary words** are left out and counted in the report.
+- **Low-confidence words** at string-literal positions that do not resolve are left out and counted.
+- **Errors**, such as an unknown token at a class position, fail the command. Nothing is written and an existing `--output` file keeps its contents, so a manifest can never silently omit a style the package needs.
+
+Configured `wind.manifests` entries, including one that names this command's own output, are neither read nor copied, and neither are `wind.safelist` entries or highlight role classes. Only candidates from the scanned sources reach the manifest. The `--output` path is excluded from the source plan. A successful run atomically writes the existing manifest schema, and the same sources and config produce the same bytes:
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "ui",
+  "candidates": ["bg-surface", "group", "p-hsp-sm"]
+}
+```
+
+The text report goes to stdout: the plan, the candidate and marker counts, the excluded counts, and each error or warning with its source location. `--json` prints `{ "schemaVersion": 1, "command": "manifest", "producer", "output", "written", "coverage", "planDiagnostics", "classification" }` instead. `classification` lists the candidates, markers, excluded authored classes and ordinary words with their origins, and every diagnostic. The exit status is nonzero when the manifest was not written.
+
+**A manifest records the token contract it was validated against.** Classification uses the tokens, breakpoints, and dark mode of the selected config. A consumer must configure every token and breakpoint those candidates use (for example `surface` in `colors` for `bg-surface`), because the consumer validates each manifest entry strictly under its own config. A manifest that passes under the package's config is not guaranteed to resolve under a consumer config that lacks those tokens. Document the required tokens alongside the package, or ship them as a preset.
+
 ## `zfb preview`
 
 Serve a previously built site locally. Run `zfb build` first.

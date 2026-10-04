@@ -3,13 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use serde::Serialize;
 
 use crate::cli::{
     WindArgs, WindAuditArgs, WindAuditFailOn, WindAuditPlan, WindAuditSeverity, WindCommand,
-    WindExplainArgs,
+    WindExplainArgs, WindManifestArgs,
 };
 use crate::commands::css_support::{
     build_standalone_wind_source_plan, command_project_root, configured_wind,
@@ -21,6 +21,7 @@ pub async fn run(args: &WindArgs) -> Result<()> {
     match &args.command {
         WindCommand::Explain(args) => explain(args).await,
         WindCommand::Audit(args) => audit(args).await,
+        WindCommand::Manifest(args) => manifest(args).await,
     }
 }
 
@@ -126,6 +127,187 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
     print_audit_and_apply_exit_policy(&report, Some(&coverage), output, fail_on)
+}
+
+/// Classify a package's source candidates against the selected config and
+/// atomically write the resolved utilities and markers as a manifest that
+/// consumers declare under `wind.manifests`.
+async fn manifest(args: &WindManifestArgs) -> Result<()> {
+    if !crate::config::is_wind_owner_id(&args.producer) {
+        bail!(
+            "invalid --producer {:?}: a producer id must match [A-Za-z0-9][A-Za-z0-9._/-]*",
+            args.producer
+        );
+    }
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let output = zfb_types::normalize_path_lexical(&cwd.join(&args.output));
+    let mut config = load_command_config(&cwd, &project_root, args.config.as_deref())
+        .await
+        .context("failed to load project configuration for wind manifest")?;
+    let (generation_enabled, wind_config) = configured_wind(&config);
+    if !generation_enabled {
+        bail!("wind is disabled (`wind: false`); a candidate manifest needs an enabled wind configuration");
+    }
+    // Configured manifests belong to other producers, and a previous run's
+    // output must never feed the next one.
+    if let Some(crate::config::WindSetting::Enabled(wind)) = &mut config.wind {
+        wind.manifests.clear();
+    }
+    let explicit_sources =
+        crate::commands::css::resolve_explicit_sources(&project_root, &args.source);
+    let source_errors = crate::commands::css::explicit_source_errors(&explicit_sources);
+    if !source_errors.is_empty() {
+        bail!(
+            "wind manifest validation failed:\n- {}",
+            source_errors.join("\n- ")
+        );
+    }
+    let (plan, warnings) = build_standalone_wind_source_plan(
+        &project_root,
+        &output,
+        &config,
+        !args.no_auto_source,
+        &explicit_sources,
+    )?;
+    for warning in warnings {
+        crate::output::warn(warning);
+    }
+    let coverage = plan_coverage(WindAuditPlan::Standalone, &plan, &[], &project_root);
+    let indexed = index_standalone_wind_sources(&plan)?;
+    let occurrences: Vec<_> = indexed
+        .origins
+        .into_iter()
+        .filter(|candidate| matches!(candidate.origin, zfb_css::Origin::Source { .. }))
+        .collect();
+    let classification = zfb_css::classify_manifest_candidates(&occurrences, &wind_config);
+    let plan_errors = indexed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == zfb_css::CssDiagnosticSeverity::Error)
+        .count();
+    let errors = classification.error_count() + plan_errors;
+
+    if errors == 0 {
+        let document = serde_json::json!({
+            "schemaVersion": MANIFEST_SCHEMA_VERSION,
+            "specVersion": zfb_css::SPEC_VERSION,
+            "producer": args.producer,
+            "candidates": classification.candidates,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&document)?;
+        bytes.push(b'\n');
+        zfb_build::atomic::atomic_write(&output, &bytes)
+            .with_context(|| format!("failed to write wind manifest {}", output.display()))?;
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": WIND_JSON_SCHEMA_VERSION,
+                "command": "manifest",
+                "producer": args.producer,
+                "output": output.display().to_string(),
+                "written": errors == 0,
+                "coverage": coverage,
+                "planDiagnostics": indexed
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| serde_json::json!({
+                        "severity": match diagnostic.severity {
+                            zfb_css::CssDiagnosticSeverity::Error => "error",
+                            zfb_css::CssDiagnosticSeverity::Warning => "warning",
+                        },
+                        "code": diagnostic.code,
+                        "message": diagnostic.message,
+                    }))
+                    .collect::<Vec<_>>(),
+                "classification": classification,
+            }))?
+        );
+    } else {
+        print!("{}", render_plan_coverage("manifest", &coverage));
+        print!(
+            "{}",
+            render_manifest_report(&args.producer, &output, &classification, errors == 0)
+        );
+        for diagnostic in &indexed.diagnostics {
+            println!("  {}", diagnostic.render());
+        }
+    }
+    if errors > 0 {
+        bail!(
+            "wind manifest {} found {errors} error(s); {} was not written",
+            args.producer,
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+/// Version of the candidate manifest schema the consumer-side reader accepts.
+const MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+fn render_manifest_report(
+    producer: &str,
+    output: &Path,
+    classification: &zfb_css::ManifestClassification,
+    written: bool,
+) -> String {
+    let mut out = format!(
+        "wind manifest {producer}: {} candidates ({} markers) {}\n",
+        classification.candidates.len(),
+        classification.markers.len(),
+        if written {
+            format!("written to {}", output.display())
+        } else {
+            format!(
+                "not written; {} keeps its previous contents",
+                output.display()
+            )
+        }
+    );
+    let low_confidence = classification
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "auditInfo")
+        .count();
+    out.push_str(&format!(
+        "  excluded {} authored classes, {} ordinary words, {} low-confidence words\n",
+        classification.authored_classes.len(),
+        classification.ordinary_classes.len(),
+        low_confidence
+    ));
+    for diagnostic in &classification.diagnostics {
+        if diagnostic.severity == "auditInfo" {
+            continue;
+        }
+        let location = diagnostic
+            .origin
+            .as_ref()
+            .map(origin_view_location)
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  {} {location}: {} {}: {}\n",
+            diagnostic.severity,
+            diagnostic.code,
+            diagnostic.candidate.as_deref().unwrap_or_default(),
+            diagnostic.message
+        ));
+    }
+    out
+}
+
+fn origin_view_location(origin: &zfb_css::OriginView) -> String {
+    match (&origin.source_id, origin.line, origin.byte_column) {
+        (Some(source), Some(line), Some(column)) => format!("{source}:{line}:{column}"),
+        _ => origin
+            .key_path
+            .clone()
+            .unwrap_or_else(|| origin.kind.clone()),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -303,8 +485,8 @@ fn plan_coverage(
 }
 
 /// A human summary of what the audit covers, printed before the report.
-fn render_plan_coverage(coverage: &PlanCoverage) -> String {
-    let mut out = format!("wind audit plan: {}\n", coverage.mode);
+fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
+    let mut out = format!("wind {command} plan: {}\n", coverage.mode);
     for root in &coverage.roots {
         let kind = match root.kind {
             "packageRoot" => "package root",
@@ -365,7 +547,7 @@ fn print_audit_and_apply_exit_policy(
         );
     } else {
         if let Some(coverage) = coverage {
-            print!("{}", render_plan_coverage(coverage));
+            print!("{}", render_plan_coverage("audit", coverage));
         }
         print!("{}", zfb_css::render_audit(&shown));
     }
@@ -881,7 +1063,7 @@ mod tests {
                 "origin": "project"
             })
         );
-        let coverage = render_plan_coverage(&structured);
+        let coverage = render_plan_coverage("audit", &structured);
         assert_eq!(
             coverage,
             "wind audit plan: build\n\
@@ -892,12 +1074,15 @@ mod tests {
              \x20 excluded dist (output or scratch)\n\
              \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n"
         );
-        assert!(render_plan_coverage(&plan_coverage(
-            WindAuditPlan::Standalone,
-            &zfb_css::SourcePlan::default(),
-            &[],
-            project
-        ))
+        assert!(render_plan_coverage(
+            "audit",
+            &plan_coverage(
+                WindAuditPlan::Standalone,
+                &zfb_css::SourcePlan::default(),
+                &[],
+                project
+            )
+        )
         .starts_with("wind audit plan: standalone\n"));
 
         let mut sources = Vec::new();

@@ -80,6 +80,8 @@ pub enum WindCommand {
     Explain(WindExplainArgs),
     /// Audit candidate sources and utility conflicts.
     Audit(WindAuditArgs),
+    /// Generate a package candidate manifest from its sources.
+    Manifest(WindManifestArgs),
 }
 
 /// Arguments for `zfb wind explain`.
@@ -107,6 +109,41 @@ pub struct WindExplainArgs {
     /// root. Its directory anchors config-relative references.
     #[arg(long)]
     pub config: Option<PathBuf>,
+}
+
+/// Arguments for `zfb wind manifest`.
+#[derive(Debug, Args)]
+pub struct WindManifestArgs {
+    /// Producer id written into the manifest; consumers declare the file
+    /// under this key in `wind.manifests`.
+    #[arg(long)]
+    pub producer: String,
+
+    /// Manifest file to write. Relative paths are resolved from the current directory.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
+    #[arg(long)]
+    pub source: Vec<String>,
+
+    /// Omit the five default content roots; explicit --source values remain active.
+    #[arg(long)]
+    pub no_auto_source: bool,
+
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Print a versioned JSON report instead of text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `zfb wind audit`.
@@ -1418,6 +1455,47 @@ mod tests {
             other => panic!("expected wind command, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["zfb", "wind", "audit", "--severity", "info"]).is_err());
+    }
+
+    #[test]
+    fn wind_manifest_parses_repeatable_sources_and_requires_producer_and_output() {
+        match Cli::try_parse_from([
+            "zfb",
+            "wind",
+            "manifest",
+            "--producer",
+            "ui",
+            "--output",
+            "dist/wind.json",
+            "--source",
+            "src/**/*.tsx",
+            "--source",
+            "lib",
+            "--no-auto-source",
+            "--config",
+            "../site/zfb.config.ts",
+            "--json",
+        ])
+        .expect("wind manifest parses")
+        .command
+        {
+            Command::Wind(args) => match args.command {
+                WindCommand::Manifest(manifest) => {
+                    assert_eq!(manifest.producer, "ui");
+                    assert_eq!(manifest.output, PathBuf::from("dist/wind.json"));
+                    assert_eq!(manifest.source, ["src/**/*.tsx", "lib"]);
+                    assert!(manifest.no_auto_source && manifest.json);
+                    assert_eq!(
+                        manifest.config,
+                        Some(PathBuf::from("../site/zfb.config.ts"))
+                    );
+                }
+                other => panic!("expected wind manifest, got {other:?}"),
+            },
+            other => panic!("expected wind command, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["zfb", "wind", "manifest", "--output", "w.json"]).is_err());
+        assert!(Cli::try_parse_from(["zfb", "wind", "manifest", "--producer", "ui"]).is_err());
     }
 
     #[test]

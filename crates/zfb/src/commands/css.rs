@@ -95,19 +95,7 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
 
     let (engine, source_plan) = if generation_enabled {
         let explicit_sources = resolve_explicit_sources(&project_root, &args.source);
-        for (authored, absolute) in &explicit_sources {
-            match source_glob_matches_file(absolute) {
-                Ok(true) => {}
-                Ok(false) => validation_errors.push(format!(
-                    "--source glob {authored:?} matched zero files (resolved as {})",
-                    absolute.display()
-                )),
-                Err(error) => validation_errors.push(format!(
-                    "invalid --source glob {authored:?} (resolved as {}): {error:#}",
-                    absolute.display()
-                )),
-            }
-        }
+        validation_errors.extend(explicit_source_errors(&explicit_sources));
         bail_collected(validation_errors)?;
         let authored = authored_css_bundle(&input, &project_root)?;
         let (plan, warnings) = build_standalone_wind_source_plan(
@@ -249,7 +237,10 @@ fn absolute_path(base: &Path, path: &Path) -> PathBuf {
     normalized
 }
 
-fn resolve_explicit_sources(project_root: &Path, sources: &[String]) -> Vec<(String, PathBuf)> {
+pub(crate) fn resolve_explicit_sources(
+    project_root: &Path,
+    sources: &[String],
+) -> Vec<(String, PathBuf)> {
     let mut seen = HashSet::new();
     sources
         .iter()
@@ -261,6 +252,25 @@ fn resolve_explicit_sources(project_root: &Path, sources: &[String]) -> Vec<(Str
             )
         })
         .collect()
+}
+
+/// One message per explicit `--source` that is invalid or matches no file.
+pub(crate) fn explicit_source_errors(explicit_sources: &[(String, PathBuf)]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (authored, absolute) in explicit_sources {
+        match source_glob_matches_file(absolute) {
+            Ok(true) => {}
+            Ok(false) => errors.push(format!(
+                "--source glob {authored:?} matched zero files (resolved as {})",
+                absolute.display()
+            )),
+            Err(error) => errors.push(format!(
+                "invalid --source glob {authored:?} (resolved as {}): {error:#}",
+                absolute.display()
+            )),
+        }
+    }
+    errors
 }
 
 fn contains_glob_meta(component: &std::ffi::OsStr) -> bool {

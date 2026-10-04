@@ -3161,7 +3161,7 @@ fn is_wind_name(name: &str) -> bool {
 
 /// W27 owner and producer ids are ASCII identifiers with slash-separated
 /// package path characters allowed by the contract.
-fn is_wind_owner_id(id: &str) -> bool {
+pub(crate) fn is_wind_owner_id(id: &str) -> bool {
     let mut bytes = id.bytes();
     bytes
         .next()

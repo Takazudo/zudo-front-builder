@@ -302,6 +302,40 @@ zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warnin
 
 これらのコマンドは設定済みのプロジェクトを調べます。クラス候補の探索のためにアプリケーションコードは実行しません（`--plan build` でのプラグインの `setup` を除きます）。結果と由来については [診断とツール](../zudo-wind/diagnostics-and-tools.mdx) を参照してください。
 
+### `zfb wind manifest`
+
+パッケージが利用側に公開する候補マニフェストを、`zfb css` と同じソースプラン、抽出器、コンパイラで生成します。
+
+```sh
+zfb wind manifest --producer <id> --output <file>
+                  [--source <glob> ...] [--no-auto-source]
+                  [--project-root <dir>] [--config <file>] [--json]
+```
+
+`--producer` はマニフェストの producer ID（`[A-Za-z0-9][A-Za-z0-9._/-]*`）で、利用側はこのキーで `wind.manifests` にファイルを宣言します。`--output` は現在の作業ディレクトリを基準に解決されます。`--source`、`--no-auto-source`、`--project-root`、`--config` は `zfb css` と同じように動作します。[明示的な config ファイル](#明示的な-config-ファイル) を参照してください。
+
+走査したソース内の候補の出現はすべて、1 回のコンパイルで分類されます。
+
+- **解決されたユーティリティと `group`/`peer` マーカー**がマニフェストになります。バイト順に並べ、重複は除きます。
+- **`authoredClasses` に一致するクラスと通常の単語**は含めず、レポートで件数を示します。
+- 文字列リテラルの位置にあり解決できない**低信頼の単語**も含めず、件数を示します。
+- クラスの位置にある未知のトークンなどの**エラー**があるとコマンドは失敗します。何も書き込まず、既存の `--output` ファイルは内容を保つため、パッケージに必要なスタイルが黙ってマニフェストから抜け落ちることはありません。
+
+設定済みの `wind.manifests` の項目は、このコマンド自身の出力を指すものも含めて、読み込みもコピーもしません。`wind.safelist` の項目やハイライトのロールクラスも同様です。マニフェストに入るのは走査したソースの候補だけです。`--output` のパスはソースプランから除外されます。成功すると既存のマニフェストスキーマをアトミックに書き込み、ソースと config が同じなら同じバイト列になります。
+
+```json
+{
+  "schemaVersion": 1,
+  "specVersion": 1,
+  "producer": "ui",
+  "candidates": ["bg-surface", "group", "p-hsp-sm"]
+}
+```
+
+テキストのレポートは標準出力に出ます。内容はプラン、候補とマーカーの件数、除外した件数、各エラーと警告とそのソース位置です。`--json` を付けると代わりに `{ "schemaVersion": 1, "command": "manifest", "producer", "output", "written", "coverage", "planDiagnostics", "classification" }` を出力します。`classification` には候補、マーカー、除外した authored クラスと通常の単語とその由来、すべての診断が入ります。マニフェストを書き込まなかった場合は非ゼロで終了します。
+
+**マニフェストは、検証に使ったトークンの契約を前提にしています。** 分類には選択した config のトークン、ブレークポイント、ダークモードを使います。利用側は各マニフェスト項目を自身の config で厳密に検証するため、それらの候補が使うトークンとブレークポイントをすべて設定する必要があります（たとえば `bg-surface` には `colors` の `surface`）。パッケージの config で通るマニフェストでも、そのトークンを持たない利用側の config で解決できるとは限りません。必要なトークンはパッケージと一緒に文書化するか、プリセットとして配布してください。
+
 ## `zfb preview`
 
 ビルド済みのサイトをローカルで配信します。先に `zfb build` を実行してください。

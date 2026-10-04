@@ -115,7 +115,7 @@ Remove `ZFB_TAILWIND_BIN` and `ZFB_TAILWIND_OXIDE_WARMUP` from scripts and CI. T
 
 ## Packages that ship classes or components
 
-A package that previously relied on a shipped safelist should publish complete candidates in a versioned JSON manifest. The consumer declares the file under its producer key; distinct producers survive preset and app merging. Every manifest entry is validated strictly, and the consumer must configure its tokens. A manifest does not define tokens or discover itself automatically.
+A package that previously relied on a shipped safelist should publish complete candidates in a versioned JSON manifest. The consumer declares the file under its producer key; distinct producers survive preset and app merging. Every manifest entry is validated strictly, and the consumer must configure its tokens. A manifest does not define tokens or discover itself automatically. Generate it with `zfb wind manifest --producer <id> --output <file> --config <consumer config>` instead of maintaining it by hand; see [`zfb wind manifest`](../api/cli.mdx#zfb-wind-manifest).
 
 ```json
 {

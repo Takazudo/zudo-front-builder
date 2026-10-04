@@ -1678,3 +1678,186 @@ fn wind_explain_and_audit_load_an_explicit_config_file() {
     let manifests = document["coverage"]["manifests"].to_string();
     assert!(manifests.contains("widgets"), "{manifests}");
 }
+
+fn run_wind_manifest(package: &Path, flags: &[&str]) -> Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "manifest"])
+        .args(flags)
+        .current_dir(package)
+        .output()
+        .expect("spawn `zfb wind manifest`")
+}
+
+const MANIFEST_FLAGS: &[&str] = &[
+    "--producer",
+    "ui",
+    "--output",
+    "dist/wind.json",
+    "--config",
+    "../shared/zfb.config.json",
+    "--project-root",
+    ".",
+    "--no-auto-source",
+    "--source",
+    "src/**/*.tsx",
+];
+
+#[test]
+fn wind_manifest_is_deterministic_and_keeps_only_resolved_candidates() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let shared = temp.path().join("shared");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"authoredClasses":{"widget":true},"safelist":{"app":["m-hsp-sm"]},"manifests":{"widgets":{"path":"./widgets.json"}}}}"##,
+    )
+    .expect("write shared config");
+    fs::write(
+        package.join("src/a.tsx"),
+        concat!(
+            "const tone = \"bg-missing\";\n",
+            "export const A = () => <div class=\"widget group p-hsp-sm bg-surface hello flex flex\" />;\n",
+        ),
+    )
+    .expect("write package source");
+
+    let first = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(first.status.success(), "{}", combined_output(&first));
+    let bytes = fs::read(package.join("dist/wind.json")).expect("read manifest");
+    let second = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(second.status.success(), "{}", combined_output(&second));
+    assert_eq!(
+        fs::read(package.join("dist/wind.json")).expect("reread manifest"),
+        bytes,
+        "repeated runs must write identical bytes"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        document,
+        serde_json::json!({
+            "schemaVersion": 1,
+            "specVersion": 1,
+            "producer": "ui",
+            "candidates": ["bg-surface", "flex", "group", "p-hsp-sm"],
+        })
+    );
+    let report = process_stdout(&first);
+    assert!(
+        report.contains("wind manifest plan: standalone"),
+        "{report}"
+    );
+    assert!(
+        report.contains("wind manifest ui: 4 candidates (1 markers)"),
+        "{report}"
+    );
+    assert!(
+        report.contains("excluded 1 authored classes, 1 ordinary words, 1 low-confidence words"),
+        "{report}"
+    );
+
+    let json = run_wind_manifest(&package, &[MANIFEST_FLAGS, &["--json"]].concat());
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report["command"], "manifest");
+    assert_eq!(report["written"], true);
+    assert_eq!(
+        report["classification"]["ordinaryClasses"][0]["candidate"],
+        "hello"
+    );
+    assert_eq!(
+        report["classification"]["authoredClasses"][0]["candidate"],
+        "widget"
+    );
+    assert!(report["coverage"]["manifests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn wind_manifest_class_position_invalid_fails_and_preserves_previous_output() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let output = package.join("dist/wind.json");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::write(&output, "previous\n").unwrap();
+    fs::write(
+        package.join("src/a.tsx"),
+        "export const A = () => <div class=\"bg-surface bg-missing\" />;\n",
+    )
+    .expect("write package source");
+
+    let result = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert_failure(&result, "class-position invalid candidate");
+    let stdout = process_stdout(&result);
+    assert!(
+        stdout.lines().any(|line| line.contains("error ")
+            && line.contains("a.tsx:1:")
+            && line.contains("bg-missing")),
+        "{stdout}"
+    );
+    assert!(process_stderr(&result).contains("was not written"));
+    assert_eq!(fs::read_to_string(&output).unwrap(), "previous\n");
+
+    let empty = tempfile::tempdir().unwrap();
+    fs::write(
+        empty.path().join("zfb.config.json"),
+        r#"{"wind":{"spec":1}}"#,
+    )
+    .unwrap();
+    let config = empty.path().join("zfb.config.json");
+    let no_tokens = run_wind_manifest(
+        &package,
+        &[
+            "--producer",
+            "ui",
+            "--output",
+            "dist/wind.json",
+            "--config",
+            config.to_str().unwrap(),
+            "--project-root",
+            ".",
+            "--no-auto-source",
+            "--source",
+            "src/**/*.tsx",
+        ],
+    );
+    assert_failure(&no_tokens, "token utilities without tokens");
+    assert!(process_stdout(&no_tokens).contains("bg-surface"));
+    assert_eq!(fs::read_to_string(&output).unwrap(), "previous\n");
+}
+
+#[test]
+fn wind_manifest_rejects_invalid_producer_and_ignores_its_previous_output() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+    let mut flags = MANIFEST_FLAGS.to_vec();
+    flags[1] = "bad producer";
+    let invalid = run_wind_manifest(&package, &flags);
+    assert_failure(&invalid, "invalid producer id");
+    assert!(process_stderr(&invalid).contains("invalid --producer"));
+    assert!(!package.join("dist/wind.json").exists());
+
+    // The package declares its own previous output; a stale or invalid file
+    // there must neither fail the run nor feed it.
+    let shared = temp.path().join("shared");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"manifests":{"ui":{"path":"../pkg/dist/wind.json"}}}}"##,
+    )
+    .unwrap();
+    fs::create_dir_all(package.join("dist")).unwrap();
+    fs::write(
+        package.join("dist/wind.json"),
+        r#"{"schemaVersion":2,"candidates":["stale-entry"]}"#,
+    )
+    .unwrap();
+    let output = run_wind_manifest(&package, MANIFEST_FLAGS);
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(package.join("dist/wind.json")).unwrap()).unwrap();
+    assert_eq!(
+        document["candidates"],
+        serde_json::json!(["bg-surface", "p-hsp-sm"])
+    );
+}
