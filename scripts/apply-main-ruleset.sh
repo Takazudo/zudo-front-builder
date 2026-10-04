@@ -19,12 +19,17 @@ set -euo pipefail
 #   - pnpm audit (prod)                             (.github/workflows/pr-checks.yml)
 #   - Docs gate                                      (.github/workflows/docs-checks.yml)
 #
-# Build binary's two matrix legs both build on the ubuntu-22.04 runner (the
-# GLIBC 2.35 floor host, and the arm64 leg cross-compiles rather than using a
-# native arm64 runner — see node-free-smoke.yml comments), so the check name
-# is derived from matrix.platform.target rather than matrix.platform.runner —
-# otherwise both legs would render the identical check context "Build binary
-# (ubuntu-22.04)" and a ruleset couldn't require them independently.
+# Build binary's two matrix legs both run on the same runner label (each
+# cross-compiles inside a Cross.toml-pinned container that fixes the GLIBC
+# 2.34 floor — see node-free-smoke.yml comments), so the check name is derived
+# from matrix.platform.target rather than matrix.platform.runner — otherwise
+# both legs would render the identical check context "Build binary
+# (ubuntu-latest)" and a ruleset couldn't require them independently.
+#
+# "Smoke amd64 Amazon Linux 2023 (glibc 2.34 floor)" (#3623) is deliberately
+# NOT required: it is a floor probe on a third-party rolling image, and a
+# required check that can redden for a non-code reason would block unrelated
+# PRs. A red run still blocks its author under the red-check policy.
 #
 # Deliberately NOT required:
 #   - "Build docs site (docs-checks.yml)" is job-level path-gated behind

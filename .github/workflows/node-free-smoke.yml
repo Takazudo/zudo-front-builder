@@ -7,8 +7,13 @@
 # ── Job topology ──────────────────────────────────────────────────────────
 #
 # PR + main push (ZFB_SMOKE_MODE=local):
-#   build-binary (amd64 on ubuntu-22.04)
+#   build-binary (amd64 cross in an Amazon Linux 2023 container, mirrors release.yml)
 #     ├─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
+#     ├─► smoke-amd64-al2023 (ubuntu-latest) — issue #3623: the same run.sh
+#     │                                   inside amazonlinux:2023 (glibc 2.34),
+#     │                                   proving the GLIBC floor on the distro
+#     │                                   it exists for (AWS Amplify / CodeBuild,
+#     │                                   RHEL 9-class). NOT a required check.
 #     ├─► scaffold-e2e (ubuntu-latest)  — pre-publish npm-consumption E2E:
 #     │                                   pnpm/npm packs zfb, zfb-runtime,
 #     │                                   zfb-adapter-cloudflare, create-zfb,
@@ -63,7 +68,7 @@
 #                                         list) — deliberately excluded so a
 #                                         Playwright/Chromium regression here
 #                                         never blocks an unrelated PR.
-#   build-binary (arm64 cross on ubuntu-22.04, mirrors release.yml)
+#   build-binary (arm64 cross, mirrors release.yml)
 #     └─► smoke-arm64 (ubuntu-24.04-arm) — runs container in local mode
 #
 # Tag push — after release.yml has published GH Release assets
@@ -145,10 +150,9 @@ jobs:
   # ── Linux binary build (one job per platform) ──────────────────────────────
   build-binary:
     # Named after matrix.platform.target (not .runner) so each leg produces a
-    # unique GitHub check context — both legs run on the same runner
-    # (ubuntu-22.04, see comments below), so naming after .runner would make
-    # both legs report the identical check name and branch-protection
-    # rulesets couldn't require them independently.
+    # unique GitHub check context — both legs run on the same runner label, so
+    # naming after .runner would make both legs report the identical check
+    # name and branch-protection rulesets couldn't require them independently.
     name: Build binary (${{ matrix.platform.target }})
     # Only run on PR and main push triggers, not on workflow_run.
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
@@ -156,20 +160,24 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          # ubuntu-22.04 host ensures x86_64 binary links against GLIBC 2.35 — the project's floor.
-          - runner: ubuntu-22.04
+          # Both legs build inside cross containers pinned in Cross.toml, mirroring
+          # release.yml exactly, so the smoke binary's required GLIBC equals the
+          # released binary's (≤ 2.34, #3623). The host runner's glibc is irrelevant
+          # to the link step, so neither leg is tied to a specific ubuntu-* label.
+          #
+          # x86_64 links inside an Amazon Linux 2023 image (GLIBC 2.34) — the
+          # distro the floor exists for; smoke-amd64-al2023 below runs the result
+          # on that same distro.
+          - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: smoke-binary-amd64
-            use_cross: false
-          # arm64 uses cross on ubuntu-22.04 (mirroring release.yml) rather than native
-          # ubuntu-24.04-arm. Rationale: native arm ubuntu-24.04 produces a GLIBC 2.39 binary
-          # which cannot run inside the bookworm smoke container (GLIBC 2.36), causing the
-          # smoke to fail at zfb --version before any assertions. Cross on ubuntu-22.04 with
-          # the Cross.toml pin produces ≤ 2.35, matching the released binary.
-          - runner: ubuntu-22.04
+          # arm64 uses cross rather than native ubuntu-24.04-arm. Rationale: native
+          # arm ubuntu-24.04 produces a GLIBC 2.39 binary which cannot run inside the
+          # bookworm smoke container (GLIBC 2.36), causing the smoke to fail at
+          # zfb --version before any assertions. The Cross.toml pin measures 2.30.
+          - runner: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: smoke-binary-arm64
-            use_cross: true
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 30
     steps:
@@ -193,8 +201,8 @@ jobs:
 
       # Cache compiled Rust artifacts across the two build-binary matrix legs
       # (issue #1345 — this job rebuilt from scratch, ~6 min, on every PR).
-      # Prefix keyed per target: x86_64 (native) and aarch64 (cross, via a
-      # Docker-mounted target/ dir) run on the same ubuntu-22.04 runner label
+      # Prefix keyed per target: x86_64 and aarch64 (both cross, via a
+      # Docker-mounted target/ dir) run on the same runner label
       # but produce non-interchangeable target/ trees — sharing one key
       # between them risks the same "v8 static lib not found after partial
       # rebuild" class of breakage that motivated health.yml's v1 -> v2
@@ -214,20 +222,26 @@ jobs:
       # `build-no-v8` job is its own family ("v2-zfb-no-v8"); exam.yml's
       # `macos-exam` job is its own family ("v2-zfb-macos-exam", different
       # OS/arch); and this workflow's two matrix legs
-      # ("v2-zfb-smoke-x86_64-unknown-linux-gnu" /
-      # "v2-zfb-smoke-aarch64-unknown-linux-gnu") are each their own family.
+      # ("v3-zfb-smoke-x86_64-unknown-linux-gnu" /
+      # "v3-zfb-smoke-aarch64-unknown-linux-gnu") are each their own family.
       # Five moderately-sized target/ caches should stay well under budget; if
       # repo-wide cache pressure or eviction thrashing appears, this is the
       # first place to look.
+      #
+      # v2 -> v3 (#3623): the x86_64 leg moved from a native ubuntu-22.04 build
+      # into the Amazon Linux 2023 cross container. Cargo fingerprints do not
+      # cover the C compiler or libc headers, so a v2 tree's cached C objects
+      # (built against glibc 2.35 headers) would be relinked unchanged; a fresh
+      # family makes the first cross build start cold instead.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
-          prefix-key: "v2-zfb-smoke-${{ matrix.platform.target }}"
+          prefix-key: "v3-zfb-smoke-${{ matrix.platform.target }}"
 
       # Staged-binaries cache (issue 2385) — see health.yml's identically
       # named step for the full rationale. Keyed on matrix.platform.target
       # because the build script downloads binaries for the TARGET platform
-      # (the arm64 leg stages arm64 binaries into the same slot paths). The
-      # cross leg works host-side: cross mounts the workspace into its
+      # (the arm64 leg stages arm64 binaries into the same slot paths). Both
+      # cross legs work host-side: cross mounts the workspace into its
       # container, so a restored slot is visible to the build script and its
       # SHA check skips the download. The x86_64 leg's key matches health.yml
       # so those jobs share one cache entry.
@@ -244,24 +258,23 @@ jobs:
             crates/zfb/binaries/esbuild/esbuild
           key: zfb-staged-binaries-v1-${{ matrix.platform.target }}-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      # Install cross-rs for the arm64 cross-compile target (same as release.yml).
-      # cross wraps cargo build inside a Docker container providing the aarch64 sysroot;
-      # Cross.toml at repo root pins the image to a GLIBC 2.23 base (≤ 2.35 floor).
-      - name: Install cross (arm64 only)
-        if: ${{ matrix.platform.use_cross == true }}
+      # Install cross-rs for both legs (same as release.yml). cross wraps cargo
+      # build inside the Docker container Cross.toml pins per target: the aarch64
+      # image provides the cross sysroot, and the x86_64 image (Amazon Linux 2023,
+      # built on the fly from docker/x86_64-unknown-linux-gnu.Dockerfile) fixes
+      # the GLIBC ceiling at 2.34.
+      - name: Install cross
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
           tool: cross@0.2.5
 
-      - name: Build zfb binary (native)
-        if: ${{ matrix.platform.use_cross != true }}
-        run: cargo build -p zfb --release --target ${{ matrix.platform.target }}
-
-      - name: Build zfb binary (cross — arm64)
-        if: ${{ matrix.platform.use_cross == true }}
+      - name: Build zfb binary (cross)
         run: cross build -p zfb --release --target ${{ matrix.platform.target }}
 
-      - name: Enforce GLIBC 2.35 floor on the built binary
+      # GLIBC 2.34 = Amazon Linux 2023 / RHEL 9-class (#3623). Keep this value
+      # identical to release.yml's step. Lower it only with a measured objdump
+      # result; never raise it without an issue.
+      - name: Enforce GLIBC 2.34 floor on the built binary
         shell: bash
         run: |
           BIN="target/${{ matrix.platform.target }}/release/zfb"
@@ -274,9 +287,9 @@ jobs:
             echo "::error::No GLIBC symbols found via objdump — binary inspection failed."
             exit 1
           fi
-          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.35" | sort -V | tail -1)
-          if [[ "$WORST" != "GLIBC_2.35" ]]; then
-            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.35 floor."
+          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.34" | sort -V | tail -1)
+          if [[ "$WORST" != "GLIBC_2.34" ]]; then
+            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.34 floor."
             exit 1
           fi
 
@@ -333,6 +346,63 @@ jobs:
 
       - name: Run smoke container
         run: docker run --rm zfb-smoke:amd64
+
+  # ── amd64 smoke on Amazon Linux 2023 (issue #3623) ─────────────────────────
+  #
+  # The bookworm smoke above proves forward compatibility (glibc 2.36 is above
+  # the floor); this one proves the floor itself. amazonlinux:2023 ships
+  # glibc 2.34 — the version AWS Amplify Hosting's default build image,
+  # CodeBuild, and RHEL 9-class distros run, and the one the previous 2.35
+  # floor locked out (#3584). It reuses run.sh verbatim (scaffold → build →
+  # dev → hot-reload), so a real `zfb build` exercises the embedded V8 and the
+  # staged esbuild on that glibc. Deliberately a plain `docker run` rather
+  # than a second Dockerfile or a FROM build-arg — #395 rejected
+  # parameterizing the smoke image, and this needs no image of its own.
+  # NOT in ruleset 18452968 (see CLAUDE.md); a red run still blocks its author.
+  smoke-amd64-al2023:
+    name: Smoke amd64 Amazon Linux 2023 (glibc 2.34 floor)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download smoke context (amd64)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: smoke-binary-amd64
+          path: smoke-ctx
+
+      # The container image is the rolling `2023` tag on purpose: the smoke
+      # should track the distro users actually get. The glibc assertion keeps
+      # the job honest if Amazon ever moves AL2023 off 2.34 — then this smoke
+      # would no longer prove the floor and must be revisited, not ignored.
+      - name: Run smoke inside amazonlinux:2023
+        run: |
+          docker run --rm \
+            -v "$PWD/smoke-ctx:/smoke-ctx:ro" \
+            amazonlinux:2023 \
+            sh -eu -c '
+              GLIBC_LINE="$(ldd --version | head -n 1)"
+              echo "container glibc: $GLIBC_LINE"
+              case "$GLIBC_LINE" in
+                *" 2.34") ;;
+                *) echo "::error::amazonlinux:2023 no longer reports glibc 2.34 — this smoke no longer proves the floor"; exit 1 ;;
+              esac
+              # run.sh needs only curl, grep, mktemp, and tail; the base image
+              # ships them, so dnf is a fallback, not a fixed cost.
+              for tool in curl grep mktemp tail; do
+                command -v "$tool" >/dev/null 2>&1 || MISSING=1
+              done
+              if [ -n "${MISSING:-}" ]; then
+                dnf install -y -q curl-minimal grep coreutils
+              fi
+              install -m 0755 /smoke-ctx/zfb-bin /usr/local/bin/zfb
+              mkdir -p /smoke
+              install -m 0755 /smoke-ctx/run.sh /smoke/run.sh
+              # A GLIBC_x.y "not found" loader error surfaces here, before any
+              # smoke assertion, with the exact missing symbol version.
+              zfb -V
+              /smoke/run.sh
+            '
 
   # ── scaffold E2E: pre-publish `npm create zfb` consumption path (issue #1345) ──
   #
