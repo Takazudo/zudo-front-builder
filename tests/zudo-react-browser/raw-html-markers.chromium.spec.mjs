@@ -57,7 +57,8 @@ function expectDisplayOnly(entries, mode, liveText) {
     const label = `${mode} case ${entry.id}`;
     expect(entry.text, label).toBe(entry.id === "live" ? liveText : CASES[Number(entry.id)][1]);
     expect(entry.reservedAttributes, label).toEqual([]);
-    if (mode === "none") {
+    // `mode` may carry a phase suffix such as "none SSR"; the root kind is its first word.
+    if (mode.split(" ")[0] === "none") {
       expect(entry.protocolComments, label).toEqual([]);
     } else {
       // Only the renderer's own opaque-region pair; the payload adds none.

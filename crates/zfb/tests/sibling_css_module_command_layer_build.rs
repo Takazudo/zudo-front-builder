@@ -1229,7 +1229,7 @@ export default {
 
 export default function HomePage() {
   return (
-    <main className="block origin-page">
+    <main class="block origin-page">
       <Panel />
     </main>
   );
@@ -1242,7 +1242,7 @@ export default function HomePage() {
         r#"export default function PackageRoute() {
   return (
     <html lang="en">
-      <body className="flex origin-route">package route</body>
+      <body class="flex origin-route">package route</body>
     </html>
   );
 }
@@ -1267,7 +1267,7 @@ export default function HomePage() {
     fs::write(
         sibling.join("Panel.tsx"),
         r#"export default function Panel() {
-  return <section className="grid origin-mirror">panel</section>;
+  return <section class="grid origin-mirror">panel</section>;
 }
 "#,
     )
