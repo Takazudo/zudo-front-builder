@@ -27,6 +27,37 @@ pub(crate) struct StandaloneWindIndex {
     pub audit_sources: Vec<AuditSource>,
 }
 
+/// The project root for `zfb css` and `zfb wind`: `--project-root`, else the
+/// `--config` file's directory, else `cwd`.
+pub(crate) fn command_project_root(
+    cwd: &Path,
+    project_root: Option<&Path>,
+    config: Option<&Path>,
+) -> PathBuf {
+    let root = match (project_root, config) {
+        (Some(root), _) => cwd.join(root),
+        (None, Some(config)) => {
+            let config = zfb_types::normalize_path_lexical(&cwd.join(config));
+            config.parent().unwrap_or(cwd).to_path_buf()
+        }
+        (None, None) => cwd.to_path_buf(),
+    };
+    zfb_types::normalize_path_lexical(&root)
+}
+
+/// Load the explicitly selected config file, or discover one in the project
+/// root.
+pub(crate) async fn load_command_config(
+    cwd: &Path,
+    project_root: &Path,
+    config: Option<&Path>,
+) -> Result<Config> {
+    match config {
+        Some(config) => crate::config::load_from_file(&cwd.join(config)).await,
+        None => crate::config::load_from_dir(project_root).await,
+    }
+}
+
 /// Convert the public project config shape to the pure compiler config.
 pub(crate) fn map_wind_config(input: &crate::config::WindConfig) -> zfb_css::WindConfig {
     let mut output = zfb_css::WindConfig {
@@ -734,6 +765,22 @@ fn run_css_emitter_with_module_policy<E: CssEngine>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_project_root_defaults_to_the_config_directory() {
+        let cwd = Path::new("/work/pkg");
+        let config = Some(Path::new("../shared/./zfb.config.ts"));
+        assert_eq!(
+            command_project_root(cwd, None, config),
+            Path::new("/work/shared")
+        );
+        assert_eq!(command_project_root(cwd, Some(Path::new(".")), config), cwd);
+        assert_eq!(command_project_root(cwd, None, None), cwd);
+        assert_eq!(
+            command_project_root(cwd, Some(Path::new("/abs/root")), None),
+            Path::new("/abs/root")
+        );
+    }
 
     fn project() -> (tempfile::TempDir, PathBuf, Config) {
         let temp = tempfile::tempdir().unwrap();
