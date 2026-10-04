@@ -5,7 +5,7 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: **Node 22.16.0 or later and pnpm 11 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22.16.0 is the effective floor on the 22.x line (`html-validate` requires `^20.19.0 || ^22.16.0 || >=24.0.0`); earlier 22.x versions will fail `pnpm install`.
+- **Node / pnpm**: **Node 22.16.0 or later and pnpm 12 or later are required.** pnpm is pinned exactly by the `packageManager` field in `package.json` (currently `pnpm@12.8.2`). An installed pnpm 11 or 12 switches to the pinned version automatically; [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`) also resolves it. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22.16.0 is the effective floor on the 22.x line (`html-validate` requires `^20.19.0 || ^22.16.0 || >=24.0.0`); earlier 22.x versions will fail `pnpm install`.
 
 ## First build expectation
 
