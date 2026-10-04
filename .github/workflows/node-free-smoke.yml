@@ -389,11 +389,12 @@ jobs:
               esac
               # run.sh needs only curl, grep, mktemp, and tail; the base image
               # ships them, so dnf is a fallback, not a fixed cost.
+              # --allowerasing: coreutils conflicts with the image's coreutils-single.
               for tool in curl grep mktemp tail; do
                 command -v "$tool" >/dev/null 2>&1 || MISSING=1
               done
               if [ -n "${MISSING:-}" ]; then
-                dnf install -y -q curl-minimal grep coreutils
+                dnf install -y -q --allowerasing curl-minimal grep coreutils
               fi
               install -m 0755 /smoke-ctx/zfb-bin /usr/local/bin/zfb
               mkdir -p /smoke

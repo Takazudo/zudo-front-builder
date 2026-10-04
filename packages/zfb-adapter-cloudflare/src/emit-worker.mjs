@@ -75,7 +75,7 @@ async function resolveAssets(inputBundlePath, assetPaths) {
 // the copied bundle would dangle and make source-map-aware tools (Vite Workers
 // integration) fail with ENOENT. Inline `data:` maps are self-contained and kept.
 const TRAILING_EXTERNAL_SOURCE_MAP =
-  /(?:\r?\n)?[ \t]*\/\/[#@][ \t]*sourceMappingURL=(?!data:)\S*[ \t]*(\r?\n\s*)*$/;
+  /(?:\r?\n)?[ \t]*\/\/[#@][ \t]*sourceMappingURL=(?!data:)\S*\s*$/;
 
 export function stripDanglingSourceMapReference(source) {
   const stripped = source.replace(TRAILING_EXTERNAL_SOURCE_MAP, "");
