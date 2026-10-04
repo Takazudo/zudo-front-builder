@@ -7,6 +7,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "jsxImportSource": "@takazudo/zfb/zudo-react",
+    "types": ["node"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true

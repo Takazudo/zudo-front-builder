@@ -9,7 +9,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "@takazudo/zfb/zudo-react"
+    "jsxImportSource": "@takazudo/zfb/zudo-react",
+    "types": ["node"]
   },
   "include": ["type-tests-zudo-react/**/*.tsx", "type-tests/config-fixture.ts"]
 }

@@ -22,6 +22,18 @@ Keep these direct docs declarations when auditing dependencies:
 
 This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing these declarations.
 
+## tsconfig.json inlines zudo-doc's base config
+
+`docs/tsconfig.json` copies the `compilerOptions` and `files` of
+`@takazudo/zudo-doc@5.27.0/tsconfig.base.json` instead of extending it (#3556). The upstream file
+sets `baseUrl: "."`, which TypeScript 6 rejects as deprecated (TS5101) and TypeScript 7 removes.
+Extending it would make every inherited `paths` anchor at the zudo-doc package directory, and
+`"baseUrl": null` is not a fix: tsc honors the reset, but esbuild and zfb's own tsconfig reader keep
+the inherited value, so the `react` → `preact/compat` aliases stop resolving in the product build.
+The copy drops only `baseUrl`, adds `types: ["node"]` (TypeScript 6 no longer auto-loads
+`@types/*`), and keeps the `paths` relative to `docs/`. When zudo-doc is bumped, diff its new
+`tsconfig.base.json` against this file and carry over any change.
+
 ## Setup
 
 Two scripts in `docs/scripts/` each install a Claude Code skill that symlinks this docs tree (`src/content/docs` + `docs-ja`) into the user-scope skills dir (`~/.claude/skills/`) for AI lookup access. They produce **distinct** skills:
