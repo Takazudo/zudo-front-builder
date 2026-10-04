@@ -588,12 +588,21 @@ impl<'a> Module<'a> {
         if token.end - token.start < 2 {
             return;
         }
+        // An unterminated string runs to the end of the text with no closing
+        // quote (or line break) to strip.
+        let bytes = self.text.as_bytes();
+        let last = bytes[token.end - 1];
+        let value_end = if last == bytes[token.start] || last == b'\n' {
+            token.end - 1
+        } else {
+            token.end
+        };
         emit(
             self.text,
             self.base,
             out,
             token.start + 1,
-            token.end - 1,
+            value_end,
             token.start,
             token.end,
             true,
@@ -647,7 +656,12 @@ impl<'a> Module<'a> {
                         left,
                     );
                     let end = interpolation_end(self.text, i + 2, token.end);
-                    let inner = tokenize(self.text, i + 2, end.saturating_sub(1));
+                    let body_end = if self.text[..end].ends_with('}') {
+                        end - 1
+                    } else {
+                        end
+                    };
+                    let inner = tokenize(self.text, i + 2, body_end.max(i + 2));
                     self.expression(&inner, out, visiting);
                     segment = end;
                     left = true;
