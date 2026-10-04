@@ -125,18 +125,11 @@ pub fn resolve_node_bare_specifier(name: &str, project_root: &Path) -> Result<St
 /// - **Fallback path:** if the resolution carries no `package_json()` (unusual;
 ///   can happen when resolving a bare file outside a package), walks up from the
 ///   resolved file to the nearest ancestor directory containing a `package.json`.
+/// - **Subpath-only packages:** when the bare name does not resolve (the `exports`
+///   map has no `"."` entry), falls back to the nearest `node_modules/<pkg>` with
+///   a `package.json`, walking up from `project_root`.
 ///
 /// Hard-errors if the package is not installed (no `node_modules` entry found).
-///
-/// # Known edge (documented, not fixed here)
-///
-/// A preset whose `exports` map exposes neither `"."` nor `"./package.json"` —
-/// for example only `"@scope/preset/zfb"` — cannot be resolved from its bare
-/// name alone. In that case this function will still succeed for `"."` (it
-/// resolves the default entry), but callers that need to resolve a non-root
-/// subpath will receive a different package dir or an error. The correct fix
-/// (T2/T4) is to anchor resolution at the project root and use a clearer error
-/// message when the preset is not found.
 pub fn resolve_package_dir(pkg: &str, project_root: &Path) -> Result<PathBuf> {
     if pkg.is_empty() {
         bail!("resolve_package_dir: package name must be non-empty");
@@ -151,15 +144,22 @@ pub fn resolve_package_dir(pkg: &str, project_root: &Path) -> Result<PathBuf> {
         ..ResolveOptions::default()
     });
 
-    let resolution = resolver.resolve(project_root, pkg).map_err(|e| {
-        anyhow!(
-            "package {:?} could not be resolved from {}: {} \
-             (is it installed in node_modules?)",
-            pkg,
-            project_root.display(),
-            e
-        )
-    })?;
+    let resolution = match resolver.resolve(project_root, pkg) {
+        Ok(resolution) => resolution,
+        // A package that exports only subpaths (no "." entry) is still installed;
+        // locate its directory the way Node's lookup would, without an entry point.
+        Err(e) => {
+            return installed_package_dir(pkg, project_root).ok_or_else(|| {
+                anyhow!(
+                    "package {:?} could not be resolved from {}: {} \
+                     (is it installed in node_modules?)",
+                    pkg,
+                    project_root.display(),
+                    e
+                )
+            });
+        }
+    };
 
     // Primary path: use the package_json attached to the resolution.
     // oxc_resolver populates this for all normal node_modules resolutions.
@@ -189,6 +189,17 @@ pub fn resolve_package_dir(pkg: &str, project_root: &Path) -> Result<PathBuf> {
             )
         })?;
     }
+}
+
+/// Walk up from `project_root` looking for `node_modules/<pkg>/package.json`.
+fn installed_package_dir(pkg: &str, project_root: &Path) -> Option<PathBuf> {
+    project_root.ancestors().find_map(|dir| {
+        let candidate = dir.join("node_modules").join(pkg);
+        candidate
+            .join("package.json")
+            .is_file()
+            .then(|| candidate.canonicalize().unwrap_or(candidate))
+    })
 }
 
 /// Resolve a plugin `name` from two anchors: preferred first, then fallback.
@@ -311,6 +322,24 @@ mod tests {
     /// (which must stay alive for the duration of the test).
     /// The returned `TempDir` itself is the `project_root` to pass to
     /// `resolve_node_bare_specifier`.
+    #[test]
+    fn resolve_package_dir_finds_a_package_that_exports_only_subpaths() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("site");
+        let pkg = temp.path().join("node_modules/@fixture/wind-ui");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@fixture/wind-ui","exports":{"./preset":"./preset.mjs"}}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("preset.mjs"), "export default {};").unwrap();
+        let resolved = resolve_package_dir("@fixture/wind-ui", &project).unwrap();
+        assert_eq!(resolved, pkg.canonicalize().unwrap());
+        assert!(resolve_package_dir("@fixture/missing", &project).is_err());
+    }
+
     fn build_fixture(case: &str) -> TempDir {
         let src_root = fixture_src(case);
         let tmp = TempDir::new().expect("create TempDir");
