@@ -4,5 +4,18 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["bin/**/__tests__/**/*.test.mjs"],
+    // Vitest 2's default fake-timer set, kept explicit: Vitest 3+ also fakes
+    // performance, requestAnimationFrame and idle callbacks unless told otherwise.
+    fakeTimers: {
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+        "setImmediate",
+        "clearImmediate",
+        "Date",
+      ],
+    },
   },
 });

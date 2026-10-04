@@ -43,6 +43,6 @@
     "@takazudo/zfb": "workspace:3.1.0"
   },
   "devDependencies": {
-    "vitest": "^2.1.9"
+    "vitest": "4.1.11"
   }
 }
