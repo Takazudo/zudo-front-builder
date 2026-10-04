@@ -159,7 +159,7 @@ Adapted from the 7-step checklist in https://zfb.takazudomodular.com/guides/migr
 
 ## Risks and open questions
 
-- The whole timeline is zudo-doc's: 39/51 topics exist only in the maintainer's local branch and the integration floor waits on an unreleased zfb. Do not estimate a date from this guide.
+- The whole timeline is zudo-doc's: 39/51 topics existed only in the maintainer's local branch at the 2026-10-02 checkpoint; the zfb fixes the integration floor waited for shipped in 3.2.0, but 6.0.0 has no date. Do not estimate one from this guide.
 - `chromeBindingsModule` / `defineChromeBindings({ mdxExtras })` is the only host→preset API this repo uses; if 6.0.0 renames or re-types it, `src/chrome-bindings.js` and the three preview components follow the consumer guide (zudolab/zudo-doc#4473).
 - `scripts/run-site.mjs` exists because `bundle.define` had to differ per run and concurrent runs collided (#3318). zfb 3.0.0's `--scratch-dir` + `--define` are the designed replacement, but #3318 closed without a linked PR; verify that a `dev` with its own `--scratch-dir` keeps its define while a concurrent `build` with a different define runs, before deleting the mirror. `zfb preview` rejects `--define`, which is fine (preview serves `dist/`).
 - `preview-links.jsx` passes `loading: "lazy"` and a numeric `height` to `<iframe>`; the finite attribute vocabulary was widened in 3.2.0 (#3359) but `loading` is not listed explicitly. If the target release rejects an attribute, the build names it and the file:line:column (https://zfb.takazudomodular.com/zudo-react/server-rendering/#read-a-render-failure, 3.2.0).
