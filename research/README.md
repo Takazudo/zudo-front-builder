@@ -25,6 +25,7 @@ findings are no longer load-bearing.
 | `3242-owned-engines-completion-report.md` | `referenced-from` | Owned-engine completion record; referenced by epic #3242 and sub-issue #3306. |
 | `3318-scratch-dir-design.md` | `referenced-from` | Scratch-dir + per-invocation `--define` contract; locks epic #3339's sub-issues #3341-#3348. |
 | `swc-smartstring-verification.md` | `referenced-from` | SWC 74 migration verification evidence for issue #3636. |
+| `v3-island-size/swc-74-darwin-report.md` | `referenced-from` | Interim measured Darwin arm64 size contract after SWC 74; referenced by issue #3636 and the final #3594 remeasure. |
 
 ## Purgeable one-shots
 
