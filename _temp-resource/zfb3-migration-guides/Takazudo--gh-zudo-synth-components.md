@@ -19,7 +19,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
 ## Sequencing and blockers
 
 1. **zudo-doc 6.0.0** (zudolab/zudo-doc#4430, PR #4477; consumer guide #4473 planned). Blocked on zfb fixes #3569/#3570 that are on zfb `main` but **unreleased**; the epic's round-2 lock is exact 3.1.0 / peer `^3.1.0` (R2-DD3), so expect 6.0.0 to re-lock on the **next zfb release** — pin whatever its peer range names.
-2. **zudo-circuit-doc v3 release** (public repo, `main` pushed 2026-10-02 for v0.2.0; branches `main` + `claude/quirky-clarke-ayd6am` at 0 ahead/95 behind; 0 open issues). Needs 2 islands + 7 UI components on zudo-react, peers `zfb ^3`/`zudo-doc ^6`, `preact` peer dropped, `styles.css` variables re-pointed at zudo-doc 6's emitted names. Separate M-size job; this guide lists what this host needs from it.
+2. **zudo-circuit-doc v3 release** (public repo, `main` pushed 2026-10-02 for v0.2.0; branches `main` + `claude/quirky-clarke-ayd6am` at 0 ahead/95 behind; 0 open issues). Needs 2 islands + 7 UI components on zudo-react, peers `zfb ^3`/`zudo-doc ^6`, `preact` peer dropped, `styles.css` variables re-pointed at zudo-doc 6's emitted names. A separate job with its own guide (`Takazudo--zudo-circuit-doc.md`, same directory), which rates it **L** because the runtime library, `create-zudo-circuit-doc`, two example hosts, the SSR test harness and a coordinated 0.3.0 release move together; this guide lists what this host needs from it.
 3. **This repo** (S): pins; re-copy the five vendored scaffold files from `create-zudo-doc@6`; re-apply the two ADR-015/ADR-016 glue lines; drop the dead history-server dep/script; rebuild; `pnpm check:site`, `pnpm corpus:check`, `scripts/test_browser.py`.
 4. **Possible now**: file the zudo-circuit-doc tracking issue; note the plan in `ZUDO_DEPS_PINS.md`; nothing else — all pins are exact and CI installs with `--frozen-lockfile`, so nothing floats to 3.x by accident.
 
@@ -74,8 +74,8 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
   @import "@takazudo/zudo-circuit-doc/styles.css";
   ```
 
-- Reset: today's page relies on Tailwind preflight in the `zd-preflight` layer. zudo-doc 6 plans `owned-v1` plus an authored preflight patch (DD4 in #4430); the measured preflight → `owned-v1` differences the patch must cover are `sub`/`sup`, `small`, `hr`, `::placeholder`, `::file-selector-button`, `[hidden]` and control backgrounds (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#differences-from-tailwind-preflight). Check the evidence tables, `<details>` blocks and the model-viewer `<dialog>` — a prose-only pixel diff misses them.
-- Cascade: wind places utilities **after** authored unlayered CSS by default (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties); zudo-circuit-doc's `styles.css` is unlayered, so `(0,1,0)` `zcd-*` rules that beat a zudo-doc utility by order today will lose. `wind.utilities.placement: "before-authored"` is **next zfb release** (3.1.0 rejects the key as `wind.utilities: unknown field`, measured); zudo-doc keeps the default order and fixes flips locally (DD5 in #4430).
+- Reset: today's page relies on Tailwind preflight in the `zd-preflight` layer. zudo-doc 6 plans `owned-v1` plus an authored preflight patch (DD4 in #4430); the measured preflight → `owned-v1` differences the patch must cover are `sub`/`sup`, `small`, `hr`, `::placeholder`, `::file-selector-button`, `[hidden]` and control backgrounds (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#reset-differences-from-tailwind-preflight). Check the evidence tables, `<details>` blocks and the model-viewer `<dialog>` — a prose-only pixel diff misses them.
+- Cascade: wind places utilities **after** authored unlayered CSS by default (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties); zudo-circuit-doc's `styles.css` is unlayered, so `(0,1,0)` `zcd-*` rules that beat a zudo-doc utility by order today will lose. `wind.utilities.placement: "before-authored"` is **next zfb release** (3.1.0 rejects the key as `wind.utilities: unknown field`, measured; 3.1.0 accepts only `spec`, `reset`, `tokens`, `breakpoints`, `dark`, `defaultTransitionTimingFunction`, `safelist`, `authoredClasses`, `manifests`); zudo-doc accepted the flipped order for its own CSS (DD5 in #4430) and has not decided whether the 6.0 preset ships `before-authored` for consumers (open question in `zudolab--zudo-doc.md`), so zudo-circuit-doc should fix its own ties locally.
 - Audit (zfb 3.1.0, temporary `wind: { spec: 1 }`, `zfb wind audit --project-root doc`, exit 0):
 
   ```text
@@ -86,10 +86,10 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
   dead classes: (none)
   dynamic constructions:
     - docs; at default/pages:docs/[[...slug]].tsx:2636
-  diagnostics: 11 x auditInfo (ZW002 x2, ZW005 x8, ZW012 x1) — import specifiers in 4 files + the template literal
+  diagnostics: 12 x auditInfo (ZW002 x2, ZW005 x9, ZW012 x1) — import specifiers in 4 files + the template literal
   ```
 
-  162 MDX/MD files: 0 `class=`/`className=`. Content JSX: `<EvidenceAnchor>` x686, `<EvidenceFact>` x261, `<EvidenceTable>` x36, `<PackageModelViewer>` x35, `<EvidenceDetails>` x35, `<ComponentReferences>` x35, `<CategoryNav>` x1 — all package components. The host declares no tokens. The 11 `auditInfo` lines sit at import specifiers (`@takazudo/zudo-doc/...`, `virtual:zudo-doc-*`, `../lib/_circuit-doc-islands`) in the stub, `pages/index.tsx`, `pages/lib/_circuit-doc-islands.ts` and `src/chrome-bindings.tsx` — not in comments. (3.1.0 prints byte offsets; `file:line:col` audit locations and `--json`/`--severity`/`--plan` are **next zfb release**.)
+  162 MDX/MD files: 0 `class=`/`className=`. Content JSX: `<EvidenceAnchor>` x686, `<EvidenceFact>` x261, `<EvidenceTable>` x36, `<PackageModelViewer>` x35, `<EvidenceDetails>` x35, `<ComponentReferences>` x35, `<CategoryNav>` x1 — all package components. The host declares no tokens. The 12 `auditInfo` lines sit at import specifiers (`@takazudo/zudo-doc/...`, `virtual:zudo-doc-*`, `../lib/_circuit-doc-islands`) in the stub (x8, incl. the ZW012 template literal), `pages/index.tsx` (x1), `pages/lib/_circuit-doc-islands.ts` (x1) and `src/chrome-bindings.tsx` (x2) — not in comments. The report is byte-identical to zudo-osc-hole-field's. (3.1.0 prints byte offsets; `file:line:col` audit locations and `--json`/`--severity`/`--plan` are **next zfb release**.)
 
 ### 3. Components and islands
 
@@ -144,8 +144,8 @@ Adapted from the 7-step checklist (https://zfb.takazudomodular.com/guides/migrat
 - **Chain of two upstreams**: zudo-doc 6.0.0 needs the next zfb release; zudo-circuit-doc has not started. This host is last.
 - **Token-name coupling** in `@takazudo/zudo-circuit-doc/styles.css` (22 zudo-doc custom properties incl. Tailwind's `--default-transition-duration`): silent visual loss, no diagnostic. Ask zudo-circuit-doc to pin against 6.0.0's emitted names.
 - **three.js inside a zudo-react island**: lifecycle must move to `onActivate`/cleanup; `dynamicPageTransition: true` means islands are disposed and re-created across client-side navigations — watch for WebGL context leaks in the browser check.
-- **`useModalDialog`** (zudo-doc 5.x Preact hook) is ported first as a shared zudo-react primitive in the epic (#4441 in #4430); the dialog port should target that 6.0.0 export.
-- **Cascade flip** for unlayered `zcd-*` rules; `placement: "before-authored"` is next zfb release only.
+- **`useModalDialog`** (zudo-doc 5.x Preact hook) is ported first as a shared zudo-react primitive in the epic (#4441 in #4430; the zudo-doc guide records the ported form as `modalDialog(scope, options)`); the dialog port should target that 6.0.0 export.
+- **Cascade flip** for unlayered `zcd-*` rules (DD5 in #4430 accepts it; upstream gap Takazudo/zudo-front-builder#3386); `placement: "before-authored"` is next zfb release only.
 - Not verified here: `zfb check` cannot run on the clone (preset imports need `node_modules`); the audit used a stand-in `wind: { spec: 1 }` config.
 
 ## References
@@ -156,6 +156,6 @@ Adapted from the 7-step checklist (https://zfb.takazudomodular.com/guides/migrat
 - https://zfb.takazudomodular.com/concepts/islands/ , https://zfb.takazudomodular.com/api/cli/
 - https://zfb.takazudomodular.com/changelog/zfb/v3.0.0/ , https://zfb.takazudomodular.com/changelog/zfb/v3.1.0/ (v2.21.0–v2.22.1 notes carry no Breaking Changes section)
 - zudolab/zudo-doc#4430, #4477, #4473; Takazudo/zudo-front-builder#3569, #3570
-- https://github.com/Takazudo/zudo-circuit-doc (0.2.0; peers zfb ^2.20.2 / zudo-doc ^5.27.0 / preact ^10.29.1; no v3 branch)
+- https://github.com/Takazudo/zudo-circuit-doc (0.2.0; peers zfb ^2.20.2 / zudo-doc ^5.27.0 / preact ^10.29.1; no v3 branch); its migration guide: `Takazudo--zudo-circuit-doc.md` (same directory; effort L)
 - Sibling guide with the identical host glue: `Takazudo--zudo-osc-hole-field.md`
 - This repo: `ZUDO_DEPS_PINS.md`, `doc/zfb.config.ts`, `doc/src/styles/global.css`, `doc/pages/docs/[[...slug]].tsx`, `.github/workflows/check.yml`, `scripts/test_browser.py`
