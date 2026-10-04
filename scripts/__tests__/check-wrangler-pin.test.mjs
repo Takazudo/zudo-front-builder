@@ -61,6 +61,17 @@ describe("check-wrangler-pin", () => {
     );
   });
 
+  it("reads importers from the dependency document after a pnpm 12 env-lockfile document", () => {
+    const lock =
+      `---\nlockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    configDependencies: {}\n    packageManagerDependencies:\n      pnpm:\n        specifier: 12.8.2\n        version: 12.8.2\n\n---\n` +
+      `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    devDependencies:\n      wrangler:\n        specifier: ${EXPECTED_WRANGLER_VERSION}\n        version: ${EXPECTED_WRANGLER_VERSION}\n`;
+
+    expect(readLockImporterDependency(lock, ".", "wrangler")).toEqual({
+      specifier: EXPECTED_WRANGLER_VERSION,
+      version: EXPECTED_WRANGLER_VERSION,
+    });
+  });
+
   it("reads quoted lockfile scalar values", () => {
     const lock = `importers:\n\n  .:\n    devDependencies:\n      wrangler:\n        specifier: '${EXPECTED_WRANGLER_VERSION}'\n        version: \"${EXPECTED_WRANGLER_VERSION}\"\n`;
 

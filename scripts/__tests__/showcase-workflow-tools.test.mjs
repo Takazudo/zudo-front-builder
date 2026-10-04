@@ -37,7 +37,7 @@ describe("showcase workflow tool provenance", () => {
 
       expect(beforeSteps).not.toMatch(/^    env:/m);
       expect(jobText).toContain(
-        "uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8",
+        "uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0",
       );
       expect(install).toContain("pnpm install --frozen-lockfile --filter zudo-front-builder");
       expect(validate).toContain("working-directory: create-zfb-showcase");

@@ -13,22 +13,15 @@ packages:
 
 linkWorkspacePackages: false
 
-# pnpm 11 only reads auth/registry from .npmrc and ignores pnpm.* in package.json.
+# pnpm 11+ only reads auth/registry from .npmrc and ignores pnpm.* in package.json.
 # Everything else (peer-deps policy, engine strictness, supply-chain delays,
 # overrides, build-script allowlist) lives here. See https://pnpm.io/settings.
 autoInstallPeers: true
 engineStrict: true
 
-# After a workspace version bump pnpm wants to purge + relink node_modules.
-# Under a non-interactive shell (agent/CI-like local run) pnpm aborts with
-# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY. The relink is not
-# security-sensitive, so auto-confirming is safe. CI is unaffected because it
-# already passes CI=true, which skips the prompt independently.
-confirmModulesPurge: false
-
 # pnpm 11 defaults minimumReleaseAge to 1440 (24h), which would block CI
 # `pnpm install --frozen-lockfile` on any dep published in the last day. CI must be
-# deterministic, so disable the delay here.
+# deterministic, so the delay stays explicitly disabled under pnpm 12 too.
 minimumReleaseAge: 0
 
 overrides:
