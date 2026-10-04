@@ -8,6 +8,7 @@ import {
   type DescriptionSite,
 } from "./description.js";
 import { escapeAttribute, escapeText } from "./escape.js";
+import { rawHtmlReserved } from "./raw-html.js";
 import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
@@ -423,8 +424,7 @@ function element(
       fail("ZR_RAW_HTML", context, `${tag} requires static rawHtml`);
     const payload = read(raw);
     if (typeof payload !== "string") fail("ZR_RAW_HTML", context, `${tag} requires string rawHtml`);
-    if (/<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(payload))
-      fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
+    if (rawHtmlReserved(payload, tag)) fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
     if (
       (tag === "script" && /<\/script/i.test(payload)) ||
       (tag === "style" && /<\/style/i.test(payload))

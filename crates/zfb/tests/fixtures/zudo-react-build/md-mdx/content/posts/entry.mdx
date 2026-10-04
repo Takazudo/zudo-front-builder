@@ -8,3 +8,8 @@ A collection entry with an <em class="authored-jsx">authored JSX element</em>.
 ```js
 const highlighted = true;
 ```
+
+```sh
+grep -roh 'data-zfb-island="[^"]*"' dist/ | sort -u
+# <div data-zfb-island="Demo">
+```

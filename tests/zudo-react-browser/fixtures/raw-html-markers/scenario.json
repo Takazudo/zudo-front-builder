@@ -1,0 +1,8 @@
+{
+  "page": "raw-html-markers",
+  "roots": [
+    { "component": "component.tsx", "props": {}, "mode": "none", "static": true },
+    { "component": "component.tsx", "props": {}, "mode": "hydrate" },
+    { "component": "component.tsx", "props": {}, "mode": "mount" }
+  ]
+}
