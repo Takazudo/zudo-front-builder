@@ -925,7 +925,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   only as part of a recorded triage, never merely to turn the lane green, and
   branch-only churn no longer requires one. The only refresh recipe is
   write-then-copy —
-  `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec vp fmt --write scripts/yaml-candidate-baseline.json`
   — because the detector reads the baseline it is about to replace for
   branch-ancestry evidence, so `--snapshot` output must never be redirected
   onto the baseline path.
@@ -960,7 +960,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   done only as part of a recorded triage note, under the same anti-gaming
   rule:
 
-  `S=$(mktemp -d) && jq --arg c CANDIDATE --arg v VERSION --arg t OBSERVED_TS '.candidates[$c].versionUpdatedAt[$v] = $t' scripts/yaml-candidate-baseline.json > "$S/ack.json" && cp "$S/ack.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  `S=$(mktemp -d) && jq --arg c CANDIDATE --arg v VERSION --arg t OBSERVED_TS '.candidates[$c].versionUpdatedAt[$v] = $t' scripts/yaml-candidate-baseline.json > "$S/ack.json" && cp "$S/ack.json" scripts/yaml-candidate-baseline.json && pnpm exec vp fmt --write scripts/yaml-candidate-baseline.json`
 
   **Accepted blind spots (weekly cadence).** The tripwire closes the
   crates.io half only. A tag or a GitHub Release added and then deleted
@@ -3043,7 +3043,7 @@ workspace package importers.
 
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
-| `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vite-plus` (Vite+, which bundles Vitest; #3557 replaced the direct `vitest`), `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
+| `package.json` | Private root; six dev tools: `@playwright/test`, `@takazudo/mdx-formatter` (exact 1.2.1, the only MD/MDX formatter; #3558 replaced `pnpm dlx`), `html-validate`, `lefthook`, `vite-plus` (Vite+, which bundles Vitest and Oxfmt; #3557 replaced the direct `vitest`, #3558 the direct `prettier`), `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
 | `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vite-plus` (bundled Vitest, #3557), and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and a Vite+ (bundled Vitest) dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages and build/test type tooling. | Clean: optional carriers and dev fixtures are part of the package contract; the owned runtime has no external framework peer. |

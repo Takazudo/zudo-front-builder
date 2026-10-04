@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use serde_json::Value;
 
-const REGENERATION_COMMAND: &str = "cargo run -p zudo-wind --example export_catalog, then pnpm exec prettier --write crates/zudo-wind/catalog/zudo-wind-catalog.v1.json";
+const REGENERATION_COMMAND: &str = "cargo run -p zudo-wind --example export_catalog, then pnpm exec vp fmt --write crates/zudo-wind/catalog/zudo-wind-catalog.v1.json";
 
 #[test]
 fn committed_catalog_export_is_current() {

@@ -21,11 +21,11 @@ The committed `catalog/zudo-wind-catalog.v1.json` file exports all v1 catalog
 entries and their examples. Its independent catalog schema version is `1`; the
 language spec version is `1`. Export fields use stable camelCase names and the
 entries follow the catalog's deterministic conflict and order ranks. The stale
-test compares parsed JSON values so Prettier can own the checked-in formatting.
+test compares parsed JSON values so Oxfmt can own the checked-in formatting.
 
 Regenerate the file from the workspace root, then format it:
 
 ```text
 cargo run -p zudo-wind --example export_catalog
-pnpm exec prettier --write crates/zudo-wind/catalog/zudo-wind-catalog.v1.json
+pnpm exec vp fmt --write crates/zudo-wind/catalog/zudo-wind-catalog.v1.json
 ```

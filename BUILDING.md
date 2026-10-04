@@ -104,7 +104,7 @@ The zudo-wind engine runs in-process and does not require a staged CLI binary.
 ## Format / lint
 
 ```sh
-pnpm format:check         # check (TS/MD/MDX, runs in CI)
+pnpm format:check         # check (Oxfmt for JS/TS/JSON/YAML, mdx-formatter for MD/MDX; runs in CI)
 pnpm format               # apply
 ```
 

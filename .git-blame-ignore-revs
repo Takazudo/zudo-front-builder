@@ -1,2 +1,4 @@
 # One-off cargo fmt --all reformat (style only, no logic changes)
 8c0b14a2714abb83b4d0c46e3123a06cef4dc8cf
+# Prettier -> Oxfmt reformat of the ordinary-code file set (#3558, style only)
+cb3eb8e44075ab978cc8e9c0f099fa587ae8205e
