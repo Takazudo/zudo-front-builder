@@ -161,7 +161,7 @@ Compile one CSS entrypoint with zudo-wind and zfb's authored-CSS processing, wit
 
 ```sh
 zfb css --input <entry.css> --output <compiled.css>
-        [--project-root <dir>]
+        [--project-root <dir>] [--config <file>]
         [--source <glob> ...]
         [--no-auto-source]
         [--code-highlight-mode <class|inline>]
@@ -174,7 +174,8 @@ zfb css --input <entry.css> --output <compiled.css>
 |---|---|---|---|
 | `--input` | path | required | CSS entrypoint. Relative paths resolve from the current working directory. |
 | `--output` | path | required | Destination CSS file. Relative paths resolve from the current working directory. It must not resolve to the same file as the input. |
-| `--project-root` | path | current working directory | Root used to load `zfb.config` and resolve `--source` globs. A relative path itself resolves from the current working directory. |
+| `--project-root` | path | the `--config` file's directory, else the current working directory | Root used to discover `zfb.config` when `--config` is omitted, and to resolve `--source` globs and the conventional source roots. A relative path itself resolves from the current working directory. |
+| `--config` | path | none | zfb config file (`.ts`, `.mts`, `.js`, `.mjs`, or `.json`) to load instead of discovering `zfb.config.ts` or `zfb.config.json` in the project root. A relative path resolves from the current working directory. See [Explicit config files](#explicit-config-files). |
 | `--source` | glob, repeatable | none | Explicit zudo-wind candidate source, resolved from `--project-root`. Each glob must match at least one file. Matches under the configured `outDir`, at the `--output` path, under zfb scratch roots, or matching a `wind.sources.exclude` pattern are excluded. A declaration whose matches are all excluded fails with a `ZW010` error; a partially excluded declaration reports a `ZW010` warning and keeps its accepted matches. Caller order is preserved; exact duplicates use their first occurrence. The standalone command accepts `.html` and `.mjs` sources as well as the build/dev source extensions. |
 | `--no-auto-source` | boolean flag | `false` | Omit the command's conventional source-plan roots. Explicit `--source` values and the configured syntax-highlight role classes remain active. |
 | `--code-highlight-mode` | `class` or `inline` | config/default | Override `codeHighlight.mode` when deciding whether to include zfb's framework syntax-highlight CSS. Other `codeHighlight` settings, including `classPrefix` and `roleClasses`, still come from config. |
@@ -255,25 +256,48 @@ The `@import` paths resolve as authored CSS. zudo-wind gets utility values from 
 - **Sources follow the configured source plan.** `--source` supplies explicit inputs; `--no-auto-source` omits the command's conventional roots while preserving explicit inputs and the classes configured in `codeHighlight.roleClasses`. Walking a conventional root skips subdirectories named `node_modules`, `dist`, `build`, `target`, `.git`, `.cache`, `.turbo`, `.next`, `.vercel`, `.zfb-build`, and `.zfb`; files an explicit `--source` glob matches in such directories are still read. Declare a package source root with `wind.sources.packageRoots` or `--source`, or publish its candidates through `wind.manifests`, and remove files from every root with `wind.sources.exclude`. The consuming project's configured `outDir`, the `--output` path, and zfb scratch roots stay excluded. If every match from an explicit `--source` is under one of those output roots or matches a `wind.sources.exclude` pattern, `zfb css` reports a `ZW010` error; if only some matches are excluded, it reports a `ZW010` warning and scans the accepted files. For example, `--source 'dist/**/*.tsx'` reports an error when `dist` is the configured `outDir`. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md` by default; standalone explicit inputs can also use `.html` and `.mjs`. See [Sources and candidates](../zudo-wind/sources-and-candidates.mdx) for source-plan details.
 - **Output is deterministic and replaced atomically.** The same entry, config, and ordered source set produce timestamp-, sourcemap-, and temporary-path-free bytes. A successful compile atomically replaces `--output`; a failed compile leaves any existing output untouched.
 - **This is a global-CSS-only command.** CSS Modules are not discovered or processed. Package-attributed `url()` assets that would require companion files are rejected in v1 with a non-zero exit instead of being emitted beside the stylesheet.
-- **Config use is narrow.** When present, `zfb.config.json` or `zfb.config.ts` supplies wind tokens, reset, sources, and syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. `wind: false` disables wind generation while authored CSS and highlight processing continue. An omitted key uses the empty enabled wind config.
+- **Config use is narrow.** When present, the `--config` file or the project's `zfb.config.json` or `zfb.config.ts` supplies wind tokens, reset, sources, and syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. `wind: false` disables wind generation while authored CSS and highlight processing continue. An omitted key uses the empty enabled wind config.
 - **V1 wind output is not minified.** Generated wind CSS uses the fixed printer described in [Cascade and reset](../zudo-wind/cascade-and-reset.mdx).
+
+### Explicit config files
+
+A package that ships a stylesheet has no site config of its own, but its classes use the tokens of the configuration its consumers run. `--config <file>` loads that configuration with the normal config loader, including presets, without making the package look like a site:
+
+```sh
+cd packages/ui
+zfb css \
+  --input src/styles/entry.css \
+  --output dist/ui.css \
+  --config ../../site/zfb.config.ts \
+  --project-root . \
+  --source 'src/**/*.tsx' \
+  --no-auto-source
+```
+
+Two directories are involved:
+
+- **The config file's directory** anchors every reference written in the config: relative `wind.manifests` paths, `wind.sources.packageRoots`, and `wind.sources.exclude` patterns. A preset keeps its own package directory as the base for the references it declares, and preset packages resolve from the config file's directory.
+- **The project root** anchors the command's own inputs: `--source` globs, the conventional source roots, and the configured `outDir` exclusion. Without `--project-root`, it is the config file's directory.
+
+`zfb wind explain` and `zfb wind audit` accept the same `--config` flag, so one configuration file can drive the compile, the audit, and candidate checks. Without `--config`, every command behaves as before and discovers `zfb.config.ts` or `zfb.config.json` in the project root.
 
 ## `zfb wind`
 
 Use `zfb wind explain` to inspect how a candidate is parsed, resolved, and emitted. The explanation includes its catalog entry, token bindings, declarations, selector, conditions, and ordering data.
 
 ```sh
-zfb wind explain [--project-root <path>] [--json] <candidate>
-zfb wind explain [--project-root <path>] [--json] --stdin
+zfb wind explain [--project-root <path>] [--config <file>] [--json] <candidate>
+zfb wind explain [--project-root <path>] [--config <file>] [--json] --stdin
 zfb wind explain -- -mt-4
 ```
 
-A candidate that starts with a dash, such as a negative utility, must follow `--` so it is not read as an option. `--stdin` reads one complete candidate per nonempty line and explains them all with one configuration load, in input order and keeping duplicates. `--json` prints `{ "schemaVersion": 1, "command": "explain", "explanations": [...] }` on stdout and nothing else.
+`--config <file>` loads a zfb config file instead of discovering one in the project root, as described in [Explicit config files](#explicit-config-files). A candidate that starts with a dash, such as a negative utility, must follow `--` so it is not read as an option. `--stdin` reads one complete candidate per nonempty line and explains them all with one configuration load, in input order and keeping duplicates. `--json` prints `{ "schemaVersion": 1, "command": "explain", "explanations": [...] }` on stdout and nothing else.
 
 Use `zfb wind audit` to review ordinary class-position names, missing or unused utilities, dynamic class fragments, and property conflicts within a single class-list literal. An exact `authoredClasses` match and `group`/`peer` markers are excluded. With `wind: false`, explain reports generation disabled and audit returns an empty candidate report.
 
 ```sh
-zfb wind audit [--project-root <path>] [--fail-on error|warning] [--plan standalone|build]
+zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
+               [--plan standalone|build]
                [--severity error|warning|auditInfo] [--json]
 ```
 

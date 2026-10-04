@@ -130,7 +130,7 @@ export default defineConfig({
 });
 ```
 
-`widgets` パッケージは `./wind.json` を export する必要があります。bare specifier はパッケージの exports から解決され、`./` で始まるパスはプロジェクトルート（プリセット由来ならそのプリセットパッケージ）を基準に解決されます。[マニフェストパスの解決](../zudo-wind/configuration.mdx#wind-キー-マニフェストパスの解決)を参照してください。
+`widgets` パッケージは `./wind.json` を export する必要があります。bare specifier はパッケージの exports から解決され、`./` で始まるパスは宣言した config のディレクトリ（プリセット由来ならそのプリセットパッケージ）を基準に解決されます。[マニフェストパスの解決](../zudo-wind/configuration.mdx#wind-キー-マニフェストパスの解決)を参照してください。
 
 配布するコンポーネントは `@takazudo/zfb/zudo-react` からインポートし、同じ JSX import source を使ってください。zudo-react が描画するコンポーネントには Preact や React の JSX runtime import を含めないでください。独自フレームワークを持つ不透明な自己マウント型ウィジェットは、島から遅延読み込みできます。[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)を参照してください。マニフェストの検証と探索ルートは [ソースと候補](../zudo-wind/sources-and-candidates.mdx)を参照してください。
 

@@ -137,7 +137,7 @@ export default defineConfig({
 });
 ```
 
-The `widgets` package must export `./wind.json`. A bare specifier resolves through its package exports; a `./` path resolves from the project root (or from the declaring preset package). See [manifest path resolution](../zudo-wind/configuration.mdx#the-wind-key-manifest-path-resolution).
+The `widgets` package must export `./wind.json`. A bare specifier resolves through its package exports; a `./` path resolves from the directory of the config that declares it (or from the declaring preset package). See [manifest path resolution](../zudo-wind/configuration.mdx#the-wind-key-manifest-path-resolution).
 
 Ship package components using imports from `@takazudo/zfb/zudo-react` and the same JSX import source. Do not ship Preact or React JSX runtime imports in components rendered by zudo-react. An opaque self-mounting widget with its own framework can be lazily loaded from an island; see [Embedding a third-party widget](../concepts/islands.mdx#embedding-a-third-party-widget). See [sources and candidates](../zudo-wind/sources-and-candidates.mdx) for manifest validation and root rules.
 

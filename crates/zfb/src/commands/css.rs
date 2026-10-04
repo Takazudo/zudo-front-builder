@@ -8,8 +8,9 @@ use zfb_css::{AuthoredCssEngine, CssEmitterOutput, CssEngine, CssEngineOutput, W
 
 use crate::cli::{CssArgs, CssCodeHighlightMode};
 use crate::commands::css_support::{
-    build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
-    resolve_framework_css_with_options, run_css_emitter_without_modules,
+    build_standalone_wind_source_plan, command_project_root, configured_wind,
+    index_standalone_wind_sources, load_command_config, resolve_framework_css_with_options,
+    run_css_emitter_without_modules,
 };
 use crate::config::CodeHighlightMode;
 
@@ -58,7 +59,8 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     let cwd = absolute_path(cwd, cwd);
     let input = absolute_path(&cwd, &args.input);
     let output = absolute_path(&cwd, &args.output);
-    let project_root = absolute_path(&cwd, args.project_root.as_deref().unwrap_or(Path::new(".")));
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
 
     let mut validation_errors = Vec::new();
     if let Err(error) = std::fs::read(&input) {
@@ -86,7 +88,7 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     // particular, this does not discover pages/content and never starts the
     // plugin host. A config-less directory returns Config::default() without
     // evaluating TypeScript or booting V8.
-    let config = crate::config::load_from_dir(&project_root)
+    let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for CSS compilation")?;
     let (generation_enabled, wind_config) = configured_wind(&config);
@@ -381,6 +383,7 @@ mod tests {
             input: PathBuf::from("entry.css"),
             output: PathBuf::from("dist/out.css"),
             project_root: None,
+            config: None,
             source: Vec::new(),
             no_auto_source: false,
             code_highlight_mode: None,

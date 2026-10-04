@@ -1553,3 +1553,128 @@ fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
         assert!(!emitted.contains(selector), "{selector} leaked:\n{emitted}");
     }
 }
+
+/// A package with no site config or pages, plus a sibling directory holding
+/// the zfb config its consumers use (#3531).
+fn package_with_external_config_fixture() -> TempDir {
+    let temp = tempfile::tempdir().expect("create package fixture");
+    let package = temp.path().join("pkg");
+    let shared = temp.path().join("shared");
+    fs::create_dir_all(package.join("src")).expect("create package src");
+    fs::create_dir_all(&shared).expect("create shared config dir");
+    fs::write(package.join("package.json"), "{}\n").expect("write package.json");
+    fs::write(package.join("entry.css"), "").expect("write CSS entrypoint");
+    fs::write(
+        package.join("src/a.tsx"),
+        "export const A = () => <div class=\"bg-surface p-hsp-sm\" />;\n",
+    )
+    .expect("write package source");
+    fs::write(
+        shared.join("zfb.config.json"),
+        r##"{"wind":{"spec":1,"tokens":{"colors":{"surface":"#fff"},"spacing":{"hsp-sm":"0.5rem"}},"manifests":{"widgets":{"path":"./widgets.json"}}}}"##,
+    )
+    .expect("write shared config");
+    fs::write(
+        shared.join("widgets.json"),
+        r#"{"schemaVersion":1,"specVersion":1,"producer":"widgets","candidates":["m-hsp-sm"]}"#,
+    )
+    .expect("write shared manifest");
+    temp
+}
+
+#[test]
+fn css_command_compiles_a_package_with_an_explicit_config_file() {
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+
+    let without = run_css(
+        &package,
+        "entry.css",
+        "dist/pkg.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&without, "package tokens without --config");
+    assert!(
+        process_stderr(&without).contains("ZW006"),
+        "{}",
+        combined_output(&without)
+    );
+
+    let output = run_css(
+        &package,
+        "entry.css",
+        "dist/pkg.css",
+        Some("."),
+        &["src/**/*.tsx"],
+        &["--no-auto-source", "--config", "../shared/zfb.config.json"],
+    );
+    assert_success(&output, "package compiled against an explicit config");
+    let css = fs::read_to_string(package.join("dist/pkg.css")).expect("read package CSS");
+    for selector in [".bg-surface", ".p-hsp-sm", ".m-hsp-sm"] {
+        assert!(css.contains(selector), "{selector} missing:\n{css}");
+    }
+}
+
+#[test]
+fn wind_explain_and_audit_load_an_explicit_config_file() {
+    use std::io::Write;
+    let temp = package_with_external_config_fixture();
+    let package = temp.path().join("pkg");
+
+    let mut child = Command::new(zfb_binary!())
+        .args([
+            "wind",
+            "explain",
+            "--stdin",
+            "--json",
+            "--config",
+            "../shared/zfb.config.json",
+        ])
+        .current_dir(&package)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn `zfb wind explain --config`");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"bg-surface\np-hsp-sm\nrounded-missing\n")
+        .expect("write candidates");
+    let output = child.wait_with_output().expect("wait for explain");
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let outcomes: Vec<_> = document["explanations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|explanation| explanation["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["resolved_utility", "resolved_utility", "invalid"]
+    );
+
+    let audit = Command::new(zfb_binary!())
+        .args([
+            "wind",
+            "audit",
+            "--json",
+            "--project-root",
+            ".",
+            "--config",
+            "../shared/zfb.config.json",
+            "--fail-on",
+            "error",
+        ])
+        .current_dir(&package)
+        .output()
+        .expect("spawn `zfb wind audit --config`");
+    assert!(audit.status.success(), "{}", combined_output(&audit));
+    let document: serde_json::Value = serde_json::from_slice(&audit.stdout).unwrap();
+    let manifests = document["coverage"]["manifests"].to_string();
+    assert!(manifests.contains("widgets"), "{manifests}");
+}

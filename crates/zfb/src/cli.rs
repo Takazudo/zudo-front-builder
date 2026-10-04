@@ -98,17 +98,29 @@ pub struct WindExplainArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Project root used for config loading. Defaults to the current directory.
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 /// Arguments for `zfb wind audit`.
 #[derive(Debug, Args)]
 pub struct WindAuditArgs {
-    /// Project root used for config loading. Defaults to the current directory.
+    /// Project root used for config discovery and source paths. Defaults to
+    /// the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Fail when diagnostics meet this severity threshold.
     #[arg(long, value_enum)]
@@ -163,10 +175,15 @@ pub struct CssArgs {
     #[arg(long, required = true)]
     pub output: PathBuf,
 
-    /// Project root used for config loading and source-glob resolution.
-    /// Defaults to the current directory.
+    /// Project root used for config discovery and source-glob resolution.
+    /// Defaults to the --config file's directory, else the current directory.
     #[arg(long)]
     pub project_root: Option<PathBuf>,
+
+    /// zfb config file to load instead of discovering one in the project
+    /// root. Its directory anchors config-relative references.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Explicit zudo-wind source root or glob, relative to the project root. Repeatable.
     #[arg(long)]

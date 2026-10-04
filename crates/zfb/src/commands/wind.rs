@@ -1,7 +1,7 @@
 //! Candidate inspection commands for zudo-wind.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -12,7 +12,8 @@ use crate::cli::{
     WindExplainArgs,
 };
 use crate::commands::css_support::{
-    build_standalone_wind_source_plan, configured_wind, index_standalone_wind_sources,
+    build_standalone_wind_source_plan, command_project_root, configured_wind,
+    index_standalone_wind_sources, load_command_config,
 };
 
 /// Dispatch the zudo-wind command family.
@@ -33,8 +34,10 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
             &std::io::read_to_string(std::io::stdin()).context("failed to read stdin")?,
         ),
     };
-    let project_root = project_root(args.project_root.as_deref())?;
-    let config = crate::config::load_from_dir(&project_root)
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind explain")?;
     let (generation_enabled, wind_config) = configured_wind(&config);
@@ -80,8 +83,10 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
         json: args.json,
         severity: args.severity,
     };
-    let project_root = project_root(args.project_root.as_deref())?;
-    let project_config = crate::config::load_from_dir(&project_root)
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let project_root =
+        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+    let project_config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind audit")?;
     let (generation_enabled, mut wind_config) = configured_wind(&project_config);
@@ -158,7 +163,7 @@ async fn build_audit_plan(
         setup.setup_registries.injected_routes.as_slice(),
     )
     .context("resolving package-owned routes for wind audit --plan build")?;
-    let package_route_entrypoints: Vec<PathBuf> = overlay
+    let package_route_entrypoints: Vec<std::path::PathBuf> = overlay
         .materialized
         .iter()
         .map(|route| route.entrypoint.clone())
@@ -451,17 +456,6 @@ fn audit_exit(
     }
 }
 
-fn project_root(root: Option<&Path>) -> Result<PathBuf> {
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
-    let root = root.unwrap_or(Path::new("."));
-    let root = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        cwd.join(root)
-    };
-    Ok(zfb_types::normalize_path_lexical(&root))
-}
-
 #[derive(Clone)]
 struct ManifestAuditOwner {
     producer: String,
@@ -647,6 +641,7 @@ fn rewrite_role_class_view(origin: &mut zfb_css::OriginView, candidate: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn audit_report(outcome: zfb_css::AuditOutcome, severities: &[&str]) -> zfb_css::AuditReport {
         zfb_css::AuditReport {
