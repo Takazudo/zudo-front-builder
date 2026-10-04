@@ -83,12 +83,12 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
+- `lefthook` runs the pre-commit pipeline: Oxfmt (`vp fmt`) over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
 - Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline. The main PR gate includes `cargo fmt --all --check`, `pnpm typecheck:workspace`, `pnpm test:workspace`, `pnpm format:check`, `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, the env-gated binary integration tests, `cargo nextest run --workspace --profile ci`, `cargo test --workspace --doc`, and actionlint.
 
 ## Formatting
 
-JavaScript, TypeScript, JSON, and YAML are formatted with **Prettier**. Markdown and MDX use the dedicated `@takazudo/mdx-formatter` step.
+JavaScript, TypeScript, JSON, and YAML (`js`, `mjs`, `cjs`, `ts`, `tsx`, `json`, `yml`, `yaml`) are formatted with **Oxfmt**, through Vite+'s `vp fmt`. Markdown and MDX are formatted only by `@takazudo/mdx-formatter` (an exact devDependency, configured by `.mdx-formatter.json`). Rust stays with `cargo fmt`.
 
 Run formatters across the repo:
 
@@ -99,16 +99,18 @@ pnpm format:check   # check formatting (CI-friendly, exits non-zero on diffs)
 
 Targeted variants:
 
-- `pnpm format:ts` / `pnpm format:check:ts` — Prettier over JS/TS/JSON/YAML
+- `pnpm format:ts` / `pnpm format:check:ts` — Oxfmt over JS/TS/JSON/YAML
 - `pnpm format:mdx` / `pnpm format:check:mdx` — Markdown/MDX
 
-The pre-commit hook (lefthook) runs Prettier on staged matching files and re-stages the fixes.
+The pre-commit hook (lefthook) runs each formatter on its own staged files and re-stages the fixes.
 
-### Why Prettier (and not Oxfmt) for now
+### Oxfmt configuration and file ownership
 
-[Oxfmt](https://oxc.rs/docs/guide/usage/formatter.html) is the formatter from the Oxc project and is the long-term direction the JS ecosystem is moving toward (30x faster than Prettier, 100% Prettier JS/TS conformance, supports JSON and YAML). At evaluation time (2026-04-26) it is published as `oxfmt` v0.46.0 and is officially in **Beta** ([announcement](https://oxc.rs/blog/2026-02-24-oxfmt-beta)) — sub-1.0 with no formal stable release yet, comparable to where Oxlint sat before its v1.0 stable announcement.
+Oxfmt's settings live in the `fmt` block of the root `vite.config.mjs` (Vite+ discovers it; there is no separate `.oxfmtrc.json`). They carry over the former Prettier settings: semicolons, double quotes, trailing commas everywhere, and a print width of 100. Package.json key sorting, import sorting, and Tailwind class sorting stay off.
 
-To keep the foundation conservative we ship Prettier today and revisit the swap once Oxfmt cuts a 1.0 / "stable" release. Tracker: [oxc-project/oxc milestone 19](https://github.com/oxc-project/oxc/milestone/19).
+`ignorePatterns` in that block replaces `.prettierignore`, and Oxfmt also reads the root `.gitignore`, as Prettier 3 did. It excludes `.md`/`.mdx` (owned by mdx-formatter) and the other formats Prettier never formatted (HTML, CSS, TOML, JSX, `.sublime-syntax`), so even a bare `vp fmt` touches only the files above. It also protects the byte-exact goldens: `pnpm-lock.yaml`, `crates/zfb-content/tests/fixtures/two-collections-schemas/expected.d.ts`, and the md-roundtrip fixtures. Use `pnpm format:ts` rather than `vp check`, which also lints and type-checks.
+
+The switch from Prettier happened in #3558, after Oxfmt shipped inside Vite+ 1.0.0. The one-time reformat commit is listed in `.git-blame-ignore-revs`; run `git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip it in `git blame`.
 
 ## CI secrets
 
