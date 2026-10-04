@@ -49,7 +49,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 
 import { compile, renderHtml } from "../dist/index.js";
 import type { ZfbMdWasmOptions } from "../dist/index.js";

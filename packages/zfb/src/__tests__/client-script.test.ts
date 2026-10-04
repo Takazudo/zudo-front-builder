@@ -10,7 +10,7 @@
 // 4. `__zfb` present but `base` field absent (other slots set, `base` never
 //    emitted — zero-script fallback or an older bundle).
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { clientScript } from "../client-script.js";
 
 // We need to manipulate globalThis.__zfb between tests.

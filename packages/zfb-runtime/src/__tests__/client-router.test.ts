@@ -7,7 +7,7 @@
 //
 // This pins the meta-tag contract with sibling sub-issue #276.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 // Imports the pure component module directly (#2437) — it has no
 // module-scope side effects, so no vi.mock is needed to suppress `init()`

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { escapeAttribute, escapeText } from "../../zudo-react/escape.js";
 
 describe("HTML escaping", () => {

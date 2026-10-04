@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { h, signal, type Child, type Diagnostic } from "../../zudo-react/index.js";
 import { mount } from "../../zudo-react/client.js";

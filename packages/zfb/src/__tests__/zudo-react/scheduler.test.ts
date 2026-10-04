@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { batch, enqueue, flush, MAX_FLUSH_PASSES, type Job } from "../../zudo-react/scheduler.js";
 
 it("batches nested writes and restores depth after a throw", async () => {

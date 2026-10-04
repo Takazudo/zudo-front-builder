@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import * as parseEntry from "../dist/parse.js";
 import * as renderEntry from "../dist/render.js";

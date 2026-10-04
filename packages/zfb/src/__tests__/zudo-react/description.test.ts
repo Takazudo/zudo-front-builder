@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Fragment, Show, flattenChildren, h, isDescription } from "../../zudo-react/index.js";
 import { jsx, jsxs } from "../../zudo-react/jsx-runtime.js";
 import { jsxDEV } from "../../zudo-react/jsx-dev-runtime.js";

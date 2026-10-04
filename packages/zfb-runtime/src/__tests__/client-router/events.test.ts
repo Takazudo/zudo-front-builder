@@ -12,7 +12,7 @@
 // consumer subscribing to lifecycle events depends on, so we verify the order
 // observably (sequence numbers) rather than via implementation snooping.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 

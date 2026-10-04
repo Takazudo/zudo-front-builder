@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jsx, jsxs } from "../zudo-react/jsx-runtime.js";
 
 import { getCollection, setContentSnapshot } from "../content.js";

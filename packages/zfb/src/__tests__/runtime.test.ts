@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vite-plus/test";
 
 import {
   __hasPendingCancelForTests,
@@ -1096,7 +1096,10 @@ describe("island mounted marker state contract (#2541)", () => {
     const mount = vi.fn();
     const observer = { disconnect: vi.fn(), observe: vi.fn() };
     let trigger: ((isIntersecting: boolean) => void) | undefined;
-    const Observer = vi.fn((callback: IntersectionCallback) => {
+    // A `function` implementation, not an arrow: the runtime calls it with
+    // `new`, and Vitest 4+ mocks are only constructible from a constructible
+    // implementation.
+    const Observer = vi.fn(function (callback: IntersectionCallback) {
       trigger = (isIntersecting) => {
         callback([{ isIntersecting, target: el }], observer);
       };

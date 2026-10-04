@@ -29,7 +29,7 @@ import remarkDirective from "remark-directive";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { visit } from "unist-util-visit";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 
 import {
   MdastAdapterError,

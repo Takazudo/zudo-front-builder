@@ -7,7 +7,7 @@
   "description": "zudo-front-builder — frontend build orchestrator (private workspace)",
   "packageManager": "pnpm@12.8.2",
   "engines": {
-    "node": ">=22.0.0",
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0",
     "pnpm": ">=12.0.0"
   },
   "scripts": {
@@ -39,8 +39,8 @@
     "//// test:md-wasm:local downgrades gzip-ceiling breaches to warnings for Mac/CI codegen drift (zfb#3054) via --allow-over-ceiling (zfb#3060); CI refuses the flag, so it can't green a PR gate": "",
     "test:md-wasm:local": "pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling && pnpm --filter @takazudo/zfb-md-wasm test",
     "//// === ROOT-LEVEL SCRIPTS (scripts/**, run via pnpm -r --include-workspace-root) ===": "",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vp test run",
+    "test:watch": "vp test",
     "//// === CLIENT-ROUTER L4 (Chromium, runs in CI) ===": "",
     "test:router-chromium": "pnpm -C packages/zfb-runtime build && pnpm -C packages/zfb build && node tests/router-chromium/build-real-islands-fixture.mjs && pnpm exec playwright test --config tests/router-chromium/playwright.config.mjs",
     "//// === ZUDO-WIND COMPUTED STYLE L5 (Chromium) ===": "",
@@ -56,8 +56,8 @@
     "html-validate": "10.17.0",
     "lefthook": "^2.1.6",
     "prettier": "^3.8.3",
-    "vitest": "^2.1.9",
     "wrangler": "4.85.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "vite-plus": "catalog:"
   }
 }
