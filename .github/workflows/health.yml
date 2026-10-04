@@ -53,7 +53,7 @@ jobs:
           base: ${{ github.ref }}
           filters: |
             wasm_md:
-              # The six-crate cargo metadata closure across all six matrix
+              # The six-crate cargo metadata closure across all seven matrix
               # feature configurations (zfb-md-wasm plus these five crates).
               - 'crates/zfb-md-wasm/**'
               - 'crates/zfb-content/**'
@@ -878,6 +878,9 @@ jobs:
           - label: no-features
             cargo_args: "--no-default-features"
             graph_config: none
+          - label: compile
+            cargo_args: "--no-default-features --features compile"
+            graph_config: compile
           - label: highlight
             cargo_args: "--no-default-features --features highlight"
             graph_config: highlight
