@@ -10,15 +10,15 @@ Generated 2026-10-04 by an automated diagnosis of `main` @ `a65433f`. Counts com
 
 | Package / dir | zfb | zudo-doc / zudo-sg / zdtp | Tailwind | Preact | Islands | md-wasm | Deploy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `doc/` (`zudo-modular-component-corpus-doc`; `doc/zfb.config.ts`) | `@takazudo/zfb` `2.21.0` exact, `-runtime` `2.21.0`, `-md-wasm` `2.21.0` (`doc/package.json:22-24`) | `@takazudo/zudo-doc` `5.27.0`, `@takazudo/zudo-doc-history-server` `5.27.0` (`:25-26`; history server is a scaffold leftover — `docHistory: false` at `doc/zfb.config.ts:20`); no zudo-sg, no zdtp | scaffold `doc/src/styles/global.css` only (`tailwindcss/preflight`, `tailwindcss/utilities`, 3 `@source`, empty `@theme {}`); no `tailwind.config.*`, no `@tailwindcss/*`, no `ZFB_TAILWIND*` | `preact ^10.29.1`, `preact-render-to-string ^6.6.6` (`:29-30`) for zudo-doc's engine; host has 1 pragma file (`doc/pages/docs/[[...slug]].tsx:1-2`), 0 hooks | none host-owned; `doc/pages/lib/_circuit-doc-islands.ts` imports `@takazudo/zudo-circuit-doc/islands` (2 Preact island roots) | dep only (zudo-doc HtmlPreview); no direct calls | **none**: no `wrangler.*`; `.github/workflows/check.yml` builds and uploads `doc/dist` as the `corpus-reading-site` artifact; README: "No production domain or deployment is configured" |
-| `@takazudo/zudo-circuit-doc` (root `devDependencies` `0.1.0` exact; `doc/` dep `0.1.0` exact) | peer `^2.20.2` | peer `^5.27.0` | `styles.css` 525 lines authored BEM `zcd-*`, 0 directives, reads 22 zudo-doc theme custom properties (`--color-muted` x12, `--color-surface` x6, `--spacing-vsp-xs` x5, `--default-transition-duration` x4, …) | peer; 10 shipped modules import `preact`; hooks `useState` x7, `useRef` x7, `useEffect` x4; `useModalDialog` from `@takazudo/zudo-doc/use-modal-dialog` | `FootprintPreviewIsland`, `PackageModelViewerIsland` (three.js 0.185.1), `PreviewEnlargeDialog` | none | n/a |
+| `doc/` (`zudo-modular-component-corpus-doc`; `doc/zfb.config.ts`) | `@takazudo/zfb` `2.21.0` exact, `-runtime` `2.21.0`, `-md-wasm` `2.21.0` (`doc/package.json:22-24`) | `@takazudo/zudo-doc` `5.27.0`, `@takazudo/zudo-doc-history-server` `5.27.0` (`:25-26`; history server is a scaffold leftover — `docHistory: false` at `doc/zfb.config.ts:20`); no zudo-sg, no zdtp | scaffold `doc/src/styles/global.css` only (`tailwindcss/preflight`, `tailwindcss/utilities`, 3 `@source`, empty `@theme {}`); no `tailwind.config.*`, no `@tailwindcss/*`, no `ZFB_TAILWIND*` | `preact ^10.29.1`, `preact-render-to-string ^6.6.6` (`:29-30`) for zudo-doc's engine; host has 1 pragma file (`doc/pages/docs/[[...slug]].tsx:1-2`), 0 hooks | none host-owned; `doc/pages/lib/_circuit-doc-islands.ts` imports `@takazudo/zudo-circuit-doc/islands` (2 Preact island roots) | dep only (zudo-doc HtmlPreview); no direct calls | **none**: no `wrangler.*`; `.github/workflows/check.yml` builds and uploads `doc/dist` as the `corpus-reading-site` artifact; `README.md:143`: "No website is deployed by this import" |
+| `@takazudo/zudo-circuit-doc` (root `devDependencies` `0.1.0` exact; `doc/` dep `0.1.0` exact) | peer `^2.20.2` | peer `^5.27.0` | `styles.css` 525 lines authored BEM `zcd-*`, 0 directives, reads 22 zudo-doc theme custom properties (`--color-muted` x12, `--color-surface` x6, `--spacing-vsp-xs` x5, `--default-transition-duration` x4, …) | peer; 10 shipped modules import `preact`; hooks `useState` x5, `useRef` x5, `useEffect` x2 call sites (7/7/4 counting the import identifiers); `useModalDialog` from `@takazudo/zudo-doc/use-modal-dialog` | 3 `"use client"` modules: `FootprintPreviewIsland` (`useState` x4, `useRef` x2, `useEffect` x1), `PackageModelViewerIsland` (three.js 0.185.1; `useState` x1, `useRef` x3, `useEffect` x1), `PreviewEnlargeDialog` (`useModalDialog`) | none | n/a |
 | repo root (`corpus/`, `scripts/build_corpus.py`, `scripts/build_browser.mjs`, `doc/public/assets/corpus-browser.html`) | none | none | none (the standalone viewer is bundled by `scripts/build_browser.mjs`, not zfb) | none | none | none | n/a |
 
 Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` against the sibling repo, `npm view` / `npm pack @takazudo/zudo-circuit-doc@0.2.0`, `gh api repos/Takazudo/zudo-circuit-doc/branches`.
 
 ## Sequencing and blockers
 
-1. **zudo-doc 6.0.0** (zudolab/zudo-doc#4430, PR #4477; consumer guide #4473 planned). Blocked on zfb fixes #3569/#3570 that are on zfb `main` but **unreleased** — so 6.0.0 will pin the **next zfb release**, not 3.1.0.
+1. **zudo-doc 6.0.0** (zudolab/zudo-doc#4430, PR #4477; consumer guide #4473 planned). Blocked on zfb fixes #3569/#3570 that are on zfb `main` but **unreleased**; the epic's round-2 lock is exact 3.1.0 / peer `^3.1.0` (R2-DD3), so expect 6.0.0 to re-lock on the **next zfb release** — pin whatever its peer range names.
 2. **zudo-circuit-doc v3 release** (public repo, `main` pushed 2026-10-02 for v0.2.0; branches `main` + `claude/quirky-clarke-ayd6am` at 0 ahead/95 behind; 0 open issues). Needs 2 islands + 7 UI components on zudo-react, peers `zfb ^3`/`zudo-doc ^6`, `preact` peer dropped, `styles.css` variables re-pointed at zudo-doc 6's emitted names. Separate M-size job; this guide lists what this host needs from it.
 3. **This repo** (S): pins; re-copy the five vendored scaffold files from `create-zudo-doc@6`; re-apply the two ADR-015/ADR-016 glue lines; drop the dead history-server dep/script; rebuild; `pnpm check:site`, `pnpm corpus:check`, `scripts/test_browser.py`.
 4. **Possible now**: file the zudo-circuit-doc tracking issue; note the plan in `ZUDO_DEPS_PINS.md`; nothing else — all pins are exact and CI installs with `--frozen-lockfile`, so nothing floats to 3.x by accident.
@@ -27,7 +27,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
 
 ### 1. Dependencies, config, tsconfig, env
 
-- `doc/package.json:22-24` — zfb family to the exact version zudo-doc 6.0.0 pins. `doc/package.json:25` + root `package.json:23` — `@takazudo/zudo-doc` → `6.0.0`; `@takazudo/zudo-circuit-doc` → its first v3-compatible release (both exact, as today).
+- `doc/package.json:22-24` — zfb family to the exact version zudo-doc 6.0.0 pins. One root `pnpm-lock.yaml` covers `doc/` (`pnpm-workspace.yaml`: `["doc"]`); no separate `doc/` lockfile. `doc/package.json:25` + root `package.json:23` — `@takazudo/zudo-doc` → `6.0.0`; `@takazudo/zudo-circuit-doc` → its first v3-compatible release (both exact, as today).
 - `doc/package.json:26` + `:10,17,18` — `@takazudo/zudo-doc-history-server` and the `dev:history` / `dev:network` scripts are unused (`docHistory: false`). Drop them in the same PR, or keep the dep at `6.0.0` for lockstep; either way do not leave 5.27.0 behind.
 - `doc/package.json:29-30` — delete `preact` and `preact-render-to-string` (only present for zfb's removed engine; https://zfb.takazudomodular.com/guides/migrating-to-v3/#components-and-islands), unless zudo-circuit-doc's v3 release still declares a `preact` peer.
 
@@ -44,7 +44,7 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
   }
   ```
 
-- `doc/zfb.config.ts` (77 lines) — no host-side `framework`/`tailwind` key exists (both are emitted by `zudoDoc()` in 5.x); the `delete site.markdown?.features?.linkValidation;` at `:75` is unrelated and stays. An absent `wind` key is the empty v1 config (reset `none`, no tokens; https://zfb.takazudomodular.com/zudo-wind/configuration/#the-wind-key), so tokens/reset must come from the preset. zudo-doc 6 plans a wind override through `zudoDoc()` — verify the key name in #4473 before using it.
+- `doc/zfb.config.ts` (77 lines) — no host-side `framework`/`tailwind` key exists (both are emitted by `zudoDoc()` in 5.x); the `delete site.markdown?.features?.linkValidation;` at `:75` is unrelated and stays. An absent `wind` key is the empty v1 config (reset `none`, no tokens; https://zfb.takazudomodular.com/zudo-wind/configuration/#the-wind-key), so tokens/reset must come from the preset. zudo-doc 6 plans the consumer override as `zudoDoc({ wind: {...} })`, package-owned tokens as `var(--…)`, `owned-v1` reset plus an authored preflight patch, no `spacingUnit`, `sm`/`lg`/`xl` breakpoints, `dark: false` and a `./wind.json` manifest (DD4 in #4430; confirm in #4473). This host has no utilities of its own, so it should need no override.
 - `doc/tsconfig.json:8-10` — remove the `react`/`react/jsx-runtime`/`react-dom` → `preact/compat` aliases; `jsx: "react-jsx"` + `jsxImportSource: "@takazudo/zfb/zudo-react"` should arrive via `@takazudo/zudo-doc/tsconfig.base.json` (planned flip of a consumer-shipped file); add them locally only if 6.0.0 does not.
 
   ```json
@@ -74,8 +74,8 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
   @import "@takazudo/zudo-circuit-doc/styles.css";
   ```
 
-- Reset: today's page relies on Tailwind preflight in the `zd-preflight` layer. Whichever `wind.reset` zudo-doc 6 selects changes `sub`/`sup`, `small`, `hr`, `::placeholder`, `::file-selector-button`, `[hidden]` and control backgrounds (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#differences-from-tailwind-preflight). Check the evidence tables, `<details>` blocks and the model-viewer `<dialog>` — a prose-only pixel diff misses them.
-- Cascade: wind places utilities **after** authored unlayered CSS by default (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties); zudo-circuit-doc's `styles.css` is unlayered, so `(0,1,0)` `zcd-*` rules that beat a zudo-doc utility by order today will lose. `wind.utilities.placement: "before-authored"` is **next zfb release** (on `main`, not 3.1.0).
+- Reset: today's page relies on Tailwind preflight in the `zd-preflight` layer. zudo-doc 6 plans `owned-v1` plus an authored preflight patch (DD4 in #4430); the measured preflight → `owned-v1` differences the patch must cover are `sub`/`sup`, `small`, `hr`, `::placeholder`, `::file-selector-button`, `[hidden]` and control backgrounds (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#differences-from-tailwind-preflight). Check the evidence tables, `<details>` blocks and the model-viewer `<dialog>` — a prose-only pixel diff misses them.
+- Cascade: wind places utilities **after** authored unlayered CSS by default (https://zfb.takazudomodular.com/zudo-wind/coming-from-tailwind/#utility-placement-and-ties); zudo-circuit-doc's `styles.css` is unlayered, so `(0,1,0)` `zcd-*` rules that beat a zudo-doc utility by order today will lose. `wind.utilities.placement: "before-authored"` is **next zfb release** (3.1.0 rejects the key as `wind.utilities: unknown field`, measured); zudo-doc keeps the default order and fixes flips locally (DD5 in #4430).
 - Audit (zfb 3.1.0, temporary `wind: { spec: 1 }`, `zfb wind audit --project-root doc`, exit 0):
 
   ```text
@@ -86,10 +86,10 @@ Measured with: `find . -name 'zfb.config.*'`, the briefing greps, `diff -rq` aga
   dead classes: (none)
   dynamic constructions:
     - docs; at default/pages:docs/[[...slug]].tsx:2636
-  diagnostics: 11 x auditInfo (ZW002 x2, ZW005 x8, ZW012 x1) — all inside comments of the generator stubs
+  diagnostics: 11 x auditInfo (ZW002 x2, ZW005 x8, ZW012 x1) — import specifiers in 4 files + the template literal
   ```
 
-  162 MDX/MD files: 0 `class=`/`className=`. Content JSX: `<EvidenceAnchor>` x686, `<EvidenceFact>` x261, `<EvidenceTable>` x36, `<PackageModelViewer>` x35, `<EvidenceDetails>` x35, `<ComponentReferences>` x35, `<CategoryNav>` x1 — all package components. The host declares no tokens. (3.1.0 prints byte offsets; `file:line:col` audit locations and `--json`/`--severity`/`--plan` are **next zfb release**.)
+  162 MDX/MD files: 0 `class=`/`className=`. Content JSX: `<EvidenceAnchor>` x686, `<EvidenceFact>` x261, `<EvidenceTable>` x36, `<PackageModelViewer>` x35, `<EvidenceDetails>` x35, `<ComponentReferences>` x35, `<CategoryNav>` x1 — all package components. The host declares no tokens. The 11 `auditInfo` lines sit at import specifiers (`@takazudo/zudo-doc/...`, `virtual:zudo-doc-*`, `../lib/_circuit-doc-islands`) in the stub, `pages/index.tsx`, `pages/lib/_circuit-doc-islands.ts` and `src/chrome-bindings.tsx` — not in comments. (3.1.0 prints byte offsets; `file:line:col` audit locations and `--json`/`--severity`/`--plan` are **next zfb release**.)
 
 ### 3. Components and islands
 
@@ -144,7 +144,7 @@ Adapted from the 7-step checklist (https://zfb.takazudomodular.com/guides/migrat
 - **Chain of two upstreams**: zudo-doc 6.0.0 needs the next zfb release; zudo-circuit-doc has not started. This host is last.
 - **Token-name coupling** in `@takazudo/zudo-circuit-doc/styles.css` (22 zudo-doc custom properties incl. Tailwind's `--default-transition-duration`): silent visual loss, no diagnostic. Ask zudo-circuit-doc to pin against 6.0.0's emitted names.
 - **three.js inside a zudo-react island**: lifecycle must move to `onActivate`/cleanup; `dynamicPageTransition: true` means islands are disposed and re-created across client-side navigations — watch for WebGL context leaks in the browser check.
-- **`useModalDialog`** (zudo-doc 5.x Preact hook) has no hook successor in zudo-react; the dialog port depends on what zudo-doc 6 exports.
+- **`useModalDialog`** (zudo-doc 5.x Preact hook) is ported first as a shared zudo-react primitive in the epic (#4441 in #4430); the dialog port should target that 6.0.0 export.
 - **Cascade flip** for unlayered `zcd-*` rules; `placement: "before-authored"` is next zfb release only.
 - Not verified here: `zfb check` cannot run on the clone (preset imports need `node_modules`); the audit used a stand-in `wind: { spec: 1 }` config.
 
