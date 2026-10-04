@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "409f7dc9e2455070c318ca7874d10790c4f36fa7",
+  "baselineSourceSha": "e5522f619d849fc0f65026fdaa29c4d9c159b510",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -56,11 +56,11 @@
       },
       "model": {
         "raw": 63208,
-        "gzip": 21140
+        "gzip": 21144
       },
       "blog-theme": {
         "raw": 63558,
-        "gzip": 21278
+        "gzip": 21279
       },
       "json-api": {
         "raw": 63363,
@@ -68,7 +68,7 @@
       },
       "multi-island": {
         "raw": 63485,
-        "gzip": 21234
+        "gzip": 21236
       }
     },
     "packed": {
@@ -86,7 +86,7 @@
       },
       "show-for": {
         "raw": 63425,
-        "gzip": 21242
+        "gzip": 21243
       },
       "model": {
         "raw": 63270,
@@ -94,15 +94,15 @@
       },
       "blog-theme": {
         "raw": 63620,
-        "gzip": 21296
+        "gzip": 21298
       },
       "json-api": {
         "raw": 63425,
-        "gzip": 21252
+        "gzip": 21253
       },
       "multi-island": {
         "raw": 63547,
-        "gzip": 21261
+        "gzip": 21262
       }
     }
   },
