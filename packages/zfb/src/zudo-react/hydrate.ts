@@ -14,6 +14,7 @@ import {
 import type { ReadonlySignal } from "./reactive-types.js";
 import { subscribe } from "./reactive.js";
 import { batch } from "./scheduler.js";
+import { rawHtmlReserved } from "./raw-html.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
 import {
@@ -234,7 +235,7 @@ function scalar(value: unknown, path: string): string {
 function validateRawHtml(value: unknown, tag: string, path: string): asserts value is string {
   if (
     typeof value !== "string" ||
-    /<!--\/?zr:1:|data-zfb-island(?:-skip-ssr)?\s*=/.test(value) ||
+    rawHtmlReserved(value, tag) ||
     (tag === "script" && /<\/script/i.test(value)) ||
     (tag === "style" && /<\/style/i.test(value))
   )
