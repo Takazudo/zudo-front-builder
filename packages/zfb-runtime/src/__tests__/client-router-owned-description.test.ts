@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { isDescription } from "@takazudo/zfb/zudo-react";
 import { renderToString } from "@takazudo/zfb/zudo-react/server";
 

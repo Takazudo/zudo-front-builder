@@ -925,7 +925,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   only as part of a recorded triage, never merely to turn the lane green, and
   branch-only churn no longer requires one. The only refresh recipe is
   write-then-copy —
-  `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec vp fmt --write scripts/yaml-candidate-baseline.json`
   — because the detector reads the baseline it is about to replace for
   branch-ancestry evidence, so `--snapshot` output must never be redirected
   onto the baseline path.
@@ -960,7 +960,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   done only as part of a recorded triage note, under the same anti-gaming
   rule:
 
-  `S=$(mktemp -d) && jq --arg c CANDIDATE --arg v VERSION --arg t OBSERVED_TS '.candidates[$c].versionUpdatedAt[$v] = $t' scripts/yaml-candidate-baseline.json > "$S/ack.json" && cp "$S/ack.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  `S=$(mktemp -d) && jq --arg c CANDIDATE --arg v VERSION --arg t OBSERVED_TS '.candidates[$c].versionUpdatedAt[$v] = $t' scripts/yaml-candidate-baseline.json > "$S/ack.json" && cp "$S/ack.json" scripts/yaml-candidate-baseline.json && pnpm exec vp fmt --write scripts/yaml-candidate-baseline.json`
 
   **Accepted blind spots (weekly cadence).** The tripwire closes the
   crates.io half only. A tag or a GitHub Release added and then deleted
@@ -3043,12 +3043,12 @@ workspace package importers.
 
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
-| `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
-| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
-| `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
+| `package.json` | Private root; six dev tools: `@playwright/test`, `@takazudo/mdx-formatter` (exact 1.2.1, the only MD/MDX formatter; #3558 replaced `pnpm dlx`), `html-validate`, `lefthook`, `vite-plus` (Vite+, which bundles Vitest and Oxfmt; #3557 replaced the direct `vitest`, #3558 the direct `prettier`), `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
+| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vite-plus` (bundled Vitest, #3557), and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
+| `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and a Vite+ (bundled Vitest) dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages and build/test type tooling. | Clean: optional carriers and dev fixtures are part of the package contract; the owned runtime has no external framework peer. |
 | `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, the `@takazudo/zfb` peer, and dev fixtures. | Clean: Hono is the router dependency; the zfb peer keeps shared content-snapshot state single-instanced. |
-| `packages/zfb-adapter-cloudflare/package.json` | Publishable adapter with no runtime `dependencies`; Node types, TypeScript, and Vitest are dev-only. | Clean: shipped CLI uses Node built-ins and the project-local worker wrapper. |
+| `packages/zfb-adapter-cloudflare/package.json` | Publishable adapter with no runtime `dependencies`; Node types, TypeScript, and Vite+ (bundled Vitest) are dev-only. | Clean: shipped CLI uses Node built-ins and the project-local worker wrapper. |
 | `packages/zfb-darwin-arm64/package.json` | Publishable native carrier; no dependencies. | Clean: package ships the platform binary and metadata only. |
 | `packages/zfb-darwin-x64/package.json` | Publishable native carrier; no dependencies. | Clean: package ships the platform binary and metadata only. |
 | `packages/zfb-linux-arm64-gnu/package.json` | Publishable native carrier; no dependencies. | Clean: package ships the platform binary and metadata only. |
@@ -3057,6 +3057,8 @@ workspace package importers.
 | `crates/zfb-islands/npm/package.json` | Private islands runtime package with zfb dependency and test/type tooling. | Clean: the runtime package and its Vitest fixture use the declarations. |
 | `crates/zfb-md-wasm/npm/package.json` | Publishable md-wasm package; `@types/mdast`, `mdast-util-directive`, and `mdast-util-mdx` are dependencies, with parser/build tools dev-only. | Clean: published declarations re-export mdast/directive/MDX types and registries, so consumers need these dependencies. |
 | `tests/md-wasm-browser-smoke/package.json` | Private browser smoke package with the local packed md-wasm artifact. | Clean: the browser smoke imports the packaged artifact. |
+
+Keep the `typescript-6.0` (`npm:typescript@6.0.3`, #3559) and `typescript-5.9` (`npm:typescript@5.9.3`, #3556) devDependencies in `packages/zfb`, `packages/zfb-adapter-cloudflare` and `crates/zfb-md-wasm/npm`. Nothing imports them: the packed-declaration checks (`zudo-react-packed.mjs check`, `check-packed-types.mjs`, the md-wasm tarball-consumer test) compile with them, beside the pinned `typescript` 7.0.2, to keep the published types working for TS 6.0 and TS 5.9 consumers. All three manifests are named `typescript`; pnpm 12.8.2 links the highest version, the pinned compiler, as `node_modules/.bin/tsc`, so package scripts that call `tsc` are unaffected.
 
 No declaration with no reference was found in the retained inventory. The three
 dead docs declarations were removed and documented above. **No publishable

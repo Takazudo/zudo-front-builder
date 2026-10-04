@@ -1,7 +1,7 @@
 // Smoke tests for the `minifyHtml` config type and `defineConfig`
 // identity round-trip.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { defineConfig } from "../config.js";
 import type { ZfbConfig } from "../config.js";
 

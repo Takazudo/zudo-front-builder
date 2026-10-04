@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -479,20 +479,20 @@ describe("island shipped-size budget", () => {
       "event-only": { raw: 63209, gzip: 21137 },
       "scalar-signal": { raw: 63217, gzip: 21133 },
       "show-for": { raw: 63363, gzip: 21214 },
-      model: { raw: 63208, gzip: 21140 },
-      "blog-theme": { raw: 63558, gzip: 21278 },
+      model: { raw: 63208, gzip: 21144 },
+      "blog-theme": { raw: 63558, gzip: 21279 },
       "json-api": { raw: 63363, gzip: 21228 },
-      "multi-island": { raw: 63485, gzip: 21234 },
+      "multi-island": { raw: 63485, gzip: 21236 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
       "event-only": { raw: 63271, gzip: 21156 },
       "scalar-signal": { raw: 63279, gzip: 21159 },
-      "show-for": { raw: 63425, gzip: 21242 },
+      "show-for": { raw: 63425, gzip: 21243 },
       model: { raw: 63270, gzip: 21166 },
-      "blog-theme": { raw: 63620, gzip: 21296 },
-      "json-api": { raw: 63425, gzip: 21252 },
-      "multi-island": { raw: 63547, gzip: 21261 },
+      "blog-theme": { raw: 63620, gzip: 21298 },
+      "json-api": { raw: 63425, gzip: 21253 },
+      "multi-island": { raw: 63547, gzip: 21262 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });

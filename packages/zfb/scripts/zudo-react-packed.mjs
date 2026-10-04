@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePackageTsc } from "../../../scripts/package-tsc.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -95,18 +96,28 @@ function writeConsumer(directory) {
     readFileSync(join(packageDir, "tsconfig.zudo-react-fixture.json"), "utf8"),
   );
   config.include = fixtures;
+  // The repo fixture loads the workspace's @types/node; an isolated packed consumer has none.
+  config.compilerOptions.types = [];
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify(config));
   config.compilerOptions.jsx = "react-jsxdev";
   writeFileSync(join(directory, "tsconfig.dev.json"), JSON.stringify(config));
 }
 
 function checkTypes(directory) {
+  // The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+  // keep supporting while contributor builds use TypeScript 7 (#3544).
+  const compilers = [
+    resolvePackageTsc(packageDir),
+    resolvePackageTsc(packageDir, "typescript-6.0"),
+    resolvePackageTsc(packageDir, "typescript-5.9"),
+  ];
   writeConsumer(directory);
-  const tsc = join(packageDir, "node_modules", "typescript", "bin", "tsc");
-  run(process.execPath, [tsc, "-p", "tsconfig.json"], directory);
-  console.log("packed types production: PASS");
-  run(process.execPath, [tsc, "-p", "tsconfig.dev.json"], directory);
-  console.log("packed types development: PASS");
+  for (const tsc of compilers) {
+    run(tsc.command, [...tsc.args, "-p", "tsconfig.json"], directory);
+    console.log(`packed types production (tsc ${tsc.version}): PASS`);
+    run(tsc.command, [...tsc.args, "-p", "tsconfig.dev.json"], directory);
+    console.log(`packed types development (tsc ${tsc.version}): PASS`);
+  }
 }
 
 function esbuildProbe(directory, kind, esbuild) {

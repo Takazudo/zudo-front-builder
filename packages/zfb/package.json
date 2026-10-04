@@ -173,14 +173,16 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "vitest run && tsc -p tsconfig.zudo-react-fixture.json && tsc -p tsconfig.zudo-react-dev-fixture.json && tsc -p tsconfig.zudo-react-sdk-fixture.json",
-    "test:watch": "vitest",
+    "test": "vp test run && tsc -p tsconfig.zudo-react-fixture.json && tsc -p tsconfig.zudo-react-dev-fixture.json && tsc -p tsconfig.zudo-react-sdk-fixture.json",
+    "test:watch": "vp test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "happy-dom": "^15.7.4",
-    "typescript": "^5.9.0",
-    "vitest": "^2.1.9"
+    "typescript": "7.0.2",
+    "typescript-5.9": "npm:typescript@5.9.3",
+    "typescript-6.0": "npm:typescript@6.0.3",
+    "vite-plus": "catalog:"
   }
 }

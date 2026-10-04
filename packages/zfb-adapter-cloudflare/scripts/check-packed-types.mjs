@@ -1,12 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { resolvePackageTsc } from "../../../scripts/package-tsc.mjs";
 
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+// The package's own compiler, plus the TS 6.0 and TS 5.9 consumers the published declarations
+// keep supporting while contributor builds use TypeScript 7 (#3544).
+const compilers = [
+  resolvePackageTsc(packageDir),
+  resolvePackageTsc(packageDir, "typescript-6.0"),
+  resolvePackageTsc(packageDir, "typescript-5.9"),
+];
 const tempDir = await mkdtemp(join(tmpdir(), "zfb-adapter-cloudflare-packed-types-"));
 const tarballDir = join(tempDir, "tarballs");
 const installDir = join(tempDir, "node_modules", "@takazudo", "zfb-adapter-cloudflare");
@@ -20,7 +27,7 @@ function run(command, args, options = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
-      `${command} ${args.join(" ")} failed with exit ${result.status ?? "signal"}:\n${result.stdout ?? ""}${result.stderr ?? ""}`,
+      `${command} ${args.join(" ")} failed with ${result.status === null ? `signal ${result.signal}` : `exit ${result.status}`}:\n${result.stdout ?? ""}${result.stderr ?? ""}`,
     );
   }
   return result.stdout;
@@ -62,10 +69,12 @@ try {
     ),
   );
 
-  const require = createRequire(import.meta.url);
-  const tscPath = require.resolve("typescript/bin/tsc");
-  run(process.execPath, [tscPath, "--project", configPath], { cwd: tempDir });
-  process.stdout.write("Packed adapter consumer declarations passed strict tsc.\n");
+  for (const tsc of compilers) {
+    run(tsc.command, [...tsc.args, "--project", configPath], { cwd: tempDir });
+    process.stdout.write(
+      `Packed adapter consumer declarations passed strict tsc ${tsc.version}.\n`,
+    );
+  }
 } finally {
   await rm(tempDir, { recursive: true, force: true });
 }

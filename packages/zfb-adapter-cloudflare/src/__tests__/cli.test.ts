@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../build.js";
 // CLI helper is a sibling .mjs — Node 22 resolves the .mjs ESM directly.

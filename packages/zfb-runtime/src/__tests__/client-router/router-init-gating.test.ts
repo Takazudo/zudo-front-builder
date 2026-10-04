@@ -20,7 +20,7 @@
 // so eligibility here is driven entirely by the fallback meta: content="none"
 // makes the page ineligible, its absence yields the "animate" default.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 

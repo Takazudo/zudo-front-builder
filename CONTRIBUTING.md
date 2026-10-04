@@ -5,7 +5,9 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: **Node 22.16.0 or later and pnpm 11 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22.16.0 is the effective floor on the 22.x line (`html-validate` requires `^20.19.0 || ^22.16.0 || >=24.0.0`); earlier 22.x versions will fail `pnpm install`.
+- **Node / pnpm**: **Node `^22.18.0 || ^24.11.0 || >=26.0.0` and pnpm 12 or later are required.** pnpm is pinned exactly by the `packageManager` field in `package.json` (currently `pnpm@12.8.2`). An installed pnpm 11 or 12 switches to the pinned version automatically; [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`) also resolves it. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. The root `engines.node` declares that range because the contributor test runner, Vite+ (`vite-plus`, `vp test`), requires it; earlier 22.x versions and 24.x before 24.11.0 will fail `pnpm install`. Published packages keep their own, wider `engines.node`.
+- **TypeScript**: each compiler-using workspace package (`packages/zfb`, `packages/zfb-runtime`, `packages/zfb-adapter-cloudflare`, `crates/zfb-md-wasm/npm`, `docs`) pins `typescript` exactly (currently `7.0.2`, the native compiler, which installs one `@typescript/typescript-<platform>` binary) and runs it from its own `node_modules`; there is no root or global compiler. Every package script, `pnpm --filter <pkg> exec tsc` and `zfb check` in `docs` therefore run 7.0.2. `packages/zfb`, the adapter and md-wasm also carry `typescript-6.0` (`npm:typescript@6.0.3`) and `typescript-5.9` (`npm:typescript@5.9.3`): the packed-declaration checks compile with all three, so the published types keep working for TS 6.0 and TS 5.9 consumers. Neither alias is a build or typecheck compiler. Scripts that launch a compiler from another directory use `scripts/package-tsc.mjs`, never `require.resolve("typescript/bin/tsc")`, which TypeScript 7's `exports` map blocks. Compiler-facing tsconfigs use explicit relative `paths` without `baseUrl`, which TypeScript 7 removes; the Rust test fixtures and the `create-zfb` template are separate contracts and keep theirs (the template's users resolve `typescript ^5.6.0`).
+- **Editors**: the repository commits no editor settings; keep your own. TypeScript 7 ships no `lib/tsserver.js`, so VS Code's "Use Workspace Version" cannot select the pinned compiler. An editor's bundled TypeScript service still works for editing; to see exactly what CI sees, run the package's `typecheck` script, or point an editor that accepts a custom language server at `<package>/node_modules/.bin/tsc --lsp --stdio`.
 
 ## First build expectation
 
@@ -82,12 +84,12 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
+- `lefthook` runs the pre-commit pipeline: Oxfmt (`vp fmt`) over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
 - Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline. The main PR gate includes `cargo fmt --all --check`, `pnpm typecheck:workspace`, `pnpm test:workspace`, `pnpm format:check`, `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, the env-gated binary integration tests, `cargo nextest run --workspace --profile ci`, `cargo test --workspace --doc`, and actionlint.
 
 ## Formatting
 
-JavaScript, TypeScript, JSON, and YAML are formatted with **Prettier**. Markdown and MDX use the dedicated `@takazudo/mdx-formatter` step.
+JavaScript, TypeScript, JSON, and YAML (`js`, `mjs`, `cjs`, `ts`, `tsx`, `json`, `yml`, `yaml`) are formatted with **Oxfmt**, through Vite+'s `vp fmt`. Markdown and MDX are formatted only by `@takazudo/mdx-formatter` (an exact devDependency, configured by `.mdx-formatter.json`). Rust stays with `cargo fmt`.
 
 Run formatters across the repo:
 
@@ -98,16 +100,18 @@ pnpm format:check   # check formatting (CI-friendly, exits non-zero on diffs)
 
 Targeted variants:
 
-- `pnpm format:ts` / `pnpm format:check:ts` — Prettier over JS/TS/JSON/YAML
+- `pnpm format:ts` / `pnpm format:check:ts` — Oxfmt over JS/TS/JSON/YAML
 - `pnpm format:mdx` / `pnpm format:check:mdx` — Markdown/MDX
 
-The pre-commit hook (lefthook) runs Prettier on staged matching files and re-stages the fixes.
+The pre-commit hook (lefthook) runs each formatter on its own staged files and re-stages the fixes.
 
-### Why Prettier (and not Oxfmt) for now
+### Oxfmt configuration and file ownership
 
-[Oxfmt](https://oxc.rs/docs/guide/usage/formatter.html) is the formatter from the Oxc project and is the long-term direction the JS ecosystem is moving toward (30x faster than Prettier, 100% Prettier JS/TS conformance, supports JSON and YAML). At evaluation time (2026-04-26) it is published as `oxfmt` v0.46.0 and is officially in **Beta** ([announcement](https://oxc.rs/blog/2026-02-24-oxfmt-beta)) — sub-1.0 with no formal stable release yet, comparable to where Oxlint sat before its v1.0 stable announcement.
+Oxfmt's settings live in the `fmt` block of the root `vite.config.mjs` (Vite+ discovers it; there is no separate `.oxfmtrc.json`). They carry over the former Prettier settings: semicolons, double quotes, trailing commas everywhere, and a print width of 100. Package.json key sorting, import sorting, and Tailwind class sorting stay off.
 
-To keep the foundation conservative we ship Prettier today and revisit the swap once Oxfmt cuts a 1.0 / "stable" release. Tracker: [oxc-project/oxc milestone 19](https://github.com/oxc-project/oxc/milestone/19).
+`ignorePatterns` in that block replaces `.prettierignore`, and Oxfmt also reads the root `.gitignore`, as Prettier 3 did. It excludes `.md`/`.mdx` (owned by mdx-formatter) and the other formats Prettier never formatted (HTML, CSS, TOML, JSX, `.sublime-syntax`), so even a bare `vp fmt` touches only the files above. It also protects the byte-exact goldens: `pnpm-lock.yaml`, `crates/zfb-content/tests/fixtures/two-collections-schemas/expected.d.ts`, and the md-roundtrip fixtures. Use `pnpm format:ts` rather than `vp check`, which also lints and type-checks.
+
+The switch from Prettier happened in #3558, after Oxfmt shipped inside Vite+ 1.0.0. The one-time reformat commit is listed in `.git-blame-ignore-revs`; run `git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip it in `git blame`.
 
 ## CI secrets
 

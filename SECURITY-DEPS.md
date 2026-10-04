@@ -42,7 +42,7 @@ license metadata. They do not declare `dependencies`.
 - `optionalDependencies` on the five first-party platform binary packages, so package managers
   install the matching native `zfb` executable when available;
 - `devDependencies` for local build/test/typecheck tooling, including `@types/node`,
-  TypeScript, Vitest, and `happy-dom`.
+  TypeScript, Vite+ (`vite-plus`, which bundles Vitest), and `happy-dom`.
 
 The SDK has no third-party production dependency or external framework peer. These
 fields are intentionally separate from third-party production `dependencies`.

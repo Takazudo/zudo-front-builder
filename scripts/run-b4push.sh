@@ -19,7 +19,7 @@ set -uo pipefail
 #      step per test file, mirrors health.yml:47-50
 #   3. cargo machete --with-metadata (optional local tool) — fast
 #   4. cargo fmt --check                          — near-free, no compilation
-#   5. pnpm format:check (prettier + mdx)         — fast
+#   5. pnpm format:check (oxfmt + mdx)            — fast
 #   6. node scripts/assert-md-wasm-size-docs.mjs — fast
 #   7. node scripts/check-sse-endpoint.mjs — fast, offline source guard
 #   8. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast

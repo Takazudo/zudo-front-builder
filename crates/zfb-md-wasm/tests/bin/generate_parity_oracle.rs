@@ -49,10 +49,10 @@
 //!    header for why parse-then-compare is the right boundary), so the
 //!    on-disk formatting is not load-bearing.
 //!
-//! IMPORTANT: the committed `expected/*.json` are prettier-formatted (the
+//! IMPORTANT: the committed `expected/*.json` are Oxfmt-formatted (the
 //! repo's `format:check` gate covers `**/*.json`), but this bin writes
 //! compact single-line JSON. After regenerating, run `pnpm format` (or
-//! `pnpm --filter docs exec prettier --write <dir>`) so the committed files
+//! `pnpm exec vp fmt --write <dir>` from the repo root) so the committed files
 //! stay `format:check`-clean. Key order is identical either way (the same
 //! serde struct order the wasm build emits), so this is formatting only.
 //!

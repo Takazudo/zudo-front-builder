@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(joinRoot(".github/workflows/node-free-smoke.yml"), "utf8");
@@ -37,7 +37,7 @@ describe("showcase workflow tool provenance", () => {
 
       expect(beforeSteps).not.toMatch(/^    env:/m);
       expect(jobText).toContain(
-        "uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8",
+        "uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0",
       );
       expect(install).toContain("pnpm install --frozen-lockfile --filter zudo-front-builder");
       expect(validate).toContain("working-directory: create-zfb-showcase");
