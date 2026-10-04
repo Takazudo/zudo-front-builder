@@ -2,8 +2,9 @@
 //!
 //! The tests inspect the bytes and diagnostics from the built CLI. Fixtures
 //! live below `tests/fixtures/css-*` and are copied to isolated projects before
-//! each invocation. Only the build-parity case needs esbuild; CSS-only cases
-//! run without external binaries or skip paths.
+//! each invocation. Only the build-parity case and the packed library
+//! consumer (which also needs npm) use esbuild; CSS-only cases run without
+//! external binaries or skip paths.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1860,4 +1861,220 @@ fn wind_manifest_rejects_invalid_producer_and_ignores_its_previous_output() {
         document["candidates"],
         serde_json::json!(["bg-surface", "p-hsp-sm"])
     );
+}
+
+/// A package with no site config or pages: its styles compile against
+/// `wind.config.json`, and its preset ships the same tokens plus a manifest
+/// path relative to the package (#3533).
+fn wind_library_fixture(root: &Path) -> PathBuf {
+    let library = root.join("library");
+    fs::create_dir_all(library.join("src")).expect("create library src");
+    fs::create_dir_all(library.join("dist")).expect("create library dist");
+    fs::write(
+        library.join("package.json"),
+        r#"{
+  "name": "@fixture/wind-ui",
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["dist", "preset.mjs"],
+  "exports": {
+    "./ui.css": "./dist/ui.css",
+    "./wind.json": "./dist/wind.json",
+    "./preset": "./preset.mjs"
+  }
+}
+"#,
+    )
+    .expect("write library package.json");
+    let tokens =
+        r##"{"colors":{"surface":"#fff","accent":"#2563eb"},"spacing":{"hsp-sm":"0.5rem"}}"##;
+    fs::write(
+        library.join("wind.config.json"),
+        format!(r#"{{"wind":{{"spec":1,"tokens":{tokens},"authoredClasses":{{"card":true}}}}}}"#),
+    )
+    .expect("write library wind config");
+    fs::write(
+        library.join("preset.mjs"),
+        format!(
+            "import {{ definePreset }} from \"zfb/config\";\n\nexport default definePreset(\"@fixture/wind-ui\", {{\n  wind: {{\n    tokens: {tokens},\n    authoredClasses: {{ card: true }},\n    manifests: {{ \"wind-ui\": {{ path: \"./dist/wind.json\" }} }},\n  }},\n}});\n"
+        ),
+    )
+    .expect("write library preset");
+    fs::write(
+        library.join("src/card.tsx"),
+        "export const Card = () => <div class=\"card group bg-surface p-hsp-sm hover:bg-accent\" />;\n",
+    )
+    .expect("write library component");
+    fs::write(
+        library.join("src/styles.css"),
+        ".card { border: 1px solid var(--zw-color-accent); }\n",
+    )
+    .expect("write library stylesheet");
+    // A stale build artifact under the default outDir: scanning it would
+    // fail the manifest on an unknown token.
+    fs::write(
+        library.join("dist/legacy.tsx"),
+        "export const Legacy = () => <div class=\"bg-retired\" />;\n",
+    )
+    .expect("write stale dist source");
+    library
+}
+
+#[test]
+fn wind_library_manifest_reaches_a_packed_consumer() {
+    let npm = Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let Some(esbuild) = locate_esbuild().filter(|_| npm) else {
+        eprintln!("[wind_library_consumer] esbuild or npm unavailable; skipping");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("create library tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let library = wind_library_fixture(&root);
+    let library_flags = ["--config", "wind.config.json", "--source", "**/*.tsx"];
+
+    let css = run_css(
+        &library,
+        "src/styles.css",
+        "dist/ui.css",
+        None,
+        &[],
+        &library_flags,
+    );
+    assert_success(&css, "library CSS with an explicit config");
+    let library_css = fs::read_to_string(library.join("dist/ui.css")).expect("read library CSS");
+    for needle in [".bg-surface", ".p-hsp-sm", ".card"] {
+        assert!(library_css.contains(needle), "{needle}:\n{library_css}");
+    }
+    assert!(!library_css.contains("bg-retired"), "{library_css}");
+
+    let manifest = run_wind_manifest(
+        &library,
+        &[
+            &["--producer", "wind-ui", "--output", "dist/wind.json"][..],
+            &library_flags[..],
+        ]
+        .concat(),
+    );
+    assert!(manifest.status.success(), "{}", combined_output(&manifest));
+    assert!(
+        process_stderr(&manifest).contains("ZW010"),
+        "the stale dist/ match is reported as excluded:\n{}",
+        combined_output(&manifest)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(library.join("dist/wind.json")).unwrap()).unwrap();
+    assert_eq!(
+        document["candidates"],
+        serde_json::json!(["bg-surface", "group", "hover:bg-accent", "p-hsp-sm"])
+    );
+
+    fs::remove_file(library.join("dist/legacy.tsx")).expect("drop stale source before packing");
+    let tarballs = root.join("tarballs");
+    fs::create_dir_all(&tarballs).unwrap();
+    let packed = Command::new("npm")
+        .args(["pack", "--ignore-scripts", "--pack-destination"])
+        .arg(&tarballs)
+        .current_dir(&library)
+        .output()
+        .expect("spawn npm pack");
+    assert!(packed.status.success(), "{}", combined_output(&packed));
+    let tarball = fs::read_dir(&tarballs)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "tgz"))
+        .expect("npm pack created a tarball");
+
+    let consumer = root.join("consumer");
+    fs::create_dir_all(consumer.join("src")).unwrap();
+    fs::write(
+        consumer.join("package.json"),
+        r#"{"name":"consumer","private":true,"type":"module"}"#,
+    )
+    .unwrap();
+    let installed = Command::new("npm")
+        .args([
+            "install",
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--no-save",
+            "--package-lock=false",
+        ])
+        .arg(&tarball)
+        .current_dir(&consumer)
+        .output()
+        .expect("spawn npm install");
+    assert!(
+        installed.status.success(),
+        "{}",
+        combined_output(&installed)
+    );
+    fs::write(
+        consumer.join("zfb.config.ts"),
+        "import { defineConfig } from \"zfb/config\";\nimport ui from \"@fixture/wind-ui/preset\";\n\nexport default defineConfig({ presets: [ui] });\n",
+    )
+    .unwrap();
+    fs::write(consumer.join("entry.css"), "").unwrap();
+    fs::write(
+        consumer.join("with-ui.css"),
+        "@import \"@fixture/wind-ui/ui.css\";\n",
+    )
+    .unwrap();
+    fs::write(
+        consumer.join("src/app.tsx"),
+        "export const App = () => <main class=\"flex\" />;\n",
+    )
+    .unwrap();
+    let consumer_css = |input: &str| {
+        Command::new(zfb_binary!())
+            .args(["css", "--input", input, "--output", "dist/app.css"])
+            .args(["--no-auto-source", "--source", "src/**/*.tsx"])
+            .current_dir(&consumer)
+            .env("ZFB_ESBUILD_BIN", &esbuild)
+            .output()
+            .expect("spawn consumer `zfb css`")
+    };
+    // No authored CSS from the package: every package utility here comes
+    // from the manifest the installed preset declares.
+    let output = consumer_css("entry.css");
+    assert_success(&output, "consumer CSS through the installed preset");
+    let emitted = fs::read_to_string(consumer.join("dist/app.css")).unwrap();
+    for needle in [".flex", ".bg-surface", ".p-hsp-sm", "hover\\:bg-accent"] {
+        assert!(emitted.contains(needle), "{needle} missing:\n{emitted}");
+    }
+    assert!(!emitted.contains(".card"), "{emitted}");
+
+    let output = consumer_css("with-ui.css");
+    assert_success(&output, "consumer importing the package stylesheet export");
+    let emitted = fs::read_to_string(consumer.join("dist/app.css")).unwrap();
+    assert!(
+        emitted.contains("var(--zw-color-accent)"),
+        "the exported ui.css is imported:\n{emitted}"
+    );
+
+    // The token contract: the same manifest without the preset's tokens fails
+    // the consumer on its manifest entries instead of dropping them.
+    fs::remove_file(consumer.join("zfb.config.ts")).unwrap();
+    fs::write(
+        consumer.join("zfb.config.json"),
+        r#"{"wind":{"spec":1,"manifests":{"wind-ui":{"path":"@fixture/wind-ui/wind.json"}}}}"#,
+    )
+    .unwrap();
+    let no_tokens = run_css(
+        &consumer,
+        "entry.css",
+        "dist/app.css",
+        None,
+        &["src/**/*.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(&no_tokens, "consumer without the package's tokens");
+    let stderr = process_stderr(&no_tokens);
+    assert!(stderr.contains("ZW006"), "{stderr}");
+    assert!(stderr.contains("manifest wind-ui"), "{stderr}");
 }
