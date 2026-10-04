@@ -354,7 +354,6 @@ jobs:
       # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
       # integration tests run below.
       - run: cargo build --workspace --all-targets
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
 
       # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
       # generated artifact. Regenerate it from the checked-in grammar sources
@@ -686,13 +685,11 @@ jobs:
       # Keep the test suite on Node 22 above. The size contract pins Node and
       # zlib separately because gzip-9 is part of the measured byte oracle.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
         with:
           node-version: 24.14.0
           cache: pnpm
 
       - name: Assert island-size toolchain
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
         run: |
           node --input-type=module -e '
             if (process.version !== "v24.14.0") {
@@ -710,7 +707,6 @@ jobs:
       # Rebuild and pack both packages from this checkout so workspace and
       # published-consumer resolution are measured from the same source SHA.
       - name: Build and pack packages for island-size measurement
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
         run: |
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
           ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
@@ -726,7 +722,6 @@ jobs:
       # Keep the complete workspace and packed real CLI matrices together so
       # the guard checks fresh saved dist bytes from this checkout.
       - name: Measure and enforce Linux x64 island-size budgets
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
         shell: bash
         run: |
           set -euo pipefail
@@ -762,15 +757,6 @@ jobs:
             --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" \
             --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
             --contract research/v3-island-size/decision-linux-x64.json
-
-      - name: Upload temporary Linux island-size evidence
-        if: always() # Temporary measurement run; remove after saving Linux evidence.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: swc-linux-island-size-evidence
-          path: target/island-size/
-          if-no-files-found: error
-          retention-days: 7
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
