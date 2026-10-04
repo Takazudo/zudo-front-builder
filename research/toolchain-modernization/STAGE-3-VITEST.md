@@ -188,6 +188,13 @@ now reads 90 s.
 `test:md-wasm` still builds and then tests. `health.yml` and `scripts/run-b4push.sh` still call the
 same `pnpm test:workspace`.
 
+## Packed manifests resolve the catalog to an exact version
+
+The five publishable packages with a test runner now declare `"vite-plus": "catalog:"` as a dev
+dependency. `pnpm pack` (used for the non-platform publishes and the md-wasm tarball) rewrites it:
+`create-zfb`'s packed `package.json` lists `"vite-plus": "1.0.0"` and `"test": "vp test run"`.
+Shipped files are otherwise unchanged; only that dev-only manifest metadata differs from stage 2.
+
 ## Startup is faster or neutral (loaded host, alternated)
 
 Three rounds alternated the stage 2 base (Vitest 2, a temporary detached worktree at `e2469233`) and
