@@ -202,15 +202,15 @@ fn read_candidate_manifest(path: &Path, producer: &str) -> Result<BTreeSet<Strin
 }
 
 fn resolve_manifest_path(
-    project_root: &Path,
+    config_dir: &Path,
     path: &str,
     source_package: Option<&str>,
 ) -> Result<PathBuf> {
     let base = if let Some(package) = source_package {
-        zfb_config_loader::resolve_package_dir(package, project_root)
+        zfb_config_loader::resolve_package_dir(package, config_dir)
             .with_context(|| format!("manifest declaring package {package}"))?
     } else {
-        project_root.to_path_buf()
+        config_dir.to_path_buf()
     };
     if path.starts_with("./") || path.starts_with("../") || Path::new(path).is_absolute() {
         return Ok(absolute(&base, Path::new(path)));
@@ -226,17 +226,17 @@ fn resolve_manifest_path(
 /// plans always call `resolve_manifest_path`, so an invalid exports map or
 /// active condition still fails exactly as the authoritative resolver says.
 fn resolve_manifest_watch_path(
-    project_root: &Path,
+    config_dir: &Path,
     path: &str,
     source_package: Option<&str>,
 ) -> Result<PathBuf> {
-    match resolve_manifest_path(project_root, path, source_package) {
+    match resolve_manifest_path(config_dir, path, source_package) {
         Ok(resolved) => Ok(resolved),
         Err(error) => {
             let base = if let Some(package) = source_package {
-                zfb_config_loader::resolve_package_dir(package, project_root)?
+                zfb_config_loader::resolve_package_dir(package, config_dir)?
             } else {
-                project_root.to_path_buf()
+                config_dir.to_path_buf()
             };
             missing_package_subpath(&base, path).ok_or(error)
         }
@@ -438,7 +438,7 @@ fn resolve_declared_manifest_paths_with(
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         for (producer, declaration) in &wind.manifests {
             let path = resolve(
-                project_root,
+                wind.declaring_dir(project_root),
                 &declaration.path,
                 declaration.source_package.as_deref(),
             )
@@ -457,13 +457,13 @@ pub(crate) fn resolve_declared_manifest_watch_paths(
 }
 
 fn resolve_source_declaring_dir(
-    project_root: &Path,
+    config_dir: &Path,
     source_package: Option<&str>,
 ) -> Result<PathBuf> {
     match source_package {
-        Some(package) => zfb_config_loader::resolve_package_dir(package, project_root)
+        Some(package) => zfb_config_loader::resolve_package_dir(package, config_dir)
             .with_context(|| format!("wind.sources declaring package {package}")),
-        None => Ok(project_root.to_path_buf()),
+        None => Ok(config_dir.to_path_buf()),
     }
 }
 
@@ -525,9 +525,12 @@ pub(crate) fn declared_package_root_watch_paths(
     wind.source_declarations()
         .iter()
         .filter_map(|declaration| {
-            resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())
-                .ok()
-                .map(|dir| (dir, declaration))
+            resolve_source_declaring_dir(
+                wind.declaring_dir(&project_root),
+                declaration.source_package.as_deref(),
+            )
+            .ok()
+            .map(|dir| (dir, declaration))
         })
         .flat_map(|(dir, declaration)| {
             declaration
@@ -562,8 +565,10 @@ pub(crate) fn gather_css_source_plan_inputs(
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         for declaration in wind.source_declarations() {
             let origin = declaration.origin();
-            let declaring_dir =
-                resolve_source_declaring_dir(&project_root, declaration.source_package.as_deref())?;
+            let declaring_dir = resolve_source_declaring_dir(
+                wind.declaring_dir(&project_root),
+                declaration.source_package.as_deref(),
+            )?;
             for (index, root) in declaration.sources.package_roots.iter().enumerate() {
                 declared_package_roots.push(
                     resolve_declared_package_root(&project_root, &declaring_dir, root)
@@ -1053,6 +1058,73 @@ mod tests {
             declared_package_root_watch_paths(&inputs.project_root, &config),
             [inputs.project_root.join("packages/ui")]
         );
+    }
+
+    #[test]
+    fn explicit_config_dir_anchors_config_relative_references() {
+        let (temp, inputs) = fixture();
+        let canonical = |path: &Path| fs::canonicalize(path).unwrap();
+        let config_dir = temp.path().join("config");
+        let preset = install_package(&config_dir, "@scope/preset");
+        fs::create_dir_all(config_dir.join("packages/ui")).unwrap();
+        fs::create_dir_all(preset.join("ui")).unwrap();
+        let manifest = |path: &Path, producer: &str| {
+            fs::write(
+                path,
+                format!("{{\"schemaVersion\":1,\"specVersion\":1,\"producer\":\"{producer}\",\"candidates\":[\"p-1\"]}}"),
+            )
+            .unwrap();
+        };
+        manifest(&config_dir.join("wind.json"), "local");
+        manifest(&preset.join("wind.json"), "preset");
+        let mut config = sources_config(vec![
+            (
+                None,
+                serde_json::json!({ "packageRoots": ["./packages/ui"] }),
+            ),
+            (
+                Some("@scope/preset"),
+                serde_json::json!({ "packageRoots": ["./ui"] }),
+            ),
+        ]);
+        let Some(WindSetting::Enabled(wind)) = &mut config.wind else {
+            unreachable!()
+        };
+        for (producer, source_package) in [("local", None), ("preset", Some("@scope/preset"))] {
+            wind.manifests.insert(
+                producer.into(),
+                crate::config::WindManifest {
+                    path: "./wind.json".into(),
+                    source_package: source_package.map(str::to_owned),
+                },
+            );
+        }
+
+        let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+        assert!(error.contains("@scope/preset"), "{error}");
+
+        let Some(WindSetting::Enabled(wind)) = &mut config.wind else {
+            unreachable!()
+        };
+        wind.config_dir = Some(config_dir.clone());
+        let gathered = gather(&inputs, &config).unwrap();
+        assert_eq!(gathered.manifests["local"], config_dir.join("wind.json"));
+        assert_eq!(
+            canonical(&gathered.manifests["preset"]),
+            canonical(&preset.join("wind.json"))
+        );
+        assert_eq!(
+            gathered
+                .declared_package_roots
+                .iter()
+                .map(|root| canonical(root))
+                .collect::<Vec<_>>(),
+            [
+                canonical(&config_dir.join("packages/ui")),
+                canonical(&preset.join("ui"))
+            ]
+        );
+        assert_eq!(gathered.project_root, inputs.project_root);
     }
 
     #[test]

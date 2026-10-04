@@ -50,7 +50,7 @@ Manifest paths are resolved from a base directory. A bare package specifier such
 }
 ```
 
-Paths beginning with `./` or `../` resolve from the project root, meaning the directory that contains `zfb.config.ts` or `zfb.config.json`, regardless of the current working directory. When a manifest declaration comes from a preset built with `definePreset()`, zfb records the preset package as its source, so both relative paths and bare package specifiers resolve from that preset package's directory instead.
+Paths beginning with `./` or `../` resolve from the project root, meaning the directory that contains `zfb.config.ts` or `zfb.config.json`, regardless of the current working directory. When `zfb css` or `zfb wind` loads a file selected with `--config`, that file's directory takes this role (see [Explicit config files](../api/cli.mdx#explicit-config-files)). When a manifest declaration comes from a preset built with `definePreset()`, zfb records the preset package as its source, so both relative paths and bare package specifiers resolve from that preset package's directory instead.
 
 ### Source exclusions and package roots
 
@@ -65,7 +65,7 @@ wind: {
 }
 ```
 
-Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root, or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
+Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root (the `--config` file's directory when one is selected), or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
 
 Each `packageRoots` entry is either a `./` or `../` path from the declaring root, or an installed package name with an optional subpath such as `@example/widgets/dist`, found through the `node_modules` directories above the declaring root. A package root must be an existing directory that is neither the project root nor one of its ancestors, and it is scanned with its own `dist` and `node_modules`, ignoring gitignore rules. Output, `--output`, and scratch directories stay excluded inside it.
 

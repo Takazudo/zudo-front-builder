@@ -973,9 +973,19 @@ pub struct WindConfig {
     /// Empty means `sources` belongs to the project root.
     #[serde(skip)]
     pub(crate) source_declarations: Vec<WindSourceDeclaration>,
+    /// Directory of an explicitly selected config file (`--config`). `None`
+    /// means the config was discovered in the project root.
+    #[serde(skip)]
+    pub(crate) config_dir: Option<PathBuf>,
 }
 
 impl WindConfig {
+    /// Directory that anchors config-relative manifest paths, package roots
+    /// and preset package lookups.
+    pub(crate) fn declaring_dir<'a>(&'a self, project_root: &'a Path) -> &'a Path {
+        self.config_dir.as_deref().unwrap_or(project_root)
+    }
+
     /// Each `sources` declaration with the package that anchors its paths.
     pub(crate) fn source_declarations(&self) -> Vec<WindSourceDeclaration> {
         if self.source_declarations.is_empty() && !self.sources.is_empty() {
@@ -1065,6 +1075,7 @@ impl Default for WindConfig {
             sources: WindSources::default(),
             utilities: WindUtilities::default(),
             source_declarations: Vec::new(),
+            config_dir: None,
         }
     }
 }
@@ -2050,126 +2061,11 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
     // TS wins over JSON — the TypeScript form is the canonical, recommended
     // path for new projects. See module docs for the full resolution order.
     if ts_path.exists() {
-        let cfg = load_from_ts_file(&ts_path, dir, opts)
-            .await
-            .with_context(|| format!("loading {}", ts_path.display()))?;
-        validate(&cfg, dir).with_context(|| format!("validating {}", ts_path.display()))?;
-        return Ok(cfg);
+        return load_ts_config(&ts_path, dir, opts).await;
     }
 
     if json_path.exists() {
-        let text = tokio::fs::read_to_string(&json_path)
-            .await
-            .with_context(|| format!("reading {}", json_path.display()))?;
-        // Parse to a raw Value first so the preset merge can run at the Value
-        // layer (#1199, #1202): key *presence* is observable there, so a user
-        // who explicitly sets a scalar to its type default still beats a
-        // preset, and the merge recurses to arbitrary depth. The syntax error
-        // here keeps the line/column message.
-        let mut user_value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-            anyhow!(
-                "{}: invalid config JSON at line {}, column {}: {}",
-                json_path.display(),
-                e.line(),
-                e.column(),
-                e
-            )
-        })?;
-        // #1196 — split out `presets`. When there are none, deserialize from
-        // the original `text` so a TYPE/schema error keeps the line/column
-        // message (`from_value` on a merged Value loses position info). Only
-        // the preset path needs the Value-layer merge.
-        reject_removed_top_level_keys(&user_value)
-            .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
-        let presets =
-            take_presets(&mut user_value).map_err(|e| anyhow!("{}: {}", json_path.display(), e))?;
-        let mut cfg: Config = if let Some(mut presets) = presets {
-            annotate_wind_manifest_sources(&mut user_value, false)
-                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
-            let user_sources = take_wind_sources(&mut user_value, false)
-                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
-            let mut source_declarations = Vec::new();
-            // Validate each preset as a `Config` fragment BEFORE merging so an
-            // invalid preset field surfaces even when the user also sets that
-            // key (all `Config` fields are `#[serde(default)]`, so a partial
-            // fragment deserializes cleanly).
-            for (i, preset_value) in presets.iter_mut().enumerate() {
-                reject_removed_top_level_keys(preset_value)
-                    .map_err(|e| anyhow!("{}: presets[{i}]: {e}", json_path.display()))?;
-                annotate_wind_manifest_sources(preset_value, false).map_err(|e| {
-                    anyhow!(
-                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
-                        json_path.display()
-                    )
-                })?;
-                source_declarations.extend(take_wind_sources(preset_value, false).map_err(
-                    |e| {
-                        anyhow!(
-                            "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
-                            json_path.display()
-                        )
-                    },
-                )?);
-                let mut validation_value = preset_value.clone();
-                take_wind_manifest_sources(&mut validation_value).map_err(|e| {
-                    anyhow!(
-                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
-                        json_path.display()
-                    )
-                })?;
-                serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
-                    anyhow!(
-                        "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
-                        json_path.display(),
-                        e
-                    )
-                })?;
-            }
-            let preset_defaults = build_preset_defaults(presets);
-            let mut merged_value = merge_user_over_presets(preset_defaults, user_value);
-            let manifest_sources = take_wind_manifest_sources(&mut merged_value)
-                .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
-            // A merged Value loses byte offsets, so a type error can't name a
-            // line/column — `.with_context()` still names the file.
-            let mut config: Config = serde_path_to_error::deserialize(merged_value)
-                .with_context(|| format!("{}: invalid zfb config", json_path.display()))?;
-            apply_wind_manifest_sources(&mut config, manifest_sources);
-            source_declarations.extend(user_sources);
-            apply_wind_sources(&mut config, source_declarations);
-            config
-        } else {
-            let mut deserializer = serde_json::Deserializer::from_str(&text);
-            serde_path_to_error::deserialize(&mut deserializer).map_err(|e| {
-                let path = e.path().to_string();
-                let inner = e.into_inner();
-                let path_context = if path.is_empty() {
-                    String::new()
-                } else {
-                    format!("{path}: ")
-                };
-                anyhow!(
-                    "{}: invalid config JSON at line {}, column {}: {}{}",
-                    json_path.display(),
-                    inner.line(),
-                    inner.column(),
-                    path_context,
-                    inner
-                )
-            })?
-        };
-        // Issue #211: the JSON config path used to leave every
-        // `PluginConfig.resolved_module` at `None`, which made the
-        // downstream plugin-host filter silently drop ALL plugins
-        // (see `commands::plugins::build_plugin_specs`). Mirror the
-        // shape the TS-load path produces (a `file://` URL) for plugin
-        // entries that name a path on disk; bare specifiers require Node
-        // module resolution (not available on the JSON path) and stay
-        // `None` with a user-facing warning so the surprise is visible.
-        // This also resolves any plugins contributed by presets above.
-        resolve_json_plugin_modules(&mut cfg, dir)
-            .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
-        validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
-        return Ok(cfg);
+        return load_json_config(&json_path, dir).await;
     }
 
     // No file present → defaults.
@@ -2180,6 +2076,157 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
     // through this path and a panic here would tear the dev server
     // down on what is a benign discovery step.
     validate(&cfg, dir).context("Config::default() must validate cleanly")?;
+    Ok(cfg)
+}
+
+/// Load and validate an explicitly selected config file. Its directory, not
+/// the project root, anchors config-relative references. `path` must be
+/// absolute.
+pub async fn load_from_file(path: &Path) -> Result<Config> {
+    load_from_file_with_options(path, &LoadOptions::default()).await
+}
+
+/// Variant of [`load_from_file`] with explicit knobs.
+pub async fn load_from_file_with_options(path: &Path, opts: &LoadOptions) -> Result<Config> {
+    let path = zfb_types::normalize_path_lexical(path);
+    if !path.is_file() {
+        bail!("config file {} is not a readable file", path.display());
+    }
+    let dir = path
+        .parent()
+        .with_context(|| format!("config file {} has no parent directory", path.display()))?;
+    let mut cfg = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("json") => load_json_config(&path, dir).await?,
+        Some("ts" | "mts" | "js" | "mjs") => load_ts_config(&path, dir, opts).await?,
+        _ => bail!(
+            "config file {} must end in .ts, .mts, .js, .mjs, or .json",
+            path.display()
+        ),
+    };
+    if let Some(WindSetting::Enabled(wind)) = &mut cfg.wind {
+        wind.config_dir = Some(dir.to_path_buf());
+    }
+    Ok(cfg)
+}
+
+async fn load_ts_config(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<Config> {
+    let cfg = load_from_ts_file(ts_path, dir, opts)
+        .await
+        .with_context(|| format!("loading {}", ts_path.display()))?;
+    validate(&cfg, dir).with_context(|| format!("validating {}", ts_path.display()))?;
+    Ok(cfg)
+}
+
+async fn load_json_config(json_path: &Path, dir: &Path) -> Result<Config> {
+    let text = tokio::fs::read_to_string(json_path)
+        .await
+        .with_context(|| format!("reading {}", json_path.display()))?;
+    // Parse to a raw Value first so the preset merge can run at the Value
+    // layer (#1199, #1202): key *presence* is observable there, so a user
+    // who explicitly sets a scalar to its type default still beats a
+    // preset, and the merge recurses to arbitrary depth. The syntax error
+    // here keeps the line/column message.
+    let mut user_value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        anyhow!(
+            "{}: invalid config JSON at line {}, column {}: {}",
+            json_path.display(),
+            e.line(),
+            e.column(),
+            e
+        )
+    })?;
+    // #1196 — split out `presets`. When there are none, deserialize from
+    // the original `text` so a TYPE/schema error keeps the line/column
+    // message (`from_value` on a merged Value loses position info). Only
+    // the preset path needs the Value-layer merge.
+    reject_removed_top_level_keys(&user_value)
+        .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+    let presets =
+        take_presets(&mut user_value).map_err(|e| anyhow!("{}: {}", json_path.display(), e))?;
+    let mut cfg: Config = if let Some(mut presets) = presets {
+        annotate_wind_manifest_sources(&mut user_value, false)
+            .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+        let user_sources = take_wind_sources(&mut user_value, false)
+            .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+        let mut source_declarations = Vec::new();
+        // Validate each preset as a `Config` fragment BEFORE merging so an
+        // invalid preset field surfaces even when the user also sets that
+        // key (all `Config` fields are `#[serde(default)]`, so a partial
+        // fragment deserializes cleanly).
+        for (i, preset_value) in presets.iter_mut().enumerate() {
+            reject_removed_top_level_keys(preset_value)
+                .map_err(|e| anyhow!("{}: presets[{i}]: {e}", json_path.display()))?;
+            annotate_wind_manifest_sources(preset_value, false).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    json_path.display()
+                )
+            })?;
+            source_declarations.extend(take_wind_sources(preset_value, false).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    json_path.display()
+                )
+            })?);
+            let mut validation_value = preset_value.clone();
+            take_wind_manifest_sources(&mut validation_value).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    json_path.display()
+                )
+            })?;
+            serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
+                    json_path.display(),
+                    e
+                )
+            })?;
+        }
+        let preset_defaults = build_preset_defaults(presets);
+        let mut merged_value = merge_user_over_presets(preset_defaults, user_value);
+        let manifest_sources = take_wind_manifest_sources(&mut merged_value)
+            .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
+        // A merged Value loses byte offsets, so a type error can't name a
+        // line/column — `.with_context()` still names the file.
+        let mut config: Config = serde_path_to_error::deserialize(merged_value)
+            .with_context(|| format!("{}: invalid zfb config", json_path.display()))?;
+        apply_wind_manifest_sources(&mut config, manifest_sources);
+        source_declarations.extend(user_sources);
+        apply_wind_sources(&mut config, source_declarations);
+        config
+    } else {
+        let mut deserializer = serde_json::Deserializer::from_str(&text);
+        serde_path_to_error::deserialize(&mut deserializer).map_err(|e| {
+            let path = e.path().to_string();
+            let inner = e.into_inner();
+            let path_context = if path.is_empty() {
+                String::new()
+            } else {
+                format!("{path}: ")
+            };
+            anyhow!(
+                "{}: invalid config JSON at line {}, column {}: {}{}",
+                json_path.display(),
+                inner.line(),
+                inner.column(),
+                path_context,
+                inner
+            )
+        })?
+    };
+    // Issue #211: the JSON config path used to leave every
+    // `PluginConfig.resolved_module` at `None`, which made the
+    // downstream plugin-host filter silently drop ALL plugins
+    // (see `commands::plugins::build_plugin_specs`). Mirror the
+    // shape the TS-load path produces (a `file://` URL) for plugin
+    // entries that name a path on disk; bare specifiers require Node
+    // module resolution (not available on the JSON path) and stay
+    // `None` with a user-facing warning so the surprise is visible.
+    // This also resolves any plugins contributed by presets above.
+    resolve_json_plugin_modules(&mut cfg, dir)
+        .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
+    validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
     Ok(cfg)
 }
 
@@ -3114,7 +3161,7 @@ fn is_wind_name(name: &str) -> bool {
 
 /// W27 owner and producer ids are ASCII identifiers with slash-separated
 /// package path characters allowed by the contract.
-fn is_wind_owner_id(id: &str) -> bool {
+pub(crate) fn is_wind_owner_id(id: &str) -> bool {
     let mut bytes = id.bytes();
     bytes
         .next()
@@ -3958,6 +4005,48 @@ mod tests {
             panic!("wind object should load")
         };
         assert_eq!(wind.breakpoints["sm"].min_width_px, 640.0);
+    }
+
+    #[tokio::test]
+    async fn load_from_file_records_the_config_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("shared");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("wind.config.json");
+        tokio::fs::write(
+            &path,
+            r##"{"wind":{"tokens":{"colors":{"surface":"#fff"}}}}"##,
+        )
+        .await
+        .unwrap();
+
+        let config = load_from_file(&path)
+            .await
+            .expect("explicit JSON config loads");
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object should load")
+        };
+        assert_eq!(wind.tokens.colors["surface"], "#fff");
+        assert_eq!(wind.config_dir.as_deref(), Some(dir.as_path()));
+        assert_eq!(wind.declaring_dir(tmp.path()), dir);
+
+        let discovered = load_from_dir(&dir)
+            .await
+            .expect("discovery ignores other names");
+        assert_eq!(discovered, Config::default());
+
+        let missing = format!(
+            "{:#}",
+            load_from_file(&dir.join("absent.json")).await.unwrap_err()
+        );
+        assert!(missing.contains("not a readable file"), "{missing}");
+        let yaml = dir.join("wind.yaml");
+        tokio::fs::write(&yaml, "wind: {}").await.unwrap();
+        let unsupported = format!("{:#}", load_from_file(&yaml).await.unwrap_err());
+        assert!(
+            unsupported.contains(".ts, .mts, .js, .mjs, or .json"),
+            "{unsupported}"
+        );
     }
 
     #[tokio::test]

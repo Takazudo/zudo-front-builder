@@ -13,6 +13,7 @@ mod escape;
 mod explain;
 mod index;
 mod layers;
+mod manifest;
 mod order;
 mod reset;
 mod selector;
@@ -50,6 +51,7 @@ pub use explain::{
 };
 pub use index::CandidateIndex;
 pub use layers::LAYER_ORDER;
+pub use manifest::{classify_manifest_candidates, ExcludedCandidate, ManifestClassification};
 pub use order::SortKey;
 pub use reset::reset_css;
 pub use selector::Specificity;
