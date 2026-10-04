@@ -1,0 +1,12 @@
+---
+title: v3.2.0
+sidebar_position: 27
+---
+
+# v3.2.0
+
+Released: 2026-10-04
+
+## Other Changes
+
+- No package-specific behavior or API changes. The four `.wasm` artifacts keep their 3.1.0 `finalWasm` and glue byte sizes; the CI-measured gzip-9 sizes moved by a few bytes (root +6, render −1, parse +2) within compressor-drift tolerance. All four SHA-256 content digests still change, as on every release, because each `.wasm` embeds `ZFB_RELEASE_VERSION` — re-verify any pinned digests.

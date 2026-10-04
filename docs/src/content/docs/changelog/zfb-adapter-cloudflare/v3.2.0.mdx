@@ -1,0 +1,12 @@
+---
+title: v3.2.0
+sidebar_position: 27
+---
+
+# v3.2.0
+
+Released: 2026-10-04
+
+## Bug Fixes
+
+- Strip a trailing external `sourceMappingURL` comment from the emitted `_zfb_inner.mjs`, since the adapter does not ship that map; inline `data:` maps are kept (13fddbb8, e18b5503).

@@ -1,0 +1,44 @@
+---
+title: v3.2.0
+sidebar_position: 141
+---
+
+# v3.2.0
+
+Released: 2026-10-04
+
+## Features
+
+- Expand the finite HTML and SVG markup vocabulary and expose precise owned JSX and Island types (fefe6832, 513c60b3).
+- Support childless owned `<iframe>` shells (881867b6).
+- Add owned Island persistence options (14e41983).
+- Share one literal CSS `style` contract across server rendering and the client (8e4b6922).
+- Normalize optional Island props once for SSR and JSON transport: undefined record members are omitted, arrays stay strict (3bccf6f1).
+- Add public island testing helpers and format default diagnostics readably in the console (41d32ef8, 4bfb5f58).
+- Register islands from actual `<Island>` boundary targets with binding-aware discovery, so unused helper exports no longer collide while real ambiguities still fail (7b742c30, a1e6ffdf, 6ddc3669).
+- Report build render failures with a sanitized structured summary and the authored `file:line:column` of the failing element, without needing `zfb check` first (353a94bc, a542eabd, 2568912d).
+- Warn, once per file, when a per-file `@jsxImportSource` pragma overrides the zudo-react runtime, before the failure it causes (283e77fd).
+- Add `wind.sources` with root-scoped `exclude` patterns and `packageRoots`, recorded with preset provenance (1fb23e44, 70936a8d).
+- Add `zfb wind audit --plan build`, sharing source discovery with `zfb build`; dev now watches declared package roots (da65e5f3).
+- Add six utility groups: `wrap-anywhere`, `decoration-<color>`, `leading-none`, the resize cursors, `visible` / `invisible` and `underline-offset-<n>` (zudo-wind spec revision 4) (088a65b7).
+- Treat BEM and snake_case names as ordinary authored classes and report known Tailwind-only names as `ZW014` warnings, which become errors at class positions under the new `wind.strict` (823f3c5b).
+- Recognize complete class expressions (ternaries, logical operands, template interpolations, `clsx`/`cn` helpers and same-module constants) as class positions (a56867f8).
+- Render Wind diagnostics as `source:line:column: ZWnnn candidate: message` and collect every forbidden directive in one run (b5824556).
+- Add `zfb wind audit --json` / `--severity` and `zfb wind explain --stdin` / `--json`; extraction now skips module specifiers, URLs, non-class attribute values and inline style text (2b7763a4).
+- Add `--config <file>` to `zfb css`, `zfb wind explain` and `zfb wind audit`, and `zfb wind manifest` for package authors (c3fd3306, d1d42d23).
+- Validate arbitrary values and tokens with one `var()`-aware rule, and explain type hints, attempted properties and `calc()` spacing fixes (e416ba9f, 2c7213c3).
+- Add `wind.utilities.placement` to place utilities before authored CSS (default unchanged) (a85dce2e).
+- The Linux binaries now require glibc 2.34 instead of 2.35, so they run on Amazon Linux 2023 (the AWS Amplify default image) and RHEL 9-class systems (47c8978e).
+
+## Bug Fixes
+
+- Stage package-owned SSR dependencies correctly under strict pnpm layouts (9610fa86, 08fa0c9e).
+- Fix a build panic when a class candidate followed a multibyte character inside a generated JS string (6fde09fe).
+- Render quoted `data-zfb-island` text in highlighted code instead of rejecting it, while real island markers stay rejected (94b77a65).
+- Locate installed packages that export only subpaths, so their package-relative Wind manifests resolve (9bbe077d).
+- `border-[var(--x)]` and the per-side forms are now reported as ambiguous between width and color, like `text-[var(--x)]`, instead of silently resolving to a width; add a type-specific utility or a literal value (e416ba9f).
+- Accept channel-list variables such as `hsl(var(--primary))` in tokens and arbitrary values (bce02ff8).
+- Validate `underline-offset` arbitrary values as nonnegative lengths (60a69b0f).
+- Let package roots read their own `dist` and `node_modules` regardless of ignore files, honor `dir/` exclusions, and reject package roots that contain the project (3b200d63, 71782bf7).
+- Attribute render-failure locations only to the failing element and keep an internal frame as context when no authored span is available (d9332ae1, d7f91337).
+- Never warn about pragmas inside dependency files (39218759).
