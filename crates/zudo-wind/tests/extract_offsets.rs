@@ -116,6 +116,25 @@ fn escape_shrinkage_never_lands_a_decoded_offset_inside_an_em_dash() {
     }
 }
 
+/// #3625: the #3569 (offset panic) and #3570 (quoted island marker) payloads
+/// together, with multibyte text before the class candidate.
+#[test]
+fn quoted_island_marker_with_multibyte_text_before_embedded_class() {
+    let source = concat!(
+        "const meta = 1;\n",
+        r#"export default [{"html":"<span class=\"line\">grep -roh 'data-zfb-island=&quot;[^&quot;]*&quot;' dist/ \u2014 日本語 🎉</span>"}];"#,
+    );
+    let result = extract_candidates(source.as_bytes(), SourceKind::Tsx);
+    assert_positions(source, &result);
+
+    let line = class_occurrence(&result, "line");
+    let open = source.find(r#"class=\"line"#).unwrap() + r#"class="#.len();
+    assert_eq!(line.byte_offset, open + 2);
+    assert_eq!(&source[line.byte_offset..][..line.byte_length], "line");
+    assert_eq!((line.line, line.byte_column), line_column(source, open + 2));
+    assert_eq!(line.literal_byte_offset, open);
+}
+
 #[test]
 fn escapes_before_embedded_class_map_to_raw_positions() {
     let source = concat!(

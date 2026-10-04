@@ -109,6 +109,25 @@ describe("rawHtml reserved boundaries", () => {
   });
 });
 
+// #3625 combined payload: the inner HTML of the generated module that
+// crates/zudo-wind/tests/extract_offsets.rs scans as a raw source.
+describe("rawHtml combined #3569/#3570 payload", () => {
+  const html =
+    "<span class=\"line\">grep -roh 'data-zfb-island=&quot;[^&quot;]*&quot;' dist/ \u2014 \u65e5\u672c\u8a9e \u{1f389}</span>";
+
+  it("renders the quoted text exactly with no island marker", () => {
+    expect(rawHtmlReserved(html, "pre")).toBe(false);
+    const markup = renderToString(h("pre", { rawHtml: html }));
+    expect(markup).toBe(`<pre>${html}</pre>`);
+    const host = document.createElement("div");
+    host.innerHTML = markup;
+    expect(host.querySelector("pre")?.textContent).toBe(
+      `grep -roh 'data-zfb-island="[^"]*"' dist/ \u2014 \u65e5\u672c\u8a9e \u{1f389}`,
+    );
+    expect(host.querySelector("[data-zfb-island]")).toBeNull();
+  });
+});
+
 describe.each(["hydrate", "mount"] as const)("%s rawHtml reserved boundaries", (mode) => {
   const attach = mode === "hydrate" ? hydrate : mount;
   const identity = { component: "Demo", build: "b1" };
