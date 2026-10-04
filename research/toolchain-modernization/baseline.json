@@ -1,0 +1,1782 @@
+{
+  "schema": "zfb-toolchain-baseline/v1",
+  "baseSha": "89b333c9662229ef18ff6aa3cdff5f6f23558eba",
+  "ciHeadSha": "3e8e4d719b57d9e2e4c6a8968f3c0fcc43704aa4",
+  "vitestFiles": {
+    "root:scripts": [
+      {
+        "file": "scripts/__tests__/assert-md-wasm-size-docs.test.mjs",
+        "cases": 50,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/assert-zfb-md-wasm-budgets.test.mjs",
+        "cases": 17,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/changelog-layout.test.mjs",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/check-provenance-drift.test.mjs",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/check-provenance-preflight.test.mjs",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/check-wrangler-pin.test.mjs",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/check-yaml-candidate-drift.test.mjs",
+        "cases": 77,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/generate-wind-reference.test.mjs",
+        "cases": 8,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/island-size-budget.test.mjs",
+        "cases": 16,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/md-wasm-build-ceilings.test.mjs",
+        "cases": 12,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/nextest-heavy-binary-drift.test.mjs",
+        "cases": 10,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/pnpm-build-arg-forwarding.test.mjs",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/retire-next-dist-tag.test.mjs",
+        "cases": 27,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/showcase-inject-banner.test.mjs",
+        "cases": 7,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/showcase-workflow-tools.test.mjs",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/smoke-clean-room.test.mjs",
+        "cases": 11,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/supervisor-env-identity.test.mjs",
+        "cases": 13,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/supervisor-timeline-summary.test.mjs",
+        "cases": 83,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/workspace-test-contract.test.mjs",
+        "cases": 4,
+        "skipped": 0
+      }
+    ],
+    "root:scripts-subprocess": [
+      {
+        "file": "scripts/__tests__/docs-dev-supervisor.test.mjs",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
+        "cases": 50,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/supervisor-watch-handoff.test.mjs",
+        "cases": 5,
+        "skipped": 0
+      },
+      {
+        "file": "scripts/__tests__/supervisor-watch.test.mjs",
+        "cases": 37,
+        "skipped": 0
+      }
+    ],
+    "docs": [
+      {
+        "file": "src/components/playground/__tests__/admonition-samples.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/components/playground/__tests__/option-row-layout.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "src/components/playground/__tests__/page-title-layout.test.ts",
+        "cases": 12,
+        "skipped": 0
+      },
+      {
+        "file": "src/components/playground/__tests__/playground-security.test.ts",
+        "cases": 1,
+        "skipped": 0
+      },
+      {
+        "file": "src/components/playground/__tests__/use-wasm-module.test.ts",
+        "cases": 6,
+        "skipped": 0
+      }
+    ],
+    "packages/create-zfb": [
+      {
+        "file": "bin/__tests__/spawn-error-message.test.mjs",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "bin/__tests__/version-check.test.mjs",
+        "cases": 22,
+        "skipped": 0
+      }
+    ],
+    "packages/zfb": [
+      {
+        "file": "src/__tests__/client-script.test.ts",
+        "cases": 7,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config-emit-render-artifacts.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config-minify-html.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config-prefetch.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config-strict-broken-links.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config-strict-content-bridge.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/config.test.ts",
+        "cases": 11,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/content-render-markers-zudo-react.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/content.test.ts",
+        "cases": 69,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/detect-musl.test.ts",
+        "cases": 11,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/frontmatter.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/island-owned-factory.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/launcher.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/livereload.test.ts",
+        "cases": 13,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/paginate.test.ts",
+        "cases": 7,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/plugins.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/runtime-lifecycle.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/runtime-persist-plan.test.ts",
+        "cases": 15,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/runtime.test.ts",
+        "cases": 60,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/slugify.test.ts",
+        "cases": 35,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/acceptance-r-a01.test.ts",
+        "cases": 5,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/acceptance-r-a03-logic.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/description.test.ts",
+        "cases": 11,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/dialect-diagnostics.test.ts",
+        "cases": 25,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/dom-bindings.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/escape.test.ts",
+        "cases": 1,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/forms-server.test.ts",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/forms.test.ts",
+        "cases": 16,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/hydrate.test.ts",
+        "cases": 38,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/iframe-shell.test.ts",
+        "cases": 26,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/jsx-contract-matrix.test.ts",
+        "cases": 52,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/keyed-remount-table.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/md-roundtrip.test.ts",
+        "cases": 8,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/ol-attributes.test.ts",
+        "cases": 8,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/pre-leading-lf.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/props-transport.test.ts",
+        "cases": 30,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/raw-html-reserved.test.ts",
+        "cases": 54,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/raw-text.test.ts",
+        "cases": 18,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/reactive.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/root.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/scheduler.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/scope.test.ts",
+        "cases": 7,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/server.test.ts",
+        "cases": 12,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/structure-server.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/structure.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/style.test.ts",
+        "cases": 14,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/testing.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/third-party-widget.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/zudo-react/vocabulary.test.ts",
+        "cases": 32,
+        "skipped": 0
+      }
+    ],
+    "packages/zfb-adapter-cloudflare": [
+      {
+        "file": "src/__tests__/cli.test.ts",
+        "cases": 26,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/d1-binding.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/packaging.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/runtime.test.ts",
+        "cases": 4,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/shared-key-contract.test.ts",
+        "cases": 5,
+        "skipped": 0
+      }
+    ],
+    "packages/zfb-runtime": [
+      {
+        "file": "src/__tests__/client-router-component-split.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router-owned-description.test.ts",
+        "cases": 1,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router-split.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router.test.ts",
+        "cases": 18,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/events.test.ts",
+        "cases": 14,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/history-safe.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/persist-island-lifecycle.test.ts",
+        "cases": 46,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/prefetch.test.ts",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/router-init-gating.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/router-srcdoc-guard.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/router-vt-history.test.ts",
+        "cases": 8,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/router.test.ts",
+        "cases": 57,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/client-router/swap-functions.test.ts",
+        "cases": 45,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/root-barrel-no-server-router.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/router-owned-render.test.ts",
+        "cases": 6,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/router.test.ts",
+        "cases": 57,
+        "skipped": 0
+      },
+      {
+        "file": "src/__tests__/view-transitions.test.ts",
+        "cases": 1,
+        "skipped": 0
+      }
+    ],
+    "crates/zfb-md-wasm/npm (wasm-md default leg)": [
+      {
+        "file": "test/api.test.ts",
+        "cases": 41,
+        "skipped": 0
+      },
+      {
+        "file": "test/artifact-contract.test.ts",
+        "cases": 8,
+        "skipped": 0
+      },
+      {
+        "file": "test/diagnostic-contract.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "test/factory-glue.test.ts",
+        "cases": 7,
+        "skipped": 0
+      },
+      {
+        "file": "test/gfm-parity.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "test/highlight-entry.test.ts",
+        "cases": 3,
+        "skipped": 0
+      },
+      {
+        "file": "test/highlight-parity.test.ts",
+        "cases": 21,
+        "skipped": 0
+      },
+      {
+        "file": "test/package-browser.test.ts",
+        "cases": 9,
+        "skipped": 0
+      },
+      {
+        "file": "test/parity.test.ts",
+        "cases": 14,
+        "skipped": 0
+      },
+      {
+        "file": "test/parse-to-ast.test.ts",
+        "cases": 54,
+        "skipped": 0
+      },
+      {
+        "file": "test/runtime-retry.test.ts",
+        "cases": 32,
+        "skipped": 0
+      },
+      {
+        "file": "test/slim-entry.test.ts",
+        "cases": 2,
+        "skipped": 0
+      },
+      {
+        "file": "test/slim-semantics.test.ts",
+        "cases": 29,
+        "skipped": 0
+      },
+      {
+        "file": "test/workerd.test.ts",
+        "cases": 2,
+        "skipped": 0
+      }
+    ]
+  },
+  "packedTarballs": {
+    "create-zfb-3.1.0.tgz": {
+      "files": 7,
+      "unpackedBytes": 11120,
+      "contents": [
+        {
+          "path": "bin/create-zfb.mjs",
+          "size": 2104
+        },
+        {
+          "path": "bin/spawn-error-message.mjs",
+          "size": 1029
+        },
+        {
+          "path": "bin/version-check.mjs",
+          "size": 3981
+        },
+        {
+          "path": "CHANGELOG.md",
+          "size": 918
+        },
+        {
+          "path": "LICENSE",
+          "size": 1074
+        },
+        {
+          "path": "package.json",
+          "size": 1064
+        },
+        {
+          "path": "README.md",
+          "size": 950
+        }
+      ]
+    },
+    "takazudo-zfb-3.1.0.tgz": {
+      "files": 120,
+      "unpackedBytes": 978455,
+      "contents": [
+        {
+          "path": "bin/detect-musl.mjs",
+          "size": 2191
+        },
+        {
+          "path": "bin/zfb.mjs",
+          "size": 6822
+        },
+        {
+          "path": "CHANGELOG.md",
+          "size": 10033
+        },
+        {
+          "path": "dist/client-script.d.ts",
+          "size": 2036
+        },
+        {
+          "path": "dist/client-script.js",
+          "size": 2767
+        },
+        {
+          "path": "dist/client-script.js.map",
+          "size": 3405
+        },
+        {
+          "path": "dist/config.d.ts",
+          "size": 59950
+        },
+        {
+          "path": "dist/config.js",
+          "size": 4732
+        },
+        {
+          "path": "dist/config.js.map",
+          "size": 64126
+        },
+        {
+          "path": "dist/content.d.ts",
+          "size": 13235
+        },
+        {
+          "path": "dist/content.js",
+          "size": 25472
+        },
+        {
+          "path": "dist/content.js.map",
+          "size": 50011
+        },
+        {
+          "path": "dist/frontmatter.d.ts",
+          "size": 896
+        },
+        {
+          "path": "dist/frontmatter.js",
+          "size": 5818
+        },
+        {
+          "path": "dist/frontmatter.js.map",
+          "size": 9745
+        },
+        {
+          "path": "dist/index.d.ts",
+          "size": 1282
+        },
+        {
+          "path": "dist/index.js",
+          "size": 1771
+        },
+        {
+          "path": "dist/index.js.map",
+          "size": 3425
+        },
+        {
+          "path": "dist/island-boundary.d.ts",
+          "size": 356
+        },
+        {
+          "path": "dist/island-boundary.js",
+          "size": 1947
+        },
+        {
+          "path": "dist/island-boundary.js.map",
+          "size": 4031
+        },
+        {
+          "path": "dist/island.d.ts",
+          "size": 848
+        },
+        {
+          "path": "dist/island.js",
+          "size": 1568
+        },
+        {
+          "path": "dist/island.js.map",
+          "size": 3682
+        },
+        {
+          "path": "dist/jsx-types.d.ts",
+          "size": 552
+        },
+        {
+          "path": "dist/jsx-types.js",
+          "size": 233
+        },
+        {
+          "path": "dist/jsx-types.js.map",
+          "size": 946
+        },
+        {
+          "path": "dist/paginate.d.ts",
+          "size": 1596
+        },
+        {
+          "path": "dist/paginate.js",
+          "size": 1900
+        },
+        {
+          "path": "dist/paginate.js.map",
+          "size": 4416
+        },
+        {
+          "path": "dist/plugins.d.ts",
+          "size": 23470
+        },
+        {
+          "path": "dist/plugins.js",
+          "size": 1738
+        },
+        {
+          "path": "dist/plugins.js.map",
+          "size": 25269
+        },
+        {
+          "path": "dist/runtime.d.ts",
+          "size": 4305
+        },
+        {
+          "path": "dist/runtime.js",
+          "size": 30018
+        },
+        {
+          "path": "dist/runtime.js.map",
+          "size": 53280
+        },
+        {
+          "path": "dist/slugify.d.ts",
+          "size": 3057
+        },
+        {
+          "path": "dist/slugify.js",
+          "size": 7039
+        },
+        {
+          "path": "dist/slugify.js.map",
+          "size": 10595
+        },
+        {
+          "path": "dist/types.d.ts",
+          "size": 1415
+        },
+        {
+          "path": "dist/types.js",
+          "size": 1487
+        },
+        {
+          "path": "dist/types.js.map",
+          "size": 3205
+        },
+        {
+          "path": "dist/wasm.d.ts",
+          "size": 101
+        },
+        {
+          "path": "dist/wasm.js",
+          "size": 46
+        },
+        {
+          "path": "dist/wasm.js.map",
+          "size": 431
+        },
+        {
+          "path": "dist/zudo-react/client.d.ts",
+          "size": 156
+        },
+        {
+          "path": "dist/zudo-react/client.js",
+          "size": 132
+        },
+        {
+          "path": "dist/zudo-react/client.js.map",
+          "size": 397
+        },
+        {
+          "path": "dist/zudo-react/description.d.ts",
+          "size": 1654
+        },
+        {
+          "path": "dist/zudo-react/description.js",
+          "size": 3551
+        },
+        {
+          "path": "dist/zudo-react/description.js.map",
+          "size": 8899
+        },
+        {
+          "path": "dist/zudo-react/dom-bindings.d.ts",
+          "size": 827
+        },
+        {
+          "path": "dist/zudo-react/dom-bindings.js",
+          "size": 2046
+        },
+        {
+          "path": "dist/zudo-react/dom-bindings.js.map",
+          "size": 4986
+        },
+        {
+          "path": "dist/zudo-react/escape.d.ts",
+          "size": 123
+        },
+        {
+          "path": "dist/zudo-react/escape.js",
+          "size": 254
+        },
+        {
+          "path": "dist/zudo-react/escape.js.map",
+          "size": 683
+        },
+        {
+          "path": "dist/zudo-react/forms.d.ts",
+          "size": 1238
+        },
+        {
+          "path": "dist/zudo-react/forms.js",
+          "size": 15646
+        },
+        {
+          "path": "dist/zudo-react/forms.js.map",
+          "size": 32806
+        },
+        {
+          "path": "dist/zudo-react/hydrate.d.ts",
+          "size": 322
+        },
+        {
+          "path": "dist/zudo-react/hydrate.js",
+          "size": 42375
+        },
+        {
+          "path": "dist/zudo-react/hydrate.js.map",
+          "size": 88879
+        },
+        {
+          "path": "dist/zudo-react/index.d.ts",
+          "size": 2203
+        },
+        {
+          "path": "dist/zudo-react/index.js",
+          "size": 566
+        },
+        {
+          "path": "dist/zudo-react/index.js.map",
+          "size": 3225
+        },
+        {
+          "path": "dist/zudo-react/island-root-type.d.ts",
+          "size": 52
+        },
+        {
+          "path": "dist/zudo-react/island-root-type.js",
+          "size": 129
+        },
+        {
+          "path": "dist/zudo-react/island-root-type.js.map",
+          "size": 314
+        },
+        {
+          "path": "dist/zudo-react/jsx-dev-runtime.d.ts",
+          "size": 374
+        },
+        {
+          "path": "dist/zudo-react/jsx-dev-runtime.js",
+          "size": 303
+        },
+        {
+          "path": "dist/zudo-react/jsx-dev-runtime.js.map",
+          "size": 998
+        },
+        {
+          "path": "dist/zudo-react/jsx-runtime.d.ts",
+          "size": 315
+        },
+        {
+          "path": "dist/zudo-react/jsx-runtime.js",
+          "size": 287
+        },
+        {
+          "path": "dist/zudo-react/jsx-runtime.js.map",
+          "size": 928
+        },
+        {
+          "path": "dist/zudo-react/jsx-types.d.ts",
+          "size": 10968
+        },
+        {
+          "path": "dist/zudo-react/jsx-types.js",
+          "size": 48
+        },
+        {
+          "path": "dist/zudo-react/jsx-types.js.map",
+          "size": 12274
+        },
+        {
+          "path": "dist/zudo-react/props-transport.d.ts",
+          "size": 341
+        },
+        {
+          "path": "dist/zudo-react/props-transport.js",
+          "size": 4792
+        },
+        {
+          "path": "dist/zudo-react/props-transport.js.map",
+          "size": 9973
+        },
+        {
+          "path": "dist/zudo-react/raw-html.d.ts",
+          "size": 80
+        },
+        {
+          "path": "dist/zudo-react/raw-html.js",
+          "size": 4939
+        },
+        {
+          "path": "dist/zudo-react/raw-html.js.map",
+          "size": 8988
+        },
+        {
+          "path": "dist/zudo-react/reactive-types.d.ts",
+          "size": 243
+        },
+        {
+          "path": "dist/zudo-react/reactive-types.js",
+          "size": 53
+        },
+        {
+          "path": "dist/zudo-react/reactive-types.js.map",
+          "size": 405
+        },
+        {
+          "path": "dist/zudo-react/reactive.d.ts",
+          "size": 814
+        },
+        {
+          "path": "dist/zudo-react/reactive.js",
+          "size": 4941
+        },
+        {
+          "path": "dist/zudo-react/reactive.js.map",
+          "size": 10505
+        },
+        {
+          "path": "dist/zudo-react/render-html.d.ts",
+          "size": 463
+        },
+        {
+          "path": "dist/zudo-react/render-html.js",
+          "size": 26673
+        },
+        {
+          "path": "dist/zudo-react/render-html.js.map",
+          "size": 55601
+        },
+        {
+          "path": "dist/zudo-react/root.d.ts",
+          "size": 1061
+        },
+        {
+          "path": "dist/zudo-react/root.js",
+          "size": 3458
+        },
+        {
+          "path": "dist/zudo-react/root.js.map",
+          "size": 7663
+        },
+        {
+          "path": "dist/zudo-react/scheduler.d.ts",
+          "size": 453
+        },
+        {
+          "path": "dist/zudo-react/scheduler.js",
+          "size": 3435
+        },
+        {
+          "path": "dist/zudo-react/scheduler.js.map",
+          "size": 6817
+        },
+        {
+          "path": "dist/zudo-react/scope.d.ts",
+          "size": 1403
+        },
+        {
+          "path": "dist/zudo-react/scope.js",
+          "size": 7077
+        },
+        {
+          "path": "dist/zudo-react/scope.js.map",
+          "size": 14397
+        },
+        {
+          "path": "dist/zudo-react/server.d.ts",
+          "size": 710
+        },
+        {
+          "path": "dist/zudo-react/server.js",
+          "size": 452
+        },
+        {
+          "path": "dist/zudo-react/server.js.map",
+          "size": 1540
+        },
+        {
+          "path": "dist/zudo-react/structure.d.ts",
+          "size": 907
+        },
+        {
+          "path": "dist/zudo-react/structure.js",
+          "size": 1997
+        },
+        {
+          "path": "dist/zudo-react/structure.js.map",
+          "size": 4928
+        },
+        {
+          "path": "dist/zudo-react/style.d.ts",
+          "size": 9629
+        },
+        {
+          "path": "dist/zudo-react/style.js",
+          "size": 12494
+        },
+        {
+          "path": "dist/zudo-react/style.js.map",
+          "size": 20627
+        },
+        {
+          "path": "dist/zudo-react/testing.d.ts",
+          "size": 1314
+        },
+        {
+          "path": "dist/zudo-react/testing.js",
+          "size": 4220
+        },
+        {
+          "path": "dist/zudo-react/testing.js.map",
+          "size": 8896
+        },
+        {
+          "path": "dist/zudo-react/vocabulary.d.ts",
+          "size": 1270
+        },
+        {
+          "path": "dist/zudo-react/vocabulary.js",
+          "size": 9157
+        },
+        {
+          "path": "dist/zudo-react/vocabulary.js.map",
+          "size": 16424
+        },
+        {
+          "path": "LICENSE",
+          "size": 1074
+        },
+        {
+          "path": "package.json",
+          "size": 3551
+        },
+        {
+          "path": "README.md",
+          "size": 11484
+        }
+      ]
+    },
+    "takazudo-zfb-adapter-cloudflare-3.1.0.tgz": {
+      "files": 15,
+      "unpackedBytes": 73312,
+      "contents": [
+        {
+          "path": "bin/cli.mjs",
+          "size": 5740
+        },
+        {
+          "path": "CHANGELOG.md",
+          "size": 663
+        },
+        {
+          "path": "dist/build.d.ts",
+          "size": 3038
+        },
+        {
+          "path": "dist/build.js",
+          "size": 2615
+        },
+        {
+          "path": "dist/build.js.map",
+          "size": 4887
+        },
+        {
+          "path": "dist/emit-worker.mjs",
+          "size": 6791
+        },
+        {
+          "path": "dist/index.d.ts",
+          "size": 2464
+        },
+        {
+          "path": "dist/index.js",
+          "size": 3679
+        },
+        {
+          "path": "dist/index.js.map",
+          "size": 6953
+        },
+        {
+          "path": "dist/worker-wrapper.mjs",
+          "size": 9042
+        },
+        {
+          "path": "LICENSE",
+          "size": 1074
+        },
+        {
+          "path": "package.json",
+          "size": 2153
+        },
+        {
+          "path": "README.md",
+          "size": 8380
+        },
+        {
+          "path": "src/emit-worker.mjs",
+          "size": 6791
+        },
+        {
+          "path": "src/worker-wrapper.mjs",
+          "size": 9042
+        }
+      ]
+    },
+    "takazudo-zfb-runtime-3.1.0.tgz": {
+      "files": 46,
+      "unpackedBytes": 446278,
+      "contents": [
+        {
+          "path": "CHANGELOG.md",
+          "size": 1572
+        },
+        {
+          "path": "dist/client-router-component.d.ts",
+          "size": 3644
+        },
+        {
+          "path": "dist/client-router-component.js",
+          "size": 6139
+        },
+        {
+          "path": "dist/client-router-component.js.map",
+          "size": 11717
+        },
+        {
+          "path": "dist/client-router.d.ts",
+          "size": 112
+        },
+        {
+          "path": "dist/client-router.js",
+          "size": 1480
+        },
+        {
+          "path": "dist/client-router.js.map",
+          "size": 2088
+        },
+        {
+          "path": "dist/client-router/events.d.ts",
+          "size": 2970
+        },
+        {
+          "path": "dist/client-router/events.js",
+          "size": 5186
+        },
+        {
+          "path": "dist/client-router/events.js.map",
+          "size": 11418
+        },
+        {
+          "path": "dist/client-router/history-safe.d.ts",
+          "size": 182
+        },
+        {
+          "path": "dist/client-router/history-safe.js",
+          "size": 1352
+        },
+        {
+          "path": "dist/client-router/history-safe.js.map",
+          "size": 2080
+        },
+        {
+          "path": "dist/client-router/index.d.ts",
+          "size": 889
+        },
+        {
+          "path": "dist/client-router/index.js",
+          "size": 1690
+        },
+        {
+          "path": "dist/client-router/index.js.map",
+          "size": 2807
+        },
+        {
+          "path": "dist/client-router/prefetch.d.ts",
+          "size": 1009
+        },
+        {
+          "path": "dist/client-router/prefetch.js",
+          "size": 15416
+        },
+        {
+          "path": "dist/client-router/prefetch.js.map",
+          "size": 27014
+        },
+        {
+          "path": "dist/client-router/router.d.ts",
+          "size": 2706
+        },
+        {
+          "path": "dist/client-router/router.js",
+          "size": 64328
+        },
+        {
+          "path": "dist/client-router/router.js.map",
+          "size": 98412
+        },
+        {
+          "path": "dist/client-router/swap-functions.d.ts",
+          "size": 1187
+        },
+        {
+          "path": "dist/client-router/swap-functions.js",
+          "size": 17381
+        },
+        {
+          "path": "dist/client-router/swap-functions.js.map",
+          "size": 29900
+        },
+        {
+          "path": "dist/client-router/types.d.ts",
+          "size": 404
+        },
+        {
+          "path": "dist/client-router/types.js",
+          "size": 72
+        },
+        {
+          "path": "dist/client-router/types.js.map",
+          "size": 923
+        },
+        {
+          "path": "dist/index.d.ts",
+          "size": 1468
+        },
+        {
+          "path": "dist/index.js",
+          "size": 2773
+        },
+        {
+          "path": "dist/index.js.map",
+          "size": 5039
+        },
+        {
+          "path": "dist/router.d.ts",
+          "size": 6586
+        },
+        {
+          "path": "dist/router.js",
+          "size": 28385
+        },
+        {
+          "path": "dist/router.js.map",
+          "size": 47177
+        },
+        {
+          "path": "dist/server.d.ts",
+          "size": 162
+        },
+        {
+          "path": "dist/server.js",
+          "size": 748
+        },
+        {
+          "path": "dist/server.js.map",
+          "size": 1181
+        },
+        {
+          "path": "dist/snapshot.d.ts",
+          "size": 2843
+        },
+        {
+          "path": "dist/snapshot.js",
+          "size": 873
+        },
+        {
+          "path": "dist/snapshot.js.map",
+          "size": 4056
+        },
+        {
+          "path": "dist/view-transitions.d.ts",
+          "size": 1483
+        },
+        {
+          "path": "dist/view-transitions.js",
+          "size": 2812
+        },
+        {
+          "path": "dist/view-transitions.js.map",
+          "size": 3783
+        },
+        {
+          "path": "LICENSE",
+          "size": 1074
+        },
+        {
+          "path": "package.json",
+          "size": 2219
+        },
+        {
+          "path": "README.md",
+          "size": 19538
+        }
+      ]
+    },
+    "zfb-md-wasm.tgz": {
+      "files": 68,
+      "unpackedBytes": 8159151,
+      "contents": [
+        {
+          "path": "dist/browser.d.ts",
+          "size": 2080
+        },
+        {
+          "path": "dist/browser.js",
+          "size": 1365
+        },
+        {
+          "path": "dist/browser.js.map",
+          "size": 3716
+        },
+        {
+          "path": "dist/highlight-browser.d.ts",
+          "size": 744
+        },
+        {
+          "path": "dist/highlight-browser.js",
+          "size": 1461
+        },
+        {
+          "path": "dist/highlight-browser.js.map",
+          "size": 2670
+        },
+        {
+          "path": "dist/highlight-workerd.d.ts",
+          "size": 751
+        },
+        {
+          "path": "dist/highlight-workerd.js",
+          "size": 533
+        },
+        {
+          "path": "dist/highlight-workerd.js.map",
+          "size": 1193
+        },
+        {
+          "path": "dist/highlight.d.ts",
+          "size": 744
+        },
+        {
+          "path": "dist/highlight.js",
+          "size": 1845
+        },
+        {
+          "path": "dist/highlight.js.map",
+          "size": 3474
+        },
+        {
+          "path": "dist/index.d.ts",
+          "size": 2080
+        },
+        {
+          "path": "dist/index.js",
+          "size": 1676
+        },
+        {
+          "path": "dist/index.js.map",
+          "size": 4427
+        },
+        {
+          "path": "dist/mdast.d.ts",
+          "size": 769
+        },
+        {
+          "path": "dist/mdast.js",
+          "size": 24838
+        },
+        {
+          "path": "dist/mdast.js.map",
+          "size": 51612
+        },
+        {
+          "path": "dist/parse-browser.d.ts",
+          "size": 1441
+        },
+        {
+          "path": "dist/parse-browser.js",
+          "size": 939
+        },
+        {
+          "path": "dist/parse-browser.js.map",
+          "size": 2863
+        },
+        {
+          "path": "dist/parse-workerd.d.ts",
+          "size": 1448
+        },
+        {
+          "path": "dist/parse-workerd.js",
+          "size": 571
+        },
+        {
+          "path": "dist/parse-workerd.js.map",
+          "size": 2070
+        },
+        {
+          "path": "dist/parse.d.ts",
+          "size": 1441
+        },
+        {
+          "path": "dist/parse.js",
+          "size": 1240
+        },
+        {
+          "path": "dist/parse.js.map",
+          "size": 3498
+        },
+        {
+          "path": "dist/render-browser.d.ts",
+          "size": 820
+        },
+        {
+          "path": "dist/render-browser.js",
+          "size": 883
+        },
+        {
+          "path": "dist/render-browser.js.map",
+          "size": 2064
+        },
+        {
+          "path": "dist/render.d.ts",
+          "size": 820
+        },
+        {
+          "path": "dist/render.js",
+          "size": 1184
+        },
+        {
+          "path": "dist/render.js.map",
+          "size": 2699
+        },
+        {
+          "path": "dist/runtime-core.d.ts",
+          "size": 1949
+        },
+        {
+          "path": "dist/runtime-core.js",
+          "size": 7142
+        },
+        {
+          "path": "dist/runtime-core.js.map",
+          "size": 14185
+        },
+        {
+          "path": "dist/runtime-static.d.ts",
+          "size": 1444
+        },
+        {
+          "path": "dist/runtime-static.js",
+          "size": 875
+        },
+        {
+          "path": "dist/runtime-static.js.map",
+          "size": 1943
+        },
+        {
+          "path": "dist/runtime.d.ts",
+          "size": 1688
+        },
+        {
+          "path": "dist/runtime.js",
+          "size": 1382
+        },
+        {
+          "path": "dist/runtime.js.map",
+          "size": 3068
+        },
+        {
+          "path": "dist/types.d.ts",
+          "size": 21835
+        },
+        {
+          "path": "dist/types.js",
+          "size": 296
+        },
+        {
+          "path": "dist/types.js.map",
+          "size": 23632
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm",
+          "size": 1537556
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm.d.ts",
+          "size": 565
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_glue.zfb-factory.d.mts",
+          "size": 207
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_glue.zfb-factory.mjs",
+          "size": 6526
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_glue.zfb-resource.d.mts",
+          "size": 2778
+        },
+        {
+          "path": "dist/wasm-highlight/zfb_md_wasm_highlight_glue.zfb-resource.mjs",
+          "size": 8758
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_bg.wasm",
+          "size": 700397
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_bg.wasm.d.ts",
+          "size": 562
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_glue.zfb-factory.d.mts",
+          "size": 206
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_glue.zfb-factory.mjs",
+          "size": 8928
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.d.mts",
+          "size": 5187
+        },
+        {
+          "path": "dist/wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs",
+          "size": 11159
+        },
+        {
+          "path": "dist/wasm-render/zfb_md_wasm_render_bg.wasm",
+          "size": 2192801
+        },
+        {
+          "path": "dist/wasm-render/zfb_md_wasm_render_bg.wasm.d.ts",
+          "size": 562
+        },
+        {
+          "path": "dist/wasm-render/zfb_md_wasm_render_glue.zfb-resource.d.mts",
+          "size": 2797
+        },
+        {
+          "path": "dist/wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs",
+          "size": 8772
+        },
+        {
+          "path": "dist/wasm/zfb_md_wasm_bg.wasm",
+          "size": 3393514
+        },
+        {
+          "path": "dist/wasm/zfb_md_wasm_bg.wasm.d.ts",
+          "size": 832
+        },
+        {
+          "path": "dist/wasm/zfb_md_wasm_glue.zfb-resource.d.mts",
+          "size": 6684
+        },
+        {
+          "path": "dist/wasm/zfb_md_wasm_glue.zfb-resource.mjs",
+          "size": 14998
+        },
+        {
+          "path": "LICENSE",
+          "size": 1074
+        },
+        {
+          "path": "package.json",
+          "size": 2584
+        },
+        {
+          "path": "README.md",
+          "size": 42306
+        }
+      ]
+    }
+  },
+  "localTimings": [
+    {
+      "command": "typecheck:workspace",
+      "run": 1,
+      "exit": 0,
+      "seconds": 7.02,
+      "loadavg": "5.44 5.48 5.00"
+    },
+    {
+      "command": "format:check",
+      "run": 1,
+      "exit": 0,
+      "seconds": 9.28,
+      "loadavg": "5.46 5.48 5.01"
+    },
+    {
+      "command": "typecheck:workspace",
+      "run": 2,
+      "exit": 0,
+      "seconds": 4.61,
+      "loadavg": "5.43 5.47 5.01"
+    },
+    {
+      "command": "format:check",
+      "run": 2,
+      "exit": 0,
+      "seconds": 9.8,
+      "loadavg": "5.83 5.55 5.04"
+    },
+    {
+      "command": "typecheck:workspace",
+      "run": 3,
+      "exit": 0,
+      "seconds": 4.09,
+      "loadavg": "5.93 5.58 5.05"
+    },
+    {
+      "command": "format:check",
+      "run": 3,
+      "exit": 0,
+      "seconds": 10.04,
+      "loadavg": "5.48 5.49 5.03"
+    },
+    {
+      "command": "format:check:ts",
+      "run": 1,
+      "exit": 0,
+      "seconds": 5.78,
+      "loadavg": "4.91 5.37 4.99"
+    },
+    {
+      "command": "format:check:mdx",
+      "run": 1,
+      "exit": 0,
+      "seconds": 3.79,
+      "loadavg": "5.16 5.41 5.01"
+    },
+    {
+      "command": "build3",
+      "run": 1,
+      "exit": 0,
+      "seconds": 3.76,
+      "loadavg": "5.22 5.42 5.01"
+    },
+    {
+      "command": "format:check:ts",
+      "run": 2,
+      "exit": 0,
+      "seconds": 5.8,
+      "loadavg": "5.21 5.41 5.01"
+    },
+    {
+      "command": "format:check:mdx",
+      "run": 2,
+      "exit": 0,
+      "seconds": 3.99,
+      "loadavg": "5.19 5.41 5.01"
+    },
+    {
+      "command": "build3",
+      "run": 2,
+      "exit": 0,
+      "seconds": 5.48,
+      "loadavg": "4.93 5.35 5.00"
+    },
+    {
+      "command": "format:check:ts",
+      "run": 3,
+      "exit": 0,
+      "seconds": 6.04,
+      "loadavg": "4.94 5.34 5.00"
+    },
+    {
+      "command": "format:check:mdx",
+      "run": 3,
+      "exit": 0,
+      "seconds": 4.13,
+      "loadavg": "4.94 5.34 5.00"
+    },
+    {
+      "command": "build3",
+      "run": 3,
+      "exit": 0,
+      "seconds": 3.43,
+      "loadavg": "7.27 5.81 5.17"
+    },
+    {
+      "command": "vitest-startup-create-zfb",
+      "run": 1,
+      "exit": 0,
+      "seconds": 4.28,
+      "loadavg": "6.71 5.74 5.15"
+    },
+    {
+      "command": "vitest-startup-create-zfb",
+      "run": 2,
+      "exit": 0,
+      "seconds": 1.76,
+      "loadavg": "6.71 5.74 5.15"
+    },
+    {
+      "command": "vitest-startup-create-zfb",
+      "run": 3,
+      "exit": 0,
+      "seconds": 1.76,
+      "loadavg": "6.33 5.68 5.13"
+    }
+  ]
+}
