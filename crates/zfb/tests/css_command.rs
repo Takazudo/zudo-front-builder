@@ -1700,7 +1700,7 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     fs::write(
         temp.path().join("src/demo.mdx"),
         r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
-<div class="flex p-2">Real content</div>
+<div class="flex block">Real content</div>
 "#,
     )
     .unwrap();
@@ -1708,7 +1708,7 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     assert_success(&css, "mixed MDX CSS");
     let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap();
     assert!(emitted.contains(".flex"), "{emitted}");
-    assert!(emitted.contains(".p-2"), "{emitted}");
+    assert!(emitted.contains(".block"), "{emitted}");
     assert!(!emitted.contains("bg-missing-preview"), "{emitted}");
 }
 

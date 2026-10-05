@@ -97,11 +97,13 @@ const View = () => <>
   <Preview html={renderPreview('<div class="bg-red-500">')} />
   <Preview html={`<i class="bg-blue-500">${ctl('text-xl')}</i>`} />
   <Preview html={ctl('border-2')} />
+  <Preview onClick={() => { let html; html = 'p-4'; }} />
+  <Outer child={<Preview html={renderPreview('<div class="bg-green-500">')} />} />
   <div className="flex missing-real" />
 </>;"#;
     let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
     let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
-    for kept in ["p-2", "m-2", "flex", "missing-real"] {
+    for kept in ["p-2", "m-2", "p-4", "flex", "missing-real"] {
         assert!(found.contains(&kept), "{kept}: {found:?}");
     }
     for ignored in [
@@ -111,6 +113,7 @@ const View = () => <>
         "bg-blue-500",
         "text-xl",
         "border-2",
+        "bg-green-500",
     ] {
         assert!(!found.contains(&ignored), "{ignored}: {found:?}");
     }

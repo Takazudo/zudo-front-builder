@@ -266,8 +266,11 @@ pub(super) fn known_non_class_context(
 fn jsx_tag_attribute_context(prefix: &str) -> bool {
     let bytes = prefix.as_bytes();
     let mut i = 0;
-    let mut in_tag = false;
-    let mut braces = 0usize;
+    // An outer tag can contain a JSX element in one of its expressions.
+    // Keep each open tag's expression depth so the inner tag's attributes
+    // are recognized without treating assignments in the outer expression
+    // as attributes.
+    let mut tag_braces = Vec::<usize>::new();
     while i < bytes.len() {
         if bytes[i..].starts_with(b"//") {
             i = prefix[i..].find('\n').map_or(bytes.len(), |n| i + n);
@@ -294,19 +297,23 @@ fn jsx_tag_attribute_context(prefix: &str) -> bool {
             }
             continue;
         }
-        if !in_tag && bytes[i] == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
-            in_tag = true;
-        } else if in_tag {
+        if bytes[i] == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+            if tag_braces.last().is_none_or(|depth| *depth > 0) {
+                tag_braces.push(0);
+            }
+        } else if let Some(depth) = tag_braces.last_mut() {
             match bytes[i] {
-                b'{' => braces += 1,
-                b'}' => braces = braces.saturating_sub(1),
-                b'>' if braces == 0 => in_tag = false,
+                b'{' => *depth += 1,
+                b'}' => *depth = (*depth).saturating_sub(1),
+                b'>' if *depth == 0 => {
+                    tag_braces.pop();
+                }
                 _ => {}
             }
         }
         i += 1;
     }
-    in_tag
+    tag_braces.last() == Some(&0)
 }
 
 /// CSS text of a `<style>` element: `<style>{`…`}</style>` or the
