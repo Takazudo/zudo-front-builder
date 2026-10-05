@@ -155,7 +155,7 @@ pub(crate) fn build_standalone_wind_source_plan(
         roots: build_plan
             .roots
             .into_iter()
-            .filter(|root| root.package_root)
+            .filter(|root| root.package_root || root.label.starts_with("root/"))
             .collect(),
         exclusions: build_plan.exclusions,
         author_exclusions: build_plan.author_exclusions,

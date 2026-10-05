@@ -1031,6 +1031,9 @@ pub struct WindSources {
     /// Globs excluded from every source root under the declaring root.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Additional project directories scanned with conventional gitignore rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
     /// Package directories scanned as roots, including their `dist` and `node_modules`.
     #[serde(default)]
     pub package_roots: Vec<String>,
@@ -1038,7 +1041,7 @@ pub struct WindSources {
 
 impl WindSources {
     fn is_empty(&self) -> bool {
-        self.exclude.is_empty() && self.package_roots.is_empty()
+        self.exclude.is_empty() && self.roots.is_empty() && self.package_roots.is_empty()
     }
 }
 
@@ -2879,6 +2882,10 @@ fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclarati
             .iter()
             .flat_map(|declaration| declaration.sources.exclude.iter().cloned())
             .collect(),
+        roots: declarations
+            .iter()
+            .flat_map(|declaration| declaration.sources.roots.iter().cloned())
+            .collect(),
         package_roots: declarations
             .iter()
             .flat_map(|declaration| declaration.sources.package_roots.iter().cloned())
@@ -3087,6 +3094,11 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
 
     for declaration in wind.source_declarations() {
         let origin = declaration.origin();
+        for (index, root) in declaration.sources.roots.iter().enumerate() {
+            if let Err(message) = validate_wind_project_root(root) {
+                bail!("wind.sources.roots[{index}] {root:?} declared by {origin}: {message}");
+            }
+        }
         for (index, pattern) in declaration.sources.exclude.iter().enumerate() {
             if let Err(message) = zfb_css::compile_exclusion_pattern(pattern) {
                 bail!("wind.sources.exclude[{index}] {pattern:?} declared by {origin}: {message}");
@@ -3099,6 +3111,19 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_wind_project_root(root: &str) -> Result<(), &'static str> {
+    if root.is_empty() || root == "." {
+        return Err("must name a directory below the declaring root");
+    }
+    if root.contains('\\') {
+        return Err("must use `/` separators");
+    }
+    if Path::new(root).is_absolute() || root.as_bytes().get(1) == Some(&b':') {
+        return Err("must be relative to the declaring root");
     }
     Ok(())
 }
@@ -3736,6 +3761,7 @@ mod tests {
                 serde_json::json!({
                     "wind": { "sources": {
                         "exclude": ["fixtures/**"],
+                        "roots": ["./ui"],
                         "packageRoots": ["."],
                         "__zfb_source_package": "@example/preset-a"
                     } }
@@ -3745,7 +3771,7 @@ mod tests {
                 }),
             ],
             serde_json::json!({
-                "wind": { "sources": { "exclude": ["src/**/__tests__/**"] } }
+                "wind": { "sources": { "exclude": ["src/**/__tests__/**"], "roots": ["./widgets"] } }
             }),
         );
         let Some(WindSetting::Enabled(wind)) = config.wind else {
@@ -3771,10 +3797,12 @@ mod tests {
             ["fixtures/**", "src/**", "src/**/__tests__/**"]
         );
         assert_eq!(wind.sources.package_roots, ["."]);
+        assert_eq!(wind.sources.roots, ["./ui", "./widgets"]);
         assert_eq!(
             serde_json::to_value(&wind.sources).unwrap(),
             serde_json::json!({
                 "exclude": ["fixtures/**", "src/**", "src/**/__tests__/**"],
+                "roots": ["./ui", "./widgets"],
                 "packageRoots": ["."]
             })
         );
@@ -3860,6 +3888,7 @@ mod tests {
                 source_package: None,
                 sources: WindSources {
                     exclude: vec!["src/**".into()],
+                    roots: Vec::new(),
                     package_roots: Vec::new(),
                 },
             }]
@@ -3908,6 +3937,7 @@ mod tests {
                 source_package: Some("@example/preset".into()),
                 sources: WindSources {
                     exclude: vec!["src/**".into(), "src/[".into()],
+                    roots: Vec::new(),
                     package_roots: Vec::new(),
                 },
             }],

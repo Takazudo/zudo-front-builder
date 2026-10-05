@@ -36,6 +36,42 @@ fn ids(plan: &SourcePlan) -> Vec<String> {
 }
 
 #[test]
+fn declaration_files_are_never_candidates_on_any_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    for dir in ["src", "ui", "packages/widget"] {
+        put(
+            base,
+            &format!("{dir}/types.d.ts"),
+            "export type X = 'flex';",
+        );
+        put(
+            base,
+            &format!("{dir}/ordinary.ts"),
+            "export const x = 'flex';",
+        );
+        put(
+            base,
+            &format!("{dir}/ordinary.test.ts"),
+            "export const x = 'flex';",
+        );
+    }
+    let mut package = root(base, "package-root/widget", "packages/widget", true);
+    package.package_root = true;
+    let plan = SourcePlan {
+        roots: vec![
+            root(base, "default/src", "src", false),
+            root(base, "root/ui", "ui", true),
+            package,
+        ],
+        ..Default::default()
+    };
+    let files = ids(&plan);
+    assert_eq!(files.len(), 6, "{files:?}");
+    assert!(files.iter().all(|id| !id.ends_with(".d.ts")), "{files:?}");
+}
+
+#[test]
 fn author_exclusions_are_root_scoped_and_win_explicit_roots() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
