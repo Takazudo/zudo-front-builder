@@ -25,7 +25,7 @@ export const svgTags = words(
   "svg g path circle ellipse rect line polyline polygon text tspan defs symbol use clipPath mask linearGradient radialGradient stop title desc foreignObject pattern filter marker image",
 );
 export const htmlTags = words(
-  "html head body title base link meta style script div span p a br hr main header footer nav section article aside search hgroup menu h1 h2 h3 h4 h5 h6 ul ol li dl dt dd blockquote pre code strong em b i small mark time figure figcaption img picture source video audio track canvas form label input button textarea select option optgroup fieldset legend output progress meter datalist table caption thead tbody tfoot tr th td col colgroup details summary dialog template slot iframe noscript address abbr bdi bdo cite data del dfn ins kbd map area object param q rp rt ruby s samp sub sup u var wbr embed xmp noembed noframes plaintext",
+  "html head body title base link meta style script div span p a br hr main header footer nav section article aside search hgroup menu h1 h2 h3 h4 h5 h6 ul ol li dl dt dd blockquote pre code strong em b i small mark time figure figcaption img picture source video audio track canvas form label input button textarea select option optgroup fieldset legend output progress meter datalist table caption thead tbody tfoot tr th td col colgroup details summary dialog template slot iframe noscript address abbr bdi bdo cite data del dfn ins kbd map area object param q rp rb rt ruby s samp sub sup u var wbr embed xmp noembed noframes plaintext",
 );
 export type Namespace = "html" | "svg";
 

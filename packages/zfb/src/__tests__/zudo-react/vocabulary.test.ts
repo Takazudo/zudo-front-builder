@@ -43,6 +43,7 @@ function StandardMarkupIsland() {
     h("a", { download: values.download }),
     h("input", { spellcheck: values.spellcheck }),
     h("ol", { start: values.listStart, reversed: false }),
+    h("ruby", null, h("rb", null, "base"), h("rt", null, "reading")),
     h(
       "svg",
       { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 16 16" },
@@ -92,11 +93,18 @@ const cases: Array<[string, Record<string, unknown>, string]> = [
   ["search", {}, "<search></search>"],
   ["hgroup", {}, "<hgroup></hgroup>"],
   ["menu", {}, "<menu></menu>"],
+  ["rb", {}, "<rb></rb>"],
 ];
 
 beforeEach(() => document.body.replaceChildren());
 
 describe("finite HTML/SVG vocabulary", () => {
+  it("renders the standard ruby base and reading elements", () => {
+    expect(renderToString(h("ruby", {}, h("rb", {}, "base"), h("rt", {}, "reading")))).toBe(
+      "<ruby><rb>base</rb><rt>reading</rt></ruby>",
+    );
+  });
+
   it.each(cases)("serializes and mounts %s", (tag, props, html) => {
     expect(renderToString(h(tag, props))).toBe(html);
     const container = containerFor(tag, props);
@@ -122,13 +130,14 @@ describe("finite HTML/SVG vocabulary", () => {
   });
 
   it.each(["hydrate", "mount"] as const)(
-    "round-trips the standard OGP, preload, deferred script, and SVG matrix through SSR and %s",
+    "round-trips the standard markup matrix through SSR and %s",
     async (mode) => {
       const node = h(StandardMarkupIsland, {});
       const html = renderToString(islandRoot(node, { identity: markupIdentity }));
       expect(html).toContain('<meta property="og:title" content="Standard markup">');
       expect(html).toContain('<link rel="preload" href="/assets/body.woff2" as="font">');
       expect(html).toContain('<script defer nonce="page-nonce"></script>');
+      expect(html).toContain("<ruby><rb>base</rb><rt>reading</rt></ruby>");
       expect(html).toContain('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">');
       expect(html).toContain('<use href="#shape" xlink:href="#shape"></use>');
 
@@ -157,6 +166,7 @@ describe("finite HTML/SVG vocabulary", () => {
       expect(container.querySelector("a")?.getAttribute("download")).toBe("");
       expect(container.querySelector("input")?.getAttribute("spellcheck")).toBe("false");
       expect(container.querySelector("ol")?.getAttribute("start")).toBe("3");
+      expect(container.querySelector("ruby")?.innerHTML).toBe("<rb>base</rb><rt>reading</rt>");
       expect(container.querySelector("svg")?.namespaceURI).toBe("http://www.w3.org/2000/svg");
       const use = container.querySelector("use")!;
       expect(use.getAttribute("xlink:href")).toBe("#shape");
@@ -300,4 +310,17 @@ describe("finite HTML/SVG vocabulary", () => {
       expect(diagnostics[0]?.code).toMatch(/ZR_(ATTRIBUTE|PROP_DIALECT)/);
     },
   );
+
+  it("rejects an unknown standard tag", () => {
+    expect(() => renderToString(h("madeuptag", null))).toThrow(/ZR_TAG/);
+
+    const container = containerFor("div");
+    const diagnostics: Diagnostic[] = [];
+    const handle = mount(h(Vocabulary, { tag: "madeuptag", props: {} }), container, {
+      identity,
+      report: (item) => diagnostics.push(item),
+    });
+    expect(handle).toBeNull();
+    expect(diagnostics[0]?.code).toBe("ZR_TAG");
+  });
 });
