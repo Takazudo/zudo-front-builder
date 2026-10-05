@@ -61,7 +61,7 @@ pub use source_plan::{
 };
 pub use token_vars::{emit_token_variables, TokenVariable};
 pub use tokenizer::{structural_split, StructuralSplit};
-pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};
+pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, TokenOverride, ValidatedTokens};
 pub use value_check::ValueStatus;
 pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
 pub use walk::{

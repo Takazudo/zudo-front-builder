@@ -4,6 +4,19 @@ use crate::config::configuration_diagnostic;
 use crate::value_check::{validate_value, ValueCategory};
 use crate::{Diagnostic, ValueStatus};
 
+/// A host token entry that changed an effective preset binding. Values are
+/// limited to the single token entry, never the surrounding configuration.
+/// `preset_index` is zero-based in the declared `presets` array and remains
+/// available for anonymous presets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenOverride {
+    pub category: TokenCategory,
+    pub name: String,
+    pub preset_index: usize,
+    pub previous_value: serde_json::Value,
+    pub final_value: serde_json::Value,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TokenCategory {
     Color,

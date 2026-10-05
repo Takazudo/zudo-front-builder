@@ -48,6 +48,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use serde::{de, Deserialize, Deserializer, Serialize};
+use zfb_css::{TokenCategory, TokenOverride};
 
 // OsString is used by LoadOptions::node_binary (always compiled in).
 use std::ffi::OsString;
@@ -973,6 +974,9 @@ pub struct WindConfig {
     /// Empty means `sources` belongs to the project root.
     #[serde(skip)]
     pub(crate) source_declarations: Vec<WindSourceDeclaration>,
+    /// Effective host-over-preset token changes, retained outside the user schema.
+    #[serde(skip)]
+    pub(crate) token_overrides: Vec<TokenOverride>,
     /// Directory of an explicitly selected config file (`--config`). `None`
     /// means the config was discovered in the project root.
     #[serde(skip)]
@@ -980,6 +984,10 @@ pub struct WindConfig {
 }
 
 impl WindConfig {
+    pub fn token_overrides(&self) -> &[TokenOverride] {
+        &self.token_overrides
+    }
+
     /// Directory that anchors config-relative manifest paths, package roots
     /// and preset package lookups.
     pub(crate) fn declaring_dir<'a>(&'a self, project_root: &'a Path) -> &'a Path {
@@ -1088,6 +1096,7 @@ impl Default for WindConfig {
             sources: WindSources::default(),
             utilities: WindUtilities::default(),
             source_declarations: Vec::new(),
+            token_overrides: Vec::new(),
             config_dir: None,
         }
     }
@@ -2196,7 +2205,9 @@ async fn load_json_config(json_path: &Path, dir: &Path) -> Result<Config> {
                 )
             })?;
         }
+        let origins = preset_token_origins(&presets);
         let preset_defaults = build_preset_defaults(presets);
+        let token_overrides = collect_token_overrides(&preset_defaults, &user_value, &origins);
         let mut merged_value = merge_user_over_presets(preset_defaults, user_value);
         let manifest_sources = take_wind_manifest_sources(&mut merged_value)
             .map_err(|e| anyhow!("{}: {e}", json_path.display()))?;
@@ -2207,6 +2218,7 @@ async fn load_json_config(json_path: &Path, dir: &Path) -> Result<Config> {
         apply_wind_manifest_sources(&mut config, manifest_sources);
         source_declarations.extend(user_sources);
         apply_wind_sources(&mut config, source_declarations);
+        apply_token_overrides(&mut config, token_overrides);
         config
     } else {
         let mut deserializer = serde_json::Deserializer::from_str(&text);
@@ -2489,69 +2501,77 @@ fn parse_loaded_config(
             e
         )
     })?;
-    let (merged_value, manifest_sources, source_declarations) = if let Some(mut presets) = presets {
-        had_presets = true;
-        annotate_wind_manifest_sources(&mut value, false).map_err(|e| {
-            anyhow!(
-                "{}: failed to parse the default export: {e}",
-                ts_path.display()
-            )
-        })?;
-        let user_sources = take_wind_sources(&mut value, false).map_err(|e| {
-            anyhow!(
-                "{}: failed to parse the default export: {e}",
-                ts_path.display()
-            )
-        })?;
-        let mut source_declarations = Vec::new();
-        for (i, preset_value) in presets.iter_mut().enumerate() {
-            reject_removed_top_level_keys(preset_value)
-                .map_err(|e| anyhow!("{}: presets[{i}]: {e}", ts_path.display()))?;
-            annotate_wind_manifest_sources(preset_value, true).map_err(|e| {
+    let (merged_value, manifest_sources, source_declarations, token_overrides) =
+        if let Some(mut presets) = presets {
+            had_presets = true;
+            annotate_wind_manifest_sources(&mut value, false).map_err(|e| {
                 anyhow!(
-                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    "{}: failed to parse the default export: {e}",
                     ts_path.display()
                 )
             })?;
-            source_declarations.extend(take_wind_sources(preset_value, true).map_err(|e| {
+            let user_sources = take_wind_sources(&mut value, false).map_err(|e| {
                 anyhow!(
-                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
-                    ts_path.display()
-                )
-            })?);
-            let mut validation_value = preset_value.clone();
-            take_wind_manifest_sources(&mut validation_value).map_err(|e| {
-                anyhow!(
-                    "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                    "{}: failed to parse the default export: {e}",
                     ts_path.display()
                 )
             })?;
-            serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
+            let mut source_declarations = Vec::new();
+            for (i, preset_value) in presets.iter_mut().enumerate() {
+                reject_removed_top_level_keys(preset_value)
+                    .map_err(|e| anyhow!("{}: presets[{i}]: {e}", ts_path.display()))?;
+                annotate_wind_manifest_sources(preset_value, true).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                        ts_path.display()
+                    )
+                })?;
+                source_declarations.extend(take_wind_sources(preset_value, true).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                        ts_path.display()
+                    )
+                })?);
+                let mut validation_value = preset_value.clone();
+                take_wind_manifest_sources(&mut validation_value).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {e}",
+                        ts_path.display()
+                    )
+                })?;
+                serde_path_to_error::deserialize::<_, Config>(validation_value).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
+                        ts_path.display(),
+                        e
+                    )
+                })?;
+            }
+            let origins = preset_token_origins(&presets);
+            let preset_defaults = build_preset_defaults(presets);
+            let token_overrides = collect_token_overrides(&preset_defaults, &value, &origins);
+            let mut merged_value = merge_user_over_presets(preset_defaults, value);
+            let manifest_sources = take_wind_manifest_sources(&mut merged_value).map_err(|e| {
                 anyhow!(
-                    "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
-                    ts_path.display(),
-                    e
+                    "{}: failed to parse the default export: {e}",
+                    ts_path.display()
                 )
             })?;
-        }
-        let preset_defaults = build_preset_defaults(presets);
-        let mut merged_value = merge_user_over_presets(preset_defaults, value);
-        let manifest_sources = take_wind_manifest_sources(&mut merged_value).map_err(|e| {
-            anyhow!(
-                "{}: failed to parse the default export: {e}",
-                ts_path.display()
+            source_declarations.extend(user_sources);
+            (
+                merged_value,
+                manifest_sources,
+                Some(source_declarations),
+                token_overrides,
             )
-        })?;
-        source_declarations.extend(user_sources);
-        (merged_value, manifest_sources, Some(source_declarations))
-    } else {
-        // Still strip a `presets: []` / `presets: null` key before the final
-        // deserialize so it never reaches `Config`.
-        if let Some(map) = value.as_object_mut() {
-            map.remove("presets");
-        }
-        (value, BTreeMap::new(), None)
-    };
+        } else {
+            // Still strip a `presets: []` / `presets: null` key before the final
+            // deserialize so it never reaches `Config`.
+            if let Some(map) = value.as_object_mut() {
+                map.remove("presets");
+            }
+            (value, BTreeMap::new(), None, Vec::new())
+        };
 
     // serde_path_to_error wraps the deserialize with the field path that
     // failed (e.g. `framework`), so the error names the offending key
@@ -2570,6 +2590,7 @@ fn parse_loaded_config(
     if let Some(source_declarations) = source_declarations {
         apply_wind_sources(&mut config, source_declarations);
     }
+    apply_token_overrides(&mut config, token_overrides);
 
     // Resolve any plugin entries that still have `resolved_module = None`
     // (i.e. those contributed by presets). Mirrors the JSON-load path
@@ -2914,6 +2935,79 @@ fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclarati
             .collect(),
     };
     wind.source_declarations = declarations;
+}
+
+type PresetTokenOrigins = BTreeMap<(TokenCategory, String), usize>;
+
+fn token_entries(
+    value: &serde_json::Value,
+) -> impl Iterator<Item = (TokenCategory, String, &serde_json::Value)> {
+    TokenCategory::ALL.into_iter().flat_map(move |category| {
+        value
+            .pointer(&format!("/wind/tokens/{}", category.config_name()))
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flat_map(move |entries| {
+                entries
+                    .iter()
+                    .map(move |(name, value)| (category, name.clone(), value))
+            })
+    })
+}
+
+/// The first declaring preset owns an entry under the first-wins preset fold.
+/// A later preset can fill a missing field of a fontSizes object, but cannot
+/// replace the earlier entry's binding identity.
+fn preset_token_origins(presets: &[serde_json::Value]) -> PresetTokenOrigins {
+    let mut origins = BTreeMap::new();
+    for (index, preset) in presets.iter().enumerate() {
+        for (category, name, _) in token_entries(preset) {
+            origins.entry((category, name)).or_insert(index);
+        }
+    }
+    origins
+}
+
+/// Compare at token-entry granularity after the ordinary deep merge. In
+/// particular, a partial fontSizes object produces one record containing the
+/// complete effective old and new objects.
+fn collect_token_overrides(
+    defaults: &serde_json::Value,
+    user: &serde_json::Value,
+    origins: &PresetTokenOrigins,
+) -> Vec<TokenOverride> {
+    let mut overrides = Vec::new();
+    for (category, name, user_value) in token_entries(user) {
+        let Some(&preset_index) = origins.get(&(category, name.clone())) else {
+            continue;
+        };
+        let Some(previous_value) = defaults
+            .pointer(&format!("/wind/tokens/{}", category.config_name()))
+            .and_then(|entries| entries.get(name.as_str()))
+        else {
+            continue;
+        };
+        let final_value = deep_merge(previous_value.clone(), user_value.clone());
+        if final_value != *previous_value {
+            overrides.push(TokenOverride {
+                category,
+                name,
+                preset_index,
+                previous_value: previous_value.clone(),
+                final_value,
+            });
+        }
+    }
+    overrides.sort_by(|a, b| {
+        (a.category.config_name(), &a.name).cmp(&(b.category.config_name(), &b.name))
+    });
+    overrides
+}
+
+fn apply_token_overrides(config: &mut Config, overrides: Vec<TokenOverride>) {
+    if let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() {
+        wind.token_overrides = overrides;
+    }
 }
 
 /// Phase 1 of the two-phase preset fold (#1196): build `preset_defaults` by
@@ -3603,19 +3697,158 @@ mod tests {
             .collect();
         source_declarations
             .extend(take_wind_sources(&mut user, false).expect("user sources are valid"));
+        let origins = preset_token_origins(&presets);
         let preset_defaults = build_preset_defaults(presets);
+        let token_overrides = collect_token_overrides(&preset_defaults, &user, &origins);
         let mut merged = merge_user_over_presets(preset_defaults, user);
         let manifest_sources =
             take_wind_manifest_sources(&mut merged).expect("manifest sources are valid");
         let mut config = serde_json::from_value(merged).expect("merged preset config deserializes");
         apply_wind_manifest_sources(&mut config, manifest_sources);
         apply_wind_sources(&mut config, source_declarations);
+        apply_token_overrides(&mut config, token_overrides);
         config
     }
 
     fn config_with_wind(wind: serde_json::Value) -> Config {
         serde_json::from_value(serde_json::json!({ "wind": wind }))
             .expect("wind config deserializes")
+    }
+
+    #[test]
+    fn token_overrides_record_only_changed_effective_entries() {
+        let config = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "wind": { "tokens": {
+                    "colors": { "bg": "white", "same": "blue" },
+                    "fontSizes": { "body": { "size": "1rem" } }
+                } } }),
+                serde_json::json!({ "wind": { "tokens": {
+                    "colors": { "bg": "black", "accent": "gold" },
+                    "fontSizes": { "body": { "size": "2rem", "lineHeight": "1.5" } }
+                } } }),
+            ],
+            serde_json::json!({ "wind": { "tokens": {
+                "colors": { "bg": "red", "same": "blue", "accent": "green", "hostOnly": "pink" },
+                "fontSizes": { "body": { "lineHeight": "1.75" } }
+            } } }),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind enabled")
+        };
+        assert_eq!(wind.tokens.colors["bg"], "red");
+        assert_eq!(wind.tokens.font_sizes["body"].size, "1rem");
+        assert_eq!(
+            wind.tokens.font_sizes["body"].line_height.as_deref(),
+            Some("1.75")
+        );
+        let records = wind.token_overrides();
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            (
+                records[0].category,
+                records[0].name.as_str(),
+                records[0].preset_index
+            ),
+            (TokenCategory::Color, "accent", 1)
+        );
+        assert_eq!(
+            (
+                records[1].category,
+                records[1].name.as_str(),
+                records[1].preset_index
+            ),
+            (TokenCategory::Color, "bg", 0)
+        );
+        assert_eq!(
+            (
+                records[2].category,
+                records[2].name.as_str(),
+                records[2].preset_index
+            ),
+            (TokenCategory::FontSize, "body", 0)
+        );
+        assert_eq!(
+            records[2].previous_value,
+            serde_json::json!({"size":"1rem","lineHeight":"1.5"})
+        );
+        assert_eq!(
+            records[2].final_value,
+            serde_json::json!({"size":"1rem","lineHeight":"1.75"})
+        );
+        assert!(serde_json::to_value(&*wind)
+            .unwrap()
+            .get("token_overrides")
+            .is_none());
+        assert!(
+            serde_json::from_value::<WindConfig>(serde_json::json!({"token_overrides":[]}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn token_override_order_is_stable_across_user_key_order() {
+        let presets = vec![
+            serde_json::json!({"wind":{"tokens":{"spacing":{"z":"1rem","a":"2rem"},"colors":{"z":"red","a":"blue"}}}}),
+        ];
+        let first = merge_presets_to_config(
+            presets.clone(),
+            serde_json::json!({"wind":{"tokens":{"spacing":{"z":"3rem","a":"4rem"},"colors":{"z":"green","a":"pink"}}}}),
+        );
+        let second: serde_json::Value = serde_json::from_str(r#"{"wind":{"tokens":{"colors":{"a":"pink","z":"green"},"spacing":{"a":"4rem","z":"3rem"}}}}"#).unwrap();
+        let second = merge_presets_to_config(presets, second);
+        let get = |config: Config| match config.wind.unwrap() {
+            WindSetting::Enabled(wind) => wind.token_overrides,
+            _ => panic!("wind enabled"),
+        };
+        assert_eq!(get(first), get(second));
+    }
+
+    #[tokio::test]
+    async fn json_loader_retains_token_override_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r##"{
+                "presets": [{"wind":{"tokens":{"colors":{"bg":"#ffffff"}}}}],
+                "wind":{"tokens":{"colors":{"bg":"#ff00ff","panel":"#eeeeee"}}}
+            }"##,
+        )
+        .await
+        .unwrap();
+        let config = load_from_dir(tmp.path()).await.unwrap();
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind enabled")
+        };
+        assert_eq!(wind.token_overrides().len(), 1);
+        assert_eq!(wind.token_overrides()[0].name, "bg");
+        assert_eq!(
+            wind.token_overrides()[0].previous_value,
+            serde_json::json!("#ffffff")
+        );
+        assert_eq!(
+            wind.token_overrides()[0].final_value,
+            serde_json::json!("#ff00ff")
+        );
+    }
+
+    #[test]
+    fn ts_evaluated_config_retains_token_override_sidecar() {
+        let loaded = zfb_config_loader::LoadedTsConfig {
+            config: serde_json::json!({
+                "presets": [{"wind":{"tokens":{"spacing":{"gutter":"1rem"}}}}],
+                "wind":{"tokens":{"spacing":{"gutter":"2rem"}}}
+            }),
+            resolved_plugins: Vec::new(),
+        };
+        let config =
+            parse_loaded_config(loaded, Path::new("zfb.config.ts"), Path::new(".")).unwrap();
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind enabled")
+        };
+        assert_eq!(wind.token_overrides().len(), 1);
+        assert_eq!(wind.token_overrides()[0].name, "gutter");
+        assert_eq!(wind.token_overrides()[0].preset_index, 0);
     }
 
     #[test]
