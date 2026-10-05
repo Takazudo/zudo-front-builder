@@ -126,6 +126,25 @@ mod tests {
     }
 
     #[test]
+    fn panicking_nested_scope_restores_previous_owner() {
+        let outer = BuildDiagnosticSink::default();
+        let inner = BuildDiagnosticSink::default();
+        with_sink(&outer, || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_sink(&inner, || {
+                    record(warning("inner"));
+                    panic!("test unwind");
+                });
+            }));
+            assert!(result.is_err());
+            record(warning("outer after unwind"));
+        });
+        assert_eq!(inner.snapshot_sorted()[0].message, "inner");
+        assert_eq!(outer.snapshot_sorted()[0].message, "outer after unwind");
+        assert!(!in_scope());
+    }
+
+    #[test]
     fn concurrent_threads_have_independent_scopes() {
         let sinks = [
             BuildDiagnosticSink::default(),

@@ -1149,13 +1149,12 @@ impl BuildRunner for DefaultRunner {
             &|_roots| {},
             zfb_written_roots,
         )
-        .map_err(|error| {
+        .inspect_err(|error| {
             if let Some(wind) = error.downcast_ref::<zfb_css::WindDiagnosticsError>() {
                 for diagnostic in &wind.diagnostics {
                     emit_wind_diagnostic(diagnostic);
                 }
             }
-            error
         })
         .context("CSS emitter (DefaultRunner) failed")?;
         emit_build_phase_timing("css", css_started);

@@ -592,6 +592,7 @@ impl PluginHost {
         .await
     }
 
+    #[cfg(test)]
     async fn spawn_with_timeout_trace(
         plugins: Vec<PluginSpec>,
         node_binary: Option<OsString>,
@@ -1562,6 +1563,7 @@ impl PluginHost {
 
     /// Format a plugin log with its producer-supplied code, or ZB010 for
     /// legacy envelopes. Severity comes from the existing level contract.
+    #[cfg(test)]
     fn format_plugin_log_line(log: &LogPayload) -> String {
         log.to_build_diagnostic().render()
     }
@@ -1571,6 +1573,7 @@ impl PluginHost {
     /// line that failed to parse as a `{log:...}`/reply envelope — for the
     /// same visible `eprintln!` channel. `source` names which pipe it came
     /// from (`"stderr"` / `"stdout"`) so a reader can tell the two apart.
+    #[cfg(test)]
     fn format_plugin_host_warn_line(source: &str, detail: &str) -> String {
         Self::plugin_host_diagnostic(source, detail).render()
     }
