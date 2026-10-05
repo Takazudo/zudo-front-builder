@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "line-height",
+  "lookup": [
+    {
+      "entry": "v1.leading",
+      "candidate": "leading-copy",
+      "example": "leading-compare"
+    },
+    {
+      "entry": "v1.leading",
+      "candidate": "leading-[1.8]",
+      "example": "leading-custom"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Control the distance between lines of text. A compact leading suits short labels and larger headings; a more open value can make body copy easier to follow.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each token example declares tokens.lineHeights. The named copy and compact values are ratios, while leading-[1.8] is an arbitrary ratio. No font-size token is implied by a leading utility.",
+      "customValues": "Use a name such as leading-copy when a ratio belongs to a reusable text role. leading-none emits the configured lineHeights.none token when one exists and otherwise falls back to 1. Arbitrary bracket values accept validated line-height CSS such as a unitless ratio or length. Line height inherits, so apply it at the smallest block that should share the rhythm.",
+      "examples": [
+        {
+          "id": "leading-compare",
+          "title": "Compare named line heights",
+          "description": "The paragraphs use the same copy but different configured ratios, making the baseline spacing visible."
+        },
+        {
+          "id": "leading-custom",
+          "title": "Choose a custom ratio",
+          "description": "leading-[1.8] increases line spacing for one block without adding a named token."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "テキストの行と行の間隔を調整します。短いラベルや大きな見出しには詰めた値、本文には読みやすい余裕を持たせた値が向きます。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。トークンを使う例は tokens.lineHeights を宣言します。名前付きの compact と copy は倍率で、leading-[1.8] は任意の倍率です。leading ユーティリティから font-size トークンは生成されません。",
+      "customValues": "役割に合わせた倍率には leading-copy のような名前を付けられます。leading-none は tokens.lineHeights.none があればその値を使い、なければ 1 にフォールバックします。角括弧には倍率や長さなど、検証済みの line-height 値を指定できます。行の高さは継承されるため、同じリズムを共有する最小のブロックに適用します。",
+      "examples": [
+        {
+          "id": "leading-compare",
+          "title": "名前付きの行の高さを比べる",
+          "description": "同じ文章に異なる倍率を設定し、行の基準線の間隔を比べます。"
+        },
+        {
+          "id": "leading-custom",
+          "title": "任意の倍率を指定する",
+          "description": "leading-[1.8] は名前付きトークンを増やさずに、このブロックの行間を広げます。"
+        }
+      ]
+    }
+  }
+}

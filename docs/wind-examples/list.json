@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "family": "list",
+  "examples": [
+    {
+      "id": "marker-types",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-list-types\">\n  <section><strong>Bullets</strong><ul class=\"list-disc\"><li>Choose a route</li><li>Check the source</li></ul></section>\n  <section><strong>Steps</strong><ol class=\"list-decimal\"><li>Choose a route</li><li>Check the source</li></ol></section>\n  <section><strong>Marker-free links</strong><ul class=\"list-none\"><li>Overview</li><li>Reference</li></ul></section>\n</div>",
+      "utilities": ["list-disc", "list-decimal", "list-none"],
+      "authoredClasses": ["wind-demo-list-types"],
+      "scaffoldCss": ".wind-demo-list-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; color: #223247; }\n.wind-demo-list-types section { border: 1px solid #b7c5d4; padding: 0.75rem 1rem; }\n.wind-demo-list-types strong { color: #5d6c7c; font-size: 0.8rem; }\n"
+    },
+    {
+      "id": "marker-position",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-list-positions\">\n  <section><strong>Outside</strong><ul class=\"list-disc list-outside\"><li>A long item wraps onto a second line so the marker position stays easy to compare. / 長い項目は2行目に折り返されます。</li><li>Another item</li></ul></section>\n  <section><strong>Inside</strong><ul class=\"list-disc list-inside\"><li>A long item wraps onto a second line so the marker position stays easy to compare. / 長い項目は2行目に折り返されます。</li><li>Another item</li></ul></section>\n</div>",
+      "utilities": ["list-disc", "list-outside", "list-inside"],
+      "authoredClasses": ["wind-demo-list-positions"],
+      "scaffoldCss": ".wind-demo-list-positions { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.75rem; color: #223247; }\n.wind-demo-list-positions section { min-width: 0; border: 1px solid #b7c5d4; padding: 0.75rem; }\n.wind-demo-list-positions strong { color: #5d6c7c; font-size: 0.8rem; }\n"
+    }
+  ]
+}

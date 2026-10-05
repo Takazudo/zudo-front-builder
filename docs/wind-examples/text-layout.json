@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "text-layout",
+  "examples": [
+    {
+      "id": "text-alignment",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-align\">\n  <p class=\"text-left\">Left: The same sentence wraps inside this box. / 左寄せの表示です。</p>\n  <p class=\"text-center\">Center: The same sentence wraps inside this box. / 中央寄せの表示です。</p>\n  <p class=\"text-right\">Right: The same sentence wraps inside this box. / 右寄せの表示です。</p>\n  <p class=\"text-justify\">Justified copy uses the available line width. / 両端揃えは行幅を使います。</p>\n  <p dir=\"ltr\" class=\"text-start\">Logical start in left-to-right text. / 左から始まる文章です。</p>\n  <p dir=\"rtl\" class=\"text-start\">Logical start in right-to-left text. / 右から始まる文章です。</p>\n  <p dir=\"rtl\" class=\"text-end\">Logical end in right-to-left text. / 右から始まる文章です。</p>\n</div>",
+      "utilities": [
+        "text-left",
+        "text-center",
+        "text-right",
+        "text-justify",
+        "text-start",
+        "text-end"
+      ],
+      "authoredClasses": ["wind-demo-align"],
+      "scaffoldCss": ".wind-demo-align { max-width: 23rem; color: #223247; }\n.wind-demo-align p { margin: 0 0 0.55rem; border: 1px solid #b7c5d4; padding: 0.45rem 0.65rem; }\n.wind-demo-align p:last-child { margin-bottom: 0; }\n"
+    },
+    {
+      "id": "whitespace",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-whitespace\">\n  <p><span class=\"wind-demo-label\">normal</span><span class=\"wind-demo-sample whitespace-normal\">Alpha  beta\n日本語 line\nspace  end</span></p>\n  <p><span class=\"wind-demo-label\">nowrap</span><span class=\"wind-demo-sample whitespace-nowrap\">Alpha  beta 日本語 line space  end</span></p>\n  <p><span class=\"wind-demo-label\">pre</span><span class=\"wind-demo-sample whitespace-pre\">Alpha  beta\n日本語 line\nspace  end</span></p>\n  <p><span class=\"wind-demo-label\">pre-line</span><span class=\"wind-demo-sample whitespace-pre-line\">Alpha  beta\n日本語 line\nspace  end</span></p>\n  <p><span class=\"wind-demo-label\">pre-wrap</span><span class=\"wind-demo-sample whitespace-pre-wrap\">Alpha  beta\n日本語 line\nspace  end</span></p>\n  <p><span class=\"wind-demo-label\">break-spaces</span><span class=\"wind-demo-sample whitespace-break-spaces\">Alpha  beta\n日本語 line\nspace  end</span></p>\n</div>",
+      "utilities": [
+        "whitespace-normal",
+        "whitespace-nowrap",
+        "whitespace-pre",
+        "whitespace-pre-line",
+        "whitespace-pre-wrap",
+        "whitespace-break-spaces"
+      ],
+      "authoredClasses": ["wind-demo-whitespace", "wind-demo-label", "wind-demo-sample"],
+      "scaffoldCss": ".wind-demo-whitespace { max-width: 24rem; color: #223247; }\n.wind-demo-whitespace p { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.4rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-whitespace p:last-child { border-bottom: 0; }\n.wind-demo-label { flex: 0 0 5.5rem; color: #5d6c7c; font-size: 0.75rem; }\n.wind-demo-sample { min-width: 0; flex: 1; border-left: 2px solid #b7c5d4; padding-left: 0.5rem; }\n"
+    },
+    {
+      "id": "word-wrapping",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-wrap-grid\">\n  <p class=\"wind-demo-wrap-box break-normal\"><strong>normal</strong><br />https://example.invalid/verylongsegmentwithoutbreaks</p>\n  <p class=\"wind-demo-wrap-box break-all\"><strong>break-all</strong><br />https://example.invalid/verylongsegmentwithoutbreaks</p>\n  <p class=\"wind-demo-wrap-box break-words\"><strong>break-words</strong><br />https://example.invalid/verylongsegmentwithoutbreaks</p>\n  <p class=\"wind-demo-wrap-box wrap-anywhere\"><strong>anywhere</strong><br />https://example.invalid/verylongsegmentwithoutbreaks</p>\n</div>",
+      "utilities": ["break-normal", "break-all", "break-words", "wrap-anywhere"],
+      "authoredClasses": ["wind-demo-wrap-grid", "wind-demo-wrap-box"],
+      "scaffoldCss": ".wind-demo-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; max-width: 28rem; }\n.wind-demo-wrap-box { min-width: 0; margin: 0; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }\n.wind-demo-wrap-box strong { display: block; margin-bottom: 0.3rem; color: #5d6c7c; font-size: 0.75rem; }\n"
+    },
+    {
+      "id": "truncate-line",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-truncate truncate\">A long title needs a single-line preview when the card has limited room / 長い見出しを狭いカード幅に収める</p>",
+      "utilities": ["truncate"],
+      "authoredClasses": ["wind-demo-truncate"],
+      "scaffoldCss": ".wind-demo-truncate { width: 15rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }\n"
+    }
+  ]
+}

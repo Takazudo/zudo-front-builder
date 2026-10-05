@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "family": "list",
+  "lookup": [
+    {
+      "entry": "v1.list-disc",
+      "candidate": "list-disc",
+      "example": "marker-types"
+    },
+    {
+      "entry": "v1.list-decimal",
+      "candidate": "list-decimal",
+      "example": "marker-types"
+    },
+    {
+      "entry": "v1.list-none",
+      "candidate": "list-none",
+      "example": "marker-types"
+    },
+    {
+      "entry": "v1.list-inside",
+      "candidate": "list-inside",
+      "example": "marker-position"
+    },
+    {
+      "entry": "v1.list-outside",
+      "candidate": "list-outside",
+      "example": "marker-position"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose a list marker and place it inside or outside the list item’s text box. These classes style semantic ul and ol elements; they do not create list structure for you.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The authored CSS lays out demo cards but leaves list-style-type and list-style-position to the utilities. Semantic list markup supplies the item structure.",
+      "customValues": "list-disc, list-decimal, and list-none select the marker type. list-inside and list-outside control marker placement independently, so combine one marker type with one position when both matter. A list-none navigation still needs meaningful link text and accessible navigation semantics. The catalog currently exposes these fixed choices, with no named marker token or arbitrary marker syntax.",
+      "examples": [
+        {
+          "id": "marker-types",
+          "title": "Choose a marker type",
+          "description": "Semantic unordered and ordered lists compare disc, decimal, and no visible marker."
+        },
+        {
+          "id": "marker-position",
+          "title": "Place markers with wrapped text",
+          "description": "The same long list item shows how inside and outside markers align with the second line."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "リストマーカーの種類と、リスト項目のテキスト枠に対する位置を選びます。ul や ol の意味構造は HTML で用意します。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。自作 CSS はデモカードを配置するだけで、list-style-type と list-style-position はユーティリティに任せます。リストの意味構造は HTML のリスト要素で表します。",
+      "customValues": "list-disc、list-decimal、list-none はマーカーの種類を指定します。list-inside と list-outside は独立して位置を指定するため、種類と位置は必要に応じて組み合わせられます。マーカーを消したナビゲーションでもリンクテキストとナビゲーションの意味づけは必要です。現在のカタログには固定の選択肢があり、名前付きトークンや任意マーカー構文はありません。",
+      "examples": [
+        {
+          "id": "marker-types",
+          "title": "マーカーの種類を選ぶ",
+          "description": "意味構造を持つ ul と ol で disc、decimal、マーカーなしを比べます。"
+        },
+        {
+          "id": "marker-position",
+          "title": "折り返した項目とマーカー位置",
+          "description": "同じ長い項目を使い、inside と outside で2行目の位置がどう変わるかを示します。"
+        }
+      ]
+    }
+  }
+}
