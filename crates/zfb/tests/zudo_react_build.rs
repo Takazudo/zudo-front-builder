@@ -338,7 +338,7 @@ fn build_only_h_description_keeps_structural_context_without_a_span() {
     assert_no_internal_primary_location(&output);
 }
 
-const PREACT_PRAGMA_WARNING: &str = "zfb warn: components/search-field.tsx:1:5: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
+const PREACT_PRAGMA_WARNING: &str = "zfb warn: ZB005 components/search-field.tsx:1:5: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
 
 fn add_preact_pragma(root: &Path) {
     replace_in(
