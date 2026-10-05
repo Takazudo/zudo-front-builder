@@ -72,6 +72,22 @@ fn declaration_files_are_never_candidates_on_any_root() {
 }
 
 #[test]
+fn legacy_overlapping_roots_keep_label_order_and_source_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    put(base, "src/pkg/card.tsx", "export const card = 'flex';");
+    let mut package = root(base, "package-root/pkg", "src/pkg", true);
+    package.package_root = true;
+    let plan = SourcePlan {
+        roots: vec![package, root(base, "default/src", "src", false)],
+        ..Default::default()
+    };
+    assert_eq!(ids(&plan), ["default/src:pkg/card.tsx"]);
+    let changed = expand_changed_path(&plan, &base.join("src/pkg/card.tsx"));
+    assert_eq!(changed.files[0].id.render(), "default/src:pkg/card.tsx");
+}
+
+#[test]
 fn author_exclusions_are_root_scoped_and_win_explicit_roots() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();

@@ -55,27 +55,23 @@ pub fn is_candidate_source(path: &Path, accepts_extension: impl FnOnce(&str) -> 
         .is_some_and(accepts_extension)
 }
 
-fn root_priority(root: &PositiveRoot) -> u8 {
-    if root.label.starts_with("package-root/") {
-        0
-    } else if root.label.starts_with("root/") {
-        1
-    } else {
-        2
-    }
-}
-
 fn compare_roots(a: &PositiveRoot, b: &PositiveRoot) -> std::cmp::Ordering {
-    root_priority(a)
-        .cmp(&root_priority(b))
-        .then_with(|| {
+    let a_project = a.label.starts_with("root/");
+    let b_project = b.label.starts_with("root/");
+    // New project roots own their overlapping files. Keep the historical
+    // label/path ordering among all pre-existing root kinds.
+    b_project.cmp(&a_project).then_with(|| {
+        if a_project && b_project {
             b.resolved_path()
                 .components()
                 .count()
                 .cmp(&a.resolved_path().components().count())
-        })
-        .then(a.label.cmp(&b.label))
-        .then(a.path.cmp(&b.path))
+                .then(a.label.cmp(&b.label))
+                .then(a.path.cmp(&b.path))
+        } else {
+            a.label.cmp(&b.label).then(a.path.cmp(&b.path))
+        }
+    })
 }
 
 fn excluded(path: &Path, exclusions: &BTreeSet<PathBuf>) -> bool {
