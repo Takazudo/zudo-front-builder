@@ -239,6 +239,171 @@
       "target": "breakpoint-target",
       "control": "breakpoint-control",
       "assert": "target block below/at/above 640px boundary only where variant applies"
+    },
+    {
+      "id": "semantic-initial-composed/p-hsp-sm",
+      "caseId": "semantic-initial-composed",
+      "candidate": "p-hsp-sm",
+      "target": "semantic-initial-composed-padding-target",
+      "control": "semantic-initial-composed-padding-control",
+      "expected": {
+        "paddingTop": "17px",
+        "paddingRight": "17px",
+        "paddingBottom": "17px",
+        "paddingLeft": "17px",
+        "controlPadding": "24px"
+      }
+    },
+    {
+      "id": "semantic-initial-composed/mx-hsp-sm",
+      "caseId": "semantic-initial-composed",
+      "candidate": "mx-hsp-sm",
+      "target": "semantic-initial-composed-margin-target",
+      "control": "semantic-initial-composed-margin-control",
+      "expected": {
+        "marginLeft": "17px",
+        "marginRight": "17px",
+        "controlMargin": "0px"
+      }
+    },
+    {
+      "id": "semantic-initial-composed/pt-vsp-md",
+      "caseId": "semantic-initial-composed",
+      "candidate": "pt-vsp-md",
+      "target": "semantic-initial-composed-vertical-padding-target",
+      "control": "semantic-initial-composed-vertical-padding-control",
+      "expected": {
+        "paddingTop": "29px",
+        "controlPaddingTop": "24px"
+      }
+    },
+    {
+      "id": "semantic-initial-composed/my-vsp-md",
+      "caseId": "semantic-initial-composed",
+      "candidate": "my-vsp-md",
+      "target": "semantic-initial-composed-vertical-margin-target",
+      "control": "semantic-initial-composed-vertical-margin-control",
+      "expected": {
+        "marginTop": "29px",
+        "marginBottom": "29px",
+        "controlMargin": "0px"
+      }
+    },
+    {
+      "id": "semantic-initial-composed/bg-surface",
+      "caseId": "semantic-initial-composed",
+      "candidate": "bg-surface",
+      "target": "semantic-initial-composed-background-target",
+      "control": "semantic-initial-composed-background-control",
+      "expected": {
+        "backgroundColor": "rgb(18, 52, 86)",
+        "controlBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "id": "semantic-initial-composed/text-surface",
+      "caseId": "semantic-initial-composed",
+      "candidate": "text-surface",
+      "target": "semantic-initial-composed-text-target",
+      "control": "semantic-initial-composed-text-control",
+      "expected": {
+        "color": "rgb(18, 52, 86)",
+        "controlColor": "rgb(34, 34, 34)"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/p-hsp-sm",
+      "caseId": "semantic-changed-composed",
+      "candidate": "p-hsp-sm",
+      "target": "semantic-changed-composed-padding-target",
+      "control": "semantic-changed-composed-padding-control",
+      "expected": {
+        "paddingTop": "23px",
+        "paddingRight": "23px",
+        "paddingBottom": "23px",
+        "paddingLeft": "23px",
+        "controlPadding": "24px"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/mx-hsp-sm",
+      "caseId": "semantic-changed-composed",
+      "candidate": "mx-hsp-sm",
+      "target": "semantic-changed-composed-margin-target",
+      "control": "semantic-changed-composed-margin-control",
+      "expected": {
+        "marginLeft": "23px",
+        "marginRight": "23px",
+        "controlMargin": "0px"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/pt-vsp-md",
+      "caseId": "semantic-changed-composed",
+      "candidate": "pt-vsp-md",
+      "target": "semantic-changed-composed-vertical-padding-target",
+      "control": "semantic-changed-composed-vertical-padding-control",
+      "expected": {
+        "paddingTop": "31px",
+        "controlPaddingTop": "24px"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/my-vsp-md",
+      "caseId": "semantic-changed-composed",
+      "candidate": "my-vsp-md",
+      "target": "semantic-changed-composed-vertical-margin-target",
+      "control": "semantic-changed-composed-vertical-margin-control",
+      "expected": {
+        "marginTop": "31px",
+        "marginBottom": "31px",
+        "controlMargin": "0px"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/bg-surface",
+      "caseId": "semantic-changed-composed",
+      "candidate": "bg-surface",
+      "target": "semantic-changed-composed-background-target",
+      "control": "semantic-changed-composed-background-control",
+      "expected": {
+        "backgroundColor": "rgb(101, 67, 33)",
+        "controlBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "id": "semantic-changed-composed/text-surface",
+      "caseId": "semantic-changed-composed",
+      "candidate": "text-surface",
+      "target": "semantic-changed-composed-text-target",
+      "control": "semantic-changed-composed-text-control",
+      "expected": {
+        "color": "rgb(101, 67, 33)",
+        "controlColor": "rgb(34, 34, 34)"
+      }
+    },
+    {
+      "id": "numeric-spacing-removed/p-4",
+      "caseId": "numeric-spacing-removed",
+      "candidate": "p-4",
+      "target": "numeric-spacing-removed-target",
+      "control": "numeric-spacing-removed-control",
+      "expected": {
+        "padding": "24px",
+        "controlPadding": "24px",
+        "previousConfiguredPadding": "1rem"
+      }
+    },
+    {
+      "id": "palette-gray-500-opt-in/bg-gray-500",
+      "caseId": "palette-gray-500-opt-in",
+      "candidate": "bg-gray-500",
+      "target": "palette-gray-500-opt-in-target",
+      "control": "palette-gray-500-opt-in-control",
+      "expected": {
+        "backgroundColor": "rgb(55, 98, 138)",
+        "controlBackground": "rgba(0, 0, 0, 0)"
+      }
     }
   ],
   "negativeControls": [
@@ -421,6 +586,312 @@
       "configuration": "breakpoint",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
+    },
+    {
+      "caseId": "semantic-initial-composed",
+      "explicitCandidates": [
+        "p-hsp-sm",
+        "mx-hsp-sm",
+        "pt-vsp-md",
+        "my-vsp-md",
+        "bg-surface",
+        "text-surface"
+      ],
+      "configuration": "semantic",
+      "expectedOutcome": "generated",
+      "sourceFile": "index.html",
+      "expectedWind": {
+        "utilityWrites": {
+          "p-hsp-sm": {
+            "padding-top": "var(--zw-spacing-hsp-sm)",
+            "padding-right": "var(--zw-spacing-hsp-sm)",
+            "padding-bottom": "var(--zw-spacing-hsp-sm)",
+            "padding-left": "var(--zw-spacing-hsp-sm)"
+          },
+          "mx-hsp-sm": {
+            "margin-left": "var(--zw-spacing-hsp-sm)",
+            "margin-right": "var(--zw-spacing-hsp-sm)"
+          },
+          "pt-vsp-md": {
+            "padding-top": "var(--zw-spacing-vsp-md)"
+          },
+          "my-vsp-md": {
+            "margin-top": "var(--zw-spacing-vsp-md)",
+            "margin-bottom": "var(--zw-spacing-vsp-md)"
+          },
+          "bg-surface": {
+            "background-color": "var(--zw-color-surface)"
+          },
+          "text-surface": {
+            "color": "var(--zw-color-surface)"
+          }
+        },
+        "tokenDeclarations": {
+          "--zw-spacing-hsp-sm": "17px",
+          "--zw-spacing-vsp-md": "29px",
+          "--zw-color-surface": "#123456"
+        },
+        "tokenLayer": "zw-tokens",
+        "preludeOccurrences": 1
+      },
+      "browserTargets": {
+        "p-hsp-sm": "semantic-initial-composed-padding-target",
+        "mx-hsp-sm": "semantic-initial-composed-margin-target",
+        "pt-vsp-md": "semantic-initial-composed-vertical-padding-target",
+        "my-vsp-md": "semantic-initial-composed-vertical-margin-target",
+        "bg-surface": "semantic-initial-composed-background-target",
+        "text-surface": "semantic-initial-composed-text-target"
+      },
+      "browserControls": {
+        "p-hsp-sm": "semantic-initial-composed-padding-control",
+        "mx-hsp-sm": "semantic-initial-composed-margin-control",
+        "pt-vsp-md": "semantic-initial-composed-vertical-padding-control",
+        "my-vsp-md": "semantic-initial-composed-vertical-margin-control",
+        "bg-surface": "semantic-initial-composed-background-control",
+        "text-surface": "semantic-initial-composed-text-control"
+      },
+      "browserExpected": {
+        "p-hsp-sm": {
+          "paddingTop": "17px",
+          "paddingRight": "17px",
+          "paddingBottom": "17px",
+          "paddingLeft": "17px",
+          "controlPadding": "24px"
+        },
+        "mx-hsp-sm": {
+          "marginLeft": "17px",
+          "marginRight": "17px",
+          "controlMargin": "0px"
+        },
+        "pt-vsp-md": {
+          "paddingTop": "29px",
+          "controlPaddingTop": "24px"
+        },
+        "my-vsp-md": {
+          "marginTop": "29px",
+          "marginBottom": "29px",
+          "controlMargin": "0px"
+        },
+        "bg-surface": {
+          "backgroundColor": "rgb(18, 52, 86)",
+          "controlBackground": "rgba(0, 0, 0, 0)"
+        },
+        "text-surface": {
+          "color": "rgb(18, 52, 86)",
+          "controlColor": "rgb(34, 34, 34)"
+        }
+      }
+    },
+    {
+      "caseId": "semantic-changed-composed",
+      "explicitCandidates": [
+        "p-hsp-sm",
+        "mx-hsp-sm",
+        "pt-vsp-md",
+        "my-vsp-md",
+        "bg-surface",
+        "text-surface"
+      ],
+      "configuration": "semantic-changed",
+      "expectedOutcome": "generated",
+      "sourceFile": "index.html",
+      "expectedWind": {
+        "utilityWrites": {
+          "p-hsp-sm": {
+            "padding-top": "var(--zw-spacing-hsp-sm)",
+            "padding-right": "var(--zw-spacing-hsp-sm)",
+            "padding-bottom": "var(--zw-spacing-hsp-sm)",
+            "padding-left": "var(--zw-spacing-hsp-sm)"
+          },
+          "mx-hsp-sm": {
+            "margin-left": "var(--zw-spacing-hsp-sm)",
+            "margin-right": "var(--zw-spacing-hsp-sm)"
+          },
+          "pt-vsp-md": {
+            "padding-top": "var(--zw-spacing-vsp-md)"
+          },
+          "my-vsp-md": {
+            "margin-top": "var(--zw-spacing-vsp-md)",
+            "margin-bottom": "var(--zw-spacing-vsp-md)"
+          },
+          "bg-surface": {
+            "background-color": "var(--zw-color-surface)"
+          },
+          "text-surface": {
+            "color": "var(--zw-color-surface)"
+          }
+        },
+        "tokenDeclarations": {
+          "--zw-spacing-hsp-sm": "23px",
+          "--zw-spacing-vsp-md": "31px",
+          "--zw-color-surface": "#654321"
+        },
+        "tokenLayer": "zw-tokens",
+        "preludeOccurrences": 1,
+        "forbiddenStylesheetFragments": [
+          "--zw-spacing-hsp-sm: 17px",
+          "--zw-spacing-vsp-md: 29px",
+          "--zw-color-surface: #123456"
+        ]
+      },
+      "browserTargets": {
+        "p-hsp-sm": "semantic-changed-composed-padding-target",
+        "mx-hsp-sm": "semantic-changed-composed-margin-target",
+        "pt-vsp-md": "semantic-changed-composed-vertical-padding-target",
+        "my-vsp-md": "semantic-changed-composed-vertical-margin-target",
+        "bg-surface": "semantic-changed-composed-background-target",
+        "text-surface": "semantic-changed-composed-text-target"
+      },
+      "browserControls": {
+        "p-hsp-sm": "semantic-changed-composed-padding-control",
+        "mx-hsp-sm": "semantic-changed-composed-margin-control",
+        "pt-vsp-md": "semantic-changed-composed-vertical-padding-control",
+        "my-vsp-md": "semantic-changed-composed-vertical-margin-control",
+        "bg-surface": "semantic-changed-composed-background-control",
+        "text-surface": "semantic-changed-composed-text-control"
+      },
+      "browserExpected": {
+        "p-hsp-sm": {
+          "paddingTop": "23px",
+          "paddingRight": "23px",
+          "paddingBottom": "23px",
+          "paddingLeft": "23px",
+          "controlPadding": "24px"
+        },
+        "mx-hsp-sm": {
+          "marginLeft": "23px",
+          "marginRight": "23px",
+          "controlMargin": "0px"
+        },
+        "pt-vsp-md": {
+          "paddingTop": "31px",
+          "controlPaddingTop": "24px"
+        },
+        "my-vsp-md": {
+          "marginTop": "31px",
+          "marginBottom": "31px",
+          "controlMargin": "0px"
+        },
+        "bg-surface": {
+          "backgroundColor": "rgb(101, 67, 33)",
+          "controlBackground": "rgba(0, 0, 0, 0)"
+        },
+        "text-surface": {
+          "color": "rgb(101, 67, 33)",
+          "controlColor": "rgb(34, 34, 34)"
+        }
+      },
+      "transitionFrom": "semantic-initial-composed"
+    },
+    {
+      "caseId": "numeric-spacing-removed",
+      "explicitCandidates": [
+        "p-4"
+      ],
+      "configuration": "numeric-removed",
+      "expectedOutcome": "omitted",
+      "sourceFile": "index.html",
+      "transitionFrom": "configured-p-4",
+      "expectedWind": {
+        "utilityWrites": {},
+        "tokenDeclarations": {},
+        "stylesheet": "empty",
+        "preludeOccurrences": 0,
+        "diagnostic": {
+          "code": "ZW006",
+          "rejectionId": "R17",
+          "sourceClassSeverity": "error",
+          "sourceLiteralSeverity": "audit-info",
+          "manifestSeverity": "error"
+        }
+      },
+      "browserTargets": {
+        "p-4": "numeric-spacing-removed-target"
+      },
+      "browserControls": {
+        "p-4": "numeric-spacing-removed-control"
+      },
+      "browserExpected": {
+        "p-4": {
+          "padding": "24px",
+          "controlPadding": "24px",
+          "previousConfiguredPadding": "1rem"
+        }
+      }
+    },
+    {
+      "caseId": "palette-gray-500-opt-in",
+      "explicitCandidates": [
+        "bg-gray-500"
+      ],
+      "configuration": "palette-opt-in",
+      "expectedOutcome": "generated",
+      "sourceFile": "index.html",
+      "transitionFrom": "undeclared-palette",
+      "expectedWind": {
+        "utilityWrites": {
+          "bg-gray-500": {
+            "background-color": "var(--zw-color-gray-500)"
+          }
+        },
+        "tokenDeclarations": {
+          "--zw-color-gray-500": "#37628a"
+        },
+        "tokenLayer": "zw-tokens",
+        "preludeOccurrences": 1,
+        "forbiddenStylesheetFragments": [
+          "--zw-spacing-unit:"
+        ]
+      },
+      "browserTargets": {
+        "bg-gray-500": "palette-gray-500-opt-in-target"
+      },
+      "browserControls": {
+        "bg-gray-500": "palette-gray-500-opt-in-control"
+      },
+      "browserExpected": {
+        "bg-gray-500": {
+          "backgroundColor": "rgb(55, 98, 138)",
+          "controlBackground": "rgba(0, 0, 0, 0)"
+        }
+      }
+    }
+  ],
+  "supplementalCaseIds": [
+    "semantic-initial-composed",
+    "semantic-changed-composed",
+    "numeric-spacing-removed",
+    "palette-gray-500-opt-in"
+  ],
+  "transitions": [
+    {
+      "id": "semantic-token-change",
+      "from": "semantic-initial-composed",
+      "to": "semantic-changed-composed",
+      "configurationChange": [
+        "tokens.spacing.hsp-sm",
+        "tokens.spacing.vsp-md",
+        "tokens.colors.surface"
+      ],
+      "assert": "new stylesheet contains each changed token once; previous values absent; all six utility uses retain var references and computed values change"
+    },
+    {
+      "id": "spacing-unit-removal",
+      "from": "configured-p-4",
+      "to": "numeric-spacing-removed",
+      "configurationChange": [
+        "tokens.spacingUnit"
+      ],
+      "assert": "p-4 rule and token layer disappear; stylesheet empty with no prelude; source diagnostics retain origin policy"
+    },
+    {
+      "id": "palette-explicit-opt-in",
+      "from": "undeclared-palette",
+      "to": "palette-gray-500-opt-in",
+      "configurationChange": [
+        "tokens.colors.gray-500"
+      ],
+      "assert": "configured gray-500 is legal and bg-gray-500 emits variable-backed utility; no implicit palette needed"
     }
   ]
 }

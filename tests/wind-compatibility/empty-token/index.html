@@ -26,6 +26,12 @@
   .flex-box > span { width: 20px; height: 20px; }
   .intrinsic-box { width: 200px; border: 1px dotted #333; }
   .intrinsic-box > span { display: block; white-space: nowrap; }
+  .token-pad-box { width: 80px; min-height: 20px; padding: 24px; background: #cde; }
+  .token-margin-container { width: 250px; border: 1px dotted #333; }
+  .token-margin-box { width: 80px; height: 20px; margin: 0; background: #cde; }
+  .token-color-box { width: 80px; height: 24px; background: transparent; }
+  .token-text-box { color: #222222; }
+
 }
 </style>
 </head>
@@ -117,6 +123,46 @@
   <div id="undeclared-font-target" class="font-sans">font-sans</div>
   <div id="undeclared-radius-target" class="rounded-lg">rounded-lg</div>
   <div id="undeclared-shadow-target" class="shadow-md">shadow-md</div>
+</section>
+<section class="fixture" data-case-id="semantic-initial-composed">
+  <p>Six distinct semantic uses; compile this section with its own configuration.</p>
+  <div id="semantic-initial-composed-padding-target" data-role="target" class="token-pad-box p-hsp-sm">A</div>
+  <div id="semantic-initial-composed-padding-control" data-role="control" class="token-pad-box">A</div>
+  <div class="token-margin-container"><div id="semantic-initial-composed-margin-target" data-role="target" class="token-margin-box mx-hsp-sm">A</div></div>
+  <div class="token-margin-container"><div id="semantic-initial-composed-margin-control" data-role="control" class="token-margin-box">A</div></div>
+  <div id="semantic-initial-composed-vertical-padding-target" data-role="target" class="token-pad-box pt-vsp-md">A</div>
+  <div id="semantic-initial-composed-vertical-padding-control" data-role="control" class="token-pad-box">A</div>
+  <div class="token-margin-container"><div id="semantic-initial-composed-vertical-margin-target" data-role="target" class="token-margin-box my-vsp-md">A</div></div>
+  <div class="token-margin-container"><div id="semantic-initial-composed-vertical-margin-control" data-role="control" class="token-margin-box">A</div></div>
+  <div id="semantic-initial-composed-background-target" data-role="target" class="token-color-box bg-surface">A</div>
+  <div id="semantic-initial-composed-background-control" data-role="control" class="token-color-box">A</div>
+  <div id="semantic-initial-composed-text-target" data-role="target" class="token-text-box text-surface">A</div>
+  <div id="semantic-initial-composed-text-control" data-role="control" class="token-text-box">A</div>
+</section>
+<section class="fixture" data-case-id="semantic-changed-composed">
+  <p>Six distinct semantic uses; compile this section with its own configuration.</p>
+  <div id="semantic-changed-composed-padding-target" data-role="target" class="token-pad-box p-hsp-sm">A</div>
+  <div id="semantic-changed-composed-padding-control" data-role="control" class="token-pad-box">A</div>
+  <div class="token-margin-container"><div id="semantic-changed-composed-margin-target" data-role="target" class="token-margin-box mx-hsp-sm">A</div></div>
+  <div class="token-margin-container"><div id="semantic-changed-composed-margin-control" data-role="control" class="token-margin-box">A</div></div>
+  <div id="semantic-changed-composed-vertical-padding-target" data-role="target" class="token-pad-box pt-vsp-md">A</div>
+  <div id="semantic-changed-composed-vertical-padding-control" data-role="control" class="token-pad-box">A</div>
+  <div class="token-margin-container"><div id="semantic-changed-composed-vertical-margin-target" data-role="target" class="token-margin-box my-vsp-md">A</div></div>
+  <div class="token-margin-container"><div id="semantic-changed-composed-vertical-margin-control" data-role="control" class="token-margin-box">A</div></div>
+  <div id="semantic-changed-composed-background-target" data-role="target" class="token-color-box bg-surface">A</div>
+  <div id="semantic-changed-composed-background-control" data-role="control" class="token-color-box">A</div>
+  <div id="semantic-changed-composed-text-target" data-role="target" class="token-text-box text-surface">A</div>
+  <div id="semantic-changed-composed-text-control" data-role="control" class="token-text-box">A</div>
+</section>
+<section class="fixture" data-case-id="numeric-spacing-removed">
+  <p>After removing spacingUnit, p-4 has no generated rule; both boxes retain 24px.</p>
+  <div id="numeric-spacing-removed-target" data-role="target" class="token-pad-box p-4">A</div>
+  <div id="numeric-spacing-removed-control" data-role="control" class="token-pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="palette-gray-500-opt-in">
+  <p>An explicit palette-like token name is legal.</p>
+  <div id="palette-gray-500-opt-in-target" data-role="target" class="token-color-box bg-gray-500">A</div>
+  <div id="palette-gray-500-opt-in-control" data-role="control" class="token-color-box">A</div>
 </section>
 </body>
 </html>
