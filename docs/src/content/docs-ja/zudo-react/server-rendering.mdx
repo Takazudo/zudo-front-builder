@@ -44,7 +44,11 @@ const html = renderToString(<main>{root}</main>);
 
 ラッパーは div です。コンポーネントマーカーは data-zfb-island または data-zfb-island-skip-ssr のどちらか一つだけです。さらに data-when、data-zfb-transport="json/1"、data-zfb-protocol="zudo-react/1"、空ではない data-zfb-build の識別子、props が空でも data-props を持ちます。属性はこの順に出力され、media モードの場合だけ data-when と transport の間に data-media が入ります。data-when のデフォルトは load で、idle、visible、media も使えます。media には空でない data-media クエリーが必要です。skip-SSR オプションは専用マーカーを選び、子を実行せずに identity と props を検証し、内部のハイドレーションマーカーなしで fallback をレンダリングします。
 
-コンポーネント名とビルドの識別子は、生成された zfb メタデータとクライアントの RootOptions に一致する必要があります。スキャナーのマーカーは定義元の関数名であり、`displayName` は読み取りません。サーバーレンダリング時、`displayName` は未設定か、その関数名と一致している必要があります。一致しない値ではターゲット名が変わらず、`ZR_ISLAND_IDENTITY` で失敗します。無名または未登録のコンポーネントも島の子にできません。スキャナーへの登録、スケジュール、永続化には既存の zfb の島連携を使ってください。詳しくは[島のガイド](../concepts/islands.mdx)を参照してください。
+zfb がレンダリングする島では、コンポーネント名とビルドの識別子を生成された zfb メタデータおよびクライアントの RootOptions に一致させます。
+
+呼び出し元が所有するクライアント mount では、独自の空でない安定したビルド文字列を選べます。ラッパーと `RootOptions.identity.build` の値は一致させてください。詳しくは[ハイドレーション](./hydration.mdx)を参照してください。
+
+zfb が生成したサーバー島では、スキャナーのマーカーは定義元の関数名であり、`displayName` は読み取りません。サーバーレンダリング時、`displayName` は未設定か、その関数名と一致している必要があります。一致しない値ではターゲット名が変わらず、`ZR_ISLAND_IDENTITY` で失敗します。無名または未登録のコンポーネントも島の子にできません。スキャナーへの登録、スケジュール、永続化には既存の zfb の島連携を使ってください。詳しくは[島のガイド](../concepts/islands.mdx)を参照してください。
 
 ラッパーは zfb が保持します。zudo-react のマーカーはラッパー内の範囲だけを示すので、周囲の文書にマーカーは付きません。各ルートは独立したマーカー番号を持ち、作成者がグローバルな要素 ID や独自のコンポーネントレジストリーを用意する必要はありません。
 
@@ -56,9 +60,11 @@ const html = renderToString(<main>{root}</main>);
 const inner = renderToString(<Counter />, { island: identity });
 ~~~
 
-このモードで独自のラッパープロトコルを作らないでください。SDK と連携する島では、[島 API ガイド](../api/island.mdx)で説明する zfb のサポート済み境界を使います。
+このオプションは島内部のマーカーだけを出力します。静的スキャナーへのコンポーネント登録や、クライアント mount の境界定義は行いません。サーバーレンダリングする島には、[島 API ガイド](../api/island.mdx)で説明する zfb のサポート済み境界を使います。クライアント専用のホストはラッパーを所有し、[ハイドレーション](./hydration.mdx)で説明するように **mount** を呼び出せます。
 
 ## Props は JSON で転送する
+
+このシリアライズ規則は、サーバーレンダリングの `islandRoot` と data-props 属性に適用されます。クライアントの **mount** を直接呼ぶホストは、コールバックや子の記述を含む props をメモリ上で渡します。詳しくは[ハイドレーション](./hydration.mdx)を参照してください。
 
 **serializeProps** は JSON テキストを返します。レンダラーが data-props として出力する際に、HTML 属性として一度エスケープします。転送できるのは単純なデータレコード、欠けのない配列、文字列、真偽値、null、有限数だけです。自身が持つ列挙可能な文字列キーのデータプロパティで、値が `undefined` のものはどの階層でも省略されます。明示的な `null` は保持されます。
 
