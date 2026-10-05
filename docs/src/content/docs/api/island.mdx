@@ -62,7 +62,7 @@ arrays count as empty and are omitted.
 
 The scanner's marker name is the defining function's own name (`type.name`);
 the scanner does not read `displayName`, and import or re-export aliases do not
-change the marker. At server render time, `displayName` must be absent or equal
+change the marker. At server render time, `displayName` must be absent or equal to
 that function name. A different value fails with `ZR_ISLAND_IDENTITY` instead
 of renaming the target. Anonymous and unregistered names also fail rather than
 guessing which client entry to load. The client verifies the same component
