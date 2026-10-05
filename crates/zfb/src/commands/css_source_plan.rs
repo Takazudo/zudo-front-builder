@@ -16,7 +16,7 @@ use super::build::root_package_css_excluded_dirs;
 use crate::config::{Config, WindSetting};
 
 /// Every discovery channel is supplied as a plain value; construction never reads disk.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct CssSourcePlanInputs {
     pub project_root: PathBuf,
     pub first_party_root: PathBuf,
@@ -29,6 +29,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub declared_package_roots: Vec<PathBuf>,
     pub author_exclusions: Vec<SourceExclusion>,
     pub root_package_claimed: bool,
+    pub root_package_enabled: bool,
     pub root_package_excluded_dirs: Vec<PathBuf>,
     pub plugin_virtual_modules: BTreeMap<String, String>,
     pub role_classes: BTreeSet<String>,
@@ -36,6 +37,32 @@ pub(crate) struct CssSourcePlanInputs {
     pub safelist: BTreeMap<String, BTreeSet<String>>,
     pub extraction_options: ExtractionOptions,
     pub zfb_written_roots: Vec<PathBuf>,
+}
+
+impl Default for CssSourcePlanInputs {
+    fn default() -> Self {
+        Self {
+            project_root: PathBuf::new(),
+            first_party_root: PathBuf::new(),
+            configured_output_dir: PathBuf::new(),
+            pass_output_dir: PathBuf::new(),
+            default_content_roots: Vec::new(),
+            declared_project_roots: Vec::new(),
+            package_route_entrypoints: Vec::new(),
+            sibling_mirror_roots: Vec::new(),
+            declared_package_roots: Vec::new(),
+            author_exclusions: Vec::new(),
+            root_package_claimed: false,
+            root_package_enabled: true,
+            root_package_excluded_dirs: Vec::new(),
+            plugin_virtual_modules: BTreeMap::new(),
+            role_classes: BTreeSet::new(),
+            manifests: BTreeMap::new(),
+            safelist: BTreeMap::new(),
+            extraction_options: ExtractionOptions::default(),
+            zfb_written_roots: Vec::new(),
+        }
+    }
 }
 
 fn absolute(base: &Path, path: &Path) -> PathBuf {
@@ -155,7 +182,10 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
             ));
         }
     }
-    if inputs.root_package_claimed && seen.insert(first_party.clone()) {
+    if inputs.root_package_claimed
+        && inputs.root_package_enabled
+        && seen.insert(first_party.clone())
+    {
         let mut root_package = root("root-package".into(), first_party.clone(), true);
         root_package.exclusions = inputs
             .root_package_excluded_dirs
@@ -573,6 +603,7 @@ pub(crate) fn declared_package_root_watch_paths(
     let project_root = zfb_types::normalize_path_lexical(project_root);
     wind.source_declarations()
         .iter()
+        .filter(|declaration| !declaration.sources.package_roots.is_empty())
         .filter_map(|declaration| {
             resolve_source_declaring_dir(
                 wind.declaring_dir(&project_root),
@@ -602,6 +633,9 @@ pub(crate) fn declared_project_root_paths(project_root: &Path, config: &Config) 
     let project_root = zfb_types::normalize_path_lexical(project_root);
     let mut roots = BTreeSet::new();
     for declaration in wind.source_declarations() {
+        if declaration.sources.roots.is_empty() {
+            continue;
+        }
         let Ok(dir) = resolve_source_declaring_dir(
             wind.declaring_dir(&project_root),
             declaration.source_package.as_deref(),
@@ -631,6 +665,10 @@ pub(crate) fn gather_css_source_plan_inputs(
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(&project_root);
+    let root_package_enabled = match &config.wind {
+        Some(WindSetting::Enabled(wind)) => wind.sources.root_package != Some(false),
+        _ => true,
+    };
     let manifests =
         resolve_declared_manifest_paths_with(&project_root, config, resolve_manifest_path)?;
     let mut safelist = BTreeMap::new();
@@ -652,6 +690,12 @@ pub(crate) fn gather_css_source_plan_inputs(
             extraction_options
                 .ignore_attributes
                 .extend(declaration.sources.ignore_attributes.iter().cloned());
+            if declaration.sources.package_roots.is_empty()
+                && declaration.sources.roots.is_empty()
+                && declaration.sources.exclude.is_empty()
+            {
+                continue;
+            }
             let origin = declaration.origin();
             let declaring_dir = resolve_source_declaring_dir(
                 wind.declaring_dir(&project_root),
@@ -701,7 +745,7 @@ pub(crate) fn gather_css_source_plan_inputs(
             .collect(),
         configured_output_dir: absolute(&project_root, &config.out_dir),
         pass_output_dir: absolute(&project_root, pass_output_dir),
-        root_package_excluded_dirs: if root_package_claimed {
+        root_package_excluded_dirs: if root_package_claimed && root_package_enabled {
             root_package_css_excluded_dirs(&project_root, &first_party_root)
         } else {
             Vec::new()
@@ -714,6 +758,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         declared_project_roots,
         author_exclusions,
         root_package_claimed,
+        root_package_enabled,
         plugin_virtual_modules: plugin_virtual_modules.iter().cloned().collect(),
         role_classes,
         manifests,
@@ -897,6 +942,57 @@ mod tests {
     }
 
     #[test]
+    fn root_package_switch_changes_only_implicit_claimed_scan() {
+        let (temp, mut inputs) = fixture();
+        let root = temp.path();
+        write(root, "root.tsx", "text-root-only");
+        write(&inputs.project_root, "src/page.tsx", "p-4");
+        write(root, "explicit/page.tsx", "m-2");
+        write(root, "package/dist/view.js", "grid");
+        inputs.root_package_claimed = true;
+        inputs
+            .root_package_excluded_dirs
+            .push(inputs.project_root.clone());
+        inputs.declared_project_roots.push(root.join("explicit"));
+        inputs.declared_package_roots.push(root.join("package"));
+        inputs
+            .manifests
+            .insert("widget".into(), root.join("wind.json"));
+        inputs.safelist.insert("app".into(), ["flex".into()].into());
+        fs::write(
+            root.join("wind.json"),
+            r#"{"schemaVersion":1,"specVersion":1,"producer":"widget","candidates":["grid"]}"#,
+        )
+        .unwrap();
+
+        let enabled = build_css_source_plan(&inputs);
+        assert!(enabled
+            .roots
+            .iter()
+            .any(|root| root.label == "root-package"));
+        assert!(live(&enabled).contains("text-root-only"));
+        inputs.root_package_enabled = false;
+        let disabled = build_css_source_plan(&inputs);
+        assert_ne!(enabled, disabled);
+        assert!(!disabled
+            .roots
+            .iter()
+            .any(|root| root.label == "root-package"));
+        assert_eq!(disabled.manifests, enabled.manifests);
+        for candidate in ["p-4", "m-2", "grid", "flex"] {
+            assert!(live(&disabled).contains(candidate), "{candidate}");
+        }
+        assert!(!live(&disabled).contains("text-root-only"));
+        inputs.root_package_enabled = true;
+        assert_eq!(build_css_source_plan(&inputs), enabled);
+
+        inputs.root_package_claimed = false;
+        let unclaimed = build_css_source_plan(&inputs);
+        inputs.root_package_enabled = false;
+        assert_eq!(build_css_source_plan(&inputs), unclaimed);
+    }
+
+    #[test]
     fn wind_source_plan_excludes_an_in_project_session_scratch_root() {
         let (_temp, mut inputs) = fixture();
         let project = inputs.project_root.clone();
@@ -1030,6 +1126,7 @@ mod tests {
         )
         .unwrap();
         assert!(gathered.root_package_claimed);
+        assert!(gathered.root_package_enabled);
         assert!(gathered
             .root_package_excluded_dirs
             .contains(&inputs.project_root));
@@ -1038,6 +1135,16 @@ mod tests {
         let plan = build_css_source_plan(&gathered);
         assert!(plan.exclusions.contains(&inputs.project_root.join("dist")));
         assert!(plan.exclusions.contains(&inputs.pass_output_dir));
+        if let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() {
+            wind.sources.root_package = Some(false);
+        }
+        let opted_out = gather(&inputs, &config).unwrap();
+        assert!(opted_out.root_package_claimed);
+        assert!(!opted_out.root_package_enabled);
+        assert!(!build_css_source_plan(&opted_out)
+            .roots
+            .iter()
+            .any(|root| root.label == "root-package"));
     }
 
     fn sources_config(declarations: Vec<(Option<&str>, serde_json::Value)>) -> Config {
