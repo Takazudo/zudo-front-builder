@@ -212,7 +212,7 @@ wind: {
 
 ZW001～ZW006 は、クラス、セーフリスト、厳格なマニフェストの発生元ではエラーです。確信度の低いソース位置では監査専用情報です。その位置で見つかった有効な完全候補は引き続き出力されます。基部名を持つクラスを手書きとして使う場合は、`authoredClasses: { "text-link": true }` のように完全な候補表記を `wind.authoredClasses` に追加します。この予約は候補全体に対するユーティリティの検証、診断、CSS 生成を抑止します。それ以外の場合は、ユーティリティの綴りを直すか不足トークンを宣言します。`site-header` のように一致するユーティリティ基部を持たない名前は通常のクラステキストとして残ります。
 
-ZW013 は同じバリアント区分でカタログが暗黙のデフォルトとして定義した上書きを省きます。border 幅と style、outline 幅と style、transition と duration/ease が対象です。style 同士、duration 同士、transition-property 同士、sr-only と padding、辺と省略形の幅の競合は引き続き報告します。
+ZW013 は同じバリアント区分でカタログが暗黙のデフォルトとして定義した上書きを省きます。border 幅と style、outline 幅と style、transition と duration/ease が対象です。style 同士、duration 同士、transition-property 同士、sr-only と padding、辺と省略形の幅の競合は引き続き報告します。 同じバリアント区分の互換な `translate-x-*` と `translate-y-*` は、カタログが定義する合成用の宣言を共有しても競合とは扱いません。同じ軸の異なる値や、ほかのプロパティの重複は引き続き ZW013 の対象です。
 
 未宣言の色名に有効な `/0`～`/100` を付けた `text-*`、`border-*`、`border-x-*`、`outline-*`、`placeholder:text-*` は、トークン不足の ZW006/R17 を報告します。不正な不透明度、負の形、未対応のスラッシュは ZW005 のままです。
 

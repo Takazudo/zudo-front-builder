@@ -770,10 +770,14 @@ fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
                     .as_ref()
                     .map(|resolved| resolved.entry_id.as_str())
                     .unwrap_or_default();
+                let composed_translate = compatible_translate_composition(left.rule, right.rule);
                 let overlapping_properties = left
                     .properties
                     .intersection(&right.properties)
                     .filter(|property| {
+                        if composed_translate && property.as_str() == "translate" {
+                            return false;
+                        }
                         !default_overrides
                             .iter()
                             .any(|default| default.matches(property, right_entry_id))
@@ -816,6 +820,39 @@ fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
         }
     }
     conflicts
+}
+
+/// The two owned axis utilities compose through one shared declaration. This
+/// exception applies only to that property; extra shared writes still conflict.
+fn compatible_translate_composition(left: &RuleMetadata, right: &RuleMetadata) -> bool {
+    let (Some(left), Some(right)) = (&left.resolved, &right.resolved) else {
+        return false;
+    };
+    let (x, y) = match (left.entry_id.as_str(), right.entry_id.as_str()) {
+        ("v1.translate.x", "v1.translate.y") => (left, right),
+        ("v1.translate.y", "v1.translate.x") => (right, left),
+        _ => return false,
+    };
+    translate_axis_composes(x, "--zw-translate-x", "--zw-translate-y")
+        && translate_axis_composes(y, "--zw-translate-y", "--zw-translate-x")
+}
+
+fn translate_axis_composes(rule: &crate::ResolvedRule, own: &str, other: &str) -> bool {
+    let mut translates = rule
+        .declarations
+        .iter()
+        .filter(|declaration| declaration.property == "translate");
+    translates.next().is_some_and(|declaration| {
+        declaration.value == "var(--zw-translate-x) var(--zw-translate-y)"
+    }) && translates.next().is_none()
+        && rule
+            .declarations
+            .iter()
+            .any(|declaration| declaration.property == own)
+        && !rule
+            .declarations
+            .iter()
+            .any(|declaration| declaration.property == other)
 }
 
 struct RuleOccurrence<'a> {
@@ -1329,6 +1366,187 @@ mod tests {
         let mixed = find_conflicts(&compiled.rules);
         assert_eq!(mixed.len(), 1);
         assert_eq!(mixed[0].overlapping_properties, ["border-top-color"]);
+    }
+
+    #[test]
+    fn translate_composition_keeps_axes_independent_and_preserves_real_conflicts() {
+        let config = WindConfig {
+            breakpoints: BTreeMap::from([(
+                "sm".to_owned(),
+                crate::BreakpointConfig { min_width_px: 640 },
+            )]),
+            ..WindConfig::default()
+        };
+        for markup in [
+            r#"<div class="translate-x-1/2 translate-y-1/2"></div>"#,
+            r#"<div class="translate-y-px -translate-x-px"></div>"#,
+            r#"<div class="hover:translate-x-full hover:-translate-y-full"></div>"#,
+            r#"<div class="sm:translate-x-1/2 sm:translate-y-1/2"></div>"#,
+            r#"<div class="translate-x-px hover:translate-x-full"></div>"#,
+        ] {
+            let report = audit(
+                &AuditInput::single(
+                    "src/translate.html",
+                    extract_candidates(markup.as_bytes(), SourceKind::Html),
+                ),
+                &config,
+            );
+            assert_eq!(report.outcome, AuditOutcome::Complete);
+            assert!(report.dead_classes.is_empty(), "{markup}: {report:?}");
+            assert!(report.conflicts.is_empty(), "{markup}: {report:?}");
+            assert!(report.diagnostics.is_empty(), "{markup}: {report:?}");
+            for rendered in [render_audit(&report), render_audit_grouped(&report)] {
+                assert!(!rendered.contains("ZW013"), "{rendered}");
+                assert!(!rendered.contains(" overlap ["), "{rendered}");
+            }
+            let json: serde_json::Value =
+                serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+            assert_eq!(json["conflicts"], serde_json::json!([]));
+            assert_eq!(json["diagnostics"], serde_json::json!([]));
+        }
+
+        for (classes, properties) in [
+            (
+                "translate-x-px translate-x-full",
+                vec!["--zw-translate-x", "translate"],
+            ),
+            (
+                "-translate-y-px translate-y-full",
+                vec!["--zw-translate-y", "translate"],
+            ),
+            (
+                "hover:translate-x-px hover:translate-x-full",
+                vec!["--zw-translate-x", "translate"],
+            ),
+            ("w-full w-0", vec!["width"]),
+            // Equal values on unrelated utilities are still overlapping writes.
+            ("h-full h-[100%]", vec!["height"]),
+        ] {
+            let markup = format!(r#"<div class="{classes}"></div>"#);
+            let report = audit(
+                &AuditInput::single(
+                    "src/translate.html",
+                    extract_candidates(markup.as_bytes(), SourceKind::Html),
+                ),
+                &config,
+            );
+            assert_eq!(report.conflicts.len(), 1, "{classes}: {report:?}");
+            assert_eq!(report.conflicts[0].overlapping_properties, properties);
+            assert_eq!(
+                report
+                    .diagnostics
+                    .iter()
+                    .filter(|item| item.code == "ZW013")
+                    .count(),
+                1
+            );
+            for rendered in [render_audit(&report), render_audit_grouped(&report)] {
+                assert_eq!(rendered.matches(" overlap [").count(), 1, "{rendered}");
+                assert_eq!(rendered.matches("ZW013 auditInfo").count(), 1, "{rendered}");
+            }
+            let json: serde_json::Value =
+                serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+            assert_eq!(json["conflicts"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                json["conflicts"][0]["overlappingProperties"],
+                serde_json::json!(properties)
+            );
+        }
+    }
+
+    #[test]
+    fn translate_composition_exception_rejects_noncanonical_or_additional_writes() {
+        let extraction = extract_candidates(
+            br#"<div class="translate-x-px translate-y-px"></div>"#,
+            SourceKind::Html,
+        );
+        let candidates = extraction
+            .candidates
+            .iter()
+            .flat_map(|candidate| {
+                candidate
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| OriginCandidate {
+                        text: candidate.text.clone(),
+                        origin: source_origin("src/composition.html", occurrence),
+                    })
+            })
+            .collect();
+        let compiled = crate::compile(&crate::CompileInput {
+            candidates,
+            config: WindConfig::default(),
+        });
+        assert!(!compiled.has_errors());
+        assert_eq!(compiled.rules.len(), 2);
+        assert!(find_conflicts(&compiled.rules).is_empty());
+
+        let mut extra = compiled.rules.clone();
+        for rule in &mut extra {
+            rule.resolved
+                .as_mut()
+                .unwrap()
+                .declarations
+                .push(crate::Declaration {
+                    property: "opacity".to_owned(),
+                    value: "0.5".to_owned(),
+                });
+        }
+        let conflicts = find_conflicts(&extra);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].overlapping_properties, ["opacity"]);
+
+        for mutation in [
+            "replace-template",
+            "append-template",
+            "other-axis",
+            "missing-axis",
+            "foreign-entry",
+        ] {
+            let mut rules = compiled.rules.clone();
+            let x = rules
+                .iter_mut()
+                .find(|rule| rule.candidate == "translate-x-px")
+                .unwrap()
+                .resolved
+                .as_mut()
+                .unwrap();
+            match mutation {
+                "replace-template" => {
+                    x.declarations
+                        .iter_mut()
+                        .find(|d| d.property == "translate")
+                        .unwrap()
+                        .value = "none".to_owned()
+                }
+                "append-template" => x.declarations.push(crate::Declaration {
+                    property: "translate".to_owned(),
+                    value: "none".to_owned(),
+                }),
+                "other-axis" => x.declarations.push(crate::Declaration {
+                    property: "--zw-translate-y".to_owned(),
+                    value: "0".to_owned(),
+                }),
+                "missing-axis" => x.declarations.retain(|d| d.property != "--zw-translate-x"),
+                "foreign-entry" => x.entry_id = "v1.translate.x-extra".to_owned(),
+                _ => unreachable!(),
+            }
+            let conflicts = find_conflicts(&rules);
+            assert_eq!(conflicts.len(), 1, "{mutation}");
+            assert!(
+                conflicts[0]
+                    .overlapping_properties
+                    .iter()
+                    .any(|p| p == "translate"),
+                "{mutation}"
+            );
+            if mutation == "other-axis" {
+                assert_eq!(
+                    conflicts[0].overlapping_properties,
+                    ["--zw-translate-y", "translate"]
+                );
+            }
+        }
     }
 
     #[test]

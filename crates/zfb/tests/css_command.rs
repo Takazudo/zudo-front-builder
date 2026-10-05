@@ -1209,6 +1209,47 @@ fn wind_audit_error_threshold_is_opt_in_and_includes_complete_report() {
 }
 
 #[test]
+fn wind_audit_translate_axes_compose_but_same_axis_conflicts_remain() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "export default () => <div class=\"translate-x-1/2 translate-y-1/2\" />;\n",
+    );
+    for flags in [vec![], vec!["--group"]] {
+        let output = run_wind_audit(temp.path(), &flags);
+        assert!(output.status.success(), "{}", combined_output(&output));
+        assert!(!process_stdout(&output).contains("ZW013"));
+    }
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(document["report"]["conflicts"], serde_json::json!([]));
+    assert_eq!(document["report"]["diagnostics"], serde_json::json!([]));
+    assert_eq!(
+        run_wind_audit(temp.path(), &["--group", "--json"]).stdout,
+        json.stdout
+    );
+
+    fs::write(
+        temp.path().join("src/a.tsx"),
+        "export default () => <div class=\"translate-x-px translate-x-full\" />;\n",
+    )
+    .unwrap();
+    for flags in [vec![], vec!["--group"]] {
+        let output = run_wind_audit(temp.path(), &flags);
+        assert!(output.status.success(), "{}", combined_output(&output));
+        assert!(process_stdout(&output).contains("ZW013 auditInfo"));
+    }
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(document["report"]["conflicts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        document["report"]["conflicts"][0]["overlappingProperties"],
+        serde_json::json!(["--zw-translate-x", "translate"])
+    );
+}
+
+#[test]
 fn wind_audit_group_summarizes_text_without_changing_json_or_exit_policy() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,
