@@ -19,6 +19,65 @@ beforeEach(() => {
 });
 
 describe("form hydration", () => {
+  it.each([
+    ["text", () => h("input", { defaultValue: "a" }), "value", "a"],
+    ["checkbox", () => h("input", { type: "checkbox", defaultChecked: true }), "checked", true],
+    ["radio", () => h("input", { type: "radio", defaultChecked: true }), "checked", true],
+    ["textarea", () => h("textarea", { defaultValue: "a" }), "value", "a"],
+    [
+      "select",
+      () =>
+        h("select", {
+          defaultValue: "a",
+          children: h("option", { value: "a", children: "A" }),
+        }),
+      "value",
+      "a",
+    ],
+  ] as const)(
+    "keeps %s defaults through mount and hydration",
+    (_kind, control, property, expected) => {
+      function Demo() {
+        return control();
+      }
+      const mounted = host(h(Demo, {}));
+      mounted.setAttribute("data-zfb-island-skip-ssr", "Demo");
+      mounted.replaceChildren();
+      expect(mount(h(Demo, {}), mounted, options())).not.toBeNull();
+      expect((mounted.firstElementChild as unknown as Record<string, unknown>)[property]).toBe(
+        expected,
+      );
+
+      const hydrated = host(h(Demo, {}));
+      expect(hydrate(h(Demo, {}), hydrated, options())).not.toBeNull();
+      expect((hydrated.firstElementChild as unknown as Record<string, unknown>)[property]).toBe(
+        expected,
+      );
+      expect(diagnostics).toEqual([]);
+    },
+  );
+  it.each(["number", "range", "color", "date", "time"])(
+    "rejects %s defaultValue during both mount and hydration",
+    (type) => {
+      let invalid = false;
+      function Demo() {
+        return h("input", invalid ? { type, defaultValue: "2" } : { type, value: "2" });
+      }
+      const mounted = host(h(Demo, {}));
+      mounted.setAttribute("data-zfb-island-skip-ssr", "Demo");
+      mounted.replaceChildren();
+      invalid = true;
+      expect(mount(h(Demo, {}), mounted, options())).toBeNull();
+      expect(diagnostics.at(-1)?.code).toBe("ZR_MODEL_UNSUPPORTED");
+
+      invalid = false;
+      const hydrated = host(h(Demo, {}));
+      invalid = true;
+      diagnostics = [];
+      expect(hydrate(h(Demo, {}), hydrated, options())).toBeNull();
+      expect(diagnostics.at(-1)?.code).toBe("ZR_MODEL_UNSUPPORTED");
+    },
+  );
   it.each(["text", "textarea", "checkbox", "select", "radio"] as const)(
     "adopts live %s state before derived binding",
     async (kind) => {
