@@ -1,0 +1,160 @@
+---
+title: 対応する HTML と SVG の語彙
+description: zudo-react が受け付ける現在のタグ名、属性名、値の分類、React 形式の診断候補です。
+sidebar_position: 15
+---
+
+## レンダラーが受け付ける名前
+
+標準の HTML 要素と SVG 要素では、以下の有限な名前を使います。属性の受け入れ判定は**要素ごとではなく、名前ごとに名前空間内で行います**。たとえば `loading` は `iframe`、`img`、`video`、`div` のすべてで使えます。HTML と SVG の属性セットは別で、共通属性と後述のパターン属性は両方の名前空間で使えます。表の件数と名前は、`rb` を含む現在の `vocabulary.ts` から生成しています。
+
+`svg` タグから SVG 名前空間が始まります。`foreignObject` の子は HTML 名前空間になり、その内側にある `svg` で SVG に戻ります。現在の名前空間で未対応のタグは `ZR_TAG` を報告します。
+
+## 要素名
+
+### HTML タグ（118）
+
+| タグ | タグ | タグ | タグ |
+| --- | --- | --- | --- |
+| `html` | `head` | `body` | `title` |
+| `base` | `link` | `meta` | `style` |
+| `script` | `div` | `span` | `p` |
+| `a` | `br` | `hr` | `main` |
+| `header` | `footer` | `nav` | `section` |
+| `article` | `aside` | `search` | `hgroup` |
+| `menu` | `h1` | `h2` | `h3` |
+| `h4` | `h5` | `h6` | `ul` |
+| `ol` | `li` | `dl` | `dt` |
+| `dd` | `blockquote` | `pre` | `code` |
+| `strong` | `em` | `b` | `i` |
+| `small` | `mark` | `time` | `figure` |
+| `figcaption` | `img` | `picture` | `source` |
+| `video` | `audio` | `track` | `canvas` |
+| `form` | `label` | `input` | `button` |
+| `textarea` | `select` | `option` | `optgroup` |
+| `fieldset` | `legend` | `output` | `progress` |
+| `meter` | `datalist` | `table` | `caption` |
+| `thead` | `tbody` | `tfoot` | `tr` |
+| `th` | `td` | `col` | `colgroup` |
+| `details` | `summary` | `dialog` | `template` |
+| `slot` | `iframe` | `noscript` | `address` |
+| `abbr` | `bdi` | `bdo` | `cite` |
+| `data` | `del` | `dfn` | `ins` |
+| `kbd` | `map` | `area` | `object` |
+| `param` | `q` | `rp` | `rb` |
+| `rt` | `ruby` | `s` | `samp` |
+| `sub` | `sup` | `u` | `var` |
+| `wbr` | `embed` | `xmp` | `noembed` |
+| `noframes` | `plaintext` |  |  |
+
+`^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$` に一致する HTML カスタム要素名（例: `x-card`）も使えます。カスタム要素の属性には、後述の文字列のみの規則を適用します。カスタム要素は `on:<event>` リスナーと予約済みランタイム prop にも対応します。
+
+### SVG タグ（26）
+
+| タグ | タグ | タグ | タグ |
+| --- | --- | --- | --- |
+| `svg` | `g` | `path` | `circle` |
+| `ellipse` | `rect` | `line` | `polyline` |
+| `polygon` | `text` | `tspan` | `defs` |
+| `symbol` | `use` | `clipPath` | `mask` |
+| `linearGradient` | `radialGradient` | `stop` | `title` |
+| `desc` | `foreignObject` | `pattern` | `filter` |
+| `marker` | `image` |  |  |
+
+## 属性名
+
+以下はタグごとの HTML 属性表ではなく、名前の集合です。HTML の名前は対応するすべての HTML タグで、SVG の名前は対応するすべての SVG タグで使えます。複数の集合に含まれる名前もあります。
+
+| 名前の集合 | 件数 | 名前 |
+| --- | ---: | --- |
+| HTML と SVG の共通 | 19 | `accesskey`, `class`, `contenteditable`, `dir`, `draggable`, `hidden`, `id`, `inert`<br />`lang`, `onclick`, `onerror`, `onload`, `role`, `slot`, `spellcheck`, `style`<br />`tabindex`, `title`, `translate` |
+| HTML 名前空間 | 83 | `accept`, `accept-charset`, `action`, `allow`, `allowfullscreen`, `alt`, `as`, `async`<br />`autocapitalize`, `autocomplete`, `autofocus`, `autoplay`, `charset`, `checked`, `cite`, `closedby`<br />`cols`, `colspan`, `content`, `controls`, `crossorigin`, `datetime`, `decoding`, `defer`<br />`disabled`, `download`, `enctype`, `fetchpriority`, `for`, `form`, `formnovalidate`, `height`<br />`href`, `hreflang`, `http-equiv`, `inputmode`, `integrity`, `itemprop`, `label`, `loading`<br />`loop`, `max`, `maxlength`, `media`, `method`, `min`, `minlength`, `multiple`<br />`muted`, `name`, `nonce`, `novalidate`, `open`, `pattern`, `placeholder`, `playsinline`<br />`popover`, `popovertarget`, `popovertargetaction`, `poster`, `preload`, `property`, `readonly`, `referrerpolicy`<br />`rel`, `required`, `reversed`, `rows`, `rowspan`, `sandbox`, `scope`, `selected`<br />`sizes`, `src`, `srcdoc`, `srcset`, `start`, `step`, `target`, `type`<br />`value`, `width`, `wrap` |
+| SVG 名前空間 | 44 | `clip-rule`, `cx`, `cy`, `d`, `fill`, `fill-opacity`, `fill-rule`, `focusable`<br />`gradientTransform`, `gradientUnits`, `height`, `href`, `markerHeight`, `markerWidth`, `offset`, `opacity`<br />`points`, `preserveAspectRatio`, `r`, `refX`, `refY`, `rx`, `ry`, `stop-color`<br />`stop-opacity`, `stroke`, `stroke-dasharray`, `stroke-linecap`, `stroke-linejoin`, `stroke-width`, `text-anchor`, `transform`<br />`viewBox`, `width`, `x`, `x1`, `x2`, `xlink:href`, `xml:lang`, `xmlns`<br />`xmlns:xlink`, `y`, `y1`, `y2` |
+
+次の名前パターンは標準の HTML 要素と SVG 要素で使えます。
+
+| 種類 | 受け付ける名前 | 値の規則 |
+| --- | --- | --- |
+| data 属性 | `data-[\w.-]+` | 文字列と有限数。真偽値は `"true"` または `"false"` に変換します。 |
+| ARIA 属性 | `aria-[\w.-]+` | 文字列と有限数。真偽値は `"true"` または `"false"` に変換します。 |
+| インラインイベント属性 | `on[a-z]+`（例: `onclick`、`onload`） | リアクティブな文字列を含む文字列値です。null と undefined では属性を省略します。レンダラーはブラウザーのインラインハンドラー属性としてエスケープして出力し、更新します。イベント時にブラウザーが実行することがあるため、信頼できる文字列だけを使います。関数値は拒否されます。 |
+| ネイティブイベントリスナー | `on:<event>` または `on:<event>:capture` | `[A-Za-z][A-Za-z0-9_-]*` に一致する大文字小文字を区別するイベント名の関数 prop です。ネイティブリスナーを登録し、HTML 属性は出力しません。 |
+
+属性名は `^[A-Za-z_:][A-Za-z0-9_:.-]*$` に一致する必要があります。null と undefined の値は省略します。値の特別な分類にない標準属性では、文字列と有限数を使えます。
+
+## 属性値の分類
+
+以下の値の規則は、対応する名前空間でその名前が使える場合に適用します。名前は共通、HTML、SVG の各集合と重なることがあります。
+
+| 分類 | 件数 | 名前 | 値の扱い |
+| --- | ---: | --- | --- |
+| 真偽値（有無） | 21 | `allowfullscreen`, `async`, `autofocus`, `autoplay`, `checked`, `controls`<br />`defer`, `disabled`, `formnovalidate`, `hidden`, `inert`, `loop`<br />`multiple`, `muted`, `novalidate`, `open`, `playsinline`, `readonly`<br />`required`, `reversed`, `selected` | 真偽値のみです。true は値なしの属性として出力し、false は省略します。 |
+| 列挙型の真偽値 | 3 | `contenteditable`, `draggable`, `spellcheck` | 文字列または真偽値です。真偽値は `true` または `false` の文字列として出力します。 |
+| オーバーロード真偽値 | 1 | `download` | 文字列または真偽値です。true は空の値を出力し、false は省略します。 |
+| 数値 | 1 | `start` | 文字列または有限数です。 |
+| 文字列のみ | 24 | `as`, `autocapitalize`, `closedby`, `fetchpriority`, `focusable`, `form`<br />`href`, `hreflang`, `inputmode`, `integrity`, `itemprop`, `label`<br />`nonce`, `popover`, `popovertarget`, `popovertargetaction`, `preload`, `property`<br />`srcdoc`, `stroke-dasharray`, `text-anchor`, `wrap`, `xmlns`, `xmlns:xlink` | 文字列のみです。数値と真偽値は拒否されます。 |
+
+`style` は両方の名前空間で使える共通 prop ですが、専用のハンドラーで処理します。CSS 文字列はそのまま通し、プレーンオブジェクト形式は検証します。標準要素では文字列のみの属性ではありません。カスタム要素では標準属性の分類よりカスタム要素の規則が優先され、属性値は文字列のみです。リアクティブな文字列値も使え、null と undefined は省略します。
+
+## 拒否される React 形式の綴りと候補（35）
+
+以下は**診断に表示する候補**であり、受け入れられる別名ではありません。React 形式の綴りはエラーになり、書き換えもそのまま出力もされません。候補を表示するのは、現在の名前空間で対応する綴りが有効な場合だけです。`dangerouslySetInnerHTML` の候補 `rawHtml` は専用のレンダラー prop であり、HTML 属性ではありません。`on[A-Z]` 形式のイベント prop は別に扱います。たとえば `onClick` には `on:click`、`onDoubleClick` には `on:dblclick` が候補として表示されます。
+
+| 拒否される綴り | 提示される綴り | `ZR_PROP_DIALECT` の候補が出る名前空間 | カスタム要素での扱い |
+| --- | --- | --- | --- |
+| `className` | `class` | HTML, SVG | カスタム要素でも拒否 |
+| `htmlFor` | `for` | HTML | カスタム要素でも拒否 |
+| `charSet` | `charset` | HTML | カスタム要素でも拒否 |
+| `dateTime` | `datetime` | HTML | カスタム要素でも拒否 |
+| `tabIndex` | `tabindex` | HTML, SVG | カスタム要素でも拒否 |
+| `readOnly` | `readonly` | HTML | カスタム要素でも拒否 |
+| `autoComplete` | `autocomplete` | HTML | 通常の文字列属性 |
+| `autoFocus` | `autofocus` | HTML | 通常の文字列属性 |
+| `maxLength` | `maxlength` | HTML | 通常の文字列属性 |
+| `minLength` | `minlength` | HTML | 通常の文字列属性 |
+| `crossOrigin` | `crossorigin` | HTML | 通常の文字列属性 |
+| `srcSet` | `srcset` | HTML | 通常の文字列属性 |
+| `acceptCharset` | `accept-charset` | HTML | 通常の文字列属性 |
+| `httpEquiv` | `http-equiv` | HTML | 通常の文字列属性 |
+| `encType` | `enctype` | HTML | 通常の文字列属性 |
+| `noValidate` | `novalidate` | HTML | 通常の文字列属性 |
+| `formNoValidate` | `formnovalidate` | HTML | 通常の文字列属性 |
+| `colSpan` | `colspan` | HTML | 通常の文字列属性 |
+| `rowSpan` | `rowspan` | HTML | 通常の文字列属性 |
+| `referrerPolicy` | `referrerpolicy` | HTML | 通常の文字列属性 |
+| `allowFullScreen` | `allowfullscreen` | HTML | 通常の文字列属性 |
+| `autoPlay` | `autoplay` | HTML | 通常の文字列属性 |
+| `contentEditable` | `contenteditable` | HTML, SVG | 通常の文字列属性 |
+| `spellCheck` | `spellcheck` | HTML, SVG | 通常の文字列属性 |
+| `accessKey` | `accesskey` | HTML, SVG | 通常の文字列属性 |
+| `dangerouslySetInnerHTML` | `rawHtml` | HTML | カスタム要素でも拒否 |
+| `strokeWidth` | `stroke-width` | SVG | カスタム要素でも拒否 |
+| `fillRule` | `fill-rule` | SVG | 通常の文字列属性 |
+| `clipRule` | `clip-rule` | SVG | 通常の文字列属性 |
+| `strokeLinecap` | `stroke-linecap` | SVG | 通常の文字列属性 |
+| `strokeLinejoin` | `stroke-linejoin` | SVG | 通常の文字列属性 |
+| `stopColor` | `stop-color` | SVG | 通常の文字列属性 |
+| `stopOpacity` | `stop-opacity` | SVG | 通常の文字列属性 |
+| `xlinkHref` | `xlink:href` | SVG | 通常の文字列属性 |
+| `xmlLang` | `xml:lang` | SVG | 通常の文字列属性 |
+
+通常の別名はカスタム要素では特別扱いされません。カスタム要素は構文に合う任意の属性名を文字列値で受け付けます。この表の旧式の綴りと `on[A-Z]` 形式はカスタム要素でも拒否されます。旧式の綴りは他の名前空間でも拒否されますが、候補の綴りが無効なら候補は表示されません。その他の対応表記は、表に記載した名前空間でだけ `ZR_PROP_DIALECT` を報告し、それ以外では未対応属性名として `ZR_ATTRIBUTE` を報告します。
+
+## 属性ではないランタイム prop
+
+- `key` は記述に属し、`children` は子の内容を指定します。どちらも属性として出力されません。
+- `ref` はクライアントランタイム用のオブジェクト prop です。ネイティブリスナーには前述の `on:<event>` を使います。
+- `modelValue`、`modelChecked`、`defaultValue`、`defaultChecked` は HTML 属性ではなく、フォーム用のランタイム prop です。[フォームガイド](./forms.mdx)を参照してください。
+- `rawHtml` は信頼済みのマークアップをレンダラーに渡します。children とは併用できず、SVG では使えません。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+- `style` は専用のハンドラーで処理します。CSS 文字列はそのまま通し、プレーンオブジェクト形式は検証します。
+
+## 語彙エラーを読む
+
+未対応の属性名または値は `ZR_ATTRIBUTE`、未対応のタグは `ZR_TAG` を報告します。静的レンダリングでは、メッセージにタグまたは属性、要素パス、処理段階が含まれます。
+
+~~~text
+ZR_TAG: madeuptag at root in static render
+ZR_ATTRIBUTE: input.enterkeyhint at root in static render
+~~~
+
+詳しい診断形式は[サーバーレンダリング](./server-rendering.mdx)を参照してください。

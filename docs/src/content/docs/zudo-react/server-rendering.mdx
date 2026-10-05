@@ -94,6 +94,8 @@ Validation happens before JSON serialization. Arrays must be dense and have no e
 
 When server rendering rejects an element during `zfb build` or `zfb dev`, the error carries three kinds of information. Read them in this order:
 
+The `ZR_TAG` code identifies a tag outside the active HTML or SVG vocabulary. `ZR_ATTRIBUTE` identifies an unsupported attribute name or a value outside its active rules, including the custom-element string-only rule. See the [supported HTML and SVG vocabulary](./vocabulary.mdx) for the complete lists and exact message examples.
+
 ~~~text
 [zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7
 [zfb-runtime] render threw for "/": ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render
