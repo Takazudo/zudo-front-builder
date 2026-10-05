@@ -18,6 +18,7 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
         ("focus-visible", ":focus-visible"),
         ("active", ":active"),
         ("disabled", ":disabled"),
+        ("checked", ":checked"),
     ]
     .into_iter()
     .enumerate()
@@ -25,7 +26,7 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
         for (prefix, relation_rank, classes) in [
             ("", 0, 2),
             ("group-", index + 1, 1),
-            ("peer-", index + 10, 1),
+            ("peer-", index + 11, 1),
         ] {
             let candidate = format!("{prefix}{state}:block");
             let result = compile(&common::input(&[&candidate]));
@@ -66,6 +67,76 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
             StyleSheet::parse(&result.stylesheet, ParserOptions::default()).unwrap();
         }
     }
+}
+
+#[test]
+fn checked_relation_ranks_are_unique_and_follow_disabled() {
+    let mut ranks = std::collections::BTreeSet::new();
+    for relation in ["group", "peer"] {
+        for state in [
+            "first",
+            "last",
+            "open",
+            "focus-within",
+            "hover",
+            "focus",
+            "focus-visible",
+            "active",
+            "disabled",
+            "checked",
+        ] {
+            let candidate = format!("{relation}-{state}:block");
+            let result = compile(&common::input(&[&candidate]));
+            assert!(!result.has_errors(), "{candidate}");
+            let rank = result.rules[0].sort_key.as_ref().unwrap().relation_rank;
+            assert!(ranks.insert(rank), "duplicate relation rank {rank}");
+        }
+    }
+    assert_eq!(
+        ranks.into_iter().collect::<Vec<_>>(),
+        (1..=20).collect::<Vec<_>>()
+    );
+
+    let result = compile(&common::input(&[
+        "peer-checked:block",
+        "group-checked:block",
+        "peer-disabled:block",
+        "group-disabled:block",
+    ]));
+    assert_eq!(
+        result
+            .rules
+            .iter()
+            .map(|rule| rule.candidate.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "group-disabled:block",
+            "group-checked:block",
+            "peer-disabled:block",
+            "peer-checked:block",
+        ]
+    );
+}
+
+#[test]
+fn checked_responsive_combination_keeps_canonical_variant_order() {
+    let candidate = "max-sm:peer-checked:visible";
+    let result = compile(&common::input(&[candidate]));
+    assert!(!result.has_errors());
+    let rule = &result.rules[0];
+    assert_eq!(rule.conditions, ["(width < 640px)"]);
+    assert_eq!(
+        rule.selector.as_deref(),
+        Some(":where(.peer:checked) ~ .max-sm\\:peer-checked\\:visible")
+    );
+    assert_specificity(rule.selector.as_ref().unwrap(), rule.specificity);
+
+    let rejected = compile(&common::input(&["peer-checked:max-sm:visible"]));
+    assert!(rejected.rules.is_empty());
+    assert_eq!(
+        rejected.diagnostics[0].suggested_spelling.as_deref(),
+        Some(candidate)
+    );
 }
 
 fn assert_specificity(selector: &str, expected: Specificity) {

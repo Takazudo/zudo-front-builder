@@ -349,6 +349,7 @@ mod tests {
             "focus-visible",
             "active",
             "disabled",
+            "checked",
             "first",
             "last",
             "focus-within",
@@ -367,6 +368,7 @@ mod tests {
                 "focus-visible",
                 "active",
                 "disabled",
+                "checked",
                 "first",
                 "last",
                 "focus-within",
@@ -528,6 +530,15 @@ mod tests {
     #[test]
     fn r04_unknown_variant() {
         rejected("lg:block", DiagnosticCode::Zw002, "R04");
+        for state in ["indeterminate", "required", "invalid"] {
+            for prefix in ["", "group-", "peer-"] {
+                rejected(
+                    &format!("{prefix}{state}:block"),
+                    DiagnosticCode::Zw002,
+                    "R04",
+                );
+            }
+        }
     }
 
     #[test]

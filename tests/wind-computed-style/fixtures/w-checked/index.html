@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Checked peer drawer</title>
+    <link rel="stylesheet" href="../../dist/w-checked/wind.css" />
+  </head>
+  <body>
+    <input id="nav-toggle" type="checkbox" class="peer opacity-0 checked:opacity-100" />
+    <label id="nav-label" for="nav-toggle">Toggle navigation</label>
+    <label
+      id="overlay"
+      for="nav-toggle"
+      class="opacity-0 pointer-events-none peer-checked:opacity-100 peer-checked:pointer-events-auto"
+    >Close navigation</label>
+    <nav
+      id="drawer"
+      class="invisible -translate-x-full peer-checked:translate-x-0 max-sm:peer-checked:visible"
+    >Navigation drawer</nav>
+  </body>
+</html>
