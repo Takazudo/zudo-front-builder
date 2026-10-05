@@ -1040,6 +1040,9 @@ pub struct WindSources {
     /// Explicit local helpers whose arguments are class lists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub class_helpers: Vec<String>,
+    /// JSX/MDX/HTML attributes whose literal values do not contain utility classes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore_attributes: Vec<String>,
 }
 
 impl WindSources {
@@ -1048,6 +1051,7 @@ impl WindSources {
             && self.roots.is_empty()
             && self.package_roots.is_empty()
             && self.class_helpers.is_empty()
+            && self.ignore_attributes.is_empty()
     }
 }
 
@@ -2902,6 +2906,12 @@ fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclarati
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect(),
+        ignore_attributes: declarations
+            .iter()
+            .flat_map(|declaration| declaration.sources.ignore_attributes.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
     };
     wind.source_declarations = declarations;
 }
@@ -3111,6 +3121,11 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
                 bail!("wind.sources.classHelpers[{index}] {helper:?} declared by {origin}: must be a JavaScript identifier");
             }
         }
+        for (index, attribute) in declaration.sources.ignore_attributes.iter().enumerate() {
+            if !is_wind_ignore_attribute_name(attribute) {
+                bail!("wind.sources.ignoreAttributes[{index}] {attribute:?} declared by {origin}: must be an attribute name other than class or className");
+            }
+        }
         for (index, root) in declaration.sources.roots.iter().enumerate() {
             if let Err(message) = validate_wind_project_root(root) {
                 bail!("wind.sources.roots[{index}] {root:?} declared by {origin}: {message}");
@@ -3130,6 +3145,20 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_wind_ignore_attribute_name(name: &str) -> bool {
+    if matches!(name, "class" | "className") {
+        return false;
+    }
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| unicode_id_start::is_id_start(c) || c == '_')
+        && chars.all(|c| {
+            unicode_id_start::is_id_continue(c)
+                || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}')
+        })
 }
 
 fn is_wind_class_helper_identifier(name: &str) -> bool {
@@ -3983,6 +4012,43 @@ mod tests {
     }
 
     #[test]
+    fn wind_ignore_attributes_merge_presets_and_project_and_validate_names() {
+        let config = merge_presets_to_config(
+            vec![
+                serde_json::json!({"wind": {"sources": {"ignoreAttributes": ["css", "html"]}}}),
+                serde_json::json!({"wind": {"sources": {"ignoreAttributes": ["displayJs", "css"]}}}),
+            ],
+            serde_json::json!({"wind": {"sources": {"ignoreAttributes": ["title", "html"]}}}),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object expected")
+        };
+        assert_eq!(
+            wind.sources.ignore_attributes,
+            ["css", "displayJs", "html", "title"]
+        );
+        assert_eq!(wind.source_declarations().len(), 3);
+        assert!(is_wind_ignore_attribute_name("data-preview"));
+        assert!(is_wind_ignore_attribute_name("preview:html"));
+        assert!(is_wind_ignore_attribute_name("étiquette"));
+        assert!(is_wind_ignore_attribute_name("e\u{301}tiquette"));
+        for invalid in ["", "class", "className", "a.b", "1name", "name space"] {
+            let wind = WindConfig {
+                sources: WindSources {
+                    ignore_attributes: vec![invalid.into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let error = validate_wind_config(&wind).unwrap_err().to_string();
+            assert!(
+                error.contains("wind.sources.ignoreAttributes[0]"),
+                "{invalid}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn wind_sources_without_presets_belong_to_the_project() {
         let config = config_with_wind(serde_json::json!({
             "sources": { "exclude": ["src/**"] }
@@ -3999,6 +4065,7 @@ mod tests {
                     roots: Vec::new(),
                     package_roots: Vec::new(),
                     class_helpers: Vec::new(),
+                    ignore_attributes: Vec::new(),
                 },
             }]
         );
@@ -4049,6 +4116,7 @@ mod tests {
                     roots: Vec::new(),
                     package_roots: Vec::new(),
                     class_helpers: Vec::new(),
+                    ignore_attributes: Vec::new(),
                 },
             }],
             ..Default::default()

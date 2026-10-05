@@ -5,8 +5,63 @@ use super::{Collector, NoteKind, PositionKind};
 /// Scans every literal, then upgrades the complete strings whose value
 /// provably reaches a class attribute to class positions.
 pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
+    let masked = mask_ignored_attribute_expressions(source, &out.options.ignore_attributes);
+    let source = masked.as_deref().unwrap_or(source);
     scan_literals(source, base, out);
     class_expression::Module::new(source, base, out.options.class_helpers.clone()).scan(out);
+}
+
+/// Hide the complete expression of a known non-class JSX prop from both
+/// scanners. Literal context checks alone cannot see through a conditional or
+/// helper call nested inside `html={...}`.
+fn mask_ignored_attribute_expressions(
+    source: &str,
+    ignore_attributes: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut changed = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"//") {
+            i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i = source[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + n + 4);
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'{' && known_non_class_context(&source[..=i], ignore_attributes) {
+            let end = expression_end(source, i + 1);
+            for byte in &mut masked[i..end] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+            changed = true;
+            i = end;
+            continue;
+        }
+        i += source[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    changed.then(|| String::from_utf8(masked).expect("mask preserves UTF-8"))
 }
 
 fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
@@ -26,7 +81,8 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
         if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
             let quote = bytes[i];
             let class = class_context(&source[..i]);
-            let known_non_class = !class && known_non_class_context(&source[..i]);
+            let known_non_class =
+                !class && known_non_class_context(&source[..i], &out.options.ignore_attributes);
             let open = i;
             i += 1;
             let mut segment = i;
@@ -37,7 +93,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     continue;
                 }
                 if quote == b'`' && bytes[i..].starts_with(b"${") {
-                    if !known_non_class {
+                    if !known_non_class && (class || !is_pure_url(&source[segment..i])) {
                         emit(
                             source,
                             base,
@@ -47,7 +103,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             open,
                             i + 2,
                             class,
-                            false,
+                            true,
                             true,
                             left,
                         );
@@ -57,7 +113,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     // An unterminated interpolation runs to the end of the
                     // source and has no closing `}` to strip.
                     let body_end = if source[..i].ends_with('}') { i - 1 } else { i };
-                    if body_end > expression_start {
+                    if !known_non_class && body_end > expression_start {
                         scan_literals(
                             &source[expression_start..body_end],
                             base + expression_start,
@@ -71,7 +127,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                 if bytes[i] == quote {
                     let right = source[i + 1..].trim_start().starts_with('+');
                     let left = left || source[..open].trim_end().ends_with('+');
-                    let whole_url = !class && !left && !right && is_pure_url(&source[segment..i]);
+                    let whole_url = !class && is_pure_url(&source[segment..i]);
                     if !known_non_class && !whole_url {
                         emit(
                             source,
@@ -82,7 +138,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             open,
                             i + 1,
                             class,
-                            quote != b'`',
+                            true,
                             right,
                             left,
                         );
@@ -156,13 +212,12 @@ fn class_context(prefix: &str) -> bool {
     !matches!(preceding_word, "const" | "let" | "var")
 }
 
-/// Attributes whose value is never a class list: links, sources, metadata
-/// and input types (`type="hidden"` is not the `hidden` utility).
-const NON_CLASS_ATTRIBUTES: &[&str] = &["href", "src", "content", "name", "rel", "type"];
-
 /// A literal that is a module specifier (`import`/`export … from`,
 /// `import()`, `require()`) or an intrinsic non-class attribute value.
-fn known_non_class_context(prefix: &str) -> bool {
+pub(super) fn known_non_class_context(
+    prefix: &str,
+    ignore_attributes: &std::collections::BTreeSet<String>,
+) -> bool {
     let trimmed = prefix.trim_end();
     let word = |text: &str| {
         text.rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
@@ -186,13 +241,79 @@ fn known_non_class_context(prefix: &str) -> bool {
         return false;
     };
     let before = before.trim_end();
-    let name = word(before);
-    if !NON_CLASS_ATTRIBUTES.contains(&name.as_str()) {
+    let name = before
+        .rsplit(|c: char| {
+            !(unicode_id_start::is_id_continue(c)
+                || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}'))
+        })
+        .next()
+        .unwrap_or("");
+    if !ignore_attributes.contains(name) {
         return false;
     }
-    // `const name = "..."` is a variable, not an attribute.
-    let preceding = word(before.strip_suffix(name.as_str()).unwrap_or("").trim_end());
-    !matches!(preceding.as_str(), "const" | "let" | "var")
+    // Declarations and member assignments are not JSX/MDX attributes.
+    let before_name = before.strip_suffix(name).unwrap_or("").trim_end();
+    if before_name.ends_with('.') {
+        return false;
+    }
+    let preceding = word(before_name);
+    if matches!(preceding.as_str(), "const" | "let" | "var") {
+        return false;
+    }
+    jsx_tag_attribute_context(before_name)
+}
+
+fn jsx_tag_attribute_context(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let mut i = 0;
+    // An outer tag can contain a JSX element in one of its expressions.
+    // Keep each open tag's expression depth so the inner tag's attributes
+    // are recognized without treating assignments in the outer expression
+    // as attributes.
+    let mut tag_braces = Vec::<usize>::new();
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"//") {
+            i = prefix[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i = prefix[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + n + 4);
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+            if tag_braces.last().is_none_or(|depth| *depth > 0) {
+                tag_braces.push(0);
+            }
+        } else if let Some(depth) = tag_braces.last_mut() {
+            match bytes[i] {
+                b'{' => *depth += 1,
+                b'}' => *depth = (*depth).saturating_sub(1),
+                b'>' if *depth == 0 => {
+                    tag_braces.pop();
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    tag_braces.last() == Some(&0)
 }
 
 /// CSS text of a `<style>` element: `<style>{`…`}</style>` or the
@@ -290,19 +411,22 @@ fn emit(
     } else {
         PositionKind::Literal
     };
-    out.tokens(
-        &decoded,
-        base + start,
-        (base + open, close - open),
-        kind,
-        right,
-        left,
-        Some(&source_map),
-    );
-    if embedded && (raw.contains("class=") || raw.contains("className=")) {
-        out.within_decoded(base + start, source_map, |out| {
+    let scanned_markup = !class
+        && embedded
+        && decoded.contains('<')
+        && out.within_decoded(base + start, source_map.clone(), |out| {
             super::markup::scan(&decoded, 0, out, false)
         });
+    if !scanned_markup {
+        out.tokens(
+            &decoded,
+            base + start,
+            (base + open, close - open),
+            kind,
+            right,
+            left,
+            Some(&source_map),
+        );
     }
 }
 

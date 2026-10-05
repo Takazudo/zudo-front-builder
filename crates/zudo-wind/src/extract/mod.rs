@@ -70,12 +70,16 @@ pub struct ExtractionResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtractionOptions {
     pub class_helpers: BTreeSet<String>,
+    pub ignore_attributes: BTreeSet<String>,
 }
 
 impl Default for ExtractionOptions {
     fn default() -> Self {
         Self {
             class_helpers: ["clsx", "cn", "cx", "classNames", "classnames"]
+                .map(str::to_owned)
+                .into(),
+            ignore_attributes: ["href", "src", "content", "name", "rel", "type"]
                 .map(str::to_owned)
                 .into(),
         }
@@ -119,7 +123,9 @@ pub fn extract_candidates_with_options(
         SourceKind::Tsx | SourceKind::Ts | SourceKind::Jsx | SourceKind::Js | SourceKind::Mjs => {
             script::scan(source, 0, &mut collector)
         }
-        SourceKind::Html => markup::scan(source, 0, &mut collector, true),
+        SourceKind::Html => {
+            markup::scan(source, 0, &mut collector, true);
+        }
         SourceKind::Md | SourceKind::Mdx => {
             markdown::scan(source, &mut collector, kind == SourceKind::Mdx)
         }
@@ -149,15 +155,16 @@ impl Collector<'_> {
     /// Scans `decoded` (whose `map` has one entry per decoded byte plus the
     /// end) as if it sat at `base`, reporting every position in raw-source
     /// coordinates.
-    pub(super) fn within_decoded(
+    pub(super) fn within_decoded<T>(
         &mut self,
         base: usize,
         map: Vec<usize>,
-        scan: impl FnOnce(&mut Self),
-    ) {
+        scan: impl FnOnce(&mut Self) -> T,
+    ) -> T {
         self.frames.push(Frame { base, map });
-        scan(self);
+        let result = scan(self);
         self.frames.pop();
+        result
     }
 
     /// The raw-source offset of an offset in the current scan coordinates.
@@ -260,7 +267,9 @@ impl Collector<'_> {
                             at + source_map.map_or(start, |map| map[start]),
                             token,
                         );
-                    } else if complete || position_kind == PositionKind::Class {
+                    } else if position_kind == PositionKind::Class
+                        || (complete && literal_token_shape(token))
+                    {
                         if !complete {
                             self.note(
                                 NoteKind::MalformedClassCandidate,
@@ -323,4 +332,40 @@ impl Collector<'_> {
             notes: self.notes,
         }
     }
+}
+
+/// Literal positions are speculative. Drop punctuation that the named utility
+/// grammar cannot use, while keeping CSS values inside balanced arbitrary forms.
+/// Structural validation above handles malformed delimiters separately.
+fn literal_token_shape(token: &str) -> bool {
+    let mut depth = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in token.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        if depth > 0 && matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        match ch {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            '=' | '\'' | '"' | ',' | '+' | '*' | '@' | '%' | '#' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    true
 }
