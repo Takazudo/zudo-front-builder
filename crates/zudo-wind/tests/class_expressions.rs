@@ -304,3 +304,88 @@ fn candidate_index_uses_helper_options_for_file_extraction() {
     assert_class(&extraction, "text-xl");
     assert!(index.live_set().contains("text-xl"));
 }
+
+#[test]
+fn owned_factory_props_trace_values_and_preserve_authored_spans() {
+    let source = r#"import { h as make, type h as TypeH } from "@takazudo/zfb/zudo-react";
+const saved = "ring-2";
+const view = make("div", {
+  class: active ? `flex ${saved}` : "gap-2",
+  'className': cn("p-3", { "rounded-md": active }),
+  "class": "text-ink",
+});"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Ts);
+    for value in ["ring-2", "flex", "gap-2", "p-3", "rounded-md", "text-ink"] {
+        assert_class(&result, value);
+        let candidate = result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.text == value)
+            .unwrap();
+        assert!(
+            candidate.occurrences.iter().any(|occurrence| {
+                let span = &source
+                    [occurrence.byte_offset..occurrence.byte_offset + occurrence.byte_length];
+                span == value && occurrence.position_kind == PositionKind::Class
+            }),
+            "{value} has no authored class span"
+        );
+    }
+    let mut config = WindConfig::default();
+    config.tokens.colors = BTreeMap::new();
+    let report = audit(&AuditInput::single("view.ts", result), &config);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(
+            |diagnostic| diagnostic.candidate.as_deref() == Some("ring-2")
+                && diagnostic.code == "ZW004"
+                && diagnostic.severity == "error"
+        ));
+}
+
+#[test]
+fn unrelated_factory_data_types_and_shadowed_imports_stay_literals() {
+    let source = r#"import { h as make } from "@takazudo/zfb/zudo-react";
+import { h as foreign } from "preact";
+import type { h as TypeH } from "@takazudo/zfb/zudo-react";
+const className = "p-1";
+type Shape = { className: "p-2" };
+const data = { class: "p-3" };
+const label = "class";
+foreign("div", { class: "p-4" });
+h("div", { class: "p-5" });
+TypeH("div", { class: "p-6" });
+make("div", { other: "p-7" }, { class: "p-8" });
+make("div", { "other": "p-9" });
+const choose = label === "class" ? "m-1" : "m-2";
+function nested(make) { return make("div", { class: "p-10" }); }
+make("div", { class: "p-11" });"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Ts);
+    for value in [
+        "p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-8", "p-9", "m-1", "m-2", "p-10", "p-11",
+    ] {
+        assert_literal(&result, value);
+    }
+
+    let unshadowed = r#"import { h as make } from '@takazudo/zfb/zudo-react';
+import { h as foreign } from 'preact';
+import type { h as TypeH } from '@takazudo/zfb/zudo-react';
+const data = { class: 'p-3' };
+type Shape = { className: 'p-2' };
+foreign('div', { class: 'p-4' });
+h('div', { class: 'p-5' });
+TypeH('div', { class: 'p-6' });
+make('div', { other: 'p-7' }, { class: 'p-8' });
+make('div', { other: 'p-9' });
+switch (kind) { case 'class': value = 'm-3'; break; }
+const pick = kind ? 'm-4' : 'm-5';
+make('div', { class: 'p-12' });"#;
+    let result = extract_candidates(unshadowed.as_bytes(), SourceKind::Ts);
+    for value in [
+        "p-2", "p-3", "p-4", "p-5", "p-6", "p-8", "p-9", "m-3", "m-4", "m-5",
+    ] {
+        assert_literal(&result, value);
+    }
+    assert_class(&result, "p-12");
+}
