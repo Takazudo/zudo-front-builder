@@ -56,7 +56,7 @@ describe("root script timing harness", () => {
     });
   });
 
-  it("uses the repository's locked nearest-rank quantile for even sample counts", () => {
+  it("uses round(p * (n - 1)), capped at n - 1, for even sample counts", () => {
     assert.equal(quantile([40, 10, 30, 20], 0.5), 30);
     assert.equal(quantile([], 0.5), null);
   });

@@ -21,7 +21,7 @@ let interruptedSignal;
 export function quantile(values, probability) {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
-  // Match the repository's locked supervisor timeline quantile convention.
+  // Match the supervisor timeline convention: round(p * (n - 1)), capped at n - 1.
   return sorted[Math.min(sorted.length - 1, Math.floor(probability * (sorted.length - 1) + 0.5))];
 }
 
@@ -422,7 +422,7 @@ function renderMarkdownSummary(summary) {
     "",
     "## Per-test observation distribution",
     "",
-    `Across ${distribution.n} individual test observations from ${summary.timing.runCount} run(s): min ${number(distribution.minMs)}, p50 ${number(distribution.p50Ms)}, p90 ${number(distribution.p90Ms)}, p99 ${number(distribution.p99Ms)}, max ${number(distribution.maxMs)}. Ranks use the repository's locked nearest-rank quantile convention.`,
+    `Across ${distribution.n} individual test observations from ${summary.timing.runCount} run(s): min ${number(distribution.minMs)}, p50 ${number(distribution.p50Ms)}, p90 ${number(distribution.p90Ms)}, p99 ${number(distribution.p99Ms)}, max ${number(distribution.maxMs)}. Quantiles select sorted index round(p * (n - 1)), capped at n - 1, matching the repository's locked timeline convention.`,
     "",
     "## Runs",
     "",

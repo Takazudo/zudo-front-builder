@@ -26,8 +26,10 @@ artifacts; no generated timing data is committed to the repository.
 
 ## Per-test timing distributions
 
-Percentiles use the repository's locked nearest-rank convention and are calculated over individual
-test observations pooled across the five runs in that row.
+Percentiles are calculated over individual test observations pooled across the five runs in that row.
+For a sorted sample of length `n`, the selected index is `min(n - 1, floor(p * (n - 1) + 0.5))`,
+equivalent to `round(p * (n - 1))` capped at `n - 1`. This matches the supervisor timeline summary's
+locked quantile formula; it is distinct from the standard `ceil(p * n) - 1` nearest-rank formula.
 
 | Platform | Condition | Load workers | Passes / tests each | Samples | p50 | p90 | p99 | Max |
 | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
