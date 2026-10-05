@@ -75,7 +75,14 @@ export function validateEditorial(record, family, examples, entriesById, assets)
         const properties = new Set(
           [...declarations.matchAll(/(?:^|;)\s*([\w-]+)\s*:/g)].map((match) => match[1]),
         );
-        const missing = entry.emitter.filter((property) => !properties.has(property));
+        const optional = new Set(
+          (entry.declarationTemplates ?? [])
+            .filter((template) => template.valueKind === "optionalFontSizeLeading")
+            .map((template) => template.property),
+        );
+        const missing = entry.emitter.filter(
+          (property) => !optional.has(property) && !properties.has(property),
+        );
         if (missing.length)
           fail(`${label}: ${row.candidate} does not emit catalog properties ${missing.join(", ")}`);
       }
