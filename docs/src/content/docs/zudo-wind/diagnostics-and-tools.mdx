@@ -242,6 +242,8 @@ Run `zfb wind audit` to inspect ordinary class-position names, missing or dead u
 
 By default, a completed audit exits with status 0 even when it reports error-severity findings; stderr then recommends `--fail-on error`. `--fail-on error` fails on error-severity diagnostics, while `--fail-on warning` also fails on warnings. `auditInfo` findings do not affect either threshold. Invalid configuration and source scan failures always exit nonzero.
 
+Use `--group` for a compact text audit. It groups unrecognized names by candidate and dead-class/diagnostic occurrences by candidate, code, and severity, showing a count and deterministic first origin. Diagnostic summaries keep the message and optional suggestion from that first origin. The flag leaves default text and exit policy unchanged; with `--json` it has no effect, preserving JSON occurrence arrays. See the [CLI reference](../api/cli.mdx).
+
 `codeHighlight.roleClasses` is deliberately tolerant: a valid utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. Audit may report that role as ignored. An exact match in `authoredClasses` suppresses utility validation, generation, and utility diagnostics at every candidate origin. It cannot suppress configuration errors or stylesheet checks.
 
 ## Leftover directives and CSS command

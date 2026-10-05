@@ -95,6 +95,7 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let plan_mode = args.plan;
     let output = AuditOutput {
         json: args.json,
+        group: args.group,
         severity: args.severity,
     };
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
@@ -336,6 +337,7 @@ fn origin_view_location(origin: &zfb_css::OriginView) -> String {
 #[derive(Clone, Copy)]
 struct AuditOutput {
     json: bool,
+    group: bool,
     severity: Option<WindAuditSeverity>,
 }
 
@@ -583,7 +585,12 @@ fn print_audit_and_apply_exit_policy(
         if let Some(coverage) = coverage {
             print!("{}", render_plan_coverage("audit", coverage));
         }
-        print!("{}", zfb_css::render_audit(&shown));
+        let text = if output.group {
+            zfb_css::render_audit_grouped(&shown)
+        } else {
+            zfb_css::render_audit(&shown)
+        };
+        print!("{text}");
     }
     match audit_exit(report, fail_on) {
         Ok(Some(note)) => {
