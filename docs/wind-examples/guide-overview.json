@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-overview",
+  "examples": [
+    {
+      "id": "quickstart",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">A configured card</h3>\n    <p>Each class is a complete candidate.</p>\n  </article>\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">Project values</h3>\n    <p>Wind emits only the rules these candidates request.</p>\n  </article>\n</div>",
+      "utilities": ["grid", "grid-cols-2", "gap-4", "rounded-card", "bg-panel", "p-4", "text-ink"],
+      "authoredClasses": ["wind-demo-grid", "wind-demo-card", "wind-demo-title"],
+      "scaffoldCss": ".wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-card { border: 1px solid #8797aa; }\n.wind-demo-title { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "panel": "#f4f1ec",
+              "ink": "#203046"
+            },
+            "radii": {
+              "card": "0.5rem"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

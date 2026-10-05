@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-variants",
+  "examples": [
+    {
+      "id": "responsive-grid",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-board grid grid-cols-1 gap-3 sm:grid-cols-2\">\n  <div class=\"wind-demo-card\">One column below 640px</div>\n  <div class=\"wind-demo-card\">Two columns from 640px</div>\n  <div class=\"wind-demo-card\">Resize the preview</div>\n</div>",
+      "utilities": ["grid", "grid-cols-1", "gap-3", "sm:grid-cols-2"],
+      "authoredClasses": ["wind-demo-board", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo-board { font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-card { min-height: 3rem; text-align: center; border: 1px solid #8797aa; background: #f4f1ec; }\n",
+      "config": {
+        "wind": {
+          "breakpoints": {
+            "sm": {
+              "minWidthPx": 640
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dark-surface",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-dark-grid\">\n  <div class=\"wind-demo-color-card bg-paper text-ink p-4\">Light surface</div>\n  <div class=\"wind-demo-color-card bg-paper text-ink dark:bg-night dark:text-night-ink p-4\" data-theme=\"dark\">Dark surface from this element’s configured attribute</div>\n</div>",
+      "utilities": ["bg-paper", "text-ink", "p-4", "dark:bg-night", "dark:text-night-ink"],
+      "authoredClasses": ["wind-demo-dark-grid", "wind-demo-color-card"],
+      "scaffoldCss": ".wind-demo-dark-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-color-card { border: 1px solid #8797aa; }\n",
+      "config": {
+        "wind": {
+          "dark": {
+            "attribute": "data-theme",
+            "value": "dark"
+          },
+          "tokens": {
+            "colors": {
+              "paper": "#f5f7fb",
+              "ink": "#253047",
+              "night": "#263449",
+              "night-ink": "#f5f7fb"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "element-states",
+      "kind": "positive",
+      "html": "<button class=\"wind-demo-button bg-accent text-paper px-4 py-2 hover:bg-accent-strong focus-visible:bg-accent-strong disabled:opacity-50\">Hover or focus this button</button>\n<button class=\"wind-demo-button bg-accent text-paper px-4 py-2 disabled:opacity-50\" disabled>Disabled state</button>",
+      "utilities": [
+        "bg-accent",
+        "text-paper",
+        "px-4",
+        "py-2",
+        "hover:bg-accent-strong",
+        "focus-visible:bg-accent-strong",
+        "disabled:opacity-50"
+      ],
+      "authoredClasses": ["wind-demo-button"],
+      "scaffoldCss": ".wind-demo-button { margin: .25rem; border: 0; border-radius: 9999px; font: 600 14px/1.4 system-ui, sans-serif; cursor: pointer; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "accent": "#5b5bd6",
+              "accent-strong": "#38389a",
+              "paper": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "group-and-peer",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-relations\">\n  <div class=\"wind-demo-link group text-ink\">\n    <span class=\"group-hover:text-accent\">Hover this group to color its child</span>\n  </div>\n  <label class=\"wind-demo-choice\">\n    <input class=\"peer\" type=\"checkbox\" />\n    <span class=\"peer-focus:text-accent\">Tab to the preceding peer control</span>\n  </label>\n</div>",
+      "utilities": [
+        "group",
+        "text-ink",
+        "group-hover:text-accent",
+        "peer",
+        "peer-focus:text-accent"
+      ],
+      "authoredClasses": ["wind-demo-relations", "wind-demo-link", "wind-demo-choice"],
+      "scaffoldCss": ".wind-demo-relations { display: grid; gap: .75rem; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-link { display: block; padding: .75rem; border: 1px solid #8797aa; }\n.wind-demo-choice { display: flex; align-items: center; gap: .5rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#253047",
+              "accent": "#5b5bd6"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "pseudo-element",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-mark before:block before:bg-accent\">The scaffold supplies pseudo-element content and size.</p>",
+      "utilities": ["before:block", "before:bg-accent"],
+      "authoredClasses": ["wind-demo-mark"],
+      "scaffoldCss": ".wind-demo-mark { display: flex; align-items: center; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-mark::before { content: \"\"; inline-size: .75rem; block-size: .75rem; border-radius: 50%; margin-inline-end: .5rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "accent": "#5b5bd6"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "noncanonical-order",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"hover:sm:block\">hover:sm:block</div>",
+      "utilities": ["hover:sm:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "breakpoints": {
+            "sm": {
+              "minWidthPx": 640
+            }
+          }
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW003",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unconfigured-dark",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"dark:block\">dark:block needs configured dark mode.</div>",
+      "utilities": ["dark:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW002",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "named-group",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"group-hover/menu:block\">group-hover/menu:block</div>",
+      "utilities": ["group-hover/menu:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "attribute-variant",
+      "kind": "expected-diagnostic",
+      "html": "<button class=\"aria-pressed:block\">aria-pressed:block</button>",
+      "utilities": ["aria-pressed:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "data-attribute-variant",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"data-[state=open]:block\">data-[state=open]:block</div>",
+      "utilities": ["data-[state=open]:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "arbitrary-selector-variant",
+      "kind": "expected-diagnostic",
+      "html": "<p class=\"[_a]:underline\">[_a]:underline</p>",
+      "utilities": ["[_a]:underline"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "pseudo-child-utility",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"before:divide-y\">before:divide-y</div>",
+      "utilities": ["before:divide-y"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}

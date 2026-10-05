@@ -730,6 +730,376 @@
       "cssSha256": "4a91cf45ddfc2891321cf474a16e070c25a5befd7ada089e6464df1158e5cf00"
     },
     {
+      "family": "guide-overview",
+      "id": "quickstart",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "138057e86f812ed3c0083ed0c126744ece3fc96c725252529f29080bb08e4f17",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "348567515d5ac95a3754a40c2035efb9293017a08da4bea027440e3ebf70086b",
+      "configSha256": "6fbda3e41cdc9f034f893afef4f074a76329b8cb4b21d1fc0cdd21b02ad12519",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-overview/quickstart.css",
+      "htmlPath": "wind-examples/guide-overview/quickstart.html",
+      "cssSha256": "0f12387c4dba6b646098faef72eddb07df2ff32374bac12979cf436c128b19c4"
+    },
+    {
+      "family": "guide-tokens",
+      "id": "named-values",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "50f9c8506f29a976191009c61c456624f90b59dfb0eb3843aab08b3b9f9eab9d",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "7f1f3080a762c36a79650a33ad433260398248c36946069f29b6edf29557c96e",
+      "configSha256": "777a41144c9476b153457f9f7837cb75fe8a8c38aee5a3b474025475501cfff7",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-tokens/named-values.css",
+      "htmlPath": "wind-examples/guide-tokens/named-values.html",
+      "cssSha256": "6100545ba72b3e07f9fd70e2ee73ee445fee66f5bc8ffee6a40b4ec62b2f1080"
+    },
+    {
+      "family": "guide-tokens",
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "e4dfb3d93e842dd7bf2759c6f02ecba18ed5e9d8bcb878163f5d06b2129d4c97",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "37533e43aca0b12e4246701359767d93ee08c12c57d0d9f7774706cf208b3376",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "unconfigured-breakpoint",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "d7bc18ae524a6ff08ec31d50d7e71d5976aac8e36e43dee2ae9703fdf789fcdb",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "4b71a881e7766d0aa39f6912522e6f6f85cdf37ed94ed4088da912321d5738ff",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW002",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "calc-needs-underscores",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "254d40dced84a93190c789d511d07114e6a4cd7c912ffe2b9d28a784959e4b6d",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "ad140e69da9983f69c8734b22ec26fe1271985fc7a40b8968251445adbe11400",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "unsupported-type-hint",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "adcabc636e145e8fb852957b05efae29508083b1edbacad7f9a57ddd141e3dc5",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "d58ad2aa88af9e6f5c614b7be3860f461c3e50bddec979c4f238d806459f1d8f",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "arbitrary-property",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "edb92577198ddf5dcc2a81db3bdf9a498bab6dbe0fafdad71aa403655dcba6bf",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "6193bf1b911a46c383633708168649ba0674adaeca153171d6ab0e185ae936f1",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "unsupported-ring",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "28229069274526bd9122ee16e96f2a9f337ce3fab93465d613b63e8e54621528",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "9b34cd39ea1c2c2c9ea357c10dc50ac9ac33c00f5e08bfe138c6f365761657f8",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "negative-padding",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "a63a58683ac44f45af04f7521d7291002108cb5b194deb723ec83cfa8c468d7e",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "a3f6b0c3d55a1cfc8e2edd8dcd7cd12e5fd4b2fec4a04683d926dfd6b7f8a7a1",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "empty-variant-segment",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "a4e818b689283ce36d74f29b6388d8516ec278241afcdf6edd6263219e3a7f7b",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "f212540de760eb911f3f3f726f392826e6b645e300d3c7c77b8f3f7bb61f63a3",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW001",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "foreign-utility-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "50820d487411c11eb4a851b0190586a93677522a82394897fc419537edd74a5e",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "700d3bd773700a902516eb3a58ddadfba96e74df6e09a65e752761d0148ea4fd",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "family": "guide-utility-grammar",
+      "id": "foreign-utility-strict-error",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "50820d487411c11eb4a851b0190586a93677522a82394897fc419537edd74a5e",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "a174f3f215171c8a67820736391fe0685be0cf09b04ca85ef36601c4e433c0d1",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "responsive-grid",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "6943745aa8b3d8e0a0203f983b648fe4125a0d97082eb0902026ce73ae6b1084",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "fe35b436126603e7604ee02eda5ce32188880f40349631c9a6c352426e15aaa1",
+      "configSha256": "4128bd2cc30314e8745d5c297a3683cf88a0c16d807d3736c332f0ef779a4847",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-variants/responsive-grid.css",
+      "htmlPath": "wind-examples/guide-variants/responsive-grid.html",
+      "cssSha256": "27c5a78d52e207421e90ca0a47543b8b225048cc13b5a4041b5d2712ae20a4bb"
+    },
+    {
+      "family": "guide-variants",
+      "id": "dark-surface",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "54b43390ebf81adf9ad0a8b0ca23bc925a335c52a18045dd37bb7650c796a9ac",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e627529ee6ff49ca3ae8dcdcd4bded359868cd3d476d16edc5136266c279337c",
+      "configSha256": "e508919fd29acc80e326c3c6aa75644b55d56919f055f8a2d654155fd228817d",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-variants/dark-surface.css",
+      "htmlPath": "wind-examples/guide-variants/dark-surface.html",
+      "cssSha256": "e05dd882ed25128818aeda505462ff0607768909012a5f6feaa2d7ae58f11e3d"
+    },
+    {
+      "family": "guide-variants",
+      "id": "element-states",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "a2505a3deacef83642f76e995239fd9afaf3a53e56ef8dffb6f95b411fd7e04d",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "36e313b11f332b4caefd09787fde7c22b63c5597e9d99f4bcb3fbec478efdb0e",
+      "configSha256": "15354b6245bddfc712af7a589f885796b911a69b286172834d289e22193e46dd",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-variants/element-states.css",
+      "htmlPath": "wind-examples/guide-variants/element-states.html",
+      "cssSha256": "7789df93dcca95c8ca0f6cea3a41ebab189e54a90dad3a457805413e4dfd8747"
+    },
+    {
+      "family": "guide-variants",
+      "id": "group-and-peer",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "150de2a3d9dd6fc81d1cce3ebc0393a5d1174ef7b5331a19a1024a94669f8d9f",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "8a6b9ffecdbdc70d3690a1a73998adf963a79239d7f0ba2599f8cbc5017ce12e",
+      "configSha256": "efd3b3ee0dbaafeb0a1623d632186a09afd7423cec1186e34cf79558b796aa9f",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-variants/group-and-peer.css",
+      "htmlPath": "wind-examples/guide-variants/group-and-peer.html",
+      "cssSha256": "43cd03f93133fc2348bdc9b3d119b0cb7dd93a5784c94ec4d2c8a9bd5633dd1a"
+    },
+    {
+      "family": "guide-variants",
+      "id": "pseudo-element",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "7c743f01975e1112cde67c97f1afe0a47b5950cbfbd6e2ef9a49b8b774411172",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "26ea9406561b6c991b0656e77e68fe268d8a834086dfa213642bce2e679b25ba",
+      "configSha256": "29e052138f441ce8ce595852d48288048cbb3294157ffb472ed8768c528a0138",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-variants/pseudo-element.css",
+      "htmlPath": "wind-examples/guide-variants/pseudo-element.html",
+      "cssSha256": "96d3953b3b45aed4becc5831b21a7898d3822e04fc1385c7d141219f28a05520"
+    },
+    {
+      "family": "guide-variants",
+      "id": "noncanonical-order",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "de3e167d04a17c96469eb0d6ad4d744b0f6bfa33b66b66e2761e81d8c3895e92",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "64eece1c8fdca2e7549283339db9563ebc3cf213d19cc91dce5b7dd98958c38f",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW003",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "unconfigured-dark",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "fa8066968a34734b757f8fbf76deb9a050e0bb1e14a7e418478555a55798d5b1",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "8d0b486ce6fda297902002cd699eb8b4f8dd1e7953a64146e955b976bc13f320",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW002",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "named-group",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "cc96812e2a43f69255765c6cff382a9331307767b70b2cc33b3cda9326959c79",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "c9925e0f0d62d804488de659ba41ccce571880a9311394f23ff5f7eae2a61a2e",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "attribute-variant",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "53c8062cdc3cce667b8064d939ab32fa3e1b09f920c6e572ea3c33e5d09b8be6",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "38cddf4091e00e1dac26dd9f4c4a1faa3af633a6f03019289ba683ad17ec5dce",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "data-attribute-variant",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "541075c336302a3154d05ef30ac252d4b8a65c06e596b681c359576e05b181fb",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "90be3bc0880067dacd6821619163e266efb9ade6d5fca670632a595057c75f07",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "arbitrary-selector-variant",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "3cb4aec3c9bccb8e997d99339d168d7d24066fd6d2a1ebecb11ce34ca5d3fa1b",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "4b0990e6a88fead3900c57ac31524e06dd462e088fb32d12ece4a991cab07f20",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-variants",
+      "id": "pseudo-child-utility",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "4f48e799a4e9a1c9f586d2e676e8604c7a0a21207c402626845cf18d44c4cd2e",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "ae88d72e4dc7a8b4f7b5a2598b0fc1c63817f9b7a233da6b71edf9986e58872c",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
       "family": "inset",
       "id": "inset-fill",
       "kind": "positive",
