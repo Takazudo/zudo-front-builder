@@ -15,6 +15,10 @@ Use alignment utilities on a flex or grid container to position its children. it
 | `justify-between` | `justify-content: space-between;` |
 | `self-end` | `align-self: flex-end;` |
 | `place-items-center` | `place-items: center;` |
+| `justify-items-center` | `justify-items: center;` |
+| `justify-self-end` | `justify-self: end;` |
+| `place-content-between` | `place-content: space-between;` |
+| `place-self-start` | `place-self: start;` |
 | `self-start` | `align-self: flex-start;` |
 
 <Details title={"Example setup"}>
@@ -82,9 +86,9 @@ justify-between distributes items along the row; items-center aligns them across
 
 ### Align grid items on both axes
 
-place-items-center centers each item in its cell on both axes; self-start changes one item without moving the others.
+place-items-center centers grid items, justify-items-center controls the inline axis, place-content-between distributes the grid tracks, and separate tiles demonstrate justify-self-end, place-self-start, and self-start.
 
-<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eplace-items sets both axes for each grid item; self overrides one item.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile self-start\"\u003eSelf start\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-rows-2 {\n  grid-template-rows: repeat(2,minmax(0,1fr));\n}\n.place-items-center {\n  place-items: center;\n}\n.self-start {\n  align-self: flex-start;\n}\n.h-36 {\n  height: 9rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Align grid items on both axes"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eplace-items sets both axes for each grid item; self overrides one item.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center justify-items-center place-content-between gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile justify-self-end\"\u003eJustify self end\u003c/div\u003e\u003cdiv class=\"wind-demo-tile place-self-start\"\u003ePlace self start\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile self-start\"\u003eSelf start\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-rows-2 {\n  grid-template-rows: repeat(2,minmax(0,1fr));\n}\n.justify-items-center {\n  justify-items: center;\n}\n.justify-self-end {\n  justify-self: end;\n}\n.place-content-between {\n  place-content: space-between;\n}\n.place-items-center {\n  place-items: center;\n}\n.place-self-start {\n  place-self: start;\n}\n.self-start {\n  align-self: flex-start;\n}\n.h-36 {\n  height: 9rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Align grid items on both axes"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
 
 <Details title={"Configuration for this example"}>
 
@@ -112,7 +116,11 @@ place-items-center centers each item in its cell on both axes; self-start change
         "grid-cols-2",
         "grid-rows-2",
         "h-36",
+        "justify-items-center",
+        "justify-self-end",
+        "place-content-between",
         "place-items-center",
+        "place-self-start",
         "self-start"
       ]
     }
@@ -135,7 +143,7 @@ place-items-center centers each item in its cell on both axes; self-start change
 
 ## Custom and named values
 
-These roots accept a fixed keyword set. items and self support start, end, center, baseline, and stretch; justify supports start, end, center, between, around, and evenly; place-items supports start, end, center, and stretch. The container must provide the relevant layout context and available space.
+These roots accept fixed keywords. Newly admitted justify-self, justify-items, and place-self use start, end, center, stretch, baseline. Place-content uses start, end, center, stretch, between (space-between), around (space-around), and evenly (space-evenly). Place-self sets align-self and justify-self; place-content sets align-content and justify-content. Existing place-items is unchanged. The new roots do not admit flex-start or flex-end as utility suffixes; CSS itself may use those values, and existing items, self, and justify retain their flex-start/flex-end emissions.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 
@@ -218,6 +226,122 @@ These roots accept a fixed keyword set. items and self support start, end, cente
 | --- | --- |
 | `justify-center` | `justify-content: center` |
 
+## justify-items
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.justify-items` |
+| Class pattern | `justify-items-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `5` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `justify-items` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `justify-items` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `justify-items-center` | `justify-items: center` |
+
+## justify-self
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.justify-self` |
+| Class pattern | `justify-self-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `5` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `justify-self` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `justify-self` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `justify-self-center` | `justify-self: center` |
+
+## place-content
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.place-content` |
+| Class pattern | `place-content-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `7` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `place-content` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"between"` | `"space-between"` |
+| `keyword` | `"around"` | `"space-around"` |
+| `keyword` | `"evenly"` | `"space-evenly"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `place-content` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `place-content-center` | `place-content: center` |
+
 ## place-items
 
 | Field | Value |
@@ -254,6 +378,44 @@ These roots accept a fixed keyword set. items and self support start, end, cente
 | Example class | Expected declarations |
 | --- | --- |
 | `place-items-center` | `place-items: center` |
+
+## place-self
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.place-self` |
+| Class pattern | `place-self-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `5` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `alignment` (`7`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `place-self` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `place-self` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `place-self-center` | `place-self: center` |
 
 ## self
 

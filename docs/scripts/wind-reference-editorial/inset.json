@@ -50,9 +50,9 @@
   ],
   "locales": {
     "en": {
-      "purpose": "Use inset utilities to place a positioned box against its containing block. inset sets all four edges, inset-x and inset-y set a pair, and top/right/bottom/left target one edge.",
+      "purpose": "Use inset utilities to place a positioned box against its containing block with spacing values or fractions. inset sets all four edges, inset-x and inset-y set a pair, and top/right/bottom/left target one edge.",
       "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
-      "customValues": "Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem. The 0, px, full, and auto keywords need no token. Named values such as left-nudge require tokens.spacing; arbitrary values such as top-[calc(100%_+_8px)] are also supported. Negative forms are supported, for example -top-2. Offsets do not make an element positioned.",
+      "customValues": "Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem. The 0, px, full, and auto keywords need no token. Named values such as left-nudge require tokens.spacing; arbitrary values such as top-[calc(100%_+_8px)] are also supported. Negative forms are supported, for example -top-2. Offsets do not make an element positioned. Fractions such as left-1/2 emit left: calc(100% * 1 / 2); -top-1/2 emits top: calc(calc(100% * 1 / 2) * -1). Left/right percentages use containing-block width, while top/bottom use its height. Numerator and denominator are positive integers from 1 to 1,000,000.",
       "examples": [
         {
           "id": "inset-fill",
@@ -77,9 +77,9 @@
       ]
     },
     "ja": {
-      "purpose": "inset で、位置指定された箱を包含ブロックのどの端に置くかを決めます。inset は4辺すべて、inset-x と inset-y はそれぞれ左右と上下、top/right/bottom/left は個別の端を指定します。",
+      "purpose": "inset で、余白値や分数を使い、位置指定された箱を包含ブロックのどの端に置くかを決めます。inset は4辺すべて、inset-x と inset-y はそれぞれ左右と上下、top/right/bottom/left は個別の端を指定します。",
       "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
-      "customValues": "数値オフセットは明示した spacingUnit 0.25rem を使い、4 は 1rem です。0、px、full、auto はトークン不要です。left-nudge のような名前付き値には tokens.spacing が必要です。top-[calc(100%_+_8px)] のような任意値も使えます。-top-2 のように負の値も指定できます。inset 自体は要素を位置指定しません。",
+      "customValues": "数値オフセットは明示した spacingUnit 0.25rem を使い、4 は 1rem です。0、px、full、auto はトークン不要です。left-nudge のような名前付き値には tokens.spacing が必要です。top-[calc(100%_+_8px)] のような任意値も使えます。-top-2 のように負の値も指定できます。inset 自体は要素を位置指定しません。 left-1/2 のような分数は left: calc(100% * 1 / 2)、-top-1/2 は top: calc(calc(100% * 1 / 2) * -1) を出力します。左右のパーセンテージは包含ブロックの幅、上下は高さを基準にします。分子と分母はそれぞれ 1～1,000,000 の正の整数です。",
       "examples": [
         {
           "id": "inset-fill",

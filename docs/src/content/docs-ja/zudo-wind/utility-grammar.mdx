@@ -444,11 +444,13 @@ sidebar_position: 5
 
 ## 値と修飾子
 
-数値形式には ASCII 数字を使います。正の分数は正の整数からなります。サイズと移動のユーティリティは分数を受け入れ、aspect ユーティリティは括弧なしの正の整数比を受け入れます。色の `/N` は 0～100 の整数 `N` による不透明度修飾子です。`color-mix(in oklab, VALUE N%, transparent)` を出力し、`/0` と `/100` でも同じ関数形式を保ちます。角括弧の色にも同じ修飾子を使えます。サイズのスラッシュは不透明度として解釈しません。
+数値形式には ASCII 数字を使います。正の分数は正の整数からなります。サイズ、移動、inset のユーティリティは分数を受け入れ、aspect ユーティリティは括弧なしの正の整数比を受け入れます。色の `/N` は 0～100 の整数 `N` による不透明度修飾子です。`color-mix(in oklab, VALUE N%, transparent)` を出力し、`/0` と `/100` でも同じ関数形式を保ちます。角括弧の色にも同じ修飾子を使えます。サイズまたは inset のスラッシュは不透明度として解釈しません。
 
 負の接頭辞はカタログで許可された群だけに使えます。対象は inset、`auto` を除く margin、子要素間の余白、`auto` を除く z-index、tracking、outline 幅のオフセット、translate、rotate、scroll margin です。padding を含むほかの群では拒否されます。リテラルの長さや数値には先頭のマイナスを 1 つ適用し、負のゼロはゼロに正規化します。リテラル以外には `calc(V * -1)` を出力します。`-p-2` のような未対応の負の値は無効です。
 
-サイズと移動の基部は正の整数分数を受け入れ、`aspect-N/D` は正の整数によるアスペクト比を受け入れます。分子と分母はそれぞれ 1～1,000,000 です。サイズの分数は `calc(100% * N / D)` を出力し、幅と高さの両方を設定します。アスペクト比は比率をそのまま出力するため、`aspect-4/3` は `aspect-ratio: 4 / 3` になります。アスペクト比の括弧なし表記ではゼロや小数を使えません。小数の比率には `aspect-[1.5/2.5]`、カスタムプロパティには `aspect-[var(--project-ratio)]` のような任意値を使ってください。不透明度修飾子は色専用です。`bg-panel/40` は、設定された色を透明色と oklab で 40% の比率で混ぜます。padding やサイズの値には使えません。
+サイズと移動の基部、および7つの inset 基部（`inset`、`inset-x`、`inset-y`、`top`、`right`、`bottom`、`left`）は正の整数分数を受け入れ、`aspect-N/D` は正の整数によるアスペクト比を受け入れます。分子と分母はそれぞれ 1～1,000,000 です。サイズの分数は `calc(100% * N / D)` を出力し、幅と高さの両方を設定します。アスペクト比は比率をそのまま出力するため、`aspect-4/3` は `aspect-ratio: 4 / 3` になります。アスペクト比の括弧なし表記ではゼロや小数を使えません。小数の比率には `aspect-[1.5/2.5]`、カスタムプロパティには `aspect-[var(--project-ratio)]` のような任意値を使ってください。不透明度修飾子は色専用です。`bg-panel/40` は、設定された色を透明色と oklab で 40% の比率で混ぜます。padding やサイズの値には使えません。
+
+inset の分数は各オフセットプロパティに `calc(100% * N / D)` を出力します。`left-1/2` は `left: calc(100% * 1 / 2)`、`-top-1/2` は `top: calc(calc(100% * 1 / 2) * -1)` です。左右のパーセンテージは位置指定要素の包含ブロックの幅、上下は高さを基準にします。
 
 `fontSizes` マップの各項目は必須の `size` と任意の `lineHeight` を持つオブジェクトです。行の高さが指定されると、対になる変数として出力します。その名前が予約されているため、フォントサイズのキーを `-leading` で終わらせることはできません。`ease-in-out` は `easings.in-out` という名前付きの参照です。組み込みのイージングトークンはありません。
 
@@ -467,6 +469,18 @@ v1 は有限の集合としてカタログを受け入れます。群には表�
 見慣れた接頭辞でも、意図的に未対応のものがあります。ring、animation、scale、transform、任意プロパティのユーティリティは手書きの CSS に記述します。`ring-*` と `animate-*` の基部は認識されるため、無効な試行には未対応言語の診断が出ます。zudo-wind は animation のキーフレームを合成しません。
 
 仕様リビジョン 4 では、`wrap-anywhere`、`decoration-<color>`、`leading-none`、`cursor-col-resize` などのリサイズ用カーソル、`visible` と `invisible`、`underline-offset-<n>` の 6 つの小さなグループを追加しました。`leading-none` は、プロジェクトが `lineHeights.none` トークンを設定していない場合にだけ定数 `1` を出力します。トークンを設定している場合はトークンが優先されます。`underline-offset-<n>` は整数のピクセル値か、0 以上の任意の長さを受け付けます。これらのユーティリティはいずれも負の値の形を受け付けません。ring と animation のユーティリティは引き続き未対応です。
+
+仕様リビジョン 5 は接尾辞のない `outline` を追加し、幅 1px と実線の style を出力します。数値の `outline-2` は 2px のままで、`focus-visible:outline focus-visible:outline-2` は決定的な順序によって計算上の幅が 2px になります。
+
+リビジョン 6 は自身、group、peer の状態に `checked` を追加し、group の順位を 1～10、peer を 11～20 に変更しました。
+
+リビジョン 7 は `selection` と `pointer-coarse`／`pointer-fine` を追加しました。pointer は正規順で関係バリアントより前です。
+
+リビジョン 8 は `decoration-<整数>` → `text-decoration-thickness: <n>px`、0 以上の長さの `decoration-[<length>]`、`decoration-solid`／`double`／`dotted`／`dashed`／`wavy` → text-decoration-style を追加しました。既存の色と `/N` 不透明度は残ります。`decoration-auto` と `decoration-from-font` は未対応のキーワードで、thickness/style の負数とスラッシュ形式は拒否します。設定済みの完全な色トークンは style の基部より優先され、`colors.wavy` があれば `decoration-wavy` は色になります。`decoration-[var(--x)]` は曖昧で ZW005、`color:`／`length:` ヒントは未対応です。
+
+リビジョン 9 は `help`、`none`、`progress`、`crosshair`、`cell`、`copy`、`alias`、`no-drop`、`context-menu`、`vertical-text`、`all-scroll`、`zoom-in`、`zoom-out` の13のカーソルキーワードを追加しました。cursor は引き続きキーワード専用で、トークン、負数、スラッシュ、任意値は使えません。
+
+リビジョン 10 は7つの inset 基部に分数を追加し、リビジョン 11 は固定キーワードの `justify-self`、`justify-items`、`place-self`、`place-content` を追加しました。リビジョン 12 は定数 `translate-x-px` と `translate-y-px` を追加し、それぞれの軸変数に 1px を出力します（負数形は -1px）。`px` はテーマトークンではなく言語定数です。現在のカタログは spec 1 revision 12 です。
 
 `space-x/y` は後続の表示対象の直接の子に margin-left または margin-top を設定し、`divide-x/y` は実線の左または上のボーダーを設定します。セレクタは `C > :not([hidden]) ~ :not([hidden])` で、`C` は完全なユーティリティの対象セレクタです。両側の兄弟要素を `hidden` 属性で絞ります。その属性を持たず `display: none` になっている要素は調べません。逆方向フラグはなく、表示上の順序も推測しません。疑似要素バリアントはこれらの子ユーティリティと組み合わせられません。たとえば `before:divide-y` は子セレクタが誤った対象を指すため、R23/ZW005 で拒否されます。
 

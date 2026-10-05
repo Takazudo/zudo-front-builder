@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "compiler": {
     "version": "0.0.0",
-    "sourceSha256": "d76082f1f5c7eb320f61a8e6991e94630f5dffd36dffa87ab03d6b515dcad8c3"
+    "sourceSha256": "d2499e932ff6309744bfe2b140810abe481ef6f59b813fb343ca37015230fc7c"
   },
   "examples": [
     {
@@ -24,14 +24,14 @@
       "id": "alignment-grid",
       "kind": "positive",
       "candidateOrigin": "safelist",
-      "htmlSha256": "e03b67d567844c439ae3968823d32ba69e86ee435cbfc849b01a5793d8a39b6b",
+      "htmlSha256": "3dde352726c4f3e184c0426f9da708ec633760b5e9016cd713f44037f3a22dfb",
       "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "inputSha256": "f8b1230e2575909e99b3bf4c647f74801c42fa413ed71cb6ecf3225278376cea",
-      "configSha256": "1657b83b38af50ba03e98f57daf5b46dad616c272036d4310ff99d83f2227710",
+      "configSha256": "7224fad8ec5232f4bf076bb71f58b6a4c6f8b9d5b4ce0ee4c913f82ba1ac0071",
       "expectedDiagnostics": [],
       "cssPath": "wind-examples/alignment/alignment-grid.css",
       "htmlPath": "wind-examples/alignment/alignment-grid.html",
-      "cssSha256": "111b1b38b1acd142833c90362067520254170f7a62bbad189123bfcaa9f7bb98"
+      "cssSha256": "893a43a87145a829e6b825ce03d75c9846d883296b507a8bf72a9c8c4b7ace49"
     },
     {
       "family": "aspect",
@@ -2116,14 +2116,14 @@
       "id": "decoration-token",
       "kind": "positive",
       "candidateOrigin": "safelist",
-      "htmlSha256": "b397f02162631016ba61a568d3cb6fa3fb540e2307ce157457172ce4a22cf095",
+      "htmlSha256": "7ffb19535cea79c51d1880d2f2736dd1cc052aa21d2e9de50c286a34039c16f4",
       "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "inputSha256": "d1a18fbfda85926322676456435fe6e9b9df251947ef49c9841ff6233978149d",
-      "configSha256": "8ef9f718b7bd65a4a3fa86e4b2207d1c5e8f8f9347119af8d1313fbb88a4bcf2",
+      "configSha256": "bf049735d7b21c3e5b2e720f8ab3a155abc99a17d55169bd4631c5a808e2c638",
       "expectedDiagnostics": [],
       "cssPath": "wind-examples/text-decoration-color/decoration-token.css",
       "htmlPath": "wind-examples/text-decoration-color/decoration-token.html",
-      "cssSha256": "3334788af760cbf96e3ae36018c4970abaae57f795c0eda5733aae459fb4d480"
+      "cssSha256": "685200897b76a529c8ac47e9874ad8f424d551b43590980e1b23a292f10b1b7e"
     },
     {
       "family": "text-decoration-color",
