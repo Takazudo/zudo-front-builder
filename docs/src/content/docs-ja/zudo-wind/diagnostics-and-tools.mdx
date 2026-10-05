@@ -212,7 +212,7 @@ wind: {
 
 ZW001～ZW006 は、クラス、セーフリスト、厳格なマニフェストの発生元ではエラーです。確信度の低いソース位置では監査専用情報です。その位置で見つかった有効な完全候補は引き続き出力されます。基部名を持つクラスを手書きとして使う場合は、`authoredClasses: { "text-link": true }` のように完全な候補表記を `wind.authoredClasses` に追加します。この予約は候補全体に対するユーティリティの検証、診断、CSS 生成を抑止します。それ以外の場合は、ユーティリティの綴りを直すか不足トークンを宣言します。`site-header` のように一致するユーティリティ基部を持たない名前は通常のクラステキストとして残ります。
 
-ZW013 は同じバリアント区分でカタログが暗黙のデフォルトとして定義した上書きを省きます。border 幅と style、outline 幅と style、transition と duration/ease が対象です。style 同士、duration 同士、transition-property 同士、sr-only と padding、辺と省略形の幅の競合は引き続き報告します。translate 合成の監査誤検知は別件として未修正です。
+ZW013 は同じバリアント区分でカタログが暗黙のデフォルトとして定義した上書きを省きます。border 幅と style、outline 幅と style、transition と duration/ease が対象です。style 同士、duration 同士、transition-property 同士、sr-only と padding、辺と省略形の幅の競合は引き続き報告します。
 
 未宣言の色名に有効な `/0`～`/100` を付けた `text-*`、`border-*`、`border-x-*`、`outline-*`、`placeholder:text-*` は、トークン不足の ZW006/R17 を報告します。不正な不透明度、負の形、未対応のスラッシュは ZW005 のままです。
 
@@ -228,11 +228,11 @@ zudo-wind は Tailwind のユーティリティをすべて実装しているわ
 
 v4 のグラデーション語彙には、v3 の `bg-gradient-to-*`、`bg-linear-to-*` と整数角度の `bg-linear-*`、`bg-radial` と `bg-radial-[<value>]`、`bg-conic` と整数角度の `bg-conic-*`、および宣言済み color token、`current`、`transparent`、角括弧で囲んだ任意の color または position を stop 値に使う `from-*`／`via-*`／`to-*` が含まれます。CSS は生成されません。`background-image` を自作し、完全なクラス名を `wind.authoredClasses` に登録してください。角括弧なしの `from-10%`、`via-30%`、`to-90%` は現在 candidate parser が拒否し、`from-[60%]` は ZW014 に到達します。
 
-ZW014 は既定では警告なので、移行中のプロジェクトはビルドを続けつつ、スタイルを失ったクラスを把握できます。クラス位置でエラーにするには `wind.strict: true` を設定します。strict モードでも確信度の低いリテラルは昇格しません。クラス属性に届かない定数、テストのタイトル、URL は監査専用情報のままです。手書きの CSS がスタイルを付けているために名前を残す場合は、完全な表記を `wind.authoredClasses` に予約してください。
+ZW014 は既定では警告なので、移行中のプロジェクトはビルドを続けつつ、スタイルを失ったクラスを把握できます。クラス位置でエラーにするには `wind.strict: true` を設定します。strict モードでも確信度の低いリテラルは昇格しません。クラス属性に届かない定数やテストのタイトルにある適格な完全候補は監査専用情報のままです。URL だけのリテラルは読み飛ばします。手書きの CSS がスタイルを付けているために名前を残す場合は、完全な表記を `wind.authoredClasses` に予約してください。
 
 `zfb wind explain` は、このような名前を `unsupported foreign utility` の結果として報告します。
 
-公開 Rust の移行分類関数は `foreign_family(candidate, tokens)` です。検証済みトークンを渡すことで、設定済みユーティリティを ZW014 より優先できます。Rust カタログのメタデータには、ZW013 の暗黙デフォルト例外を示す `DefaultOverride` と `CatalogEntry.default_overrides` もあります。CSS 出力とシリアライズされたスキーマは spec revision 12 のままです。
+公開 Rust の移行分類関数は `foreign_family(candidate, tokens)` です。検証済みトークンを渡すことで、設定済みユーティリティを ZW014 より優先できます。Rust カタログのメタデータには、ZW013 の暗黙デフォルト例外を示す `DefaultOverride` と `CatalogEntry.default_overrides` もあります。カタログと言語の仕様は revision 12 のままで、シリアライズされた CLI スキーマのバージョンは 1 のままです。このメタデータ追加で CSS 出力は変わりません。
 
 ## explain と audit
 
@@ -240,7 +240,7 @@ ZW014 は既定では警告なので、移行中のプロジェクトはビル�
 
 `zfb wind audit` は、通常のクラス位置の名前、不足または使われていないユーティリティ、動的な断片、同じクラスリストリテラル内のプロパティ競合を調べます。マーカーと、完全一致する手書きクラスの許可リスト項目は除外します。競合の比較は 1 つのリテラル内に限られ、無関係な要素間では行いません。`wind: false` のときは生成が無効と報告し、候補レポートは空になります。
 
-`--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
+`--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources.roots`、パッケージルート、除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
 デフォルトでは、エラー重大度の指摘があっても監査完了時の終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。`--fail-on error` はエラー重大度の診断で失敗し、`--fail-on warning` は警告でも失敗します。`auditInfo` の指摘はどちらのしきい値にも影響しません。設定が無効な場合やソースの走査に失敗した場合は常に非ゼロで終了します。
 
