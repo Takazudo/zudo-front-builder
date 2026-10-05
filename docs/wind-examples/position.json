@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "family": "position",
+  "examples": [
+    {
+      "id": "position-static",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame w-64\">\n    <div class=\"wind-demo-tile static top-4 left-4\">static ignores these offsets</div>\n    <div class=\"wind-demo-tile\">Normal-flow sibling</div>\n  </div>\n</div>",
+      "utilities": ["left-4", "static", "top-4", "w-64"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "position-relative",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"wind-demo-note\">This box is the containing block.</div>\n    <div class=\"wind-demo-tile absolute bottom-2 right-2\">Pinned to this frame</div>\n  </div>\n</div>",
+      "utilities": ["absolute", "bottom-2", "h-36", "relative", "right-2", "w-72"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "position-sticky",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Scroll inside the panel to see the heading stick to its top edge.</p>\n  <div class=\"wind-demo-frame h-36 overflow-y-auto\">\n    <div class=\"h-12 wind-demo-muted\">Earlier content</div>\n    <div class=\"sticky top-0 wind-demo-tile\">Sticky section heading</div>\n    <div class=\"h-24 wind-demo-tile\">Long section content</div>\n    <div class=\"h-24 wind-demo-muted\">More content</div>\n  </div>\n</div>",
+      "utilities": ["h-12", "h-24", "h-36", "overflow-y-auto", "sticky", "top-0"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-muted",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "position-fixed",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">The chip is fixed to this preview viewport. Scroll the panel if needed.</p>\n  <div class=\"wind-demo-frame h-36 overflow-y-auto\">\n    <div class=\"h-24 wind-demo-muted\">Scroll content</div>\n    <div class=\"h-24 wind-demo-tile\">More content</div>\n  </div>\n  <div class=\"fixed bottom-2 right-2 wind-demo-highlight\">Viewport chip</div>\n</div>",
+      "utilities": ["bottom-2", "fixed", "h-24", "h-36", "overflow-y-auto", "right-2"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-highlight",
+        "wind-demo-muted",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }\n.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}

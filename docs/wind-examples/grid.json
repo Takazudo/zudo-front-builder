@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "family": "grid",
+  "examples": [
+    {
+      "id": "grid-tracks",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Template utilities create explicit tracks for automatic placement.</p>\n  <div class=\"wind-demo-frame grid grid-cols-3 grid-rows-2 gap-2\">\n    <div class=\"wind-demo-tile\">1</div><div class=\"wind-demo-tile\">2</div><div class=\"wind-demo-tile\">3</div>\n    <div class=\"wind-demo-tile\">4</div><div class=\"wind-demo-tile\">5</div><div class=\"wind-demo-tile\">6</div>\n  </div>\n</div>",
+      "utilities": ["gap-2", "grid", "grid-cols-3", "grid-rows-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "grid-placement",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Column and row lines place or span items across the explicit tracks.</p>\n  <div class=\"wind-demo-frame grid grid-cols-4 grid-rows-4 gap-2\">\n    <div class=\"wind-demo-tile col-span-2 row-start-1 row-end-2\">Span two columns</div>\n    <div class=\"wind-demo-tile wind-demo-alt col-start-3 col-end-5 row-start-1 row-span-2\">Start/end lines; span two rows</div>\n    <div class=\"wind-demo-tile col-start-1 col-end-3 row-start-2 row-end-4\">Rows 2–4</div>\n    <div class=\"wind-demo-tile wind-demo-alt col-start-3 col-end-5 row-start-3 row-end-4\">Placed at line 3</div>\n    <div class=\"wind-demo-tile col-start-2 col-end-4 row-start-4 row-end-5\">Column lines 2–4</div>\n    <div class=\"wind-demo-tile col-start-auto row-end-auto\">Auto placement</div>\n  </div>\n</div>",
+      "utilities": [
+        "col-end-3",
+        "col-end-4",
+        "col-end-5",
+        "col-span-2",
+        "col-start-1",
+        "col-start-2",
+        "col-start-3",
+        "col-start-auto",
+        "gap-2",
+        "grid",
+        "grid-cols-4",
+        "grid-rows-4",
+        "row-end-2",
+        "row-end-4",
+        "row-end-5",
+        "row-end-auto",
+        "row-span-2",
+        "row-start-1",
+        "row-start-2",
+        "row-start-3",
+        "row-start-4"
+      ],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-alt",
+        "wind-demo-frame",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "grid-custom-tracks",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-note\">An arbitrary track list is written with underscores for spaces.</div>\n  <div class=\"wind-demo-frame grid grid-cols-[7rem_1fr] grid-rows-[auto_1fr] gap-2\">\n    <div class=\"wind-demo-tile\">Fixed track</div><div class=\"wind-demo-tile\">Flexible track</div>\n    <div class=\"wind-demo-tile\">Second row</div><div class=\"wind-demo-tile\">Remaining width</div>\n  </div>\n</div>",
+      "utilities": ["gap-2", "grid", "grid-cols-[7rem_1fr]", "grid-rows-[auto_1fr]"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}

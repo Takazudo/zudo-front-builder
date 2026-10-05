@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "family": "flex-container",
+  "lookup": [
+    {
+      "entry": "v1.flex-row",
+      "candidate": "flex-row",
+      "example": "flex-direction"
+    },
+    {
+      "entry": "v1.flex-row-reverse",
+      "candidate": "flex-row-reverse",
+      "example": "flex-direction"
+    },
+    {
+      "entry": "v1.flex-col",
+      "candidate": "flex-col",
+      "example": "flex-direction"
+    },
+    {
+      "entry": "v1.flex-col-reverse",
+      "candidate": "flex-col-reverse",
+      "example": "flex-direction"
+    },
+    {
+      "entry": "v1.flex-wrap",
+      "candidate": "flex-wrap",
+      "example": "flex-wrapping"
+    },
+    {
+      "entry": "v1.flex-nowrap",
+      "candidate": "flex-nowrap",
+      "example": "flex-wrapping"
+    },
+    {
+      "entry": "v1.flex-wrap-reverse",
+      "candidate": "flex-wrap-reverse",
+      "example": "flex-wrapping"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Apply these utilities to a flex container. Direction chooses the main axis and item order; wrapping decides whether items stay on one line or form additional lines. Use a row for horizontal groups and a column for stacked controls or cards.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "All seven class names are exact and have no value suffixes. flex-row and flex-col select the direction; their reverse forms reverse the visual direction. flex-wrap, flex-nowrap, and flex-wrap-reverse control line wrapping. They do not create the flex container; add display:flex separately.",
+      "examples": [
+        {
+          "id": "flex-direction",
+          "title": "Choose the main axis",
+          "description": "row and column arrange items on horizontal and vertical axes. The reverse forms reverse visual order without changing the source order."
+        },
+        {
+          "id": "flex-wrapping",
+          "title": "Let items form lines",
+          "description": "flex-wrap moves items onto additional lines, flex-nowrap keeps one line, and flex-wrap-reverse reverses the cross-axis line order."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "これらのユーティリティは flex コンテナに指定します。direction は主軸と項目の順序を決め、wrap は1行のままにするか次の行へ送るかを決めます。横並びには row、操作項目やカードの縦積みには column を使います。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "7 個のクラス名は固定で、値の接尾辞はありません。flex-row と flex-col が方向を選び、reverse 形は見た目の順序を逆にします。flex-wrap、flex-nowrap、flex-wrap-reverse が折り返し方を決めます。これらは flex コンテナを作らないため、別途 display:flex が必要です。",
+      "examples": [
+        {
+          "id": "flex-direction",
+          "title": "主軸を選ぶ",
+          "description": "row と column は項目を横軸と縦軸に並べます。reverse 形は DOM の順序を変えず、見た目の方向を逆にします。"
+        },
+        {
+          "id": "flex-wrapping",
+          "title": "項目を複数行にする",
+          "description": "flex-wrap は折り返し、flex-nowrap は1行を保ち、flex-wrap-reverse は交差軸方向の行順を逆にします。"
+        }
+      ]
+    }
+  }
+}

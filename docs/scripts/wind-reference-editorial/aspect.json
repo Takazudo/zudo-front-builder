@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "family": "aspect",
+  "lookup": [
+    {
+      "entry": "v1.aspect",
+      "candidate": "aspect-video",
+      "example": "aspect-common"
+    },
+    {
+      "entry": "v1.aspect",
+      "candidate": "aspect-square",
+      "example": "aspect-common"
+    },
+    {
+      "entry": "v1.aspect",
+      "candidate": "aspect-3/2",
+      "example": "aspect-common"
+    },
+    {
+      "entry": "v1.aspect",
+      "candidate": "aspect-auto",
+      "example": "aspect-auto"
+    },
+    {
+      "entry": "v1.aspect",
+      "candidate": "aspect-4/3",
+      "example": "aspect-auto"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use aspect-ratio to preserve a frame shape while its width changes, which is useful for media cards, thumbnails, and embeds. The ratio determines the other dimension when that dimension is automatic.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "The named values are auto, square (1:1), and video (16:9). Numeric fractions such as aspect-3/2 are supported, as are arbitrary CSS values in brackets. No aspect token is inherited or required. aspect-auto leaves the ratio automatic so another sizing rule or intrinsic content can determine the shape.",
+      "examples": [
+        {
+          "id": "aspect-common",
+          "title": "Compare common ratios",
+          "description": "The wide frame uses 16:9, the square frame uses 1:1, and aspect-3/2 creates a wider-than-tall rectangle."
+        },
+        {
+          "id": "aspect-auto",
+          "title": "Leave the ratio automatic",
+          "description": "aspect-auto lets the explicit h-16 set height; aspect-4/3 derives height from its width."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "幅が変わってもメディア枠、サムネイル、埋め込み表示の形を保つには aspect-ratio を使います。一方の寸法が auto の場合、比率からもう一方が決まります。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "名前付き値は auto、square（1:1）、video（16:9）です。aspect-3/2 のような数値分数と、括弧内の CSS 任意値も使えます。aspect token は継承も必須設定もありません。aspect-auto は比率を自動のままにし、別の寸法指定や内容に形を任せます。",
+      "examples": [
+        {
+          "id": "aspect-common",
+          "title": "よく使う比率を比較",
+          "description": "横長の枠は16:9、正方形は1:1、aspect-3/2 は横幅が高さより広い長方形です。"
+        },
+        {
+          "id": "aspect-auto",
+          "title": "比率を自動にする",
+          "description": "aspect-auto は明示した h-16 に高さを任せ、aspect-4/3 は幅から高さを計算します。"
+        }
+      ]
+    }
+  }
+}

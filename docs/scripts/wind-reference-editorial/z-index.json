@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "family": "z-index",
+  "lookup": [
+    {
+      "entry": "v1.z",
+      "candidate": "z-10",
+      "example": "z-overlap"
+    },
+    {
+      "entry": "v1.z",
+      "candidate": "z-auto",
+      "example": "z-custom"
+    },
+    {
+      "entry": "v1.z",
+      "candidate": "z-0",
+      "example": "z-overlap"
+    },
+    {
+      "entry": "v1.z",
+      "candidate": "z-dialog",
+      "example": "z-custom"
+    },
+    {
+      "entry": "v1.z",
+      "candidate": "z-[-1]",
+      "example": "z-custom"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use z-index to order overlapping positioned boxes within their stacking context. A larger number paints above a smaller one when the elements participate in the same context.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "Integer values, negative integers, auto, named tokens in tokens.zIndices, and arbitrary CSS values are supported. This preview declares tokens.zIndices.dialog as 30, so z-dialog is a readable project layer name. z-index does not move an element or necessarily escape an ancestor stacking context.",
+      "examples": [
+        {
+          "id": "z-overlap",
+          "title": "Layer overlapping cards",
+          "description": "The boxes share a relative parent; z-20 paints above z-10 and z-0 even though it appears earlier in the markup."
+        },
+        {
+          "id": "z-custom",
+          "title": "Name an overlay layer",
+          "description": "z-dialog reads the explicitly configured tokens.zIndices.dialog value. z-[-1] demonstrates an arbitrary negative value, while z-auto returns to the automatic stack level."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "同じ stacking context 内で重なる位置指定要素の前後関係を z-index で決めます。要素が同じ context に属する場合、大きい数値が小さい数値より手前に描画されます。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "整数、負の整数、auto、tokens.zIndices の名前付きトークン、CSS 任意値に対応します。このプレビューは tokens.zIndices.dialog に 30 を設定し、z-dialog という役割名で参照します。z-index は要素を移動せず、祖先の stacking context を必ずしも越えません。",
+      "examples": [
+        {
+          "id": "z-overlap",
+          "title": "カードを重ねる",
+          "description": "3つの箱は relative 親を共有します。z-20 は markup 上で先にあっても z-10 と z-0 より手前に描画されます。"
+        },
+        {
+          "id": "z-custom",
+          "title": "レイヤー名を付ける",
+          "description": "z-dialog は明示した tokens.zIndices.dialog の値を使います。z-[-1] は任意の負値を示し、z-auto は自動の積み重なりに戻します。"
+        }
+      ]
+    }
+  }
+}

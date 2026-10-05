@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "family": "visibility",
+  "examples": [
+    {
+      "id": "visibility-preserves-space",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame flex items-center gap-2\">\n    <div class=\"wind-demo-tile\">Visible</div>\n    <div class=\"wind-demo-tile invisible\">Invisible box</div>\n    <div class=\"wind-demo-tile\">Space is still reserved</div>\n  </div>\n</div>",
+      "utilities": ["flex", "gap-2", "invisible", "items-center"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "visibility-vs-display",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">invisible keeps its flex slot; hidden removes its slot from layout.</p>\n  <div class=\"wind-demo-frame flex items-center gap-2\">\n    <div class=\"wind-demo-tile\">First</div>\n    <div class=\"wind-demo-tile invisible\">Invisible</div>\n    <div class=\"wind-demo-tile hidden\">Hidden</div>\n    <div class=\"wind-demo-tile visible\">Visible again</div>\n  </div>\n</div>",
+      "utilities": ["flex", "gap-2", "hidden", "invisible", "items-center", "visible"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}
