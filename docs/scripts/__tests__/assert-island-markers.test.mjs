@@ -51,6 +51,17 @@ test("collectIslandMarkers ignores marker-looking prose outside element attribut
   assert.deepEqual([...collectIslandMarkers(`<p>data-zfb-island="NotAnElementAttribute"</p>`)], []);
 });
 
+test("collectIslandMarkers finds a trailing marker after a quoted HTML data-props value", () => {
+  assert.deepEqual(
+    [
+      ...collectIslandMarkers(
+        `<div data-props='{"html":"<div>Example</div>"}' data-zfb-island="HtmlPreviewWrapperInner"></div>`,
+      ),
+    ],
+    ["HtmlPreviewWrapperInner"],
+  );
+});
+
 test("manifest check requires a registry-key position, not a stray marker string", () => {
   assert.equal(
     hasIslandManifestEntry(
