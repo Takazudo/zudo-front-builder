@@ -29,7 +29,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
-    "cargoLockSha256": "695094eb4031b7e0578130ce339ab7cac6c66aedbb0bfb219640a0112d3cc75e"
+    "cargoLockSha256": "6ad6c9657d88fb1c6d285e0596d7fee6db6960e1c980236121d47571d8c04c29"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -115,6 +115,6 @@
     "sourceSha": "35bee65b022645286aac6d9778c434c99a6ad21a",
     "artifact": "bounded-fixes-darwin-island-size-evidence",
     "report": "research/v3-island-size/final-sweep-darwin-report.md",
-    "note": "Complete real workspace and packed eight-fixture matrices, two identical saved dist inventories per fixture. Original run failed only against the older SWC-only ceilings. Refreshed exact ceilings retain zero allowance and are checked against the original saved bytes."
+    "note": "Complete real workspace and packed eight-fixture matrices, two identical saved dist inventories per fixture. Original run failed only against the older SWC-only ceilings. Refreshed exact ceilings retain zero allowance and are checked against the original saved bytes. Metadata follow-up for #3716: Cargo.lock's digest was refreshed after review confirmed its only new edge is direct unicode-id-start, whose package, version, and checksum already existed transitively. No runtime package, size ceiling, or allowance changed. Historical run/source SHA and measured bytes remain unchanged; no remeasurement is claimed and fresh measurement remains pending."
   }
 }
