@@ -53,6 +53,7 @@ fn unclosed_container_reaches_pipeline_markdown_diagnostics() {
         "unclosed opener stays literal in the emitted JSX: {jsx}"
     );
     let diags = p.take_markdown_diagnostics();
+    assert!(diags.iter().all(|d| d.code() == "ZB012"));
     assert_eq!(
         diags.len(),
         1,
@@ -62,6 +63,7 @@ fn unclosed_container_reaches_pipeline_markdown_diagnostics() {
         severity,
         message,
         location,
+        ..
     } = &diags[0]
     else {
         unreachable!(
@@ -106,6 +108,7 @@ fn unclosed_opener_glued_before_valid_directive_reaches_pipeline_markdown_diagno
         "the trailing note must transform, not leak: {jsx}"
     );
     let diags = p.take_markdown_diagnostics();
+    assert!(diags.iter().all(|d| d.code() == "ZB012"));
     assert_eq!(
         diags.len(),
         1,
@@ -115,6 +118,7 @@ fn unclosed_opener_glued_before_valid_directive_reaches_pipeline_markdown_diagno
         severity,
         message,
         location,
+        ..
     } = &diags[0]
     else {
         unreachable!(
@@ -151,6 +155,7 @@ fn buried_unclosed_opener_reaches_pipeline_markdown_diagnostics() {
         "buried opener stays literal in the emitted JSX: {jsx}"
     );
     let diags = p.take_markdown_diagnostics();
+    assert!(diags.iter().all(|d| d.code() == "ZB012"));
     assert_eq!(
         diags.len(),
         1,
@@ -160,6 +165,7 @@ fn buried_unclosed_opener_reaches_pipeline_markdown_diagnostics() {
         severity,
         message,
         location,
+        ..
     } = &diags[0]
     else {
         unreachable!(

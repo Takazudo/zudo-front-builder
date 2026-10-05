@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
-const WARNING_PREFIX: &str = "zfb warn: components/search-box.tsx:";
+const WARNING_PREFIX: &str = "zfb warn: ZB005 components/search-box.tsx:";
 const ADVICE: &str =
     "Remove the pragma, or change it to `@jsxImportSource @takazudo/zfb/zudo-react`";
 
@@ -215,7 +215,37 @@ fn add_preact_pragma(root: &Path) {
     );
 }
 
-const PREACT_WARNING: &str = "zfb warn: components/search-box.tsx:3:7: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
+const PREACT_WARNING: &str = "zfb warn: ZB005 components/search-box.tsx:3:7: per-file `@jsxImportSource preact` pragma overrides the project's JSX import source";
+
+#[test]
+fn check_skip_tsc_reports_authored_components_without_failing() {
+    let _lock = CrossBinaryE2eLock::acquire();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let foreign = "/** @jsxImportSource preact */\nexport const A = () => <p />;\n";
+    for path in [
+        "src/legacy.tsx",
+        "node_modules/widget/index.jsx",
+        "dist/generated.tsx",
+        ".zfb-build/generated.tsx",
+    ] {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, foreign).unwrap();
+    }
+    let output = Command::new(zfb_binary!())
+        .args(["check", "--skip-tsc"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("zfb warn: ZB005 src/legacy.tsx:1:5:"),
+        "{text}"
+    );
+    assert_eq!(text.matches("zfb warn: ZB005").count(), 1, "{text}");
+}
 
 #[test]
 fn case_a_missing_preact_warns_before_the_unresolved_runtime() {

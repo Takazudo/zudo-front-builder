@@ -229,9 +229,12 @@ impl MdastVisitor for TranscludePlugin {
             // No source path — cannot resolve includes. Emit a warning if a
             // sink is wired, then return.
             if let Some(sink) = ctx.diagnostics.as_mut() {
-                sink.emit(zfb_md_ast::diagnostics::MarkdownDiagnostic::warning(
-                    "transclude: no source_path in BuildContext; includes cannot be resolved",
-                ));
+                sink.emit(
+                    zfb_md_ast::diagnostics::MarkdownDiagnostic::warning(
+                        "transclude: no source_path in BuildContext; includes cannot be resolved",
+                    )
+                    .with_code(zfb_md_ast::diagnostics::codes::TRANSCLUSION),
+                );
             }
             return;
         };
@@ -858,7 +861,10 @@ fn slice_lines(content: &str, start: usize, end: usize) -> String {
 
 fn emit_error(ctx: &mut BuildContext<'_>, message: String) {
     if let Some(sink) = ctx.diagnostics.as_mut() {
-        sink.emit(zfb_md_ast::diagnostics::MarkdownDiagnostic::error(message));
+        sink.emit(
+            zfb_md_ast::diagnostics::MarkdownDiagnostic::error(message)
+                .with_code(zfb_md_ast::diagnostics::codes::TRANSCLUSION),
+        );
     }
 }
 

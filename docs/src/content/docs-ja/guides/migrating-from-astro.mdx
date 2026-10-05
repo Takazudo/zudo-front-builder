@@ -63,7 +63,7 @@ Zod はありません。スキーマの検証には最小限の JSON-Schema 方
 
 ## アイランド
 
-Astro はインポートしたフレームワークコンポーネントの JSX 属性として `client:load`、`client:visible` などを使います。zfb はその代わりにファイルレベルの `"use client"` ディレクティブを使います — Next.js App Router が広めたのと同じパターンです:
+Astro はインポートしたフレームワークコンポーネントの JSX 属性として `client:load`、`client:visible` などを使います。zfb はその代わりにファイルレベルの `"use client"` ディレクティブと明示的な `<Island>` 境界を使います:
 
 ```tsx
 "use client";
@@ -76,7 +76,9 @@ export default function Counter() {
 }
 ```
 
-`"use client"` ファイルからインポートされたものは、自動的に島になります。セットアップは一度実行され、signal のバインディングが島の DOM を更新します。[`Island`](../api/island.mdx) を参照してください。
+`"use client"` はクライアント境界の対象を示しますが、それだけで島は起動しません。対象コンポーネントを明示的な `<Island>` で包んでください。セットアップは一度実行され、signal のバインディングが島の DOM を更新します。[`Island`](../api/island.mdx) を参照してください。
+
+MDX のコンポーネントに残った `client:load`、`client:idle`、`client:visible`、`client:media`、`client:only` は ZB014 の警告でファイルと行が示されます。コンポーネントがこの props を無視すると起動タイミングには影響しません。DOM 要素へ転送すると `ZR_ATTRIBUTE` でレンダリングに失敗する場合があります。明示的な `<Island>` を使ってください。
 
 ## スロットとレイアウト
 
@@ -95,8 +97,8 @@ export default function DocsLayout({ children }) {
 - **ビュートランジション** — `@takazudo/zfb-runtime` の `<ClientRouter />` を使います
   （Astro の `<ClientRouter />` が提供するのと同じ、ビュートランジションアニメーション付きの
   SPA ルーターです）。
-- **アイランド / クライアントディレクティブ** — `"use client"` ファイルディレクティブに
-  置き換えられています（Next.js App Router のパターン）。[アイランド](../concepts/islands.mdx)を参照してください。
+- **アイランド / クライアントディレクティブ** — `"use client"` と明示的な `<Island>` に
+  置き換えられています。[アイランド](../concepts/islands.mdx)を参照してください。
 
 現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
 
