@@ -5,9 +5,211 @@ sidebar_position: 26
 generated: true
 ---
 
-グリッドトラックを定義し、行・列の範囲と線に沿って項目を配置します。
+grid-template で列と行を定義し、子要素は複数トラックをまたがせたり、開始線と終了線を指定して配置したりします。両方の軸を扱うレイアウトには grid が向いています。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `grid-cols-3` | `grid-template-columns: repeat(3,minmax(0,1fr));` |
+| `grid-rows-2` | `grid-template-rows: repeat(2,minmax(0,1fr));` |
+| `col-span-2` | `grid-column: span 2 / span 2;` |
+| `col-start-2` | `grid-column-start: 2;` |
+| `col-end-4` | `grid-column-end: 4;` |
+| `row-span-2` | `grid-row: span 2 / span 2;` |
+| `row-start-2` | `grid-row-start: 2;` |
+| `row-end-4` | `grid-row-end: 4;` |
+| `grid-cols-[7rem_1fr]` | `grid-template-columns: 7rem 1fr;` |
+| `grid-rows-[auto_1fr]` | `grid-template-rows: auto 1fr;` |
+| `col-start-auto` | `grid-column-start: auto;` |
+| `row-end-auto` | `grid-row-end: auto;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 列と行を定義
+
+grid-cols-3 は等幅の列を3本、grid-rows-2 は等高の行を2本作り、自動配置に使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eTemplate utilities create explicit tracks for automatic placement.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-3 grid-rows-2 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003e1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003e2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003e3\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003e4\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003e5\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003e6\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.grid-rows-2 {\n  grid-template-rows: repeat(2,minmax(0,1fr));\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"列と行を定義"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "gap-2",
+        "grid",
+        "grid-cols-3",
+        "grid-rows-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### グリッド線に沿って配置
+
+col-span-2 と row-span-2 は複数トラックをまたぎ、start/end は番号付きの線に合わせます。auto にすると自動配置に戻ります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eColumn and row lines place or span items across the explicit tracks.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-4 grid-rows-4 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile col-span-2 row-start-1 row-end-2\"\u003eSpan two columns\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile wind-demo-alt col-start-3 col-end-5 row-start-1 row-span-2\"\u003eStart/end lines; span two rows\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile col-start-1 col-end-3 row-start-2 row-end-4\"\u003eRows 2–4\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile wind-demo-alt col-start-3 col-end-5 row-start-3 row-end-4\"\u003ePlaced at line 3\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile col-start-2 col-end-4 row-start-4 row-end-5\"\u003eColumn lines 2–4\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile col-start-auto row-end-auto\"\u003eAuto placement\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.col-end-3 {\n  grid-column-end: 3;\n}\n.col-end-4 {\n  grid-column-end: 4;\n}\n.col-end-5 {\n  grid-column-end: 5;\n}\n.col-span-2 {\n  grid-column: span 2 / span 2;\n}\n.col-start-1 {\n  grid-column-start: 1;\n}\n.col-start-2 {\n  grid-column-start: 2;\n}\n.col-start-3 {\n  grid-column-start: 3;\n}\n.col-start-auto {\n  grid-column-start: auto;\n}\n.grid-cols-4 {\n  grid-template-columns: repeat(4,minmax(0,1fr));\n}\n.grid-rows-4 {\n  grid-template-rows: repeat(4,minmax(0,1fr));\n}\n.row-end-2 {\n  grid-row-end: 2;\n}\n.row-end-4 {\n  grid-row-end: 4;\n}\n.row-end-5 {\n  grid-row-end: 5;\n}\n.row-end-auto {\n  grid-row-end: auto;\n}\n.row-span-2 {\n  grid-row: span 2 / span 2;\n}\n.row-start-1 {\n  grid-row-start: 1;\n}\n.row-start-2 {\n  grid-row-start: 2;\n}\n.row-start-3 {\n  grid-row-start: 3;\n}\n.row-start-4 {\n  grid-row-start: 4;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"グリッド線に沿って配置"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "col-end-3",
+        "col-end-4",
+        "col-end-5",
+        "col-span-2",
+        "col-start-1",
+        "col-start-2",
+        "col-start-3",
+        "col-start-auto",
+        "gap-2",
+        "grid",
+        "grid-cols-4",
+        "grid-rows-4",
+        "row-end-2",
+        "row-end-4",
+        "row-end-5",
+        "row-end-auto",
+        "row-span-2",
+        "row-start-1",
+        "row-start-2",
+        "row-start-3",
+        "row-start-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 固定幅と可変幅を組み合わせる
+
+任意値で 7rem の列と可変列、auto の行と可変行を定義します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-note\"\u003eAn arbitrary track list is written with underscores for spaces.\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-[7rem_1fr] grid-rows-[auto_1fr] gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFixed track\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eFlexible track\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eSecond row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eRemaining width\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-\\[7rem_1fr\\] {\n  grid-template-columns: 7rem 1fr;\n}\n.grid-rows-\\[auto_1fr\\] {\n  grid-template-rows: auto 1fr;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"固定幅と可変幅を組み合わせる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "gap-2",
+        "grid",
+        "grid-cols-[7rem_1fr]",
+        "grid-rows-[auto_1fr]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+grid-cols-N と grid-rows-N は 1〜12 の整数を受け取り、none と subgrid も使えます。col-span-N と row-span-N は 1〜12、start/end の線番号は 1〜13 と auto に対応します。span-full は 1 / -1 です。テンプレートには CSS の任意トラックリストも指定でき、grid-cols-[7rem_1fr] のように空白をアンダースコアで表します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## col-end
 
@@ -282,3 +484,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `row-start-auto` | `grid-row-start: auto` |
+
+</Details>

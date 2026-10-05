@@ -5,9 +5,245 @@ sidebar_position: 22
 generated: true
 ---
 
-包含ブロック内での要素の配置方式を設定します。
+position で、オフセットの基準と通常フローへの残り方を選びます。relative は場所を保ったまま absolute 子要素の基準になり、absolute はフローから外れます。fixed はプレビューのビューポートに固定され、sticky はスクロール領域の中で端に張り付きます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `static` | `position: static;` |
+| `relative` | `position: relative;` |
+| `absolute` | `position: absolute;` |
+| `sticky` | `position: sticky;` |
+| `fixed` | `position: fixed;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 通常フローに置く
+
+static は通常フローに残ります。top-4 と left-4 のオフセットは意図的に無視されます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-64\"\u003e\n    \u003cdiv class=\"wind-demo-tile static top-4 left-4\"\u003estatic ignores these offsets\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eNormal-flow sibling\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.static {\n  position: static;\n}\n.left-4 {\n  left: 1rem;\n}\n.top-4 {\n  top: 1rem;\n}\n.w-64 {\n  width: 16rem;\n}\n"} title={"通常フローに置く"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "left-4",
+        "static",
+        "top-4",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 近くの枠を基準にする
+
+relative はフロー上の場所を保ち、absolute 子要素の基準になります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"wind-demo-note\"\u003eThis box is the containing block.\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile absolute bottom-2 right-2\"\u003ePinned to this frame\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.bottom-2 {\n  bottom: 0.5rem;\n}\n.right-2 {\n  right: 0.5rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"近くの枠を基準にする"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "bottom-2",
+        "h-36",
+        "relative",
+        "right-2",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### スクロール領域内で固定する
+
+sticky は top-0 がスクロール領域の上端に達すると張り付き、包含ブロックの範囲内でその状態を保ちます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eScroll inside the panel to see the heading stick to its top edge.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame h-36 overflow-y-auto\"\u003e\n    \u003cdiv class=\"h-12 wind-demo-muted\"\u003eEarlier content\u003c/div\u003e\n    \u003cdiv class=\"sticky top-0 wind-demo-tile\"\u003eSticky section heading\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-tile\"\u003eLong section content\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-muted\"\u003eMore content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-muted {\n  background: #eef1f4;\n  color: #64758a;\n  border: 1px solid #cbd3dc;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.sticky {\n  position: sticky;\n}\n.top-0 {\n  top: 0;\n}\n.h-12 {\n  height: 3rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.overflow-y-auto {\n  overflow-y: auto;\n}\n"} title={"スクロール領域内で固定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-muted": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "h-12",
+        "h-24",
+        "h-36",
+        "overflow-y-auto",
+        "sticky",
+        "top-0"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### プレビューのビューポートに固定する
+
+fixed はスクロールパネルではなく iframe のビューポートを基準に bottom-2 と right-2 を使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe chip is fixed to this preview viewport. Scroll the panel if needed.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame h-36 overflow-y-auto\"\u003e\n    \u003cdiv class=\"h-24 wind-demo-muted\"\u003eScroll content\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-tile\"\u003eMore content\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"fixed bottom-2 right-2 wind-demo-highlight\"\u003eViewport chip\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-highlight {\n  background: #f2d794;\n  color: #493810;\n  border: 1px solid #b39761;\n  text-align: center;\n}\n\n.wind-demo-muted {\n  background: #eef1f4;\n  color: #64758a;\n  border: 1px solid #cbd3dc;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.fixed {\n  position: fixed;\n}\n.bottom-2 {\n  bottom: 0.5rem;\n}\n.right-2 {\n  right: 0.5rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.overflow-y-auto {\n  overflow-y: auto;\n}\n"} title={"プレビューのビューポートに固定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-highlight": true,
+      "wind-demo-muted": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bottom-2",
+        "fixed",
+        "h-24",
+        "h-36",
+        "overflow-y-auto",
+        "right-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }
+.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+5 個のクラス名は固定で、値は付きません。top-4 などのオフセットは位置指定された箱だけを動かし、static は無視して、absolute 子要素の基準にもなりません。sticky には auto 以外の inset 閾値とスクロール領域が必要です。CSS では transform の祖先が fixed 子要素の包含ブロックになることもあります。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## absolute
 
@@ -178,3 +414,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `sticky` | `position: sticky` |
+
+</Details>

@@ -5,9 +5,245 @@ sidebar_position: 22
 generated: true
 ---
 
-Set the positioning mode used to place an element in its containing block.
+Use position to choose the reference for offsets and whether a box stays in normal flow. relative keeps its place and anchors absolute children; absolute leaves flow, fixed follows the preview viewport, and sticky sticks within a scrolling ancestor.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `static` | `position: static;` |
+| `relative` | `position: relative;` |
+| `absolute` | `position: absolute;` |
+| `sticky` | `position: sticky;` |
+| `fixed` | `position: fixed;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Keep normal flow
+
+static leaves the box in document flow; the top-4 and left-4 offsets are intentionally ignored.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-64\"\u003e\n    \u003cdiv class=\"wind-demo-tile static top-4 left-4\"\u003estatic ignores these offsets\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eNormal-flow sibling\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.static {\n  position: static;\n}\n.left-4 {\n  left: 1rem;\n}\n.top-4 {\n  top: 1rem;\n}\n.w-64 {\n  width: 16rem;\n}\n"} title={"Keep normal flow"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "left-4",
+        "static",
+        "top-4",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Position against a nearby frame
+
+relative stays in flow and establishes the reference box for its absolute child.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"wind-demo-note\"\u003eThis box is the containing block.\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile absolute bottom-2 right-2\"\u003ePinned to this frame\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.bottom-2 {\n  bottom: 0.5rem;\n}\n.right-2 {\n  right: 0.5rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"Position against a nearby frame"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "bottom-2",
+        "h-36",
+        "relative",
+        "right-2",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Stick within a scroll area
+
+sticky follows normal flow until top-0 reaches the scrollport, then remains there while its containing block continues.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eScroll inside the panel to see the heading stick to its top edge.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame h-36 overflow-y-auto\"\u003e\n    \u003cdiv class=\"h-12 wind-demo-muted\"\u003eEarlier content\u003c/div\u003e\n    \u003cdiv class=\"sticky top-0 wind-demo-tile\"\u003eSticky section heading\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-tile\"\u003eLong section content\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-muted\"\u003eMore content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-muted {\n  background: #eef1f4;\n  color: #64758a;\n  border: 1px solid #cbd3dc;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.sticky {\n  position: sticky;\n}\n.top-0 {\n  top: 0;\n}\n.h-12 {\n  height: 3rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.overflow-y-auto {\n  overflow-y: auto;\n}\n"} title={"Stick within a scroll area"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-muted": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "h-12",
+        "h-24",
+        "h-36",
+        "overflow-y-auto",
+        "sticky",
+        "top-0"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Pin to the preview viewport
+
+fixed uses bottom-2 and right-2 against the iframe viewport rather than the scroll panel.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe chip is fixed to this preview viewport. Scroll the panel if needed.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame h-36 overflow-y-auto\"\u003e\n    \u003cdiv class=\"h-24 wind-demo-muted\"\u003eScroll content\u003c/div\u003e\n    \u003cdiv class=\"h-24 wind-demo-tile\"\u003eMore content\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"fixed bottom-2 right-2 wind-demo-highlight\"\u003eViewport chip\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-highlight {\n  background: #f2d794;\n  color: #493810;\n  border: 1px solid #b39761;\n  text-align: center;\n}\n\n.wind-demo-muted {\n  background: #eef1f4;\n  color: #64758a;\n  border: 1px solid #cbd3dc;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.fixed {\n  position: fixed;\n}\n.bottom-2 {\n  bottom: 0.5rem;\n}\n.right-2 {\n  right: 0.5rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.overflow-y-auto {\n  overflow-y: auto;\n}\n"} title={"Pin to the preview viewport"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-highlight": true,
+      "wind-demo-muted": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bottom-2",
+        "fixed",
+        "h-24",
+        "h-36",
+        "overflow-y-auto",
+        "right-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }
+.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+The five class names are exact and have no values. Offset utilities such as top-4 only move positioned boxes; static ignores offsets and cannot anchor absolute descendants. Sticky needs a non-auto inset threshold and a scrolling context. A transformed ancestor can also establish a containing block for fixed descendants in CSS.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## absolute
 
@@ -178,3 +414,5 @@ Set the positioning mode used to place an element in its containing block.
 | Example class | Expected declarations |
 | --- | --- |
 | `sticky` | `position: sticky` |
+
+</Details>
