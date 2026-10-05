@@ -9,6 +9,7 @@
 //! demanded unresolved or opaque child flows become source-located errors.
 
 use super::*;
+use std::rc::Rc;
 use swc_core::common::{Span, Spanned};
 use swc_core::ecma::ast::{
     ArrowExpr, CallExpr, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild,
@@ -57,7 +58,7 @@ enum FactoryKind {
     Jsx,
 }
 
-#[derive(Clone)]
+// Shared within one discovery pass; binding lookups must not clone the AST.
 struct SourceModule {
     ast: Module,
     source: String,
@@ -124,26 +125,31 @@ impl Visit for FormCollector {
 
 struct Discovery<'a, R: Resolver> {
     resolver: &'a R,
-    modules: BTreeMap<PathBuf, SourceModule>,
+    modules: BTreeMap<PathBuf, Rc<SourceModule>>,
     resolving: HashSet<(PathBuf, String)>,
     summarizing: HashSet<Definition>,
     summary_cache: BTreeMap<Definition, WrapperSummary>,
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
+    owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
     fn new(resolver: &'a R, modules: BTreeMap<PathBuf, SourceModule>) -> Self {
         Self {
             resolver,
-            modules,
+            modules: modules
+                .into_iter()
+                .map(|(path, module)| (path, Rc::new(module)))
+                .collect(),
             resolving: HashSet::new(),
             summarizing: HashSet::new(),
             summary_cache: BTreeMap::new(),
             deferred_forward_sites: HashSet::new(),
+            owned_factory_sites: HashMap::new(),
         }
     }
 
-    fn module(&mut self, path: &Path) -> ScanResult<SourceModule> {
+    fn module(&mut self, path: &Path) -> ScanResult<Rc<SourceModule>> {
         if let Some(module) = self.modules.get(path) {
             return Ok(module.clone());
         }
@@ -165,11 +171,11 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         let parsed = parse_module(path, &source)?;
         let client = has_use_client_directive(&parsed);
         let (ast, _) = resolve_worker_bindings(parsed);
-        let module = SourceModule {
+        let module = Rc::new(SourceModule {
             ast,
             source,
             client,
-        };
+        });
         self.modules.insert(path.to_path_buf(), module.clone());
         Ok(module)
     }
@@ -1126,11 +1132,13 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         }
     }
 
-    fn function_return(
-        &mut self,
-        function: &FunctionValue,
-    ) -> ScanResult<Option<(Expr, Vec<Pat>)>> {
-        let path = &function.definition.module;
+    /// Classify each module's factory calls once. A compiled package can put
+    /// hundreds of functions in one module; repeating this walk for every
+    /// function multiplies binding resolution and filesystem work (#3648).
+    fn owned_factory_sites(&mut self, path: &Path) -> ScanResult<Rc<HashSet<u32>>> {
+        if let Some(sites) = self.owned_factory_sites.get(path) {
+            return Ok(Rc::clone(sites));
+        }
         let module = self.module(path)?;
         // Owned description factories are pure with respect to the incoming
         // wrapper props. Their arguments may read those props as runtime
@@ -1147,6 +1155,19 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 }
             }
         }
+        let sites = Rc::new(owned_factory_sites);
+        self.owned_factory_sites
+            .insert(path.to_path_buf(), Rc::clone(&sites));
+        Ok(sites)
+    }
+
+    fn function_return(
+        &mut self,
+        function: &FunctionValue,
+    ) -> ScanResult<Option<(Expr, Vec<Pat>)>> {
+        let path = &function.definition.module;
+        let module = self.module(path)?;
+        let owned_factory_sites = self.owned_factory_sites(path)?;
         for item in &module.ast.body {
             let declaration = match item {
                 ModuleItem::Stmt(Stmt::Decl(decl)) => Some(decl),
@@ -2177,6 +2198,60 @@ mod tests {
             .iter()
             .map(|island| island.marker_name.clone())
             .collect()
+    }
+
+    #[test]
+    fn packed_module_factory_resolution_scales_with_call_sites() {
+        struct CountingResolver {
+            inner: InMemoryResolver,
+            demands: std::cell::Cell<usize>,
+        }
+        impl Resolver for CountingResolver {
+            fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.inner.resolve(dir, specifier)
+            }
+            fn resolve_demanded(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.demands.set(self.demands.get() + 1);
+                self.inner.resolve(dir, specifier)
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                self.inner.read(path)
+            }
+        }
+        const FUNCTIONS: usize = 48;
+        let mut source = String::from(
+            "import { h } from './factory';\nimport { Island } from '@takazudo/zfb';\nimport { Counter } from './counter';\n",
+        );
+        for index in 0..FUNCTIONS {
+            source.push_str(&format!(
+                "function helper{index}() {{ return h('span', {{ children: '{index}' }}); }}\n"
+            ));
+        }
+        source.push_str(
+            "export default function Page() { return h(Island, { children: h(Counter, {}) }); }",
+        );
+        let resolver = CountingResolver {
+            inner: InMemoryResolver::new()
+                .with_file("/proj/page.ts", source)
+                .with_file(
+                    "/proj/factory.ts",
+                    "export { h } from '@takazudo/zfb/zudo-react';",
+                )
+                .with_file(
+                    "/proj/counter.ts",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            demands: std::cell::Cell::new(0),
+        };
+        let islands = scan_islands(&[PathBuf::from("/proj/page.ts")], &resolver).unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+        // Allow classification, summary, and form walks plus fixed overhead.
+        // Resolving every call again for each helper exceeds this linear budget.
+        assert!(
+            resolver.demands.get() < FUNCTIONS * 10,
+            "factory classification repeated across functions: {} resolutions for {FUNCTIONS} functions",
+            resolver.demands.get(),
+        );
     }
 
     #[test]
