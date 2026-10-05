@@ -10,7 +10,11 @@ The additive editorial schema is version 1:
 - `lookup`: compact rows with `entry` (catalog ID belonging to this family),
   `candidate` (literal class), and `example` (positive example ID in the matching
   example record). Cover every catalog entry at least once. The candidate must be
-  declared in that example's `utilities`. The generator reads the real emitted
+  declared in that example's `utilities`. Exact-only entries must match the whole
+  utility root after removing variants. Every row must emit all of its catalog
+  entry's properties, preventing shared roots such as font from being assigned
+  to the wrong semantic entry. Additional emitted properties are allowed.
+  The generator reads the real emitted
   declarations from the committed compiler CSS, including child-selector rules;
   workers do not author a duplicate CSS/declaration string.
 - `locales.en` and `locales.ja`: each has `purpose`, `setup`, `customValues`, and

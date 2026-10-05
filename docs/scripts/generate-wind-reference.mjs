@@ -350,7 +350,7 @@ function fenced(value, language) {
 }
 
 function renderEditorial(family, record, strings, locale, preview, entriesById) {
-  validateEditorial(record, family, preview.examples.get(family.id), entriesById);
+  validateEditorial(record, family, preview.examples.get(family.id), entriesById, preview.assets);
   const content = record.locales[locale];
   if (!content) throw new Error(`Editorial ${family.id}: unsupported locale ${locale}`);
   const labels = strings.reader;

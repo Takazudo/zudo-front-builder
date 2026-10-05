@@ -378,6 +378,70 @@ describe("reader-first wind pages", () => {
     );
   });
 
+  it("binds exact roots and shared roots to their actual catalog properties", () => {
+    function validate(entry, candidate, css) {
+      const family = { id: entry.conflictGroup, entries: [entry.id] };
+      const localized = {
+        purpose: "Purpose",
+        setup: "Explicit setup",
+        customValues: "Supported values",
+        examples: [{ id: "sample", title: "Sample", description: "Sample behavior" }],
+      };
+      const record = {
+        schemaVersion: 1,
+        family: family.id,
+        lookup: [{ entry: entry.id, candidate, example: "sample" }],
+        locales: { en: localized, ja: localized },
+      };
+      const example = { id: "sample", kind: "positive", utilities: [candidate] };
+      return validateEditorial(
+        record,
+        family,
+        { examples: [example] },
+        new Map([[entry.id, entry]]),
+        new Map([[`${family.id}/sample`, { css }]]),
+      );
+    }
+    const entry = (id) => realCatalog.entries.find((item) => item.id === id);
+    expect(() =>
+      validate(
+        entry("v1.grid"),
+        "grid-cols-3",
+        ".grid-cols-3 { grid-template-columns: repeat(3,minmax(0,1fr)); }",
+      ),
+    ).toThrow("does not match catalog root");
+    expect(() =>
+      validate(entry("v1.flex"), "flex-col", ".flex-col { flex-direction: column; }"),
+    ).toThrow("does not match catalog root");
+    expect(() =>
+      validate(entry("v1.font.family"), "font-[400]", ".font-\\[400\\] { font-weight: 400; }"),
+    ).toThrow("does not emit catalog properties font-family");
+    expect(() =>
+      validate(entry("v1.grid"), "hover:grid", ".hover\\:grid:hover { display: grid; }"),
+    ).not.toThrow();
+    expect(() =>
+      validate(
+        entry("v1.font.family"),
+        "font-[serif]",
+        ".font-\\[serif\\] { font-family: serif; font-weight: 400; }",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validate(
+        entry("v1.m"),
+        "hover:-m-2",
+        ".hover\\:-m-2:hover { margin-top: -0.5rem; margin-right: -0.5rem; margin-bottom: -0.5rem; margin-left: -0.5rem; }",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validate(
+        entry("v1.gap"),
+        "gap-[var(--x:spacing)]",
+        ".gap-\\[var\\(--x\\:spacing\\)\\] { column-gap: var(--x); row-gap: var(--x); }",
+      ),
+    ).not.toThrow();
+  });
+
   it("shows diagnostic teaching source and configured severity without creating a runnable iframe", () => {
     const diagnostic = structuredClone(
       records.find((record) => record.family === "diagnostics").examples[0],

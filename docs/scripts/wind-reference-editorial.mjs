@@ -21,8 +21,30 @@ export function loadEditorial(directory) {
   );
 }
 
+// Variant separators inside arbitrary selector/value brackets are literal bytes.
+function unvariedCandidate(candidate) {
+  let nesting = 0;
+  let start = 0;
+  let escaped = false;
+  for (let index = 0; index < candidate.length; index += 1) {
+    const ch = candidate[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "[" || ch === "(") nesting += 1;
+    else if (ch === "]" || ch === ")") nesting -= 1;
+    else if (ch === ":" && nesting === 0) start = index + 1;
+  }
+  return candidate.slice(start);
+}
+
 /** Each worker owns one bilingual JSON file; no shared translation edits are needed. */
-export function validateEditorial(record, family, examples, entriesById) {
+export function validateEditorial(record, family, examples, entriesById, assets) {
   const label = `Editorial ${family.id}`;
   if (record?.schemaVersion !== 1 || record.family !== family.id)
     fail(`${label}: invalid identity`);
@@ -39,10 +61,24 @@ export function validateEditorial(record, family, examples, entriesById) {
     )
       fail(`${label}: lookup must reference a family entry and a positive declared candidate`);
     if (entriesById) {
-      const root = entriesById.get(row.entry).root;
-      const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (!new RegExp(`(?:^|:)-?${escaped}(?:-|$)`).test(row.candidate))
+      const entry = entriesById.get(row.entry);
+      const root = entry.root;
+      const core = unvariedCandidate(row.candidate);
+      const unsigned = core.startsWith("-") ? core.slice(1) : core;
+      const exactOnly = entry.grammar.acceptedKinds.every((kind) => kind === "exact");
+      if (exactOnly ? core !== root : unsigned !== root && !unsigned.startsWith(`${root}-`))
         fail(`${label}: lookup candidate does not match catalog root ${root}`);
+      if (assets) {
+        const asset = assets.get(`${family.id}/${row.example}`);
+        if (!asset?.css) fail(`${label}: missing lookup CSS for ${row.example}`);
+        const declarations = candidateDeclarations(asset.css, row.candidate);
+        const properties = new Set(
+          [...declarations.matchAll(/(?:^|;)\s*([\w-]+)\s*:/g)].map((match) => match[1]),
+        );
+        const missing = entry.emitter.filter((property) => !properties.has(property));
+        if (missing.length)
+          fail(`${label}: ${row.candidate} does not emit catalog properties ${missing.join(", ")}`);
+      }
     }
     covered.add(row.entry);
   }
