@@ -206,11 +206,16 @@ type CancelHandleMap = Map<Element, ReturnType<typeof setTimeout> | number>;
 // apart from a real leave/first-enter. #1398.
 type RelatedTargetEvent = Event & { relatedTarget?: EventTarget | null };
 
+// Capture listeners also receive events targeted at document or text nodes.
+function closestLink(target: EventTarget | null): HTMLAnchorElement | null {
+  return target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+}
+
 function makeEnterLeaveHandlers(
   cancelHandles: CancelHandleMap,
 ): [enterHandler: (e: Event) => void, leaveHandler: (e: Event) => void] {
   function enterHandler(e: Event): void {
-    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    const link = closestLink(e.target);
     if (!link) return;
     if (!shouldPrefetchLink(link, "hover")) return;
 
@@ -251,7 +256,7 @@ function makeEnterLeaveHandlers(
   }
 
   function leaveHandler(e: Event): void {
-    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    const link = closestLink(e.target);
     if (!link) return;
 
     // The pointer/focus is moving to relatedTarget. If that's still inside
@@ -291,7 +296,7 @@ const [onFocusIn, onFocusOut] = makeEnterLeaveHandlers(focusCancelHandles);
 // ---------------------------------------------------------------------------
 
 function onTap(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  const link = closestLink(e.target);
   if (!link) return;
   if (!shouldPrefetchLink(link, "tap")) return;
   prefetch(link.href);

@@ -568,3 +568,38 @@ test("Forward after Back restores the router's live-tracked scroll position", as
   await expect(page.locator("h1")).toHaveText("Page A");
   expect(await page.evaluate(() => Math.round(window.scrollY))).toBe(900);
 });
+
+test("prefetch delegates ignore non-element targets and still follow nested links", async ({
+  page,
+}) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/index.html");
+  await waitForInitialLoad(page);
+
+  const prefetched = 'head link[rel="prefetch"][href*="/prefetch-target.html?via=nested-hover"]';
+  await expect(page.locator(prefetched)).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const link = document.querySelector("#prefetch-link-nested");
+    if (!link) throw new Error("nested prefetch fixture missing");
+    const text = document.createTextNode("text target");
+    link.appendChild(text);
+    for (const name of [
+      "pointerenter",
+      "pointerleave",
+      "focusin",
+      "focusout",
+      "mousedown",
+      "touchstart",
+    ]) {
+      document.dispatchEvent(new Event(name, { bubbles: true }));
+      text.dispatchEvent(new Event(name, { bubbles: true }));
+    }
+  });
+
+  await expect(page.locator(prefetched)).toHaveCount(0);
+  await page.dispatchEvent("#prefetch-link-nested-icon", "pointerenter", { bubbles: true });
+  await expect(page.locator(prefetched)).toHaveCount(1);
+  expect(pageErrors).toEqual([]);
+});

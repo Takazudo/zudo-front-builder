@@ -261,6 +261,53 @@ describe("tap trigger", () => {
   });
 });
 
+describe("delegated event targets", () => {
+  it("ignores Document and text-node targets across hover, focus, and tap delegates", async () => {
+    init();
+    const link = createLink(sameOriginUrl("/target-guard"), "hover");
+    const text = document.createTextNode("inside link");
+    link.appendChild(text);
+
+    for (const name of [
+      "pointerenter",
+      "pointerleave",
+      "focusin",
+      "focusout",
+      "mousedown",
+      "touchstart",
+    ]) {
+      expect(() => document.dispatchEvent(new Event(name, { bubbles: true }))).not.toThrow();
+      expect(() => text.dispatchEvent(new Event(name, { bubbles: true }))).not.toThrow();
+    }
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still finds links from nested element targets for hover, focus, and tap", async () => {
+    init();
+    for (const [name, strategy] of [
+      ["pointerenter", "hover"],
+      ["focusin", "hover"],
+      ["mousedown", "tap"],
+      ["touchstart", "tap"],
+    ] as const) {
+      const link = createLink(sameOriginUrl(`/nested-${name}`), strategy);
+      const child = document.createElement("span");
+      link.appendChild(child);
+      child.dispatchEvent(new Event(name, { bubbles: true }));
+    }
+    await Promise.resolve();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      sameOriginUrl("/nested-pointerenter"),
+      sameOriginUrl("/nested-focusin"),
+      sameOriginUrl("/nested-mousedown"),
+      sameOriginUrl("/nested-touchstart"),
+    ]);
+  });
+});
+
 describe("cross-origin skip", () => {
   it("6. cross-origin hrefs are never prefetched", async () => {
     init();
