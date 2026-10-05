@@ -1043,7 +1043,7 @@ fn diagnostic_origin_order(origin: Option<&OriginView>) -> (String, usize, Strin
     }
 }
 
-fn render_section(output: &mut String, title: &str, items: impl Iterator<Item = String>) {
+fn render_section(output: &mut String, title: &str, items: impl IntoIterator<Item = String>) {
     output.push_str(&format!("{title}:\n"));
     let mut any = false;
     for item in items {
