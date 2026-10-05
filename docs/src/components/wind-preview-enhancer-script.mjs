@@ -8,10 +8,15 @@ const LATE_PREVIEW_OBSERVER = `  // Mirror the stock body-end enhancer through i
   var synchronizingStockWrap = false;
   // On an SPA-entered route, a stock button can expose its live state even when
   // sessionStorage was blocked after earlier interaction.
-  var existingWrapButton = document.querySelector(".code-block-wrapper .code-btn-wrap");
-  if (existingWrapButton) {
-    stockWrapMode = existingWrapButton.getAttribute("aria-pressed") === "true";
-    wrapMode = stockWrapMode;
+  var existingWrapButtons = document.querySelectorAll(".code-block-wrapper .code-btn-wrap");
+  for (var existingIndex = 0; existingIndex < existingWrapButtons.length; existingIndex++) {
+    var existingWrapper = existingWrapButtons[existingIndex].closest(".code-block-wrapper");
+    var existingPre = existingWrapper && existingWrapper.querySelector("pre");
+    if (existingPre && existingPre.clientWidth > 0 && existingPre.dataset.codeOverflow !== undefined) {
+      stockWrapMode = existingWrapButtons[existingIndex].getAttribute("aria-pressed") === "true";
+      wrapMode = stockWrapMode;
+      break;
+    }
   }
 
   function isBridgeWrapButton(button) {

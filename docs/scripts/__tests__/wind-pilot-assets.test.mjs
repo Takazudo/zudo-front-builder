@@ -66,6 +66,11 @@ test("late preview code uses the pinned enhancer behind a unique, body-swap-safe
   assert.match(script, /\.zd-html-preview-code pre\.hi-root/);
   assert.match(
     script,
+    /existingPre\.clientWidth > 0 && existingPre\.dataset\.codeOverflow !== undefined/,
+    "hidden, unmeasured native blocks cannot override the stored wrap preference",
+  );
+  assert.match(
+    script,
     /latePreviewCodeObserver\.observe\(document\.documentElement, \{ childList: true, subtree: true \}\)/,
   );
   assert.equal(script.split("// Run on initial load.").length - 1, 1);
