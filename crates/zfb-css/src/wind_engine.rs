@@ -453,8 +453,8 @@ mod tests {
         );
         assert_eq!(
             rendered.lines().count(),
-            5,
-            "one line per diagnostic: {rendered}"
+            6,
+            "one header plus five diagnostics: {rendered}"
         );
     }
 
