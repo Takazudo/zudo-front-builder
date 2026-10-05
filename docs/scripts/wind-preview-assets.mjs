@@ -64,6 +64,11 @@ export function validateRecord(record) {
     if (typeof example.html !== "string" || typeof example.scaffoldCss !== "string")
       fail(`${label}: html and scaffoldCss required`);
     if (
+      example.head !== undefined &&
+      (example.kind !== "positive" || example.head !== '<base href="about:srcdoc">')
+    )
+      fail(`${label}: only positive examples may declare the about:srcdoc fragment base`);
+    if (
       /\bclassName\s*=|\bclass\s*=\s*[^"']|\bclass\s*=\s*['"][^'"]*[&{}]|<script\b|<style\b|<link\b/i.test(
         example.html,
       )
@@ -292,6 +297,7 @@ export function generateAssets({ root = REPO_ROOT, compiler, check = false, run 
           kind: example.kind,
           candidateOrigin,
           htmlSha256: hash(html),
+          headSha256: hash(example.head ?? ""),
           inputSha256: hash(input),
           configSha256: hash(json(config)),
           expectedDiagnostics: example.expectedDiagnostics ?? [],

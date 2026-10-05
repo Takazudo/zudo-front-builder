@@ -198,12 +198,13 @@ export function loadPreviewContext(root, exampleRecords) {
         !provenance ||
         storedHtml !== html ||
         provenance.htmlSha256 !== hash(html) ||
+        provenance.headSha256 !== hash(example.head ?? "") ||
         provenance.cssSha256 !== hash(css) ||
         provenance.inputSha256 !== hash(`${example.scaffoldCss.trimEnd()}\n`) ||
         provenance.configSha256 !== hash(`${JSON.stringify(config, null, 2)}\n`)
       )
         fail(`Stale preview source/CSS: ${record.family}/${example.id}; regenerate preview assets`);
-      assets.set(`${record.family}/${example.id}`, { html, css, config });
+      assets.set(`${record.family}/${example.id}`, { html, css, config, head: example.head ?? "" });
     }
   return { examples, assets, baseConfig };
 }
