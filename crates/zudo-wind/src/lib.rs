@@ -65,8 +65,8 @@ pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};
 pub use value_check::ValueStatus;
 pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
 pub use walk::{
-    expand_changed_path, expand_file_set, ExpandedFile, FileSet, WalkDiagnostic,
-    PACKAGE_ROOT_TRAVERSES,
+    expand_changed_path, expand_file_set, is_candidate_source, ExpandedFile, FileSet,
+    WalkDiagnostic, PACKAGE_ROOT_TRAVERSES,
 };
 
 pub const SPEC_VERSION: u32 = 1;

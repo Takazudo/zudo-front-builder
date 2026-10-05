@@ -1694,14 +1694,10 @@ const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
 /// so the project-root walk (`walkdir`) and the sibling-mirror-root walk
 /// (`ignore`) apply the identical filter.
 fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<PathBuf>) {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_ascii_lowercase());
-    if let Some(ext) = ext {
-        if extensions.contains(&ext.as_str()) {
-            out.push(path);
-        }
+    if zfb_css::is_candidate_source(&path, |ext| {
+        extensions.contains(&ext.to_ascii_lowercase().as_str())
+    }) {
+        out.push(path);
     }
 }
 
@@ -19253,6 +19249,7 @@ mod tests {
         let wind = crate::config::WindConfig {
             sources: crate::config::WindSources {
                 exclude: Vec::new(),
+                roots: Vec::new(),
                 package_roots: vec!["./packages/ui".into()],
             },
             ..Default::default()
