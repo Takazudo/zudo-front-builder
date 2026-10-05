@@ -19321,6 +19321,7 @@ mod tests {
                 roots: Vec::new(),
                 package_roots: vec!["./packages/ui".into()],
                 class_helpers: Vec::new(),
+                ignore_attributes: Vec::new(),
             },
             ..Default::default()
         };

@@ -121,12 +121,17 @@ export type WindConfig = {
    * are `./` paths or installed package names scanned as roots, including
    * their `dist` and `node_modules`; `classHelpers` explicitly names local
    * functions whose string, array and object arguments are class lists.
+   * `ignoreAttributes` adds non-class attribute/prop names to the built-in
+   * `href`, `src`, `content`, `name`, `rel` and `type` set. The entire literal
+   * value is skipped, including any markup embedded in a preview prop.
+   * `class` and `className` cannot be ignored.
    */
   sources?: {
     exclude?: string[];
     roots?: string[];
     packageRoots?: string[];
     classHelpers?: string[];
+    ignoreAttributes?: string[];
   };
 };
 
