@@ -29,6 +29,14 @@
         "property": "display",
         "wind": "inline-flex",
         "reference": "inline-flex"
+      },
+      {
+        "name": "inline-flex-child-second-position",
+        "property": "geometry:left",
+        "wind": "20",
+        "reference": "20",
+        "selector": "#child-b",
+        "relativeTo": "#target"
       }
     ]
   },
@@ -36,31 +44,264 @@
     "caseId": "mx-auto",
     "probes": [
       {
-        "name": "horizontal-left-margin",
+        "name": "horizontal-tb-ltr-margin-left",
         "property": "margin-left",
         "wind": "auto",
         "reference": "auto",
-        "element": "div"
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
       },
       {
-        "name": "vertical-left-margin",
+        "name": "horizontal-tb-ltr-margin-right",
+        "property": "margin-right",
+        "wind": "auto",
+        "reference": "auto",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-margin-top",
+        "property": "margin-top",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-margin-bottom",
+        "property": "margin-bottom",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-geometry-left",
+        "property": "geometry:left",
+        "wind": "100",
+        "reference": "100",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-geometry-top",
+        "property": "geometry:top",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-left",
+        "property": "margin-left",
+        "wind": "auto",
+        "reference": "auto",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-right",
+        "property": "margin-right",
+        "wind": "auto",
+        "reference": "auto",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-top",
+        "property": "margin-top",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-bottom",
+        "property": "margin-bottom",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-geometry-left",
+        "property": "geometry:left",
+        "wind": "100",
+        "reference": "100",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-geometry-top",
+        "property": "geometry:top",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-left",
         "property": "margin-left",
         "wind": "auto",
         "reference": {
           "notValue": "auto"
         },
-        "element": "div",
-        "writingMode": "vertical-rl"
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
       },
       {
-        "name": "vertical-top-margin",
+        "name": "vertical-rl-ltr-margin-right",
+        "property": "margin-right",
+        "wind": "auto",
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-top",
         "property": "margin-top",
         "wind": {
           "notValue": "auto"
         },
         "reference": "auto",
-        "element": "div",
-        "writingMode": "vertical-rl"
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-bottom",
+        "property": "margin-bottom",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": "auto",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-geometry-left",
+        "property": "geometry:left",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-geometry-top",
+        "property": "geometry:top",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-left",
+        "property": "margin-left",
+        "wind": "auto",
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-right",
+        "property": "margin-right",
+        "wind": "auto",
+        "reference": {
+          "notValue": "auto"
+        },
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-top",
+        "property": "margin-top",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": "auto",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-bottom",
+        "property": "margin-bottom",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": "auto",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-geometry-left",
+        "property": "geometry:left",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-geometry-top",
+        "property": "geometry:top",
+        "wind": {
+          "min": 0,
+          "max": 300
+        },
+        "reference": {
+          "min": 0,
+          "max": 300
+        },
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
       }
     ]
   },
@@ -75,8 +316,15 @@
         },
         "reference": {
           "notValue": "none"
-        },
-        "element": "div"
+        }
+      },
+      {
+        "name": "grid-child-second-column",
+        "property": "geometry:left",
+        "wind": "150",
+        "reference": "150",
+        "selector": "#child-b",
+        "relativeTo": "#target"
       }
     ]
   },
@@ -89,8 +337,7 @@
         "wind": "0px",
         "reference": {
           "min": 1
-        },
-        "element": "button"
+        }
       }
     ]
   },
@@ -101,8 +348,7 @@
         "name": "button-padding",
         "property": "padding-top",
         "wind": "0px",
-        "reference": "0px",
-        "element": "button"
+        "reference": "0px"
       }
     ]
   },
@@ -113,8 +359,7 @@
         "name": "named-padding",
         "property": "padding-top",
         "wind": "17px",
-        "reference": "17px",
-        "element": "button"
+        "reference": "17px"
       }
     ]
   },
@@ -140,8 +385,7 @@
         },
         "reference": {
           "min": 1
-        },
-        "element": "button"
+        }
       }
     ]
   },
@@ -163,8 +407,7 @@
         "name": "numeric-padding",
         "property": "padding-top",
         "wind": "16px",
-        "reference": "16px",
-        "element": "button"
+        "reference": "16px"
       }
     ]
   },

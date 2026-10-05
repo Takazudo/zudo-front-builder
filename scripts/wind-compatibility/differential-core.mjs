@@ -34,6 +34,28 @@ export function validatePilot(profile, manifest, observations) {
   }
   for (const id of Object.keys(observations))
     if (!required.has(id) || !ids.includes(id)) throw Error(`Unlisted observation ${id}`);
+  const mx = new Set(observations["mx-auto"]?.probes.map((probe) => probe.name));
+  for (const mode of ["horizontal-tb", "vertical-rl"])
+    for (const direction of ["ltr", "rtl"])
+      for (const measure of [
+        "margin-left",
+        "margin-right",
+        "margin-top",
+        "margin-bottom",
+        "geometry-left",
+        "geometry-top",
+      ])
+        if (!mx.has(`${mode}-${direction}-${measure}`))
+          throw Error(`Missing axis probe ${mode}/${direction}/${measure}`);
+  if (
+    !observations["grid-cols-2"]?.probes.some(
+      (probe) => probe.selector === "#child-b" && probe.property.startsWith("geometry:"),
+    ) ||
+    !observations["inline-flex"]?.probes.some(
+      (probe) => probe.selector === "#child-b" && probe.property.startsWith("geometry:"),
+    )
+  )
+    throw Error("Grid and inline-flex child geometry is required");
   return required;
 }
 
@@ -105,4 +127,24 @@ export function completeReport(profile, manifest, rows, controls, identity) {
 
 export function artifactIdentity(css, report) {
   return { cssSha256: sha256(css), reportSha256: sha256(JSON.stringify(report)) };
+}
+
+export function compareExtractionSets(actual, reviewed) {
+  const unique = (values) => Array.isArray(values) && new Set(values).size === values.length;
+  if (
+    ![
+      actual.windCandidates,
+      actual.referenceCandidates,
+      actual.windRules,
+      actual.referenceRules,
+    ].every(unique)
+  )
+    return false;
+  return (
+    digest(actual.windCandidates) === digest(reviewed.expectedWindCandidates) &&
+    digest(actual.referenceCandidates) === digest(reviewed.expectedReferenceCandidates) &&
+    digest([...actual.windRules].sort()) === digest([...reviewed.expectedWindRules].sort()) &&
+    digest([...actual.referenceRules].sort()) ===
+      digest([...reviewed.expectedReferenceRules].sort())
+  );
 }

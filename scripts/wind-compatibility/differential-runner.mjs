@@ -6,21 +6,16 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { gunzipSync } from "node:zlib";
-import {
-  browserIdentity,
-  observePair,
-  observeIsolated,
-  unexpectedSelector,
-} from "./browser-adapter.mjs";
+import { browserIdentity, observePair, observeIsolated } from "./browser-adapter.mjs";
 import {
   artifactIdentity,
   classify,
+  compareExtractionSets,
   completeReport,
   outcomes,
-  preludeCheck,
-  requiredNonempty,
   validatePilot,
 } from "./differential-core.mjs";
+import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   digest,
@@ -232,112 +227,63 @@ function expectedWindConfig(row, fixture, profile) {
     throw Error(`Candidate fixture drift: ${row.id}`);
 }
 
-function candidateRule(css, candidate) {
-  const escaped = candidate.replaceAll(":", "\\:");
-  return css.includes(`.${escaped}`);
-}
-
-function reviewedStructure(row, windCss, referenceCss) {
-  switch (row.id) {
-    case "mx-auto":
-      return (
-        /margin-left:\s*auto/.test(windCss) &&
-        /margin-right:\s*auto/.test(windCss) &&
-        /margin-inline:\s*auto/.test(referenceCss)
-      );
-    case "p-0-empty":
-      return (
-        /padding-(?:top|right|bottom|left):\s*0/.test(windCss) &&
-        !candidateRule(referenceCss, "p-0")
-      );
-    case "p-0-mapped":
-      return (
-        !windCss.includes("--zw-spacing") &&
-        referenceCss.includes("--spacing-0: 0px") &&
-        referenceCss.includes("var(--spacing-0)")
-      );
-    case "named-spacing":
-      return (
-        windCss.includes("--zw-spacing-hsp-sm: 17px") &&
-        windCss.includes("var(--zw-spacing-hsp-sm)") &&
-        referenceCss.includes("--spacing-hsp-sm: 17px") &&
-        referenceCss.includes("var(--spacing-hsp-sm)")
-      );
-    case "named-color":
-      return (
-        windCss.includes("--zw-color-surface: #123456") &&
-        windCss.includes("var(--zw-color-surface)") &&
-        referenceCss.includes("--color-surface: #123456") &&
-        referenceCss.includes("var(--color-surface)")
-      );
-    case "configured-p-4":
-      return (
-        windCss.includes("--zw-spacing-unit: 0.25rem") &&
-        referenceCss.includes("--spacing: 0.25rem") &&
-        referenceCss.includes("var(--spacing)")
-      );
-    case "hover-block":
-      return (
-        windCss.includes(":hover") &&
-        windCss.includes("(hover: hover)") &&
-        referenceCss.includes("&:hover") &&
-        referenceCss.includes("(hover: hover)")
-      );
-    case "breakpoint-block":
-      return (
-        windCss.includes("640px") &&
-        referenceCss.includes("640px") &&
-        windCss.includes("@media") &&
-        referenceCss.includes("@media")
-      );
-    default:
-      return true;
-  }
-}
-
-function structuralChecks(row, windCss, referenceCss, windReport, profile) {
-  const hasWind = candidateRule(windCss, row.candidate),
-    hasReference = candidateRule(referenceCss, row.candidate);
+function structuralChecks(row, windCss, referenceCss, windReport, diagnosticsPass) {
   const expectWind =
     row.implementation === "implemented" &&
     !["unconfigured-p-4", "undeclared-palette"].includes(row.id);
-  const expectReference = !["p-0-empty", "unconfigured-p-4", "undeclared-palette"].includes(row.id);
-  const prelude = profile.reviewedDifferences.find(
-    (difference) => difference.id === "wind-layer-order-prelude",
+  const reportRule =
+    windReport.rules.length === Number(expectWind) &&
+    windReport.rules.includes(row.candidate) === expectWind;
+  const parsed = compareStructure(
+    row.id,
+    windCss,
+    referenceCss,
+    row.reviewedDifferenceIds,
+    diagnosticsPass,
   );
-  const noDefaultTheme = !/--color-(?:gray|red|blue)-[0-9]+\s*:|--spacing\s*:/.test(referenceCss);
-  const reportRule = windReport.rules.includes(row.candidate) === expectWind;
   return {
-    pass:
-      hasWind === expectWind &&
-      hasReference === expectReference &&
-      reportRule &&
-      noDefaultTheme &&
-      preludeCheck(windCss, requiredNonempty(row), prelude.statement) &&
-      !windCss.includes("@tailwind") &&
-      !referenceCss.includes("zw-tokens") &&
-      reviewedStructure(row, windCss, referenceCss),
-    hasWind,
-    hasReference,
-    expectWind,
-    expectReference,
+    pass: reportRule && parsed.pass,
     reportRule,
-    noDefaultTheme,
-    preludeCount: (windCss.match(/@layer zw-reset/g) ?? []).length,
+    ...parsed,
   };
 }
 
-function diagnosticCheck(row, report) {
+export function diagnosticCheck(row, report) {
   const diagnostics = report.diagnostics ?? [];
-  const missing = ["unconfigured-p-4", "undeclared-palette", "contents-gap"].includes(row.id);
-  if (!missing) return diagnostics.every((d) => d.severity !== "error");
-  return diagnostics.some(
-    (d) =>
-      d.candidate === row.candidate &&
-      d.origin?.kind === "manifest" &&
-      d.origin.path === `${row.id}/case.json` &&
-      /^ZW[0-9]{3}$/.test(d.code) &&
-      d.severity === "error",
+  const expected = {
+    "unconfigured-p-4": {
+      code: "ZW006",
+      rejectionId: "R17",
+      message: "nonzero numeric spacing requires spacingUnit",
+    },
+    "undeclared-palette": {
+      code: "ZW006",
+      rejectionId: "R17",
+      message: "unknown value or token gray-500",
+    },
+    "contents-gap": {
+      code: "ZW014",
+      rejectionId: null,
+      messagePrefix: "unsupported foreign utility (migration vocabulary",
+    },
+  }[row.id];
+  if (!expected) return diagnostics.length === 0;
+  if (diagnostics.length !== 1) return false;
+  const diagnostic = diagnostics[0];
+  return (
+    diagnostic.code === expected.code &&
+    diagnostic.severity === "error" &&
+    diagnostic.candidate === row.candidate &&
+    diagnostic.rejectionId === expected.rejectionId &&
+    diagnostic.suggestion === null &&
+    diagnostic.origin?.kind === "manifest" &&
+    diagnostic.origin.producer === "wind-fixture-css" &&
+    diagnostic.origin.path === `${row.id}/case.json` &&
+    diagnostic.origin.index === 0 &&
+    (expected.message
+      ? diagnostic.message === expected.message
+      : diagnostic.message.startsWith(expected.messagePrefix) &&
+        diagnostic.message.includes("Tailwind `contents`"))
   );
 }
 
@@ -353,7 +299,7 @@ async function runExtraction(binary, reference, scanner, extractionRoot, output)
   if (digest(actual) !== digest([...ids].sort()))
     throw Error("Extraction fixture manifest incomplete");
   const windOutput = resolve(output, "wind-extraction");
-  await runWind(binary, extractionRoot, windOutput, "extract");
+  const extractionProcess = await runWind(binary, extractionRoot, windOutput, "extract");
   const rows = [];
   for (const id of ids) {
     const dir = resolve(extractionRoot, id),
@@ -364,7 +310,21 @@ async function runExtraction(binary, reference, scanner, extractionRoot, output)
       extension = extname(sourceName).slice(1);
     const source = await readFile(resolve(dir, sourceName), "utf8");
     const expected = definition.expectedCandidates;
-    if (!Array.isArray(expected) || expected.length === 0)
+    const assertions = await readJson(resolve(dir, "assertions.json"));
+    if (
+      !Array.isArray(expected) ||
+      expected.length === 0 ||
+      ![
+        "expectedWindCandidates",
+        "expectedReferenceCandidates",
+        "expectedWindRules",
+        "expectedReferenceRules",
+      ].every(
+        (key) =>
+          Array.isArray(assertions[key]) &&
+          new Set(assertions[key]).size === assertions[key].length,
+      )
+    )
       throw Error(`Extraction ${id} missing expected candidates`);
     const referenceCandidates = scanOriginal(scanner.Scanner, source, extension);
     const windReport = await readJson(resolve(windOutput, id, "report.json"));
@@ -373,13 +333,32 @@ async function runExtraction(binary, reference, scanner, extractionRoot, output)
     const windCss = await readFile(resolve(windOutput, id, "wind.css"), "utf8");
     const compiler = await reference.compile("@theme { --*: initial; } @tailwind utilities;");
     const referenceCss = compiler.build(referenceCandidates);
+    const windStructure = parseCssStructure(windCss);
+    const referenceStructure = parseCssStructure(referenceCss);
+    const cssRuleNames = (tree) =>
+      tree
+        .filter((node) => node.kind === "rule" && node.head.startsWith("."))
+        .map((node) => node.head.slice(1).replaceAll("\\:", ":"));
     const pass =
+      compareExtractionSets(
+        {
+          windCandidates,
+          referenceCandidates,
+          windRules: windReport.rules,
+          referenceRules: cssRuleNames(referenceStructure),
+        },
+        assertions,
+      ) &&
+      digest(cssRuleNames(windStructure).sort()) ===
+        digest([...assertions.expectedWindRules].sort()) &&
+      digest(windStructure) ===
+        digest(expectedExtractionStructure(assertions.expectedWindRules, "wind")) &&
+      digest(referenceStructure) ===
+        digest(expectedExtractionStructure(assertions.expectedReferenceRules, "reference")) &&
       expected.every(
         (candidate) =>
-          windCandidates.includes(candidate) &&
-          referenceCandidates.includes(candidate) &&
-          candidateRule(windCss, candidate) &&
-          candidateRule(referenceCss, candidate),
+          assertions.expectedWindCandidates.includes(candidate) &&
+          assertions.expectedReferenceCandidates.includes(candidate),
       ) &&
       windReport.inputMode === "extract" &&
       windReport.sourceBytes === Buffer.byteLength(source);
@@ -389,10 +368,15 @@ async function runExtraction(binary, reference, scanner, extractionRoot, output)
       expected,
       windCandidates,
       referenceCandidates,
+      assertions,
+      windStructure,
+      referenceStructure,
       sourceInputDigest,
+      fixtureTreeDigest: await treeDigest(dir),
       windCssSha256: sha256(windCss),
       referenceCssSha256: sha256(referenceCss),
       windReportSha256: sha256(JSON.stringify(windReport)),
+      windProcessStatus: extractionProcess.status,
     });
   }
   return rows;
@@ -476,44 +460,39 @@ async function main() {
     for (const id of manifest.caseIds) {
       const row = required.get(id),
         fixture = await readJson(resolve(options.fixture, id, "case.json"));
+      const probeHtml = await readFile(resolve(options.fixture, id, "index.html"), "utf8");
+      const probes = observations[id].probes.map((probe) => ({
+        ...probe,
+        documentHtml: probeHtml,
+      }));
       expectedWindConfig(row, fixture, profile);
       const config = profile.configurations[row.configuration];
       const compiler = await reference.compile(referenceTheme(profile, row));
       const referenceCss = compiler.build([row.candidate]);
       const windCss = await readFile(resolve(windOutput, id, "wind.css"), "utf8");
       const windReport = await readJson(resolve(windOutput, id, "report.json"));
-      const structure = structuralChecks(row, windCss, referenceCss, windReport, profile);
-      const observation = await observePair(
-        browser,
-        windCss,
-        referenceCss,
-        row.candidate,
-        observations[id].probes,
-      );
-      const observed = observation.every(
-        (pair) =>
-          pair.wind.pass &&
-          pair.reference.pass &&
-          !unexpectedSelector(pair.wind.observation.cssTree, row.candidate) &&
-          !unexpectedSelector(pair.reference.observation.cssTree, row.candidate),
-      );
+      const diagnosticsPass = diagnosticCheck(row, windReport);
+      const structure = structuralChecks(row, windCss, referenceCss, windReport, diagnosticsPass);
+      const observation = await observePair(browser, windCss, referenceCss, row.candidate, probes);
+      const observed = observation.every((pair) => pair.wind.pass && pair.reference.pass);
       const checks = {
         identity: windReport.inputMode === "compiler" && windReport.specCaseId === id,
         structure: structure.pass,
         observations: observed,
-        diagnostics: diagnosticCheck(row, windReport),
+        diagnostics: diagnosticsPass,
       };
       rows[id] = {
         caseId: id,
         outcome: classify(row, checks),
         disposition: row.disposition,
-        reviewedDifferenceIds: row.reviewedDifferenceIds,
+        reviewedDifferenceIds: structure.observedDifferenceIds,
         checks,
         structure,
         observations: observation,
         configDigest: digest(config),
         sourceInputDigest: digest([row.candidate]),
         fixtureDigest: sha256(await readFile(resolve(options.fixture, id, "case.json"))),
+        fixtureTreeDigest: await treeDigest(resolve(options.fixture, id)),
         wind: artifactIdentity(windCss, windReport),
         reference: { cssSha256: sha256(referenceCss) },
       };
@@ -523,7 +502,7 @@ async function main() {
         referenceCss,
       );
       if (id === "block") {
-        const probe = observations[id].probes[0];
+        const probe = probes[0];
         const missing = await observeIsolated(browser, "", row.candidate, probe, "wind");
         const wrong = await observeIsolated(
           browser,
@@ -571,9 +550,17 @@ async function main() {
         );
         controls["extra-rule-detection"] = {
           controlId: "extra-rule-detection",
-          outcome: unexpectedSelector(injected.observation.cssTree, row.candidate)
-            ? outcomes.shared
-            : outcomes.mismatch,
+          outcome:
+            injected.verified &&
+            !compareStructure(
+              "block",
+              `${windCss}\n.injected { color: red; }`,
+              referenceCss,
+              row.reviewedDifferenceIds,
+              true,
+            ).pass
+              ? outcomes.shared
+              : outcomes.mismatch,
         };
         const authored = {
           ...probe,
@@ -594,7 +581,7 @@ async function main() {
         };
       }
       if (id === "hover-block") {
-        const probe = observations[id].probes[1];
+        const probe = probes[1];
         const wrongMediaCss = windCss.replace(/\(hover:\s*hover\)/, "(hover: none)");
         const wrongMedia = await observeIsolated(
           browser,
@@ -617,21 +604,35 @@ async function main() {
           mutations: { wrongMediaDetected: wrongMediaCss !== windCss && !wrongMedia.pass },
         };
       }
-      if (id === "mx-auto")
+      if (id === "mx-auto") {
+        const byName = new Map(probes.map((probe, index) => [probe.name, observation[index]]));
+        const verticalDifferences = ["ltr", "rtl"].every((direction) => {
+          const left = byName.get(`vertical-rl-${direction}-geometry-left`);
+          const top = byName.get(`vertical-rl-${direction}-geometry-top`);
+          return (
+            Math.abs(left.wind.observation.number - left.reference.observation.number) > 10 ||
+            Math.abs(top.wind.observation.number - top.reference.observation.number) > 10
+          );
+        });
         controls["writing-mode-axis"] = {
           controlId: "writing-mode-axis",
-          outcome: observation.every((x) => x.wind.pass && x.reference.pass)
-            ? outcomes.shared
-            : outcomes.mismatch,
+          outcome:
+            probes.length === 24 &&
+            verticalDifferences &&
+            observation.every((x) => x.wind.pass && x.reference.pass)
+              ? outcomes.shared
+              : outcomes.mismatch,
+          verticalDifferences,
         };
+      }
       if (id === "named-spacing") {
         const scoped = {
           name: "nested-token-scope",
           property: "padding-top",
-          element: "button",
           scopeVars: "--zw-spacing-hsp-sm:31px;--spacing-hsp-sm:31px;",
           wind: "31px",
           reference: "31px",
+          documentHtml: probeHtml,
         };
         const scope = await observePair(browser, windCss, referenceCss, row.candidate, [scoped]);
         controls["nested-token-scope"] = {
@@ -645,17 +646,23 @@ async function main() {
     }
     const nativeRoot = fromRoot("tests/wind-compatibility/native");
     const nativeOutput = resolve(options.output, "wind-native");
-    await runWind(options["wind-binary"], nativeRoot, nativeOutput, "compiler");
+    const nativeProcess = await runWind(
+      options["wind-binary"],
+      nativeRoot,
+      nativeOutput,
+      "compiler",
+    );
     const nativeCss = await readFile(resolve(nativeOutput, "native-reset", "wind.css"), "utf8");
     const nativeReport = await readJson(resolve(nativeOutput, "native-reset", "report.json"));
     const nativeAuthored = await readFile(
       resolve(nativeRoot, "native-reset", "authored.css"),
       "utf8",
     );
+    const nativeHtml = await readFile(resolve(nativeRoot, "native-reset", "index.html"), "utf8");
     const nativeReferenceCompiler = await reference.compile(
       "@theme { --*: initial; } @tailwind utilities;",
     );
-    const nativeReferenceCss = `${reference.preflightCss}\n${nativeReferenceCompiler.build(["block"])}\n${nativeAuthored}`;
+    const nativeReferenceCss = `@layer theme, base, components, utilities;\n@layer base {\n${reference.preflightCss}\n}\n@layer utilities {\n${nativeReferenceCompiler.build(["block"])}\n}\n${nativeAuthored}`;
     await mkdir(resolve(options.output, "reference-native"), { recursive: true });
     await writeFile(
       resolve(options.output, "reference-native", "reference.css"),
@@ -666,25 +673,58 @@ async function main() {
       property: "box-sizing",
       wind: "border-box",
       reference: "border-box",
+      documentHtml: nativeHtml,
     };
     const authoredProbe = {
       name: "native-authored-cascade",
       property: "display",
       wind: "inline",
       reference: "inline",
+      documentHtml: nativeHtml,
     };
-    const nativeResult = [
-      await observeIsolated(browser, nativeCss, "block native", resetProbe, "wind"),
-      await observeIsolated(browser, nativeCss, "block native", authoredProbe, "wind"),
-      await observeIsolated(browser, nativeReferenceCss, "block native", resetProbe, "reference"),
-      await observeIsolated(
-        browser,
-        nativeReferenceCss,
-        "block native",
-        authoredProbe,
-        "reference",
-      ),
+    const nativeProbes = [
+      resetProbe,
+      authoredProbe,
+      {
+        name: "native-heading",
+        selector: "#heading",
+        property: "font-size",
+        wind: "32px",
+        reference: "16px",
+        documentHtml: nativeHtml,
+      },
+      {
+        name: "native-list",
+        selector: "#list",
+        property: "list-style-type",
+        wind: "disc",
+        reference: "none",
+        documentHtml: nativeHtml,
+      },
+      {
+        name: "native-border",
+        selector: "#border",
+        property: "border-top-style",
+        wind: "inset",
+        reference: "solid",
+        documentHtml: nativeHtml,
+      },
+      {
+        name: "native-form",
+        selector: "#form",
+        property: "border-top-style",
+        wind: "outset",
+        reference: "solid",
+        documentHtml: nativeHtml,
+      },
     ];
+    const nativeResult = [];
+    for (const probe of nativeProbes) {
+      nativeResult.push(await observeIsolated(browser, nativeCss, "block native", probe, "wind"));
+      nativeResult.push(
+        await observeIsolated(browser, nativeReferenceCss, "block native", probe, "reference"),
+      );
+    }
     controls["native-reset-controls"] = {
       controlId: "native-reset-controls",
       outcome:
@@ -696,9 +736,13 @@ async function main() {
           ? outcomes.shared
           : outcomes.mismatch,
       scope: "separate native reset and authored CSS behavior; no shared-lane equivalence claim",
+      referenceComposition:
+        "pinned preflight and compiled utility in the package index.css layer order; default theme omitted",
       observations: nativeResult,
       windCssSha256: sha256(nativeCss),
       referenceCssSha256: sha256(nativeReferenceCss),
+      fixtureTreeDigest: await treeDigest(nativeRoot),
+      windProcessStatus: nativeProcess.status,
     };
   } finally {
     await browser.close();
@@ -719,6 +763,9 @@ async function main() {
     scanner: scanner.identity,
     profileDigest: sha256(await readFile(fromRoot("tests/wind-compatibility/profile.json"))),
     fixtureManifestDigest: sha256(await readFile(resolve(options.fixture, "manifest.json"))),
+    pilotFixtureTreeDigest: await treeDigest(options.fixture),
+    extractionFixtureTreeDigest: await treeDigest(options.extraction),
+    nativeFixtureTreeDigest: await treeDigest(fromRoot("tests/wind-compatibility/native")),
     sourceInputDigest: digest(manifest.caseIds.map((id) => [id, required.get(id).candidate])),
     observationsDigest: sha256(await readFile(resolve(options.fixture, "observations.json"))),
     assertionDigest: sha256(await readFile(resolve(options.fixture, "observations.json"))),
@@ -727,7 +774,9 @@ async function main() {
       sha256(await readFile(import.meta.filename)),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/browser-adapter.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/differential-core.mjs"))),
+      sha256(await readFile(fromRoot("scripts/wind-compatibility/structure.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/oxide-scanner.mjs"))),
+      sha256(await readFile(fromRoot("scripts/wind-compatibility/reference.mjs"))),
     ]),
     lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
     browserEnvironment: environment,

@@ -123,7 +123,5 @@ export async function loadIndependentScanner(cache, fetcher = fetch) {
 export function scanOriginal(Scanner, source, extension) {
   if (!["html", "tsx", "mdx"].includes(extension))
     throw Error(`Unsupported scan extension ${extension}`);
-  return [
-    ...new Set(new Scanner({ sources: [] }).scanFiles([{ content: source, extension }])),
-  ].sort();
+  return [...new Scanner({ sources: [] }).scanFiles([{ content: source, extension }])].sort();
 }

@@ -8,14 +8,19 @@ const cssUrl = "https://wind-fixture.invalid/style.css";
 const documentUrl = "https://wind-fixture.invalid/fixture";
 
 function documentFor(candidate, probe) {
-  const tag = probe.element ?? "span";
-  const safeCandidate = candidate
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;");
+  if (
+    typeof probe.documentHtml !== "string" ||
+    !probe.documentHtml.includes("</head>") ||
+    !probe.documentHtml.includes('id="target"') ||
+    !probe.documentHtml.includes('id="box"')
+  )
+    throw Error(`Missing explicit probe DOM for ${probe.name}`);
   const width = probe.containerWidth ?? 300;
-  const targetWidth = probe.targetWidth ?? 100;
-  return `<!doctype html><html><head><link rel="stylesheet" href="${cssUrl}"><style>${probe.authoredCss ?? ""}</style></head><body style="margin:0"><div id="box" style="width:${width}px;height:${width}px;writing-mode:${probe.writingMode ?? "horizontal-tb"};direction:${probe.direction ?? "ltr"};${probe.scopeVars ?? ""}"><${tag} id="target" class="${safeCandidate}" style="width:${targetWidth}px">probe</${tag}></div></body></html>`;
+  const setup = `#box{width:${width}px;height:${width}px;writing-mode:${probe.writingMode ?? "horizontal-tb"};direction:${probe.direction ?? "ltr"};${probe.scopeVars ?? ""}}`;
+  return probe.documentHtml.replace(
+    "</head>",
+    `<link rel="stylesheet" href="${cssUrl}"><style>${setup}${probe.authoredCss ?? ""}</style></head>`,
+  );
 }
 
 function matchesExpected(actual, expected) {
@@ -33,8 +38,29 @@ function matchesExpected(actual, expected) {
 }
 
 export async function observeIsolated(browser, css, candidate, probe, engine) {
+  const html = documentFor(candidate, probe);
+  const selector = probe.selector ?? "#target";
+  const settings = {
+    viewportWidth: probe.viewportWidth ?? 800,
+    viewportHeight: 700,
+    hover: Boolean(probe.hover),
+    writingMode: probe.writingMode ?? "horizontal-tb",
+    direction: probe.direction ?? "ltr",
+    selector,
+    relativeTo: probe.relativeTo ?? "#box",
+    documentSha256: sha256(probe.documentHtml),
+    servedDocumentSha256: sha256(html),
+    authoredCssSha256: sha256(probe.authoredCss ?? ""),
+    scopeVars: probe.scopeVars ?? "",
+    hasTouch: false,
+    isMobile: false,
+    deviceScaleFactor: 1,
+    colorScheme: "light",
+    reducedMotion: "no-preference",
+    hoverCapability: "desktop-hover",
+  };
   const context = await browser.newContext({
-    viewport: { width: probe.viewportWidth ?? 800, height: 700 },
+    viewport: { width: settings.viewportWidth, height: settings.viewportHeight },
     reducedMotion: "no-preference",
     colorScheme: "light",
     hasTouch: false,
@@ -45,61 +71,68 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
       route.fulfill({ status: 200, contentType: "text/css", body: css }),
     );
     await context.route(documentUrl, (route) =>
-      route.fulfill({ status: 200, contentType: "text/html", body: documentFor(candidate, probe) }),
+      route.fulfill({ status: 200, contentType: "text/html", body: html }),
     );
     const page = await context.newPage();
     const cssResponse = page.waitForResponse((response) => response.url() === cssUrl);
     await page.goto(documentUrl, { waitUntil: "load" });
     const response = await cssResponse;
     const served = { status: response.status(), body: await response.body() };
-    await page.locator("#target").evaluate((el) => document.fonts.ready);
+    const targetClasses = await page.locator("#target").evaluate((el) => [...el.classList]);
+    if (!candidate.split(/\s+/).every((name) => targetClasses.includes(name)))
+      throw Error(`Probe DOM candidate mismatch: ${probe.name}`);
+    await page.locator(selector).evaluate(() => document.fonts.ready);
     if (probe.hover) await page.locator("#target").hover();
-    const observation = await page.locator("#target").evaluate((el, property) => {
-      const style = getComputedStyle(el),
-        box = el.getBoundingClientRect();
-      const parent = document.querySelector("#box").getBoundingClientRect();
-      const value = property.startsWith("geometry:")
-        ? String(Math.round((box[property.slice(9)] - parent[property.slice(9)]) * 100) / 100)
-        : style.getPropertyValue(property).trim();
-      const tree = [];
-      const walk = (rules, conditions) => {
-        for (const rule of rules) {
-          const next = [...conditions];
-          if (rule.conditionText) next.push(rule.conditionText);
-          if (rule.name && rule.cssRules) next.push(`@layer ${rule.name}`);
-          if (rule.selectorText)
-            tree.push({
-              selector: rule.selectorText,
-              conditions: next,
-              declarations: [...rule.style].map((name) => [
-                name,
-                rule.style.getPropertyValue(name).trim(),
-                rule.style.getPropertyPriority(name),
-              ]),
-            });
-          if (rule.cssRules) walk(rule.cssRules, next);
-        }
-      };
-      for (const sheet of document.styleSheets) walk(sheet.cssRules, []);
-      return {
-        value,
-        number: Number.parseFloat(value),
-        box: {
-          x: box.x,
-          y: box.y,
-          width: box.width,
-          height: box.height,
-          parentX: parent.x,
-          parentY: parent.y,
-          parentWidth: parent.width,
-          parentHeight: parent.height,
-        },
-        cssTree: tree,
-        cssRules: [...document.styleSheets].flatMap((sheet) =>
-          [...sheet.cssRules].map((rule) => rule.cssText),
-        ),
-      };
-    }, probe.property);
+    const observation = await page.locator(selector).evaluate(
+      (el, input) => {
+        const { property, relativeTo } = input;
+        const style = getComputedStyle(el),
+          box = el.getBoundingClientRect();
+        const parent = document.querySelector(relativeTo).getBoundingClientRect();
+        const value = property.startsWith("geometry:")
+          ? String(Math.round((box[property.slice(9)] - parent[property.slice(9)]) * 100) / 100)
+          : style.getPropertyValue(property).trim();
+        const tree = [];
+        const walk = (rules, conditions) => {
+          for (const rule of rules) {
+            const next = [...conditions];
+            if (rule.conditionText) next.push(rule.conditionText);
+            if (rule.name && rule.cssRules) next.push(`@layer ${rule.name}`);
+            if (rule.selectorText)
+              tree.push({
+                selector: rule.selectorText,
+                conditions: next,
+                declarations: [...rule.style].map((name) => [
+                  name,
+                  rule.style.getPropertyValue(name).trim(),
+                  rule.style.getPropertyPriority(name),
+                ]),
+              });
+            if (rule.cssRules) walk(rule.cssRules, next);
+          }
+        };
+        for (const sheet of document.styleSheets) walk(sheet.cssRules, []);
+        return {
+          value,
+          number: Number.parseFloat(value),
+          box: {
+            x: box.x,
+            y: box.y,
+            width: box.width,
+            height: box.height,
+            parentX: parent.x,
+            parentY: parent.y,
+            parentWidth: parent.width,
+            parentHeight: parent.height,
+          },
+          cssTree: tree,
+          cssRules: [...document.styleSheets].flatMap((sheet) =>
+            [...sheet.cssRules].map((rule) => rule.cssText),
+          ),
+        };
+      },
+      { property: probe.property, relativeTo: settings.relativeTo },
+    );
     const servedBytes = served?.body;
     const verified = served?.status === 200 && servedBytes && sha256(servedBytes) === sha256(css);
     return {
@@ -111,6 +144,7 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
       pass: Boolean(verified) && matchesExpected(observation, probe[engine]),
       stylesheetSha256: sha256(css),
       servedSha256: servedBytes ? sha256(servedBytes) : null,
+      settings,
     };
   } finally {
     await context.close();
@@ -162,15 +196,4 @@ export async function browserIdentity(browser, executable) {
     isolation: "new context per engine and probe",
     styleDelivery: "same-origin intercepted 200 text/css response",
   };
-}
-
-export function unexpectedSelector(tree, candidate) {
-  const escaped = candidate.replaceAll(":", "\\:");
-  return tree.some(
-    (rule) =>
-      !rule.selector.includes(`.${escaped}`) &&
-      !rule.selector.includes(":root") &&
-      !rule.selector.includes(":host") &&
-      !/^&(?::hover)?$/.test(rule.selector),
-  );
 }
