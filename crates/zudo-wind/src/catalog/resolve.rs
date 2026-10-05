@@ -146,7 +146,25 @@ impl Catalog {
                         .map(|suffix| (entry, suffix))
                 }
             })
+            // A static decoration style claims only its exact spelling. Its
+            // prefix still belongs to the color token lookup and diagnostics.
+            .filter(|(entry, suffix)| {
+                !entry.id.starts_with("v1.decoration.style.") || suffix.is_empty()
+            })
             .collect();
+        // Exact style roots were added after color tokens. Keep configured
+        // colors such as `wavy` and `solid-brand` on their old meaning.
+        let configured_decoration_color = name
+            .strip_prefix("decoration-")
+            .is_some_and(|suffix| tokens.contains(crate::TokenCategory::Color, suffix));
+        let matching: Vec<_> = if configured_decoration_color {
+            matching
+                .into_iter()
+                .filter(|(entry, _)| entry.id == "v1.decoration.color")
+                .collect()
+        } else {
+            matching
+        };
         let Some(longest) = matching.iter().map(|(entry, _)| entry.root.len()).max() else {
             return match super::migration::foreign_family(candidate) {
                 Some(family) => foreign(candidate, origin, family),
@@ -664,7 +682,9 @@ fn resolve_value(
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
                 value = normalize_ratio(&value);
             }
-            if entry.root == "underline-offset" && status == ValueStatus::Verified {
+            if (entry.root == "underline-offset" || entry.id == "v1.decoration.thickness")
+                && status == ValueStatus::Verified
+            {
                 validate_length(&value)
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
             }
@@ -748,6 +768,7 @@ fn resolve_special_integer(
         || entry.id == "v1.outline.width"
         || entry.id == "v1.outline.offset"
         || entry.id == "v1.underline-offset"
+        || entry.id == "v1.decoration.thickness"
     {
         let canonical = match Decimal::parse(suffix) {
             Ok(value) => value.to_string(),
