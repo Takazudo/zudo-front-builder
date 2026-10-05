@@ -60,12 +60,20 @@ fn getstaticprops_collection_appears_in_rendered_html() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
+        .env_remove("ZFB_BUILD_TIMING")
+        .env_remove("ZFB_DEV_TIMING")
+        .env_remove("ZFB_DEBUG_SNAPSHOT")
         .output()
         .expect("spawn zfb binary");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !stderr.contains("[zfb-build-timing]") && !stderr.contains("[zfb-timing] phase="),
+        "build timing must be silent by default; stderr: {stderr}"
+    );
 
     // Skip gracefully when the embedded runtime is unavailable (e.g. build
     // was done without the embed_v8 feature, or in a stripped CI image).
@@ -120,6 +128,75 @@ fn getstaticprops_collection_appears_in_rendered_html() {
          fixture's hello.md frontmatter title. \
          Got html:\n{html}"
     );
+}
+
+#[test]
+fn build_timing_opt_in_reports_snapshot_and_bundler_phase_starts() {
+    let tmp = tempfile::tempdir().expect("create tempdir for timing fixture copy");
+    let root = tmp.path();
+    copy_dir(&fixture_dir(), root).expect("copy fixture into tempdir");
+
+    let output = Command::new(zfb_binary!())
+        .args(["build", "--warnings-json", "warnings.json"])
+        .current_dir(root)
+        .env("ZFB_BUILD_TIMING", "1")
+        .env("ZFB_DEV_TIMING", "1")
+        .env_remove("ZFB_DEBUG_SNAPSHOT")
+        .output()
+        .expect("spawn zfb binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() && (stderr.contains("embed_v8") || stderr.contains("no esbuild")) {
+        eprintln!(
+            "[content_snapshot_no_deferred] timed zfb build exited non-zero with \
+             a known-skip indicator; skipping test.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "timed zfb build failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let event = |prefix: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("missing timing event {prefix:?}; stderr: {stderr}"))
+    };
+    let snapshot_start = event("[zfb-build-timing] phase=content-snapshot event=start");
+    let snapshot_done = event("[zfb-build-timing] phase=content-snapshot elapsed_ms=");
+    let bundle_start = event("[zfb-build-timing] phase=main-esbuild-bundle event=start");
+    let materialise_start = event("[zfb-timing] phase=materialise event=start");
+    let esbuild_start = event("[zfb-timing] phase=esbuild event=start");
+    let post_esbuild_start = event("[zfb-timing] phase=post-esbuild event=start");
+    let post_start = event("[zfb-timing] phase=post event=start");
+    assert!(
+        snapshot_start < snapshot_done
+            && snapshot_done < bundle_start
+            && bundle_start < materialise_start
+            && materialise_start < esbuild_start
+            && esbuild_start < post_esbuild_start
+            && post_esbuild_start < post_start,
+        "phase starts and completions must follow build order; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[zfb-timing] bundle(): materialise="),
+        "the existing bundler completion line must remain compatible; stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Hello World"),
+        "timing diagnostics must not include collection contents; stderr: {stderr}"
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("warnings.json")).expect("read warning report"))
+            .expect("warning report remains valid JSON");
+    assert_eq!(report["schemaVersion"], 1);
+    assert_eq!(report["command"], "build");
+    assert_eq!(report["status"], "success");
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).
