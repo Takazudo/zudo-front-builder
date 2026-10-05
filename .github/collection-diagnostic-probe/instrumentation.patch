@@ -1,0 +1,96 @@
+--- a/crates/zfb-build/src/orchestrator.rs
++++ b/crates/zfb-build/src/orchestrator.rs
+@@ -1523,6 +1523,10 @@
+                 affected
+             }
+         };
++
++        if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++            eprintln!("[deletion-diag] changes={changes:?} removed_consumers={removed_consumers:?}");
++        }
+ 
+         // Discovery runs first so a newly-created page is upserted into
+         // the graph (by the hook) before `plan_for_changes` folds the
+@@ -1769,6 +1773,10 @@
+             });
+         }
+ 
++        if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++            eprintln!("[deletion-diag] selected_pages={:?} narrowing={:?} discovery_refresh={discovery_refresh_completed}", plan.pages, plan.content_narrowing);
++        }
++
+         // `ZFB_DEV_TIMING=1` — surface the per-tick change kinds and the
+         // resulting narrowing decision (issue #1058, extending the #1028
+         // tick-class instrumentation). On a loaded arm64 macOS host an
+--- a/crates/zfb/src/commands/dev.rs
++++ b/crates/zfb/src/commands/dev.rs
+@@ -5779,6 +5779,9 @@
+         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+         let generation = stale.generation;
+         for path in output_paths {
++            if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++                eprintln!("[deletion-diag] mark_stale path={path:?} generation={generation}");
++            }
+             stale.entries.insert(path.clone(), generation);
+             stale.tick_stale.push(path);
+         }
+@@ -5805,6 +5808,9 @@
+     fn note_table_swap(&self, vanished: &[PathBuf]) {
+         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+         stale.generation += 1;
++        if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++            eprintln!("[deletion-diag] table_swap generation={} vanished={vanished:?} stale_entries={:?}", stale.generation, stale.entries);
++        }
+         if !vanished.is_empty() {
+             let vanished: HashSet<&PathBuf> = vanished.iter().collect();
+             stale.entries.retain(|path, _| !vanished.contains(path));
+@@ -5864,6 +5870,9 @@
+     /// new as the claimed generation.
+     fn claim(&self, output_path: &Path) -> Option<StaleClaim> {
+         let stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
++        if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++            eprintln!("[deletion-diag] claim output={output_path:?} generation={:?}", stale.entries.get(output_path));
++        }
+         stale.entries.get(output_path).map(|generation| StaleClaim {
+             output_path: output_path.to_path_buf(),
+             generation: *generation,
+@@ -7146,6 +7155,9 @@
+                 anyhow::bail!("content provenance trace wrapper failed: {error}");
+             }
+ 
++            if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++                eprintln!("[deletion-diag] raw_trace={:?}", payload.events);
++            }
+             let membership = collect_content_provenance_membership(
+                 &self.inner.rebuild_inputs.cfg,
+                 &self.inner.collection_roots,
+@@ -7163,6 +7175,9 @@
+                 )?
+             };
+ 
++            if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++                eprintln!("[deletion-diag] membership={:?} current_trace={current_trace:?}", membership.membership);
++            }
+             let mut state = self
+                 .inner
+                 .content_trace
+@@ -7186,6 +7201,9 @@
+                 .edge_groups(&membership.membership)
+                 .map_err(anyhow::Error::from)
+                 .context("expanding content provenance membership")?;
++            if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++                eprintln!("[deletion-diag] retained_observations={:?} edge_groups={groups:?}", state.reads_by_observation);
++            }
+             if let Some(graph) = self.content_graph() {
+                 let mut graph = graph
+                     .lock()
+@@ -11045,6 +11063,9 @@
+             }
+         };
+         let eager = eager_sets.get(page.path());
++        if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
++            eprintln!("[deletion-diag] lazy_page={page:?} outputs={outputs:?} eager={eager:?}");
++        }
+         stale.extend(
+             outputs
+                 .iter()
