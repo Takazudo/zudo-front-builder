@@ -1231,28 +1231,31 @@ fn wind_audit_group_summarizes_text_without_changing_json_or_exit_policy() {
         process_stderr(&grouped)
     );
     assert!(
-        grouped_stdout.contains("panel-card x3, first at default/src/a.tsx:2:"),
+        grouped_stdout.contains("panel-card x3, first at default/src:a.tsx:2:"),
         "{grouped_stdout}"
     );
     assert!(
-        grouped_stdout.contains("rounded-lg [ZW006 error] x3, first at default/src/a.tsx:2:"),
+        grouped_stdout.contains("rounded-lg [ZW006 error] x3, first at default/src:a.tsx:2:"),
         "{grouped_stdout}"
     );
     assert!(
-        grouped_stdout.contains("hover:rounded-lg [ZW006 error] x1, first at default/src/a.tsx:2:"),
+        grouped_stdout.contains("hover:rounded-lg [ZW006 error] x1, first at default/src:a.tsx:2:"),
         "{grouped_stdout}"
     );
     assert!(
-        grouped_stdout.contains("rounded-lg [ZW006 auditInfo] x1, first at default/src/a.tsx:1:"),
+        grouped_stdout.contains("rounded-lg [ZW006 auditInfo] x1, first at default/src:a.tsx:1:"),
         "{grouped_stdout}"
     );
     assert_eq!(grouped_stdout.matches("panel-card x3,").count(), 1);
 
     let default = run_wind_audit(temp.path(), &[]);
     let default_stdout = process_stdout(&default);
-    assert!(default_stdout.contains("panel-card at default/src/a.tsx:2:"));
-    assert!(default_stdout.contains("panel-card at default/src/b.tsx:1:"));
-    assert_eq!(default_stdout.matches("panel-card at default/src/").count(), 3);
+    assert!(default_stdout.contains("panel-card at default/src:a.tsx:2:"));
+    assert!(default_stdout.contains("panel-card at default/src:b.tsx:1:"));
+    assert_eq!(
+        default_stdout.matches("panel-card at default/src:").count(),
+        3
+    );
     assert!(!default_stdout.contains("panel-card x3,"));
 
     let strict = run_wind_audit(temp.path(), &["--group", "--fail-on", "error"]);
