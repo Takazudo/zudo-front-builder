@@ -1278,7 +1278,16 @@ fn wind_audit_group_summarizes_text_without_changing_json_or_exit_policy() {
         process_stderr(&strict_filtered)
     );
     assert!(process_stderr(&strict_filtered).contains("--fail-on error"));
-    assert!(!process_stdout(&strict_filtered).contains("rounded-lg [ZW006 error]"));
+    let filtered_stdout = process_stdout(&strict_filtered);
+    // --severity is a minimum: warning keeps errors and hides auditInfo.
+    assert!(
+        filtered_stdout.contains("rounded-lg [ZW006 error] x3,"),
+        "{filtered_stdout}"
+    );
+    assert!(
+        !filtered_stdout.contains("rounded-lg [ZW006 auditInfo]"),
+        "{filtered_stdout}"
+    );
 
     let json = run_wind_audit(temp.path(), &["--json"]);
     let grouped_json = run_wind_audit(temp.path(), &["--group", "--json"]);
