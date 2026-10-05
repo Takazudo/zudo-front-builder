@@ -21,7 +21,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use zfb_test_utils::{CrossBinaryE2eLock, locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 const EXPECTED_MARKERS: &[&str] = &[
     "ConsumerA",
