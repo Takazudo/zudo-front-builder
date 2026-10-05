@@ -1,0 +1,30 @@
+/** Locale-neutral, literal source shared by compiler input and generated MDX. */
+export interface WindExampleSource {
+  id: string;
+  html: string;
+  utilities: string[];
+  authoredClasses: string[];
+  scaffoldCss: string;
+  /** Recursive wind-only overrides. A null value removes the inherited key. */
+  config?: { wind: Record<string, unknown> };
+}
+export interface WindExpectedDiagnostic {
+  code: `ZW${string}`;
+  severity: "error" | "warning";
+}
+export interface WindPositiveExample extends WindExampleSource {
+  kind: "positive";
+  candidateOrigin?: never;
+  expectedDiagnostics?: never;
+}
+export interface WindDiagnosticExample extends WindExampleSource {
+  kind: "expected-diagnostic";
+  candidateOrigin?: "source" | "safelist";
+  expectedDiagnostics: WindExpectedDiagnostic[];
+}
+export type WindExample = WindPositiveExample | WindDiagnosticExample;
+export interface WindExampleFamily {
+  schemaVersion: 1;
+  family: string;
+  examples: WindExample[];
+}

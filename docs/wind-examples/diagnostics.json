@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "family": "diagnostics",
+  "examples": [
+    {
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"p-4\">p-4</div>",
+      "utilities": ["p-4"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacingUnit": null
+          }
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unknown-explicit-utility",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"unknown-utility\">unknown-utility</div>",
+      "utilities": ["unknown-utility"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW008",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unsupported-foreign-utility",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"line-clamp-2\">line-clamp-2</div>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "source-foreign-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<div class=\"line-clamp-2\">line-clamp-2</div>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": false
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "id": "source-foreign-strict",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<div class=\"line-clamp-2\">line-clamp-2</div>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": true
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}
