@@ -4518,9 +4518,12 @@ mod tests {
                     };
                     let error = load_from_dir_with_options(tmp.path(), &options)
                         .await
-                        .unwrap_err()
-                        .to_string();
-                    assert!(error.contains("rootPackage"), "{ts} {preset}: {error}");
+                        .unwrap_err();
+                    let diagnostic = format!("{error:#}");
+                    assert!(
+                        diagnostic.contains("rootPackage"),
+                        "{ts} {preset}: {diagnostic}"
+                    );
                 }
             }
         }
