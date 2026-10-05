@@ -12343,6 +12343,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wind_root_package_config_toggle_retracts_and_restores_session_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let project = root.join("app");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'app'\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("root.tsx"), "<div className=\"flex\" />").unwrap();
+        std::fs::write(project.join("src/page.tsx"), "<div className=\"block\" />").unwrap();
+        let config_path = project.join("zfb.config.json");
+        std::fs::write(&config_path, r#"{"wind":{}}"#).unwrap();
+        let mut config = DevCssConfig::new(config::load_from_dir(&project).await.unwrap());
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let mut session = None;
+
+        let css = wind_css_pass(&project, &mut config, &mut session, &invalidation, None).await;
+        assert!(css.contains(".flex") && css.contains(".block"), "{css}");
+        let initial_plan = session.as_ref().unwrap().plan().clone();
+        assert!(session.as_ref().unwrap().live_set().contains("flex"));
+
+        std::fs::write(
+            &config_path,
+            r#"{"wind":{"sources":{"rootPackage":false}}}"#,
+        )
+        .unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(!css.contains(".flex") && css.contains(".block"), "{css}");
+        assert_ne!(session.as_ref().unwrap().plan(), &initial_plan);
+        assert!(!session.as_ref().unwrap().live_set().contains("flex"));
+
+        std::fs::write(&config_path, r#"{"wind":{"sources":{"rootPackage":true}}}"#).unwrap();
+        let css = wind_css_pass(
+            &project,
+            &mut config,
+            &mut session,
+            &invalidation,
+            Some(&config_path),
+        )
+        .await;
+        assert!(css.contains(".flex") && css.contains(".block"), "{css}");
+        assert_eq!(session.as_ref().unwrap().plan(), &initial_plan);
+        assert!(session.as_ref().unwrap().live_set().contains("flex"));
+    }
+
+    #[tokio::test]
     async fn wind_source_exclusion_edits_retract_and_restore_candidates() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().canonicalize().unwrap();

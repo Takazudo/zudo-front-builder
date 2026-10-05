@@ -127,6 +127,8 @@ export type WindConfig = {
    * `class` and `className` cannot be ignored.
    */
   sources?: {
+    /** Omission scans a claimed workspace root package; false skips only that implicit Wind scan. */
+    rootPackage?: boolean;
     exclude?: string[];
     roots?: string[];
     packageRoots?: string[];

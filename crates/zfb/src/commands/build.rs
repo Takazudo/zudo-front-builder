@@ -1325,6 +1325,11 @@ pub(crate) struct WindSessionIndex {
 }
 
 impl WindSessionIndex {
+    #[cfg(test)]
+    pub(crate) fn plan(&self) -> &zfb_css::SourcePlan {
+        &self.plan
+    }
+
     fn canonical_event_path(path: &Path) -> PathBuf {
         let mut cursor = path;
         let mut suffix = Vec::new();
@@ -19642,6 +19647,7 @@ mod tests {
         std::fs::write(package.join("dist/view.js"), "export const c = \"grid\";").unwrap();
         let wind = crate::config::WindConfig {
             sources: crate::config::WindSources {
+                root_package: None,
                 exclude: Vec::new(),
                 roots: Vec::new(),
                 package_roots: vec!["./packages/ui".into()],
