@@ -1948,6 +1948,15 @@ fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<S
             i = j;
             continue;
         }
+        // Lowercase MDX JSX nodes inside a JsxRaw body have already been
+        // emitted as `<_components.<tag>>` by the nested renderer. The
+        // separate tag scan below registers their fallback-map entries;
+        // never turn the emitter-owned `_components` object into a generated
+        // component binding of its own.
+        if name.starts_with("_components.") {
+            i = j;
+            continue;
+        }
         if !is_component_identifier(name) {
             i = j.max(i + 1);
             continue;
