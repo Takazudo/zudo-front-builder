@@ -23,7 +23,7 @@ function documentFor(candidate, probe) {
   );
 }
 
-function matchesExpected(actual, expected) {
+export function matchesExpected(actual, expected) {
   if (typeof expected === "string") return actual.value === expected;
   if (expected === null) return true;
   if (typeof expected === "object") {
@@ -191,6 +191,12 @@ export async function browserIdentity(browser, executable) {
   const browserName = browser.browserType().name();
   const browserEntry = manifest.browsers.find((entry) => entry.name === browserName);
   if (!browserEntry) throw Error(`Playwright ${browserName} manifest entry absent`);
+  let releaseText = "";
+  if (process.platform === "linux") {
+    try { releaseText = await readFile("/etc/os-release", "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  const host = hostPlatformIdentity(process.platform, process.arch, releaseText);
   return {
     name: browser.browserType().name(),
     version: browser.version(),
@@ -198,6 +204,8 @@ export async function browserIdentity(browser, executable) {
     executableSha256: executable ? sha256(await readFile(executable)) : null,
     launchExecutableKind: `${browserName}-full-explicit`,
     platform: process.platform,
+    hostPlatform: host.hostPlatform,
+    linuxDistribution: host.linuxDistribution,
     osVersion: release(),
     architecture: process.arch,
     node: process.version,
@@ -213,4 +221,40 @@ export async function browserIdentity(browser, executable) {
     isolation: "new context per engine and probe",
     styleDelivery: "same-origin intercepted 200 text/css response",
   };
+}
+
+export function hostPlatformIdentity(platform, architecture, releaseText = "") {
+  if (platform !== "linux") return { hostPlatform: null, linuxDistribution: null };
+  const fields = Object.fromEntries(releaseText.split(/\r?\n/).flatMap((line) => {
+    const match = /^([A-Z_]+)=(.*)$/.exec(line);
+    if (!match) return [];
+    let value = match[2];
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    return [[match[1], value]];
+  }));
+  const id = fields.ID?.toLowerCase();
+  const versionId = fields.VERSION_ID;
+  const valid = /^[a-z0-9.-]+$/;
+  return {
+    hostPlatform: id && versionId && valid.test(id) && valid.test(versionId) && valid.test(architecture)
+      ? `${id}${versionId}-${architecture}` : null,
+    linuxDistribution: id && versionId ? { id, versionId } : null,
+  };
+}
+
+export function requiredMatrixMember(profile, environment) {
+  const policy = profile.browserPolicy;
+  if (environment.playwrightVersion !== policy.playwrightTestVersion ||
+      environment.playwrightCoreVersion !== policy.playwrightCoreVersion ||
+      environment.browserManifestSha256 !== policy.browserManifest.sha256 ||
+      !environment.hostPlatform || !environment.linuxDistribution ||
+      environment.hostPlatform !== `${environment.linuxDistribution.id}${environment.linuxDistribution.versionId}-${environment.architecture}`) return false;
+  return policy.requiredMatrix.some((member) =>
+    member.os === environment.platform &&
+    member.hostPlatform === environment.hostPlatform &&
+    member.browser === environment.name &&
+    member.revision === environment.revision &&
+    member.browserVersion === environment.version &&
+    member.browserVersion === environment.manifestBrowserVersion);
 }

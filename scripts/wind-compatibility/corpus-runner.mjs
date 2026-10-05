@@ -2,31 +2,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { browserIdentity, observeIsolated, observePair } from "./browser-adapter.mjs";
+import { browserIdentity, observeIsolated, observePair, requiredMatrixMember } from "./browser-adapter.mjs";
 import { checkMutations, completeCorpus, expectedOutcomes, finiteInventoryAccounting, validateCorpus } from "./corpus-core.mjs";
 import { generatedCandidateLists, generatedCount, generatedSourceCount, generatedSourceStrings, generatedWidthCount, generatedWidths, seed, shrinkFailure, shrinkSourceFailure, shrinkWidthFailure } from "./corpus-seeds.mjs";
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
+import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope } from "./corpus-pilot.mjs";
 import { compareCorpusStructure, expectedWindTree, canonical, validateStructureContracts } from "./corpus-structure.mjs";
-import { loadReference, verifyWindBuild } from "./differential-runner.mjs";
+import { supplementalProbePlan } from "./corpus-supplemental.mjs";
+import { loadReference, treeDigest, verifyWindBuild } from "./differential-runner.mjs";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
 
 const corpusRoot = fromRoot("tests/wind-compatibility/corpus");
 const archiveName = "response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3";
 const sourcePrefix = "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/";
-
-async function treeDigest(root) {
-  const entries = [];
-  async function visit(directory) {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) entries.push([path.slice(root.length + 1), sha256(await readFile(path))]);
-    }
-  }
-  await visit(root);
-  return digest(entries.sort((a, b) => a[0].localeCompare(b[0])));
-}
 
 function options(argv) {
   const result = { cache: "/tmp/zfb-wind-reference-cache", engine: "chromium" };
@@ -125,13 +114,11 @@ async function browserFor(name) {
   return { browser: await kind.launch({ headless: true, executablePath }), executablePath };
 }
 
-async function pilotResults(path, manifest, profile, windBuild) {
+async function pilotResults(path, manifest, profile, pilotManifest, pilotObservations, extractionManifest, windBuild, reference, scanner, browserEnvironment) {
   const report = await readJson(path);
-  if (!report.complete || report.exitCode !== 0 || report.kind !== "wind-differential-pilot" ||
-      digest(report.pilotCaseIds) !== digest(manifest.pilotCaseIds) ||
-      report.identity?.windBuild?.binarySha256 !== windBuild.binarySha256 ||
-      report.identity?.profileDigest !== sha256(await readFile(fromRoot("tests/wind-compatibility/profile.json"))))
-    throw Error("Pilot report absent, incomplete, stale, or from another build");
+  const expectedIdentity = await currentPilotIdentity({ profile, manifest: pilotManifest, windBuild, reference, scanner, browserEnvironment });
+  validatePilotEnvelope(report, profile, pilotManifest, pilotObservations, extractionManifest, expectedIdentity);
+  await validatePilotArtifacts(report, path, profile, pilotManifest, pilotObservations, extractionManifest, reference, scanner);
   const result = {};
   for (const row of report.cases) {
     if (manifest.pilotCaseIds.includes(row.caseId)) result[`pilot/${row.caseId}/chromium`] = { outcome: row.outcome, reportId: report.reportId };
@@ -176,6 +163,7 @@ async function supplementalResults(binary, reference, empty, configurations, con
   }
   wind(binary, fixture, windOutput);
   const results = {};
+  const sourceHtml = await readFile(fromRoot("tests/wind-compatibility/empty-token/index.html"), "utf8");
   for (const id of empty.supplementalCaseIds) {
     const row = empty.cases.find((x) => x.caseId === id);
     const css = await readFile(resolve(windOutput, id, "wind.css"), "utf8");
@@ -200,19 +188,15 @@ async function supplementalResults(binary, reference, empty, configurations, con
     await writeFile(referenceInputPath, referenceInput);
     const structure = compareCorpusStructure(contracts.supplemental[id], css, referenceCss);
     const observations = [];
-    for (const candidate of row.explicitCandidates) {
-      const expected = row.browserExpected[candidate];
-      for (const [key, value] of Object.entries(expected)) {
-        const property = { paddingTop: "padding-top", paddingRight: "padding-right", paddingBottom: "padding-bottom", paddingLeft: "padding-left", marginLeft: "margin-left", marginRight: "margin-right", marginTop: "margin-top", marginBottom: "margin-bottom", backgroundColor: "background-color", color: "color", padding: "padding-top", controlPadding: "padding-top", controlPaddingTop: "padding-top", controlMargin: candidate.startsWith("my-") ? "margin-top" : "margin-left", controlBackground: "background-color", controlColor: "color" }[key];
-        if (!property || typeof value !== "string") continue;
-        const documentHtml = `<!doctype html><html><head></head><body><div id="box"><span id="target" class="${candidate}">x</span><span id="control">x</span></div></body></html>`;
-        const probe = { name: `${id}/${candidate}/${key}`, property, selector: key.startsWith("control") ? "#control" : "#target", wind: value, reference: value, documentHtml, authoredCss: ':where(#target,#control){padding:24px;margin:0;color:#222;background-color:transparent;}' };
-        observations.push(await observePair(browser, css, referenceCss, candidate, [probe]));
-      }
+    const plan = supplementalProbePlan(row, sourceHtml);
+    for (const { candidate, key, property, role, value } of plan) {
+      const documentHtml = `<!doctype html><html><head></head><body><div id="box"><span id="target" class="${candidate}">x</span><span id="control">x</span></div></body></html>`;
+      const probe = { name: `${id}/${candidate}/${key}`, property, selector: role === "control" ? "#control" : "#target", wind: value, reference: value, documentHtml, authoredCss: ':where(#target,#control){padding:24px;margin:0;color:#222;background-color:transparent;}' };
+      observations.push(await observePair(browser, css, referenceCss, candidate, [probe]));
     }
     const transportPass = observations.flat().every((pair) => pair.wind.verified && pair.reference.verified);
-    const browserPass = observations.flat().every((pair) => pair.wind.pass && pair.reference.pass);
-    results[`supplemental/${id}/chromium`] = { outcome: !transportPass ? "infrastructure-failure" : declarations && exactRules && vars && prelude && structure.pass && browserPass ? "matched" : "unexpected-mismatch", declarations, exactRules, vars, prelude, structure, transportPass, browserPass, observations, windCssPath: resolve(windOutput, id, "wind.css"), windCssSha256: sha256(css), referenceCssPath, referenceCssSha256: sha256(referenceCss), referenceInputPath, referenceInputSha256: sha256(referenceInput) };
+    const browserPass = observations.length === plan.length && observations.flat().every((pair) => pair.wind.pass && pair.reference.pass);
+    results[`supplemental/${id}/chromium`] = { outcome: !transportPass ? "infrastructure-failure" : declarations && exactRules && vars && prelude && structure.pass && browserPass ? "matched" : "unexpected-mismatch", declarations, exactRules, vars, prelude, structure, observationCount: plan.length, transitionMetadata: row.browserExpected["p-4"]?.previousConfiguredPadding ?? null, transportPass, browserPass, observations, windCssPath: resolve(windOutput, id, "wind.css"), windCssSha256: sha256(css), referenceCssPath, referenceCssSha256: sha256(referenceCss), referenceInputPath, referenceInputSha256: sha256(referenceInput) };
   }
   return results;
 }
@@ -317,7 +301,7 @@ async function mutations(browser, cssById) {
   return checkMutations(valid, mutated);
 }
 
-async function seededControls(binary, reference, browser, cache, output) {
+async function seededControls(binary, reference, browser, scanner, output) {
   const checked = await readJson(resolve(corpusRoot, "seed-regressions.json"));
   if (checked.schemaVersion !== 1 || checked.seed !== `0x${seed.toString(16)}` || checked.generatedCount !== generatedCount || checked.generatedWidthCount !== generatedWidthCount || checked.generatedSourceCount !== generatedSourceCount ||
       digest(checked.permanentSpecimens) !== digest([["flex", "flex-row", "flex"], ["relative", "flex", "flex-row"]]))
@@ -396,7 +380,6 @@ async function seededControls(binary, reference, browser, cache, output) {
       return { outcome: "unexpected-mismatch", kind: "arbitrary-width", specimenIndex: index, shrunk, artifacts };
     }
   }
-  const scanner = await loadIndependentScanner(cache);
   const sources = generatedSourceStrings();
   const sourceRoot = resolve(output, "source-fixtures");
   const sourceOutput = resolve(output, "source-wind");
@@ -462,12 +445,13 @@ async function main(argv) {
   const args = options(argv);
   const output = await outsideCheckout(args.output);
   await mkdir(output, { recursive: true });
-  const [manifest, profile, empty, pilot, pilotObservations, upstream, configurations, bootstrap, inventory, catalog, contracts] = await Promise.all([
+  const [manifest, profile, empty, pilot, pilotObservations, extractionManifest, upstream, configurations, bootstrap, inventory, catalog, contracts] = await Promise.all([
     readJson(resolve(corpusRoot, "manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/profile.json")),
     readJson(fromRoot("tests/wind-compatibility/empty-token/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/pilot/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/pilot/observations.json")),
+    readJson(fromRoot("tests/wind-compatibility/extraction/manifest.json")),
     readJson(resolve(corpusRoot, "upstream/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/empty-token/configurations.json")),
     readJson(fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
@@ -483,16 +467,17 @@ async function main(argv) {
   const source = await provenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
   const reference = await loadReference(args.cache, bootstrap);
+  const scanner = args.engine === "chromium" ? await loadIndependentScanner(args.cache) : null;
   const { browser, executablePath } = await browserFor(args.engine);
   let report;
   try {
     const browserEnvironment = await browserIdentity(browser, executablePath);
-    const matrix = profile.browserPolicy.requiredMatrix.find((row) => row.browser === args.engine);
-    if (!matrix || matrix.os !== browserEnvironment.platform || matrix.revision !== browserEnvironment.revision || matrix.browserVersion !== browserEnvironment.version)
+    if (!requiredMatrixMember(profile, browserEnvironment) || browserEnvironment.name !== args.engine)
       throw Error(`Browser outside required matrix: ${args.engine}`);
+    browserEnvironment.requiredMatrixMember = true;
     const executed = {};
     if (args.engine === "chromium") {
-      Object.assign(executed, await pilotResults(args["pilot-report"], manifest, profile, windBuild));
+      Object.assign(executed, await pilotResults(args["pilot-report"], manifest, profile, pilot, pilotObservations, extractionManifest, windBuild, reference, scanner, browserEnvironment));
       Object.assign(executed, await nativeResults(args["wind-binary"], manifest, empty, output));
       Object.assign(executed, await supplementalResults(args["wind-binary"], reference, empty, configurations, contracts, browser, output));
     }
@@ -500,7 +485,7 @@ async function main(argv) {
     Object.assign(executed, results);
     const controls = args.engine === "chromium" ? {
       mutations: await mutations(browser, cssById),
-      seeded: await seededControls(args["wind-binary"], reference, browser, args.cache, output),
+      seeded: await seededControls(args["wind-binary"], reference, browser, scanner, output),
     } : { targetedEngine: "not-required" };
     const expected = allExpected.filter((id) => id.endsWith(`/${args.engine}`));
     const accounting = completeCorpus(expected, executed, expectedOutcomes(manifest, profile));
@@ -510,11 +495,12 @@ async function main(argv) {
       return { id: difference.id, requiredCaseIds, reviewedCount: requiredCaseIds.length, observedCaseIds, observedCount: observedCaseIds.length, pass: digest(requiredCaseIds) === digest(observedCaseIds) };
     });
     const differencesPass = differenceSummary.every((row) => row.pass);
-    const adapterPaths = ["corpus-runner.mjs", "corpus-core.mjs", "corpus-seeds.mjs", "corpus-structure.mjs", "browser-adapter.mjs", "differential-runner.mjs", "differential-core.mjs", "structure.mjs", "reference.mjs", "reference-module-graph.mjs"];
+    const adapterPaths = ["corpus-runner.mjs", "corpus-core.mjs", "corpus-seeds.mjs", "corpus-structure.mjs", "corpus-supplemental.mjs", "corpus-pilot.mjs", "browser-adapter.mjs", "differential-runner.mjs", "differential-core.mjs", "structure.mjs", "reference.mjs", "reference-module-graph.mjs", "oxide-scanner.mjs"];
     const adapterFiles = await Promise.all(adapterPaths.map(async (name) => [name, sha256(await readFile(fromRoot(`scripts/wind-compatibility/${name}`)))]));
     const identity = {
       source,
       reference: reference.identity,
+      scanner: scanner?.identity ?? null,
       windBuild,
       profileId: profile.profileId,
       profileVersion: profile.profileVersion,
