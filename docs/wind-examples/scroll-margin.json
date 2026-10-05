@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "family": "scroll-margin",
+  "examples": [
+    {
+      "id": "top-offset",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller\">\n    <a class=\"wind-demo-link\" href=\"#top-target\">Jump to the target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target scroll-mt-8\" id=\"top-target\">Target with scroll-mt-8</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n</div>",
+      "utilities": ["scroll-mt-8"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    },
+    {
+      "id": "axis-offsets",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller wind-demo-y-scroller\">\n    <a class=\"wind-demo-link\" href=\"#axis-y\">Jump to the vertical target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target scroll-my-2\" id=\"axis-y\">Vertical target with scroll-my-2</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n  <div class=\"wind-demo-scroller wind-demo-x-scroller\">\n    <a class=\"wind-demo-link\" href=\"#axis-x\">Jump to the horizontal target</a>\n    <div class=\"wind-demo-track\">\n      <section class=\"wind-demo-target scroll-mx-8\" id=\"axis-x\">Horizontal target with scroll-mx-8</section>\n    </div>\n  </div>\n</div>",
+      "utilities": ["scroll-mx-8", "scroll-my-2"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-y-scroller",
+        "wind-demo-x-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-track",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-y-scroller { width: 17rem; }\n.wind-demo-x-scroller { width: 17rem; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-track { display: flex; align-items: center; justify-content: flex-end; width: 34rem; min-height: 7rem; }\n.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    },
+    {
+      "id": "edge-offsets",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller\">\n    <a class=\"wind-demo-link\" href=\"#bottom-target\">Jump to the bottom-margin target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target scroll-mb-4\" id=\"bottom-target\">Target with scroll-mb-4</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n  <div class=\"wind-demo-scroller wind-demo-x-scroller\">\n    <a class=\"wind-demo-link\" href=\"#left-target\">Jump to the left-margin target</a>\n    <a class=\"wind-demo-link\" href=\"#right-target\">Jump to the right-margin target</a>\n    <div class=\"wind-demo-track wind-demo-edge-track\">\n      <section class=\"wind-demo-target scroll-ml-6\" id=\"left-target\">scroll-ml-6</section>\n      <section class=\"wind-demo-target scroll-mr-6\" id=\"right-target\">scroll-mr-6</section>\n    </div>\n  </div>\n</div>",
+      "utilities": ["scroll-mb-4", "scroll-ml-6", "scroll-mr-6"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-x-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-track",
+        "wind-demo-edge-track",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-x-scroller { width: 17rem; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-track { display: flex; align-items: center; justify-content: flex-end; width: 34rem; min-height: 7rem; }\n.wind-demo-edge-track { justify-content: space-between; }\n.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    },
+    {
+      "id": "all-sides-offset",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller wind-demo-two-axis-scroller\">\n    <a class=\"wind-demo-link\" href=\"#all-sides-target\">Jump to the lower-right target</a>\n    <div class=\"wind-demo-canvas\">\n      <section class=\"wind-demo-target scroll-m-6\" id=\"all-sides-target\">scroll-m-6 on all four sides</section>\n    </div>\n  </div>\n</div>",
+      "utilities": ["scroll-m-6"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-two-axis-scroller",
+        "wind-demo-link",
+        "wind-demo-canvas",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-two-axis-scroller { width: 17rem; height: 9rem; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-canvas { display: flex; align-items: flex-end; justify-content: flex-end; width: 34rem; height: 20rem; }\n.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    },
+    {
+      "id": "named-offset",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller\">\n    <a class=\"wind-demo-link\" href=\"#named-target\">Jump to the named-token target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target scroll-mt-sticky\" id=\"named-target\">scroll-mt-sticky · 3rem</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n</div>",
+      "utilities": ["scroll-mt-sticky"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "sticky": "3rem"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "arbitrary-offset",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller\">\n    <a class=\"wind-demo-link\" href=\"#arbitrary-target\">Jump to the arbitrary-value target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target scroll-mt-[72px]\" id=\"arbitrary-target\">scroll-mt-[72px]</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n</div>",
+      "utilities": ["scroll-mt-[72px]"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    },
+    {
+      "id": "negative-offset",
+      "kind": "positive",
+      "head": "<base href=\"about:srcdoc\">",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-scroller\">\n    <a class=\"wind-demo-link\" href=\"#negative-target\">Jump to the negative-margin target</a>\n    <div class=\"wind-demo-spacer\">Earlier content</div>\n    <section class=\"wind-demo-target -scroll-mt-4\" id=\"negative-target\">-scroll-mt-4</section>\n    <div class=\"wind-demo-spacer\">Later content</div>\n  </div>\n</div>",
+      "utilities": ["-scroll-mt-4"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-scroller",
+        "wind-demo-link",
+        "wind-demo-spacer",
+        "wind-demo-target"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }\n.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }\n.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }"
+    }
+  ]
+}
