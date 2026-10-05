@@ -98,3 +98,23 @@ fail-closed `Docs gate`. Compiler/catalog, records/config, generator scripts,
 assets, and Rust manifests trigger it. Failure, cancellation, detector failure,
 and unexplained skipping all fail the gate. Subsequent content branches must
 regenerate their assets before merge.
+
+## Authored guide previews
+
+Guides retain their authored prose. Mark a generated preview block with a stable
+record reference and localized title:
+
+```mdx
+{/* wind-preview: guide-variants/responsive "Resize the preview" */}
+{/* wind-preview:end */}
+```
+
+After the manager commits genuine assets, run
+`node docs/scripts/generate-wind-guide-previews.mjs` with the owned guide paths.
+Without paths it updates all ten guides in both locales; `--check` rejects stale
+blocks. The generated native HtmlPreview receives the verified record HTML and
+CSS, localized controls, and optional fragment base. It also shows the merged
+configuration and authored scaffold in disclosures. Diagnostic records render
+source and expected codes instead of an iframe. Do not hand-edit generated blocks
+or duplicate their HTML/CSS elsewhere. Use `guide-` family names for guide records
+to keep their identities distinct from utility families.
