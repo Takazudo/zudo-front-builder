@@ -16,7 +16,7 @@
   "locales": {
     "en": {
       "purpose": "Color an outline independently of its thickness, distance, and line style.",
-      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
       "customValues": "Named outline colors use tokens.colors; outline-current and outline-transparent are supported keywords. Arbitrary values such as outline-[#8b1e3f] are validated as CSS colors. A slash modifier accepts an integer from 0 through 100 and mixes the color with transparent in Oklab. The outline root is shared: integer suffixes resolve as width, while configured color names and CSS colors resolve as color. No automatic color palette is provided.",
       "examples": [
         {
@@ -33,7 +33,7 @@
     },
     "ja": {
       "purpose": "アウトラインの太さ、距離、線種とは独立して色を指定します。",
-      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
       "customValues": "名前付きの色は tokens.colors を使います。outline-current と outline-transparent もキーワードとして使えます。outline-[#8b1e3f] のような任意値は CSS 色として検証されます。スラッシュ修飾子には 0〜100 の整数を指定し、色を Oklab で transparent と混ぜます。outline の根は共有されており、整数の接尾辞は幅、設定済みの色名や CSS 色は色として解決します。自動パレットはありません。",
       "examples": [
         {

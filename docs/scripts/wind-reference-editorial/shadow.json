@@ -16,7 +16,7 @@
   "locales": {
     "en": {
       "purpose": "Apply a configured box shadow, an arbitrary CSS box-shadow, or remove the shadow.",
-      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
       "customValues": "A named value such as shadow-panel resolves only from tokens.shadows. shadow-none is the supported keyword for no shadow. Bracket values are validated as CSS box-shadow values, with underscores separating spaces in a class candidate. There is no default shadow scale and no shadow opacity modifier. The catalog does not add ring utilities.",
       "examples": [
         {
@@ -28,7 +28,7 @@
     },
     "ja": {
       "purpose": "設定済みの box-shadow、任意の CSS box-shadow、または影なしを指定します。",
-      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
       "customValues": "shadow-panel のような名前は tokens.shadows に設定した値だけを参照します。shadow-none は影なしのキーワードです。角括弧の値は CSS box-shadow として検証され、クラス内のアンダースコアは空白を表します。既定の影スケールも影用の不透明度修飾子もありません。カタログには ring ユーティリティもありません。",
       "examples": [
         {

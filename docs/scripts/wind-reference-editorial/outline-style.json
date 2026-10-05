@@ -31,7 +31,7 @@
   "locales": {
     "en": {
       "purpose": "Choose a supported outline line style, including a style that removes the outline.",
-      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
       "customValues": "The exact classes outline-solid, outline-dashed, outline-dotted, outline-double, and outline-none set outline-style. They do not supply width or color, so pair a visible style with outline width and color utilities. outline-none removes the outline completely; use it only when another clear focus indicator replaces it. The catalog does not include Tailwind’s outline-hidden utility.",
       "examples": [
         {
@@ -43,7 +43,7 @@
     },
     "ja": {
       "purpose": "対応するアウトラインの線種を選びます。アウトラインを消す指定もあります。",
-      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
       "customValues": "outline-solid、outline-dashed、outline-dotted、outline-double、outline-none は完全一致のクラスで outline-style を設定します。幅と色は含まれないため、見える線には幅と色のユーティリティも組み合わせます。outline-none はアウトラインを完全に削除します。使う場合は、明確な別のフォーカス表示を用意してください。カタログには Tailwind の outline-hidden は含まれません。",
       "examples": [
         {

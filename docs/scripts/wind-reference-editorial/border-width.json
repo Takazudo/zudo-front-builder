@@ -41,7 +41,7 @@
   "locales": {
     "en": {
       "purpose": "Set the thickness of a physical border on every side, an axis, or one edge.",
-      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
       "customValues": "The bare border utility emits a 1px solid border on all four sides. Integer suffixes are pixel lengths: border-x-4 means 4px on the left and right, while border-y-2 means 2px on the top and bottom. The x/y names refer to physical sides, not writing-mode-aware logical axes. border-t, border-r, border-b, and border-l target individual edges. Bracket values accept validated CSS lengths. These widths do not use spacingUnit and cannot be negative; each width utility also sets that edge’s style to solid.",
       "examples": [
         {
@@ -58,7 +58,7 @@
     },
     "ja": {
       "purpose": "四辺すべて、軸、または一辺の物理ボーダー幅を指定します。",
-      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
       "customValues": "引数なしの border は四辺に 1px solid を出力します。数値の接尾辞はピクセル長です。border-x-4 は左右、border-y-2 は上下に作用します。x/y は書字方向に応じて変化する論理軸ではなく物理辺です。border-t、border-r、border-b、border-l は各辺を指定します。角括弧には検証済み CSS 長さを指定できます。spacingUnit は使わず、負数も使えません。幅ユーティリティは対象辺のスタイルも solid にします。",
       "examples": [
         {
