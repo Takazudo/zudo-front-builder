@@ -53,11 +53,7 @@
     "implementation-gap",
     "out-of-scope"
   ],
-  "evidenceLevels": [
-    "source-inspected",
-    "contract-tested",
-    "independently-differential-tested"
-  ],
+  "evidenceLevels": ["source-inspected", "contract-tested", "independently-differential-tested"],
   "evidenceIdentityRequired": [
     "windGitSha",
     "windSpecVersion",
@@ -151,9 +147,7 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "expectedContract": "display:block",
       "evidence": {
         "sourceInspected": {
@@ -171,9 +165,7 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "expectedContract": "display:none; none is not a display utility spelling",
       "evidence": {
         "sourceInspected": {
@@ -191,9 +183,7 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "expectedContract": "display:inline-flex",
       "evidence": {
         "sourceInspected": {
@@ -211,10 +201,7 @@
       "disposition": "intentional-difference",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "physical-logical-margin",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"],
       "expectedContract": "Wind margin-left/right:auto; reference margin-inline:auto",
       "evidence": {
         "sourceInspected": {
@@ -232,9 +219,7 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "expectedContract": "repeat(2,minmax(0,1fr)); use a grid container in geometry cases",
       "evidence": {
         "sourceInspected": {
@@ -252,10 +237,7 @@
       "disposition": "intentional-difference",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "zero-without-theme",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["zero-without-theme", "wind-layer-order-prelude"],
       "expectedContract": "Wind emits zero padding; empty-theme reference omits candidate",
       "evidence": {
         "sourceInspected": {
@@ -317,10 +299,7 @@
       "disposition": "equivalent-mapped",
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
-      "reviewedDifferenceIds": [
-        "named-token-representation",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"],
       "expectedContract": "Wind tokens.colors.surface=#123456; reference --color-surface:#123456",
       "evidence": {
         "sourceInspected": {
@@ -338,9 +317,7 @@
       "disposition": "intentional-difference",
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ],
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
       "expectedContract": "No spacingUnit or spacing token: no utility CSS on either side; diagnostics are independently asserted",
       "evidence": {
         "sourceInspected": {
@@ -358,9 +335,7 @@
       "disposition": "intentional-difference",
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ],
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
       "expectedContract": "No palette: no utility CSS on either side; missing token is not a missing family",
       "evidence": {
         "sourceInspected": {
@@ -419,10 +394,7 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
       "expectedContract": "Test hover active/inactive and hover capability; preserve media and specificity",
       "evidence": {
         "sourceInspected": {
@@ -440,10 +412,7 @@
       "disposition": "equivalent-mapped",
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
       "expectedContract": "Wind breakpoints.sm=640; reference --breakpoint-sm:640px; test below/at/above boundary",
       "evidence": {
         "sourceInspected": {
@@ -471,70 +440,49 @@
   "reviewedDifferences": [
     {
       "id": "physical-logical-margin",
-      "caseIds": [
-        "mx-auto"
-      ],
+      "caseIds": ["mx-auto"],
       "kind": "semantic",
       "scope": "Physical left/right versus inline margins; horizontal-tb and vertical-rl, ltr and rtl, with both computed longhands and geometry."
     },
     {
       "id": "zero-without-theme",
-      "caseIds": [
-        "p-0-empty"
-      ],
+      "caseIds": ["p-0-empty"],
       "kind": "generation",
       "scope": "Wind zero padding versus omitted reference rule; absence must be asserted and counted."
     },
     {
       "id": "zero-variable-indirection",
-      "caseIds": [
-        "p-0-mapped"
-      ],
+      "caseIds": ["p-0-mapped"],
       "kind": "structural",
       "scope": "Reference var(--spacing-0) plus explicit theme rule versus Wind literal zero; fixed mapped config, no override equivalence promised."
     },
     {
       "id": "padding-expansion",
-      "caseIds": [
-        "p-0-mapped",
-        "named-spacing",
-        "configured-p-4"
-      ],
+      "caseIds": ["p-0-mapped", "named-spacing", "configured-p-4"],
       "kind": "structural",
       "scope": "Reference padding shorthand versus Wind four physical longhands; compare parsed writes and browser behavior."
     },
     {
       "id": "named-token-representation",
-      "caseIds": [
-        "named-spacing",
-        "named-color"
-      ],
+      "caseIds": ["named-spacing", "named-color"],
       "kind": "structural",
       "scope": "Reference --spacing/--color names and :root,:host rule versus Wind --zw names in zw-tokens layer; both use var(), preserve each rule."
     },
     {
       "id": "numeric-scale-representation",
-      "caseIds": [
-        "configured-p-4"
-      ],
+      "caseIds": ["configured-p-4"],
       "kind": "structural",
       "scope": "Reference configured --spacing:0.25rem in its :root,:host theme rule and padding calculation versus Wind --zw-spacing-unit:0.25rem in @layer zw-tokens/:root and computed literal utility padding. Compare and count both token rules/layers and utility values; shared token declarations occur once per generated stylesheet in composition. No runtime variable override equivalence promised; extra declarations/rules/layers fail."
     },
     {
       "id": "missing-token-diagnostics",
-      "caseIds": [
-        "unconfigured-p-4",
-        "undeclared-palette"
-      ],
+      "caseIds": ["unconfigured-p-4", "undeclared-palette"],
       "kind": "diagnostic",
       "scope": "No generated utility on either side; Wind origin/strictness-sensitive diagnostic versus reference omission. Probe separately."
     },
     {
       "id": "variant-nesting",
-      "caseIds": [
-        "hover-block",
-        "breakpoint-block"
-      ],
+      "caseIds": ["hover-block", "breakpoint-block"],
       "kind": "structural",
       "scope": "Reference nested selector/media representation versus Wind flat rules; retain conditions, specificity, and ordering during structural analysis."
     },
@@ -562,11 +510,7 @@
         "wind": 1,
         "reference": 0
       },
-      "standaloneAbsentCaseIds": [
-        "unconfigured-p-4",
-        "undeclared-palette",
-        "contents-gap"
-      ],
+      "standaloneAbsentCaseIds": ["unconfigured-p-4", "undeclared-palette", "contents-gap"],
       "emptyStylesheetExpectedOccurrences": {
         "wind": 0,
         "reference": 0
@@ -681,11 +625,7 @@
       "autoAdopt": false
     }
   ],
-  "excludedOwnership": [
-    3696,
-    3328,
-    3329
-  ],
+  "excludedOwnership": [3696, 3328, 3329],
   "history": [
     {
       "version": 1,
