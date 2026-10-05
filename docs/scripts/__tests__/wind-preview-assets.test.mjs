@@ -166,7 +166,11 @@ test("CSS and source-plan lessons cannot relax positive validation", () => {
   assert.doesNotThrow(() => validateRecord(negative));
   assert.equal(exampleInput(example), "@apply p-4;\n");
   example.diagnosticStylesheet += '\n@import "foreign.css";';
-  assert.throws(() => validateRecord(negative), /without imports/);
+  assert.throws(() => validateRecord(negative), /separate ZW009 error fixture/);
+  example.diagnosticStylesheet = '@import "tailwindcss/utilities";';
+  assert.doesNotThrow(() => validateRecord(negative));
+  example.diagnosticStylesheet = '@import "ordinary-package/styles.css";';
+  assert.throws(() => validateRecord(negative), /separate ZW009 error fixture/);
   delete example.diagnosticStylesheet;
   for (const mode of ["all", "partial"]) {
     example.sourceExclusion = mode;

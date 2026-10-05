@@ -63,21 +63,27 @@ export function validateRecord(record) {
     }
     if (typeof example.html !== "string" || typeof example.scaffoldCss !== "string")
       fail(`${label}: html and scaffoldCss required`);
+    const rejectedTailwindImport =
+      typeof example.diagnosticStylesheet === "string" &&
+      /^@import\s+["']tailwindcss(?:\/[a-z0-9_./-]+)?["']\s*;\s*$/i.test(
+        example.diagnosticStylesheet,
+      );
     if (
       example.diagnosticStylesheet !== undefined &&
       (example.kind !== "expected-diagnostic" ||
         typeof example.diagnosticStylesheet !== "string" ||
-        !/@(?:tailwind|apply|theme|source|utility|plugin|config|reference)\b/i.test(
-          example.diagnosticStylesheet,
-        ) ||
-        /@import\b/i.test(example.diagnosticStylesheet) ||
+        (!rejectedTailwindImport &&
+          !/@(?:tailwind|apply|theme|source|utility|plugin|config|reference)\b/i.test(
+            example.diagnosticStylesheet,
+          )) ||
+        (!rejectedTailwindImport && /@import\b/i.test(example.diagnosticStylesheet)) ||
         example.scaffoldCss.trim() ||
         !example.expectedDiagnostics?.some(
           (item) => item.code === "ZW009" && item.severity === "error",
         ))
     )
       fail(
-        `${label}: diagnosticStylesheet requires a separate ZW009 error fixture without imports or scaffolding`,
+        `${label}: diagnosticStylesheet requires a separate ZW009 error fixture, unsupported directives or one Tailwind import, and no scaffolding`,
       );
     if (
       example.sourceExclusion !== undefined &&

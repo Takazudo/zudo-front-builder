@@ -123,8 +123,9 @@ Operational rejection lessons have two diagnostic-only fields. Neither is allowe
 on a positive preview, and neither changes the normal candidate-intent contract:
 
 - `diagnosticStylesheet`: a separate CSS entry containing a rejected Tailwind
-  directive, with expected `ZW009` / `error`. Keep `scaffoldCss` empty; imports
-  are rejected. The guide generator displays these exact CSS bytes as source,
+  directive, with expected `ZW009` / `error`. Keep `scaffoldCss` empty. A single
+  quoted `@import "tailwindcss"` or `tailwindcss/...` import is also accepted as
+  a rejection lesson; ordinary imports remain rejected. The guide generator displays these exact CSS bytes as source,
   never an iframe. This field does not allow Tailwind directives in scaffolding.
 - `sourceExclusion: "all" | "partial"`: writes both `sample.html` and
   `excluded.html` from the same record HTML, and configures
