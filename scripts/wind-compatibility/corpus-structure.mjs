@@ -2,7 +2,7 @@ import { digest } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
 
 const prelude = "@layer zw-reset, zw-tokens, zfb-hi, base, components";
-const reviewedContractsDigest = "03cfccf1401a4966e044d3be5706591117863e61939d7bbbb8935ed21b915000";
+const reviewedContractsDigest = "af9ebfa1142e60660f6fad48b5ecc9e8ae7dd23e0a399b0d4722abc338e040b4";
 
 export function canonical(node) {
   if (node.kind === "declaration")

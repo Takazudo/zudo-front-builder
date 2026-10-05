@@ -216,7 +216,7 @@
           "selector": ".translate-y-2",
           "media": null,
           "writes": [
-            ["--zw-translate-y", ".5rem"],
+            ["--zw-translate-y", "0.5rem"],
             ["translate", "var(--zw-translate-x) var(--zw-translate-y)"]
           ]
         }
