@@ -454,135 +454,105 @@
   "cases": [
     {
       "caseId": "block",
-      "explicitCandidates": [
-        "block"
-      ],
+      "explicitCandidates": ["block"],
       "configuration": "empty",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "hidden",
-      "explicitCandidates": [
-        "hidden"
-      ],
+      "explicitCandidates": ["hidden"],
       "configuration": "empty",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "inline-flex",
-      "explicitCandidates": [
-        "inline-flex"
-      ],
+      "explicitCandidates": ["inline-flex"],
       "configuration": "empty",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "mx-auto",
-      "explicitCandidates": [
-        "mx-auto"
-      ],
+      "explicitCandidates": ["mx-auto"],
       "configuration": "empty",
       "expectedOutcome": "generated-reviewed-difference",
       "sourceFile": "index.html"
     },
     {
       "caseId": "grid-cols-2",
-      "explicitCandidates": [
-        "grid-cols-2"
-      ],
+      "explicitCandidates": ["grid-cols-2"],
       "configuration": "empty",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "p-0-empty",
-      "explicitCandidates": [
-        "p-0"
-      ],
+      "explicitCandidates": ["p-0"],
       "configuration": "empty",
       "expectedOutcome": "wind-generated-reference-omitted",
       "sourceFile": "index.html"
     },
     {
       "caseId": "p-0-mapped",
-      "explicitCandidates": [
-        "p-0"
-      ],
+      "explicitCandidates": ["p-0"],
       "configuration": "zero-mapping",
       "expectedOutcome": "generated-reference-explicit-zero",
       "sourceFile": "index.html"
     },
     {
       "caseId": "named-spacing",
-      "explicitCandidates": [
-        "p-hsp-sm"
-      ],
+      "explicitCandidates": ["p-hsp-sm"],
       "configuration": "semantic",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "named-color",
-      "explicitCandidates": [
-        "bg-surface"
-      ],
+      "explicitCandidates": ["bg-surface"],
       "configuration": "semantic",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "unconfigured-p-4",
-      "explicitCandidates": [
-        "p-4"
-      ],
+      "explicitCandidates": ["p-4"],
       "configuration": "empty",
       "expectedOutcome": "omitted",
       "sourceFile": "index.html"
     },
     {
       "caseId": "undeclared-palette",
-      "explicitCandidates": [
-        "bg-gray-500"
-      ],
+      "explicitCandidates": ["bg-gray-500"],
       "configuration": "empty",
       "expectedOutcome": "omitted",
       "sourceFile": "index.html"
     },
     {
       "caseId": "configured-p-4",
-      "explicitCandidates": [
-        "p-4"
-      ],
+      "explicitCandidates": ["p-4"],
       "configuration": "numeric-opt-in",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "contents-gap",
-      "explicitCandidates": [
-        "contents"
-      ],
+      "explicitCandidates": ["contents"],
       "configuration": "empty",
       "expectedOutcome": "wind-implementation-gap",
       "sourceFile": "index.html"
     },
     {
       "caseId": "hover-block",
-      "explicitCandidates": [
-        "hover:block"
-      ],
+      "explicitCandidates": ["hover:block"],
       "configuration": "empty",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
     },
     {
       "caseId": "breakpoint-block",
-      "explicitCandidates": [
-        "sm:block"
-      ],
+      "explicitCandidates": ["sm:block"],
       "configuration": "breakpoint",
       "expectedOutcome": "generated",
       "sourceFile": "index.html"
@@ -785,9 +755,7 @@
     },
     {
       "caseId": "numeric-spacing-removed",
-      "explicitCandidates": [
-        "p-4"
-      ],
+      "explicitCandidates": ["p-4"],
       "configuration": "numeric-removed",
       "expectedOutcome": "omitted",
       "sourceFile": "index.html",
@@ -821,9 +789,7 @@
     },
     {
       "caseId": "palette-gray-500-opt-in",
-      "explicitCandidates": [
-        "bg-gray-500"
-      ],
+      "explicitCandidates": ["bg-gray-500"],
       "configuration": "palette-opt-in",
       "expectedOutcome": "generated",
       "sourceFile": "index.html",
@@ -839,9 +805,7 @@
         },
         "tokenLayer": "zw-tokens",
         "preludeOccurrences": 1,
-        "forbiddenStylesheetFragments": [
-          "--zw-spacing-unit:"
-        ]
+        "forbiddenStylesheetFragments": ["--zw-spacing-unit:"]
       },
       "browserTargets": {
         "bg-gray-500": "palette-gray-500-opt-in-target"
@@ -879,18 +843,14 @@
       "id": "spacing-unit-removal",
       "from": "configured-p-4",
       "to": "numeric-spacing-removed",
-      "configurationChange": [
-        "tokens.spacingUnit"
-      ],
+      "configurationChange": ["tokens.spacingUnit"],
       "assert": "p-4 rule and token layer disappear; stylesheet empty with no prelude; source diagnostics retain origin policy"
     },
     {
       "id": "palette-explicit-opt-in",
       "from": "undeclared-palette",
       "to": "palette-gray-500-opt-in",
-      "configurationChange": [
-        "tokens.colors.gray-500"
-      ],
+      "configurationChange": ["tokens.colors.gray-500"],
       "assert": "configured gray-500 is legal and bg-gray-500 emits variable-backed utility; no implicit palette needed"
     }
   ]
