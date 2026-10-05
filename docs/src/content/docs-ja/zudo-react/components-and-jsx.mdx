@@ -22,7 +22,7 @@ h では可変長引数の子が props.children より優先されます。可�
 
 ## テーブルと select の子要素
 
-table と select の構造規則は、島のない静的サーバーレンダリングにも適用されます。構造を決める親要素には、HTML パーサーが許可する組み込み要素を直接置きます。たとえば tbody、thead、tfoot には tr、tr には td または th、select には option または optgroup、optgroup には option が必要です。`<Row />` のようなコンポーネント、Fragment、`For` の領域は、これらの位置の直接の子にはできません。option の内容には静的なスカラー文字列だけを使えます。不正な子は `ZR_PARSER_CONTEXT` で失敗します。
+table と select の構造規則は、静的描画、ハイドレーション、新規マウントで共通です。静的描画では、table の直下に置けるのは `caption`、`colgroup`、`thead`、`tbody`、`tfoot` です。`table` の直下に `tr` を置くと `ZR_PARSER_CONTEXT` で失敗します。raw HTML の `<table><tr>` に対して HTML パーサーが `<tbody>` を補う場合でも、`<tbody>` を明示してください。サーバー出力とハイドレーションで採用する DOM の構造を一致させられます。`tbody`、`thead`、`tfoot` には `tr`、`tr` には `td` または `th`、select には `option` または `optgroup`、`optgroup` には `option` が必要です。`<Row />` のようなコンポーネント、Fragment、`For` の領域は、これらの位置の直接の子にはできません。option の内容には静的なスカラー文字列だけを使えます。静的描画では、不正な子の位置を `ZR_PARSER_CONTEXT` で報告します。
 
 構造上の子は、組み込み要素の記述を返す通常の関数を呼び出して作ります。`rowElement(row)` が tr を返す形は使えますが、`<Row />` を tbody の子にする形は使えません。select の直下に置く option や optgroup にも同じ方法を使います。リアクティブなテーブル行については[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
 
