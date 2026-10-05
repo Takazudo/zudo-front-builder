@@ -3980,7 +3980,7 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         }
     }
 
-    if let Some(p) = pipeline.as_deref_mut() {
+    if let Some(p) = pipeline {
         // Keep these source-dependent locations out of the body-keyed cache:
         // two documents can have the same body but different frontmatter.
         p.extend_markdown_diagnostics(astro_client_attribute_warnings(input, file_path));

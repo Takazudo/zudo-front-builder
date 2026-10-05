@@ -5,16 +5,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { it } from "vite-plus/test";
 
 // Exercise the real lightweight Node protocol, without building Rust or a site.
-test(
-  "plugin logger accepts legacy calls and forwards additive metadata",
-  { timeout: 10000 },
-  async (t) => {
-    const dir = await mkdtemp(join(tmpdir(), "zfb-log-schema-"));
-    t.after(() => rm(dir, { recursive: true, force: true }));
+it("plugin logger accepts legacy calls and forwards additive metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zfb-log-schema-"));
+  let child;
+  try {
     const plugin = join(dir, "plugin.mjs");
     await writeFile(
       plugin,
@@ -27,12 +25,11 @@ test(
     }
   };`,
     );
-    const child = spawn(
+    child = spawn(
       process.execPath,
       [fileURLToPath(new URL("../../crates/zfb/js/plugin-host.mjs", import.meta.url))],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
-    t.after(() => child.kill());
     let stderr = "";
     child.stderr.on("data", (data) => {
       stderr += data;
@@ -83,5 +80,12 @@ test(
     send({ id: 3, kind: "shutdown" });
     assert.equal((await read()).ok, true, stderr);
     assert.equal((await exited)[0], 0, stderr);
-  },
-);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise((resolve) => child.once("close", resolve));
+      child.kill();
+      await closed;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10000);
