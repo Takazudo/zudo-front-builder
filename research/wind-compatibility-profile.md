@@ -105,8 +105,8 @@ All assertions remain pending independent execution.
 | `grid-cols-2` / `grid-cols-2` | equivalent-shared | Empty config: two `minmax(0,1fr)` tracks; fixture supplies `display:grid`. |
 | `p-0-empty` / `p-0` | intentional-difference | Wind guarantees zero padding without tokens; empty-theme Tailwind 4.3.2 planning probe omits it. Assert reference absence and Wind's effect over nonzero padding. |
 | `p-0-mapped` / `p-0` | equivalent-mapped | Wind stays empty. Reference declares only `--spacing-0:0px`. Independently verify generation and computed zero; never inject a corrective `.p-0` rule. |
-| `named-spacing` / `p-hsp-sm` | equivalent-mapped | Wind `tokens.spacing.hsp-sm = 17px`; reference `--spacing-hsp-sm:17px`. No numeric scale. |
-| `named-color` / `bg-surface` | equivalent-mapped | Wind `tokens.colors.surface = #123456`; reference `--color-surface:#123456`. No stock palette. |
+| `named-spacing` / `p-hsp-sm` | equivalent-mapped | Semantic config contains both `colors.surface=#123456` and `spacing.hsp-sm=17px`. Wind emits both configured `--zw` tokens once; the reference emits only used `--spacing-hsp-sm:17px`. No numeric scale. |
+| `named-color` / `bg-surface` | equivalent-mapped | The same semantic config emits both configured Wind tokens once; the reference emits only used `--color-surface:#123456`. No stock palette. |
 | `unconfigured-p-4` / `p-4` | intentional-difference | Supported numeric spacing family lacks its explicit unit. No utility rule on either side; probe and assert diagnostics separately by origin/strictness. |
 | `undeclared-palette` / `bg-gray-500` | intentional-difference | Supported color family lacks a declared token. No utility rule on either side; no implicit gray palette or presumption of a Tailwind error. |
 | `configured-p-4` / `p-4` | equivalent-mapped | Opt-in only: Wind `spacingUnit:0.25rem`, reference `--spacing:0.25rem`; padding computes to `1rem`. |
@@ -148,9 +148,15 @@ Current source corrects a planning-era claim: **Wind named tokens use variables*
 - Mapped `p-0`: reference `var(--spacing-0)` and its theme rule versus Wind literal
   zero; reference padding shorthand versus Wind four physical longhands.
 - Named spacing/color: both sides use variables, with different namespaces and
-  theme-rule/layer structure. The reference `:root, :host` rule holding only explicit
-  tokens is expected; it is not a leaked stock theme. Compare computed values and
-  nested token-scope controls; do not claim interchangeable custom-property APIs.
+  theme-rule/layer structure. The exact semantic config declares both color and
+  spacing. Wind emits `--zw-color-surface` then `--zw-spacing-hsp-sm` once in each
+  standalone stylesheet, including the token unused by that candidate. The
+  reference `:root, :host` rule emits only the candidate-used configured token:
+  `--spacing-hsp-sm` for `named-spacing`, `--color-surface` for `named-color`.
+  This is a reviewed two-versus-one declaration difference for only those two
+  cases; extra, missing or reordered declarations still fail. Compare computed
+  values and nested token-scope controls; do not claim interchangeable
+  custom-property APIs or a leaked stock theme.
 - Numeric scaling: reference `--spacing:0.25rem` in its `:root, :host` theme rule
   and variable calculation versus Wind `--zw-spacing-unit:0.25rem` in
   `@layer zw-tokens { :root { ... } }` and the utility's computed literal. The
@@ -163,7 +169,11 @@ Current source corrects a planning-era claim: **Wind named tokens use variables*
   activation still needs browser evidence. CSS text equality is insufficient.
 - `mx-auto`: preserve and count physical versus logical writes. Use `horizontal-tb`
   and `vertical-rl`, each in `ltr` and `rtl`, with constrained boxes, computed physical
-  margins and measured geometry. Horizontal coincidence cannot certify vertical parity.
+  margins and measured geometry. The pilot's 300px container and 100px child resolve
+  horizontal left/right auto margins to 100px on both sides. In `vertical-rl`,
+  Wind's physical left/right auto margins resolve to 0px while the reference's
+  logical inline top/bottom auto margins resolve to 100px; emitted declarations
+  still contain literal `auto`. Horizontal coincidence cannot certify vertical parity.
 
 Composition cases must exercise overlapping utilities, reordered class strings,
 authored CSS before/after utilities, selector specificity, nested children and

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "profileId": "wind-preset-free",
   "profileVersion": 1,
-  "profileRevision": 1,
+  "profileRevision": 2,
   "policyDocument": "research/wind-compatibility-profile.md",
   "ratifiedOn": "2026-10-06",
   "decisionIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3826",
@@ -282,7 +282,7 @@
         "padding-expansion",
         "wind-layer-order-prelude"
       ],
-      "expectedContract": "Wind tokens.spacing.hsp-sm=17px; reference --spacing-hsp-sm:17px",
+      "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --spacing-hsp-sm:17px for this candidate.",
       "evidence": {
         "sourceInspected": {
           "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
@@ -300,7 +300,7 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
       "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"],
-      "expectedContract": "Wind tokens.colors.surface=#123456; reference --color-surface:#123456",
+      "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --color-surface:#123456 for this candidate.",
       "evidence": {
         "sourceInspected": {
           "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
@@ -466,7 +466,19 @@
       "id": "named-token-representation",
       "caseIds": ["named-spacing", "named-color"],
       "kind": "structural",
-      "scope": "Reference --spacing/--color names and :root,:host rule versus Wind --zw names in zw-tokens layer; both use var(), preserve each rule."
+      "scope": "For the exact semantic config, Wind emits both configured tokens once in @layer zw-tokens/:root, in --zw-color-surface then --zw-spacing-hsp-sm order; each standalone reference compilation emits only its candidate-used token in :root,:host. Named utilities on both sides use their own var() namespaces. Each named case requires exactly two Wind token declarations and one reference token declaration; the other Wind token is explicitly unused by that candidate. Additional, absent or reordered token declarations fail.",
+      "expectedOccurrencesByCase": {
+        "named-spacing": {
+          "windDeclarations": ["--zw-color-surface", "--zw-spacing-hsp-sm"],
+          "referenceDeclarations": ["--spacing-hsp-sm"],
+          "unusedWindDeclaration": "--zw-color-surface"
+        },
+        "named-color": {
+          "windDeclarations": ["--zw-color-surface", "--zw-spacing-hsp-sm"],
+          "referenceDeclarations": ["--color-surface"],
+          "unusedWindDeclaration": "--zw-spacing-hsp-sm"
+        }
+      }
     },
     {
       "id": "numeric-scale-representation",
@@ -633,6 +645,13 @@
       "date": "2026-10-06",
       "issue": 3826,
       "change": "Initial bounded preset-free promise; no baseline admitted. Current-source named token indirection corrects the planning-era literal claim. Initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind layer-order prelude and the numeric scale token rule/layer."
+    },
+    {
+      "version": 1,
+      "revision": 2,
+      "date": "2026-10-06",
+      "issue": 3829,
+      "change": "Pilot contract refinement after Linux Chromium execution: exact resolved mx-auto margin observations and exact two-token Wind versus used-token-only reference emission for each semantic case. No compatibility baseline or reference acceptance is advanced."
     }
   ]
 }

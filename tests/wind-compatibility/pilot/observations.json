@@ -46,40 +46,32 @@
       {
         "name": "horizontal-tb-ltr-margin-left",
         "property": "margin-left",
-        "wind": "auto",
-        "reference": "auto",
+        "wind": "100px",
+        "reference": "100px",
         "writingMode": "horizontal-tb",
         "direction": "ltr"
       },
       {
         "name": "horizontal-tb-ltr-margin-right",
         "property": "margin-right",
-        "wind": "auto",
-        "reference": "auto",
+        "wind": "100px",
+        "reference": "100px",
         "writingMode": "horizontal-tb",
         "direction": "ltr"
       },
       {
         "name": "horizontal-tb-ltr-margin-top",
         "property": "margin-top",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "horizontal-tb",
         "direction": "ltr"
       },
       {
         "name": "horizontal-tb-ltr-margin-bottom",
         "property": "margin-bottom",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "horizontal-tb",
         "direction": "ltr"
       },
@@ -108,40 +100,32 @@
       {
         "name": "horizontal-tb-rtl-margin-left",
         "property": "margin-left",
-        "wind": "auto",
-        "reference": "auto",
+        "wind": "100px",
+        "reference": "100px",
         "writingMode": "horizontal-tb",
         "direction": "rtl"
       },
       {
         "name": "horizontal-tb-rtl-margin-right",
         "property": "margin-right",
-        "wind": "auto",
-        "reference": "auto",
+        "wind": "100px",
+        "reference": "100px",
         "writingMode": "horizontal-tb",
         "direction": "rtl"
       },
       {
         "name": "horizontal-tb-rtl-margin-top",
         "property": "margin-top",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "horizontal-tb",
         "direction": "rtl"
       },
       {
         "name": "horizontal-tb-rtl-margin-bottom",
         "property": "margin-bottom",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "horizontal-tb",
         "direction": "rtl"
       },
@@ -170,40 +154,32 @@
       {
         "name": "vertical-rl-ltr-margin-left",
         "property": "margin-left",
-        "wind": "auto",
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
       {
         "name": "vertical-rl-ltr-margin-right",
         "property": "margin-right",
-        "wind": "auto",
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
       {
         "name": "vertical-rl-ltr-margin-top",
         "property": "margin-top",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": "auto",
+        "wind": "0px",
+        "reference": "100px",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
       {
         "name": "vertical-rl-ltr-margin-bottom",
         "property": "margin-bottom",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": "auto",
+        "wind": "0px",
+        "reference": "100px",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
@@ -238,40 +214,32 @@
       {
         "name": "vertical-rl-rtl-margin-left",
         "property": "margin-left",
-        "wind": "auto",
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       },
       {
         "name": "vertical-rl-rtl-margin-right",
         "property": "margin-right",
-        "wind": "auto",
-        "reference": {
-          "notValue": "auto"
-        },
+        "wind": "0px",
+        "reference": "0px",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       },
       {
         "name": "vertical-rl-rtl-margin-top",
         "property": "margin-top",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": "auto",
+        "wind": "0px",
+        "reference": "100px",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       },
       {
         "name": "vertical-rl-rtl-margin-bottom",
         "property": "margin-bottom",
-        "wind": {
-          "notValue": "auto"
-        },
-        "reference": "auto",
+        "wind": "0px",
+        "reference": "100px",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       },

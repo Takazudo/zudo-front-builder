@@ -120,6 +120,91 @@ test("complete parsed structures reject same-selector, duplicate, order and laye
   assert.throws(() => parseCssStructure('.x{content:"unterminated;}'));
 });
 
+test("semantic cases count exactly two configured Wind tokens and one used reference token", () => {
+  const prelude = "@layer zw-reset, zw-tokens, zfb-hi, base, components;";
+  const tokenRule = "@layer zw-tokens{:root{--zw-color-surface:#123456;--zw-spacing-hsp-sm:17px;}}";
+  const pad = ["top", "right", "bottom", "left"]
+    .map((side) => `padding-${side}:var(--zw-spacing-hsp-sm);`)
+    .join("");
+  const cases = [
+    [
+      "named-spacing",
+      `.p-hsp-sm{${pad}}`,
+      ":root, :host{--spacing-hsp-sm:17px;}.p-hsp-sm{padding:var(--spacing-hsp-sm);}",
+      "--zw-color-surface",
+    ],
+    [
+      "named-color",
+      ".bg-surface{background-color:var(--zw-color-surface);}",
+      ":root, :host{--color-surface:#123456;}.bg-surface{background-color:var(--color-surface);}",
+      "--zw-spacing-hsp-sm",
+    ],
+  ];
+  const policy = profile.reviewedDifferences.find(
+    (item) => item.id === "named-token-representation",
+  );
+  assert.equal(profile.profileRevision, 2);
+  for (const [id, utility, reference, unusedToken] of cases) {
+    const wind = `${prelude}${tokenRule}${utility}`;
+    const row = profile.requiredCases.find((item) => item.id === id);
+    const result = compareStructure(id, wind, reference, row.reviewedDifferenceIds, true);
+    assert.equal(result.pass, true, id);
+    assert.deepEqual(result.differenceOccurrences["named-token-representation"], {
+      expectedCount: 2,
+      observedCount: 2,
+      paths: ["wind/1/0/0", "wind/1/0/1"],
+    });
+    assert.equal(policy.expectedOccurrencesByCase[id].windDeclarations.length, 2);
+    assert.equal(policy.expectedOccurrencesByCase[id].referenceDeclarations.length, 1);
+    assert.equal(policy.expectedOccurrencesByCase[id].unusedWindDeclaration, unusedToken);
+    for (const badTokens of [
+      tokenRule.replace(`--zw-color-surface:#123456;`, ""),
+      tokenRule.replace(`--zw-spacing-hsp-sm:17px;`, ""),
+      tokenRule.replace(
+        "--zw-color-surface:#123456;--zw-spacing-hsp-sm:17px;",
+        "--zw-spacing-hsp-sm:17px;--zw-color-surface:#123456;",
+      ),
+      tokenRule.replace(
+        "--zw-spacing-hsp-sm:17px;",
+        "--zw-spacing-hsp-sm:17px;--zw-radius-extra:1px;",
+      ),
+    ])
+      assert.equal(
+        compareStructure(
+          id,
+          `${prelude}${badTokens}${utility}`,
+          reference,
+          row.reviewedDifferenceIds,
+          true,
+        ).pass,
+        false,
+      );
+  }
+});
+
+test("mx-auto keeps all 24 mode, direction, physical-margin and geometry probes exact", () => {
+  const probes = observations["mx-auto"].probes;
+  assert.equal(probes.length, 24);
+  for (const mode of ["horizontal-tb", "vertical-rl"])
+    for (const direction of ["ltr", "rtl"]) {
+      for (const side of ["left", "right", "top", "bottom"]) {
+        const probe = probes.find((item) => item.name === `${mode}-${direction}-margin-${side}`);
+        assert(probe);
+        const physicalHorizontal = side === "left" || side === "right";
+        assert.equal(probe.wind, mode === "horizontal-tb" && physicalHorizontal ? "100px" : "0px");
+        assert.equal(
+          probe.reference,
+          (mode === "horizontal-tb" && physicalHorizontal) ||
+            (mode === "vertical-rl" && !physicalHorizontal)
+            ? "100px"
+            : "0px",
+        );
+      }
+      for (const axis of ["left", "top"])
+        assert(probes.some((item) => item.name === `${mode}-${direction}-geometry-${axis}`));
+    }
+});
+
 test("missing executions and controls remain visible and fail the pilot", () => {
   const report = completeReport(profile, manifest, {}, {}, { probe: true });
   assert.equal(report.cases.length, 15);
