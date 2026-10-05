@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "family": "gap",
+  "lookup": [
+    {
+      "entry": "v1.gap",
+      "candidate": "gap-4",
+      "example": "grid-gap"
+    },
+    {
+      "entry": "v1.gap-x",
+      "candidate": "gap-x-8",
+      "example": "axis-gap"
+    },
+    {
+      "entry": "v1.gap-y",
+      "candidate": "gap-y-2",
+      "example": "axis-gap"
+    },
+    {
+      "entry": "v1.gap",
+      "candidate": "gap-gutter",
+      "example": "custom-gap"
+    },
+    {
+      "entry": "v1.gap",
+      "candidate": "gap-[18px]",
+      "example": "arbitrary-gap"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use gap on a grid or flex container to separate its items. It adds space between tracks or items without adding padding around the container.",
+      "setup": "These examples explicitly use spacingUnit: \"0.25rem\", reset: \"none\", strict mode and no breakpoints. Numeric suffixes multiply that unit: gap-4 emits literal 1rem lengths. No Tailwind spacing scale or theme is inherited. wind-demo classes are authored demonstration scaffolding; their CSS is visible with each preview.",
+      "customValues": "gap-0 removes gaps and gap-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit. Named spacing values need tokens.spacing, as the gutter example shows; arbitrary values such as gap-[18px] do not need that scale. Gap values cannot be negative. Use underscore encoding for spaces in arbitrary calc values. gap-x sets column-gap and gap-y sets row-gap; in flex layouts, how these affect item and line spacing follows the flex direction.",
+      "examples": [
+        {
+          "id": "grid-gap",
+          "title": "Space items evenly",
+          "description": "Apply gap-4 to the container. Each tile uses p-2 for its own inner spacing."
+        },
+        {
+          "id": "axis-gap",
+          "title": "Separate row and column spacing",
+          "description": "Use gap-x-8 for 2rem between columns and gap-y-2 for 0.5rem between rows."
+        },
+        {
+          "id": "custom-gap",
+          "title": "Name a reusable gap",
+          "description": "The example explicitly configures tokens.spacing.gutter to 1.5rem."
+        },
+        {
+          "id": "arbitrary-gap",
+          "title": "Use a one-off length",
+          "description": "gap-[18px] emits 18px for both gap properties."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "グリッドやフレックスのコンテナに gap を指定して、項目の間隔を作ります。コンテナの内側の余白ではなく、トラックや項目の間に空間を追加します。",
+      "setup": "この例では spacingUnit: \"0.25rem\"、reset: \"none\"、strict モード、空のブレークポイントを明示しています。数値の接尾辞に単位を掛けるため、gap-4 は 1rem の長さを直接出力します。Tailwind のスケールやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、各プレビューから CSS を確認できます。",
+      "customValues": "gap-0 は間隔をなくし、gap-px はトークンなしで 1px を指定します。それ以外の数値には tokens.spacingUnit が必要です。gutter の例のような名前付きの値は tokens.spacing で設定します。gap-[18px] などの任意値はスケール不要です。負の間隔は使えません。任意値の calc 内の空白はアンダースコアで表します。gap-x は column-gap、gap-y は row-gap を設定します。フレックスでは、項目間と行間への作用は flex-direction に従います。",
+      "examples": [
+        {
+          "id": "grid-gap",
+          "title": "項目の間隔をそろえる",
+          "description": "コンテナに gap-4 を指定します。各タイルの内側の余白は p-2 で設定します。"
+        },
+        {
+          "id": "axis-gap",
+          "title": "行と列の間隔を変える",
+          "description": "gap-x-8 で列間を 2rem、gap-y-2 で行間を 0.5rem にします。"
+        },
+        {
+          "id": "custom-gap",
+          "title": "間隔に名前を付ける",
+          "description": "tokens.spacing.gutter に 1.5rem を明示的に設定しています。"
+        },
+        {
+          "id": "arbitrary-gap",
+          "title": "個別の長さを指定する",
+          "description": "gap-[18px] は両方の gap プロパティに 18px を出力します。"
+        }
+      ]
+    }
+  }
+}
