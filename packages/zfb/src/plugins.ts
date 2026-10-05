@@ -24,16 +24,31 @@
 /**
  * Logger handed to every plugin hook. `info`/`warn`/`error` each render on
  * the `zfb dev`/`zfb build`/`zfb preview` terminal at exactly that level,
- * attributed to the plugin: `zfb <level>: [plugin:<name>] <message>`.
+ * attributed to the plugin: `zfb <level>: ZB010 plugin:<name>: <message>`
+ * (or the explicitly supplied diagnostic code and source).
  * `console.*` is redirected the same way, but note it maps onto only two
  * underlying streams (stdout -> info, stderr -> warn/error/trace/assert ->
  * error) — `console.warn` therefore renders as `zfb error:`, not
  * `zfb warn:`. Prefer this logger over `console.*` when the level matters.
  */
 export type ZfbPluginLogger = {
-  info(msg: string): void;
-  warn(msg: string): void;
-  error(msg: string): void;
+  info(msg: string, diagnostic?: ZfbPluginDiagnosticMetadata): void;
+  warn(msg: string, diagnostic?: ZfbPluginDiagnosticMetadata): void;
+  error(msg: string, diagnostic?: ZfbPluginDiagnosticMetadata): void;
+};
+
+/** Optional structured context; legacy one-argument logger calls remain valid. */
+export type ZfbPluginDiagnosticMetadata = {
+  /** Stable plugin-owned code, preferably `<plugin-name>/<class>`; defaults to ZB010. */
+  code?: string;
+  /** Opaque source identity; defaults to `plugin:<name>`. */
+  sourceId?: string;
+  /** Authored source path, when known. */
+  file?: string;
+  /** One-based authored source line. */
+  line?: number;
+  /** One-based UTF-8 byte column. Do not pass a character or UTF-16 column. */
+  byteColumn?: number;
 };
 
 /**

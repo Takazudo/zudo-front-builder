@@ -307,12 +307,14 @@ impl MdastVisitor for DirectiveRegistry {
         };
         for d in std::mem::take(&mut self.diagnostics) {
             sink.emit(MarkdownDiagnostic::Generic {
+                code: Some(zfb_md_ast::diagnostics::codes::DIRECTIVE.into()),
                 severity: DiagnosticSeverity::Warning,
                 message: d.message,
                 location: Some(SourceLocation {
                     path: ctx.source_path.clone(),
                     line: d.line.and_then(|l| u32::try_from(l).ok()),
                     col: d.column.and_then(|c| u32::try_from(c).ok()),
+                    byte_column: None,
                 }),
             });
         }
@@ -3827,6 +3829,7 @@ padded body
                 severity,
                 message,
                 location,
+                ..
             } = d
             else {
                 unreachable!("directive diagnostics are Generic, got {d:?}");

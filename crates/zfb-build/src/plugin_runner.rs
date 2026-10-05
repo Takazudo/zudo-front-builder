@@ -457,10 +457,29 @@ struct LogLine {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LogPayload {
     level: String,
     plugin: String,
     message: String,
+    #[serde(flatten)]
+    diagnostic: zfb_types::build_diagnostics::PluginDiagnosticMetadata,
+}
+
+impl LogPayload {
+    fn to_build_diagnostic(&self) -> zfb_types::build_diagnostics::BuildDiagnostic {
+        use zfb_types::build_diagnostics::DiagnosticSeverity;
+        let severity = match self.level.as_str() {
+            "warn" => DiagnosticSeverity::Warning,
+            "error" => DiagnosticSeverity::Error,
+            _ => DiagnosticSeverity::Info,
+        };
+        let mut diagnostic = self.diagnostic.diagnostic(severity, self.message.clone());
+        if diagnostic.source_id.is_none() {
+            diagnostic.source_id = Some(format!("plugin:{}", self.plugin));
+        }
+        diagnostic
+    }
 }
 
 /// Default hook timeout in seconds — generous because postBuild may do
@@ -1484,16 +1503,10 @@ impl PluginHost {
         }
     }
 
-    /// Format a plugin `{log:{level,plugin,message}}` envelope for the
-    /// visible `eprintln!` channel, matching this crate's dual-channel
-    /// convention (`tracing` + `eprintln!`, see [`Self::run_stdout_reader`]'s
-    /// doc comment for #2104's rationale — no `tracing_subscriber` is
-    /// installed anywhere in the `zfb` binary, so `eprintln!` is the
-    /// channel production users actually see). `level` is the already-
-    /// normalised label (`"warn"`/`"error"`/`"info"`) a caller matched on,
-    /// not the raw, unvalidated `log.level` string from the wire.
-    fn format_plugin_log_line(level: &str, plugin: &str, message: &str) -> String {
-        format!("zfb {level}: [plugin:{plugin}] {message}")
+    /// Format a plugin log with its producer-supplied code, or ZB010 for
+    /// legacy envelopes. Severity comes from the existing level contract.
+    fn format_plugin_log_line(log: &LogPayload) -> String {
+        log.to_build_diagnostic().render()
     }
 
     /// Format a plugin-host line that has no plugin to attribute — either
@@ -1502,7 +1515,21 @@ impl PluginHost {
     /// same visible `eprintln!` channel. `source` names which pipe it came
     /// from (`"stderr"` / `"stdout"`) so a reader can tell the two apart.
     fn format_plugin_host_warn_line(source: &str, detail: &str) -> String {
-        format!("zfb warn: [plugin-host {source}] {detail}")
+        Self::plugin_host_diagnostic(source, detail).render()
+    }
+
+    fn plugin_host_diagnostic(
+        source: &str,
+        detail: &str,
+    ) -> zfb_types::build_diagnostics::BuildDiagnostic {
+        use zfb_types::build_diagnostics::{codes, BuildDiagnostic, DiagnosticSeverity};
+        let mut diagnostic = BuildDiagnostic::new(
+            codes::PLUGIN_HOST_OUTPUT,
+            DiagnosticSeverity::Warning,
+            detail,
+        );
+        diagnostic.source_id = Some(format!("plugin-host:{source}"));
+        diagnostic
     }
 
     async fn handle_line(inner: &Arc<HostInner>, line: &str) {
@@ -1521,24 +1548,15 @@ impl PluginHost {
             HostLine::Log(LogLine { log }) => match log.level.as_str() {
                 "warn" => {
                     warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!(
-                        "{}",
-                        Self::format_plugin_log_line("warn", &log.plugin, &log.message)
-                    );
+                    eprintln!("{}", Self::format_plugin_log_line(&log));
                 }
                 "error" => {
                     error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!(
-                        "{}",
-                        Self::format_plugin_log_line("error", &log.plugin, &log.message)
-                    );
+                    eprintln!("{}", Self::format_plugin_log_line(&log));
                 }
                 _ => {
                     info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!(
-                        "{}",
-                        Self::format_plugin_log_line("info", &log.plugin, &log.message)
-                    );
+                    eprintln!("{}", Self::format_plugin_log_line(&log));
                 }
             },
             HostLine::Reply(reply) => {
@@ -1585,19 +1603,26 @@ mod tests {
     // rather than trying to capture in-process `eprintln!` output (awkward
     // and race-prone with parallel test execution sharing one stderr).
 
+    fn legacy_log(level: &str, message: &str) -> LogPayload {
+        serde_json::from_value(
+            serde_json::json!({"level":level,"plugin":"my-plugin","message":message}),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn format_plugin_log_line_attributes_plugin_and_level_for_all_three_levels() {
         assert_eq!(
-            PluginHost::format_plugin_log_line("info", "my-plugin", "hello"),
-            "zfb info: [plugin:my-plugin] hello"
+            PluginHost::format_plugin_log_line(&legacy_log("info", "hello")),
+            "zfb info: ZB010 plugin:my-plugin: hello"
         );
         assert_eq!(
-            PluginHost::format_plugin_log_line("warn", "my-plugin", "careful"),
-            "zfb warn: [plugin:my-plugin] careful"
+            PluginHost::format_plugin_log_line(&legacy_log("warn", "careful")),
+            "zfb warn: ZB010 plugin:my-plugin: careful"
         );
         assert_eq!(
-            PluginHost::format_plugin_log_line("error", "my-plugin", "boom"),
-            "zfb error: [plugin:my-plugin] boom"
+            PluginHost::format_plugin_log_line(&legacy_log("error", "boom")),
+            "zfb error: ZB010 plugin:my-plugin: boom"
         );
     }
 
@@ -1605,12 +1630,37 @@ mod tests {
     fn format_plugin_host_warn_line_tags_the_source_pipe() {
         assert_eq!(
             PluginHost::format_plugin_host_warn_line("stderr", "uncaught at plugin-host.mjs:12"),
-            "zfb warn: [plugin-host stderr] uncaught at plugin-host.mjs:12"
+            "zfb warn: ZB006 plugin-host:stderr: uncaught at plugin-host.mjs:12"
         );
         assert_eq!(
             PluginHost::format_plugin_host_warn_line("stdout", "not json at all"),
-            "zfb warn: [plugin-host stdout] not json at all"
+            "zfb warn: ZB006 plugin-host:stdout: not json at all"
         );
+    }
+
+    #[test]
+    fn plugin_wire_extensions_preserve_old_envelopes_and_explicit_units() {
+        let old: HostLine = serde_json::from_str(r#"{"log":{"level":"warn","plugin":"p","message":"imageDimensions: misleading text","column":8}}"#).unwrap();
+        let HostLine::Log(LogLine { log }) = old else {
+            panic!("expected log");
+        };
+        let d = log.to_build_diagnostic();
+        assert_eq!(d.code, "ZB010");
+        assert_eq!(d.byte_column, None);
+        assert_eq!(d.source_id.as_deref(), Some("plugin:p"));
+        let new: HostLine = serde_json::from_str(r#"{"log":{"level":"error","plugin":"p","message":"bad input","code":"p/input","sourceId":"virtual:p","file":"page.mdx","line":2,"column":3,"byteColumn":7}}"#).unwrap();
+        let HostLine::Log(LogLine { log }) = new else {
+            panic!("expected log");
+        };
+        let d = log.to_build_diagnostic();
+        assert_eq!(d.code, "p/input");
+        assert_eq!(
+            d.severity,
+            zfb_types::build_diagnostics::DiagnosticSeverity::Error
+        );
+        assert_eq!(d.byte_column, Some(7));
+        assert_eq!(d.source_id.as_deref(), Some("virtual:p"));
+        assert_eq!(d.render(), "zfb error: p/input page.mdx:2:7: bad input");
     }
 
     fn file_url_for_test(p: &Path) -> String {

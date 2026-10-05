@@ -2632,10 +2632,13 @@ fn render_jsx_attrs(
                         // this iteration already pushed so no
                         // attribute-shaped gap survives in the output.
                         out.pop();
-                        diagnostics.push(MarkdownDiagnostic::warning(format!(
-                            "dropping invalid spread attribute {{{}}}: {parse_problem}",
-                            e.value
-                        )));
+                        diagnostics.push(
+                            MarkdownDiagnostic::warning(format!(
+                                "dropping invalid spread attribute {{{}}}: {parse_problem}",
+                                e.value
+                            ))
+                            .with_code(zfb_md_ast::diagnostics::codes::INVALID_MDX_SPREAD),
+                        );
                     }
                 }
             }

@@ -43,10 +43,10 @@
 //! production users, exactly as `format_plugin_log_line`'s and
 //! `format_plugin_host_warn_line`'s own doc comments describe):
 //!
-//! 1. `zfb info: [plugin:diag-plugin] SETUP-INFO-MARKER-2375` (setup hook).
-//! 2. `zfb info: [plugin:diag-plugin] POSTBUILD-INFO-MARKER-2375` (postBuild
+//! 1. `zfb info: ZB010 plugin:diag-plugin: SETUP-INFO-MARKER-2375` (setup hook).
+//! 2. `zfb info: ZB010 plugin:diag-plugin: POSTBUILD-INFO-MARKER-2375` (postBuild
 //!    hook) — the literal symptom issue #2367 reported missing.
-//! 3. `zfb warn: [plugin-host stderr] POSTBUILD-STDERR-MARKER-2375` (raw
+//! 3. `zfb warn: ZB006 plugin-host:stderr: POSTBUILD-STDERR-MARKER-2375` (raw
 //!    `process.stderr.write`, issue #2369's `run_stderr_reader` arm).
 //!
 //! ## Stale-bundle sweep + clean-exit cleanup assertions (issue #2371 confirm)
@@ -261,14 +261,14 @@ fn setup_and_postbuild_logging_and_stderr_reach_the_terminal_and_temp_bundle_is_
 
     // Assertion 1: logger.info in `setup` reaches the terminal.
     assert!(
-        stderr.contains("zfb info: [plugin:diag-plugin] SETUP-INFO-MARKER-2375"),
+        stderr.contains("zfb info: ZB010 plugin:diag-plugin: SETUP-INFO-MARKER-2375"),
         "expected the setup hook's logger.info line on stderr; got:\n{}",
         dump(&out)
     );
 
     // Assertion 1 (postBuild half) — issue #2367's literal reported symptom.
     assert!(
-        stderr.contains("zfb info: [plugin:diag-plugin] POSTBUILD-INFO-MARKER-2375"),
+        stderr.contains("zfb info: ZB010 plugin:diag-plugin: POSTBUILD-INFO-MARKER-2375"),
         "expected the postBuild hook's logger.info line on stderr; got:\n{}",
         dump(&out)
     );
@@ -278,7 +278,7 @@ fn setup_and_postbuild_logging_and_stderr_reach_the_terminal_and_temp_bundle_is_
     // above (plugin_runner.rs's `run_stderr_reader`, not `handle_line`'s
     // `HostLine::Log` arm).
     assert!(
-        stderr.contains("zfb warn: [plugin-host stderr] POSTBUILD-STDERR-MARKER-2375"),
+        stderr.contains("zfb warn: ZB006 plugin-host:stderr: POSTBUILD-STDERR-MARKER-2375"),
         "expected the postBuild hook's process.stderr.write line on stderr; got:\n{}",
         dump(&out)
     );

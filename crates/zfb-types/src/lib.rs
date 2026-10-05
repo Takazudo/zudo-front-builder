@@ -6,6 +6,7 @@
 pub mod asset_urls;
 pub mod audit_eligibility;
 pub mod base_prefix;
+pub mod build_diagnostics;
 pub mod client_scripts;
 pub mod first_party;
 pub mod helpers;
