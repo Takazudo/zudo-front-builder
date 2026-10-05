@@ -306,6 +306,7 @@ mod tests {
             ("cursor-pointer", "cursor-diagonal-resize"),
             ("list-inside", "list-start"),
             ("aspect-1/2", "aspect-0/2"),
+            ("left-1/2", "p-1/2"),
             ("scroll-mt-2", "scroll-mt-missing"),
             ("sr-only", "sr-only-extra"),
         ];
@@ -324,6 +325,43 @@ mod tests {
             };
             assert!(rejected, "expected {rejected_candidate} to be rejected");
         }
+    }
+
+    #[test]
+    fn inset_fractions_are_enabled_on_all_seven_inset_roots() {
+        let catalog = Catalog::v1();
+        let expected_roots = [
+            "inset", "inset-x", "inset-y", "top", "right", "bottom", "left",
+        ];
+        let expected_kinds = vec![
+            ValueKind::Keyword,
+            ValueKind::Token,
+            ValueKind::Scale,
+            ValueKind::Fraction,
+            ValueKind::Arbitrary,
+        ];
+
+        for root in expected_roots {
+            let entry = catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.root == root)
+                .unwrap_or_else(|| panic!("missing inset root {root}"));
+            assert_eq!(entry.grammar.accepted_kinds, expected_kinds, "{root}");
+            assert!(entry.grammar.allows_fraction_slash, "{root}");
+            assert!(entry.negative, "{root}");
+        }
+
+        let padding = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.root == "p")
+            .expect("padding root is present");
+        assert!(!padding
+            .grammar
+            .accepted_kinds
+            .contains(&ValueKind::Fraction));
+        assert!(!padding.grammar.allows_fraction_slash);
     }
 
     #[test]

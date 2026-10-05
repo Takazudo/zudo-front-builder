@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Inset fractions</title>
+    <link rel="stylesheet" href="../../dist/w-inset-fractions/wind.css" />
+    <style>
+      body {
+        margin: 0;
+      }
+
+      #containing-block {
+        position: relative;
+        width: 200px;
+        height: 120px;
+      }
+
+      .target {
+        position: absolute;
+        width: 20px;
+        height: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="containing-block" class="group">
+      <div id="inset" class="target inset-1/2"></div>
+      <div id="inset-x" class="target inset-x-1/2"></div>
+      <div id="inset-y" class="target inset-y-1/2"></div>
+      <div id="top" class="target top-1/2"></div>
+      <div id="right" class="target right-1/2"></div>
+      <div id="bottom" class="target bottom-1/2"></div>
+      <div id="left" class="target left-1/2"></div>
+      <div id="negative" class="target -left-1/2"></div>
+      <div id="variant" class="target group-hover:top-1/2"></div>
+    </div>
+  </body>
+</html>
