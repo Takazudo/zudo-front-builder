@@ -1,0 +1,127 @@
+name: Temporary MDX map acceptance
+on:
+  pull_request:
+    branches: ["base/bug-sweep-261006-release-followups-mdx-wrapper"]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/mdx-map-acceptance.yml"
+      - ".github/mdx-map-probe/**"
+permissions:
+  contents: read
+concurrency:
+  group: mdx-map-acceptance
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+      - name: Save the diagnostic harness before pinned source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mdx-map-harness"
+          cp -R .github/mdx-map-probe/. "$RUNNER_TEMP/mdx-map-harness/"
+          git rev-parse HEAD > "$RUNNER_TEMP/mdx-map-harness/probe-sha.txt"
+          git checkout --detach 399b69de4478558dc40d0d1850e89bee46ce279d
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a
+        with:
+          tool: nextest@0.9.138
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          prefix-key: v2-zfb
+          shared-key: mdx-map-acceptance
+          save-if: "false"
+      - run: pnpm install --frozen-lockfile
+      - name: Check disposable runner disk headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          available="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          df -h /
+          test "$available" -ge 10000000000
+      - name: Capture source and harness provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/mdx-map-acceptance
+          cp -R "$RUNNER_TEMP/mdx-map-harness" target/mdx-map-acceptance/harness
+          git rev-parse HEAD > target/mdx-map-acceptance/source-sha.txt
+          git status --porcelain > target/mdx-map-acceptance/source-status.txt
+          test ! -s target/mdx-map-acceptance/source-status.txt
+          sha256sum Cargo.lock crates/zfb/tests/scanner_boundary_acceptance.rs > target/mdx-map-acceptance/source-inputs.sha256
+          rustc --version --verbose > target/mdx-map-acceptance/rust.txt
+          node --version > target/mdx-map-acceptance/node.txt
+          pnpm --version > target/mdx-map-acceptance/pnpm.txt
+          cargo nextest --version > target/mdx-map-acceptance/nextest.txt
+      - name: Build exact-source CLI and require the staged esbuild binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p zfb
+          test -x crates/zfb/binaries/esbuild/esbuild
+          test "$(crates/zfb/binaries/esbuild/esbuild --version)" = "0.25.12"
+      - name: Execute actual production CLI and rejection controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest run --locked --profile ci -p zfb --test scanner_boundary_acceptance --no-fail-fast --retries 0 --failure-output immediate-final --success-output immediate 2>&1 | tee target/mdx-map-acceptance/native.log
+          cp target/nextest/ci/junit.xml target/mdx-map-acceptance/native.junit.xml
+          sha256sum target/debug/zfb > target/mdx-map-acceptance/compiler.sha256
+      - name: Verify collection removal state and request-order regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest run --locked --profile ci -p zfb-build -E 'test(orchestrator::tests::removed_) | test(orchestrator::tests::css_changes_in_root_deletion)' --no-fail-fast --retries 0 --failure-output immediate-final --success-output immediate 2>&1 | tee target/mdx-map-acceptance/deletion-state.log
+          cp target/nextest/ci/junit.xml target/mdx-map-acceptance/deletion-state.junit.xml
+          ZFB_DELETION_DIAGNOSTIC=1 cargo nextest run --locked --profile ci -p zfb --test dev_content_aggregate_cold_boot_e2e -E 'test(/^cold_lazy_deleted_entry_/)' --no-fail-fast --retries 0 --failure-output immediate-final --success-output immediate 2>&1 | tee target/mdx-map-acceptance/deletion-sequence.log
+          cp target/nextest/ci/junit.xml target/mdx-map-acceptance/deletion-sequence.junit.xml
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Exercise real production SSR and client hydration
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: target/mdx-map-acceptance/browser.junit.xml
+        run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs --reporter=list,junit
+      - name: Require executed native and browser cases
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          for name, minimum in (("native", 2), ("browser", 3), ("deletion-state", 5), ("deletion-sequence", 3)):
+            cases = ET.parse(Path("target/mdx-map-acceptance") / (name + ".junit.xml")).findall(".//testcase")
+            assert len(cases) >= minimum, (name, len(cases))
+            assert all(not any(c.find(tag) is not None for tag in ("skipped", "failure", "error")) for c in cases), name
+            names = {c.attrib["name"] for c in cases}
+            if name == "deletion-sequence":
+              assert names == {"cold_lazy_deleted_entry_detail_first_title_and_body", "cold_lazy_deleted_entry_index_before_delete_control", "cold_lazy_deleted_entry_title_only"}, names
+            if name == "native":
+              assert names == {"production_and_packed_consumers_validate_exact_boundary_registry", "dev_invalid_registration_rebuild_preserves_registry_and_recovers"}, names
+            print(name, sorted(names))
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mdx-map-acceptance
+          path: |
+            target/mdx-map-acceptance/
+            target/scanner-boundary-acceptance/
+            test-results/scanner-boundary-acceptance/
+          if-no-files-found: error
+          retention-days: 7
