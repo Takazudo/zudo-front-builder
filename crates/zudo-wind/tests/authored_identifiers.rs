@@ -657,7 +657,15 @@ fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
     strict.authored_classes.insert("float-right".into(), true);
     let authored = compile_at("float-right", source(SourcePositionKind::Class), strict);
     assert_eq!(outcome(&authored, "float-right"), None);
-    assert!(is_ordinary(&authored, "float-right"));
+    assert_eq!(
+        authored
+            .authored_classes
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect::<Vec<_>>(),
+        ["float-right"]
+    );
+    assert!(!is_ordinary(&authored, "float-right"));
 
     let malformed_gradient_alias = compile_at(
         "bg-gradient-45",
