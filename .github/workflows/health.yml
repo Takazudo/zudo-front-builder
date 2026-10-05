@@ -401,6 +401,7 @@ jobs:
             sudo apt-get install -y gdb
           fi
           gdb --version
+          set +e
           python3 - "$ZFB_GRAPH_SITE" "$GITHUB_WORKSPACE/target/debug/examples/package_graph_probe" <<'PYPROFILE'
           import pathlib
           import signal
@@ -456,9 +457,80 @@ jobs:
           print(f"Fixed scanner exit={status} elapsed={time.monotonic() - started:.1f}s", flush=True)
           sys.exit(status if status >= 0 else 128 - status)
           PYPROFILE
+          ZFB_GRAPH_SCANNER_STATUS=$?
           ZFB_GRAPH_CLI="$GITHUB_WORKSPACE/target/debug/zfb"
-          (cd "$ZFB_GRAPH_SITE" && ZFB_BUILD_TIMING=1 ZFB_DEV_TIMING=1 timeout 90s "$ZFB_GRAPH_CLI" build) 2>&1 | tee target/package-graph-evidence/build.log
-          test -f "$ZFB_GRAPH_SITE/dist/index.html"
+          (cd "$ZFB_GRAPH_SITE" && ZFB_BUILD_TIMING=1 ZFB_DEV_TIMING=1 timeout 90s "$ZFB_GRAPH_CLI" build) > target/package-graph-evidence/build.log 2>&1
+          ZFB_GRAPH_BUILD_STATUS=$?
+          set -e
+          cat target/package-graph-evidence/build.log
+          printf '%s\n' "$ZFB_GRAPH_BUILD_STATUS" > target/package-graph-evidence/build-exit-status.txt
+          python3 - "$ZFB_GRAPH_SOURCE" "$ZFB_GRAPH_SITE" "$ZFB_GRAPH_SCANNER_STATUS" "$ZFB_GRAPH_BUILD_STATUS" <<'PYVERIFY'
+          import pathlib
+          import sys
+
+          evidence = pathlib.Path("target/package-graph-evidence")
+          source = pathlib.Path(sys.argv[1]).resolve()
+          known = (
+              f"unsupported island registration at {source}/packages/zudo-doc/dist/"
+              "doc-body-end-islands/design-token-panel-island.js:21:7: "
+              "target DesignTokenPanelBootstrap has unsupported initializer"
+          )
+          for name, status in (("scanner", int(sys.argv[3])), ("build", int(sys.argv[4]))):
+              log = (evidence / f"{name}.log").read_text()
+              if status == 0:
+                  print(f"Exact-source {name}: success")
+                  if name == "build" and not (pathlib.Path(sys.argv[2]) / "dist/index.html").is_file():
+                      raise SystemExit("Successful build did not emit dist/index.html")
+              elif status == 1 and known in log and "export a named function" in log:
+                  print(f"Exact-source {name}: expected finite unsupported dependency-member target diagnostic")
+              else:
+                  raise SystemExit(f"Exact-source {name}: unexpected exit {status}; timeout/arbitrary error is not accepted")
+          PYVERIFY
+
+      - name: Temporary supported broad graph verification for issue 3648
+        id: package_graph_supported
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          ZFB_SUPPORTED_SITE="$RUNNER_TEMP/zfb-supported-graph-3648"
+          mkdir -p target/package-graph-evidence
+          python3 - "$ZFB_SUPPORTED_SITE" <<'PYPOSITIVE'
+          import pathlib
+          import sys
+
+          site = pathlib.Path(sys.argv[1])
+          (site / "pages").mkdir(parents=True, exist_ok=True)
+          (site / "graph").mkdir(parents=True, exist_ok=True)
+          (site / "package.json").write_text('{"type":"module","private":true}\n')
+          (site / "zfb.config.ts").write_text("export default { wind: false };\n")
+          (site / "pages/index.tsx").write_text(
+              "import { Shell } from '../graph/index.js';\n"
+              "export default function Page() { return <html><body><Shell /></body></html>; }\n"
+          )
+          (site / "graph/counter.js").write_text(
+              "'use client';\nimport { jsx } from '@takazudo/zfb/zudo-react/jsx-runtime';\n"
+              "export function Counter() { return jsx('span', { children: 'Supported graph' }); }\n"
+          )
+          source = (
+              "import { Island } from '@takazudo/zfb';\n"
+              "import { jsx } from '@takazudo/zfb/zudo-react/jsx-runtime';\n"
+              "import { Counter } from './counter.js';\n"
+              "export function utilities() {\n"
+          )
+          for index in range(256):
+              source += f"function helper{index}(callback) {{ const alias = callback; return unknown{index}(alias); }}\n"
+          source += (
+              "return null; }\n"
+              "export function Shell() { return jsx(Island, { when: 'load', children: jsx(Counter, {}) }); }\n"
+          )
+          (site / "graph/index.js").write_text(source)
+          PYPOSITIVE
+          timeout 90s target/debug/examples/package_graph_probe "$ZFB_SUPPORTED_SITE" 2>&1 | tee target/package-graph-evidence/supported-scanner.log
+          ZFB_GRAPH_CLI="$GITHUB_WORKSPACE/target/debug/zfb"
+          (cd "$ZFB_SUPPORTED_SITE" && ZFB_BUILD_TIMING=1 timeout 90s "$ZFB_GRAPH_CLI" build) 2>&1 | tee target/package-graph-evidence/supported-build.log
+          test -s "$ZFB_SUPPORTED_SITE/dist/index.html"
+          cp "$ZFB_SUPPORTED_SITE/dist/index.html" target/package-graph-evidence/supported-index.html
 
       - name: Upload temporary package graph evidence
         if: always()
@@ -719,9 +791,9 @@ jobs:
       - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
 
       - name: Require successful temporary package graph evidence
-        if: always() && (steps.package_graph_registration.outcome == 'failure' || steps.package_graph_diagnostic.outcome == 'failure')
+        if: always() && (steps.package_graph_registration.outcome == 'failure' || steps.package_graph_diagnostic.outcome == 'failure' || steps.package_graph_supported.outcome == 'failure')
         run: |
-          echo "::error::Issue 3648 registration tests or exact package scanner/build failed; profiling is diagnostic only and merge remains blocked."
+          echo "::error::Issue 3648 registration tests or exact/supported graph verification failed; profiling is diagnostic only and merge remains blocked."
           exit 1
 
       # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
