@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "compiler": {
+    "version": "0.0.0",
+    "sourceSha256": "0d0021060c9cd11682a9e936c36c4f301d98d3c6975f365d933af314456b9410"
+  },
+  "examples": [
+    {
+      "family": "diagnostics",
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "59e3751ffd5add9afb25e04e8a28355f571781b264ab1f64a955f7c67d7abfae",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "37533e43aca0b12e4246701359767d93ee08c12c57d0d9f7774706cf208b3376",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "diagnostics",
+      "id": "unknown-explicit-utility",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "147e12e466fd38c957caa31a0ee3f243251b0321ea0f890a1e4b166cf81170ed",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "091243b1a1c159ec07e3f0dcd656188860a1f21406c09ba57f14e84f02c131cc",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW008",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "diagnostics",
+      "id": "unsupported-foreign-utility",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "50820d487411c11eb4a851b0190586a93677522a82394897fc419537edd74a5e",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "60ac8a588254c8a5896d74e40c945c06eedfd0929397d88a898425806781e94d",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "diagnostics",
+      "id": "source-foreign-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "50820d487411c11eb4a851b0190586a93677522a82394897fc419537edd74a5e",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "700d3bd773700a902516eb3a58ddadfba96e74df6e09a65e752761d0148ea4fd",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "family": "diagnostics",
+      "id": "source-foreign-strict",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "50820d487411c11eb4a851b0190586a93677522a82394897fc419537edd74a5e",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "a174f3f215171c8a67820736391fe0685be0cf09b04ca85ef36601c4e433c0d1",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "gap",
+      "id": "grid-gap",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "0fe293674d33dd7b4f065c8d80ff1cfa7c3a826741a96443b169010dd5f73df3",
+      "inputSha256": "5869404aa8cf83ca496c0f60464c854ada8f731455fde4e6e9f4fdb86770f5cc",
+      "configSha256": "6b81d24be387bc9f95bd9f0843b06f7acfcb4135ef23c38c2f088201c18f866b",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/gap/grid-gap.css",
+      "htmlPath": "wind-examples/gap/grid-gap.html",
+      "cssSha256": "97fe8319b48b6ac29660636d3e54d71d782035176f6e1c81836fc18304008477"
+    },
+    {
+      "family": "padding",
+      "id": "all-sides",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "9bb244a85cc7c9a28409da31f027e9878f43656fc9a95da00abf02da7a82e0be",
+      "inputSha256": "4b1fb7acc3817b975ccdecc5505ec5e87c5721e505ba2275bee15776bad863dd",
+      "configSha256": "d4c6e6feebb6489f79c46fc0082ef871abe12b5e57c5f02a621a7ef4cdea64e5",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/padding/all-sides.css",
+      "htmlPath": "wind-examples/padding/all-sides.html",
+      "cssSha256": "a553d4183ca2980b533d386857d52ae682ddb1ece731014c2e7e5ed73ffca96c"
+    }
+  ]
+}
