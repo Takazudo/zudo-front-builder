@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "family": "text-decoration-color",
+  "examples": [
+    {
+      "id": "decoration-token",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-decoration\">A <a href=\"#accent\" class=\"decoration-accent\">configured accent underline</a>, a <a href=\"#current\" class=\"decoration-current\">current-color underline</a>, and a <a href=\"#transparent\" class=\"decoration-transparent\">transparent underline</a>. <a href=\"#thickness\" class=\"decoration-2\">2px underline</a>; style samples: <a href=\"#solid\" class=\"decoration-solid\">solid</a>, <a href=\"#double\" class=\"decoration-double\">double</a>, <a href=\"#dotted\" class=\"decoration-dotted\">dotted</a>, <a href=\"#dashed\" class=\"decoration-dashed\">dashed</a>, <a href=\"#wavy\" class=\"decoration-wavy\">wavy</a>.</p>",
+      "utilities": [
+        "decoration-2",
+        "decoration-accent",
+        "decoration-current",
+        "decoration-dashed",
+        "decoration-dotted",
+        "decoration-double",
+        "decoration-solid",
+        "decoration-transparent",
+        "decoration-wavy"
+      ],
+      "authoredClasses": ["wind-demo-decoration"],
+      "scaffoldCss": ".wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }\n.wind-demo-decoration a { color: inherit; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "accent": "#a23862"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "decoration-arbitrary",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-decoration\">An <a href=\"#custom\" class=\"decoration-[#b42318]/80\">arbitrary red decoration at 80 percent opacity</a> keeps the text color unchanged.</p>",
+      "utilities": ["decoration-[#b42318]/80"],
+      "authoredClasses": ["wind-demo-decoration"],
+      "scaffoldCss": ".wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }\n.wind-demo-decoration a { color: inherit; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "accent": "#a23862"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -44,7 +44,11 @@ const html = renderToString(<main>{root}</main>);
 
 The wrapper is a div. It has exactly one component marker: data-zfb-island or data-zfb-island-skip-ssr. It also carries data-when, data-zfb-transport="json/1", data-zfb-protocol="zudo-react/1", a nonempty data-zfb-build identity, and data-props even when props are empty. These attributes are emitted in that order, with data-media between data-when and transport only for media mode. The default data-when value is load; idle, visible, and media are also supported. Media mode requires a nonempty data-media query. The skip-SSR option selects the skip-SSR marker, validates identity and props without running the child, and renders its fallback without internal hydration markers.
 
-The component name and build identity must match the generated zfb metadata and client RootOptions. A component with a conflicting displayName, an anonymous component, or an unregistered component cannot be used as an island child. Use the existing zfb island integration for scanner registration, scheduling, and persistence; see the [island guide](../concepts/islands.mdx).
+For an island rendered by zfb, the component name and build identity must match the generated zfb metadata and client RootOptions.
+
+A caller-owned client mount may choose its own nonempty, stable build string, provided it matches the wrapper and `RootOptions.identity.build`; see [Mount from a host you own](./hydration.mdx#mount-from-a-host-you-own).
+
+For a zfb-generated server island, the scanner's marker is the defining function's name; it does not read `displayName`. At server render time, `displayName` must be absent or equal to that name. A mismatch fails with `ZR_ISLAND_IDENTITY` rather than renaming the target. Anonymous or unregistered components also cannot be used as island children. Use the existing zfb island integration for scanner registration, scheduling, and persistence; see the [island guide](../concepts/islands.mdx).
 
 The wrapper is retained by zfb. zudo-react markers describe ranges only inside that wrapper, so a surrounding document stays marker-free. Each root owns its local marker numbering; authors do not need a global element ID or a component registry of their own.
 
@@ -56,9 +60,11 @@ For a caller that supplies its own wrapper attributes, **renderToString** also a
 const inner = renderToString(<Counter />, { island: identity });
 ~~~
 
-Do not use this mode to invent a wrapper protocol. For SDK-integrated islands, use the supported zfb boundary described in the [island API guide](../api/island.mdx).
+This option emits inner markers only; it does not register a component with the static scanner or define the client mount boundary. For server-rendered islands, use the supported zfb boundary described in the [island API guide](../api/island.mdx). A client-only host may own its wrapper and call **mount** as described in [Hydration](./hydration.mdx#mount-from-a-host-you-own).
 
 ## Props use JSON transport
+
+These serialization rules apply to the server-rendered `islandRoot` path and its data-props attribute. A host that calls client **mount** directly passes props in memory, including callbacks and child descriptions; see [Mount from a host you own](./hydration.mdx#mount-from-a-host-you-own).
 
 **serializeProps** returns JSON text; the renderer applies HTML attribute escaping once when it emits the text as data-props. The transport accepts only plain data records, dense arrays, strings, booleans, null, and finite numbers. It omits own enumerable string data properties on records whose value is `undefined`, at every nesting level, while preserving explicit `null`:
 
@@ -87,6 +93,8 @@ Validation happens before JSON serialization. Arrays must be dense and have no e
 ## Read a render failure
 
 When server rendering rejects an element during `zfb build` or `zfb dev`, the error carries three kinds of information. Read them in this order:
+
+The `ZR_TAG` code identifies a tag outside the active HTML or SVG vocabulary. `ZR_ATTRIBUTE` identifies an unsupported attribute name or a value outside its active rules, including the custom-element string-only rule. See the [supported HTML and SVG vocabulary](./vocabulary.mdx) for the complete lists and exact message examples.
 
 ~~~text
 [zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7

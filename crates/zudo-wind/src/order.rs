@@ -1,11 +1,12 @@
 use crate::{Candidate, Catalog, ResolvedRule, ValidatedWindConfig, VariantKind};
 
-/// The nine ascending fields fixed by spec 1, revision 2. String comparison is
+/// The ten ascending fields fixed by spec 1, revision 7. String comparison is
 /// UTF-8 byte order. Scope and catalog order never override CSS specificity.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SortKey {
     pub responsive_rank: usize,
     pub dark_rank: u8,
+    pub pointer_rank: u8,
     pub relation_rank: u8,
     pub state_rank: u8,
     pub pseudo_rank: u8,
@@ -26,6 +27,7 @@ pub(crate) fn state_rank(state: &str) -> u8 {
         "focus-visible" => 7,
         "active" => 8,
         "disabled" => 9,
+        "checked" => 10,
         _ => unreachable!("validated state"),
     }
 }
@@ -42,7 +44,7 @@ pub(crate) fn sort_key(
         _ => 0,
     };
     // The catalog orders subentries by their listed rank, then root bytes.
-    // Use its dense within-group position so the tuple has exactly nine fields.
+    // Use its dense within-group position so the tuple has exactly ten fields.
     let catalog_rank = catalog
         .entries()
         .iter()
@@ -52,6 +54,7 @@ pub(crate) fn sort_key(
     let mut key = SortKey {
         responsive_rank: 0,
         dark_rank: 0,
+        pointer_rank: 0,
         relation_rank: 0,
         state_rank: 0,
         pseudo_rank: 0,
@@ -72,8 +75,9 @@ pub(crate) fn sort_key(
                 key.responsive_rank = 2 * breakpoint.rank + if *max { 2 } else { 1 };
             }
             VariantKind::Dark => key.dark_rank = 1,
+            VariantKind::Pointer { fine } => key.pointer_rank = if *fine { 2 } else { 1 },
             VariantKind::Relation { peer, state } => {
-                key.relation_rank = state_rank(state) + if *peer { 9 } else { 0 }
+                key.relation_rank = state_rank(state) + if *peer { 10 } else { 0 }
             }
             VariantKind::State(state) => key.state_rank = state_rank(state),
             VariantKind::PseudoElement(pseudo) => {
@@ -83,6 +87,7 @@ pub(crate) fn sort_key(
                     "marker" => 3,
                     "placeholder" => 4,
                     "backdrop" => 5,
+                    "selection" => 6,
                     _ => unreachable!("validated pseudo-element"),
                 }
             }

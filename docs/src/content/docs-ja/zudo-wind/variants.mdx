@@ -4,19 +4,653 @@ description: 設定済みのレスポンシブ、ダーク、関係、状態、�
 sidebar_position: 6
 ---
 
+## 作業に合わせてバリアントを適用する
+
+バリアントは完全なユーティリティ候補に条件を加えます。zudo-wind にはデフォルトのブレークポイントもダークモードもありません。使う前に両方を設定してください。
+
+```json
+{
+  "wind": {
+    "breakpoints": { "sm": { "minWidthPx": 640 } },
+    "dark": { "attribute": "data-theme", "value": "dark" }
+  }
+}
+```
+
+コンパイル済みプレビューのコントロールで幅を変え、コントロールを hover または focus し、ライトとダークの面を比べてください。プレビューの設定は明示され、CSS はワークスペースのコンパイラが生成しています。
+
+### 設定した幅でレイアウトを変える
+
+接頭辞のない候補はどの幅でも適用されます。`sm:grid-cols-2` は、設定した 640px 以上で 2 列目を追加します。
+
+{/* wind-preview: guide-variants/responsive-grid "レスポンシブグリッドの幅を変える" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-board grid grid-cols-1 gap-3 sm:grid-cols-2\">\n  <div class=\"wind-demo-card\">One column below 640px</div>\n  <div class=\"wind-demo-card\">Two columns from 640px</div>\n  <div class=\"wind-demo-card\">Resize the preview</div>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-board {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-card {\n  min-height: 3rem;\n  text-align: center;\n  border: 1px solid #8797aa;\n  background: #f4f1ec;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-1 {\n  grid-template-columns: repeat(1,minmax(0,1fr));\n}\n.gap-3 {\n  column-gap: 0.75rem;\n  row-gap: 0.75rem;\n}\n@media (min-width: 640px) {\n  .sm\\:grid-cols-2 {\n    grid-template-columns: repeat(2,minmax(0,1fr));\n  }\n}\n"} title={"レスポンシブグリッドの幅を変える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {
+      "sm": {
+        "minWidthPx": 640
+      }
+    },
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-board": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-1",
+        "gap-3",
+        "sm:grid-cols-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-board { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-card { min-height: 3rem; text-align: center; border: 1px solid #8797aa; background: #f4f1ec; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+### ダークモードでルールを適用する
+
+`dark:` は、要素自身または祖先に設定した属性と一致します。この例では 1 枚のカードに `data-theme="dark"` を指定し、両方のモードを並べて表示します。
+
+{/* wind-preview: guide-variants/dark-surface "設定済みのライト値とダーク値を比べる" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-dark-grid\">\n  <div class=\"wind-demo-color-card bg-paper text-ink p-4\">Light surface</div>\n  <div class=\"wind-demo-color-card bg-paper text-ink dark:bg-night dark:text-night-ink p-4\" data-theme=\"dark\">Dark surface from this element’s configured attribute</div>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #253047;\n    --zw-color-night: #263449;\n    --zw-color-night-ink: #f5f7fb;\n    --zw-color-paper: #f5f7fb;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-dark-grid {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: .75rem;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-color-card {\n  border: 1px solid #8797aa;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-paper {\n  background-color: var(--zw-color-paper);\n}\n.dark\\:text-night-ink:where([data-theme=\"dark\"], [data-theme=\"dark\"] *) {\n  color: var(--zw-color-night-ink);\n}\n.dark\\:bg-night:where([data-theme=\"dark\"], [data-theme=\"dark\"] *) {\n  background-color: var(--zw-color-night);\n}\n"} title={"設定済みのライト値とダーク値を比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "paper": "#f5f7fb",
+        "ink": "#253047",
+        "night": "#263449",
+        "night-ink": "#f5f7fb"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "dark": {
+      "attribute": "data-theme",
+      "value": "dark"
+    },
+    "authoredClasses": {
+      "wind-demo-dark-grid": true,
+      "wind-demo-color-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-paper",
+        "text-ink",
+        "p-4",
+        "dark:bg-night",
+        "dark:text-night-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-dark-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-color-card { border: 1px solid #8797aa; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+### 要素自身の状態に応じる
+
+状態バリアントはユーティリティ自身の要素を対象にします。最初のボタンは hover とキーボード操作時の `focus-visible` で変わり、無効化したボタンはポインター操作に依存しない状態を示します。
+
+{/* wind-preview: guide-variants/element-states "hover、focus、disabled を試す" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<button class=\"wind-demo-button bg-accent text-paper px-4 py-2 hover:bg-accent-strong focus-visible:bg-accent-strong disabled:opacity-50\">Hover or focus this button</button>\n<button class=\"wind-demo-button bg-accent text-paper px-4 py-2 disabled:opacity-50\" disabled>Disabled state</button>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #5b5bd6;\n    --zw-color-accent-strong: #38389a;\n    --zw-color-paper: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-button {\n  margin: .25rem;\n  border: 0;\n  border-radius: 9999px;\n  font: 600 14px / 1.4 system-ui, sans-serif;\n  cursor: pointer;\n}\n.px-4 {\n  padding-left: 1rem;\n  padding-right: 1rem;\n}\n.py-2 {\n  padding-top: 0.5rem;\n  padding-bottom: 0.5rem;\n}\n.text-paper {\n  color: var(--zw-color-paper);\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n@media (hover: hover) {\n  .hover\\:bg-accent-strong:hover {\n    background-color: var(--zw-color-accent-strong);\n  }\n}\n.focus-visible\\:bg-accent-strong:focus-visible {\n  background-color: var(--zw-color-accent-strong);\n}\n.disabled\\:opacity-50:disabled {\n  opacity: 0.5;\n}\n"} title={"hover、focus、disabled を試す"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#5b5bd6",
+        "accent-strong": "#38389a",
+        "paper": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-button": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "text-paper",
+        "px-4",
+        "py-2",
+        "hover:bg-accent-strong",
+        "focus-visible:bg-accent-strong",
+        "disabled:opacity-50"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-button { margin: .25rem; border: 0; border-radius: 9999px; font: 600 14px/1.4 system-ui, sans-serif; cursor: pointer; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+### 関係する要素の状態に応じる
+
+祖先に名前なしの `group` マーカーを置くか、前の兄弟要素に名前なしの `peer` マーカーを置きます。関係バリアントは、そのマーカーが指定状態のとき、子孫または後続の兄弟要素をスタイルします。
+
+{/* wind-preview: guide-variants/group-and-peer "group と前の peer の関係を試す" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-relations\">\n  <div class=\"wind-demo-link group text-ink\">\n    <span class=\"group-hover:text-accent\">Hover this group to color its child</span>\n  </div>\n  <label class=\"wind-demo-choice\">\n    <input class=\"peer\" type=\"checkbox\" />\n    <span class=\"peer-focus:text-accent\">Tab to the preceding peer control</span>\n  </label>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #5b5bd6;\n    --zw-color-ink: #253047;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-relations {\n  display: grid;\n  gap: .75rem;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-link {\n  display: block;\n  padding: .75rem;\n  border: 1px solid #8797aa;\n}\n\n.wind-demo-choice {\n  display: flex;\n  align-items: center;\n  gap: .5rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n@media (hover: hover) {\n  :where(.group:hover) .group-hover\\:text-accent {\n    color: var(--zw-color-accent);\n  }\n}\n:where(.peer:focus) ~ .peer-focus\\:text-accent {\n  color: var(--zw-color-accent);\n}\n"} title={"group と前の peer の関係を試す"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#253047",
+        "accent": "#5b5bd6"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-relations": true,
+      "wind-demo-link": true,
+      "wind-demo-choice": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "group",
+        "text-ink",
+        "group-hover:text-accent",
+        "peer",
+        "peer-focus:text-accent"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-relations { display: grid; gap: .75rem; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-link { display: block; padding: .75rem; border: 1px solid #8797aa; }
+.wind-demo-choice { display: flex; align-items: center; gap: .5rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+### 疑似要素にルールを追加する
+
+`before` と `after` は `content` を作りません。この例では手書き CSS が疑似要素の内容と形を用意し、zudo-wind が表示方法と色のユーティリティを適用します。
+
+{/* wind-preview: guide-variants/pseudo-element "手書きの疑似要素をスタイルする" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<p class=\"wind-demo-mark before:block before:bg-accent\">The scaffold supplies pseudo-element content and size.</p>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #5b5bd6;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-mark {\n  display: flex;\n  align-items: center;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-mark:before {\n  content: \"\";\n  inline-size: .75rem;\n  block-size: .75rem;\n  border-radius: 50%;\n  margin-inline-end: .5rem;\n}\n.before\\:block::before {\n  display: block;\n}\n.before\\:bg-accent::before {\n  background-color: var(--zw-color-accent);\n}\n"} title={"手書きの疑似要素をスタイルする"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#5b5bd6"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-mark": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "before:block",
+        "before:bg-accent"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-mark { display: flex; align-items: center; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-mark::before { content: ""; inline-size: .75rem; block-size: .75rem; border-radius: 50%; margin-inline-end: .5rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+<Details title="バリアントが拒否される例を見る">
+
+バリアント群には正規順序があります。`hover:sm:block` は拒否されます。設定済みのレスポンシブバリアントを先に記述してください。
+
+{/* wind-preview: guide-variants/noncanonical-order "正規順序でないバリアント" */}
+
+```html
+<div class="hover:sm:block">hover:sm:block</div>
+```
+
+期待される診断: `ZW003 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {
+      "sm": {
+        "minWidthPx": 640
+      }
+    },
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "hover:sm:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+ダークモードを設定していない場合、`dark` はこのコンパイラでは未知のバリアントです。
+
+{/* wind-preview: guide-variants/unconfigured-dark "ダークモードは設定が必要" */}
+
+```html
+<div class="dark:block">dark:block needs configured dark mode.</div>
+```
+
+期待される診断: `ZW002 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "dark:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+名前付き group と peer の形式は v1 の対象外です。
+
+{/* wind-preview: guide-variants/named-group "名前付き group の形式" */}
+
+```html
+<div class="group-hover/menu:block">group-hover/menu:block</div>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "group-hover/menu:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+属性バリアントは手書き CSS に記述します。
+
+{/* wind-preview: guide-variants/attribute-variant "未対応の ARIA 属性バリアント" */}
+
+```html
+<button class="aria-pressed:block">aria-pressed:block</button>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "aria-pressed:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+`data-*` 属性にも同じ制限があります。
+
+{/* wind-preview: guide-variants/data-attribute-variant "未対応の data 属性バリアント" */}
+
+```html
+<div class="data-[state=open]:block">data-[state=open]:block</div>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "data-[state=open]:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+v1 は任意セレクタバリアントに対応していません。セレクタは自分で記述する CSS に指定してください。
+
+{/* wind-preview: guide-variants/arbitrary-selector-variant "未対応の任意セレクタバリアント" */}
+
+```html
+<p class="[_a]:underline">[_a]:underline</p>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "[_a]:underline"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+疑似要素を対象にする候補と、子要素間の余白や区切り線のユーティリティは組み合わせられません。
+
+{/* wind-preview: guide-variants/pseudo-child-utility "疑似要素と子要素ユーティリティ" */}
+
+```html
+<div class="before:divide-y">before:divide-y</div>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "before:divide-y"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+</Details>
+
+順序、セレクタの動作、バリアントの制限は以下の[技術情報](#利用できるバリアント)を参照してください。[トークンガイド](./tokens.mdx)、[ユーティリティ文法](./utility-grammar.mdx)、[設定](./configuration.mdx)、[全ユーティリティ一覧](./utilities/index.mdx)も続けて読めます。
+
+<Details title="バリアントの順序とセレクタの詳細">
+
 ## 利用できるバリアント
 
-v1 では、設定済みのレスポンシブブレークポイント、任意のダークモード、名前のない group と peer の関係、`open` を含む 9 つの要素状態、5 つの疑似要素を使えます。候補には各カテゴリから最大 1 つのバリアントを指定できます。正規順は次のとおりです。
+v1 では、設定済みのレスポンシブブレークポイント、任意のダークモード、名前のない group と peer の関係、`checked` を含む 10 個の要素状態、6 つの疑似要素、および pointer 条件を使えます。候補には各カテゴリから最大 1 つのバリアントを指定できます。正規順は次のとおりです。
 
-    responsive → dark → relation → state → pseudo-element → utility
+    responsive → dark → pointer → relation → state → pseudo-element → utility
 
-レスポンシブとダークのバリアントは、それぞれ最大 1 つです。関係と自身の状態はそれぞれ 1 つ指定でき、関係バリアント自体も group または peer 上の状態を示します。同じバリアントは繰り返せません。最小幅と最大幅を組み合わせる形式はありません。
+レスポンシブ、ダーク、pointer のバリアントは、それぞれ最大 1 つです。関係と自身の状態はそれぞれ 1 つ指定でき、関係バリアント自体も group または peer 上の状態を示します。同じバリアントは繰り返せません。最小幅と最大幅を組み合わせる形式はありません。
 
 ## レスポンシブとダークのバリアント
 
 ブレークポイントは、`minWidthPx` に正の整数を持つ設定済みの名前です。640 に設定した `sm` は、CSS ピクセルで最小幅 640 のメディア条件を意味します。`max-sm` は排他的な条件 `width < 640px` を使い、微小値を引きません。ピクセル幅はルートのフォントサイズが変わっても固定です。
 
 ダークモードはデフォルトで無効です。小文字の属性名と空でない値を設定すると `dark` を有効にできます。条件は要素自身かいずれかの祖先にその属性がある場合に一致します。生成セレクタは `:where(...)` を使うため、ダークモードによる詳細度の加算はゼロです。値は CSS 文字列としてエスケープされます。
+
+## Pointer 条件
+
+`pointer-coarse` と `pointer-fine` は設定不要で、セレクターの詳細度を増やしません。それぞれ `(pointer: coarse)` と `(pointer: fine)` のメディア条件になり、レスポンシブや hover の条件と `and` で結合されます。最大 1 つだけ使えます。重複や coarse/fine の衝突は ZW003/R05、順序違いは正規順の提案付き ZW003/R06 です。
 
 ## 関係と状態のバリアント
 
@@ -33,18 +667,21 @@ v1 では、設定済みのレスポンシブブレークポイント、任意�
 | 7 | `focus-visible` | `:focus-visible` |
 | 8 | `active` | `:active` |
 | 9 | `disabled` | `:disabled` |
+| 10 | `checked` | `:checked` |
 
-状態がない場合の順位は 0 です。表には 1～9 を載せています。ほかの状態セレクタは、状態名を疑似クラスとして使います。group と peer を含むすべての hover 状態には、`@media (hover: hover)` のガードが付きます。
+状態がない場合の順位は 0 です。表には 1～10 を載せています。ほかの状態セレクタは、状態名を疑似クラスとして使います。group と peer を含むすべての hover 状態には、`@media (hover: hover)` のガードが付きます。
 
-`group` マーカーは祖先に置きます。`peer` マーカーは前の兄弟要素に置く必要があります。group の状態は `:where(.group:S) C`、peer の状態は `:where(.peer:S) ~ C` を使います。`C` はエスケープされた候補セレクタ、`S` は選択した状態です。関係セレクタによる詳細度の加算はゼロです。関係なしは順位 0、group の状態は 1～9、peer の状態は 10～18 で、それぞれ状態順に並びます。`group/menu` や `group-hover/menu:block` のような名前付きマーカーと関係形式は未対応です。
+`group` マーカーは祖先に置きます。`peer` マーカーは前の兄弟要素に置く必要があります。group の状態は `:where(.group:S) C`、peer の状態は `:where(.peer:S) ~ C` を使います。`C` はエスケープされた候補セレクタ、`S` は選択した状態です。関係セレクタによる詳細度の加算はゼロです。関係なしは順位 0、group の状態は 1～10、peer の状態は 11～20 で、それぞれ状態順に並びます。`group/menu` や `group-hover/menu:block` のような名前付きマーカーと関係形式は未対応です。
 
 ## 疑似要素
 
-利用できる疑似要素は `before`、`after`、`marker`、`placeholder`、`backdrop` です。この順に順位 1～5 を持ち、状態セレクタの後に追加されます。順位 0 は疑似要素なしです。`before` と `after` は `content` 宣言を挿入しません。必要なら手書きの CSS に宣言を追加してください。
+利用できる疑似要素は `before`、`after`、`marker`、`placeholder`、`backdrop`、`selection` です。この順に順位 1～6 を持ち、状態セレクタの後に追加されます。順位 0 は疑似要素なしです。`before` と `after` は `content` 宣言を挿入しません。必要なら手書きの CSS に宣言を追加してください。
+
+`checked:`、`group-checked:`、`peer-checked:`、`max-sm:peer-checked:visible` を使えます。`checked` に hover ガードはありません。`selection:` は content を作りません。対応ブラウザーの `::selection` には color、background-color、text-decoration、text-shadow、`-webkit-text-stroke` の各プロパティが適用できます。ほかのユーティリティも解決され得ますが見た目には作用しない場合があります。`selection:space-*` と `selection:divide-*` は引き続き R23 です。
 
 ## 順序と拒否
 
-完全な連鎖の順序はレスポンシブ、ダーク、関係、状態、疑似要素、ユーティリティです。たとえば `sm`、ダークモード、`colors.panel` が設定されていれば `sm:dark:hover:bg-panel` は正規の順序です。`hover:sm:block` は順序が違うため ZW003 になり、並べ替えた `sm:hover:block` が提案されます。重複や未知のバリアントには、自動の並べ替え提案はありません。
+完全な連鎖の順序はレスポンシブ、ダーク、pointer、関係、状態、疑似要素、ユーティリティです。たとえば `sm`、ダークモード、`colors.panel` が設定されていれば `sm:dark:hover:bg-panel` は正規の順序です。`hover:sm:block` は順序が違うため ZW003 になり、並べ替えた `sm:hover:block` が提案されます。重複や未知のバリアントには、自動の並べ替え提案はありません。
 
 セレクタは元の完全な候補からエスケープして作ります。ダークモードを `data-theme="dark"` に設定した場合、`dark:hover:bg-panel` のセレクタは次のとおりです。
 
@@ -59,3 +696,5 @@ v1 では `aria-*` と `data-*` の属性バリアント、および任意セレ
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

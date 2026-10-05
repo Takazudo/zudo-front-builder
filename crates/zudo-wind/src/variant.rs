@@ -6,6 +6,7 @@ use crate::{Diagnostic, DiagnosticCode};
 pub enum VariantKind {
     Breakpoint { name: String, max: bool },
     Dark,
+    Pointer { fine: bool },
     Relation { peer: bool, state: String },
     State(String),
     PseudoElement(String),
@@ -16,9 +17,10 @@ impl VariantKind {
         match self {
             Self::Breakpoint { .. } => 0,
             Self::Dark => 1,
-            Self::Relation { .. } => 2,
-            Self::State(_) => 3,
-            Self::PseudoElement(_) => 4,
+            Self::Pointer { .. } => 2,
+            Self::Relation { .. } => 3,
+            Self::State(_) => 4,
+            Self::PseudoElement(_) => 5,
         }
     }
 }
@@ -49,6 +51,11 @@ impl VariantVocabulary {
     fn classify(&self, raw: &str) -> Option<VariantKind> {
         if raw == "dark" && self.dark {
             return Some(VariantKind::Dark);
+        }
+        if raw == "pointer-coarse" || raw == "pointer-fine" {
+            return Some(VariantKind::Pointer {
+                fine: raw == "pointer-fine",
+            });
         }
         if let Some(name) = raw.strip_prefix("max-") {
             if self.breakpoints.contains(name) {
@@ -83,7 +90,16 @@ impl VariantVocabulary {
         if is_state(raw) {
             return Some(VariantKind::State(raw.to_owned()));
         }
-        if ["before", "after", "marker", "placeholder", "backdrop"].contains(&raw) {
+        if [
+            "before",
+            "after",
+            "marker",
+            "placeholder",
+            "backdrop",
+            "selection",
+        ]
+        .contains(&raw)
+        {
             return Some(VariantKind::PseudoElement(raw.to_owned()));
         }
         None
@@ -155,6 +171,7 @@ pub(crate) fn is_state(state: &str) -> bool {
         "focus-visible",
         "active",
         "disabled",
+        "checked",
         "first",
         "last",
         "focus-within",

@@ -5,9 +5,132 @@ sidebar_position: 67
 generated: true
 ---
 
-Show or hide an element while it keeps its place in the layout.
+Use visibility to hide an element while preserving its place in layout, or make it visible again. Choose hidden from the display family when the box should be removed and following content should move into its place.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `invisible` | `visibility: hidden;` |
+| `visible` | `visibility: visible;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Hide while reserving space
+
+invisible hides the middle box but preserves its flex slot, so the final box stays at the same position.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eVisible\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile invisible\"\u003eInvisible box\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eSpace is still reserved\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.invisible {\n  visibility: hidden;\n}\n"} title={"Hide while reserving space"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "invisible",
+        "items-center"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Compare visibility and display
+
+invisible retains a slot; hidden removes its slot, and visible makes the last item render normally.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003einvisible keeps its flex slot; hidden removes its slot from layout.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFirst\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile invisible\"\u003eInvisible\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile hidden\"\u003eHidden\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile visible\"\u003eVisible again\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.hidden {\n  display: none;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.invisible {\n  visibility: hidden;\n}\n.visible {\n  visibility: visible;\n}\n"} title={"Compare visibility and display"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "hidden",
+        "invisible",
+        "items-center",
+        "visible"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+This family has two exact class names and no custom values: visible sets visibility:visible and invisible sets visibility:hidden. The box keeps its layout space, while visibility:hidden content is generally omitted from the accessibility tree and cannot be interacted with. hidden is a separate display:none utility.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## invisible
 
@@ -76,3 +199,5 @@ Show or hide an element while it keeps its place in the layout.
 | Example class | Expected declarations |
 | --- | --- |
 | `visible` | `visibility: visible` |
+
+</Details>

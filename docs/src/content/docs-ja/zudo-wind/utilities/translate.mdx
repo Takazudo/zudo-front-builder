@@ -5,9 +5,188 @@ sidebar_position: 58
 generated: true
 ---
 
-余白、full、分数、負の値を使い、軸に沿って要素を移動します。
+レイアウト上の占有領域を変えずに、要素を水平方向または垂直方向へ移動します。同じ要素上で二つの軸を合成できます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `translate-x-8` | `--zw-translate-x: 2rem; translate: var(--zw-translate-x) var(--zw-translate-y);` |
+| `translate-y-4` | `--zw-translate-y: 1rem; translate: var(--zw-translate-x) var(--zw-translate-y);` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューで spec: 1、reset: "none"、strict モード、spacingUnit: "0.25rem"、空のブレークポイント、defaultTransitionTimingFunction: "ease" を明示します。これにより translate-x-8 は 2rem、translate-y-4 は 1rem になります。一つの例では名前付き間隔 rail に 2rem を設定します。図のステージ、基準位置、四角形だけを自作 CSS で描き、移動と回転は zudo-wind のユーティリティで指定します。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### x と y の移動を合成する
+
+translate-x-8 と translate-y-4 で同じ四角形を右へ 2rem、下へ 1rem 動かします。rotate-12 も組み合わせ、transform ユーティリティなしで移動と回転が合成される様子を示します。
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-8 translate-y-4 rotate-12\"\u003ex + y\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eThe blue square moves 2rem right and 1rem down, then rotates 12 degrees.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-8 {\n  --zw-translate-x: 2rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-4 {\n  --zw-translate-y: 1rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.rotate-12 {\n  rotate: 12deg;\n}\n"} title={"x と y の移動を合成する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-8",
+        "translate-y-4",
+        "rotate-12"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### 名前付き距離と割合を使う
+
+プレビュー設定で rail を 2rem にし、translate-y-1/2 は要素自身の高さの半分だけ移動します。
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-rail translate-y-1/2\"\u003etoken\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eThe configured rail token moves it 2rem right; one half moves it by half of its own height.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-rail: 2rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-rail {\n  --zw-translate-x: var(--zw-spacing-rail);\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-1\\/2 {\n  --zw-translate-y: calc(100% * 1 / 2);\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"名前付き距離と割合を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "rail": "2rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-rail",
+        "translate-y-1/2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### 測定した距離を個別に調整する
+
+translate-x-[11px] は名前付きトークンを追加せずに、一度だけ使う CSS 長さを指定します。
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-[11px]\"\u003e11px\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eAn arbitrary length is useful for a single measured adjustment.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-\\[11px\\] {\n  --zw-translate-x: 11px;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"測定した距離を個別に調整する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-[11px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+数値の接尾辞には、設定した tokens.spacingUnit を使います。translate-x-rail のような名前付きの値は tokens.spacing から参照します。translate-y-1/2 のような分数は要素の寸法に対する割合で、角括弧内には個別の CSS 長さを指定できます。固定値 0 と full はそれぞれ 0 と 100% です。負の値も使えます。Tailwind の間隔スケールは継承しません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## translate-x
 
@@ -16,7 +195,7 @@ generated: true
 | カタログ識別子 | `v1.translate.x` |
 | クラスパターン | `translate-x-<suffix>` |
 | 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| 受け入れる値 | `2` |
+| 受け入れる値 | `3` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
 | 競合グループと順位 | `translate` (`38`) |
@@ -30,6 +209,7 @@ generated: true
 | 種類 | 接尾辞 | 出力される値 |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### 宣言テンプレート
@@ -44,6 +224,9 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `translate-x-0` | `--zw-translate-x: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-x-px` | `--zw-translate-x: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+
+`{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
 
 ## translate-y
 
@@ -52,7 +235,7 @@ generated: true
 | カタログ識別子 | `v1.translate.y` |
 | クラスパターン | `translate-y-<suffix>` |
 | 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| 受け入れる値 | `2` |
+| 受け入れる値 | `3` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
 | 競合グループと順位 | `translate` (`38`) |
@@ -66,6 +249,7 @@ generated: true
 | 種類 | 接尾辞 | 出力される値 |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### 宣言テンプレート
@@ -80,3 +264,8 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `translate-y-0` | `--zw-translate-y: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-y-px` | `--zw-translate-y: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+
+`{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
+
+</Details>

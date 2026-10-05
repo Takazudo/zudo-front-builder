@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "family": "alignment",
+  "examples": [
+    {
+      "id": "alignment-flex",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">On a row, justify-content moves along the main axis and align-items moves across it.</p>\n  <div class=\"wind-demo-frame flex h-32 w-full items-center justify-between gap-2\">\n    <div class=\"wind-demo-tile\">Start</div><div class=\"wind-demo-tile self-end\">Self end</div><div class=\"wind-demo-tile\">End</div>\n  </div>\n</div>",
+      "utilities": [
+        "flex",
+        "gap-2",
+        "h-32",
+        "items-center",
+        "justify-between",
+        "self-end",
+        "w-full"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "alignment-grid",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">place-items sets both axes for each grid item; self overrides one item.</p>\n  <div class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center justify-items-center place-content-between gap-2\">\n    <div class=\"wind-demo-tile justify-self-end\">Justify self end</div><div class=\"wind-demo-tile place-self-start\">Place self start</div>\n    <div class=\"wind-demo-tile self-start\">Self start</div><div class=\"wind-demo-tile\">Centered</div>\n  </div>\n</div>",
+      "utilities": [
+        "gap-2",
+        "grid",
+        "grid-cols-2",
+        "grid-rows-2",
+        "h-36",
+        "justify-items-center",
+        "justify-self-end",
+        "place-content-between",
+        "place-items-center",
+        "place-self-start",
+        "self-start"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}

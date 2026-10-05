@@ -4,6 +4,104 @@ description: Configure zudo-wind generation, tokens, breakpoints, source candida
 sidebar_position: 2
 ---
 
+## Configure the workspace
+
+The documentation shell still uses Tailwind CSS. This page configures the separate zudo-wind engine that your project runs.
+
+Put engine settings under the top-level <code>wind</code> key. Configure the reset, tokens, breakpoints, and source roots your classes need:
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "minimal-v1",
+    strict: true,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    sources: {
+      exclude: ["src/**/__tests__/**"],
+      packageRoots: ["./packages/ui"]
+    },
+    safelist: { app: ["sm:hover:bg-panel"] },
+    authoredClasses: { "legacy-panel": true }
+  }
+});
+~~~
+
+Define custom properties in authored CSS when tokens reference them. Then inspect the same candidate and source plan the build will use:
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts sm:hover:bg-panel
+zfb css --input src/styles.css --output dist/app.css --project-root .
+~~~
+
+Use a safelist for complete app candidates that source discovery cannot find. Publish package-owned candidates as a manifest. Reserve a complete spelling in <code>authoredClasses</code> when CSS owns a name that overlaps a utility root.
+
+{/* wind-preview: guide-configuration/configured-panel "Inspect token-backed utility output" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<article class=\"wind-demo-card bg-panel p-4 sm:p-8\"><h2>Workspace panel</h2><p>A token and responsive spacing compiled by zudo-wind.</p></article>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-panel: #eaf2ff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-card {\n  max-width: 24rem;\n  border: 1px solid #b6c4d2;\n  border-radius: .5rem;\n  color: #172b4d;\n}\n\n.wind-demo-card h2 {\n  margin: 0 0 .5rem;\n  font-size: 1.1rem;\n}\n\n.wind-demo-card p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n@media (min-width: 640px) {\n  .sm\\:p-8 {\n    padding-top: 2rem;\n    padding-right: 2rem;\n    padding-bottom: 2rem;\n    padding-left: 2rem;\n  }\n}\n"} title={"Inspect token-backed utility output"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#eaf2ff"
+      }
+    },
+    "breakpoints": {
+      "sm": {
+        "minWidthPx": 640
+      }
+    },
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-4",
+        "sm:p-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }
+.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.wind-demo-card p { margin: 0; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+The sample contains compiled zudo-wind CSS with an explicit spacing unit, breakpoint, token, and reset. Its authored card styles supply context; the displayed utility classes come from the compiler.
+
+<Details title="Technical reference">
+
 ## The wind key
 
 The root configuration accepts `wind` in both `zfb.config.ts` and `zfb.config.json`. After the cutover, an absent key has the same behavior as an empty object: generation is enabled with reset `none`, empty token maps, and sources supplied by zfb's source planner.
@@ -37,6 +135,8 @@ export default defineConfig({
 });
 ```
 
+A host token value that differs from a preset binding replaces it silently in build. `wind explain` identifies the changed binding via optional `tokenResolutions[*].hostOverride`; `wind audit` reports ZW015 as audit-only information. Equal values do not produce an override record.
+
 ### Manifest path resolution
 
 Manifest paths are resolved from a base directory. A bare package specifier such as `@example/widgets/wind.json` uses Node resolution and the producer package's `exports`; this is the recommended spelling and works with pnpm's package layout. Export the manifest from the producer package:
@@ -54,12 +154,15 @@ Paths beginning with `./` or `../` resolve from the project root, meaning the di
 
 ### Source exclusions and package roots
 
-`sources` adjusts the source plan. Both lists are optional and default to empty, so an unset `sources` keeps the default plan.
+`sources` adjusts the source plan. These declarations are optional and default to empty, so an unset `sources` keeps the default plan.
 
 ```ts
 wind: {
   sources: {
+    roots: ["src", "tests"],
     exclude: ["src/**/__tests__/**", "worker"],
+    classHelpers: ["uiClasses"],
+    ignoreAttributes: ["css", "displayJs"],
     packageRoots: ["@example/widgets", "./packages/ui"]
   }
 }
@@ -67,7 +170,11 @@ wind: {
 
 Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root (the `--config` file's directory when one is selected), or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
 
+`sources.roots` lists directories strictly below the project or preset that declares them; it cannot name the declaring root or escape above it. These roots follow gitignore rules, standard skipped directories, and `wind.sources.exclude`. Ordinary `.ts` and `.test.ts` files are candidates; declaration `.d.ts` files are always excluded, and audit coverage names this as `excluded **/*.d.ts (declaration files)`. `packageRoots` is a separate first-party package channel with its own traversal rules.
+
 Each `packageRoots` entry is either a `./` or `../` path from the declaring root, or an installed package name with an optional subpath such as `@example/widgets/dist`, found through the `node_modules` directories above the declaring root. A package root must be an existing directory that is neither the project root nor one of its ancestors, and it is scanned with its own `dist` and `node_modules`, ignoring gitignore rules. Output, `--output`, and scratch directories stay excluded inside it.
+
+`sources.classHelpers` explicitly lists local helper identifiers in addition to built-in class helpers. Preset and project lists merge in deterministic order with duplicates removed. Only supported string/template, array, and object arguments are treated as class lists; naming a helper such as `cva` or `twMerge` does not infer its unrelated semantics. `sources.ignoreAttributes` adds names to the built-in ignored props `href`, `src`, `content`, `name`, `rel`, and `type`; preset and project declarations deduplicate. Names accept Unicode identifier characters, optionally followed by `-` or `:` segments. `class` and `className` are rejected. For example, opt in `css`, `html`, `js`, `displayJs`, or `title` when those props carry nonclass content. The complete ignored prop value is excluded, including nested markup, interpolation, and class-helper calls. Actual class attributes and diagnostics outside those props remain visible. No query-selector or script-text heuristic is added.
 
 The same object is valid as the value of the `wind` property in JSON:
 
@@ -107,7 +214,7 @@ The same object is valid as the value of the `wind` property in JSON:
 | `authoredClasses` | Complete candidate spellings mapped to `true`; exact matches stay authored and suppress utility validation, diagnostics, and generated CSS. Include variants when reserving a variant-bearing candidate. |
 | `strict` | `false` by default. When `true`, an unsupported foreign utility (ZW014) at a class position is a build error instead of a warning. Lower-confidence literals are never promoted. |
 | `manifests` | Producer IDs mapped to a nonempty `path` for a candidate manifest. |
-| `sources` | Optional `exclude` globs and `packageRoots` paths, each resolved from its declaring project or preset package. |
+| `sources` | Optional `roots`, `exclude`, `packageRoots`, `classHelpers`, and `ignoreAttributes` declarations, resolved from each project or preset owner. |
 | `utilities` | Optional `placement`: `"after-authored"` (the default) or `"before-authored"`. It sets whether unlayered utility rules follow or precede authored global CSS; see [Utility placement](./cascade-and-reset.mdx#utility-placement). |
 
 The dark attribute must be a lowercase HTML attribute identifier. Its value must be nonempty and contain no control characters. Owner and producer IDs use nonempty ASCII letters, digits, dots, underscores, slashes, or hyphens, and start with a letter or digit. Authored class keys must be complete, nonempty tokens without whitespace or control characters.
@@ -128,3 +235,5 @@ A leftover top-level `tailwind` key is a hard error with a named migration messa
 - [Tokens](./tokens.mdx)
 - [Sources and candidates](./sources-and-candidates.mdx)
 - [Coming from Tailwind](./coming-from-tailwind.mdx)
+
+</Details>

@@ -1,0 +1,28 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-cell {
+  background: #dce8f2;
+  border: 1px solid #849bb3;
+  min-width: 3rem;
+  text-align: center;
+}
+
+.wind-demo-content {
+  background: #fff;
+  border: 1px dashed #849bb3;
+}
+.p-\[18px\] {
+  padding-top: 18px;
+  padding-right: 18px;
+  padding-bottom: 18px;
+  padding-left: 18px;
+}

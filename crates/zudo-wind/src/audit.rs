@@ -291,6 +291,16 @@ fn append_token_override_diagnostics(report: &mut AuditReport, token_overrides: 
 }
 
 pub fn render_audit(report: &AuditReport) -> String {
+    render_audit_with_grouping(report, false)
+}
+
+/// Render a compact text report with repeated names grouped by candidate,
+/// diagnostic code, and severity where those fields apply.
+pub fn render_audit_grouped(report: &AuditReport) -> String {
+    render_audit_with_grouping(report, true)
+}
+
+fn render_audit_with_grouping(report: &AuditReport, grouped: bool) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "outcome: {}\n",
@@ -300,14 +310,22 @@ pub fn render_audit(report: &AuditReport) -> String {
         "spec: {} revision {}\n",
         report.spec_version, report.spec_revision
     ));
-    render_section(
-        &mut output,
-        "unrecognized classes",
-        report
-            .unrecognized_classes
-            .iter()
-            .map(|entry| format!("{} at {}", entry.candidate, origin_location(&entry.origin))),
-    );
+    if grouped {
+        render_section(
+            &mut output,
+            "unrecognized classes",
+            grouped_unrecognized_classes(&report.unrecognized_classes),
+        );
+    } else {
+        render_section(
+            &mut output,
+            "unrecognized classes",
+            report
+                .unrecognized_classes
+                .iter()
+                .map(|entry| format!("{} at {}", entry.candidate, origin_location(&entry.origin))),
+        );
+    }
     render_section(
         &mut output,
         "conflicts",
@@ -321,19 +339,27 @@ pub fn render_audit(report: &AuditReport) -> String {
             )
         }),
     );
-    render_section(
-        &mut output,
-        "dead classes",
-        report.dead_classes.iter().map(|dead| {
-            let location = dead
-                .diagnostic
-                .origin
-                .as_ref()
-                .map(|origin| format!(" at {}", origin_location(origin)))
-                .unwrap_or_default();
-            format!("{} [{}]{}", dead.candidate, dead.diagnostic.code, location)
-        }),
-    );
+    if grouped {
+        render_section(
+            &mut output,
+            "dead classes",
+            grouped_dead_classes(&report.dead_classes),
+        );
+    } else {
+        render_section(
+            &mut output,
+            "dead classes",
+            report.dead_classes.iter().map(|dead| {
+                let location = dead
+                    .diagnostic
+                    .origin
+                    .as_ref()
+                    .map(|origin| format!(" at {}", origin_location(origin)))
+                    .unwrap_or_default();
+                format!("{} [{}]{}", dead.candidate, dead.diagnostic.code, location)
+            }),
+        );
+    }
     render_section(
         &mut output,
         "dynamic constructions",
@@ -352,36 +378,44 @@ pub fn render_audit(report: &AuditReport) -> String {
             .iter()
             .map(|item| format!("{} at {}", item.candidate, origin_location(&item.origin))),
     );
-    render_section(
-        &mut output,
-        "diagnostics",
-        report.diagnostics.iter().map(|diagnostic| {
-            let location = diagnostic
-                .origin
-                .as_ref()
-                .map(|origin| format!(" at {}", origin_location(origin)))
-                .unwrap_or_default();
-            let candidate = diagnostic
-                .candidate
-                .as_deref()
-                .map(|candidate| format!("{candidate}: "))
-                .unwrap_or_default();
-            let suggestion = diagnostic
-                .suggestion
-                .as_deref()
-                .map(|spelling| format!("; suggested spelling: {spelling}"))
-                .unwrap_or_default();
-            format!(
-                "{} {}{}: {}{}{}",
-                diagnostic.code,
-                diagnostic.severity,
-                location,
-                candidate,
-                diagnostic.message,
-                suggestion
-            )
-        }),
-    );
+    if grouped {
+        render_section(
+            &mut output,
+            "diagnostics",
+            grouped_diagnostics(&report.diagnostics),
+        );
+    } else {
+        render_section(
+            &mut output,
+            "diagnostics",
+            report.diagnostics.iter().map(|diagnostic| {
+                let location = diagnostic
+                    .origin
+                    .as_ref()
+                    .map(|origin| format!(" at {}", origin_location(origin)))
+                    .unwrap_or_default();
+                let candidate = diagnostic
+                    .candidate
+                    .as_deref()
+                    .map(|candidate| format!("{candidate}: "))
+                    .unwrap_or_default();
+                let suggestion = diagnostic
+                    .suggestion
+                    .as_deref()
+                    .map(|spelling| format!("; suggested spelling: {spelling}"))
+                    .unwrap_or_default();
+                format!(
+                    "{} {}{}: {}{}{}",
+                    diagnostic.code,
+                    diagnostic.severity,
+                    location,
+                    candidate,
+                    diagnostic.message,
+                    suggestion
+                )
+            }),
+        );
+    }
     render_section(
         &mut output,
         "extraction notes",
@@ -393,6 +427,144 @@ pub fn render_audit(report: &AuditReport) -> String {
         }),
     );
     output
+}
+
+struct GroupedOccurrence<'a> {
+    count: usize,
+    first_origin: Option<&'a OriginView>,
+}
+
+fn record_grouped_occurrence<'a, K: Ord>(
+    groups: &mut BTreeMap<K, GroupedOccurrence<'a>>,
+    key: K,
+    origin: Option<&'a OriginView>,
+) {
+    let occurrence = groups.entry(key).or_insert(GroupedOccurrence {
+        count: 0,
+        first_origin: origin,
+    });
+    occurrence.count += 1;
+    match (occurrence.first_origin, origin) {
+        (None, Some(origin)) => occurrence.first_origin = Some(origin),
+        (Some(current), Some(origin))
+            if diagnostic_origin_order(Some(origin)) < diagnostic_origin_order(Some(current)) =>
+        {
+            occurrence.first_origin = Some(origin);
+        }
+        _ => {}
+    }
+}
+
+fn render_grouped_summary(
+    label: String,
+    count: usize,
+    first_origin: Option<&OriginView>,
+) -> String {
+    let first_origin = first_origin
+        .map(origin_location)
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("{label} x{count}, first at {first_origin}")
+}
+
+fn render_grouped_occurrence(label: String, occurrence: &GroupedOccurrence<'_>) -> String {
+    render_grouped_summary(label, occurrence.count, occurrence.first_origin)
+}
+
+fn grouped_unrecognized_classes(entries: &[UnrecognizedClass]) -> Vec<String> {
+    let mut groups = BTreeMap::new();
+    for entry in entries {
+        record_grouped_occurrence(&mut groups, entry.candidate.as_str(), Some(&entry.origin));
+    }
+    groups
+        .into_iter()
+        .map(|(candidate, occurrence)| render_grouped_occurrence(candidate.to_owned(), &occurrence))
+        .collect()
+}
+
+fn grouped_dead_classes(entries: &[DeadClass]) -> Vec<String> {
+    let mut groups = BTreeMap::new();
+    for entry in entries {
+        record_grouped_occurrence(
+            &mut groups,
+            (
+                entry.candidate.as_str(),
+                entry.diagnostic.code.as_str(),
+                entry.diagnostic.severity.as_str(),
+            ),
+            entry.diagnostic.origin.as_ref(),
+        );
+    }
+    groups
+        .into_iter()
+        .map(|((candidate, code, severity), occurrence)| {
+            render_grouped_occurrence(format!("{candidate} [{code} {severity}]"), &occurrence)
+        })
+        .collect()
+}
+
+fn grouped_diagnostics(entries: &[DiagnosticView]) -> Vec<String> {
+    let mut groups = BTreeMap::new();
+    for entry in entries {
+        let group = groups
+            .entry((
+                entry.candidate.as_deref(),
+                entry.code.as_str(),
+                entry.severity.as_str(),
+            ))
+            .or_insert_with(|| GroupedDiagnostic {
+                count: 0,
+                first: entry,
+            });
+        group.count += 1;
+        if diagnostic_precedes(entry, group.first) {
+            group.first = entry;
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((candidate, code, severity), group)| {
+            let label = match candidate {
+                Some(candidate) => format!("{candidate} [{code} {severity}]"),
+                None => format!("[{code} {severity}]"),
+            };
+            let mut summary =
+                render_grouped_summary(label, group.count, group.first.origin.as_ref());
+            summary.push_str(": ");
+            summary.push_str(&group.first.message);
+            if let Some(suggestion) = &group.first.suggestion {
+                summary.push_str("; suggested spelling: ");
+                summary.push_str(suggestion);
+            }
+            summary
+        })
+        .collect()
+}
+
+struct GroupedDiagnostic<'a> {
+    count: usize,
+    first: &'a DiagnosticView,
+}
+
+fn diagnostic_precedes(left: &DiagnosticView, right: &DiagnosticView) -> bool {
+    match (left.origin.as_ref(), right.origin.as_ref()) {
+        (Some(left_origin), Some(right_origin)) => {
+            match diagnostic_origin_order(Some(left_origin))
+                .cmp(&diagnostic_origin_order(Some(right_origin)))
+            {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Equal => diagnostic_details_precede(left, right),
+                std::cmp::Ordering::Greater => false,
+            }
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => diagnostic_details_precede(left, right),
+    }
+}
+
+fn diagnostic_details_precede(left: &DiagnosticView, right: &DiagnosticView) -> bool {
+    (left.message.as_str(), left.suggestion.as_deref())
+        < (right.message.as_str(), right.suggestion.as_deref())
 }
 
 /// `source:line:column` for a source origin, the manifest or other owner
@@ -522,6 +694,12 @@ fn source_origin(source_id: &str, occurrence: &crate::Occurrence) -> Origin {
 }
 
 fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
+    let catalog = Catalog::v1();
+    let entries = catalog
+        .entries()
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
     let mut literals: BTreeMap<(String, usize, usize), Vec<RuleOccurrence<'_>>> = BTreeMap::new();
     for rule in rules {
         let Some(resolved) = &rule.resolved else {
@@ -579,9 +757,27 @@ fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
                 {
                     continue;
                 }
+                let default_overrides = left
+                    .rule
+                    .resolved
+                    .as_ref()
+                    .and_then(|resolved| entries.get(resolved.entry_id.as_str()))
+                    .map(|entry| entry.default_overrides.as_slice())
+                    .unwrap_or_default();
+                let right_entry_id = right
+                    .rule
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.entry_id.as_str())
+                    .unwrap_or_default();
                 let overlapping_properties = left
                     .properties
                     .intersection(&right.properties)
+                    .filter(|property| {
+                        !default_overrides
+                            .iter()
+                            .any(|default| default.matches(property, right_entry_id))
+                    })
                     .cloned()
                     .collect::<Vec<_>>();
                 if overlapping_properties.is_empty() {
@@ -710,6 +906,8 @@ fn effective_write_set(property: &str) -> Vec<String> {
         ],
         "flex" => &["flex-grow", "flex-shrink", "flex-basis"],
         "place-items" => &["align-items", "justify-items"],
+        "place-self" => &["align-self", "justify-self"],
+        "place-content" => &["align-content", "justify-content"],
         _ => return vec![property.to_owned()],
     };
     longhands
@@ -845,7 +1043,7 @@ fn diagnostic_origin_order(origin: Option<&OriginView>) -> (String, usize, Strin
     }
 }
 
-fn render_section(output: &mut String, title: &str, items: impl Iterator<Item = String>) {
+fn render_section(output: &mut String, title: &str, items: impl IntoIterator<Item = String>) {
     output.push_str(&format!("{title}:\n"));
     let mut any = false;
     for item in items {
@@ -941,6 +1139,199 @@ mod tests {
     }
 
     #[test]
+    fn catalog_default_overrides_do_not_hide_genuine_conflicts() {
+        let markup = br#"<div class="border border-dashed"></div>
+<div class="border-2 border-dotted"></div>
+<div class="border-b border-dashed"></div>
+<div class="outline-2 outline-dashed"></div>
+<div class="transition-opacity duration-300 ease-[ease-in]"></div>
+<div class="transition-colors duration-500"></div>
+<div class="duration-300 transition-all"></div>
+<div class="hover:border hover:border-dashed"></div>
+<div class="hover:transition-opacity hover:duration-300"></div>
+<div class="border-dashed border-dotted"></div>
+<div class="duration-300 duration-500"></div>
+<div class="transition-opacity transition-all"></div>
+<div class="sr-only p-4"></div>
+<div class="border border-b-2"></div>
+<div class="border hover:border-dashed"></div>"#;
+        let input = AuditInput::single(
+            "src/defaults.html",
+            extract_candidates(markup, SourceKind::Html),
+        );
+        let config = WindConfig {
+            tokens: TokenConfig {
+                spacing_unit: Some("0.25rem".to_owned()),
+                ..TokenConfig::default()
+            },
+            ..WindConfig::default()
+        };
+        let report = audit(&input, &config);
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|item| item.severity != "error"));
+        let conflicts = report
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                (
+                    conflict.first_candidate.as_str(),
+                    conflict.second_candidate.as_str(),
+                    conflict
+                        .overlapping_properties
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            conflicts,
+            [
+                (
+                    "border-dashed",
+                    "border-dotted",
+                    vec![
+                        "border-bottom-style",
+                        "border-left-style",
+                        "border-right-style",
+                        "border-top-style"
+                    ]
+                ),
+                ("duration-300", "duration-500", vec!["transition-duration"]),
+                (
+                    "transition-all",
+                    "transition-opacity",
+                    vec![
+                        "transition-duration",
+                        "transition-property",
+                        "transition-timing-function"
+                    ]
+                ),
+                (
+                    "p-4",
+                    "sr-only",
+                    vec![
+                        "padding-bottom",
+                        "padding-left",
+                        "padding-right",
+                        "padding-top"
+                    ]
+                ),
+                (
+                    "border",
+                    "border-b-2",
+                    vec!["border-bottom-style", "border-bottom-width"]
+                ),
+            ]
+        );
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|item| item.code == "ZW013")
+                .count(),
+            conflicts.len()
+        );
+        let json: serde_json::Value = serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+        assert_eq!(json["conflicts"].as_array().unwrap().len(), conflicts.len());
+        assert_eq!(
+            json["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["code"] == "ZW013")
+                .count(),
+            conflicts.len()
+        );
+        let rendered = render_audit(&report);
+        assert_eq!(rendered.matches(" overlap [").count(), conflicts.len());
+        assert_eq!(rendered.matches("ZW013 auditInfo").count(), conflicts.len());
+
+        let reversed = br#"<div class="duration-300 transition-opacity border-dashed border outline-dashed outline-2 ease-[ease-in]"></div>"#;
+        let forward = br#"<div class="transition-opacity duration-300 border border-dashed outline-2 outline-dashed ease-[ease-in]"></div>"#;
+        for markup in [forward.as_slice(), reversed.as_slice()] {
+            let report = audit(
+                &AuditInput::single(
+                    "src/order.html",
+                    extract_candidates(markup, SourceKind::Html),
+                ),
+                &config,
+            );
+            assert!(report.conflicts.is_empty());
+            assert!(report
+                .diagnostics
+                .iter()
+                .all(|item| item.severity != "error"));
+            assert!(!render_audit(&report).contains("ZW013"));
+            let json: serde_json::Value =
+                serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+            assert_eq!(json["conflicts"], serde_json::json!([]));
+        }
+        let css_for = |markup: &[u8]| {
+            let extraction = extract_candidates(markup, SourceKind::Html);
+            let candidates = extraction
+                .candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate
+                        .occurrences
+                        .iter()
+                        .map(|occurrence| OriginCandidate {
+                            text: candidate.text.clone(),
+                            origin: source_origin("src/order.html", occurrence),
+                        })
+                })
+                .collect();
+            let result = crate::compile(&crate::CompileInput {
+                candidates,
+                config: config.clone(),
+            });
+            assert!(!result.has_errors());
+            result.stylesheet
+        };
+        assert_eq!(css_for(forward), css_for(reversed));
+
+        // A future rule that also writes a genuine shared property must keep
+        // that property visible after its designated default is removed.
+        let extraction = extract_candidates(
+            br#"<div class="border-b border-dashed"></div>"#,
+            SourceKind::Html,
+        );
+        let candidates = extraction
+            .candidates
+            .iter()
+            .flat_map(|candidate| {
+                candidate
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| OriginCandidate {
+                        text: candidate.text.clone(),
+                        origin: source_origin("src/mixed.html", occurrence),
+                    })
+            })
+            .collect();
+        let mut compiled = crate::compile(&crate::CompileInput {
+            candidates,
+            config: config.clone(),
+        });
+        for rule in &mut compiled.rules {
+            rule.resolved
+                .as_mut()
+                .unwrap()
+                .declarations
+                .push(crate::Declaration {
+                    property: "border-top-color".to_owned(),
+                    value: "red".to_owned(),
+                });
+        }
+        let mixed = find_conflicts(&compiled.rules);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].overlapping_properties, ["border-top-color"]);
+    }
+
+    #[test]
     fn audit_order_is_independent_of_source_arrival_and_disabled_is_explicit() {
         let first = AuditSource::new(
             "a.tsx",
@@ -970,6 +1361,138 @@ mod tests {
         );
         assert_eq!(disabled.outcome, AuditOutcome::GenerationDisabled);
         assert!(disabled.unrecognized_classes.is_empty());
+    }
+
+    #[test]
+    fn grouped_audit_summarizes_full_candidates_by_first_origin_and_severity() {
+        let empty = audit(&AuditInput::default(), &WindConfig::default());
+        assert_eq!(
+            render_audit(&empty),
+            format!(
+                "outcome: complete\n\
+                 spec: {} revision {}\n\
+                 unrecognized classes:\n  (none)\n\
+                 conflicts:\n  (none)\n\
+                 dead classes:\n  (none)\n\
+                 dynamic constructions:\n  (none)\n\
+                 tokens adjacent to interpolation:\n  (none)\n\
+                 diagnostics:\n  (none)\n\
+                 extraction notes:\n  (none)\n",
+                SPEC_VERSION, SPEC_REVISION
+            )
+        );
+        let grouped_empty = render_audit_grouped(&empty);
+        assert_eq!(grouped_empty, render_audit(&empty));
+        for section in [
+            "unrecognized classes",
+            "conflicts",
+            "dead classes",
+            "dynamic constructions",
+            "tokens adjacent to interpolation",
+            "diagnostics",
+            "extraction notes",
+        ] {
+            assert!(
+                grouped_empty.contains(&format!("{section}:\n  (none)\n")),
+                "missing empty section {section:?}:\n{grouped_empty}"
+            );
+        }
+
+        const FIRST_SOURCE: &[u8] = b"const saved = 'rounded-lg';\nexport default () => <div class=\"panel-card panel-card rounded-lg rounded-lg hover:rounded-lg\" />;\n";
+        const SECOND_SOURCE: &[u8] =
+            br#"export default () => <div class="panel-card rounded-lg" />;"#;
+        let first_source =
+            AuditSource::new("a.tsx", extract_candidates(FIRST_SOURCE, SourceKind::Tsx));
+        let second_source =
+            AuditSource::new("z.tsx", extract_candidates(SECOND_SOURCE, SourceKind::Tsx));
+        // Reverse source arrival so first-origin selection is proven to use
+        // stable source order rather than caller order.
+        let report = audit(
+            &AuditInput::new(vec![second_source, first_source]),
+            &WindConfig::default(),
+        );
+        let grouped = render_audit_grouped(&report);
+        assert!(
+            grouped.contains("panel-card x3, first at a.tsx:2:"),
+            "{grouped}"
+        );
+        assert!(
+            grouped.contains("hover:rounded-lg [ZW006 error] x1, first at a.tsx:2:"),
+            "{grouped}"
+        );
+        assert!(
+            grouped.contains("rounded-lg [ZW006 error] x3, first at a.tsx:2:"),
+            "{grouped}"
+        );
+        assert!(
+            grouped.contains("rounded-lg [ZW006 auditInfo] x1, first at a.tsx:1:"),
+            "{grouped}"
+        );
+        assert_eq!(grouped.matches("panel-card x3,").count(), 1);
+
+        // Default text keeps the occurrence-oriented text contract.
+        let default = render_audit(&report);
+        assert_eq!(default.matches("panel-card at ").count(), 3, "{default}");
+        assert!(
+            !default.contains("panel-card x3,"),
+            "default report was grouped:\n{default}"
+        );
+
+        let reversed = audit(
+            &AuditInput::new(vec![
+                AuditSource::new("a.tsx", extract_candidates(FIRST_SOURCE, SourceKind::Tsx)),
+                AuditSource::new("z.tsx", extract_candidates(SECOND_SOURCE, SourceKind::Tsx)),
+            ]),
+            &WindConfig::default(),
+        );
+        assert_eq!(grouped, render_audit_grouped(&reversed));
+
+        let mut provenance_report = empty.clone();
+        provenance_report.diagnostics = vec![
+            DiagnosticView {
+                severity: "error".to_owned(),
+                code: "ZW014".to_owned(),
+                candidate: Some("panel-card".to_owned()),
+                origin: Some(OriginView {
+                    kind: "source".to_owned(),
+                    source_id: Some("z.tsx".to_owned()),
+                    byte_offset: Some(40),
+                    line: Some(2),
+                    byte_column: Some(10),
+                    ..OriginView::default()
+                }),
+                message: "later diagnostic message".to_owned(),
+                suggestion: Some("later suggestion".to_owned()),
+                rejection_id: None,
+            },
+            DiagnosticView {
+                severity: "error".to_owned(),
+                code: "ZW014".to_owned(),
+                candidate: Some("panel-card".to_owned()),
+                origin: Some(OriginView {
+                    kind: "source".to_owned(),
+                    source_id: Some("a.tsx".to_owned()),
+                    byte_offset: Some(20),
+                    line: Some(1),
+                    byte_column: Some(6),
+                    ..OriginView::default()
+                }),
+                message: "first diagnostic message".to_owned(),
+                suggestion: Some("first suggestion".to_owned()),
+                rejection_id: None,
+            },
+        ];
+        let provenance = render_audit_grouped(&provenance_report);
+        assert!(
+            provenance.contains(
+                "panel-card [ZW014 error] x2, first at a.tsx:1:6: first diagnostic message; suggested spelling: first suggestion"
+            ),
+            "{provenance}"
+        );
+        assert!(
+            !provenance.contains("later diagnostic message"),
+            "{provenance}"
+        );
     }
 
     #[test]
@@ -1010,6 +1533,10 @@ mod tests {
         assert!(rendered.contains(
             "ZW015 auditInfo at wind.tokens.colors.bg: colors.bg: host value overrides preset[0]: \"#fff\" -> \"#f0f\"\n"
         ), "{rendered}");
+        let grouped = render_audit_grouped(&report);
+        assert!(grouped.contains(
+            "colors.bg [ZW015 auditInfo] x1, first at wind.tokens.colors.bg: host value overrides preset[0]: \"#fff\" -> \"#f0f\""
+        ));
         let json: serde_json::Value = serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
         assert_eq!(json["diagnostics"][0]["code"], "ZW015");
         assert_eq!(json["diagnostics"][0]["severity"], "auditInfo");
@@ -1071,6 +1598,68 @@ mod tests {
             .dynamic_constructions
             .iter()
             .any(|item| item.text == "bg-"));
+    }
+
+    #[test]
+    fn alignment_shorthand_conflicts_expand_to_longhands_and_keep_disjoint_pairs_clear() {
+        let source = extract_candidates(
+            br#"<div class="place-self-center self-start justify-self-end place-content-between justify-center items-center justify-items-end place-items-start"></div>"#,
+            SourceKind::Html,
+        );
+        let report = audit(
+            &AuditInput::single("src/page.html", source),
+            &WindConfig::default(),
+        );
+        let conflicts = report
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                (
+                    conflict.first_candidate.as_str(),
+                    conflict.second_candidate.as_str(),
+                    conflict
+                        .overlapping_properties
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            conflicts,
+            std::collections::BTreeSet::from([
+                (
+                    "justify-center",
+                    "place-content-between",
+                    vec!["justify-content"]
+                ),
+                (
+                    "justify-self-end",
+                    "place-self-center",
+                    vec!["justify-self"]
+                ),
+                (
+                    "justify-items-end",
+                    "place-items-start",
+                    vec!["justify-items"]
+                ),
+                ("items-center", "place-items-start", vec!["align-items"]),
+                ("place-self-center", "self-start", vec!["align-self"]),
+            ])
+        );
+        assert!(!report.conflicts.iter().any(|conflict| {
+            (conflict.first_candidate == "place-content-between"
+                && conflict.second_candidate == "items-center")
+                || (conflict.first_candidate == "items-center"
+                    && conflict.second_candidate == "place-content-between")
+        }));
+        assert!(!report.conflicts.iter().any(|conflict| {
+            (conflict.first_candidate == "place-items-start"
+                && conflict.second_candidate == "place-self-center")
+                || (conflict.first_candidate == "place-self-center"
+                    && conflict.second_candidate == "place-items-start")
+        }));
     }
 
     #[test]

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "font-family",
+  "lookup": [
+    {
+      "entry": "v1.font.family",
+      "candidate": "font-ui",
+      "example": "family-token-set"
+    },
+    {
+      "entry": "v1.font.family",
+      "candidate": "font-[Georgia,_serif]",
+      "example": "family-arbitrary"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose the typeface stack for an element. Use a named font-family token when the same stack should be reused across a site; use an arbitrary value for a one-off stack.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each token example declares tokens.fontFamilies in its record. No browser theme or Tailwind font token is assumed. wind-demo classes add only spacing, borders, labels, and color; the font utilities supply the typeface.",
+      "customValues": "A class such as font-reading resolves tokens.fontFamilies.reading. Token names used by font-family and font-weight share the font root, so keep their names distinct in one configuration. An arbitrary stack such as font-[Georgia,_serif] replaces the underscore with a space and is validated as font-family CSS. Prefer a configured name for a stack reused in several places; arbitrary values are useful for a local exception. The selected font still needs to be installed or loaded by the application.",
+      "examples": [
+        {
+          "id": "family-token-set",
+          "title": "Compare configured stacks",
+          "description": "The example configures ui, reading, and code in tokens.fontFamilies, then applies each named font directly to its text."
+        },
+        {
+          "id": "family-arbitrary",
+          "title": "Use a one-off stack",
+          "description": "font-[Georgia,_serif] resolves to Georgia, serif after underscore decoding. The example repeats the explicit token setup so the preview configuration is self-contained."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "要素に適用するフォントファミリーを選びます。サイト内で繰り返し使うスタックは名前付きトークンにし、その場限りの指定には任意値を使います。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。トークンを使う各例では tokens.fontFamilies をレコード内に記述します。ブラウザーや Tailwind のテーマは前提にしません。wind-demo クラスは余白、枠、ラベル、色だけを加え、フォントユーティリティが書体を指定します。",
+      "customValues": "font-reading は tokens.fontFamilies.reading を参照します。font-family と font-weight は同じ font ルートを使うため、ひとつの設定内で名前が重ならないようにします。font-[Georgia,_serif] のような任意値ではアンダースコアが空白になり、font-family の値として検証されます。複数箇所で使うスタックは名前付きトークンにし、局所的な例外には任意値を使うと管理しやすくなります。指定したフォントはアプリ側で読み込まれている必要があります。",
+      "examples": [
+        {
+          "id": "family-token-set",
+          "title": "設定したスタックを比べる",
+          "description": "tokens.fontFamilies に ui、reading、code を設定し、それぞれのテキストに名前付きフォントを直接適用します。"
+        },
+        {
+          "id": "family-arbitrary",
+          "title": "その場だけのスタックを指定する",
+          "description": "font-[Georgia,_serif] はアンダースコアを空白に戻して Georgia, serif として解決します。プレビューを独立させるため、トークン設定もこの例に記述しています。"
+        }
+      ]
+    }
+  }
+}

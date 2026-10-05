@@ -26,9 +26,9 @@ mod variant;
 mod walk;
 
 pub use audit::{
-    audit, audit_json, audit_with_token_overrides, render_audit, AuditConflict, AuditInput,
-    AuditNote, AuditOutcome, AuditReport, AuditSource, DeadClass, DynamicConstruction,
-    InterpolatedCandidate, UnrecognizedClass,
+    audit, audit_json, audit_with_token_overrides, render_audit, render_audit_grouped,
+    AuditConflict, AuditInput, AuditNote, AuditOutcome, AuditReport, AuditSource, DeadClass,
+    DynamicConstruction, InterpolatedCandidate, UnrecognizedClass,
 };
 pub use breakpoints::{BreakpointConfig, RankedBreakpoint, ValidatedBreakpoints};
 pub use candidate::{parse_candidate, Candidate, UtilityPart};
@@ -72,7 +72,7 @@ pub use walk::{
 
 pub const SPEC_VERSION: u32 = 1;
 
-pub const SPEC_REVISION: u32 = 4;
+pub const SPEC_REVISION: u32 = 12;
 
 pub mod extract;
 pub use extract::{

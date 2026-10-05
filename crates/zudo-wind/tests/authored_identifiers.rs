@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use zudo_wind::catalog::migration::MIGRATION_VOCABULARY_VERSION;
 use zudo_wind::{
     compile, explain, CompileInput, CompileResult, DiagnosticCode, ExplanationOutcome, Origin,
     OriginCandidate, Severity, SourcePositionKind, WindConfig,
@@ -11,7 +12,11 @@ use zudo_wind::{
 fn config() -> WindConfig {
     let mut config = WindConfig::default();
     config.tokens.spacing_unit = Some("0.25rem".to_owned());
-    config.tokens.colors = BTreeMap::from([("ink".to_owned(), "#111".to_owned())]);
+    config.tokens.colors = BTreeMap::from([
+        ("ink".to_owned(), "#111".to_owned()),
+        ("zd-black".to_owned(), "#000".to_owned()),
+        ("zd-white".to_owned(), "#fff".to_owned()),
+    ]);
     config
 }
 
@@ -181,6 +186,10 @@ fn exact_authored_suppression_wins_before_parsing() {
         "card__x-[1px]",
         "line-clamp-2",
         "text-link",
+        "bg-linear-to-r",
+        "from-zd-black/70",
+        "from-[60%]",
+        "-from-zd-black",
         "p-[",
     ] {
         let mut config = config();
@@ -206,6 +215,29 @@ fn exact_authored_suppression_wins_before_parsing() {
 }
 
 const FOREIGN: &[&str] = &[
+    // Consumer report #3657: real v3/v4 gradient roots and stop spellings.
+    "bg-linear-to-r",
+    "bg-linear-to-br",
+    "bg-linear-45",
+    "-bg-linear-45",
+    "bg-linear-[135deg]",
+    "bg-gradient-to-b",
+    "bg-gradient-to-l",
+    "bg-radial",
+    "bg-radial-[at_25%_25%]",
+    "bg-conic",
+    "bg-conic-45",
+    "-bg-conic-45",
+    "bg-conic-[from_90deg]",
+    "from-zd-white",
+    "via-zd-black",
+    "to-zd-black",
+    "to-transparent",
+    "from-zd-black/70",
+    "from-[#8B1E1E]",
+    "to-[#3A0000]",
+    "from-[60%]",
+    "from-[15%]",
     // These share a prefix with a catalog root (`inline`, `list`, ...), so
     // the vocabulary must win when the root cannot resolve the suffix.
     "inline-table",
@@ -249,8 +281,9 @@ fn foreign_names_warn_by_default_and_error_under_strict_at_class_positions() {
         assert!(!default.has_errors(), "{text}");
         let message = &default.diagnostics[0].message;
         assert!(
-            message.contains("unsupported foreign utility (migration vocabulary v1)")
-                && message.contains("no CSS is generated")
+            message.contains(&format!(
+                "unsupported foreign utility (migration vocabulary v{MIGRATION_VOCABULARY_VERSION})"
+            )) && message.contains("no CSS is generated")
                 && message.contains("wind.authoredClasses"),
             "{message}"
         );
@@ -267,6 +300,133 @@ fn foreign_names_warn_by_default_and_error_under_strict_at_class_positions() {
         assert_eq!(
             explanation.outcome,
             ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn extra_arbitrary_suffix_never_emits_shorter_root_css() {
+    for text in [
+        "border-zzz-[3px]",
+        "ml-zzz-[3px]",
+        "p-s-[3px]",
+        "text-zzz-[red]",
+        "bg-foo-[red]",
+    ] {
+        let result = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&result, text),
+            Some((DiagnosticCode::Zw005, Severity::Error)),
+            "{text}"
+        );
+        let explanation = explain(text, &config());
+        assert_eq!(explanation.outcome, ExplanationOutcome::Invalid, "{text}");
+        assert!(explanation.declarations.is_empty(), "{text}");
+        assert!(explanation.entry_identifier.is_none(), "{text}");
+    }
+
+    for text in [
+        "border-[3px]",
+        "ml-[3px]",
+        "p-[3px]",
+        "text-[red]",
+        "bg-[red]",
+    ] {
+        assert_eq!(
+            explain(text, &config()).outcome,
+            ExplanationOutcome::ResolvedUtility,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn logical_names_report_zw014_with_origin_and_json_diagnostics() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "ms-auto",
+        "-me-hsp-md",
+        "ms-[3px]",
+        "pe-hsp-xl",
+        "ps-[3px]",
+        "start-0",
+        "end-[3px]",
+        "border-s",
+        "border-e",
+        "border-s-2",
+        "border-e-accent",
+        "border-s-[3px]",
+        "border-e-[red]",
+    ] {
+        let default = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&default, text),
+            Some((DiagnosticCode::Zw014, Severity::Warning)),
+            "{text}"
+        );
+        let strict_result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
+        assert_eq!(
+            outcome(&strict_result, text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(&compile_at(text, manifest(), config()), text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Literal), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::AuditInfo)),
+            "{text}"
+        );
+
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        assert!(explanation.declarations.is_empty(), "{text}");
+        let json = serde_json::to_value(&explanation).unwrap();
+        assert_eq!(json["outcome"], "foreign_utility", "{text}");
+        assert_eq!(json["diagnostics"][0]["code"], "ZW014", "{text}");
+        assert_eq!(json["diagnostics"][0]["candidate"], text, "{text}");
+    }
+}
+
+#[test]
+fn configured_tokens_and_authored_classes_keep_their_existing_meaning() {
+    let mut config = config();
+    config
+        .tokens
+        .colors
+        .insert("s-accent".to_owned(), "#f00".to_owned());
+    let token = explain("border-s-accent", &config);
+    assert_eq!(token.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(token.entry_identifier.as_deref(), Some("v1.border.color"));
+
+    config
+        .authored_classes
+        .insert("border-s-[3px]".to_owned(), true);
+    config.authored_classes.insert("ms-card".to_owned(), true);
+    for text in ["border-s-[3px]", "ms-card"] {
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), config.clone()),
+                text
+            ),
+            None,
+            "{text}"
+        );
+        assert_eq!(
+            explain(text, &config).outcome,
+            ExplanationOutcome::Ordinary,
             "{text}"
         );
     }
@@ -291,7 +451,15 @@ fn low_confidence_literals_never_become_strict() {
 
 #[test]
 fn foreign_names_fail_from_manifests_and_safelists_regardless_of_strict() {
-    for text in ["line-clamp-2", "container", "basis-1/2"] {
+    for text in [
+        "line-clamp-2",
+        "container",
+        "basis-1/2",
+        "bg-linear-to-r",
+        "bg-gradient-to-b",
+        "from-zd-black/70",
+        "from-[60%]",
+    ] {
         let manifest = compile_at(text, manifest(), config());
         assert_eq!(
             outcome(&manifest, text),
@@ -319,4 +487,235 @@ fn plausible_authored_names_near_foreign_roots_stay_ordinary_under_strict() {
         assert_eq!(outcome(&result, text), None, "{text}");
         assert!(is_ordinary(&result, text), "{text}");
     }
+}
+
+#[test]
+fn bounded_release_families_report_zw014_at_source_and_json_positions() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "bg-linear-to-r",
+        "bg-linear-[135deg]",
+        "-bg-linear-45",
+        "bg-gradient-to-b",
+        "bg-radial-[at_25%_25%]",
+        "bg-conic-45",
+        "-bg-conic-45",
+        "from-zd-white",
+        "via-zd-black",
+        "to-zd-black",
+        "to-transparent",
+        "from-zd-black/70",
+        "from-[#8B1E1E]",
+        "to-[#3A0000]",
+        "from-[60%]",
+        "isolate",
+        "isolation-auto",
+        "float-right",
+        "clear-both",
+        "break-keep",
+        "break-before-page",
+        "break-after-avoid",
+        "break-inside-avoid-column",
+        "origin-left",
+        "brightness-0",
+        "contrast-125",
+        "saturate-150",
+        "-hue-rotate-90",
+        "grayscale",
+        "invert-0",
+        "sepia",
+        "blur-sm",
+        "drop-shadow",
+        "filter-none",
+        "filter-[blur(2px)]",
+        "backdrop-filter-none",
+        "backdrop-filter-[blur(2px)]",
+        "backdrop-blur-sm",
+        "backdrop-brightness-50",
+        "backdrop-opacity-70",
+        "text-shadow-none",
+        "text-shadow-md",
+    ] {
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), config()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::Warning)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        let json = serde_json::to_value(&explanation).unwrap();
+        assert_eq!(json["diagnostics"][0]["code"], "ZW014", "{text}");
+        assert_eq!(json["diagnostics"][0]["candidate"], text, "{text}");
+        if text.starts_with("bg-linear")
+            || text.starts_with("bg-gradient")
+            || text.starts_with("bg-radial")
+            || text.starts_with("bg-conic")
+            || text.starts_with("from-")
+            || text.starts_with("via-")
+            || text.starts_with("to-")
+        {
+            let alternative = if text.starts_with("bg-radial") {
+                "background-image: radial-gradient(...) declaration"
+            } else if text.starts_with("bg-conic") {
+                "background-image: conic-gradient(...) declaration"
+            } else if text.starts_with("bg-linear") || text.starts_with("bg-gradient") {
+                "background-image: linear-gradient(...) declaration"
+            } else {
+                "background-image gradient declaration"
+            };
+            assert!(
+                explanation.diagnostics[0].message.contains(alternative),
+                "{}",
+                explanation.diagnostics[0].message
+            );
+        }
+    }
+    assert_eq!(
+        outcome(&compile_at("isolate", manifest(), config()), "isolate"),
+        Some((DiagnosticCode::Zw014, Severity::Error))
+    );
+    assert_eq!(
+        outcome(
+            &compile_at(
+                "text-shadow-none",
+                source(SourcePositionKind::Literal),
+                strict
+            ),
+            "text-shadow-none"
+        ),
+        Some((DiagnosticCode::Zw014, Severity::AuditInfo))
+    );
+}
+
+#[test]
+fn foreign_filter_values_preserve_url_rejection() {
+    for text in ["filter-[url(#fx)]", "backdrop-filter-[url(#fx)]"] {
+        let result = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&result, text),
+            Some((DiagnosticCode::Zw005, Severity::Error))
+        );
+        assert_eq!(
+            result
+                .rules
+                .iter()
+                .map(|rule| rule.candidate.as_str())
+                .collect::<Vec<_>>(),
+            ["p-2"],
+            "only the valid peer may emit CSS beside {text}"
+        );
+        let explanation = explain(text, &config());
+        assert_eq!(explanation.outcome, ExplanationOutcome::Invalid, "{text}");
+        assert!(explanation.declarations.is_empty(), "{text}");
+        assert_eq!(
+            explanation.diagnostics[0].rejection_id.as_deref(),
+            Some("R16"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "origin-story",
+        "float-label",
+        "clear-fix",
+        "to-do",
+        "from-top",
+        "via-route",
+    ] {
+        let result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
+        assert_eq!(outcome(&result, text), None, "{text}");
+        assert!(is_ordinary(&result, text), "{text}");
+    }
+    for text in ["break-all", "break-words", "break-normal", "text-center"] {
+        assert_eq!(
+            explain(text, &config()).outcome,
+            ExplanationOutcome::ResolvedUtility,
+            "{text}"
+        );
+    }
+    strict.authored_classes.insert("float-right".into(), true);
+    let authored = compile_at("float-right", source(SourcePositionKind::Class), strict);
+    assert_eq!(outcome(&authored, "float-right"), None);
+    assert_eq!(
+        authored
+            .authored_classes
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect::<Vec<_>>(),
+        ["float-right"]
+    );
+    assert!(!is_ordinary(&authored, "float-right"));
+
+    let malformed_gradient_alias = compile_at(
+        "bg-gradient-45",
+        source(SourcePositionKind::Class),
+        config(),
+    );
+    assert_eq!(
+        outcome(&malformed_gradient_alias, "bg-gradient-45"),
+        Some((DiagnosticCode::Zw006, Severity::Error))
+    );
+    assert_eq!(
+        explain("bg-gradient-45", &config()).outcome,
+        ExplanationOutcome::Invalid
+    );
+
+    let mut configured = config();
+    configured.tokens.font_sizes.insert(
+        "shadow-md".into(),
+        zudo_wind::FontSizeToken {
+            size: "1rem".into(),
+            line_height: None,
+        },
+    );
+    let resolved = explain("text-shadow-md", &configured);
+    assert_eq!(resolved.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(resolved.entry_identifier.as_deref(), Some("v1.text.size"));
+}
+
+#[test]
+fn successful_gradient_named_color_tokens_keep_catalog_precedence() {
+    let mut configured = config();
+    configured
+        .tokens
+        .colors
+        .insert("linear-to-r".into(), "#f00".into());
+    let resolved = explain("bg-linear-to-r", &configured);
+    assert_eq!(resolved.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(resolved.entry_identifier.as_deref(), Some("v1.background"));
+    assert_eq!(resolved.declarations[0].property, "background-color");
+    assert_eq!(
+        resolved.declarations[0].value,
+        "var(--zw-color-linear-to-r)"
+    );
+
+    configured
+        .tokens
+        .shadows
+        .insert("shadow-only".into(), "0 1px 2px #000".into());
+    assert_eq!(
+        explain("from-shadow-only", &configured).outcome,
+        ExplanationOutcome::Ordinary
+    );
 }

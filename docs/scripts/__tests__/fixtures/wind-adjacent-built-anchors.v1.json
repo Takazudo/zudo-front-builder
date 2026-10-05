@@ -1,0 +1,852 @@
+{
+  "docs/concepts/styling/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "global-css",
+      "zudo-wind",
+      "zudo-wind-built-into-zfb",
+      "zudo-wind-source-discovery",
+      "zudo-wind-authored-css-only",
+      "component-scoped-styling",
+      "component-scoped-styling-zudo-wind-utility-classes",
+      "component-scoped-styling-css-modules",
+      "monorepo-workspace-sibling-packages",
+      "what-lands-in-dist",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/concepts/build-pipeline/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "the-crates-in-order",
+      "production-zfb-build",
+      "development-zfb-dev",
+      "preview-zfb-preview",
+      "why-the-split",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/concepts/dev-mode-lifecycle/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "you-save-a-tsx-file-then-what",
+      "the-three-sse-event-types",
+      "why-filenames-stay-stable-in-dev",
+      "what-this-means-in-practice",
+      "boot-is-bind-first",
+      "boot-is-bind-first-the-post-ready-watcher-arming-window",
+      "related",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/concepts/plugins/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "when-you-actually-need-a-plugin",
+      "the-five-hooks",
+      "logging-from-a-plugin",
+      "scratch-space-for-intermediates",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support-remaining-limits",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support-node-version-floor",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support-jsx-in-tsx-plugin-entries",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support-bundling-errors",
+      "plugin-entry-files-—-ts-tsx-mts-cts-support-where-the-staged-bundle-lives",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-addalias-from-to-—-exact-match-import-rewrites",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-addvirtualmodule-specifier-loader-options-—-synthetic-module-sources",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-injectroute-pattern-entrypoint-opts-—-synthetic-page-routes",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-addcliententry-entrypoint-—-package-owned-client-scripts",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-injectroute-vs-devmiddleware-—-pick-the-right-hook",
+      "setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-closed-surface-—-no-markdown-extension-hooks",
+      "prebuild-ctx-and-postbuild-ctx",
+      "prebuild-ctx-and-postbuild-ctx-ctx-routes-—-the-route-manifest-postbuild-only",
+      "prebuild-ctx-and-postbuild-ctx-on-disk-access-—-dist-__zfb-routes-json",
+      "prebuild-ctx-and-postbuild-ctx-worked-example-generating-a-sitemap-xml-in-postbuild",
+      "devmiddleware-ctx",
+      "devmiddleware-ctx-request-response-contract",
+      "previewmiddleware-ctx",
+      "worked-example-virtual-metadata-db",
+      "conflict-detection-summary",
+      "when-you-don-t-—-write-a-recipe",
+      "see-also",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/guides/migrating-to-v3/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "before-you-start",
+      "configuration",
+      "stylesheets",
+      "components-and-islands",
+      "components-and-islands-optional-island-props",
+      "mdx-and-md-wasm",
+      "cli-and-environment",
+      "packages-that-ship-classes-or-components",
+      "checklist",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/guides/examples/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "worker-backed-examples",
+      "static-examples",
+      "local-only-example",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/guides/syntax-highlighting/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "built-in-behaviour",
+      "recognized-languages",
+      "customising-the-theme-built-in-themes",
+      "using-custom-tmtheme-files",
+      "dual-light-dark-themes",
+      "dual-light-dark-themes-rules",
+      "dual-light-dark-themes-emitted-markup",
+      "dual-light-dark-themes-resolving-the-colours-consumer-css",
+      "class-mode-recommended",
+      "class-mode-recommended-the-18-role-classes",
+      "class-mode-recommended-emitted-markup",
+      "class-mode-recommended-the-default-stylesheet",
+      "class-mode-recommended-re-theming-without-a-rebuild",
+      "class-mode-recommended-dark-mode",
+      "class-mode-recommended-mapping-roles-onto-zudo-wind-utilities",
+      "class-mode-recommended-custom-class-prefix",
+      "class-mode-recommended-when-to-still-use-inline-or-dual-mode",
+      "class-mode-recommended-scope-notes",
+      "supplementary-pattern-1-—-additional-client-side-highlighting",
+      "supplementary-pattern-2-—-post-build-script-for-custom-grammars",
+      "highlighting-code-in-the-browser",
+      "see-also",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/api/cli/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "overview",
+      "zfb-new",
+      "zfb-new-arguments",
+      "zfb-new-templates",
+      "zfb-new-example",
+      "zfb-dev",
+      "zfb-dev-flags",
+      "zfb-dev-lazy-rendering",
+      "zfb-dev-environment-variables",
+      "zfb-dev-example",
+      "zfb-build",
+      "zfb-build-flags",
+      "zfb-build-environment-variables",
+      "zfb-build-example",
+      "zfb-css",
+      "zfb-css-flags",
+      "zfb-css-example",
+      "zfb-css-notes",
+      "explicit-config-files",
+      "zfb-wind",
+      "zfb-wind-manifest",
+      "zfb-preview",
+      "zfb-preview-stopping-an-adapter-mode-preview",
+      "zfb-preview-flags",
+      "zfb-preview-example",
+      "zfb-check",
+      "zfb-check-flags",
+      "zfb-check-example",
+      "scratch-dirs",
+      "scratch-dirs-selecting-a-scratch-dir",
+      "scratch-dirs-where-to-put-it",
+      "scratch-dirs-ownership-and-locking",
+      "scratch-dirs-what-lives-inside",
+      "scratch-dirs-zfb-dev-ignores-the-prebuilt-output-directory",
+      "scratch-dirs-what-stays-shared-on-purpose",
+      "per-invocation-defines",
+      "per-invocation-defines---define-with-zfb-check",
+      "per-invocation-defines-defines-are-part-of-the-build-identity",
+      "environment-variables",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/api/define-config/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "signature",
+      "typing-the-zfb-config-import",
+      "config-shape",
+      "bundle-settings",
+      "bundle-settings-bundle-mode",
+      "bundle-settings-bundle-exclude-bundle-mainfields-bundle-external",
+      "bundle-settings-bundle-loaders",
+      "bundle-settings-bundle-define",
+      "bundle-settings-typescript-ambient-declarations",
+      "watching-paths-outside-the-project-root",
+      "poll-based-file-watching",
+      "poll-based-file-watching-when-to-reach-for-it",
+      "poll-based-file-watching-the-interval",
+      "poll-based-file-watching-behaviour-differences-from-the-native-backend",
+      "examples",
+      "validation",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/api/define-preset/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "signature",
+      "why-preset-authors-need-definepreset",
+      "the-source_package-marker",
+      "resolution-order",
+      "hoisting-caveat",
+      "zudo-wind-manifests-in-presets",
+      "graceful-degradation",
+      "authoring-example",
+      "typing-the-takazudo-zfb-config-import-inside-a-preset-package",
+      "relation-to-defineconfig",
+      "see-also",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/getting-started/project-structure/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "pages",
+      "layouts",
+      "components",
+      "content",
+      "mdx-components-tsx",
+      "lib",
+      "styles",
+      "public",
+      "zfb-config-ts",
+      "package-json-tsconfig-json-readme-md-gitignore",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/install/node-free/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "supported-platforms",
+      "install-paths",
+      "install-paths-linux-macos-—-curl",
+      "install-paths-macos-—-homebrew",
+      "install-paths-windows-—-powershell",
+      "install-paths-windows-—-scoop",
+      "verify-the-install",
+      "config-file-zfb-config-json-vs-zfb-config-ts",
+      "when-node-is-still-needed",
+      "upgrading-zfb",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "recipes",
+      "example-sites",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/ai-summarizer/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-why-the-ai-binding-lives-in-a-named-environment",
+      "how-it-works-the-route-reads-the-request-from-the-adapter-context",
+      "how-it-works-why-post-still-reaches-the-worker",
+      "how-it-works-the-fallback-is-a-feature-not-an-error-path",
+      "run-it-locally",
+      "related-docs",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/blog/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-fourteen-pages-from-four-route-files",
+      "how-it-works-avoiding-the-flash-of-the-wrong-theme",
+      "how-it-works-a-custom-component-inside-mdx",
+      "run-it-locally",
+      "see-also",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/corporate-website/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-disabling-zudo-wind-is-a-one-line-config-change",
+      "how-it-works-each-component-imports-its-own-stylesheet",
+      "how-it-works-collisions-become-impossible-and-the-names-stay-reproducible",
+      "how-it-works-global-css-is-still-global",
+      "how-it-works-the-output-is-one-html-file-and-one-stylesheet",
+      "run-it-locally",
+      "see-also",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/json-api/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-the-prerender-export-has-to-be-literal",
+      "how-it-works-module-scope-is-isolate-scope",
+      "how-it-works-keeping-a-deliberate-json-error-out-of-the-styled-404",
+      "run-it-locally",
+      "related",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/kv-guestbook/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-a-missing-binding-degrades-to-503-instead-of-crashing",
+      "how-it-works-the-write-is-queued-and-the-page-says-so",
+      "how-it-works-reads-are-bounded-on-purpose",
+      "how-it-works-the-asset-layer-had-to-be-told-to-run-the-worker-first",
+      "how-it-works-the-admin-gate-is-the-part-worth-copying",
+      "run-it-locally",
+      "related-reading",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/password-gate/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-why-hand-write-the-worker-instead-of-using-the-adapter",
+      "how-it-works-run_worker_first-is-the-load-bearing-line",
+      "how-it-works-the-gate-itself",
+      "how-it-works-what-this-is-not",
+      "run-it-locally",
+      "related-reading",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/reverse-proxy/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-the-route-is-a-catch-all-that-never-enumerates-paths",
+      "how-it-works-the-upstream-url-is-derived-from-the-original-request-url",
+      "how-it-works-hop-by-hop-headers-are-stripped-in-both-directions",
+      "how-it-works-set-cookie-csp-and-hsts-are-dropped-on-purpose",
+      "how-it-works-same-origin-redirects-come-back-under-the-proxy-prefix",
+      "how-it-works-streaming-caching-and-failure-modes",
+      "how-it-works-it-coexists-with-the-static-asset-layer",
+      "run-it-locally",
+      "related-reading",
+      "page-loading-overlay"
+    ]
+  },
+  "docs/recipes/webshop/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "what-it-demonstrates",
+      "tech-used",
+      "requirements-and-configuration",
+      "how-it-works",
+      "how-it-works-no-static-html-at-all",
+      "how-it-works-a-route-returns-a-response-not-a-vnode",
+      "how-it-works-every-interaction-is-a-form-post",
+      "how-it-works-passwords-and-sessions-with-web-crypto",
+      "how-it-works-checkout-snapshots-the-cart",
+      "how-it-works-why-the-order-id-is-a-query-string",
+      "run-it-locally",
+      "related",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/concepts/styling/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "グローバル-css",
+      "zudo-wind",
+      "zudo-wind-zfb-に組み込まれたエンジン",
+      "zudo-wind-ソースの検出",
+      "zudo-wind-手書きの-css-のみを使う",
+      "コンポーネントスコープなスタイリング",
+      "コンポーネントスコープなスタイリング-zudo-wind-のユーティリティクラス",
+      "コンポーネントスコープなスタイリング-css-modules",
+      "モノレポとワークスペースの-sibling-パッケージ",
+      "dist-に出力されるもの",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/concepts/build-pipeline/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "クレート、順番に",
+      "本番-zfb-build",
+      "開発-zfb-dev",
+      "プレビュー-zfb-preview",
+      "なぜ分割するのか",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/concepts/dev-mode-lifecycle/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "tsx-ファイルを保存する。それから？",
+      "3-つの-sse-イベント種別",
+      "なぜ-dev-ではファイル名が安定したままなのか",
+      "実際にはどういう意味になるのか",
+      "ブートは-bind-ファースト",
+      "ブートは-bind-ファースト-準備完了直後のウォッチャー準備期間",
+      "関連",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/concepts/plugins/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "プラグインが本当に必要になるとき",
+      "5-つのフック",
+      "プラグインからのログ出力",
+      "中間ファイル用のスクラッチ領域",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート-残っている制限",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート-node-バージョンの下限",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート-tsx-プラグイン-entry-における-jsx",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート-バンドルエラー",
+      "プラグインの-entry-ファイル-—-ts、-tsx、-mts、-cts-のサポート-ステージされたバンドルの置き場所",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-addalias-from-to-—-完全一致のインポート書き換え",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-addvirtualmodule-specifier-loader-options-—-合成モジュールソース",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-injectroute-pattern-entrypoint-opts-—-合成ページルート",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-addcliententry-entrypoint-—-package-owned-client-scripts",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-injectroute-vs-devmiddleware-—-正しいフックを選ぶ",
+      "setup-—-仮想モジュール、エイリアス、注入ルート、client-entry-の登録-閉じた面-—-マークダウン拡張フックはなし",
+      "prebuild-ctx-と-postbuild-ctx",
+      "prebuild-ctx-と-postbuild-ctx-ctx-routes-—-ルートマニフェスト（postbuild-のみ）",
+      "prebuild-ctx-と-postbuild-ctx-ディスク上アクセス-—-dist-__zfb-routes-json",
+      "prebuild-ctx-と-postbuild-ctx-実践例-postbuild-で-sitemap-xml-を生成する",
+      "devmiddleware-ctx",
+      "devmiddleware-ctx-リクエストとレスポンスの契約",
+      "previewmiddleware-ctx",
+      "実践例-virtual-metadata-db",
+      "衝突検出のまとめ",
+      "必要ないとき-—-レシピを書く",
+      "関連項目",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/guides/migrating-to-v3/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "はじめる前に",
+      "設定",
+      "スタイルシート",
+      "コンポーネントと島",
+      "コンポーネントと島-任意の島-prop",
+      "mdx-と-md-wasm",
+      "cli-と環境変数",
+      "クラスやコンポーネントを配布するパッケージ",
+      "チェックリスト",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/guides/examples/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "worker-を伴うサンプル",
+      "静的なサンプル",
+      "ローカル専用のサンプル",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/guides/syntax-highlighting/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "組み込みの挙動",
+      "認識される言語",
+      "テーマのカスタマイズ（組み込みテーマ）",
+      "カスタム-tmtheme-ファイルの使い方",
+      "ライト-ダークのデュアルテーマ",
+      "ライト-ダークのデュアルテーマ-ルール",
+      "ライト-ダークのデュアルテーマ-出力される-markup",
+      "ライト-ダークのデュアルテーマ-色の解決（利用側の-css）",
+      "クラスモード（推奨）",
+      "クラスモード（推奨）-18-個のロールクラス",
+      "クラスモード（推奨）-出力される-markup",
+      "クラスモード（推奨）-デフォルトのスタイルシート",
+      "クラスモード（推奨）-再ビルドなしの再テーマ",
+      "クラスモード（推奨）-ダークモード",
+      "クラスモード（推奨）-ロールを-zudo-wind-のユーティリティにマッピングする",
+      "クラスモード（推奨）-カスタムクラスプレフィックス",
+      "クラスモード（推奨）-インライン-デュアルモードを使うべき場合",
+      "クラスモード（推奨）-スコープに関する注意",
+      "補足パターン-1-—-クライアントサイドの追加ハイライト",
+      "補足パターン-2-—-カスタム文法のためのポストビルドスクリプト",
+      "ブラウザでコードをハイライトする",
+      "関連項目",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/api/cli/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "概要",
+      "zfb-new",
+      "zfb-new-引数",
+      "zfb-new-テンプレート",
+      "zfb-new-例",
+      "zfb-dev",
+      "zfb-dev-フラグ",
+      "zfb-dev-遅延レンダリング",
+      "zfb-dev-環境変数",
+      "zfb-dev-例",
+      "zfb-build",
+      "zfb-build-フラグ",
+      "zfb-build-環境変数",
+      "zfb-build-例",
+      "zfb-css",
+      "zfb-css-フラグ",
+      "zfb-css-例",
+      "zfb-css-補足",
+      "明示的な-config-ファイル",
+      "zfb-wind",
+      "zfb-wind-manifest",
+      "zfb-preview",
+      "zfb-preview-アダプタモードの-preview-を停止する",
+      "zfb-preview-フラグ",
+      "zfb-preview-例",
+      "zfb-check",
+      "zfb-check-フラグ",
+      "zfb-check-例",
+      "スクラッチディレクトリ",
+      "スクラッチディレクトリ-スクラッチディレクトリの指定",
+      "スクラッチディレクトリ-置き場所",
+      "スクラッチディレクトリ-所有権とロック",
+      "スクラッチディレクトリ-中に置かれるもの",
+      "スクラッチディレクトリ-スクラッチディレクトリを使う-zfb-dev-はビルド済みの出力ディレクトリを読まない",
+      "スクラッチディレクトリ-意図的に共有されるもの",
+      "呼び出し単位の-define",
+      "呼び出し単位の-define-zfb-check-での---define",
+      "呼び出し単位の-define-define-はビルドの同一性の一部",
+      "環境変数",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/api/define-config/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "シグネチャ",
+      "zfb-config-インポートの型付け",
+      "設定の形状",
+      "bundle-設定",
+      "bundle-設定-バンドルモード",
+      "bundle-設定-bundle-exclude、bundle-mainfields、bundle-external",
+      "bundle-設定-bundle-loaders",
+      "bundle-設定-bundle-define",
+      "bundle-設定-typescript-ambient-declarations",
+      "プロジェクトルート外のパスを監視する",
+      "ポーリングによるファイル監視",
+      "ポーリングによるファイル監視-どんなときに使うか",
+      "ポーリングによるファイル監視-間隔の指定",
+      "ポーリングによるファイル監視-ネイティブバックエンドとの挙動の違い",
+      "例",
+      "バリデーション",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/api/define-preset/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "シグネチャ",
+      "プリセット作者が-definepreset-を必要とする理由",
+      "source_package-マーカー",
+      "解決順序",
+      "ホイスティングに関する注意",
+      "プリセットの-zudo-wind-マニフェスト",
+      "グレースフルデグラデーション",
+      "オーサリング例",
+      "プリセットパッケージ内での-takazudo-zfb-config-インポートの型付け",
+      "defineconfig-との関係",
+      "関連項目",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/getting-started/project-structure/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "pages",
+      "layouts",
+      "components",
+      "content",
+      "mdx-components-tsx",
+      "lib",
+      "styles",
+      "public",
+      "zfb-config-ts",
+      "package-json、tsconfig-json、readme-md、-gitignore",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/install/node-free/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "サポートされているプラットフォーム",
+      "インストール経路",
+      "インストール経路-linux-macos-—-curl",
+      "インストール経路-macos-—-homebrew",
+      "インストール経路-windows-—-powershell",
+      "インストール経路-windows-—-scoop",
+      "インストールの確認",
+      "設定ファイル：zfb-config-json-と-zfb-config-ts",
+      "node-が依然として必要なケース",
+      "zfb-のアップグレード",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "レシピ",
+      "サンプルサイト",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/ai-summarizer/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要なものと設定",
+      "しくみ",
+      "しくみ-ai-バインディングを名前付き環境に置く理由",
+      "しくみ-ルートはアダプターのコンテキストからリクエストを読む",
+      "しくみ-post-がワーカーに届く理由",
+      "しくみ-フォールバックはエラー処理ではなく機能",
+      "ローカルで動かす",
+      "関連ドキュメント",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/blog/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要な準備と設定",
+      "仕組み",
+      "仕組み-4-つのルートファイルから-14-ページ",
+      "仕組み-誤ったテーマでの一瞬の描画を避ける",
+      "仕組み-mdx-の中の独自コンポーネント",
+      "ローカルで動かす",
+      "関連ページ",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/corporate-website/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要な準備と設定",
+      "仕組み",
+      "仕組み-zudo-wind-を無効にするのは設定-1-行",
+      "仕組み-コンポーネントが自分のスタイルシートを読み込む",
+      "仕組み-衝突がなくなり名前も再現する",
+      "仕組み-グローバル-css-はグローバルのまま",
+      "仕組み-出力は-html-1-枚とスタイルシート-1-枚",
+      "ローカルで動かす",
+      "関連ドキュメント",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/json-api/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要なものと設定",
+      "仕組み",
+      "仕組み-prerender-エクスポートはリテラルでなければならない",
+      "仕組み-モジュールスコープは-isolate-のスコープ",
+      "仕組み-意図的な-json-エラーをスタイル付き-404-に飲み込ませない",
+      "ローカルで動かす",
+      "関連",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/kv-guestbook/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要な準備と設定",
+      "仕組み",
+      "仕組み-バインディングが無いときはクラッシュせず-503-に落とす",
+      "仕組み-書き込みはキューに積まれ、ページもそう伝える",
+      "仕組み-読み取りには意図的に上限がある",
+      "仕組み-アセット層に-worker-を先に走らせると教える必要があった",
+      "仕組み-管理ゲートこそ真似する価値のある部分",
+      "ローカルで動かす",
+      "関連ドキュメント",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/password-gate/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要なものと設定",
+      "仕組み",
+      "仕組み-なぜアダプタではなく-worker-を手書きするのか",
+      "仕組み-効いているのは-run_worker_first-の-1-行",
+      "仕組み-ゲート本体",
+      "仕組み-これは何ではないか",
+      "ローカルで動かす",
+      "関連ドキュメント",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/reverse-proxy/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要なものと設定",
+      "しくみ",
+      "しくみ-ルートはパスを列挙しないキャッチオール",
+      "しくみ-アップストリーム-url-は元のリクエスト-url-から導出する",
+      "しくみ-hop-by-hop-ヘッダーは両方向で削除する",
+      "しくみ-set-cookie-と-csp-と-hsts-は意図的に落とす",
+      "しくみ-同一オリジンのリダイレクトはプロキシ配下に書き換える",
+      "しくみ-ストリーミングとキャッシュと失敗時の挙動",
+      "しくみ-静的アセット層との共存",
+      "ローカルで動かす",
+      "関連ドキュメント",
+      "page-loading-overlay"
+    ]
+  },
+  "ja/docs/recipes/webshop/index.html": {
+    "ids": [
+      "language-toggle-header",
+      "language-menu-header",
+      "desktop-sidebar",
+      "何を示すか",
+      "使用技術",
+      "必要なものと設定",
+      "仕組み",
+      "仕組み-静的な-html-は-1-枚も出力されない",
+      "仕組み-ルートは-vnode-ではなく-response-を返す",
+      "仕組み-すべての操作がフォーム送信",
+      "仕組み-web-crypto-によるパスワードとセッション",
+      "仕組み-チェックアウトはカートのスナップショット",
+      "仕組み-注文-id-がクエリ文字列である理由",
+      "ローカルで動かす",
+      "関連ページ",
+      "page-loading-overlay"
+    ]
+  }
+}

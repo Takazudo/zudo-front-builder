@@ -1,0 +1,35 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  color: #16324f;
+  font: 14px / 1.4 system-ui, sans-serif;
+}
+
+.wind-demo-table {
+  border-spacing: .45rem;
+}
+
+.wind-demo-cell {
+  border: 2px solid #0f766e;
+  padding: .6rem 1rem;
+  text-align: center;
+}
+.border-collapse {
+  border-collapse: collapse;
+}
+.border-collapse-separate {
+  border-collapse: separate;
+}

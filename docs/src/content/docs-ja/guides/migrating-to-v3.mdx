@@ -55,7 +55,7 @@ BEM の `card__title` や snake_case の `card_title` のようにアンダー�
 
 ## コンポーネントと島
 
-`tsconfig.json` で `compilerOptions.jsx` を `react-jsx`、`compilerOptions.jsxImportSource` を `@takazudo/zfb/zudo-react` にします。使用中の `@takazudo/zfb` と `@takazudo/zfb-runtime` は残します。旧 zfb エンジンのためだけに追加していた `preact`、`react`、`react-dom`、`@types/react`、`@types/react-dom` は削除します。ランタイムは独立パッケージではなく、`@takazudo/zfb/zudo-react` から提供されます。
+`zfb build` と `zfb dev` はページ、コンポーネント、アイランドの JSX を、自動変換と `jsxImportSource: "@takazudo/zfb/zudo-react"` で常にコンパイルします。プロジェクトの `tsconfig.json` は不要で、その `jsx` と `jsxImportSource` の設定も無視されます。ただし、ファイル単位の `@jsxImportSource` pragma はそのファイルの build 変換を上書きできます。`zfb check`、エディター、TypeScript によるテストファイルの型検査で同じランタイムの JSX 型を使うには、`tsconfig.json` で `compilerOptions.jsx` を `react-jsx`、`compilerOptions.jsxImportSource` を `@takazudo/zfb/zudo-react` にします。テストランナーの JSX 変換は、ランナーがこの設定を tsconfig から読むよう構成されていない限り、別途設定してください。使用中の `@takazudo/zfb` と `@takazudo/zfb-runtime` は残します。旧 zfb エンジンのためだけに追加していた `preact`、`react`、`react-dom`、`@types/react`、`@types/react-dom` は削除します。ランタイムは独立パッケージではなく、`@takazudo/zfb/zudo-react` から提供されます。
 
 ```json
 {
@@ -66,13 +66,36 @@ BEM の `card__title` や snake_case の `card_title` のようにアンダー�
 }
 ```
 
-`/** @jsxImportSource preact */` または `/** @jsxImportSource react */` というファイル単位の pragma が残っていないか、たとえば `grep -rln "@jsxImportSource" src pages components` で探し、zudo-react が描画するコンポーネントから削除します。ファイル単位の pragma は `tsconfig.json` より優先されます。Preact が未インストールなら、Preact の pragma によってビルドが `Could not resolve "preact/jsx-runtime"` で失敗します。Preact がウィジェットの peer dependency などとして残っている場合は、静的描画が `ZR_CHILD` 診断で失敗します。どちらの失敗の前にも、`zfb build` と `zfb dev` は、ページやページが import するモジュールにあるこうした pragma ごとに、プロジェクトのファイル、行、列を示す `zfb warn:` 行を表示します。この警告は表示するだけで、終了ステータスは変わりません。依存パッケージ内のファイルは対象外なので、[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)のように DOM ホストの背後へ遅延マウントする Preact のウィジェットパッケージは、警告なしでビルドできます。`zfb check` はページ以外の authored `.tsx` / `.jsx` も調べ、`--skip-tsc` でも ZB005 を警告します。依存パッケージ、生成出力、スクラッチ領域は対象外で、警告だけでは check は失敗しません。
+`/** @jsxImportSource preact */` または `/** @jsxImportSource react */` というファイル単位の pragma が残っていないか、たとえば `grep -rln "@jsxImportSource" src pages components` で探し、zudo-react が描画するコンポーネントから削除します。ファイル単位の pragma は build で使う import source への唯一の上書きですが、React や Preact の指定によってそれらのレンダラーがサポートされるわけではありません。Preact が未インストールなら、Preact の pragma によってビルドが `Could not resolve "preact/jsx-runtime"` で失敗します。Preact がウィジェットの peer dependency などとして残っている場合は、静的描画が `ZR_CHILD` 診断で失敗します。どちらの失敗の前にも、`zfb build` と `zfb dev` は、ページやページが import するモジュールにあるこうした pragma ごとに、プロジェクトのファイル、行、列を示す `zfb warn:` 行を表示します。この警告は表示するだけで、終了ステータスは変わりません。依存パッケージ内のファイルは対象外なので、[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)のように DOM ホストの背後へ遅延マウントする Preact のウィジェットパッケージは、警告なしでビルドできます。`zfb check` はページ以外の authored `.tsx` / `.jsx` も調べ、`--skip-tsc` でも ZB005 を警告します。依存パッケージ、生成出力、スクラッチ領域は対象外で、警告だけでは check は失敗しません。
 
 hook を使うコンポーネントは、セットアップ時に一度実行される zudo-react コンポーネントへ書き換えます。書き込み可能な状態とフォームのモデルには `signal()`、読み取り専用の派生値には `computed()`、ライフサイクルには `getScope()` と `scope.effect()`、条件付き領域とキー付き領域には `Show` と `For` を使います。読み取り専用または computed の signal は書き込み可能なモデルにできません。JSX では `class`、`for`、`style={{ "background-color": "red" }}` のような HTML/CSS の表記と、ネイティブの `on:click` リスナーを使います。React 式の props とブランドのない要素オブジェクトは、zudo-react の JSX または `h()` に置き換えます。`rawHtml` は信頼できる内容に限り、children と併用できません。`<script>` と `<style>` のテキストの子は拒否されるため、信頼できる静的文字列を `<style rawHtml={CSS} />` または `<script rawHtml={JS} />` に渡すか、子を持たない外部 `<script src="/assets/app.js" />` を使います。この raw-text の文字列はそのまま出力され、エスケープもサニタイズもされません。この規則は `<title>` と `<textarea>` には当てはまらず、通常のテキストの子を受け取ります。変換例は [Preact hooks からの移行表](../zudo-react/coming-from-preact-hooks.mdx)を参照してください。
 
 標準的な HTML/SVG マークアップは、TypeScript、サーバーレンダリング、ハイドレーション、新規マウントで共有する有限の語彙に従います。`<meta property="og:title">` の Open Graph メタデータ、`<link rel="preload" as="font">` の preload リンク、外部の `<script defer>`、SVG の `use`/`href` は通常の JSX で直接記述できます。これらの対応属性に `rawHtml` の回避策は不要です。未知の属性名と React 式の表記は引き続きエラーになり、カスタム要素の属性は文字列のみです。値の分類と SVG 名前空間の詳細は[コンポーネントと JSX](../zudo-react/components-and-jsx.mdx)を参照してください。
 
+移行時に `.mdx` と `.md` ファイルの手書き raw HTML テーブルを確認してください。raw HTML の `<table><tr>…` は `ZR_PARSER_CONTEXT: table > tr` で失敗するため、各行を明示した `<tbody>` で囲みます。この規則は両方の形式の raw HTML に適用されます。GFM のパイプテーブルは別の形式で、Markdown コンパイラーがすでに `<thead>` と `<tbody>` を出力するため変更は不要です。構造規則の詳細は[テーブルと select の子要素](../zudo-react/components-and-jsx.mdx#テーブルと-select-の子要素)を参照してください。
+
 ビルドや dev のレンダリングが React 形式の綴りを拒否すると、代わりに使う綴りを示し、JSX であれば要素を記述したファイル、行、列も示します。事前に `zfb check` を実行する必要はありません。この位置と、構造上の文脈や生成されたバンドルのスタックとの違いは、[サーバーレンダリング](../zudo-react/server-rendering.mdx)の「レンダリング失敗の読み方」を参照してください。
+
+### zudo-react の JSX と ESLint
+
+React 向け ESLint ルールは、zudo-react が必要とする表記を拒否することがあります。`eslint-plugin-react` の recommended config には `react/no-unknown-property` が含まれ、`class`、`for`、`crossorigin` を React 向けの属性名に一致しないとして報告し、`className`、`htmlFor`、`crossOrigin` へ自動修正する場合があります。また `on:click` も未知のプロパティとして報告します。`ignore` オプションは属性名の文字列配列なので、`on:<event>[:capture]` のような任意のリスナー表記全体は除外できません。[`no-unknown-property` ルール](https://github.com/jsx-eslint/eslint-plugin-react/blob/master/docs/rules/no-unknown-property.md)を参照してください。
+
+このルールは、zfb が zudo-react でコンパイルする JSX ファイルだけで無効にします。自動変換は `React` の識別子を使わないため、同じファイルでは `react/jsx-uses-react` と `react/react-in-jsx-scope` も無効にします。React hooks または Fast Refresh のルールも適用している場合は、それらのルールやプリセットを React で描画するファイルだけに移すか、zudo-react のファイルに限って現在有効な該当ルールを無効にします。対象となるルールは `react-hooks/rules-of-hooks`、`react-hooks/exhaustive-deps`、`react-refresh/only-export-components` です。zudo-react コンポーネントは React hooks の代わりに signal と scope を使い、React Refresh ルールは zfb が提供しない Fast Refresh 連携を検査します。React を引き続き使うファイルでは、これらのプラグインとルールを維持してください。現在の React Hooks プリセットには他の React 固有ルールも含まれるため、この一覧は既知の移行時の競合だけを示し、それ以外のルールが zudo-react と互換であるとは保証しません。[React Hooks の lint ルール](https://react.dev/reference/eslint-plugin-react-hooks)と[React Refresh ルール](https://github.com/ArnaudBarre/eslint-plugin-react-refresh)を参照してください。
+
+Flat config を使う混在プロジェクトでは、React プリセットより後に次の override を追加します。サンプルの glob は zudo-react で描画する実ファイルに置き換えてください。hooks と refresh のルール ID は、それぞれのプラグインをすでに設定している場合だけ追加し、各プリセット自体は React で描画するファイルに限定します。ESLint の[flat config ガイド](https://eslint.org/docs/latest/use/configure/configuration-files)も参照してください。
+
+```js
+{
+  files: ["components/zudo-react/**/*.{js,jsx,ts,tsx}"], // zudo-react の実ソースに置き換える
+  rules: {
+    "react/no-unknown-property": "off",
+    "react/jsx-uses-react": "off",
+    "react/react-in-jsx-scope": "off",
+  },
+}
+```
+
+zudo-react の契約は TypeScript と renderer で確認します。上記のとおり `tsconfig.json` の JSX 設定を zudo-react に向けて `zfb check` を実行し、`zfb build` または `zfb dev` で renderer が示す表記エラーとソース位置を確認してください。ESLint の提案や自動修正が renderer の契約を変えることはありません。
 
 `<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../concepts/islands.mdx)も参照してください。
 
@@ -139,7 +162,7 @@ export default defineConfig({
 1. 設定プリセットを先に更新し、対応する v3 パッケージとバイナリを導入します。`zfb --version` と `package.json` を確認します。
 2. `framework` を削除し、`tailwind` を `wind` または `wind: false` に置き換えます。`zfb check` で削除済みキーと無効な内部データを確認します。
 3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定したうえで、代表的なページの `html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
-4. JSX import source を変更し、ファイル単位の `@jsxImportSource` pragma を削除して、依存関係、コンポーネント、島、フォームモデルを更新します。`zfb check` を実行し、型エラーを修正します。
+4. `zfb check`、エディター、テストファイルの型検査用に tsconfig の JSX 設定を合わせ、必要に応じてテストランナーの JSX 変換を別途設定します。ファイル単位の `@jsxImportSource` pragma を削除し、依存関係、コンポーネント、島、フォームモデルを更新します。React の表記・hooks・refresh ルールは React を使うファイルに限定し、[zudo-react 用の ESLint override](#コンポーネントと島-zudo-react-の-jsx-と-eslint)は zudo-react のファイルだけに適用します。その後 `zfb check` を実行し、型エラーを修正します。
 5. md-wasm 呼び出しから `jsxRuntime` を削除し、コンパイル済み出力の利用側を更新します。パッケージの TypeScript チェックを実行します。
 6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。多数の候補を調べるときは、`zfb wind audit --json --severity warning` と `zfb wind explain --stdin --json` で、機械可読な結果を 1 回のプロセスで得られます。
 7. ビルドスクリプトから Tailwind の環境変数を削除します。`zfb build` を実行し、主要ページ、島、フォーム、スタイルをブラウザーで比較します。

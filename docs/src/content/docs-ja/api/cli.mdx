@@ -111,6 +111,8 @@ zfb dev --host 192.168.1.10 --port 4321
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
+          [--strict-content-bridge | --no-strict-content-bridge]
+          [--strict-plain-css-imports | --no-strict-plain-css-imports]
           [--scratch-dir <path>] [--warnings-json <file>]
           [--define <KEY=EXPR>]...
 ```
@@ -124,6 +126,10 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
 | `--strict-broken` | boolean flag | config/default | マークダウンのリンク検証が壊れたリンクを見つけたとき、このビルドを失敗させます（非ゼロ終了）。`strictBrokenLinks: false` または設定の省略より優先されます。`linkValidation` の設定がまったくないプロジェクトでは、何もしないのではなく、デフォルト設定でリンク検証を強制的に有効化します。 |
 | `--no-strict-broken` | boolean flag | config/default | このビルドを壊れたリンクで失敗させません。config や preset の `strictBrokenLinks: true` より優先されます。無効にするのはトップレベルの strict オーバーレイだけで、`failOnBroken: true` を明示的に設定した `linkValidation` ブロックは有効なままです。 |
+| `--strict-content-bridge` | boolean flag | config/default | MDX ブリッジ用にパースできないコンテンツコレクションの `.md` / `.mdx` エントリが `<pre data-zfb-content-fallback>` にフォールバックする場合、このビルドを失敗させます（非ゼロ終了）。`strictContentBridge: false` または設定の省略より優先されます。 |
+| `--no-strict-content-bridge` | boolean flag | config/default | MDX コンテンツブリッジのフォールバックではこのビルドを失敗させません。zfb は引き続き警告を出してフォールバックを出力します。config や preset の `strictContentBridge: true` より優先されます。 |
+| `--strict-plain-css-imports` | boolean flag | config/default | esbuild が JavaScript / TypeScript からのプレーンな `.css` import を解決したものの、CSS のバイト列が出力されない場合にこのビルドを失敗させます。`strictPlainCssImports: false` または設定の省略より優先されます。 |
+| `--no-strict-plain-css-imports` | boolean flag | config/default | 出力されないプレーン CSS import を警告にとどめてビルドを続けます。config や preset の `strictPlainCssImports: true` より優先されます。 |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | このビルド専用の、zfb の生成物を置くディレクトリを指定します。出力ディレクトリは引き続き共有されます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 | `--warnings-json` | path | なし | ビルド診断を schemaVersion 1 の JSON ファイルに書き込みます。失敗したビルドのレポートは部分的な場合があります。 |
 | `--define` | `KEY=EXPR`（複数指定可） | なし | このビルドに限った esbuild の define を追加し、`bundle.define` をキー単位で上書きします。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
@@ -131,6 +137,8 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
 
 壊れたリンクによる strict なゲートも同様にデフォルトではオフです。`--strict-broken` と `--no-strict-broken` は排他で、同時に渡すとエラーになります。どちらも `strictBrokenLinks` 設定フィールドより優先され、その設定フィールドがデフォルトの `false` より優先されます。どちらのフラグも `zfb build` にのみ影響します。`zfb dev` が strict オーバーレイを見ることはなく、自分で書いた `linkValidation` 設定どおりのリンク検証の挙動をそのまま保ちます。`resolveMarkdownLinks.onBrokenLinks` との違いを含む挙動の全体は[リンク検証 — strict モード](../markdown-features/link-validation.mdx)を参照してください。
+
+MDX コンテンツブリッジとプレーン CSS import のゲートもデフォルトではオフです。それぞれの有効・無効フラグを同時に渡すとエラーになり、どちらかを明示すると対応する設定フィールド（デフォルト `false`）より優先されます。これらのフラグが影響するのは `zfb build` だけです。`zfb dev` は引き続き MDX のフォールバックを警告して配信し、プレーン CSS import の警告もエラーにしません。設定フィールドは [define-config](./define-config.mdx) を参照してください。
 
 ### 環境変数
 
@@ -147,6 +155,10 @@ zfb build --minify-html
 zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
+zfb build --strict-content-bridge
+zfb build --no-strict-content-bridge
+zfb build --strict-plain-css-imports
+zfb build --no-strict-plain-css-imports
 zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
 
@@ -337,12 +349,12 @@ zfb wind explain -- -mt-4
 ```sh
 zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
                [--plan standalone|build]
-               [--severity error|warning|auditInfo] [--json]
+               [--severity error|warning|auditInfo] [--group] [--json]
 ```
 
 `--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
-`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
+`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--group` はテキスト出力専用です。未認識クラスは候補名ごと、dead class と診断は候補名・コード・severity ごとにまとめ、出現数と決定的なレポート順で最初に現れる origin を表示します。診断の要約には、最初の発生位置のメッセージと、あれば推奨表記も残ります。既定のテキスト形式と終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。`--json` と `--group` を同時に指定しても JSON ドキュメントと出現ごとの配列は変わりません。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
@@ -454,6 +466,8 @@ zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 
 1. **TypeScript** — `tsc --noEmit` をサブプロセスとして呼び出します。`zfb.config.ts`、コレクションスキーマ、`src/` の型エラーを捕捉します。
 2. **コレクションスキーマの検証** — 各コレクションエントリのフロントマターを、`zfb.config.json`/`zfb.config.ts` の各コレクションの `schema` フィールドで宣言された JSON Schema に対して検証します。ビルド自体はフロントマターを検証しないため、これが強制の関門となります。
+
+TypeScript の検査ではプロジェクトの `tsconfig.json` を使うため、通常の `zfb check` にはこのファイルが必要です。`--skip-tsc` を指定すると、このファイルがなくてもほかのチェックを実行できます。
 
 いずれの失敗モードも非ゼロのコードで終了します。
 

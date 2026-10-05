@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "family": "border-style",
+  "examples": [
+    {
+      "id": "line-styles",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-lines\"><div class=\"wind-demo-line border-2 border-solid p-2\">solid</div><div class=\"wind-demo-line border-2 border-dashed p-2\">dashed</div><div class=\"wind-demo-line border-2 border-dotted p-2\">dotted</div><div class=\"wind-demo-line border-4 border-double p-2\">double</div><div class=\"wind-demo-line border-2 border-none p-2\">none · no line</div></div>",
+      "utilities": [
+        "border-2",
+        "border-4",
+        "border-dashed",
+        "border-dotted",
+        "border-double",
+        "border-none",
+        "border-solid",
+        "p-2"
+      ],
+      "authoredClasses": ["wind-demo-line", "wind-demo-lines"],
+      "scaffoldCss": ".wind-demo-lines { max-width: 30rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-line { margin: 0.55rem 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "table-collapse",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-tables\"><table class=\"wind-demo-table border-collapse\"><tbody><tr><td class=\"wind-demo-cell\">A</td><td class=\"wind-demo-cell\">B</td></tr></tbody></table><table class=\"wind-demo-table border-collapse-separate\"><tbody><tr><td class=\"wind-demo-cell\">A</td><td class=\"wind-demo-cell\">B</td></tr></tbody></table></div>",
+      "utilities": ["border-collapse", "border-collapse-separate"],
+      "authoredClasses": ["wind-demo-cell", "wind-demo-table", "wind-demo-tables"],
+      "scaffoldCss": ".wind-demo-tables { display: flex; flex-wrap: wrap; gap: 1rem; color: #16324f; font: 14px/1.4 system-ui, sans-serif; }\n.wind-demo-table { border-spacing: 0.45rem; }\n.wind-demo-cell { border: 2px solid #0f766e; padding: 0.6rem 1rem; text-align: center; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-sr-example {
+  display: grid;
+  justify-items: start;
+  gap: .7rem;
+  max-width: 30rem;
+  color: #24364b;
+  font: 15px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-sr-example p {
+  margin: 0;
+}
+
+.wind-demo-sr-button {
+  border: 1px solid #526477;
+  border-radius: .35rem;
+  background: #eef3f8;
+  padding: .55rem .8rem;
+  color: inherit;
+  font: inherit;
+}
+
+.wind-demo-sr-button:focus-visible {
+  outline: 3px solid #1670b8;
+  outline-offset: 3px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border-width: 0;
+}

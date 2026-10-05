@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "family": "margin",
+  "examples": [
+    {
+      "id": "all-sides-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame\">\n  <div class=\"wind-demo-card m-4\">m-4 · 1rem around the card</div>\n</div>",
+      "utilities": ["m-4"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; width: 20rem; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }"
+    },
+    {
+      "id": "axis-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame wind-demo-axis-frame\">\n  <div class=\"wind-demo-card wind-demo-axis-card mx-8 my-2\">mx-8 · my-2</div>\n</div>",
+      "utilities": ["mx-8", "my-2"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-axis-frame",
+        "wind-demo-card",
+        "wind-demo-axis-card"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-axis-frame { width: 20rem; }\n.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }\n.wind-demo-axis-card { min-height: 5rem; }"
+    },
+    {
+      "id": "edge-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame wind-demo-edge-frame\">\n  <div class=\"wind-demo-card mt-2\">mt-2 · top</div>\n  <div class=\"wind-demo-card mr-4\">mr-4 · right</div>\n  <div class=\"wind-demo-card mb-6\">mb-6 · bottom</div>\n  <div class=\"wind-demo-card ml-8\">ml-8 · left</div>\n</div>",
+      "utilities": ["mb-6", "ml-8", "mr-4", "mt-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-edge-frame", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; min-height: 16rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-edge-frame { width: 22rem; }\n.wind-demo-card { width: 8rem; min-height: 2.5rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }"
+    },
+    {
+      "id": "negative-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame wind-demo-negative-frame\">\n  <div class=\"wind-demo-card\">Normal flow</div>\n  <div class=\"wind-demo-card wind-demo-negative-card -mt-3 -ml-4\">-mt-3 · -ml-4</div>\n</div>",
+      "utilities": ["-ml-4", "-mt-3"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-negative-frame",
+        "wind-demo-card",
+        "wind-demo-negative-card"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; width: 20rem; min-height: 10rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-card { width: 10rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }\n.wind-demo-negative-card { background: #c6d8e9; }"
+    },
+    {
+      "id": "auto-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame wind-demo-auto-frame\">\n  <div class=\"wind-demo-card wind-demo-auto-card mx-auto\">mx-auto · centered block</div>\n</div>",
+      "utilities": ["mx-auto"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-auto-frame",
+        "wind-demo-card",
+        "wind-demo-auto-card"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-auto-frame { width: 22rem; }\n.wind-demo-card { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }\n.wind-demo-auto-card { width: 10rem; }"
+    },
+    {
+      "id": "custom-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame\">\n  <div class=\"wind-demo-card m-section\">m-section · 1.5rem around the card</div>\n</div>",
+      "utilities": ["m-section"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; width: 20rem; min-height: 10rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "section": "1.5rem"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "arbitrary-margin",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-frame\">\n  <div class=\"wind-demo-card mt-[18px]\">mt-[18px] · one-off length</div>\n</div>",
+      "utilities": ["mt-[18px]"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { display: flow-root; width: 20rem; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }"
+    }
+  ]
+}

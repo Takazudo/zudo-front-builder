@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "family": "border-width",
+  "examples": [
+    {
+      "id": "all-and-axes",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-widths\"><div class=\"wind-demo-box border p-2\">border · 1px on all sides</div><div class=\"wind-demo-box border-x-4 p-2\">border-x-4 · left and right</div><div class=\"wind-demo-box border-y-2 p-2\">border-y-2 · top and bottom</div></div>",
+      "utilities": ["border", "border-x-4", "border-y-2", "p-2"],
+      "authoredClasses": ["wind-demo-box", "wind-demo-widths"],
+      "scaffoldCss": ".wind-demo-widths { max-width: 32rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-box { margin: 0.7rem 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "individual-edges",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-widths\"><div class=\"wind-demo-box border-t-4 p-2\">top · 4px</div><div class=\"wind-demo-box border-r-2 p-2\">right · 2px</div><div class=\"wind-demo-box border-b-[3px] p-2\">bottom · 3px</div><div class=\"wind-demo-box border-l-4 p-2\">left · 4px</div></div>",
+      "utilities": ["border-b-[3px]", "border-l-4", "border-r-2", "border-t-4", "p-2"],
+      "authoredClasses": ["wind-demo-box", "wind-demo-widths"],
+      "scaffoldCss": ".wind-demo-widths { max-width: 32rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-box { margin: 0.7rem 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

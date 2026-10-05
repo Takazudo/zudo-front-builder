@@ -1,13 +1,256 @@
 ---
 title: 位置オフセット
-description: 余白値、auto、full を使い、物理的な辺のオフセットを設定します。
+description: 余白値、分数、auto、full を使い、物理的な辺のオフセットを設定します。
 sidebar_position: 23
 generated: true
 ---
 
-余白値、auto、full を使い、物理的な辺のオフセットを設定します。
+inset で、余白値や分数を使い、位置指定された箱を包含ブロックのどの端に置くかを決めます。inset は4辺すべて、inset-x と inset-y はそれぞれ左右と上下、top/right/bottom/left は個別の端を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inset-4` | `top: 1rem; right: 1rem; bottom: 1rem; left: 1rem;` |
+| `inset-x-4` | `left: 1rem; right: 1rem;` |
+| `inset-y-4` | `top: 1rem; bottom: 1rem;` |
+| `top-0` | `top: 0;` |
+| `right-0` | `right: 0;` |
+| `bottom-0` | `bottom: 0;` |
+| `left-0` | `left: 0;` |
+| `-top-2` | `top: -0.5rem;` |
+| `left-nudge` | `left: var(--zw-spacing-nudge);` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 4辺に同じオフセットを設定
+
+inset-4 は絶対配置された箱の4辺にそれぞれ 1rem の間隔を作ります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute inset-4 wind-demo-highlight\"\u003eSame offset on all four sides\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-highlight {\n  background: #f2d794;\n  color: #493810;\n  border: 1px solid #b39761;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.inset-4 {\n  top: 1rem;\n  right: 1rem;\n  bottom: 1rem;\n  left: 1rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"4辺に同じオフセットを設定"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-highlight": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "h-36",
+        "inset-4",
+        "relative",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }
+```
+
+</Details>
+
+### 2辺ずつ指定
+
+inset-x-4 は左右、inset-y-4 は上下の端を動かします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute inset-x-4 top-4 h-10 wind-demo-tile\"\u003eLeft and right inset\u003c/div\u003e\n    \u003cdiv class=\"absolute inset-y-4 right-4 w-12 wind-demo-alt\"\u003eTop and bottom inset\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.inset-x-4 {\n  left: 1rem;\n  right: 1rem;\n}\n.inset-y-4 {\n  top: 1rem;\n  bottom: 1rem;\n}\n.right-4 {\n  right: 1rem;\n}\n.top-4 {\n  top: 1rem;\n}\n.h-10 {\n  height: 2.5rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-12 {\n  width: 3rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"2辺ずつ指定"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "h-10",
+        "h-36",
+        "inset-x-4",
+        "inset-y-4",
+        "relative",
+        "right-4",
+        "top-4",
+        "w-12",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 個別の角に配置
+
+top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に合わせます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute top-0 left-0 size-8 wind-demo-tile\"\u003eTL\u003c/div\u003e\n    \u003cdiv class=\"absolute top-0 right-0 size-8 wind-demo-alt\"\u003eTR\u003c/div\u003e\n    \u003cdiv class=\"absolute bottom-0 left-0 size-8 wind-demo-alt\"\u003eBL\u003c/div\u003e\n    \u003cdiv class=\"absolute bottom-0 right-0 size-8 wind-demo-tile\"\u003eBR\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.bottom-0 {\n  bottom: 0;\n}\n.left-0 {\n  left: 0;\n}\n.right-0 {\n  right: 0;\n}\n.top-0 {\n  top: 0;\n}\n.size-8 {\n  width: 2rem;\n  height: 2rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"個別の角に配置"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "bottom-0",
+        "h-36",
+        "left-0",
+        "relative",
+        "right-0",
+        "size-8",
+        "top-0",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 負の値と名前付きトークン
+
+-top-2 は上へ 0.5rem 移動し、left-nudge は設定済みの tokens.spacing.nudge を使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute -top-2 left-nudge wind-demo-highlight\"\u003eNegative top; named left token\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-nudge: 1rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-highlight {\n  background: #f2d794;\n  color: #493810;\n  border: 1px solid #b39761;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.left-nudge {\n  left: var(--zw-spacing-nudge);\n}\n.-top-2 {\n  top: -0.5rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n"} title={"負の値と名前付きトークン"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "nudge": "1rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-highlight": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-top-2",
+        "absolute",
+        "h-36",
+        "left-nudge",
+        "relative",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+数値オフセットは明示した spacingUnit 0.25rem を使い、4 は 1rem です。0、px、full、auto はトークン不要です。left-nudge のような名前付き値には tokens.spacing が必要です。top-[calc(100%_+_8px)] のような任意値も使えます。-top-2 のように負の値も指定できます。inset 自体は要素を位置指定しません。 left-1/2 のような分数は left: calc(100% * 1 / 2)、-top-1/2 は top: calc(calc(100% * 1 / 2) * -1) を出力します。左右のパーセンテージは包含ブロックの幅、上下は高さを基準にします。分子と分母はそれぞれ 1～1,000,000 の正の整数です。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## inset
 
@@ -15,7 +258,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.inset` |
 | クラスパターン | `inset-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -55,7 +298,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.inset-x` |
 | クラスパターン | `inset-x-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -93,7 +336,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.inset-y` |
 | クラスパターン | `inset-y-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -131,7 +374,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.bottom` |
 | クラスパターン | `bottom-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -168,7 +411,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.left` |
 | クラスパターン | `left-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -205,7 +448,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.right` |
 | クラスパターン | `right-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -242,7 +485,7 @@ generated: true
 | --- | --- |
 | カタログ識別子 | `v1.top` |
 | クラスパターン | `top-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -272,3 +515,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `top-0` | `top: 0` |
+
+</Details>

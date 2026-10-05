@@ -7,6 +7,7 @@ import CompilePlayground from "./components/playground/compile-playground";
 import HighlightPlayground from "./components/playground/highlight-playground";
 import ParsePlayground from "./components/playground/parse-playground";
 import RenderPlayground from "./components/playground/render-playground";
+import WindPreviewEnhancer from "./components/wind-preview-enhancer";
 
 const RenderPlaygroundIsland = () => Island({ when: "visible", children: <RenderPlayground /> });
 const CompilePlaygroundIsland = () => Island({ when: "visible", children: <CompilePlayground /> });
@@ -40,6 +41,7 @@ export const chromeBindings = defineChromeBindings({
     CompilePlayground: CompilePlaygroundIsland,
     ParsePlayground: ParsePlaygroundIsland,
     HighlightPlayground: HighlightPlaygroundIsland,
+    WindPreviewEnhancer,
   },
   homeExtras: HomeExtras,
 });

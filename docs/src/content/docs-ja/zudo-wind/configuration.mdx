@@ -4,6 +4,104 @@ description: zudo-wind の生成、トークン、ブレークポイント、ソ
 sidebar_position: 2
 ---
 
+## プロジェクトを設定する
+
+このドキュメントのシェルは引き続き Tailwind CSS を使います。このページでは、利用者のプロジェクトで実行する別のエンジン zudo-wind を設定します。
+
+エンジンの設定はトップレベルの <code>wind</code> キーに置きます。必要なリセット、トークン、ブレークポイント、ソースルートを設定します。
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "minimal-v1",
+    strict: true,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    sources: {
+      exclude: ["src/**/__tests__/**"],
+      packageRoots: ["./packages/ui"]
+    },
+    safelist: { app: ["sm:hover:bg-panel"] },
+    authoredClasses: { "legacy-panel": true }
+  }
+});
+~~~
+
+トークンが参照するカスタムプロパティは手書き CSS で定義します。続けて、ビルドと同じソースプランと候補を調べます。
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts sm:hover:bg-panel
+zfb css --input src/styles.css --output dist/app.css --project-root .
+~~~
+
+ソース発見で見つからない完全なアプリ候補はセーフリストに追加します。パッケージ所有の候補はマニフェストとして公開します。CSS がユーティリティ基部と重なる名前を所有する場合は、完全な表記を <code>authoredClasses</code> に予約します。
+
+{/* wind-preview: guide-configuration/configured-panel "トークンを使うユーティリティの出力" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<article class=\"wind-demo-card bg-panel p-4 sm:p-8\"><h2>Workspace panel</h2><p>A token and responsive spacing compiled by zudo-wind.</p></article>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-panel: #eaf2ff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-card {\n  max-width: 24rem;\n  border: 1px solid #b6c4d2;\n  border-radius: .5rem;\n  color: #172b4d;\n}\n\n.wind-demo-card h2 {\n  margin: 0 0 .5rem;\n  font-size: 1.1rem;\n}\n\n.wind-demo-card p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n@media (min-width: 640px) {\n  .sm\\:p-8 {\n    padding-top: 2rem;\n    padding-right: 2rem;\n    padding-bottom: 2rem;\n    padding-left: 2rem;\n  }\n}\n"} title={"トークンを使うユーティリティの出力"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#eaf2ff"
+      }
+    },
+    "breakpoints": {
+      "sm": {
+        "minWidthPx": 640
+      }
+    },
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-4",
+        "sm:p-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }
+.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.wind-demo-card p { margin: 0; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+サンプルには明示的な余白単位、ブレークポイント、トークン、リセットと、コンパイル済み zudo-wind CSS が含まれます。カードの手書きスタイルは表示の補助で、ユーティリティの CSS はコンパイラが生成します。
+
+<Details title="技術リファレンス">
+
 ## wind キー
 
 ルート設定の `wind` は `zfb.config.ts` と `zfb.config.json` の両方で使えます。切り替え後はキーを省略しても空のオブジェクトと同じです。生成が有効になり、リセットは `none`、トークンマップは空、ソースは zfb のソースプランから供給されます。
@@ -37,6 +135,8 @@ export default defineConfig({
 });
 ```
 
+ホストのトークン値がプリセットの結合と異なる場合、ビルド中は無言で置き換えます。`wind explain` は任意の `tokenResolutions[*].hostOverride` で変更された結合を示し、`wind audit` は ZW015 を監査専用情報として報告します。同じ値なら上書きレコードは出しません。
+
 ### マニフェストパスの解決
 
 マニフェストのパスは基準ディレクトリから解決されます。`@example/widgets/wind.json` のような bare package specifier は Node の解決規則と producer パッケージの `exports` を使います。この表記は推奨形式で、pnpm のパッケージ配置でも動作します。producer パッケージからマニフェストをエクスポートしてください。
@@ -54,12 +154,15 @@ export default defineConfig({
 
 ### ソースの除外とパッケージルート
 
-`sources` はソースプランを調整します。どちらのリストも任意で既定値は空なので、`sources` を指定しなければ既定のソースプランのままです。
+`sources` はソースプランを調整します。これらの宣言は任意で既定値は空なので、`sources` を指定しなければ既定のソースプランのままです。
 
 ```ts
 wind: {
   sources: {
+    roots: ["src", "tests"],
     exclude: ["src/**/__tests__/**", "worker"],
+    classHelpers: ["uiClasses"],
+    ignoreAttributes: ["css", "displayJs"],
     packageRoots: ["@example/widgets", "./packages/ui"]
   }
 }
@@ -67,7 +170,11 @@ wind: {
 
 `exclude` の各エントリは、宣言元ルートからの相対パスに照合する glob です。宣言元ルートはプロジェクトルート（`--config` を指定した場合はそのファイルのディレクトリ）、または `definePreset()` 由来の宣言ではプリセットパッケージです。パス自体か親ディレクトリのいずれかに一致するとそのパスは除外されるため、`worker` または `worker/` は `worker/` 以下をすべて除外します。`*` は `/` をまたがず、任意の深さには `**` を使います。除外はすべてのソースルートに適用され、明示的な `--source` のファイルより優先され、自身の宣言元ルート内のファイルだけを取り除きます。否定 (`!`)、絶対パス、`..` を含むパターンは拒否されます。テストファイルはパターンで指定しない限り除外されません。
 
+`sources.roots` は宣言元のプロジェクトまたはプリセットより厳密に下にあるディレクトリを列挙します。宣言元自身やその外側は指定できません。これらのルートには gitignore、標準のスキップ対象ディレクトリ、`wind.sources.exclude` が適用されます。通常の `.ts` と `.test.ts` は候補ですが、宣言ファイル `.d.ts` は常に除外され、audit の範囲には `excluded **/*.d.ts (declaration files)` と表示されます。`packageRoots` は走査規則が異なる独立した第一者パッケージ用チャネルです。
+
 `packageRoots` の各エントリは、宣言元ルートからの `./` または `../` パスか、`@example/widgets/dist` のように任意のサブパスを付けたインストール済みパッケージ名です。パッケージ名は宣言元ルートより上の `node_modules` ディレクトリから探します。パッケージルートは、プロジェクトルートそのものやその祖先ではないディレクトリとして存在する必要があり、そのパッケージ自身の `dist` と `node_modules` も含め、Gitignore の規則を使わずに走査されます。出力先、`--output`、スクラッチディレクトリはその中でも除外されたままです。
+
+`sources.classHelpers` は組み込みのクラスヘルパーに追加するローカル識別子を明示します。プリセットとプロジェクトのリストは重複を除いて決定的な順序で結合します。対応する文字列・テンプレート、配列、オブジェクト引数をクラスリストとして扱いますが、`cva` や `twMerge` を指定しても別の意味を推測しません。`sources.ignoreAttributes` は組み込みの除外 prop `href`、`src`、`content`、`name`、`rel`、`type` に名前を追加し、プリセットとプロジェクトの宣言は重複を除きます。名前には Unicode 識別子文字を使い、後続に `-` または `:` の区切りを付けられます。`class` と `className` は拒否されます。クラスではない内容を保持する `css`、`html`、`js`、`displayJs`、`title` などは必要に応じて指定してください。除外 prop の値全体が対象で、入れ子のマークアップ、補間、クラスヘルパー呼び出しも除外します。ほかの場所の実際の class 属性や診断は残ります。クエリーセレクターやスクリプト本文のヒューリスティックは追加されていません。
 
 JSON でも同じオブジェクトを `wind` プロパティの値として指定できます。
 
@@ -107,7 +214,7 @@ JSON でも同じオブジェクトを `wind` プロパティの値として指�
 | `authoredClasses` | 完全な候補表記から `true` への対応です。完全一致したものは手書きとして残り、ユーティリティの検証、診断、CSS 生成を抑止します。バリアント付きの候補を予約する場合は、バリアントも含めてください。 |
 | `strict` | 既定は `false` です。`true` にすると、クラス位置の未対応の外部ユーティリティ (ZW014) が警告ではなくビルドエラーになります。確信度の低いリテラルは昇格しません。 |
 | `manifests` | 生成者 ID から、空でない候補マニフェストの `path` への対応です。 |
-| `sources` | 任意の `exclude` glob と `packageRoots` パス。それぞれ宣言元のプロジェクトまたはプリセットパッケージから解決されます。 |
+| `sources` | 任意の `roots`、`exclude`、`packageRoots`、`classHelpers`、`ignoreAttributes` を各プロジェクトまたはプリセットの宣言元から解決します。 |
 | `utilities` | 任意の `placement`。`"after-authored"`（既定）か `"before-authored"` です。レイヤーなしのユーティリティ規則を手書きのグローバル CSS の後に置くか前に置くかを決めます。[ユーティリティの配置](./cascade-and-reset.mdx#ユーティリティの配置)を参照してください。 |
 
 ダークモードの属性は小文字の HTML 属性識別子でなければなりません。値は空にできず、制御文字も含められません。所有者 ID と生成者 ID は ASCII 英数字、ドット、アンダースコア、スラッシュ、ハイフンからなり、英数字で始まる空でない文字列です。手書きのクラスのキーは、空白や制御文字を含まない完全なトークンでなければなりません。
@@ -128,3 +235,5 @@ JSON でも同じオブジェクトを `wind` プロパティの値として指�
 - [トークン](./tokens.mdx)
 - [ソースと候補](./sources-and-candidates.mdx)
 - [Tailwind からの移行](./coming-from-tailwind.mdx)
+
+</Details>

@@ -4,6 +4,417 @@ description: Learn the accepted candidate syntax, value forms, and deliberate li
 sidebar_position: 5
 ---
 
+## Write complete candidates
+
+The scanner reads source text; it does not run your application to build class names. Keep each candidate whole in source, such as `grid-cols-2`; use `sm:hover:bg-panel` only after configuring `sm` and `colors.panel`. A string like `` `p-${size}` `` is not a candidate the compiler can infer.
+
+For a one-off value, put the value in square brackets only on a supported utility root. Inside brackets, write spaces as underscores. CSS `calc()` needs spaces around binary `+` and `-`, so write `w-[calc(100vw_-_2rem)]`. An escaped `\_` stays an underscore.
+
+The invalid spelling below is a diagnostic fixture; the source panel and expected code come from the same record the compiler checks.
+
+{/* wind-preview: guide-utility-grammar/calc-needs-underscores "Use underscores for calc spaces" */}
+
+```html
+<div class="w-[calc(100vw-2rem)]">w-[calc(100vw-2rem)]</div>
+```
+
+Expected diagnostics: `ZW005 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "w-[calc(100vw-2rem)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Data-type hints, arbitrary CSS properties, and utilities outside the catalog have different remedies: use a named token for an ambiguous variable, and write unsupported declarations in authored CSS. Text-only examples below stay textual so the syntax rule is visible without a decorative preview.
+
+<Details title="Inspect selected candidate diagnostics">
+
+A known responsive name must be configured before it can prefix a utility.
+
+{/* wind-preview: guide-utility-grammar/unconfigured-breakpoint "Unconfigured breakpoint" */}
+
+```html
+<div class="md:block">md:block</div>
+```
+
+Expected diagnostics: `ZW002 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "md:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Data-type hints are not part of the language.
+
+{/* wind-preview: guide-utility-grammar/unsupported-type-hint "Unsupported data-type hint" */}
+
+```html
+<span class="text-[color:var(--project-ink)]">text-[color:var(--project-ink)]</span>
+```
+
+Expected diagnostics: `ZW005 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "text-[color:var(--project-ink)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Arbitrary property syntax is rejected; put the declaration in authored CSS.
+
+{/* wind-preview: guide-utility-grammar/arbitrary-property "Use authored CSS for arbitrary properties" */}
+
+```html
+<p class="[overflow-wrap:anywhere]">[overflow-wrap:anywhere]</p>
+```
+
+Expected diagnostics: `ZW004 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "[overflow-wrap:anywhere]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+The catalog recognizes some familiar roots as deliberately unsupported. `ring-2` is one example.
+
+{/* wind-preview: guide-utility-grammar/unsupported-ring "Unsupported utility family" */}
+
+```html
+<div class="ring-2">ring-2</div>
+```
+
+Expected diagnostics: `ZW004 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "ring-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Negative values are limited to specific utility families; padding does not accept a negative prefix.
+
+{/* wind-preview: guide-utility-grammar/negative-padding "Negative padding is rejected" */}
+
+```html
+<div class="-p-2">-p-2</div>
+```
+
+Expected diagnostics: `ZW005 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "-p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+An empty segment is a syntax error.
+
+{/* wind-preview: guide-utility-grammar/empty-variant-segment "Empty variant segment" */}
+
+```html
+<div class="hover::block">hover::block</div>
+```
+
+Expected diagnostics: `ZW001 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "hover::block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+A foreign utility warns at a source class position in non-strict mode and becomes an error in strict mode.
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-warning "Foreign utility warning at a source position" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+Expected diagnostics: `ZW014 (warning)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-strict-error "Strict source position error" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+Expected diagnostics: `ZW014 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+</Details>
+
+For the full candidate grammar, value checks, catalog boundaries, and alternatives, open [technical details](#candidate-shape) below, read [sources and candidates](./sources-and-candidates.mdx) and [variants](./variants.mdx), or visit the [complete utility index](./utilities/index.mdx).
+
+<Details title="Full candidate and value reference">
+
 ## Candidate shape
 
 A candidate is a complete utility, optionally preceded by variants separated with colons. The general shape is `variant:variant:utility`. The tokenizer balances brackets, parentheses, and quotes before splitting: colons and slashes inside those structures do not start a variant or modifier. Literal whitespace, NUL, other control characters, and forbidden outer punctuation are not allowed.
@@ -15,7 +426,7 @@ A candidate is a complete utility, optionally preceded by variants separated wit
 | G03 breakpoint | `max-sm:hidden` when `sm` is configured | `max-md:hidden` when `md` is absent, ZW002 |
 | G04 dark | `dark:block` when dark mode is configured | `dark:block` when dark mode is disabled, ZW002 |
 | G05 state | `first:pt-0` | `hover:focus:hover:block` — duplicate state, ZW003 |
-| G06 relation | `group-open:rotate-90` | `group/menu:block` — named group form, ZW004 |
+| G06 relation | `group-open:rotate-90` | `group-hover/menu:block` — named relation form, ZW004 |
 | G07 pseudo-element | `placeholder:underline` | `before:before:block` — duplicate pseudo-element, ZW003 |
 | G08 utility | `-mt-2` with a spacing unit | `-p-2` — this family does not allow negatives, ZW005 |
 | G09 named suffix | `gap-x-1.5` with a spacing unit | `w-(10px)` — forbidden outer punctuation, ZW001 |
@@ -33,11 +444,13 @@ A candidate can contain nested balanced delimiters, commas, colons, slashes, quo
 
 ## Values and modifiers
 
-Numeric forms use ASCII digits. A positive fraction consists of positive integers. Sizing and translate utilities accept fractions, and the aspect utility accepts a bare positive-integer ratio; color `/N` is an opacity modifier for integer `N` from 0 through 100. It emits `color-mix(in oklab, VALUE N%, transparent)`; `/0` and `/100` keep the same function form. A bracketed color can use the same modifier. A sizing slash is never interpreted as opacity.
+Numeric forms use ASCII digits. A positive fraction consists of positive integers. Sizing, translate, and inset utilities accept fractions, and the aspect utility accepts a bare positive-integer ratio; color `/N` is an opacity modifier for integer `N` from 0 through 100. It emits `color-mix(in oklab, VALUE N%, transparent)`; `/0` and `/100` keep the same function form. A bracketed color can use the same modifier. A sizing or inset slash is never interpreted as opacity.
 
 Negative prefixes are permitted only where the catalog allows them: inset and margin except `auto`, child spacing, z-index except `auto`, tracking, the outline width's offset, translate, rotate, and scroll margin. Other families reject them, including padding. For literal dimensions or numbers, the compiler applies one leading minus and normalizes negative zero to zero; for nonliteral values it emits `calc(V * -1)`. Unsupported negatives such as `-p-2` are invalid.
 
-Sizing and translate roots accept positive integer fractions, and `aspect-N/D` accepts a bare positive-integer aspect ratio. Each numerator and denominator must be from 1 through 1,000,000. Sizing fractions emit `calc(100% * N / D)`; a size fraction sets both width and height. Aspect ratios emit the ratio directly, so `aspect-4/3` produces `aspect-ratio: 4 / 3`. Bare aspect ratios do not accept zero or decimals; use an arbitrary ratio such as `aspect-[1.5/2.5]` for decimal parts, or `aspect-[var(--project-ratio)]` for a custom property. The opacity modifier is only for colors: `bg-panel/40` mixes the configured color at 40 percent in oklab against transparent. It is not accepted on padding or sizing values.
+Sizing, translate, and the seven inset roots (`inset`, `inset-x`, `inset-y`, `top`, `right`, `bottom`, `left`) accept positive integer fractions, and `aspect-N/D` accepts a bare positive-integer aspect ratio. Each numerator and denominator must be from 1 through 1,000,000. Sizing fractions emit `calc(100% * N / D)`; a size fraction sets both width and height. Aspect ratios emit the ratio directly, so `aspect-4/3` produces `aspect-ratio: 4 / 3`. Bare aspect ratios do not accept zero or decimals; use an arbitrary ratio such as `aspect-[1.5/2.5]` for decimal parts, or `aspect-[var(--project-ratio)]` for a custom property. The opacity modifier is only for colors: `bg-panel/40` mixes the configured color at 40 percent in oklab against transparent. It is not accepted on padding or sizing values.
+
+Inset fractions emit `calc(100% * N / D)` on each offset property. `left-1/2` emits `left: calc(100% * 1 / 2)`; `-top-1/2` emits `top: calc(calc(100% * 1 / 2) * -1)`. Left/right percentages use the positioned element’s containing-block width, and top/bottom its height.
 
 The `fontSizes` map stores objects with a required `size` and optional `lineHeight`. When a leading is supplied, it is emitted as a paired variable; a font-size key ending in `-leading` is reserved and invalid. `ease-in-out` is a named easing lookup for `easings.in-out`; there is no built-in easing token.
 
@@ -57,6 +470,18 @@ Several familiar prefixes remain deliberately unsupported. Ring, animation, scal
 
 Spec revision 4 added six small groups: `wrap-anywhere`, `decoration-<color>`, `leading-none`, the resize cursors such as `cursor-col-resize`, `visible` and `invisible`, and `underline-offset-<n>`. `leading-none` emits the constant `1` only when the project configures no `lineHeights.none` token; a configured token keeps precedence. `underline-offset-<n>` takes a whole number of pixels or an arbitrary nonnegative length, and none of these utilities accepts a negative form. Ring and animation utilities are still unsupported.
 
+Spec revision 5 added bare `outline`: it emits 1px width and solid style. Numeric `outline-2` retains 2px, so `focus-visible:outline focus-visible:outline-2` resolves to 2px by deterministic order.
+
+Revision 6 admitted `checked` for self, group, and peer states, shifting group ranks to 1–10 and peer ranks to 11–20.
+
+Revision 7 added `selection` and `pointer-coarse`/`pointer-fine`, before relation variants in canonical order.
+
+Revision 8 added `decoration-<whole integer>` as `text-decoration-thickness: <n>px`, nonnegative `decoration-[<length>]`, and exact `decoration-solid`, `decoration-double`, `decoration-dotted`, `decoration-dashed`, `decoration-wavy` as text-decoration styles. Existing decoration colors and `/N` opacity stay. `decoration-auto` and `decoration-from-font` are unsupported utility keywords; negative and slash thickness/style forms are rejected. A full configured color token wins over a style root: `colors.wavy` makes `decoration-wavy` a color. A bare `decoration-[var(--x)]` is ambiguous (ZW005); `color:` and `length:` hints are unsupported.
+
+Revision 9 added 13 cursor keywords: `help`, `none`, `progress`, `crosshair`, `cell`, `copy`, `alias`, `no-drop`, `context-menu`, `vertical-text`, `all-scroll`, `zoom-in`, and `zoom-out`. Cursor remains keyword-only with no token, negative, slash, or arbitrary form.
+
+Revision 10 added fractions to all seven inset roots. Revision 11 added `justify-self`, `justify-items`, `place-self`, and `place-content` fixed keyword roots. Revision 12 added constant `translate-x-px` and `translate-y-px`, emitting 1px on their axis variables (negative forms emit -1px); `px` remains a language constant, not a theme token. The current catalog is spec 1 revision 12.
+
 `space-x/y` set margin-left or margin-top on each later visible direct child; `divide-x/y` set a solid left or top border on those children. The selector is `C > :not([hidden]) ~ :not([hidden])`, where `C` is the complete utility subject selector. Both siblings are filtered by the `hidden` attribute. An element with `display: none` but without that attribute is not inspected. There are no reverse flags, and visual order is not inferred. A pseudo-element variant cannot be combined with these child utilities; for example, `before:divide-y` is rejected as R23/ZW005 because its child selector would target the wrong subject.
 
 Transition utilities set a 150ms duration and use `wind.defaultTransitionTimingFunction`, which defaults to `ease`; `transition-none` sets only `transition-property: none`. The configured default is a CSS timing function value. Later-sorting duration and easing utilities can override transition declarations in the same variant bucket, so an explicit `ease-*` utility wins. Translate utilities compose through the individual `translate` property and registered `--zw-translate-x` / `--zw-translate-y` custom properties; the registrations use `<length-percentage>` syntax, do not inherit, and start at `0px`. Each axis utility sets its matching variable and the combined translate value. Rotate uses the independent `rotate` property. Ring, animation, scale, and transform-string utilities stay outside the catalog.
@@ -67,3 +492,5 @@ Transition utilities set a 150ms duration and use `wind.defaultTransitionTimingF
 - [Tokens](./tokens.mdx)
 - [Utility reference](./utilities/index.mdx)
 - [Cascade and reset](./cascade-and-reset.mdx)
+
+</Details>

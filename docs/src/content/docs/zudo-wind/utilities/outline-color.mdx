@@ -5,9 +5,144 @@ sidebar_position: 51
 generated: true
 ---
 
-Set outline color from configured values or a validated arbitrary color.
+Color an outline independently of its thickness, distance, and line style.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `outline-focus/90` | `outline-color: color-mix(in oklab, var(--zw-color-focus) 90%, transparent);` |
+| `outline-[#8b1e3f]` | `outline-color: #8b1e3f;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Use a configured focus color
+
+outline-focus/90 uses an explicit color token and the supported color-opacity modifier; width and offset come from their own utilities.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-row\"\u003e\u003cdiv class=\"wind-demo-outline bg-panel text-ink p-3 outline-2 outline-offset-3 outline-focus/90\"\u003eConfigured focus color at 90 percent\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-row {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-outline {\n  display: inline-block;\n  margin: .8rem;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-3 {\n  outline-offset: 3px;\n}\n.outline-focus\\/90 {\n  outline-color: color-mix(in oklab, var(--zw-color-focus) 90%, transparent);\n}\n"} title={"Use a configured focus color"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline": true,
+      "wind-demo-outline-row": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "outline-2",
+        "outline-focus/90",
+        "outline-offset-3",
+        "p-3",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-outline-row { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-outline { display: inline-block; margin: 0.8rem; }
+```
+
+</Details>
+
+### Use a one-off outline color
+
+The bracket color is validated CSS; the example keeps width and offset as separate utilities.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-row\"\u003e\u003cdiv class=\"wind-demo-outline bg-panel text-ink p-3 outline-2 outline-offset-3 outline-[#8b1e3f]\"\u003eValidated arbitrary outline color\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-row {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-outline {\n  display: inline-block;\n  margin: .8rem;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-3 {\n  outline-offset: 3px;\n}\n.outline-\\[\\#8b1e3f\\] {\n  outline-color: #8b1e3f;\n}\n"} title={"Use a one-off outline color"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline": true,
+      "wind-demo-outline-row": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "outline-2",
+        "outline-[#8b1e3f]",
+        "outline-offset-3",
+        "p-3",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-outline-row { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-outline { display: inline-block; margin: 0.8rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Named outline colors use tokens.colors; outline-current and outline-transparent are supported keywords. Arbitrary values such as outline-[#8b1e3f] are validated as CSS colors. A slash modifier accepts an integer from 0 through 100 and mixes the color with transparent in Oklab. The outline root is shared: integer suffixes resolve as width, while configured color names and CSS colors resolve as color. No automatic color palette is provided.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## outline
 
@@ -43,3 +178,5 @@ Set outline color from configured values or a validated arbitrary color.
 | Example class | Expected declarations |
 | --- | --- |
 | `outline-[red]/40` | `outline-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

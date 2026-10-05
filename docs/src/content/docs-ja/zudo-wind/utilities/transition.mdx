@@ -5,9 +5,175 @@ sidebar_position: 55
 generated: true
 ---
 
-トランジション対象のプロパティ群と組み込みのタイミング初期値を選びます。
+状態や値が変わったときに滑らかに変化させる CSS プロパティを選びます。hover や focus-visible などの状態バリアントと、実際に操作できる要素に組み合わせます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke; transition-duration: 150ms; transition-timing-function: ease;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューで spec: 1、reset: "none"、strict モード、spacingUnit: "0.25rem"、空のブレークポイント、defaultTransitionTimingFunction: "ease" を明示します。transition-none 以外のトランジション系ユーティリティは 150ms と設定済みのタイミング関数を使います。ボタンはポインターの hover とキーボードの focus の両方に反応します。prefers-reduced-motion が reduce の場合は、自作デモ CSS が時間を 0 にします。ユーティリティの例は短く、操作したときだけ変化します。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### hover とキーボードフォーカスに反応する
+
+transition-colors は組み込みの 150ms と ease を使い、hover または focus-visible でボタンの背景色を変えます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-colors hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\"\u003eSave changes\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-colors {\n  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n@media (hover: hover) {\n  .hover\\:bg-\\[\\#dbeafe\\]:hover {\n    background-color: #dbeafe;\n  }\n}\n.focus-visible\\:bg-\\[\\#dbeafe\\]:focus-visible {\n  background-color: #dbeafe;\n}\n"} title={"hover とキーボードフォーカスに反応する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-colors",
+        "hover:bg-[#dbeafe]",
+        "focus-visible:bg-[#dbeafe]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+### 対象のプロパティを一つ選ぶ
+
+transition-[border-color] で対象を絞り、focus と hover で境界線の色を変えます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-[border-color] hover:border-[#1d4ed8] focus-visible:border-[#1d4ed8]\"\u003eShow the outline change\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-\\[border-color\\] {\n  transition-property: border-color;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n@media (hover: hover) {\n  .hover\\:border-\\[\\#1d4ed8\\]:hover {\n    border-top-color: #1d4ed8;\n    border-right-color: #1d4ed8;\n    border-bottom-color: #1d4ed8;\n    border-left-color: #1d4ed8;\n  }\n}\n.focus-visible\\:border-\\[\\#1d4ed8\\]:focus-visible {\n  border-top-color: #1d4ed8;\n  border-right-color: #1d4ed8;\n  border-bottom-color: #1d4ed8;\n  border-left-color: #1d4ed8;\n}\n"} title={"対象のプロパティを一つ選ぶ"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-[border-color]",
+        "hover:border-[#1d4ed8]",
+        "focus-visible:border-[#1d4ed8]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+### 補間を止める
+
+transition-none を使うと同じ状態変化が即時に切り替わります。時間とタイミング関数の宣言は出力しません。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-none hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\"\u003eChange without interpolation\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-none {\n  transition-property: none;\n}\n@media (hover: hover) {\n  .hover\\:bg-\\[\\#dbeafe\\]:hover {\n    background-color: #dbeafe;\n  }\n}\n.focus-visible\\:bg-\\[\\#dbeafe\\]:focus-visible {\n  background-color: #dbeafe;\n}\n"} title={"補間を止める"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-none",
+        "hover:bg-[#dbeafe]",
+        "focus-visible:bg-[#dbeafe]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+使えるキーワードは transition、transition-all、transition-colors、transition-opacity、transition-shadow、transition-transform、transition-none です。transition-[border-color] のように任意のプロパティリストも指定できます。組み込みの名前付き transition-property トークンはありません。transition-none は transition-property: none だけを出力し、時間やイージングの初期値は設定しません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## transition
 
@@ -50,3 +216,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |
+
+</Details>

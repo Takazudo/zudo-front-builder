@@ -5,9 +5,149 @@ sidebar_position: 27
 generated: true
 ---
 
-対応する軸に沿って項目、個別の項目、グリッド内容を整列します。
+flex または grid コンテナで子要素の位置を調整します。items は flex の交差軸と grid の block 軸を整列し、justify は flex レイアウトの主軸、place-items は grid item の両軸を扱います。self は個別の項目を上書きします。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `items-center` | `align-items: center;` |
+| `justify-between` | `justify-content: space-between;` |
+| `self-end` | `align-self: flex-end;` |
+| `place-items-center` | `place-items: center;` |
+| `justify-items-center` | `justify-items: center;` |
+| `justify-self-end` | `justify-self: end;` |
+| `place-content-between` | `place-content: space-between;` |
+| `place-self-start` | `place-self: start;` |
+| `self-start` | `align-self: flex-start;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### flex の行を整列
+
+justify-between は行の主軸に項目を分配し、items-center は交差軸を中央にそろえます。self-end は子要素1つだけを交差軸の端に配置します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eOn a row, justify-content moves along the main axis and align-items moves across it.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex h-32 w-full items-center justify-between gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eStart\u003c/div\u003e\u003cdiv class=\"wind-demo-tile self-end\"\u003eSelf end\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eEnd\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.items-center {\n  align-items: center;\n}\n.justify-between {\n  justify-content: space-between;\n}\n.self-end {\n  align-self: flex-end;\n}\n.h-32 {\n  height: 8rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"flex の行を整列"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "h-32",
+        "items-center",
+        "justify-between",
+        "self-end",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### grid item を両軸で整列
+
+place-items-center は grid item を中央に置き、justify-items-center は inline 軸を整列し、place-content-between はトラックを分配します。別々のタイルで justify-self-end、place-self-start、self-start を示します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eplace-items sets both axes for each grid item; self overrides one item.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center justify-items-center place-content-between gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile justify-self-end\"\u003eJustify self end\u003c/div\u003e\u003cdiv class=\"wind-demo-tile place-self-start\"\u003ePlace self start\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile self-start\"\u003eSelf start\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-rows-2 {\n  grid-template-rows: repeat(2,minmax(0,1fr));\n}\n.justify-items-center {\n  justify-items: center;\n}\n.justify-self-end {\n  justify-self: end;\n}\n.place-content-between {\n  place-content: space-between;\n}\n.place-items-center {\n  place-items: center;\n}\n.place-self-start {\n  place-self: start;\n}\n.self-start {\n  align-self: flex-start;\n}\n.h-36 {\n  height: 9rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"grid item を両軸で整列"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "gap-2",
+        "grid",
+        "grid-cols-2",
+        "grid-rows-2",
+        "h-36",
+        "justify-items-center",
+        "justify-self-end",
+        "place-content-between",
+        "place-items-center",
+        "place-self-start",
+        "self-start"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+各基部は固定キーワードを受け付けます。新しい justify-self、justify-items、place-self は start、end、center、stretch、baseline を使います。place-content は start、end、center、stretch、between（space-between）、around（space-around）、evenly（space-evenly）を使います。place-self は align-self と justify-self、place-content は align-content と justify-content を設定します。既存の place-items は変わりません。新しい基部では flex-start／flex-end をユーティリティの接尾辞として使えませんが、CSS 一般では有効で、既存の items、self、justify の出力も変わりません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## items
 
@@ -86,6 +226,122 @@ generated: true
 | --- | --- |
 | `justify-center` | `justify-content: center` |
 
+## justify-items
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.justify-items` |
+| クラスパターン | `justify-items-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `justify-items` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `justify-items` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `justify-items-center` | `justify-items: center` |
+
+## justify-self
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.justify-self` |
+| クラスパターン | `justify-self-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `justify-self` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `justify-self` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `justify-self-center` | `justify-self: center` |
+
+## place-content
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.place-content` |
+| クラスパターン | `place-content-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `7` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `place-content` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"between"` | `"space-between"` |
+| `keyword` | `"around"` | `"space-around"` |
+| `keyword` | `"evenly"` | `"space-evenly"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `place-content` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `place-content-center` | `place-content: center` |
+
 ## place-items
 
 | フィールド | 値 |
@@ -122,6 +378,44 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `place-items-center` | `place-items: center` |
+
+## place-self
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.place-self` |
+| クラスパターン | `place-self-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `5` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `alignment` (`7`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `place-self` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"start"` | `"start"` |
+| `keyword` | `"end"` | `"end"` |
+| `keyword` | `"center"` | `"center"` |
+| `keyword` | `"stretch"` | `"stretch"` |
+| `keyword` | `"baseline"` | `"baseline"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `place-self` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `place-self-center` | `place-self: center` |
 
 ## self
 
@@ -160,3 +454,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `self-center` | `align-self: center` |
+
+</Details>

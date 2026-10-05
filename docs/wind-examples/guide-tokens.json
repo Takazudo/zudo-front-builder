@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-tokens",
+  "examples": [
+    {
+      "id": "named-values",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <div class=\"wind-demo-card bg-panel text-ink p-4 rounded-card\">p-4 uses the configured spacing unit.</div>\n  <div class=\"wind-demo-card bg-panel text-ink p-card rounded-card\">p-card uses the named spacing token.</div>\n</div>",
+      "utilities": [
+        "grid",
+        "grid-cols-2",
+        "gap-4",
+        "bg-panel",
+        "text-ink",
+        "p-4",
+        "p-card",
+        "rounded-card"
+      ],
+      "authoredClasses": ["wind-demo-grid", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-card { border: 1px solid #8797aa; min-height: 4rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "card": "1.5rem"
+            },
+            "colors": {
+              "panel": "#f4f1ec",
+              "ink": "#203046"
+            },
+            "radii": {
+              "card": "0.5rem"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"p-4\">p-4 needs a configured spacingUnit.</div>",
+      "utilities": ["p-4"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacingUnit": null
+          }
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}

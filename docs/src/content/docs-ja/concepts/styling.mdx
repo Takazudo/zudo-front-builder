@@ -7,6 +7,8 @@ category: Concepts
 
 zfb のプロジェクトでは、自分で記述するグローバル CSS、zudo-wind が生成するユーティリティ、セレクタをコンポーネント内に閉じたいときの CSS Modules を組み合わせてスタイリングできます。
 
+ユーティリティを使う場合は、[ユーティリティリファレンス](../zudo-wind/utilities/index.mdx)で用途から探せます。[概要](../zudo-wind/overview.mdx)では候補が解決される仕組みを、[設定](../zudo-wind/configuration.mdx)ではプロジェクト側で指定するトークンとリセットを説明しています。
+
 ## グローバル CSS
 
 デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。プロジェクトのプロパティ、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
@@ -116,7 +118,7 @@ export default function Card() {
 
 - `import styles from "./x.module.css"` には **デフォルトインポート** が必要です。`styles` は元のクラス名をスコープ付きクラス名へ対応させるプレーンなオブジェクトです。
 - `styles.card` または `styles["card"]` でクラスを参照できます。動的なキーによるアクセスは、書き換えがビルド時に行われるため動作しません。
-- JavaScript/TypeScript モジュールからのプレーンな `.css` インポートは出力されません。esbuild がこれを解決すると zfb は警告し、`strictPlainCssImports: true`（または `zfb build --strict-plain-css-imports`）でビルドエラーになります。グローバル CSS は `styles/global.css` とその `@import` に置き、コンポーネント用にはデフォルトインポートした `.module.css` を使ってください。
+- JavaScript / TypeScript モジュールからのプレーンな `.css` import は出力されません。esbuild が解決すると zfb は警告します。デフォルトは `false` で、`strictPlainCssImports: true` にするとビルドエラーになります。`zfb build --strict-plain-css-imports` / `--no-strict-plain-css-imports` でそのビルドのみ設定を上書きできます。両フラグを同時に渡すとエラーになります。このゲートが影響するのは `zfb build` だけで、`zfb dev` は警告のみです。グローバル CSS は `styles/global.css` とその `@import` に置き、コンポーネント用にはデフォルトインポートした `.module.css` を使ってください。ほかのビルドフラグは [CLI リファレンス](../api/cli.mdx)を参照してください。
 - `.module.css` ファイルは、`pages/`、`components/`、`layouts/`、`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
 
 制限:

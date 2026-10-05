@@ -226,7 +226,7 @@ fn generated_provenance_is_separate_and_only_present_for_nonempty_css() {
             provenance.spec_revision,
             provenance.map
         ),
-        (1, 4, None)
+        (1, zudo_wind::SPEC_REVISION, None)
     );
     assert!(!result.stylesheet.contains("zudo-wind://"));
 }

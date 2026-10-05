@@ -6,6 +6,8 @@ const chosen = signal<string | null>(null);
 const readonlyText: ReadonlySignal<string> = text;
 const readonlyChecked: ReadonlySignal<boolean> = checked;
 const readonlyChosen: ReadonlySignal<string | null> = chosen;
+const dynamicType: string = Math.random() > 0.5 ? "text" : "number";
+const textLikeType: "text" | "search" = Math.random() > 0.5 ? "text" : "search";
 export const forms = [
   <input type="text" value="a" />,
   <input type="checkbox" checked={true} />,
@@ -13,6 +15,64 @@ export const forms = [
   <option selected={checked}>Selected reactively</option>,
   <my-widget value="a" checked={null} />,
   <input modelValue={text} />,
+  <input defaultValue="plain" />,
+  <input type="text" defaultValue="plain" />,
+  <input type="search" defaultValue="plain" />,
+  <input type="email" defaultValue="plain" />,
+  <input type="url" defaultValue="plain" />,
+  <input type="tel" defaultValue="plain" />,
+  <input type="password" defaultValue="plain" />,
+  <input type={textLikeType} defaultValue="plain" />,
+  <input type="checkbox" defaultChecked />,
+  <input type="radio" defaultChecked />,
+  <input type="radio" modelValue={undefined} defaultChecked />,
+  <input type="radio" name="group" value="plain" defaultChecked />,
+  <textarea defaultValue="plain" />,
+  <select defaultValue="plain">
+    <option value="plain">Plain</option>
+  </select>,
+  <input
+    type="number"
+    value="2"
+    on:input={(event) => {
+      event.currentTarget.value = "2";
+    }}
+  />,
+  <input type="color" value="#ff0000" />,
+  // @ts-expect-error Omitted type is text and cannot use defaultChecked.
+  <input defaultChecked />,
+  // @ts-expect-error Text inputs cannot use defaultChecked.
+  <input type="text" defaultChecked />,
+  // @ts-expect-error Checkboxes cannot use defaultValue.
+  <input type="checkbox" defaultValue="on" />,
+  // @ts-expect-error Radios cannot use defaultValue.
+  <input type="radio" name="group" value="plain" defaultValue="plain" />,
+  // @ts-expect-error Modelled radios require a name.
+  <input type="radio" value="plain" modelValue={chosen} />,
+  // @ts-expect-error Modelled radios require a value.
+  <input type="radio" name="group" modelValue={chosen} />,
+  // @ts-expect-error Unknown or dynamic input types cannot claim text defaults.
+  <input type={dynamicType} defaultValue="plain" />,
+  // @ts-expect-error Unknown or dynamic input types cannot claim checked defaults.
+  <input type={dynamicType} defaultChecked />,
+  // @ts-expect-error Color inputs cannot use defaultValue.
+  <input type="color" defaultValue="#ff0000" />,
+  // @ts-expect-error Number inputs cannot use defaultValue.
+  <input type="number" defaultValue="2" />,
+  // @ts-expect-error Range inputs cannot use defaultValue.
+  <input type="range" defaultValue="2" />,
+  // @ts-expect-error Date inputs cannot use defaultValue.
+  <input type="date" defaultValue="2026-10-05" />,
+  // @ts-expect-error Time inputs cannot use defaultValue.
+  <input type="time" defaultValue="12:00" />,
+  // @ts-expect-error Unsupported literal inputs cannot use defaultChecked.
+  <input type="number" defaultChecked />,
+  // @ts-expect-error Selects cannot use defaultChecked.
+  <select defaultChecked>
+    <option value="plain">Plain</option>
+  </select>,
+  // @ts-expect-error Textareas cannot use defaultChecked.
+  <textarea defaultChecked />,
   <textarea modelValue={text} />,
   <select modelValue={text}>
     <option value="text">Text</option>

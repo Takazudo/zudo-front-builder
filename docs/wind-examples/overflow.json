@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "family": "overflow",
+  "examples": [
+    {
+      "id": "overflow-clipping",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Compare clipping, clipping at the edge, and allowing overflow to show.</p>\n  <div class=\"wind-demo-frame w-40 overflow-hidden\"><div class=\"wind-demo-tile w-64\">overflow-hidden clips this wide child</div></div>\n  <div class=\"wind-demo-frame w-40 overflow-clip\"><div class=\"wind-demo-tile w-64\">overflow-clip also clips</div></div>\n  <div class=\"wind-demo-frame w-40 overflow-visible\"><div class=\"wind-demo-tile w-64\">overflow-visible shows the wide child</div></div>\n</div>",
+      "utilities": ["overflow-clip", "overflow-hidden", "overflow-visible", "w-40", "w-64"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "overflow-scroll",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Use one axis when only one direction should scroll.</p>\n  <div class=\"wind-demo-frame w-48 overflow-auto overflow-x-auto\">\n    <div class=\"wind-demo-tile w-max\">Horizontal content: one long row continues past the frame</div>\n  </div>\n  <div class=\"wind-demo-frame w-48 overflow-x-scroll\"><div class=\"wind-demo-tile w-max\">Always scrollable horizontal track</div></div>\n  <div class=\"wind-demo-frame h-24 w-48 overflow-auto overflow-y-scroll\">\n    <div class=\"wind-demo-tile\">First row</div><div class=\"wind-demo-tile\">Second row</div><div class=\"wind-demo-tile\">Third row</div><div class=\"wind-demo-tile\">Fourth row</div>\n  </div>\n  <div class=\"wind-demo-frame h-24 w-48 overflow-scroll\">Scroll is enabled on both axes; content can continue here.</div>\n</div>",
+      "utilities": [
+        "h-24",
+        "overflow-auto",
+        "overflow-scroll",
+        "overflow-x-auto",
+        "overflow-x-scroll",
+        "overflow-y-scroll",
+        "w-48",
+        "w-max"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "overflow-overscroll",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Contain scroll gestures at an inner boundary so they do not chain to the outer panel.</p>\n  <div class=\"wind-demo-frame h-36 w-64 overflow-y-auto overscroll-auto overscroll-y-auto\">\n    <div class=\"wind-demo-frame h-24 overflow-y-auto overscroll-contain overscroll-y-contain\">\n      <div class=\"wind-demo-tile\">Inner scroll area</div><div class=\"wind-demo-tile\">More inner content</div><div class=\"wind-demo-tile\">End of inner area</div>\n    </div>\n    <div class=\"wind-demo-tile\">Outer content continues</div><div class=\"wind-demo-tile\">Outer end</div>\n  </div>\n  <div class=\"wind-demo-frame h-24 w-64 overflow-x-auto overscroll-x-contain\">\n    <div class=\"wind-demo-tile w-max\">Horizontal boundary is contained</div>\n  </div>\n  <div class=\"wind-demo-frame h-24 overflow-y-auto overscroll-none overscroll-y-none\">\n    <div class=\"wind-demo-tile\">Overscroll none</div><div class=\"wind-demo-tile\">More content</div><div class=\"wind-demo-tile\">End</div>\n  </div>\n</div>",
+      "utilities": [
+        "h-24",
+        "h-36",
+        "overflow-x-auto",
+        "overflow-y-auto",
+        "overscroll-auto",
+        "overscroll-contain",
+        "overscroll-none",
+        "overscroll-x-contain",
+        "overscroll-y-auto",
+        "overscroll-y-contain",
+        "overscroll-y-none",
+        "w-64",
+        "w-max"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}

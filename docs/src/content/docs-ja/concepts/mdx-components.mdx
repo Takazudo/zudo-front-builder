@@ -44,7 +44,7 @@ const post = posts[0];
 
 `post.data`（パース済みのフロントマター）、`post.slug`、そして `post.Content`（レンダリング可能な本文）が得られます。`.md` と `.mdx` で形は同じです。CommonMark は MDX の厳密なサブセットなので、同じパイプラインが両方を扱います。プレーンな Markdown エントリにはオーバーライドすべき JSX ノードがそもそもありませんが、それでも `components` prop はそれらが出力する HTML 要素に適用されます。
 
-`post.Content` を実際のコンパイル済み JSX モジュールに繋ぐブリッジは `globalThis.__zfb.content.get(specifier)` にあり、ページモジュールが評価される前に Rust 側のレンダラーがインストールします。ブリッジが存在しない場合（ユニットテストや開発用サンドボックスなど）、`Content` は明示的にマークされた `<pre data-zfb-content-fallback>` ブロックにフォールバックし、欠落がひと目で分かるようになっています。
+`post.Content` を実際のコンパイル済み JSX モジュールに繋ぐブリッジは `globalThis.__zfb.content.get(specifier)` にあり、ページモジュールが評価される前に Rust 側のレンダラーがインストールします。ブリッジが存在しない場合（ユニットテストや開発用サンドボックスなど）、`Content` は明示的にマークされた `<pre data-zfb-content-fallback>` ブロックにフォールバックし、欠落がひと目で分かるようになっています。プロダクションビルドでも、コンパイル済みの `.md` / `.mdx` モジュールをブリッジ用にパースできない場合は同じフォールバックになり、バンドラは警告を出してエントリをスキップします。[`strictContentBridge`](../api/define-config.mdx) を `true` にするか `--strict-content-bridge` を渡すと、該当するエントリがある場合にビルドを失敗させられます。このゲートは build 専用で、`zfb dev` は引き続き警告を出してフォールバックを配信します。
 
 ## `defaultComponents` をスプレッドする
 

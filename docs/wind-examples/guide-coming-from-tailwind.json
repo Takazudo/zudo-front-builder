@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-coming-from-tailwind",
+  "examples": [
+    {
+      "id": "token-migration",
+      "kind": "positive",
+      "html": "<article class=\"wind-demo-card bg-panel p-4\"><h2>Workspace panel</h2><p>Token-backed color and numeric spacing.</p></article>",
+      "utilities": ["bg-panel", "p-4"],
+      "authoredClasses": ["wind-demo-card"],
+      "scaffoldCss": ".wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }\n.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }\n.wind-demo-card p { margin: 0; }",
+      "config": {
+        "wind": {
+          "reset": "owned-v1",
+          "tokens": {
+            "spacingUnit": "0.25rem",
+            "colors": {
+              "panel": "#eaf2ff"
+            }
+          },
+          "breakpoints": {}
+        }
+      }
+    },
+    {
+      "id": "leftover-directive",
+      "kind": "expected-diagnostic",
+      "html": "<p>Legacy entry check</p>",
+      "utilities": [],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "diagnosticStylesheet": "@tailwind utilities;\n",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW009",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "tailwind-import",
+      "kind": "expected-diagnostic",
+      "html": "<p>Legacy entry check</p>",
+      "utilities": [],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "diagnosticStylesheet": "@import \"tailwindcss/utilities\";\n",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW009",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unsupported-utility",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<p class=\"line-clamp-2\">Two-line label</p>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": false
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    }
+  ]
+}

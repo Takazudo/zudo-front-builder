@@ -109,7 +109,7 @@ zfb <level>: ZB010 plugin:<name>: <message>
 
 ### `.tsx` プラグイン entry における JSX
 
-プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig が存在しない場合は、esbuild のデフォルトである classic JSX transform が適用されます。zfb が所有する JSX ランタイムを使う `.tsx` プラグイン entry は、自身の tsconfig に `"jsx": "react-jsx"` と `"jsxImportSource": "@takazudo/zfb/zudo-react"` を設定するか、互換性のある factory を明示的に import してください。
+プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig なしで esbuild が `.tsx` プラグイン entry をバンドルする場合、デフォルトの classic JSX transform を使います。ページ、コンポーネント、アイランドの JSX は zfb 固定の自動変換を使います。[JSX を設定する](../zudo-react/overview.mdx)を参照してください。zfb が所有する JSX ランタイムを使う `.tsx` プラグイン entry は、自身の tsconfig に `"jsx": "react-jsx"` と `"jsxImportSource": "@takazudo/zfb/zudo-react"` を設定するか、互換性のある factory を明示的に import してください。
 
 ### バンドルエラー
 
@@ -173,6 +173,8 @@ addAlias("@/components/foo", "./src/components/foo.tsx");
 
 サブパスのインポートは一致しません。`import "@/components/foo/bar"` は書き換えられず、バンドル時に未解決インポートエラーとして現れます。3 つすべての利用者（SSR と `paths()` 評価を駆動する組み込み V8 ホスト、メインのページ／レイアウトバンドラ、クライアントサイドの `"use client"` バンドルを生成する islands esbuild バンドラ）は、同じ完全一致のコントラクトを尊重します。
 
+islands scanner も境界ターゲットの検出時に、この完全一致の alias edge を解決します。plugin edge の到達性と `tsconfig.json` の `paths` の優先順位は [境界ターゲットの検出と移行](./islands.mdx#境界ターゲットの検出と移行)を参照してください。
+
 **衝突検出。** 2 つのプラグインが同じ `from` を異なる `to` で登録すると `AliasConflict` が発生し、両方の問題プラグインを名指ししてビルドを中断します。冪等な再登録（同じプラグイン、同じ `to`）は許可されます。
 
 ### `addVirtualModule(specifier, loader, options?)` — 合成モジュールソース
@@ -186,6 +188,8 @@ addVirtualModule("virtual:metadata-db", () =>
 ```
 
 `loader` は **完全な ESM ソーステキスト** を文字列として返します。バンドラ／組み込み V8 ホストは、返された文字列をそのモジュールのソースとしてそのまま使います。loader は **遅延実行ではなく、即時に実行されます** — `zfb build` の実行ごとに 1 回、`zfb dev` のホスト起動ごとに 1 回、すべてのプラグインの `setup` フックが返り終えた直後の setup フェーズで実行されます。登録された specifier がどのページ／モジュールからも import されなくても実行されます。生成されたソースはメモ化され、以降その specifier を import するたびに再利用されます。（`zfb preview` の下では、この登録は形の一貫性のために受け付けられますが無効です — 前述の `setup` セクションを参照してください — そのため loader はそこでは決して実行されません。）
+
+islands scanner は `addVirtualModule` の edge を通じて実ファイルもたどります。virtual source から static import／re-export した実ファイルに `"use client"` の module を置けます。その module は別の実ファイルで定義された関数を re-export しても構いません。export した関数は到達可能な `<Island>` 境界の具体的な target である必要があります。virtual source 内に直接書いた `"use client"` ディレクティブや `import.meta.glob` は警告が出てスキップされます。virtual source 内の bare import がインストール済み package、workspace package、または別の virtual module に解決される場合もスキップされます。スキャナーの解決順序と制限は [境界ターゲットの検出と移行](./islands.mdx#境界ターゲットの検出と移行)を参照してください。
 
 loader のコントラクトは **1 つ** だけです。「loader が JSON を返し zfb がそれをラップする」という代替モードはありません。JSON を公開したいなら、自分で `() => "export default " + JSON.stringify(data)` としてください。
 

@@ -4,6 +4,417 @@ description: v1 ユーティリティ言語で受け入れる候補の構文、�
 sidebar_position: 5
 ---
 
+## 完全な候補を記述する
+
+スキャナーはソースをテキストとして読みます。アプリケーションを実行してクラス名を組み立てることはありません。`grid-cols-2` のように候補全体をソースに記述してください。`sm:hover:bg-panel` を使うには、`sm` と `colors.panel` の設定が必要です。`` `p-${size}` `` のような文字列からコンパイラが候補を推測することはできません。
+
+一度だけ使う値は、対応するユーティリティの角括弧内に記述します。括弧内の空白はアンダースコアで書きます。CSS の `calc()` では二項の `+` と `-` の前後に空白が必要なので、`w-[calc(100vw_-_2rem)]` と記述します。エスケープした `\_` はアンダースコアのまま残ります。
+
+次の無効な綴りは診断フィクスチャです。表示されるソースと期待されるコードは、コンパイラが確認する同じレコードから生成されます。
+
+{/* wind-preview: guide-utility-grammar/calc-needs-underscores "calc の空白にはアンダースコアを使う" */}
+
+```html
+<div class="w-[calc(100vw-2rem)]">w-[calc(100vw-2rem)]</div>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "w-[calc(100vw-2rem)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+データ型ヒント、任意プロパティ、カタログにないユーティリティには、それぞれ異なる代替方法があります。曖昧な変数には名前付きトークンを使い、未対応の宣言は手書きの CSS に記述します。以下の構文例は、装飾的なプレビューではなく文字情報として示します。
+
+<Details title="候補の診断例を見る">
+
+レスポンシブ名は、ユーティリティの接頭辞に使う前に設定が必要です。
+
+{/* wind-preview: guide-utility-grammar/unconfigured-breakpoint "未設定のブレークポイント" */}
+
+```html
+<div class="md:block">md:block</div>
+```
+
+期待される診断: `ZW002 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "md:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+データ型ヒントはこの言語では使えません。
+
+{/* wind-preview: guide-utility-grammar/unsupported-type-hint "未対応のデータ型ヒント" */}
+
+```html
+<span class="text-[color:var(--project-ink)]">text-[color:var(--project-ink)]</span>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "text-[color:var(--project-ink)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+任意プロパティは拒否されます。宣言は手書きの CSS に記述してください。
+
+{/* wind-preview: guide-utility-grammar/arbitrary-property "任意プロパティには手書きの CSS を使う" */}
+
+```html
+<p class="[overflow-wrap:anywhere]">[overflow-wrap:anywhere]</p>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "[overflow-wrap:anywhere]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+見慣れた接頭辞でも、意図的に未対応のものがあります。`ring-2` はその一例です。
+
+{/* wind-preview: guide-utility-grammar/unsupported-ring "未対応のユーティリティ群" */}
+
+```html
+<div class="ring-2">ring-2</div>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "ring-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+負の値を使えるユーティリティ群は限定されています。padding に負の接頭辞は使えません。
+
+{/* wind-preview: guide-utility-grammar/negative-padding "負の padding は拒否される" */}
+
+```html
+<div class="-p-2">-p-2</div>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "-p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+空の区間は構文エラーになります。
+
+{/* wind-preview: guide-utility-grammar/empty-variant-segment "空のバリアント区間" */}
+
+```html
+<div class="hover::block">hover::block</div>
+```
+
+期待される診断: `ZW001 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "hover::block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+非 strict モードでは、ソース上の 未対応ユーティリティ（foreign utility）は警告になり、strict モードではエラーになります。
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-warning "ソース位置の foreign utility 警告" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+期待される診断: `ZW014 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-strict-error "strict モードのソース位置エラー" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+期待される診断: `ZW014 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+</Details>
+
+候補の文法、値の検証、カタログ範囲、代替方法の詳細は、以下の[技術情報](#候補の形)、[ソースと候補](./sources-and-candidates.mdx)、[バリアント](./variants.mdx)、[全ユーティリティ一覧](./utilities/index.mdx)を参照してください。
+
+<Details title="候補と値の全リファレンス">
+
 ## 候補の形
 
 候補は完全なユーティリティで、任意でコロン区切りのバリアントを先頭に付けられます。一般形は `variant:variant:utility` です。トークナイザーは角括弧、丸括弧、引用符の対応を取ってから分割するため、その内側のコロンとスラッシュはバリアントや修飾子の開始にはなりません。文字どおりの空白、NUL、ほかの制御文字、禁止された外側の句読記号は使えません。
@@ -15,7 +426,7 @@ sidebar_position: 5
 | G03 breakpoint | `sm` が設定済みの場合の `max-sm:hidden` | `md` がない場合の `max-md:hidden`、ZW002 |
 | G04 dark | ダークモードが設定済みの場合の `dark:block` | ダークモードが無効な場合の `dark:block`、ZW002 |
 | G05 state | `first:pt-0` | `hover:focus:hover:block` — 状態の重複、ZW003 |
-| G06 relation | `group-open:rotate-90` | `group/menu:block` — 名前付き group 形式、ZW004 |
+| G06 relation | `group-open:rotate-90` | `group-hover/menu:block` — 名前付き関係形式、ZW004 |
 | G07 pseudo-element | `placeholder:underline` | `before:before:block` — 疑似要素の重複、ZW003 |
 | G08 utility | 余白単位がある場合の `-mt-2` | `-p-2` — この群では負の値が使えません、ZW005 |
 | G09 named suffix | 余白単位がある場合の `gap-x-1.5` | `w-(10px)` — 禁止された外側の句読記号、ZW001 |
@@ -33,11 +444,13 @@ sidebar_position: 5
 
 ## 値と修飾子
 
-数値形式には ASCII 数字を使います。正の分数は正の整数からなります。サイズと移動のユーティリティは分数を受け入れ、aspect ユーティリティは括弧なしの正の整数比を受け入れます。色の `/N` は 0～100 の整数 `N` による不透明度修飾子です。`color-mix(in oklab, VALUE N%, transparent)` を出力し、`/0` と `/100` でも同じ関数形式を保ちます。角括弧の色にも同じ修飾子を使えます。サイズのスラッシュは不透明度として解釈しません。
+数値形式には ASCII 数字を使います。正の分数は正の整数からなります。サイズ、移動、inset のユーティリティは分数を受け入れ、aspect ユーティリティは括弧なしの正の整数比を受け入れます。色の `/N` は 0～100 の整数 `N` による不透明度修飾子です。`color-mix(in oklab, VALUE N%, transparent)` を出力し、`/0` と `/100` でも同じ関数形式を保ちます。角括弧の色にも同じ修飾子を使えます。サイズまたは inset のスラッシュは不透明度として解釈しません。
 
 負の接頭辞はカタログで許可された群だけに使えます。対象は inset、`auto` を除く margin、子要素間の余白、`auto` を除く z-index、tracking、outline 幅のオフセット、translate、rotate、scroll margin です。padding を含むほかの群では拒否されます。リテラルの長さや数値には先頭のマイナスを 1 つ適用し、負のゼロはゼロに正規化します。リテラル以外には `calc(V * -1)` を出力します。`-p-2` のような未対応の負の値は無効です。
 
-サイズと移動の基部は正の整数分数を受け入れ、`aspect-N/D` は正の整数によるアスペクト比を受け入れます。分子と分母はそれぞれ 1～1,000,000 です。サイズの分数は `calc(100% * N / D)` を出力し、幅と高さの両方を設定します。アスペクト比は比率をそのまま出力するため、`aspect-4/3` は `aspect-ratio: 4 / 3` になります。アスペクト比の括弧なし表記ではゼロや小数を使えません。小数の比率には `aspect-[1.5/2.5]`、カスタムプロパティには `aspect-[var(--project-ratio)]` のような任意値を使ってください。不透明度修飾子は色専用です。`bg-panel/40` は、設定された色を透明色と oklab で 40% の比率で混ぜます。padding やサイズの値には使えません。
+サイズと移動の基部、および7つの inset 基部（`inset`、`inset-x`、`inset-y`、`top`、`right`、`bottom`、`left`）は正の整数分数を受け入れ、`aspect-N/D` は正の整数によるアスペクト比を受け入れます。分子と分母はそれぞれ 1～1,000,000 です。サイズの分数は `calc(100% * N / D)` を出力し、幅と高さの両方を設定します。アスペクト比は比率をそのまま出力するため、`aspect-4/3` は `aspect-ratio: 4 / 3` になります。アスペクト比の括弧なし表記ではゼロや小数を使えません。小数の比率には `aspect-[1.5/2.5]`、カスタムプロパティには `aspect-[var(--project-ratio)]` のような任意値を使ってください。不透明度修飾子は色専用です。`bg-panel/40` は、設定された色を透明色と oklab で 40% の比率で混ぜます。padding やサイズの値には使えません。
+
+inset の分数は各オフセットプロパティに `calc(100% * N / D)` を出力します。`left-1/2` は `left: calc(100% * 1 / 2)`、`-top-1/2` は `top: calc(calc(100% * 1 / 2) * -1)` です。左右のパーセンテージは位置指定要素の包含ブロックの幅、上下は高さを基準にします。
 
 `fontSizes` マップの各項目は必須の `size` と任意の `lineHeight` を持つオブジェクトです。行の高さが指定されると、対になる変数として出力します。その名前が予約されているため、フォントサイズのキーを `-leading` で終わらせることはできません。`ease-in-out` は `easings.in-out` という名前付きの参照です。組み込みのイージングトークンはありません。
 
@@ -57,6 +470,18 @@ v1 は有限の集合としてカタログを受け入れます。群には表�
 
 仕様リビジョン 4 では、`wrap-anywhere`、`decoration-<color>`、`leading-none`、`cursor-col-resize` などのリサイズ用カーソル、`visible` と `invisible`、`underline-offset-<n>` の 6 つの小さなグループを追加しました。`leading-none` は、プロジェクトが `lineHeights.none` トークンを設定していない場合にだけ定数 `1` を出力します。トークンを設定している場合はトークンが優先されます。`underline-offset-<n>` は整数のピクセル値か、0 以上の任意の長さを受け付けます。これらのユーティリティはいずれも負の値の形を受け付けません。ring と animation のユーティリティは引き続き未対応です。
 
+仕様リビジョン 5 は接尾辞のない `outline` を追加し、幅 1px と実線の style を出力します。数値の `outline-2` は 2px のままで、`focus-visible:outline focus-visible:outline-2` は決定的な順序によって計算上の幅が 2px になります。
+
+リビジョン 6 は自身、group、peer の状態に `checked` を追加し、group の順位を 1～10、peer を 11～20 に変更しました。
+
+リビジョン 7 は `selection` と `pointer-coarse`／`pointer-fine` を追加しました。pointer は正規順で関係バリアントより前です。
+
+リビジョン 8 は `decoration-<整数>` → `text-decoration-thickness: <n>px`、0 以上の長さの `decoration-[<length>]`、`decoration-solid`／`double`／`dotted`／`dashed`／`wavy` → text-decoration-style を追加しました。既存の色と `/N` 不透明度は残ります。`decoration-auto` と `decoration-from-font` は未対応のキーワードで、thickness/style の負数とスラッシュ形式は拒否します。設定済みの完全な色トークンは style の基部より優先され、`colors.wavy` があれば `decoration-wavy` は色になります。`decoration-[var(--x)]` は曖昧で ZW005、`color:`／`length:` ヒントは未対応です。
+
+リビジョン 9 は `help`、`none`、`progress`、`crosshair`、`cell`、`copy`、`alias`、`no-drop`、`context-menu`、`vertical-text`、`all-scroll`、`zoom-in`、`zoom-out` の13のカーソルキーワードを追加しました。cursor は引き続きキーワード専用で、トークン、負数、スラッシュ、任意値は使えません。
+
+リビジョン 10 は7つの inset 基部に分数を追加し、リビジョン 11 は固定キーワードの `justify-self`、`justify-items`、`place-self`、`place-content` を追加しました。リビジョン 12 は定数 `translate-x-px` と `translate-y-px` を追加し、それぞれの軸変数に 1px を出力します（負数形は -1px）。`px` はテーマトークンではなく言語定数です。現在のカタログは spec 1 revision 12 です。
+
 `space-x/y` は後続の表示対象の直接の子に margin-left または margin-top を設定し、`divide-x/y` は実線の左または上のボーダーを設定します。セレクタは `C > :not([hidden]) ~ :not([hidden])` で、`C` は完全なユーティリティの対象セレクタです。両側の兄弟要素を `hidden` 属性で絞ります。その属性を持たず `display: none` になっている要素は調べません。逆方向フラグはなく、表示上の順序も推測しません。疑似要素バリアントはこれらの子ユーティリティと組み合わせられません。たとえば `before:divide-y` は子セレクタが誤った対象を指すため、R23/ZW005 で拒否されます。
 
 トランジション系ユーティリティは 150ms の時間を設定し、`wind.defaultTransitionTimingFunction` を使います。デフォルトは `ease` です。`transition-none` が設定するのは `transition-property: none` だけです。設定値は CSS のタイミング関数です。同じバリアント区画では、後に並ぶ duration と easing のユーティリティがトランジションの宣言を上書きするため、明示した `ease-*` が優先されます。移動のユーティリティは個別の `translate` プロパティと、登録された `--zw-translate-x` / `--zw-translate-y` カスタムプロパティで合成されます。登録は `<length-percentage>` 構文を使い、継承せず、初期値は `0px` です。各軸のユーティリティは対応する変数と合成された移動値を設定します。回転には独立した `rotate` プロパティを使います。ring、animation、scale、transform 文字列のユーティリティはカタログの対象外です。
@@ -67,3 +492,5 @@ v1 は有限の集合としてカタログを受け入れます。群には表�
 - [トークン](./tokens.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

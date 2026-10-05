@@ -109,7 +109,7 @@ Plugin bundling invokes esbuild with `--target=node22`. As a consequence, `.ts` 
 
 ### JSX in `.tsx` plugin entries
 
-The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. With no tsconfig present, esbuild's default classic JSX transform applies. A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
+The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. When esbuild bundles a `.tsx` plugin entry without a tsconfig, it uses its default classic JSX transform. Page, component, and island JSX instead uses zfb's fixed automatic transform; see [Configure JSX](../zudo-react/overview.mdx). A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
 
 ### Bundling errors
 
@@ -177,6 +177,8 @@ Subpath imports do NOT match: `import "@/components/foo/bar"` is not rewritten a
 
 **`node_modules` importers.** A `to` that resolves to a single existing file is also applied to importers inside `node_modules`, via esbuild's `--alias` flag. A directory-shaped or missing `to` is applied through tsconfig `paths` only, which esbuild does not honor for `node_modules` importers — so a package that needs the alias to work from inside `node_modules` should register one alias per file, or use `addVirtualModule` instead. A `from` that is a slash-prefix of another registered alias, of a virtual module specifier, or of a reserved name such as `zfb` gets no `--alias` flag.
 
+The islands scanner also resolves this exact alias edge during boundary discovery. See [Boundary discovery and migration](./islands.mdx#boundary-discovery-and-migration) for plugin-edge reachability and `tsconfig.json` `paths` precedence.
+
 ### `addVirtualModule(specifier, loader, options?)` — synthetic module sources
 
 Registers a bare specifier whose source text is produced on-demand by `loader`. The recommended prefix is `virtual:` but it is not enforced — anything that does not collide with a real module specifier works.
@@ -188,6 +190,8 @@ addVirtualModule("virtual:metadata-db", () =>
 ```
 
 `loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader runs **eagerly, not lazily on import**: exactly once per `zfb build` run and once per `zfb dev` host boot, during the setup phase right after every plugin's `setup` hook has returned — even if the registered specifier is never imported by any page or module. The resulting source is memoised; every subsequent import of that specifier reuses it. (Under `zfb preview`, the registration is accepted for shape-consistency but is inert — see the `setup` section above — so the loader never runs there.)
+
+The islands scanner follows an `addVirtualModule` edge into real files: a virtual source can statically import or re-export a real `"use client"` module, which may itself re-export a function defined in another real file. That exported function must still be a concrete target of a reachable `<Island>` boundary. A `"use client"` directive or `import.meta.glob` directly inside the virtual source is warned about and skipped; bare imports from a virtual source that resolve to installed or workspace packages, or another virtual module, are skipped too. See [Boundary discovery and migration](./islands.mdx#boundary-discovery-and-migration) for the scanner's resolution precedence and limits.
 
 There is **one** loader contract. There is no alternate "loader returns JSON and zfb wraps it" mode — if you want to expose JSON, do `() => "export default " + JSON.stringify(data)` yourself.
 

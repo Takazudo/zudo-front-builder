@@ -55,6 +55,16 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             ("transition-timing-function", "ease"),
         ],
     );
+    transition.default_overrides = vec![
+        DefaultOverride {
+            property: "transition-duration",
+            overriding_entry_id: "v1.duration",
+        },
+        DefaultOverride {
+            property: "transition-timing-function",
+            overriding_entry_id: "v1.ease",
+        },
+    ];
     entries.push(transition);
 
     let mut duration = entry(
@@ -113,7 +123,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
                 ValueKind::Fraction,
                 ValueKind::Arbitrary,
             ],
-            &[("0", "0"), ("full", "100%")],
+            &[("0", "0"), ("px", "1px"), ("full", "100%")],
             &[TokenCategory::Spacing],
             Some("translate"),
             true,
@@ -143,6 +153,19 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
                 initial_value: "0px",
             },
         ];
+        axis.examples.push(Example {
+            candidate: format!("{root}-px"),
+            declarations: vec![
+                Declaration {
+                    property: property.to_owned(),
+                    value: "1px".to_owned(),
+                },
+                Declaration {
+                    property: "translate".to_owned(),
+                    value: translate.to_owned(),
+                },
+            ],
+        });
         entries.push(axis);
     }
 

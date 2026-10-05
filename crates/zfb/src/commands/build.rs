@@ -149,7 +149,7 @@ async fn run_inner(
     // routes were registered.
     let pages_dir = project_root.join("pages");
 
-    let phase_started = build_phase_start(timing_enabled);
+    let phase_started = build_phase_start("config-load", timing_enabled);
     let mut config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
@@ -229,7 +229,7 @@ async fn run_inner(
     // work so `preBuild` can prepare files the bundler will see (e.g.
     // claude-resources index emission). If no plugins are declared, we
     // skip the spawn entirely so a config-less project pays nothing.
-    let phase_started = build_phase_start(timing_enabled);
+    let phase_started = build_phase_start("plugin-host-spawn", timing_enabled);
     let plugin_host = crate::commands::plugins::maybe_spawn_host_with_diagnostic_sink(
         &config,
         Some(sink.clone()),
@@ -246,7 +246,7 @@ async fn run_inner(
         // during a build — a registered route becomes a package-owned build
         // route the overlay materialiser prerenders (see below) — rather than
         // the pre-#1193 dev-only hard error.
-        let phase_started = build_phase_start(timing_enabled);
+        let phase_started = build_phase_start("plugin-setup", timing_enabled);
         let plugin_setup = crate::commands::plugins::run_plugin_setup(
             &plugin_host,
             &project_root,
@@ -583,16 +583,37 @@ fn build_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn build_phase_start(enabled: bool) -> Option<Instant> {
-    enabled.then(Instant::now)
+fn build_phase_start(phase: &str, enabled: bool) -> Option<Instant> {
+    build_phase_start_with(phase, enabled, |line| eprintln!("{line}"))
+}
+
+fn build_phase_start_with(
+    phase: &str,
+    enabled: bool,
+    emit: impl FnOnce(String),
+) -> Option<Instant> {
+    if !enabled {
+        return None;
+    }
+    let started = Instant::now();
+    emit(format_build_phase_start_line(phase));
+    Some(started)
+}
+
+fn format_build_phase_start_line(phase: &str) -> String {
+    format!("[zfb-build-timing] phase={phase} event=start")
 }
 
 fn emit_build_phase_timing(phase: &str, started: Option<Instant>) {
+    emit_build_phase_timing_with(phase, started, |line| eprintln!("{line}"));
+}
+
+fn emit_build_phase_timing_with(phase: &str, started: Option<Instant>, emit: impl FnOnce(String)) {
     if let Some(started) = started {
-        eprintln!(
-            "{}",
-            format_build_phase_timing_line(phase, started.elapsed().as_millis())
-        );
+        emit(format_build_phase_timing_line(
+            phase,
+            started.elapsed().as_millis(),
+        ));
     }
 }
 
@@ -1041,7 +1062,7 @@ impl BuildRunner for DefaultRunner {
     }
 
     fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
-        let started = build_phase_start(self.timing_enabled);
+        let started = build_phase_start("main-esbuild-bundle", self.timing_enabled);
         let result = bundle(input);
         emit_build_phase_timing("main-esbuild-bundle", started);
         result
@@ -1057,7 +1078,7 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
-        let started = build_phase_start(self.timing_enabled);
+        let started = build_phase_start("v8-paths-eval", self.timing_enabled);
         let factory =
             crate::v8_host_adapter::make_v8_host_factory_with_hooks(self.v8_plugin_hooks.clone());
         if deferred.is_empty() {
@@ -1116,7 +1137,7 @@ impl BuildRunner for DefaultRunner {
     }
 
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
-        let started = build_phase_start(self.timing_enabled);
+        let started = build_phase_start("v8-boot-and-render", self.timing_enabled);
         let result = render_all(input).map_err(anyhow::Error::from);
         emit_build_phase_timing("v8-boot-and-render", started);
         result
@@ -1131,14 +1152,14 @@ impl BuildRunner for DefaultRunner {
         config: &Config,
         zfb_written_roots: &[PathBuf],
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
-        let started = build_phase_start(self.timing_enabled);
+        let started = build_phase_start("production-assets", self.timing_enabled);
         // Run `CssPipeline::build_emitter` and
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (wind disabled, no registered
         // SDK Island boundary targets, etc.).
-        let css_started = build_phase_start(build_timing_enabled());
+        let css_started = build_phase_start("css", self.timing_enabled);
         let css_pass = build_default_css_payload_with_details(
             project_root,
             outdir,
@@ -7167,6 +7188,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `skip_serializing_if` elides, so the JSON embedded in the worker
     // bundle is byte-identical to the flag-off build. One collection
     // walk, no bundle-byte drift.
+    let phase_started = build_phase_start("content-snapshot", runner.timing_enabled());
     let mut render_metadata = crate::commands::render_artifact::RenderMetadataIndex::default();
     let content_snapshot_json = {
         let mut snapshot = build_content_snapshot(
@@ -7189,6 +7211,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         }
         snapshot.as_ref().and_then(serialize_content_snapshot)
     };
+    emit_build_phase_timing("content-snapshot", phase_started);
 
     if static_routes.is_empty() && still_deferred.is_empty() && ssr_deferred.is_empty() {
         // Stay user-friendly: an all-dynamic project where every page
@@ -7323,7 +7346,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // per-command differences passed here:
     //   • BundleMode::Production  (dev uses Development)
     //   • CssModuleFailMode::HardFail  (dev uses WarnAndEmpty)
-    let phase_started = build_phase_start(runner.timing_enabled());
+    let phase_started = build_phase_start(
+        "vendor-extraction-and-bundler-input",
+        runner.timing_enabled(),
+    );
     let crate::commands::bundler_input::AssembledBundlerInput {
         bundler_input,
         _node_modules_handle: _embedded_nm_handle,
@@ -8634,6 +8660,35 @@ mod tests {
         assert_eq!(
             format_build_phase_timing_line("css", 17),
             "[zfb-build-timing] phase=css elapsed_ms=17"
+        );
+    }
+
+    #[test]
+    fn build_timing_events_are_ordered_opt_in_and_leave_failure_starts_visible() {
+        let mut events = Vec::new();
+        let started = build_phase_start_with("content-snapshot", true, |line| events.push(line));
+        emit_build_phase_timing_with("content-snapshot", started, |line| events.push(line));
+        assert_eq!(
+            events.first().map(String::as_str),
+            Some("[zfb-build-timing] phase=content-snapshot event=start")
+        );
+        assert!(events[1].starts_with("[zfb-build-timing] phase=content-snapshot elapsed_ms="));
+
+        events.clear();
+        let started = build_phase_start_with("content-snapshot", false, |line| events.push(line));
+        emit_build_phase_timing_with("content-snapshot", started, |line| events.push(line));
+        assert!(events.is_empty(), "disabled timing must stay silent");
+
+        let mut failure_events = Vec::new();
+        let result: Result<(), &str> = {
+            let _started =
+                build_phase_start_with("esbuild", true, |line| failure_events.push(line));
+            Err("synthetic phase failure")
+        };
+        assert_eq!(result, Err("synthetic phase failure"));
+        assert_eq!(
+            failure_events,
+            vec!["[zfb-build-timing] phase=esbuild event=start".to_owned()]
         );
     }
     use std::cell::RefCell;

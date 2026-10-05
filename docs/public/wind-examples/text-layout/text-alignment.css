@@ -1,0 +1,38 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-align {
+  max-width: 23rem;
+  color: #223247;
+}
+
+.wind-demo-align p {
+  margin: 0 0 .55rem;
+  border: 1px solid #b7c5d4;
+  padding: .45rem .65rem;
+}
+
+.wind-demo-align p:last-child {
+  margin-bottom: 0;
+}
+.text-center {
+  text-align: center;
+}
+.text-end {
+  text-align: end;
+}
+.text-justify {
+  text-align: justify;
+}
+.text-left {
+  text-align: left;
+}
+.text-right {
+  text-align: right;
+}
+.text-start {
+  text-align: start;
+}

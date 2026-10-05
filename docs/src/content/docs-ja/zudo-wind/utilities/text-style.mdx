@@ -5,9 +5,183 @@ sidebar_position: 41
 generated: true
 ---
 
-文字の装飾、大小文字、フォントスタイル、数字の形、平滑化を設定します。
+ソースの単語を変えずに、文字装飾、英字の大文字小文字、フォントの表示方法を調整します。異なる CSS プロパティを扱うため、必要な挙動だけを組み合わせます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `underline` | `text-decoration-line: underline;` |
+| `overline` | `text-decoration-line: overline;` |
+| `line-through` | `text-decoration-line: line-through;` |
+| `no-underline` | `text-decoration-line: none;` |
+| `uppercase` | `text-transform: uppercase;` |
+| `lowercase` | `text-transform: lowercase;` |
+| `capitalize` | `text-transform: capitalize;` |
+| `normal-case` | `text-transform: none;` |
+| `italic` | `font-style: italic;` |
+| `not-italic` | `font-style: normal;` |
+| `tabular-nums` | `font-variant-numeric: tabular-nums;` |
+| `antialiased` | `-webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各クラスは挙動を確認するテキストに直接付けます。デモ用 CSS はレイアウト、枠、余白、リンク色のみを加えます。大文字小文字の変換はラテン文字に作用し、かなや漢字は変換しません。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 文字装飾線を選ぶ
+
+下線、上線、取り消し線を比べます。最後のリンクには標準の下線があるため、no-underline の解除結果を確認できます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-style-stack\"\u003e\n  \u003cp\u003e\u003cspan class=\"underline\"\u003eUnderline / 下線\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"overline\"\u003eOverline / 上線\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"line-through\"\u003eLine through / 取り消し線\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003ca href=\"#normal-text\" class=\"no-underline\"\u003eNo underline / 下線なし\u003c/a\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-style-stack {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem 1rem;\n}\n\n.wind-demo-style-stack p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-style-stack p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-style-stack a {\n  color: inherit;\n}\n.line-through {\n  text-decoration-line: line-through;\n}\n.no-underline {\n  text-decoration-line: none;\n}\n.overline {\n  text-decoration-line: overline;\n}\n.underline {\n  text-decoration-line: underline;\n}\n"} title={"文字装飾線を選ぶ"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-style-stack": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "underline",
+        "overline",
+        "line-through",
+        "no-underline"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-style-stack { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }
+.wind-demo-style-stack p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-style-stack p:last-child { border-bottom: 0; }
+.wind-demo-style-stack a { color: inherit; }
+```
+
+</Details>
+
+### ラテン文字の大小を変える
+
+同じ日英の文で4種類の変換を比べます。日本語の文字は変化しません。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-style-stack\"\u003e\n  \u003cp\u003e\u003cspan class=\"uppercase\"\u003eWind notes / 見出しの整え方\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"lowercase\"\u003eWind notes / 見出しの整え方\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"capitalize\"\u003ewind notes / 見出しの整え方\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"normal-case\"\u003eWIND NOTES / 見出しの整え方\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-style-stack {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem 1rem;\n}\n\n.wind-demo-style-stack p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-style-stack p:last-child {\n  border-bottom: 0;\n}\n.capitalize {\n  text-transform: capitalize;\n}\n.lowercase {\n  text-transform: lowercase;\n}\n.normal-case {\n  text-transform: none;\n}\n.uppercase {\n  text-transform: uppercase;\n}\n"} title={"ラテン文字の大小を変える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-style-stack": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "uppercase",
+        "lowercase",
+        "capitalize",
+        "normal-case"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-style-stack { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }
+.wind-demo-style-stack p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-style-stack p:last-child { border-bottom: 0; }
+```
+
+</Details>
+
+### 強調と数字を整える
+
+italic と通常の強調、tabular-nums、スムージングを確認します。数字の形とスムージングはフォントや環境に依存します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-type-grid\"\u003e\n  \u003cp\u003eStyle: \u003cem class=\"italic\"\u003eitalic\u003c/em\u003e and \u003cem class=\"not-italic\"\u003eroman emphasis\u003c/em\u003e.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-number-grid\"\u003e\u003cspan\u003eDefault digits\u003c/span\u003e\u003cspan\u003e1,111.11\u003c/span\u003e\u003cspan\u003eTabular digits\u003c/span\u003e\u003cspan class=\"tabular-nums\"\u003e1,111.11\u003c/span\u003e\u003c/div\u003e\n  \u003cp class=\"antialiased\"\u003eSmoothing can look different on each display. / 画面によって見え方が変わります。\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-type-grid {\n  max-width: 28rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-type-grid \u003e p {\n  margin: 0 0 .85rem;\n}\n\n.wind-demo-type-grid \u003e p:last-child {\n  margin: .85rem 0 0;\n  border-top: 1px solid #d8e0e8;\n  padding-top: .75rem;\n}\n\n.wind-demo-number-grid {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: .35rem 1rem;\n}\n.italic {\n  font-style: italic;\n}\n.not-italic {\n  font-style: normal;\n}\n.tabular-nums {\n  font-variant-numeric: tabular-nums;\n}\n.antialiased {\n  -webkit-font-smoothing: antialiased;\n  -moz-osx-font-smoothing: grayscale;\n}\n"} title={"強調と数字を整える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-type-grid": true,
+      "wind-demo-number-grid": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "italic",
+        "not-italic",
+        "tabular-nums",
+        "antialiased"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-type-grid { max-width: 28rem; color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-type-grid > p { margin: 0 0 0.85rem; }
+.wind-demo-type-grid > p:last-child { margin: 0.85rem 0 0; border-top: 1px solid #d8e0e8; padding-top: 0.75rem; }
+.wind-demo-number-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.35rem 1rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+underline、overline、line-through、no-underline は text-decoration-line を指定します。4つの case クラスは text-transform を扱い、normal-case は none に戻します。italic と not-italic は font-style を指定します。tabular-nums は等幅の数字を要求しますが、選んだフォントが対応している場合にだけ見た目に表れます。antialiased は環境依存のフォントスムージングを設定するため、ブラウザーや OS によって差が小さいことがあります。このファミリーは固定クラスで、名前付き値トークンはありません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## line-through
 
@@ -417,3 +591,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `antialiased` | `-webkit-font-smoothing: antialiased`; `-moz-osx-font-smoothing: grayscale` |
+
+</Details>

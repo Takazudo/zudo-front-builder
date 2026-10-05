@@ -5,9 +5,83 @@ sidebar_position: 49
 generated: true
 ---
 
-Set the border color of later visible siblings between grouped items.
+Set the border color on later visible direct children, where a divide-width utility has drawn separators.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `divide-accent/75` | `border-top-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-right-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-bottom-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-left-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Color separators between visible rows
+
+divide-accent/75 configures the separator color and divide-y-2 supplies the top borders. The hidden row is omitted by the selector.
+
+<HtmlPreview html={"\u003cul class=\"wind-demo-divider-list divide-y-2 divide-accent/75\"\u003e\u003cli class=\"wind-demo-divider-item\"\u003eFirst visible row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\" hidden\u003eHidden source row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\"\u003eNext visible row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\"\u003eLast visible row\u003c/li\u003e\u003c/ul\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-divider-list {\n  max-width: 28rem;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-divider-item {\n  padding: .75rem .2rem;\n}\n.divide-y-2 \u003e :not([hidden]) ~ :not([hidden]) {\n  border-top-width: 2px;\n  border-top-style: solid;\n}\n.divide-accent\\/75 \u003e :not([hidden]) ~ :not([hidden]) {\n  border-top-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-right-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-bottom-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-left-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n}\n"} title={"Color separators between visible rows"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-divider-item": true,
+      "wind-demo-divider-list": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "divide-accent/75",
+        "divide-y-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-divider-list { max-width: 28rem; margin: 0; padding: 0; list-style: none; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-divider-item { padding: 0.75rem 0.2rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Names resolve only through tokens.colors; divide-current and divide-transparent are also supported, as are validated bracket colors. A slash accepts an integer from 0 through 100 and mixes the color with transparent in Oklab. The divide color rule sets all four border-color longhands on matching later siblings; pair it with divide-x or divide-y for line width and direction. Hidden-attribute children are skipped, so the next visible child is still separated from the previous visible child. This is a child-selector utility, not a color applied to the container.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## divide
 
@@ -46,3 +120,5 @@ Set the border color of later visible siblings between grouped items.
 | Example class | Expected declarations |
 | --- | --- |
 | `divide-[red]/40` | `border-top-color: color-mix(in oklab, red 40%, transparent)`; `border-right-color: color-mix(in oklab, red 40%, transparent)`; `border-bottom-color: color-mix(in oklab, red 40%, transparent)`; `border-left-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

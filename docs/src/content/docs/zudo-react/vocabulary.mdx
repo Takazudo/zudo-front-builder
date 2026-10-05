@@ -1,0 +1,160 @@
+---
+title: Supported HTML and SVG vocabulary
+description: The current tag names, attribute names, value categories, and rejected React spellings for zudo-react.
+sidebar_position: 15
+---
+
+## What the renderer accepts
+
+The renderer uses the finite names below for standard HTML and SVG elements. Attribute acceptance is **per name across the namespace, not per element**: for example, `loading` is accepted on `iframe`, `img`, `video`, and `div`. The HTML and SVG attribute sets are separate; common attributes and the listed open-ended families apply in both namespaces. These counts and tables come from the current `vocabulary.ts` source, including `rb`.
+
+The `svg` tag starts the SVG namespace. A `foreignObject` switches its children to HTML; a nested `svg` switches back to SVG. An unsupported tag in the active namespace reports `ZR_TAG`.
+
+## Element names
+
+### HTML tags (118)
+
+| Tag | Tag | Tag | Tag |
+| --- | --- | --- | --- |
+| `html` | `head` | `body` | `title` |
+| `base` | `link` | `meta` | `style` |
+| `script` | `div` | `span` | `p` |
+| `a` | `br` | `hr` | `main` |
+| `header` | `footer` | `nav` | `section` |
+| `article` | `aside` | `search` | `hgroup` |
+| `menu` | `h1` | `h2` | `h3` |
+| `h4` | `h5` | `h6` | `ul` |
+| `ol` | `li` | `dl` | `dt` |
+| `dd` | `blockquote` | `pre` | `code` |
+| `strong` | `em` | `b` | `i` |
+| `small` | `mark` | `time` | `figure` |
+| `figcaption` | `img` | `picture` | `source` |
+| `video` | `audio` | `track` | `canvas` |
+| `form` | `label` | `input` | `button` |
+| `textarea` | `select` | `option` | `optgroup` |
+| `fieldset` | `legend` | `output` | `progress` |
+| `meter` | `datalist` | `table` | `caption` |
+| `thead` | `tbody` | `tfoot` | `tr` |
+| `th` | `td` | `col` | `colgroup` |
+| `details` | `summary` | `dialog` | `template` |
+| `slot` | `iframe` | `noscript` | `address` |
+| `abbr` | `bdi` | `bdo` | `cite` |
+| `data` | `del` | `dfn` | `ins` |
+| `kbd` | `map` | `area` | `object` |
+| `param` | `q` | `rp` | `rb` |
+| `rt` | `ruby` | `s` | `samp` |
+| `sub` | `sup` | `u` | `var` |
+| `wbr` | `embed` | `xmp` | `noembed` |
+| `noframes` | `plaintext` |  |  |
+
+An HTML custom element name matching `^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$` (for example, `x-card`) is also accepted. Custom element attributes follow their separate string-only rule below. Custom elements also support `on:<event>` listeners and reserved runtime props.
+
+### SVG tags (26)
+
+| Tag | Tag | Tag | Tag |
+| --- | --- | --- | --- |
+| `svg` | `g` | `path` | `circle` |
+| `ellipse` | `rect` | `line` | `polyline` |
+| `polygon` | `text` | `tspan` | `defs` |
+| `symbol` | `use` | `clipPath` | `mask` |
+| `linearGradient` | `radialGradient` | `stop` | `title` |
+| `desc` | `foreignObject` | `pattern` | `filter` |
+| `marker` | `image` |  |  |
+
+## Attribute names
+
+The lists below are flat name sets, not per-tag HTML tables. A name in the HTML set is accepted on any supported HTML tag; a name in the SVG set is accepted on any supported SVG tag. Some names occur in more than one set.
+
+| Name group | Count | Names |
+| --- | ---: | --- |
+| Common on HTML and SVG | 19 | `accesskey`, `class`, `contenteditable`, `dir`, `draggable`, `hidden`, `id`, `inert`<br />`lang`, `onclick`, `onerror`, `onload`, `role`, `slot`, `spellcheck`, `style`<br />`tabindex`, `title`, `translate` |
+| HTML namespace | 83 | `accept`, `accept-charset`, `action`, `allow`, `allowfullscreen`, `alt`, `as`, `async`<br />`autocapitalize`, `autocomplete`, `autofocus`, `autoplay`, `charset`, `checked`, `cite`, `closedby`<br />`cols`, `colspan`, `content`, `controls`, `crossorigin`, `datetime`, `decoding`, `defer`<br />`disabled`, `download`, `enctype`, `fetchpriority`, `for`, `form`, `formnovalidate`, `height`<br />`href`, `hreflang`, `http-equiv`, `inputmode`, `integrity`, `itemprop`, `label`, `loading`<br />`loop`, `max`, `maxlength`, `media`, `method`, `min`, `minlength`, `multiple`<br />`muted`, `name`, `nonce`, `novalidate`, `open`, `pattern`, `placeholder`, `playsinline`<br />`popover`, `popovertarget`, `popovertargetaction`, `poster`, `preload`, `property`, `readonly`, `referrerpolicy`<br />`rel`, `required`, `reversed`, `rows`, `rowspan`, `sandbox`, `scope`, `selected`<br />`sizes`, `src`, `srcdoc`, `srcset`, `start`, `step`, `target`, `type`<br />`value`, `width`, `wrap` |
+| SVG namespace | 44 | `clip-rule`, `cx`, `cy`, `d`, `fill`, `fill-opacity`, `fill-rule`, `focusable`<br />`gradientTransform`, `gradientUnits`, `height`, `href`, `markerHeight`, `markerWidth`, `offset`, `opacity`<br />`points`, `preserveAspectRatio`, `r`, `refX`, `refY`, `rx`, `ry`, `stop-color`<br />`stop-opacity`, `stroke`, `stroke-dasharray`, `stroke-linecap`, `stroke-linejoin`, `stroke-width`, `text-anchor`, `transform`<br />`viewBox`, `width`, `x`, `x1`, `x2`, `xlink:href`, `xml:lang`, `xmlns`<br />`xmlns:xlink`, `y`, `y1`, `y2` |
+
+These families are accepted on standard HTML and SVG elements:
+
+| Family | Accepted names | Value rule |
+| --- | --- | --- |
+| Data attributes | `data-[\w.-]+` | Strings and finite numbers; booleans serialize as `"true"` or `"false"`. |
+| ARIA attributes | `aria-[\w.-]+` | Strings and finite numbers; booleans serialize as `"true"` or `"false"`. |
+| Inline event attributes | `on[a-z]+` (for example, `onclick`, `onload`) | Strings, including reactive string values; null and undefined omit the attribute. The renderer escapes and updates the browser's inline-handler attribute. The browser may execute it when the event fires, so use trusted strings. Function values are rejected. |
+| Native event listeners | `on:<event>` or `on:<event>:capture` | A function prop with a case-sensitive event name matching `[A-Za-z][A-Za-z0-9_-]*`; it installs a native listener and emits no HTML attribute. |
+
+The attribute name must match `^[A-Za-z_:][A-Za-z0-9_:.-]*$`. Null and undefined values are omitted. For standard attributes not listed in a special value category, strings and finite numbers are accepted.
+
+## Attribute value categories
+
+The following value rules apply to the names shown whenever those names are accepted in the active namespace. The sets can overlap with the common, HTML, and SVG name groups.
+
+| Category | Count | Names | Value handling |
+| --- | ---: | --- | --- |
+| Boolean presence | 21 | `allowfullscreen`, `async`, `autofocus`, `autoplay`, `checked`, `controls`<br />`defer`, `disabled`, `formnovalidate`, `hidden`, `inert`, `loop`<br />`multiple`, `muted`, `novalidate`, `open`, `playsinline`, `readonly`<br />`required`, `reversed`, `selected` | Boolean only: true emits a bare attribute; false is omitted. |
+| Enumerated boolean | 3 | `contenteditable`, `draggable`, `spellcheck` | String or boolean; booleans serialize as the strings `true` or `false`. |
+| Overloaded boolean | 1 | `download` | String or boolean; true emits an empty value, false is omitted. |
+| Numeric | 1 | `start` | String or finite number. |
+| String only | 24 | `as`, `autocapitalize`, `closedby`, `fetchpriority`, `focusable`, `form`<br />`href`, `hreflang`, `inputmode`, `integrity`, `itemprop`, `label`<br />`nonce`, `popover`, `popovertarget`, `popovertargetaction`, `preload`, `property`<br />`srcdoc`, `stroke-dasharray`, `text-anchor`, `wrap`, `xmlns`, `xmlns:xlink` | A string; numbers and booleans are rejected. |
+
+`style` is common to both namespaces but has a dedicated handler: CSS strings pass through, while plain object styles are validated. It is not a string-only standard attribute. Custom element attributes take precedence over these standard categories and must be strings; reactive string values are supported, and null and undefined are omitted.
+
+## Rejected React spellings and suggestions (35)
+
+These are **diagnostic suggestions**, not accepted aliases: the authored React spelling fails and is neither rewritten nor emitted. The suggestion is available only when its target spelling is valid in the current namespace. `dangerouslySetInnerHTML` suggests the special renderer prop `rawHtml`, which is not an HTML attribute. `on[A-Z]` event props are handled separately: for example, `onClick` suggests `on:click`, and `onDoubleClick` suggests `on:dblclick`.
+
+| Rejected spelling | Suggested spelling | Namespace where ZR_PROP_DIALECT suggests the target | Custom element behavior |
+| --- | --- | --- | --- |
+| `className` | `class` | HTML, SVG | Also rejected on custom elements |
+| `htmlFor` | `for` | HTML | Also rejected on custom elements |
+| `charSet` | `charset` | HTML | Also rejected on custom elements |
+| `dateTime` | `datetime` | HTML | Also rejected on custom elements |
+| `tabIndex` | `tabindex` | HTML, SVG | Also rejected on custom elements |
+| `readOnly` | `readonly` | HTML | Also rejected on custom elements |
+| `autoComplete` | `autocomplete` | HTML | Ordinary string attribute |
+| `autoFocus` | `autofocus` | HTML | Ordinary string attribute |
+| `maxLength` | `maxlength` | HTML | Ordinary string attribute |
+| `minLength` | `minlength` | HTML | Ordinary string attribute |
+| `crossOrigin` | `crossorigin` | HTML | Ordinary string attribute |
+| `srcSet` | `srcset` | HTML | Ordinary string attribute |
+| `acceptCharset` | `accept-charset` | HTML | Ordinary string attribute |
+| `httpEquiv` | `http-equiv` | HTML | Ordinary string attribute |
+| `encType` | `enctype` | HTML | Ordinary string attribute |
+| `noValidate` | `novalidate` | HTML | Ordinary string attribute |
+| `formNoValidate` | `formnovalidate` | HTML | Ordinary string attribute |
+| `colSpan` | `colspan` | HTML | Ordinary string attribute |
+| `rowSpan` | `rowspan` | HTML | Ordinary string attribute |
+| `referrerPolicy` | `referrerpolicy` | HTML | Ordinary string attribute |
+| `allowFullScreen` | `allowfullscreen` | HTML | Ordinary string attribute |
+| `autoPlay` | `autoplay` | HTML | Ordinary string attribute |
+| `contentEditable` | `contenteditable` | HTML, SVG | Ordinary string attribute |
+| `spellCheck` | `spellcheck` | HTML, SVG | Ordinary string attribute |
+| `accessKey` | `accesskey` | HTML, SVG | Ordinary string attribute |
+| `dangerouslySetInnerHTML` | `rawHtml` | HTML | Also rejected on custom elements |
+| `strokeWidth` | `stroke-width` | SVG | Also rejected on custom elements |
+| `fillRule` | `fill-rule` | SVG | Ordinary string attribute |
+| `clipRule` | `clip-rule` | SVG | Ordinary string attribute |
+| `strokeLinecap` | `stroke-linecap` | SVG | Ordinary string attribute |
+| `strokeLinejoin` | `stroke-linejoin` | SVG | Ordinary string attribute |
+| `stopColor` | `stop-color` | SVG | Ordinary string attribute |
+| `stopOpacity` | `stop-opacity` | SVG | Ordinary string attribute |
+| `xlinkHref` | `xlink:href` | SVG | Ordinary string attribute |
+| `xmlLang` | `xml:lang` | SVG | Ordinary string attribute |
+
+Ordinary aliases are not checked specially on custom elements, which accept otherwise valid attribute names as strings. The legacy spellings listed here remain rejected on custom elements, as do React-style `on[A-Z]` props. A legacy spelling is also rejected in other namespaces, but has no suggestion there when its target is invalid. Other mappings produce `ZR_PROP_DIALECT` only in the listed namespace; in other namespaces they fail with `ZR_ATTRIBUTE` as unsupported attribute names.
+
+## Runtime props are not attributes
+
+- `key` belongs to the description, and `children` supplies child content; neither is emitted as an attribute.
+- `ref` is a client runtime object prop. Native listeners use `on:<event>` as described above.
+- `modelValue`, `modelChecked`, `defaultValue`, and `defaultChecked` are form runtime props, not HTML attributes. See the [forms guide](./forms.mdx).
+- `rawHtml` supplies trusted renderer-owned markup, is mutually exclusive with children, and is unsupported in SVG. See [Components and JSX](./components-and-jsx.mdx#trusted-raw-html).
+- `style` uses a dedicated handler: CSS strings pass through, while plain object styles are validated.
+
+## Read a vocabulary error
+
+An unsupported attribute name or value reports `ZR_ATTRIBUTE`; an unsupported tag reports `ZR_TAG`. For static rendering, the message includes the tag or attribute, element path, and phase:
+
+~~~text
+ZR_TAG: madeuptag at root in static render
+ZR_ATTRIBUTE: input.enterkeyhint at root in static render
+~~~
+
+See [server rendering](./server-rendering.mdx#read-a-render-failure) for the full diagnostic format.

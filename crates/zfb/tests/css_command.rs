@@ -1209,6 +1209,92 @@ fn wind_audit_error_threshold_is_opt_in_and_includes_complete_report() {
 }
 
 #[test]
+fn wind_audit_group_summarizes_text_without_changing_json_or_exit_policy() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        concat!(
+            "const saved = 'rounded-lg';\n",
+            "export default () => <div class=\"panel-card panel-card rounded-lg rounded-lg hover:rounded-lg\" />;\n",
+        ),
+    );
+    fs::write(
+        temp.path().join("src/b.tsx"),
+        "export default () => <div class=\"panel-card rounded-lg\" />;\n",
+    )
+    .expect("write second audit source");
+
+    let grouped = run_wind_audit(temp.path(), &["--group"]);
+    let grouped_stdout = process_stdout(&grouped);
+    assert!(
+        grouped.status.success(),
+        "default exit policy should remain successful\nstdout:\n{grouped_stdout}\nstderr:\n{}",
+        process_stderr(&grouped)
+    );
+    assert!(
+        grouped_stdout.contains("panel-card x3, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("rounded-lg [ZW006 error] x3, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("hover:rounded-lg [ZW006 error] x1, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("rounded-lg [ZW006 auditInfo] x1, first at default/src:a.tsx:1:"),
+        "{grouped_stdout}"
+    );
+    assert_eq!(grouped_stdout.matches("panel-card x3,").count(), 1);
+
+    let default = run_wind_audit(temp.path(), &[]);
+    let default_stdout = process_stdout(&default);
+    assert!(default_stdout.contains("panel-card at default/src:a.tsx:2:"));
+    assert!(default_stdout.contains("panel-card at default/src:b.tsx:1:"));
+    assert_eq!(
+        default_stdout.matches("panel-card at default/src:").count(),
+        3
+    );
+    assert!(!default_stdout.contains("panel-card x3,"));
+
+    let strict = run_wind_audit(temp.path(), &["--group", "--fail-on", "error"]);
+    assert!(
+        !strict.status.success(),
+        "grouping must not hide error findings\nstdout:\n{}\nstderr:\n{}",
+        process_stdout(&strict),
+        process_stderr(&strict)
+    );
+    assert!(process_stderr(&strict).contains("--fail-on error"));
+
+    let strict_filtered = run_wind_audit(
+        temp.path(),
+        &["--group", "--fail-on", "error", "--severity", "warning"],
+    );
+    assert!(
+        !strict_filtered.status.success(),
+        "severity filtering must not change the grouped exit verdict\nstdout:\n{}\nstderr:\n{}",
+        process_stdout(&strict_filtered),
+        process_stderr(&strict_filtered)
+    );
+    assert!(process_stderr(&strict_filtered).contains("--fail-on error"));
+    let filtered_stdout = process_stdout(&strict_filtered);
+    // --severity is a minimum: warning keeps errors and hides auditInfo.
+    assert!(
+        filtered_stdout.contains("rounded-lg [ZW006 error] x3,"),
+        "{filtered_stdout}"
+    );
+    assert!(
+        !filtered_stdout.contains("rounded-lg [ZW006 auditInfo]"),
+        "{filtered_stdout}"
+    );
+
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    let grouped_json = run_wind_audit(temp.path(), &["--group", "--json"]);
+    assert_eq!(grouped_json.stdout, json.stdout);
+}
+
+#[test]
 fn owned_factory_class_prop_fails_audit_and_build() {
     let source = "import { h as make } from '@takazudo/zfb/zudo-react';\nexport default function Page() { return make('main', { class: 'rounded-missing-token' }); }\n";
     let temp = wind_audit_fixture(r#"{"wind":{"spec":1}}"#, source);

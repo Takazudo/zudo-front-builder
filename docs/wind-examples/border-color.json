@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "family": "border-color",
+  "examples": [
+    {
+      "id": "whole-and-axes",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-border-colors\"><div class=\"wind-demo-color-box border-4 border-ink p-2\">border-ink · all sides</div><div class=\"wind-demo-color-box border-4 border-x-accent/85 p-2\">border-x-accent/85 · left and right</div><div class=\"wind-demo-color-box border-4 border-y-focus p-2\">border-y-focus · top and bottom</div></div>",
+      "utilities": ["border-4", "border-ink", "border-x-accent/85", "border-y-focus", "p-2"],
+      "authoredClasses": ["wind-demo-border-colors", "wind-demo-color-box"],
+      "scaffoldCss": ".wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-color-box { margin: 0.7rem 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "edge-colors",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-border-colors\"><div class=\"wind-demo-color-box border-4 border-t-focus p-2\">top · focus</div><div class=\"wind-demo-color-box border-4 border-r-accent p-2\">right · accent</div><div class=\"wind-demo-color-box border-4 border-b-alert/90 p-2\">bottom · alert</div><div class=\"wind-demo-color-box border-4 border-l-ink p-2\">left · ink</div></div>",
+      "utilities": [
+        "border-4",
+        "border-b-alert/90",
+        "border-l-ink",
+        "border-r-accent",
+        "border-t-focus",
+        "p-2"
+      ],
+      "authoredClasses": ["wind-demo-border-colors", "wind-demo-color-box"],
+      "scaffoldCss": ".wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-color-box { margin: 0.7rem 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

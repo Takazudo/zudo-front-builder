@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "family": "sizing",
+  "examples": [
+    {
+      "id": "sizing-dimensions",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame w-64 flex flex-col gap-2\">\n    <div class=\"wind-demo-tile size-12\">size-12 square</div>\n    <div class=\"wind-demo-tile h-24 w-1/2\">h-24 and half width</div>\n    <div class=\"wind-demo-tile w-full\">w-full fills the frame</div>\n  </div>\n</div>",
+      "utilities": ["flex", "flex-col", "gap-2", "h-24", "size-12", "w-1/2", "w-64", "w-full"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "sizing-constraints",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Minimums keep a box from getting smaller; maximums cap it.</p>\n  <div class=\"wind-demo-frame w-64 flex flex-row gap-2\">\n    <div class=\"wind-demo-tile min-w-0 max-w-48 w-full\">min-w-0 allows this flex item to shrink; max-w-48 caps width</div>\n    <div class=\"wind-demo-tile min-h-24\">min-h-24 keeps this box at least 6rem tall</div>\n    <div class=\"wind-demo-tile h-48 max-h-32 overflow-hidden\">h-48 is capped by max-h-32</div>\n    <div class=\"wind-demo-tile max-w-64\">max-w-64 sets a maximum width</div>\n  </div>\n</div>",
+      "utilities": [
+        "flex",
+        "flex-row",
+        "gap-2",
+        "h-48",
+        "max-h-32",
+        "max-w-48",
+        "max-w-64",
+        "min-h-24",
+        "min-w-0",
+        "overflow-hidden",
+        "w-64",
+        "w-full"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "sizing-custom",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame w-full\">\n    <div class=\"wind-demo-tile size-card\">Named size token: card</div>\n    <div class=\"wind-demo-tile w-[18rem] max-w-reading\">Arbitrary width with a named maximum</div>\n  </div>\n</div>",
+      "utilities": ["max-w-reading", "size-card", "w-[18rem]", "w-full"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "sizes": {
+              "card": "5rem",
+              "reading": "20rem"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

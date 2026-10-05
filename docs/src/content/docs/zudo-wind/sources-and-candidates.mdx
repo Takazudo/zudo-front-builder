@@ -4,13 +4,209 @@ description: See how the source plan finds complete candidates and how explicit 
 sidebar_position: 4
 ---
 
+## Make candidates discoverable
+
+The docs shell uses Tailwind CSS; source discovery and generated rules here belong to zudo-wind. The extractor reads files without running the app, so keep each possible class complete in source:
+
+~~~tsx
+function ActionButton({ active }: { active: boolean }) {
+  const buttonClass = active
+    ? "bg-accent text-white"
+    : "bg-muted text-white";
+
+  return <button className={buttonClass}>Continue</button>;
+}
+~~~
+
+A finite conditional exposes both complete alternatives. A runtime prefix joined to a value does not form a candidate. Put a complete app-owned candidate that cannot appear in source in an owner-keyed <code>wind.safelist</code>.
+
+| Need | Use |
+| --- | --- |
+| App classes written in source | Build or standalone source plan |
+| Finite app candidate absent from scanned files | <code>wind.safelist</code> |
+| Classes shipped by a package | Versioned manifest in <code>wind.manifests</code> |
+| Paths that should stay out | <code>wind.sources.exclude</code> |
+| Package directory containing class-bearing files | <code>wind.sources.packageRoots</code> |
+
+Generate a package stylesheet and candidate manifest from the package directory:
+
+~~~sh
+zfb css --input src/styles.css --output dist/ui.css \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind manifest --producer ui --output dist/wind.json \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind audit --plan build
+~~~
+
+The consumer declares producer <code>ui</code> and supplies every token used by the manifest. This sample compiles two complete candidates with configured colors and spacing:
+
+{/* wind-preview: guide-sources-and-candidates/static-status "See complete candidates resolve" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-status\"><p class=\"bg-accent text-white p-2\">Ready</p><p class=\"bg-muted text-white p-2\">Queued</p></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #155eef;\n    --zw-color-muted: #475467;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-status {\n  max-width: 18rem;\n}\n\n.wind-demo-status p {\n  margin: 0 0 .5rem;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.text-white {\n  color: var(--zw-color-white);\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n.bg-muted {\n  background-color: var(--zw-color-muted);\n}\n"} title={"See complete candidates resolve"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#155eef",
+        "muted": "#475467",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-status": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "bg-muted",
+        "p-2",
+        "text-white"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-status { max-width: 18rem; }
+.wind-demo-status p { margin: 0 0 0.5rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+An explicit glob whose every match is excluded fails with ZW010. If some matches remain, zfb warns and scans those files. These records show the exact all-excluded and partial-exclusion source plans:
+
+{/* wind-preview: guide-sources-and-candidates/excluded-all "All matches excluded: error" */}
+
+```html
+<p class="p-4">Excluded source</p>
+```
+
+sample.html and excluded.html contain the HTML above. The configuration excludes excluded.html.
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source 'excluded.html' --no-auto-source --no-default-highlight-styles
+```
+
+Expected diagnostics: `ZW010 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-sources-and-candidates/excluded-partial "Some matches excluded: warning" */}
+
+```html
+<p class="p-4">Accepted source</p>
+```
+
+sample.html and excluded.html contain the HTML above. The configuration excludes excluded.html.
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source '*.html' --no-auto-source --no-default-highlight-styles
+```
+
+Expected diagnostics: `ZW010 (warning)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+The extractor does not execute application code or infer classes from runtime values.
+
+<Details title="Technical reference">
+
 ## The source plan
 
-The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
+The source plan determines every input scanned by build and dev. It can include project conventional roots, declared source roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
 
-`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources` package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
+`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources.roots`, package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
 
 Build and dev scan these case-sensitive extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`. The standalone `zfb css --source` path can also process `.html` and `.mjs`; these two extensions are not automatically scanned in build or dev. There is no public extension override.
+
+`wind.sources.roots` adds directories strictly below the declaring project or preset. They obey gitignore, standard skipped directories, and `wind.sources.exclude`; `packageRoots` remains a separate package traversal channel. Ordinary `.ts` and `.test.ts` files are candidates; `.d.ts` is always excluded and audit names `excluded **/*.d.ts (declaration files)`.
 
 ## What the extractor reads
 
@@ -28,6 +224,8 @@ const className = stateClasses[active ? 1 : 0];
 Both `text-muted` and `text-accent` are present as complete literals and can be extracted independently; whether they resolve as utilities still depends on configuration. Concatenating a prefix such as `bg-` with a runtime value does not form a candidate. A partial fragment such as `bg-` or `-500` is never expanded, so a dynamically constructed class is never covered. Use a literal map or an explicit candidate source for a finite set of possibilities.
 
 At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
+
+Configure `wind.sources.ignoreAttributes` for nonclass prop names such as `css`, `html`, `js`, `displayJs`, and `title`. It augments built-in `href`, `src`, `content`, `name`, `rel`, and `type`, excluding the entire prop value, even nested markup, interpolations, and class-helper calls. Class attributes elsewhere remain scanned. Speculative literals discard punctuation noise outside balanced arbitrary CSS forms but keep Unicode and punctuation inside those forms; embedded markup contributes its class attributes once. No query-selector or script-text heuristic is applied.
 
 ## Class positions and confidence
 
@@ -49,7 +247,9 @@ export const Link = ({ active }) => (
 );
 ```
 
-A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. Every other complete string, such as an unrelated constant, a test title, an import path, or a URL, is a lower-confidence literal. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. An eligible complete string in an unrelated constant or test title is a lower-confidence literal. Module specifiers and pure URL or relative-path literals are skipped rather than classified as candidates. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+
+`wind.sources.classHelpers` declares additional local class-list helper identifiers. Preset and project names merge deterministically without duplicates, alongside built-ins. Supported string/template, array, and object arguments contribute classes; arbitrary `cva` or `twMerge` semantics are not inferred. A value import of `h` from `@takazudo/zfb/zudo-react`, including a verified named-import alias, recognizes bare or quoted `class` and `className` keys only in its direct second-argument props object. Supported conditionals, templates, same-module constants, and configured helpers can feed those values. `className` recognition is for migration scanning only and does not make it renderer-valid. Arbitrary data objects, unrelated factories, type-only imports, shadowed bindings, labels, ternaries in unrelated positions, and props objects outside the second argument remain lower confidence. Invalid recognized candidates keep class-position errors in normal build and `wind audit --fail-on error`.
 
 ## Adding explicit candidates
 
@@ -107,3 +307,5 @@ The source index tracks which owners supplied each candidate. Additions, removal
 - [Utility grammar](./utility-grammar.mdx)
 - [Diagnostics and tools](./diagnostics-and-tools.mdx)
 - [Utility reference](./utilities/index.mdx)
+
+</Details>

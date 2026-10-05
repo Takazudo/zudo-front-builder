@@ -1,0 +1,45 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #a23862;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-decoration {
+  max-width: 34rem;
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: .8rem;
+  line-height: 1.8;
+}
+
+.wind-demo-decoration a {
+  color: inherit;
+}
+.decoration-accent {
+  text-decoration-color: var(--zw-color-accent);
+}
+.decoration-current {
+  text-decoration-color: currentColor;
+}
+.decoration-transparent {
+  text-decoration-color: transparent;
+}
+.decoration-2 {
+  text-decoration-thickness: 2px;
+}
+.decoration-dashed {
+  text-decoration-style: dashed;
+}
+.decoration-dotted {
+  text-decoration-style: dotted;
+}
+.decoration-double {
+  text-decoration-style: double;
+}
+.decoration-solid {
+  text-decoration-style: solid;
+}
+.decoration-wavy {
+  text-decoration-style: wavy;
+}

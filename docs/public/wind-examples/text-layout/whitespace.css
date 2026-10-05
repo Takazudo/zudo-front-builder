@@ -1,0 +1,54 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-whitespace {
+  max-width: 24rem;
+  color: #223247;
+}
+
+.wind-demo-whitespace p {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  margin: 0;
+  padding: .4rem 0;
+  border-bottom: 1px solid #d8e0e8;
+}
+
+.wind-demo-whitespace p:last-child {
+  border-bottom: 0;
+}
+
+.wind-demo-label {
+  flex: 0 0 5.5rem;
+  color: #5d6c7c;
+  font-size: .75rem;
+}
+
+.wind-demo-sample {
+  min-width: 0;
+  flex: 1;
+  border-left: 2px solid #b7c5d4;
+  padding-left: .5rem;
+}
+.whitespace-break-spaces {
+  white-space: break-spaces;
+}
+.whitespace-normal {
+  white-space: normal;
+}
+.whitespace-nowrap {
+  white-space: nowrap;
+}
+.whitespace-pre {
+  white-space: pre;
+}
+.whitespace-pre-line {
+  white-space: pre-line;
+}
+.whitespace-pre-wrap {
+  white-space: pre-wrap;
+}

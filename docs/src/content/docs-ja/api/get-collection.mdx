@@ -43,7 +43,7 @@ export default function FeaturedPost() {
 - `data: T` — パース済みのフロントマター。ジェネリックパラメータで型付けされます。
 - `body: string` — フロントマターを除いた生のマークダウン本文。
 - `module_specifier: string` — コンパイル済みモジュールをルックアップするために、レンダラが内部的に使用する安定したブリッジキーです。`.md` / `.mdx` エントリは `mdx://<collection>/<slug>#<hash>`（`body` にマークダウン本文が入ります）、`.tsx` エントリは `tsx://<collection>/<slug>#<hash>`（`body` は空 — 別個のマークダウン本文がないため）になります。末尾のハッシュはコンパイル済み JSX ソースから導出されます。独自のブリッジを構築する場合は、この specifier をカスタムの `Content` ルックアップに渡してください。
-- `Content: (props: ContentProps) => ContentElement` — このエントリのレンダリング可能なコンポーネント。利用可能な場合はレンダラブリッジ経由でレンダリングし、ブリッジが存在しないテストや dev のコンテキストでは `<pre data-zfb-content-fallback>` ブロックにフォールバックします。
+- `Content: (props: ContentProps) => ContentElement` — このエントリのレンダリング可能なコンポーネント。利用可能な場合はレンダラブリッジ経由でレンダリングし、ブリッジが存在しないテストや dev のコンテキストでは `<pre data-zfb-content-fallback>` ブロックにフォールバックします。プロダクションビルドでも、コンパイル済みの `.md` / `.mdx` モジュールをブリッジ用にパースできない場合は同じフォールバックになり、zfb は警告を出してブリッジへの登録をスキップします。[`strictContentBridge`](./define-config.mdx) を `true` にするか `--strict-content-bridge` を渡すと、影響を受けるエントリ名を示してビルドを失敗させます。build 専用の設定であり、`zfb dev` は引き続き警告を出してフォールバックを配信します。
 
 ## ContentProps
 
