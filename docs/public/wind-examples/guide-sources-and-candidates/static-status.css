@@ -1,0 +1,31 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #155eef;
+    --zw-color-muted: #475467;
+    --zw-color-white: #fff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-status {
+  max-width: 18rem;
+}
+
+.wind-demo-status p {
+  margin: 0 0 .5rem;
+}
+.p-2 {
+  padding-top: 0.5rem;
+  padding-right: 0.5rem;
+  padding-bottom: 0.5rem;
+  padding-left: 0.5rem;
+}
+.text-white {
+  color: var(--zw-color-white);
+}
+.bg-accent {
+  background-color: var(--zw-color-accent);
+}
+.bg-muted {
+  background-color: var(--zw-color-muted);
+}

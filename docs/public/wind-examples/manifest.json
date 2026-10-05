@@ -730,6 +730,214 @@
       "cssSha256": "4a91cf45ddfc2891321cf474a16e070c25a5befd7ada089e6464df1158e5cf00"
     },
     {
+      "family": "guide-cascade-and-reset",
+      "id": "reset-none",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "f248c3915581eebf3376c554243ab49385086417fbccc76a13566730b2bc7c44",
+      "headSha256": "317caa7dbe4e06d7684fbb76a1d866eaa7159dc5853028a23e718d4ea1558b2b",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "d3917520423881fdfd8e41ea84b783edb9e3fcbe209c7925bb143d6ba642a295",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/reset-none.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/reset-none.html",
+      "cssSha256": "dd089175219656167d8cdd57db9fa42d9c4b516a5155c7edf0e09b7f946099f1"
+    },
+    {
+      "family": "guide-cascade-and-reset",
+      "id": "reset-minimal",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "f248c3915581eebf3376c554243ab49385086417fbccc76a13566730b2bc7c44",
+      "headSha256": "317caa7dbe4e06d7684fbb76a1d866eaa7159dc5853028a23e718d4ea1558b2b",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "619c85c2b90d3734b14d383d708d2a231bea3a85ce0e4d9357957613edb622ef",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/reset-minimal.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/reset-minimal.html",
+      "cssSha256": "d12cf181b54419ed031ddd1293d6be33911f00647f701bf58a778a5c78a66e7e"
+    },
+    {
+      "family": "guide-cascade-and-reset",
+      "id": "reset-owned",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "f248c3915581eebf3376c554243ab49385086417fbccc76a13566730b2bc7c44",
+      "headSha256": "317caa7dbe4e06d7684fbb76a1d866eaa7159dc5853028a23e718d4ea1558b2b",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "85b98a49588ac4565dd0a7d5ddb717d5d040cf497bd5ce603a348e5d30cc6254",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/reset-owned.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/reset-owned.html",
+      "cssSha256": "c78208776be030eb4962a6bf2a64b260369a1ee6104c30c64f4d836e302dae8f"
+    },
+    {
+      "family": "guide-cascade-and-reset",
+      "id": "layered-authored",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "ecbdaa5e5513df5fe690f3fe3ed8b0bf34f610e3a4b5477e268214d5de70179f",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "32640fc8677e4fb29ba0ef303af30c1f5b867c6700668c8b37ad5040776a244d",
+      "configSha256": "64761bc833417acb623e9b2634bd7b93b0319f5d868fbed667f7570ec1618bf8",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/layered-authored.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/layered-authored.html",
+      "cssSha256": "321732d5f5e2f7a994d7f7399f94d6f9b7198ae97aea5995ce83c1badce15971"
+    },
+    {
+      "family": "guide-cascade-and-reset",
+      "id": "after-authored",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "f7c63f31e06b54833c728a44bee459cee486e070cb2958de4619b6364ccafd38",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "4b922223a71afcfba1325506894bf3b623b59396807b590c83c649cb5e73f220",
+      "configSha256": "64761bc833417acb623e9b2634bd7b93b0319f5d868fbed667f7570ec1618bf8",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/after-authored.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/after-authored.html",
+      "cssSha256": "1ee8e459a0f0ce312b060952aca4290dde026701c66c8aed146399730d679e86"
+    },
+    {
+      "family": "guide-cascade-and-reset",
+      "id": "before-authored",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "f7c63f31e06b54833c728a44bee459cee486e070cb2958de4619b6364ccafd38",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "4b922223a71afcfba1325506894bf3b623b59396807b590c83c649cb5e73f220",
+      "configSha256": "1081706d596e8a389d27f379f79d185770d2c7e9aabe1da198486a296c3798ff",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-cascade-and-reset/before-authored.css",
+      "htmlPath": "wind-examples/guide-cascade-and-reset/before-authored.html",
+      "cssSha256": "ebdb1026092b77df8b98ddcdd124476ef7cc84f192ed0a2510ba7b1610645f2d"
+    },
+    {
+      "family": "guide-coming-from-tailwind",
+      "id": "token-migration",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "0a0c3a7a27d2bab6ab112d01ed141aaeef167dd4745b3b6e08805ffa2c20bf7f",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "a17f670ce79e3cb9167c6819a325e364d7cf5cc07c39e9f7629c0932eb2ea3ef",
+      "configSha256": "d1381357e6205776fb2da2705ffb0f6cf7eac831809522c98831db7ac144c620",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-coming-from-tailwind/token-migration.css",
+      "htmlPath": "wind-examples/guide-coming-from-tailwind/token-migration.html",
+      "cssSha256": "e72a6f8a266b801712300cc0de80e4214c2f647995899eac5c4fc25715e271bc"
+    },
+    {
+      "family": "guide-coming-from-tailwind",
+      "id": "leftover-directive",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "a904af91b9850fe3c47aff427c58aacea1e8db6ae8e833c36f9093981e86f509",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "0e5844ec75de2fb4a76097b26bb624bf8f9d9cf59f6d947855b743dd25f920fb",
+      "configSha256": "9cdb826df15ee8239d68001e9ec51a12442ffa4e486bc60cd0c307930e50d30f",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW009",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-coming-from-tailwind",
+      "id": "tailwind-import",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "a904af91b9850fe3c47aff427c58aacea1e8db6ae8e833c36f9093981e86f509",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "5311e5fa6036d48207757efdbad4b7e6f8b54fdb730f5d4f8884838578c90e4f",
+      "configSha256": "9cdb826df15ee8239d68001e9ec51a12442ffa4e486bc60cd0c307930e50d30f",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW009",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-coming-from-tailwind",
+      "id": "unsupported-utility",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "8dc9e585d8fb43de7f979e33dbfad9be368be43bbe30d788b1b362f646b69c3c",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "700d3bd773700a902516eb3a58ddadfba96e74df6e09a65e752761d0148ea4fd",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "family": "guide-configuration",
+      "id": "configured-panel",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "ff848847034acde7b64a8d65d36a066b3621d8b1e8c4e386d8a5a87ce4304eb7",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "a17f670ce79e3cb9167c6819a325e364d7cf5cc07c39e9f7629c0932eb2ea3ef",
+      "configSha256": "a11a3b3f4db9e30c03d6e5a8b7c93548a9c1ce85e6f839840ae2ad241d665412",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-configuration/configured-panel.css",
+      "htmlPath": "wind-examples/guide-configuration/configured-panel.html",
+      "cssSha256": "842a9a4a057d304d0eed1b88b84530a5d5f18d462c6c5c9fdc8bb78b512524f3"
+    },
+    {
+      "family": "guide-diagnostics-and-tools",
+      "id": "source-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "8dc9e585d8fb43de7f979e33dbfad9be368be43bbe30d788b1b362f646b69c3c",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "700d3bd773700a902516eb3a58ddadfba96e74df6e09a65e752761d0148ea4fd",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "family": "guide-diagnostics-and-tools",
+      "id": "source-strict",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "8dc9e585d8fb43de7f979e33dbfad9be368be43bbe30d788b1b362f646b69c3c",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "a174f3f215171c8a67820736391fe0685be0cf09b04ca85ef36601c4e433c0d1",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "family": "guide-diagnostics-and-tools",
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "2770ccc60d9a6d566f423db34011417de81f329eb44b56439b389264fca7b077",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "37533e43aca0b12e4246701359767d93ee08c12c57d0d9f7774706cf208b3376",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    },
+    {
       "family": "guide-overview",
       "id": "quickstart",
       "kind": "positive",
@@ -742,6 +950,54 @@
       "cssPath": "wind-examples/guide-overview/quickstart.css",
       "htmlPath": "wind-examples/guide-overview/quickstart.html",
       "cssSha256": "0f12387c4dba6b646098faef72eddb07df2ff32374bac12979cf436c128b19c4"
+    },
+    {
+      "family": "guide-sources-and-candidates",
+      "id": "static-status",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "0abd5c5dfc01755da3140f753aa8aa2e97da15cce651510b08d151b49660d030",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "553c410a67d24fc02fb36b1a3e3fc4084e3dc973bd7b5c0258cfc2b62bb2ce6d",
+      "configSha256": "e488f9eb5ba21c01b5ea7fc6590ca751fd3ef4e5cc8f31e14699b850d08b6fcd",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/guide-sources-and-candidates/static-status.css",
+      "htmlPath": "wind-examples/guide-sources-and-candidates/static-status.html",
+      "cssSha256": "b9c12d1dfe8a1f0a0f0ada273fd205303aad8f7a4a81a46e7228e483a47691ff"
+    },
+    {
+      "family": "guide-sources-and-candidates",
+      "id": "excluded-all",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "c215a2224c0cdb4d4f1999c86cdbb560c5bd708b27b2095b6f802f7bba06ed6d",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "d0ce720d6379fc27d45406b347cc66022e0dcee2aa5100ea0187da52b9e1264a",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW010",
+          "severity": "error"
+        }
+      ],
+      "sourceExclusion": "all"
+    },
+    {
+      "family": "guide-sources-and-candidates",
+      "id": "excluded-partial",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "htmlSha256": "523e32408296374f7c63d50306aa0b108c829aef338df18641c51d8c5cd379d6",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "configSha256": "d0ce720d6379fc27d45406b347cc66022e0dcee2aa5100ea0187da52b9e1264a",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW010",
+          "severity": "warning"
+        }
+      ],
+      "sourceExclusion": "partial"
     },
     {
       "family": "guide-tokens",

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-configuration",
+  "examples": [
+    {
+      "id": "configured-panel",
+      "kind": "positive",
+      "html": "<article class=\"wind-demo-card bg-panel p-4 sm:p-8\"><h2>Workspace panel</h2><p>A token and responsive spacing compiled by zudo-wind.</p></article>",
+      "utilities": ["bg-panel", "p-4", "sm:p-8"],
+      "authoredClasses": ["wind-demo-card"],
+      "scaffoldCss": ".wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }\n.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }\n.wind-demo-card p { margin: 0; }",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem",
+            "colors": {
+              "panel": "#eaf2ff"
+            }
+          },
+          "breakpoints": {
+            "sm": {
+              "minWidthPx": 640
+            }
+          }
+        }
+      }
+    }
+  ]
+}

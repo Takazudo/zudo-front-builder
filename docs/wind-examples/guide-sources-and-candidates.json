@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-sources-and-candidates",
+  "examples": [
+    {
+      "id": "static-status",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-status\"><p class=\"bg-accent text-white p-2\">Ready</p><p class=\"bg-muted text-white p-2\">Queued</p></div>",
+      "utilities": ["bg-accent", "bg-muted", "p-2", "text-white"],
+      "authoredClasses": ["wind-demo-status"],
+      "scaffoldCss": ".wind-demo-status { max-width: 18rem; }\n.wind-demo-status p { margin: 0 0 0.5rem; }",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem",
+            "colors": {
+              "accent": "#155eef",
+              "muted": "#475467",
+              "white": "#ffffff"
+            }
+          },
+          "breakpoints": {}
+        }
+      }
+    },
+    {
+      "id": "excluded-all",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "sourceExclusion": "all",
+      "html": "<p class=\"p-4\">Excluded source</p>",
+      "utilities": ["p-4"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW010",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "excluded-partial",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "sourceExclusion": "partial",
+      "html": "<p class=\"p-4\">Accepted source</p>",
+      "utilities": ["p-4"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW010",
+          "severity": "warning"
+        }
+      ]
+    }
+  ]
+}

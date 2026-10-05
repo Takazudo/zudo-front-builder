@@ -1,0 +1,126 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    border-style: solid;
+    border-color: currentColor;
+  }
+  html {
+    line-height: 1.5;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+  }
+  body {
+    line-height: inherit;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+  b,
+  strong {
+    font-weight: bolder;
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 1em;
+  }
+  ol,
+  ul,
+  menu {
+    list-style: none;
+  }
+  button,
+  input,
+  optgroup,
+  select,
+  textarea {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+  button,
+  input:where([type="button"], [type="reset"], [type="submit"]) {
+    background-color: transparent;
+    background-image: none;
+  }
+  textarea {
+    resize: vertical;
+  }
+  img,
+  svg,
+  video,
+  canvas,
+  audio,
+  iframe,
+  embed,
+  object {
+    display: block;
+    vertical-align: middle;
+  }
+  img,
+  video {
+    max-width: 100%;
+    height: auto;
+  }
+  table {
+    border-collapse: collapse;
+    border-color: inherit;
+    text-indent: 0;
+  }
+  summary {
+    display: list-item;
+  }
+  hr {
+    height: 0;
+    border-top-width: 1px;
+  }
+}
+@layer zw-tokens {
+  :root {
+    --zw-color-panel: #eaf2ff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-card {
+  max-width: 24rem;
+  border: 1px solid #b6c4d2;
+  border-radius: .5rem;
+  color: #172b4d;
+}
+
+.wind-demo-card h2 {
+  margin: 0 0 .5rem;
+  font-size: 1.1rem;
+}
+
+.wind-demo-card p {
+  margin: 0;
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}
+.bg-panel {
+  background-color: var(--zw-color-panel);
+}

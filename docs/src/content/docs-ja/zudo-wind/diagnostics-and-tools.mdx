@@ -4,6 +4,154 @@ description: 候補の結果、ソース位置付きの診断、監査、単独�
 sidebar_position: 8
 ---
 
+## 指摘を切り分ける
+
+ドキュメントのシェルは引き続き Tailwind CSS を使います。このページで説明する CLI 診断は zudo-wind が出力します。
+
+<code>zfb build</code> と <code>zfb dev</code> がコンパイルするファイルや仮想ソースまで監査するには、build プランを指定します。移行チェックでは失敗のしきい値も指定します。
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts bg-panel
+~~~
+
+監査は既定で情報を報告します。エラーが報告されても、<code>--fail-on error</code> または <code>--fail-on warning</code> を指定しなければ終了ステータスは変わりません。<code>explain</code> は候補の解析、トークン検索、セレクタ、順序を示します。
+
+ZW014 の重大度は候補の発生元で変わります。クラス属性内の外部ユーティリティは既定で警告になり、strict モードではその位置でエラーになります。無関係なリテラル内の同じ文字列は監査情報のままです。セーフリストやマニフェストの項目は常に厳格に検査されます。
+
+~~~ts
+wind: {
+  strict: true
+}
+~~~
+
+次の型付きソースレコードは、警告からエラーへの変化を示します。
+
+{/* wind-preview: guide-diagnostics-and-tools/source-warning "strict でないソースクラス: 警告" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+期待される診断: `ZW014 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-diagnostics-and-tools/source-strict "strict なソースクラス: エラー" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+期待される診断: `ZW014 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+トークンや余白単位を設定するか、手書き CSS が所有する完全な表記を予約します。たとえば <code>p-4</code> には <code>tokens.spacingUnit</code> が必要です。<code>text-link</code> には一致する色またはフォントサイズのトークンが必要です。
+
+{/* wind-preview: guide-diagnostics-and-tools/missing-spacing-unit "余白単位の不足: ZW006" */}
+
+```html
+<div class="p-4">p-4 requires tokens.spacingUnit</div>
+```
+
+期待される診断: `ZW006 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {},
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+<code>site-header</code> のような名前はユーティリティの基部から始まらないため予約不要です。診断レコードはソースと期待する重大度を表示し、実行可能なプレビューにはしません。
+
+<Details title="技術リファレンス">
+
 ## 候補の 4 つの結果
 
 候補には次の 4 種類の結果があります。
@@ -98,3 +246,5 @@ ZW014 は既定では警告なので、移行中のプロジェクトはビル�
 - [カスケードとリセット](./cascade-and-reset.mdx)
 - [Tailwind からの移行](./coming-from-tailwind.mdx)
 - [CLI リファレンス](../api/cli.mdx)
+
+</Details>

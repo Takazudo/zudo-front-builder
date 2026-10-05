@@ -4,6 +4,230 @@ description: Tailwind CSS の構成要素を、zudo-wind のトークン、バ�
 sidebar_position: 9
 ---
 
+## 短い手順で移行する
+
+このガイドを載せるドキュメントサイトは、独自の chrome に引き続き Tailwind を使います。この手順とコンパイル済みサンプルが説明するのは、利用者のプロジェクトで使う zudo-wind v1 です。
+
+1. エントリーのスタイルシートと import 先から Tailwind の import とエンジンディレクティブを削除します。通常の手書き CSS と <code>@layer</code> は残します。
+2. エンジンの値をトップレベルの <code>wind</code> キーに移します。<code>spec</code> を設定し、リセットを選び、候補が使うトークンとブレークポイントを設定します。
+3. 有限の候補はソースに残します。ソースにないアプリ候補は <code>safelist</code> に、パッケージ候補はバージョン付きマニフェストに置きます。
+4. build プランを監査します。対応候補を直し、手書き名を完全一致で予約し、strict モードの前に外部ユーティリティを置き換えるか実装します。
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    strict: false,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } }
+  }
+});
+~~~
+
+参照するカスタムプロパティは手書き CSS で宣言します。続けて完全な候補を監査、説明します。
+
+~~~sh
+zfb wind audit --plan build
+zfb wind explain --config zfb.config.ts bg-panel
+zfb wind audit --plan build --fail-on warning
+~~~
+
+プレビューではコンパイル済み zudo-wind ルールがトークンと数値余白を使います。
+
+{/* wind-preview: guide-coming-from-tailwind/token-migration "テーマ値を wind.tokens に移す" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<article class=\"wind-demo-card bg-panel p-4\"><h2>Workspace panel</h2><p>Token-backed color and numeric spacing.</p></article>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-reset {\n  *,\n  *::before,\n  *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n    border-width: 0;\n    border-style: solid;\n    border-color: currentColor;\n  }\n  html {\n    line-height: 1.5;\n    font-family: ui-sans-serif, system-ui, sans-serif;\n    -webkit-text-size-adjust: 100%;\n    tab-size: 4;\n  }\n  body {\n    line-height: inherit;\n  }\n  h1,\n  h2,\n  h3,\n  h4,\n  h5,\n  h6 {\n    font-size: inherit;\n    font-weight: inherit;\n  }\n  a {\n    color: inherit;\n    text-decoration: inherit;\n  }\n  b,\n  strong {\n    font-weight: bolder;\n  }\n  code,\n  kbd,\n  samp,\n  pre {\n    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n    font-size: 1em;\n  }\n  ol,\n  ul,\n  menu {\n    list-style: none;\n  }\n  button,\n  input,\n  optgroup,\n  select,\n  textarea {\n    font: inherit;\n    letter-spacing: inherit;\n    color: inherit;\n  }\n  button,\n  input:where([type=\"button\"], [type=\"reset\"], [type=\"submit\"]) {\n    background-color: transparent;\n    background-image: none;\n  }\n  textarea {\n    resize: vertical;\n  }\n  img,\n  svg,\n  video,\n  canvas,\n  audio,\n  iframe,\n  embed,\n  object {\n    display: block;\n    vertical-align: middle;\n  }\n  img,\n  video {\n    max-width: 100%;\n    height: auto;\n  }\n  table {\n    border-collapse: collapse;\n    border-color: inherit;\n    text-indent: 0;\n  }\n  summary {\n    display: list-item;\n  }\n  hr {\n    height: 0;\n    border-top-width: 1px;\n  }\n}\n@layer zw-tokens {\n  :root {\n    --zw-color-panel: #eaf2ff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-card {\n  max-width: 24rem;\n  border: 1px solid #b6c4d2;\n  border-radius: .5rem;\n  color: #172b4d;\n}\n\n.wind-demo-card h2 {\n  margin: 0 0 .5rem;\n  font-size: 1.1rem;\n}\n\n.wind-demo-card p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n"} title={"テーマ値を wind.tokens に移す"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "owned-v1",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#eaf2ff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }
+.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.wind-demo-card p { margin: 0; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Tailwind ディレクティブが残っていると、<code>wind</code> が <code>false</code> でも ZW009 で失敗します。この型付きフィクスチャは拒否されるエントリースタイルシートを示します。
+
+{/* wind-preview: guide-coming-from-tailwind/leftover-directive "Tailwind ディレクティブの残存: ZW009" */}
+
+```css
+@tailwind utilities;
+```
+
+```html
+<p>Legacy entry check</p>
+```
+
+期待される診断: `ZW009 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": []
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Tailwind の import も同じスタイルシート検査で ZW009 になります。
+
+{/* wind-preview: guide-coming-from-tailwind/tailwind-import "Tailwind の import: ZW009" */}
+
+```css
+@import "tailwindcss/utilities";
+```
+
+```html
+<p>Legacy entry check</p>
+```
+
+期待される診断: `ZW009 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": []
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+旧来の <code>line-clamp-2</code> クラスは未対応で、ZW014 になります。失われるスタイルを調べる間は警告のままにするか、strict モードでクラス位置のエラーにします。
+
+{/* wind-preview: guide-coming-from-tailwind/unsupported-utility "クラス位置の未対応ユーティリティ: ZW014" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+期待される診断: `ZW014 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+移行できないセレクタや宣言は手書き CSS または CSS Module に記述します。以下の詳細にはリセットの正確な差、詳細度、配置の同点、未対応構文の代替策を残します。
+
+<Details title="技術リファレンス">
+
 ## 主な変更点
 
 - zudo-wind はバージョン管理されたユーティリティ言語です。v1 は `spec: 1` で識別され、見慣れた表記でも別のエンジンとの互換性は保証しません。
@@ -342,3 +566,5 @@ export default defineConfig({
 - 実行時に組み立てる候補や正規表現のセーフリストはありません。有限のリテラルマップ、所有者キー付きセーフリスト、厳格なバージョン付きパッケージマニフェストを使います。
 
 v1 カタログは[ユーティリティリファレンス](./utilities/index.mdx)、候補と移行エラーの調査は[診断とツール](./diagnostics-and-tools.mdx)を参照してください。
+
+</Details>
