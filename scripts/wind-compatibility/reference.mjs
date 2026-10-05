@@ -60,6 +60,17 @@ export function validateMetadata(meta, requested) {
     sha1: meta.dist.shasum ?? null, source: { repository: meta.repository?.url ?? null, packageGitSha: meta.gitHead ?? null,
       status: meta.gitHead ? 'registry-gitHead-unverified-artifact-link' : 'unknown' } };
 }
+export function canonicalBootstrapCandidate(bootstrap, resolved) {
+  if (resolved.package !== bootstrap.package || resolved.version !== bootstrap.version ||
+      resolved.integrity !== bootstrap.integrity || resolved.tarball !== bootstrap.tarball ||
+      resolved.sha1 !== bootstrap.sha1 ||
+      resolved.source?.repository !== bootstrap.source.repository) {
+    throw Error('Bootstrap registry/catalog metadata does not match pinned package, artifact or source identity');
+  }
+  return { package: bootstrap.package, version: bootstrap.version, integrity: bootstrap.integrity,
+    tarball: bootstrap.tarball, sha1: bootstrap.sha1,
+    artifactSha256: bootstrap.verifiedAcquisition.tarballSha256, source: bootstrap.source };
+}
 export function resolveCatalog(catalog, requested, channel = 'stable') {
   if (!['stable', 'prerelease'].includes(channel)) throw Error('Unknown channel');
   if (!Array.isArray(catalog.pages) || !catalog.pages.length || catalog.complete !== true) throw Error('Incomplete catalog');

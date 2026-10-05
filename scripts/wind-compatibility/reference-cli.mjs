@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
-import { acquire, fromRoot, identity, makePlan, paths, probe, readJson, requireChannel, resolveCatalog, validateMetadata, validatePlan } from './reference.mjs';
+import { pathToFileURL } from 'node:url';
+import { acquire, canonicalBootstrapCandidate, fromRoot, identity, makePlan, paths, probe, readJson, requireChannel, resolveCatalog, validateMetadata, validatePlan } from './reference.mjs';
 import { assessUpstream } from './upstream.mjs';
 
 function options(argv) {
@@ -11,16 +12,20 @@ function options(argv) {
   }
   return result;
 }
-async function metadata(version, opts, bootstrap) {
+export async function metadata(version, opts, bootstrap, fetcher = fetch) {
   requireChannel(version, opts.channel ?? 'stable');
-  if (opts.catalog) return resolveCatalog(await readJson(resolve(opts.catalog)), version, opts.channel ?? 'stable');
-  if (version === bootstrap.version && !opts.live) return {
+  if (version === bootstrap.version && !opts.live && !opts.catalog) return canonicalBootstrapCandidate(bootstrap, {
     package: bootstrap.package, version, integrity: bootstrap.integrity, tarball: bootstrap.tarball, sha1: bootstrap.sha1,
-    artifactSha256: bootstrap.verifiedAcquisition.tarballSha256, source: bootstrap.source,
-  };
-  const response = await fetch(`https://registry.npmjs.org/tailwindcss/${encodeURIComponent(version)}`);
-  if (!response.ok) throw Error(`Registry metadata HTTP ${response.status}`);
-  return validateMetadata(await response.json(), version);
+    source: bootstrap.source,
+  });
+  let resolved;
+  if (opts.catalog) resolved = resolveCatalog(await readJson(resolve(opts.catalog)), version, opts.channel ?? 'stable');
+  else {
+    const response = await fetcher(`https://registry.npmjs.org/tailwindcss/${encodeURIComponent(version)}`);
+    if (!response.ok) throw Error(`Registry metadata HTTP ${response.status}`);
+    resolved = validateMetadata(await response.json(), version);
+  }
+  return version === bootstrap.version ? canonicalBootstrapCandidate(bootstrap, resolved) : resolved;
 }
 async function pinSource(candidate, bootstrap) {
   if (candidate.version === bootstrap.version) return candidate;
@@ -72,4 +77,6 @@ async function main() {
     throw Error('Usage: reference-cli.mjs plan [--candidate exact] [--channel stable|prerelease] [--catalog complete.json] [--live yes] | assess --plan plan.json --cache /outside/checkout | acquire --candidate exact --cache /outside/checkout [--catalog complete.json] [--live yes] | probe --cache /outside/checkout --candidates block,hidden');
   }
 }
-main().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+}

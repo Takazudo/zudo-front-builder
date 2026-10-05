@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { acquire, assessBundle, compareVersion, digest, exactVersion, fromRoot, identity, makePlan, probe, requireChannel, resolveCatalog, validatePlan } from '../../../scripts/wind-compatibility/reference.mjs';
+import { metadata } from '../../../scripts/wind-compatibility/reference-cli.mjs';
 
 const meta = version => ({ name: 'tailwindcss', version,
   dist: { integrity: 'sha512-AAAAAAAA', tarball: `https://registry.npmjs.org/tailwindcss/-/tailwindcss-${version}.tgz` } });
@@ -132,4 +133,40 @@ test('all CLI acquisition entry points enforce exact channel before network acce
     assert.equal(run.status, 1);
     assert.match(run.stderr, /Channel stable does not match exact version/);
   }
+});
+
+test('live and catalog bootstrap resolution normalize only matching exact metadata', async () => {
+  const bootstrap = JSON.parse(await readFile(fromRoot('tests/wind-compatibility/reference/bootstrap.json'), 'utf8'));
+  const registry = { name: 'tailwindcss', version: bootstrap.version,
+    dist: { integrity: bootstrap.integrity, shasum: bootstrap.sha1, tarball: bootstrap.tarball },
+    repository: { url: bootstrap.source.repository } };
+  const dir = await mkdtemp(join(tmpdir(), 'wind-bootstrap-'));
+  const catalogPath = join(dir, 'catalog.json');
+  const live = async value => ({ ok: true, json: async () => value });
+  try {
+    await writeFile(catalogPath, JSON.stringify(catalog(registry)));
+    const fromLive = await metadata('4.3.2', { live: 'yes' }, bootstrap, async () => live(registry));
+    const fromCatalog = await metadata('4.3.2', { catalog: catalogPath }, bootstrap);
+    assert.deepEqual(fromLive, fromCatalog);
+    const cli = spawnSync(process.execPath, [fromRoot('scripts/wind-compatibility/reference-cli.mjs'), 'plan', '--catalog', catalogPath],
+      { cwd: fromRoot('.'), encoding: 'utf8' });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.deepEqual(JSON.parse(cli.stdout).candidate, fromCatalog);
+    assert.equal(fromLive.artifactSha256, bootstrap.verifiedAcquisition.tarballSha256);
+    assert.equal(fromLive.source.observedTagCommit, bootstrap.source.observedTagCommit);
+    for (const resolved of [fromLive, fromCatalog]) {
+      const replay = makePlan({ candidate: resolved, state, hashes, channel: 'stable', toolchain: {} });
+      assert.equal(validatePlan(replay, hashes, state, fromCatalog, {}).planId, replay.planId);
+    }
+    for (const changed of [
+      { ...registry, dist: { ...registry.dist, integrity: 'sha512-wrong' } },
+      { ...registry, dist: { ...registry.dist, tarball: 'https://registry.npmjs.org/tailwindcss/-/wrong.tgz' } },
+      { ...registry, dist: { ...registry.dist, shasum: '0'.repeat(40) } },
+      { ...registry, repository: undefined },
+    ]) {
+      await assert.rejects(metadata('4.3.2', { live: 'yes' }, bootstrap, async () => live(changed)), /Bootstrap registry\/catalog metadata/);
+      await writeFile(catalogPath, JSON.stringify(catalog(changed)));
+      await assert.rejects(metadata('4.3.2', { catalog: catalogPath }, bootstrap), /Bootstrap registry\/catalog metadata/);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
