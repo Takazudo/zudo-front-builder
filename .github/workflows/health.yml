@@ -355,7 +355,24 @@ jobs:
       # integration tests run below.
       - run: cargo build --workspace --all-targets
 
+      - name: Temporary focused registration tests for issue 3648
+        id: package_graph_registration
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p target/package-graph-evidence
+          cargo nextest run --workspace --profile ci -E 'package(zfb-islands) and test(scanner::registration::tests)' 2>&1 | tee target/package-graph-evidence/registration-tests.log
+          if [ -f target/nextest/ci/junit.xml ]; then
+            cp target/nextest/ci/junit.xml target/package-graph-evidence/registration-junit.xml
+          fi
+
+      # Temporary profiling must not prevent the focused or workspace tests
+      # from running. The final evidence gate below still makes a failed probe
+      # fail Health; continue-on-error is not permission to merge the timeout.
       - name: Temporary exact package graph verification for issue 3648
+        id: package_graph_diagnostic
+        continue-on-error: true
+        timeout-minutes: 6
         shell: bash
         run: |
           ZFB_GRAPH_SOURCE="$RUNNER_TEMP/zudo-doc-3648"
@@ -379,7 +396,66 @@ jobs:
           }
           PAGE
           git rev-parse HEAD > target/package-graph-evidence/source-sha.txt
-          timeout 90s target/debug/examples/package_graph_probe "$ZFB_GRAPH_SITE" 2>&1 | tee target/package-graph-evidence/scanner.log
+          if ! command -v gdb >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y gdb
+          fi
+          gdb --version
+          python3 - "$ZFB_GRAPH_SITE" "$GITHUB_WORKSPACE/target/debug/examples/package_graph_probe" <<'PYPROFILE'
+          import pathlib
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          evidence = pathlib.Path("target/package-graph-evidence")
+          started = time.monotonic()
+          with (evidence / "scanner.log").open("w") as output:
+              scanner = subprocess.Popen([sys.argv[2], sys.argv[1]], stdout=output, stderr=subprocess.STDOUT)
+              try:
+                  for sample_at in (5, 20, 40):
+                      try:
+                          scanner.wait(timeout=max(0, started + sample_at - time.monotonic()))
+                      except subprocess.TimeoutExpired:
+                          pass
+                      if scanner.poll() is not None:
+                          break
+                      print(f"Sampling fixed scanner pid={scanner.pid} elapsed={time.monotonic() - started:.1f}s", flush=True)
+                      with (evidence / f"scanner-{sample_at}s-process.txt").open("w") as process_info:
+                          subprocess.run(["ps", "-o", "pid,pcpu,rss,etime,stat,args", "-p", str(scanner.pid)], stdout=process_info, stderr=subprocess.STDOUT, check=False)
+                      with (evidence / f"scanner-{sample_at}s-backtrace.txt").open("w") as trace:
+                          sampled = subprocess.run([
+                              "sudo", "timeout", "15s", "gdb", "--batch", "--quiet",
+                              "-ex", "set pagination off", "-ex", "set print frame-arguments none",
+                              "-ex", "thread apply all bt 80", "-ex", "detach",
+                              "--pid", str(scanner.pid),
+                          ], stdout=trace, stderr=subprocess.STDOUT, check=False)
+                      print(f"gdb sample at {sample_at}s exit={sampled.returncode}", flush=True)
+                      # A timed-out debugger must not leave the child stopped.
+                      try:
+                          scanner.send_signal(signal.SIGCONT)
+                      except ProcessLookupError:
+                          pass
+                  try:
+                      status = scanner.wait(timeout=max(0, started + 90 - time.monotonic()))
+                  except subprocess.TimeoutExpired:
+                      print("Fixed scanner exceeded 90s diagnostic cap; NOT a passing scan", flush=True)
+                      status = 124
+                      scanner.terminate()
+                      try:
+                          scanner.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          scanner.kill()
+                          scanner.wait()
+              finally:
+                  if scanner.poll() is None:
+                      scanner.kill()
+                      scanner.wait()
+          print((evidence / "scanner.log").read_text(), flush=True)
+          (evidence / "scanner-exit-status.txt").write_text(f"{status}\n")
+          print(f"Fixed scanner exit={status} elapsed={time.monotonic() - started:.1f}s", flush=True)
+          sys.exit(status if status >= 0 else 128 - status)
+          PYPROFILE
           ZFB_GRAPH_CLI="$GITHUB_WORKSPACE/target/debug/zfb"
           (cd "$ZFB_GRAPH_SITE" && ZFB_BUILD_TIMING=1 ZFB_DEV_TIMING=1 timeout 90s "$ZFB_GRAPH_CLI" build) 2>&1 | tee target/package-graph-evidence/build.log
           test -f "$ZFB_GRAPH_SITE/dist/index.html"
@@ -641,6 +717,12 @@ jobs:
       # Lint the test-utils-gated targets (they are excluded from the workspace
       # clippy step above for the same reason as cargo test).
       - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
+
+      - name: Require successful temporary package graph evidence
+        if: always() && (steps.package_graph_registration.outcome == 'failure' || steps.package_graph_diagnostic.outcome == 'failure')
+        run: |
+          echo "::error::Issue 3648 registration tests or exact package scanner/build failed; profiling is diagnostic only and merge remains blocked."
+          exit 1
 
       # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
       # survives the run — the machine-readable feed issue #1341 consumes
