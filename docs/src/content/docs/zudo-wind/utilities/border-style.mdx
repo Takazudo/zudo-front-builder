@@ -5,9 +5,149 @@ sidebar_position: 46
 generated: true
 ---
 
-Choose a supported border line style or border-collapse behavior.
+Choose a supported border line style, remove its line, or set a table’s border-collapse mode.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-dashed` | `border-style: dashed;` |
+| `border-dotted` | `border-style: dotted;` |
+| `border-double` | `border-style: double;` |
+| `border-none` | `border-style: none;` |
+| `border-solid` | `border-style: solid;` |
+| `border-collapse` | `border-collapse: collapse;` |
+| `border-collapse-separate` | `border-collapse: separate;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare line patterns
+
+The width utilities make each line visible; border-none changes the style to none while leaving the width value in place.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-lines\"\u003e\u003cdiv class=\"wind-demo-line border-2 border-solid p-2\"\u003esolid\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-dashed p-2\"\u003edashed\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-dotted p-2\"\u003edotted\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-4 border-double p-2\"\u003edouble\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-none p-2\"\u003enone · no line\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-lines {\n  max-width: 30rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-line {\n  margin: .55rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-2 {\n  border-top-width: 2px;\n  border-top-style: solid;\n  border-right-width: 2px;\n  border-right-style: solid;\n  border-bottom-width: 2px;\n  border-bottom-style: solid;\n  border-left-width: 2px;\n  border-left-style: solid;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-dashed {\n  border-style: dashed;\n}\n.border-dotted {\n  border-style: dotted;\n}\n.border-double {\n  border-style: double;\n}\n.border-none {\n  border-style: none;\n}\n.border-solid {\n  border-style: solid;\n}\n"} title={"Compare line patterns"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-line": true,
+      "wind-demo-lines": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-2",
+        "border-4",
+        "border-dashed",
+        "border-dotted",
+        "border-double",
+        "border-none",
+        "border-solid",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-lines { max-width: 30rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-line { margin: 0.55rem 0; }
+```
+
+</Details>
+
+### Choose how table cell borders meet
+
+The utility on each table selects collapsed or separated borders; the scaffold supplies cell edges and spacing for comparison.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-tables\"\u003e\u003ctable class=\"wind-demo-table border-collapse\"\u003e\u003ctbody\u003e\u003ctr\u003e\u003ctd class=\"wind-demo-cell\"\u003eA\u003c/td\u003e\u003ctd class=\"wind-demo-cell\"\u003eB\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003c/table\u003e\u003ctable class=\"wind-demo-table border-collapse-separate\"\u003e\u003ctbody\u003e\u003ctr\u003e\u003ctd class=\"wind-demo-cell\"\u003eA\u003c/td\u003e\u003ctd class=\"wind-demo-cell\"\u003eB\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003c/table\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tables {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 1rem;\n  color: #16324f;\n  font: 14px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-table {\n  border-spacing: .45rem;\n}\n\n.wind-demo-cell {\n  border: 2px solid #0f766e;\n  padding: .6rem 1rem;\n  text-align: center;\n}\n.border-collapse {\n  border-collapse: collapse;\n}\n.border-collapse-separate {\n  border-collapse: separate;\n}\n"} title={"Choose how table cell borders meet"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-cell": true,
+      "wind-demo-table": true,
+      "wind-demo-tables": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-collapse",
+        "border-collapse-separate"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-tables { display: flex; flex-wrap: wrap; gap: 1rem; color: #16324f; font: 14px/1.4 system-ui, sans-serif; }
+.wind-demo-table { border-spacing: 0.45rem; }
+.wind-demo-cell { border: 2px solid #0f766e; padding: 0.6rem 1rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+border-solid, border-dashed, border-dotted, border-double, and border-none set border-style. Pair a visible line style with a width utility; the style utility itself does not add width. border-none only changes the style. The exact utilities border-collapse and border-collapse-separate set the table border-collapse property. They are useful for table cells whose borders should merge or remain separated. Bare border widths independently establish solid style.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## border-dashed
 
@@ -246,3 +386,5 @@ Choose a supported border line style or border-collapse behavior.
 | Example class | Expected declarations |
 | --- | --- |
 | `border-collapse-separate` | `border-collapse: separate` |
+
+</Details>

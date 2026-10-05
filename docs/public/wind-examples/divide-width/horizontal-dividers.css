@@ -1,0 +1,27 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-horizontal {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: 30rem;
+  color: #16324f;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-item {
+  padding: .7rem .8rem;
+}
+.divide-x-3 > :not([hidden]) ~ :not([hidden]) {
+  border-left-width: 3px;
+  border-left-style: solid;
+}

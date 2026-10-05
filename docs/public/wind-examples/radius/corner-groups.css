@@ -1,0 +1,74 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-radius-card: .75rem;
+    --zw-radius-pill: 9999px;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-radius-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(5rem, 1fr));
+  gap: .6rem;
+  max-width: 27rem;
+}
+
+.wind-demo-radius-card {
+  display: grid;
+  place-items: center;
+  min-height: 3.2rem;
+  text-align: center;
+  font: 12px / 1.25 system-ui, sans-serif;
+}
+.p-2 {
+  padding-top: 0.5rem;
+  padding-right: 0.5rem;
+  padding-bottom: 0.5rem;
+  padding-left: 0.5rem;
+}
+.text-ink {
+  color: var(--zw-color-ink);
+}
+.bg-panel {
+  background-color: var(--zw-color-panel);
+}
+.rounded-card {
+  border-top-left-radius: var(--zw-radius-card);
+  border-top-right-radius: var(--zw-radius-card);
+  border-bottom-right-radius: var(--zw-radius-card);
+  border-bottom-left-radius: var(--zw-radius-card);
+}
+.rounded-b-card {
+  border-bottom-right-radius: var(--zw-radius-card);
+  border-bottom-left-radius: var(--zw-radius-card);
+}
+.rounded-l-card {
+  border-top-left-radius: var(--zw-radius-card);
+  border-bottom-left-radius: var(--zw-radius-card);
+}
+.rounded-r-card {
+  border-top-right-radius: var(--zw-radius-card);
+  border-bottom-right-radius: var(--zw-radius-card);
+}
+.rounded-t-card {
+  border-top-left-radius: var(--zw-radius-card);
+  border-top-right-radius: var(--zw-radius-card);
+}
+.rounded-bl-card {
+  border-bottom-left-radius: var(--zw-radius-card);
+}
+.rounded-br-card {
+  border-bottom-right-radius: var(--zw-radius-card);
+}
+.rounded-tl-card {
+  border-top-left-radius: var(--zw-radius-card);
+}
+.rounded-tr-card {
+  border-top-right-radius: var(--zw-radius-card);
+}
