@@ -21,7 +21,19 @@ const use: JSX.IntrinsicElements["use"] = {
   "stroke-dasharray": "1 2",
   "text-anchor": "middle",
 };
-const tags = [<search />, <hgroup />, <menu />, <pattern />, <filter />, <marker />, <image />];
+const tags = [
+  <search />,
+  <hgroup />,
+  <menu />,
+  <pattern />,
+  <filter />,
+  <marker />,
+  <image />,
+  <ruby>
+    <rb>base</rb>
+    <rt>reading</rt>
+  </ruby>,
+];
 
 export function StandardMarkupPage() {
   return (
@@ -48,4 +60,6 @@ const badAsync: JSX.IntrinsicElements["script"] = { async: "true" };
 const badSpellcheck: JSX.IntrinsicElements["input"] = { spellcheck: 1 };
 // @ts-expect-error arbitrary attribute names remain rejected.
 const unknown: JSX.IntrinsicElements["meta"] = { unknownattribute: "x" };
-void [badAsync, badSpellcheck, unknown];
+// @ts-expect-error unknown standard element names remain outside the finite vocabulary.
+const unknownTag = <madeuptag />;
+void [badAsync, badSpellcheck, unknown, unknownTag];
