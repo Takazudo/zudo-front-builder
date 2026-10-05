@@ -6,7 +6,7 @@ sidebar_position: 1
 
 ## コンポーネントを設定して使う
 
-まず、プロジェクトで使う値を設定します。次の短い設定では、例に必要な静的でない値をすべて定義しています。zudo-wind はパレットや余白スケールを用意しません。
+まず、プロジェクトで使う値を設定します。次の `wind` オブジェクトを `zfb.config.ts` または `zfb.config.json` のルートに置くと、例に必要な静的でない値をすべて定義できます。zudo-wind はパレットや余白スケールを用意しません。
 
 ```json
 {
@@ -26,6 +26,63 @@ sidebar_position: 1
 `p-4` は `spacingUnit` の 4 倍を使います。`bg-panel`、`text-ink`、`rounded-card` はそれぞれ設定済みのトークンを参照します。これらはマークアップ内に完全な候補として記述され、コンパイラがユーティリティのルールを生成します。
 
 {/* wind-preview: guide-overview/quickstart "プロジェクト値を使うコンポーネント" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">A configured card</h3>\n    <p>Each class is a complete candidate.</p>\n  </article>\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">Project values</h3>\n    <p>Wind emits only the rules these candidates request.</p>\n  </article>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-panel: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n}\n\n.wind-demo-title {\n  margin: 0 0 .5rem;\n  font-size: 1rem;\n  font-weight: 600;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"プロジェクト値を使うコンポーネント"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#f4f1ec",
+        "ink": "#203046"
+      },
+      "radii": {
+        "card": "0.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-grid": true,
+      "wind-demo-card": true,
+      "wind-demo-title": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-2",
+        "gap-4",
+        "rounded-card",
+        "bg-panel",
+        "p-4",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-card { border: 1px solid #8797aa; }
+.wind-demo-title { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 続けて[設定](./configuration.mdx)と[ソースと候補](./sources-and-candidates.mdx)を読み、[トークンガイド](./tokens.mdx)や[全ユーティリティ一覧](./utilities/index.mdx)を参照してください。

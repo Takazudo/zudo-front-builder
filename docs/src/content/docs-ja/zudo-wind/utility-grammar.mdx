@@ -6,13 +6,53 @@ sidebar_position: 5
 
 ## 完全な候補を記述する
 
-スキャナーはソースをテキストとして読みます。アプリケーションを実行してクラス名を組み立てることはありません。`grid-cols-2` や `sm:hover:bg-panel` のように、候補全体をソースに記述してください。`` `p-${size}` `` のような文字列からコンパイラが候補を推測することはできません。
+スキャナーはソースをテキストとして読みます。アプリケーションを実行してクラス名を組み立てることはありません。`grid-cols-2` のように候補全体をソースに記述してください。`sm:hover:bg-panel` を使うには、`sm` と `colors.panel` の設定が必要です。`` `p-${size}` `` のような文字列からコンパイラが候補を推測することはできません。
 
 一度だけ使う値は、対応するユーティリティの角括弧内に記述します。括弧内の空白はアンダースコアで書きます。CSS の `calc()` では二項の `+` と `-` の前後に空白が必要なので、`w-[calc(100vw_-_2rem)]` と記述します。エスケープした `\_` はアンダースコアのまま残ります。
 
 次の無効な綴りは診断フィクスチャです。表示されるソースと期待されるコードは、コンパイラが確認する同じレコードから生成されます。
 
 {/* wind-preview: guide-utility-grammar/calc-needs-underscores "calc の空白にはアンダースコアを使う" */}
+
+```html
+<div class="w-[calc(100vw-2rem)]">w-[calc(100vw-2rem)]</div>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "w-[calc(100vw-2rem)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 データ型ヒント、任意プロパティ、カタログにないユーティリティには、それぞれ異なる代替方法があります。曖昧な変数には名前付きトークンを使い、未対応の宣言は手書きの CSS に記述します。以下の構文例は、装飾的なプレビューではなく文字情報として示します。
@@ -22,39 +62,351 @@ sidebar_position: 5
 レスポンシブ名は、ユーティリティの接頭辞に使う前に設定が必要です。
 
 {/* wind-preview: guide-utility-grammar/unconfigured-breakpoint "未設定のブレークポイント" */}
+
+```html
+<div class="md:block">md:block</div>
+```
+
+期待される診断: `ZW002 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "md:block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 データ型ヒントはこの言語では使えません。
 
 {/* wind-preview: guide-utility-grammar/unsupported-type-hint "未対応のデータ型ヒント" */}
+
+```html
+<span class="text-[color:var(--project-ink)]">text-[color:var(--project-ink)]</span>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "text-[color:var(--project-ink)]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 任意プロパティは拒否されます。宣言は手書きの CSS に記述してください。
 
 {/* wind-preview: guide-utility-grammar/arbitrary-property "任意プロパティには手書きの CSS を使う" */}
+
+```html
+<p class="[overflow-wrap:anywhere]">[overflow-wrap:anywhere]</p>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "[overflow-wrap:anywhere]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 見慣れた接頭辞でも、意図的に未対応のものがあります。`ring-2` はその一例です。
 
 {/* wind-preview: guide-utility-grammar/unsupported-ring "未対応のユーティリティ群" */}
+
+```html
+<div class="ring-2">ring-2</div>
+```
+
+期待される診断: `ZW004 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "ring-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 負の値を使えるユーティリティ群は限定されています。padding に負の接頭辞は使えません。
 
 {/* wind-preview: guide-utility-grammar/negative-padding "負の padding は拒否される" */}
+
+```html
+<div class="-p-2">-p-2</div>
+```
+
+期待される診断: `ZW005 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "-p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 空の区間は構文エラーになります。
 
 {/* wind-preview: guide-utility-grammar/empty-variant-segment "空のバリアント区間" */}
+
+```html
+<div class="hover::block">hover::block</div>
+```
+
+期待される診断: `ZW001 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "hover::block"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 非 strict モードでは、ソース上の 未対応ユーティリティ（foreign utility）は警告になり、strict モードではエラーになります。
 
 {/* wind-preview: guide-utility-grammar/foreign-utility-warning "ソース位置の foreign utility 警告" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+期待される診断: `ZW014 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-utility-grammar/foreign-utility-strict-error "strict モードのソース位置エラー" */}
+
+```html
+<div class="line-clamp-2">line-clamp-2</div>
+```
+
+期待される診断: `ZW014 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 </Details>

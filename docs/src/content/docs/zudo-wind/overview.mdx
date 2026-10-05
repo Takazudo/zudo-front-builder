@@ -6,7 +6,7 @@ sidebar_position: 1
 
 ## Configure and use a component
 
-Start with the values your project intends to use. This compact setup defines every non-static value in the example; zudo-wind supplies no palette or spacing scale.
+Start with the values your project intends to use. Put this `wind` object at the root of `zfb.config.ts` or `zfb.config.json`; it defines every non-static value in the example. zudo-wind supplies no palette or spacing scale.
 
 ```json
 {
@@ -26,6 +26,63 @@ Start with the values your project intends to use. This compact setup defines ev
 `p-4` uses four times `spacingUnit`; `bg-panel`, `text-ink`, and `rounded-card` each name a configured token. These classes are complete candidates in the markup, and the compiler emits their real utility rules.
 
 {/* wind-preview: guide-overview/quickstart "A component using project values" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">A configured card</h3>\n    <p>Each class is a complete candidate.</p>\n  </article>\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">Project values</h3>\n    <p>Wind emits only the rules these candidates request.</p>\n  </article>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-panel: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n}\n\n.wind-demo-title {\n  margin: 0 0 .5rem;\n  font-size: 1rem;\n  font-weight: 600;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"A component using project values"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#f4f1ec",
+        "ink": "#203046"
+      },
+      "radii": {
+        "card": "0.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-grid": true,
+      "wind-demo-card": true,
+      "wind-demo-title": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-2",
+        "gap-4",
+        "rounded-card",
+        "bg-panel",
+        "p-4",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-card { border: 1px solid #8797aa; }
+.wind-demo-title { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 From here, open [configuration](./configuration.mdx) and [sources and candidates](./sources-and-candidates.mdx), or browse the [token guide](./tokens.mdx) and [complete utility index](./utilities/index.mdx).
