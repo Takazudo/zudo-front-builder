@@ -6,7 +6,7 @@ sidebar_position: 6
 
 ## Hydrate the island contents
 
-The client entry is **@takazudo/zfb/zudo-react/client**. **hydrate** adopts the existing child DOM inside the supplied island wrapper. It receives the child description, the wrapper element, and the component/build identity expected by the client bundle. The wrapper itself belongs to zfb.
+The client entry is **@takazudo/zfb/zudo-react/client**. **hydrate** adopts the existing child DOM inside the supplied island wrapper. It receives the child description, the wrapper element, and the component/build identity expected by the client bundle. For an island emitted by zfb, the wrapper itself belongs to zfb.
 
 ~~~tsx
 import { hydrate, parseProps } from "@takazudo/zfb/zudo-react/client";
@@ -38,13 +38,13 @@ Hydration validates the connected wrapper, identity, transport, cancellation sta
 
 After preflight succeeds, the runtime checks cancellation and connection again, attaches bindings to the existing nodes, assigns refs, reconciles live form values, and starts activation. It does not re-run components to reconcile updates.
 
-The protocol uses balanced local comment regions for dynamic text, component ranges, fragments, conditions, lists, and opaque raw HTML. These markers exist only within an island subtree. The wrapper element and its data-zfb-island attributes remain the zfb boundary. Authors should preserve the markers produced by server rendering.
+The protocol uses balanced local comment regions for dynamic text, component ranges, fragments, conditions, lists, and opaque raw HTML. These markers exist only within an island subtree. In a zfb-generated island, zfb owns the wrapper element and its data-zfb-island attributes; a caller-owned mount keeps its wrapper under the host's ownership. Authors should preserve the markers produced by server rendering.
 
-## Identity and props must agree
+## Identity checks and server-rendered props
 
-The component name, build identity, transport version, and runtime protocol are checked before setup. The RootOptions identity supplied to hydrate must match the wrapper. A stale bundle or mismatched wrapper fails closed for that island.
+The component name, build identity, transport version, and runtime protocol are checked before setup. The RootOptions identity supplied to hydrate or mount must match the wrapper. A stale bundle or mismatched wrapper fails closed before activating the island or mounted root.
 
-The island data-props value must be present and contain a valid JSON record. **parseProps** rejects malformed JSON, top-level arrays or scalars, and recursively forbidden keys. The transport does not revive descriptions, signals, or class instances. Recreate reactive state inside component setup.
+For hydration of an island emitted by zfb, data-props must be present and contain a valid JSON record. **parseProps** rejects malformed JSON, top-level arrays or scalars, and recursively forbidden keys. The transport does not revive descriptions, signals, or class instances. Recreate reactive state inside component setup. Direct client mounts receive props in memory and do not read data-props; see [Mount from a host you own](#mount-from-a-host-you-own).
 
 The zfb island boundary requires one registered synchronous function component. It rejects multiple children, host-element children, nested islands, and nonempty children props because they cannot be transported as island props. Recursively empty arrays and empty values are allowed and omitted.
 
@@ -68,7 +68,74 @@ Title content is static scalar text. Textarea content belongs to its form adapte
 
 ## Mount is client rendering
 
-**mount** uses the same child description and wrapper contract but creates new DOM rather than adopting server children. This is the client-only path. For skip-SSR islands, zfb applies the same load, idle, visible, and media scheduling and cancellation rules, then the runtime builds the new subtree off-DOM, validates it, and replaces the fallback in one step before activation. If setup or validation fails, the fallback stays in place; if a scheduling API is unavailable, the runtime uses its immediate fallback.
+**mount** uses the same child description and identity checks but creates new DOM rather than adopting server children. For a caller-owned boundary, mount the root component directly as described below. For zfb-generated skip-SSR islands, zfb applies the same load, idle, visible, and media scheduling and cancellation rules, then the runtime builds the new subtree off-DOM, validates it, and replaces the fallback in one step before activation. If setup or validation fails, the fallback stays in place; if a scheduling API is unavailable, the runtime uses its immediate fallback.
+
+## Mount from a host you own
+
+Use this recipe when your application owns a client-only boundary and calls **mount** itself. The host creates and connects the wrapper before mounting. This direct call does not register a component with zfb's static island scanner; scanner-discovered server islands continue to use the zfb integration and its JSON/1 props transport.
+
+For a client-only mount, set these four attributes on the wrapper. Choose any nonempty, stable build string for your host; zudo-react compares it for equality with `RootOptions.identity.build` and does not look it up in a scanner registry.
+
+~~~tsx
+import { h, type Child } from "@takazudo/zfb/zudo-react";
+import { mount, type RootHandle } from "@takazudo/zfb/zudo-react/client";
+
+function PreviewChrome(props: { onSelect: () => void; slot: Child }) {
+  return h(
+    "nav",
+    null,
+    h("button", { "on:click": props.onSelect, children: "Select" }),
+    props.slot,
+  );
+}
+
+const identity = { component: PreviewChrome.name, build: "preview-frame-v1" };
+const host = document.createElement("div");
+host.setAttribute("data-zfb-island-skip-ssr", identity.component);
+host.setAttribute("data-zfb-transport", "json/1");
+host.setAttribute("data-zfb-protocol", "zudo-react/1");
+host.setAttribute("data-zfb-build", identity.build);
+document.body.append(host); // mount requires a connected root
+
+const props = {
+  onSelect: () => console.log("selected"),
+  slot: h("span", { children: "Provided by the host" }),
+};
+
+function mountPreview(): RootHandle | null {
+  const root = mount(h(PreviewChrome, props), host, {
+    identity,
+    report(diagnostic) {
+      console.error(`[zudo-react] ${diagnostic.code}`, diagnostic);
+    },
+  });
+  if (root === null) {
+    host.replaceChildren(document.createTextNode("Preview unavailable."));
+    return null;
+  }
+  return root;
+}
+
+let root: RootHandle | null = null;
+function resume() {
+  if (root && !root.disposed) return;
+  root = mountPreview();
+}
+function pause() {
+  root?.dispose(); // stop listeners and scopes; keep the current DOM
+}
+function stop() {
+  root?.unmount(); // dispose and remove the rendered subtree
+  root = null;
+  host.remove();
+}
+
+resume();
+// The host may call pause() and resume() as its own lifecycle changes.
+// Call stop() before removing the host permanently.
+~~~
+
+The root child must be one named function component. Its `displayName ?? name` must equal `identity.component`. Props passed to `h` stay in memory, so callbacks and child descriptions such as `slot` do not go through `data-props` or JSON serialization. The `report` callback receives a structured diagnostic; a failed mount returns `null`, so handle that result before treating the root as active. `dispose()` leaves the current DOM in place while stopping its scopes and listeners. A later mount on the same connected wrapper replaces that subtree; `unmount()` also removes it.
 
 ## See also
 

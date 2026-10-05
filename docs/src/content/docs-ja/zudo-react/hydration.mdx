@@ -6,7 +6,7 @@ sidebar_position: 6
 
 ## 島の内容をハイドレートする
 
-クライアントエントリは **@takazudo/zfb/zudo-react/client** です。**hydrate** は、渡された島のラッパー内にある既存の子 DOM を引き継ぎます。子の記述、ラッパー要素、クライアントバンドルが期待するコンポーネントとビルドの識別子を受け取ります。ラッパー自体は zfb が所有します。
+クライアントエントリは **@takazudo/zfb/zudo-react/client** です。**hydrate** は、渡された島のラッパー内にある既存の子 DOM を引き継ぎます。子の記述、ラッパー要素、クライアントバンドルが期待するコンポーネントとビルドの識別子を受け取ります。zfb が出力した島では、ラッパー自体を zfb が所有します。
 
 ~~~tsx
 import { hydrate, parseProps } from "@takazudo/zfb/zudo-react/client";
@@ -38,13 +38,13 @@ zfb と連携したアプリケーションでは、島の境界がこのメタ�
 
 事前検証に成功した後、ランタイムはキャンセルと接続を再確認し、既存ノードにバインディングを付け、ref を設定し、生きたフォーム値を同期してから有効化を始めます。更新を同期するためにコンポーネントを再実行しません。
 
-プロトコルは動的なテキスト、コンポーネントの範囲、Fragment、条件分岐、リスト、不透明な raw HTML に、対応するローカルのコメント領域を使います。マーカーが存在するのは島のサブツリー内だけです。ラッパー要素とその data-zfb-island 属性は引き続き zfb の境界です。サーバーレンダリングが出力したマーカーを保ってください。
+プロトコルは動的なテキスト、コンポーネントの範囲、Fragment、条件分岐、リスト、不透明な raw HTML に、対応するローカルのコメント領域を使います。マーカーが存在するのは島のサブツリー内だけです。zfb が生成した島では、ラッパー要素と data-zfb-island 属性を zfb が所有します。呼び出し元が所有する mount では、ラッパーはホストの所有物です。サーバーレンダリングが出力したマーカーを保ってください。
 
-## 識別子と props を一致させる
+## 識別子とサーバー側 props の検査
 
-コンポーネント名、ビルドの識別子、転送形式のバージョン、ランタイムプロトコルはセットアップ前に検査されます。hydrate に渡す RootOptions の識別子はラッパーと一致しなければなりません。古いバンドルや一致しないラッパーでは、その島は有効化されません。
+コンポーネント名、ビルドの識別子、転送形式のバージョン、ランタイムプロトコルはセットアップ前に検査されます。hydrate または mount に渡す RootOptions の識別子はラッパーと一致しなければなりません。古いバンドルや一致しないラッパーでは、島またはマウントするルートは有効化されません。
 
-島には data-props が必要で、その値は有効な JSON レコードでなければなりません。**parseProps** は不正な JSON、最上位の配列やスカラー、入れ子にある禁止キーを拒否します。転送によって記述、signal、クラスインスタンスが復元されることはありません。リアクティブな状態はコンポーネントのセットアップ内で作り直してください。
+zfb が出力した島をハイドレートするときは、data-props が存在し、有効な JSON レコードでなければなりません。**parseProps** は不正な JSON、最上位の配列やスカラー、入れ子にある禁止キーを拒否します。転送によって記述、signal、クラスインスタンスが復元されることはありません。リアクティブな状態はコンポーネントのセットアップ内で作り直してください。クライアントから直接 mount する場合、props はメモリ上で渡し、data-props は読みません。詳しくは下の「自分で所有するホストから mount する」を参照してください。
 
 zfb の島の境界には、登録済みの同期的な関数コンポーネントが一つ必要です。複数の子、ホスト要素の子、入れ子の島、空でない children prop は島の props として転送できないため拒否されます。再帰的に空の配列と空の値は許可され、省略されます。
 
@@ -68,7 +68,74 @@ title の内容は静的なスカラーテキストです。textarea の内容�
 
 ## mount はクライアントレンダリング
 
-**mount** は同じ子の記述とラッパーの契約を使いますが、サーバーの子を引き継がず新しい DOM を作ります。これはクライアント専用の経路です。skip-SSR の島では、zfb が同じ load、idle、visible、media のスケジュールとキャンセル規則を適用します。その後ランタイムは DOM の外で新しいサブツリーを構築・検証し、有効化前に fallback を一度に置き換えます。セットアップや検証に失敗したら fallback は残ります。スケジュール用 API が使えない場合は即時の fallback を使います。
+**mount** は同じ子の記述と識別子の検査を使いますが、サーバーの子を引き継がず新しい DOM を作ります。呼び出し元が境界を所有する場合は、以下のようにルートコンポーネントを直接 mount します。zfb が生成した skip-SSR の島では、zfb が load、idle、visible、media のスケジュールとキャンセル規則を適用します。その後ランタイムは DOM の外で新しいサブツリーを構築・検証し、有効化前に fallback を一度に置き換えます。セットアップや検証に失敗したら fallback は残ります。スケジュール用 API が使えない場合は即時の fallback を使います。
+
+## 自分で所有するホストから mount する
+
+アプリケーション自身がクライアント専用の境界を所有し、**mount** を直接呼ぶ場合はこの手順を使います。ホスト側でラッパーを作り、接続してから mount します。この直接呼び出しはコンポーネントを zfb の静的な島スキャナーに登録しません。スキャナーで検出するサーバー側の島は、引き続き zfb の連携と JSON/1 の props 転送を使います。
+
+クライアント専用の mount では、ラッパーに次の4属性を設定します。ホスト側で空でない安定したビルド文字列を選んでください。zudo-react はこの値を `RootOptions.identity.build` と等値比較するだけで、スキャナーレジストリから検索しません。
+
+~~~tsx
+import { h, type Child } from "@takazudo/zfb/zudo-react";
+import { mount, type RootHandle } from "@takazudo/zfb/zudo-react/client";
+
+function PreviewChrome(props: { onSelect: () => void; slot: Child }) {
+  return h(
+    "nav",
+    null,
+    h("button", { "on:click": props.onSelect, children: "Select" }),
+    props.slot,
+  );
+}
+
+const identity = { component: PreviewChrome.name, build: "preview-frame-v1" };
+const host = document.createElement("div");
+host.setAttribute("data-zfb-island-skip-ssr", identity.component);
+host.setAttribute("data-zfb-transport", "json/1");
+host.setAttribute("data-zfb-protocol", "zudo-react/1");
+host.setAttribute("data-zfb-build", identity.build);
+document.body.append(host); // mount requires a connected root
+
+const props = {
+  onSelect: () => console.log("selected"),
+  slot: h("span", { children: "Provided by the host" }),
+};
+
+function mountPreview(): RootHandle | null {
+  const root = mount(h(PreviewChrome, props), host, {
+    identity,
+    report(diagnostic) {
+      console.error(`[zudo-react] ${diagnostic.code}`, diagnostic);
+    },
+  });
+  if (root === null) {
+    host.replaceChildren(document.createTextNode("Preview unavailable."));
+    return null;
+  }
+  return root;
+}
+
+let root: RootHandle | null = null;
+function resume() {
+  if (root && !root.disposed) return;
+  root = mountPreview();
+}
+function pause() {
+  root?.dispose(); // stop listeners and scopes; keep the current DOM
+}
+function stop() {
+  root?.unmount(); // dispose and remove the rendered subtree
+  root = null;
+  host.remove();
+}
+
+resume();
+// The host may call pause() and resume() as its own lifecycle changes.
+// Call stop() before removing the host permanently.
+~~~
+
+ルートの子は名前付き関数コンポーネントを一つにします。その `displayName ?? name` は `identity.component` と一致する必要があります。`h` に渡す props はメモリ上にあるため、コールバックや `slot` のような子の記述を `data-props` や JSON シリアライズに通す必要はありません。`report` コールバックには構造化された診断が渡されます。mount が失敗すると `null` を返すため、ルートが有効だと扱う前に結果を確認してください。`dispose()` はスコープとリスナーを停止しますが、現在の DOM は残します。同じ接続済みラッパーに再度 mount するとそのサブツリーを置き換えます。`unmount()` はさらにそのサブツリーを削除します。
 
 ## 関連ページ
 
