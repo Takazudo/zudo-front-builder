@@ -16,6 +16,7 @@ import {
   validatePilot,
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
+import { verifyPinnedReferenceModuleGraph } from "./reference-module-graph.mjs";
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   digest,
@@ -155,13 +156,10 @@ export async function loadReference(cache, bootstrap) {
       JSON.stringify({ name: "tailwindcss", version: "4.3.2" })
   )
     throw Error("Pinned Tailwind tarball identity mismatch");
-  const moduleBytes = tarMember(bytes, "package/dist/lib.mjs");
   const preflightBytes = tarMember(bytes, "package/preflight.css");
-  const modulePath = await outsideCheckout(
-    resolve(cache, `tailwindcss-4.3.2-${referenceSha}/dist/lib.mjs`),
-  );
-  if (sha256(await readFile(modulePath)) !== sha256(moduleBytes))
-    throw Error("Reference module differs from tarball");
+  const modulePath = resolve(cache, `tailwindcss-4.3.2-${referenceSha}/dist/lib.mjs`);
+  await outsideCheckout(modulePath);
+  const graph = await verifyPinnedReferenceModuleGraph(cache, modulePath, bytes, referenceSha);
   const { compile } = await import(pathToFileURL(modulePath).href);
   if (typeof compile !== "function") throw Error("Reference compile API absent");
   return {
@@ -172,7 +170,9 @@ export async function loadReference(cache, bootstrap) {
       version: "4.3.2",
       integrity: bootstrap.integrity,
       artifactSha256: referenceSha,
-      moduleSha256: sha256(moduleBytes),
+      moduleSha256: graph.moduleDigests["lib.mjs"],
+      moduleGraphSha256: graph.moduleGraphSha256,
+      moduleDigests: graph.moduleDigests,
       preflightSha256: sha256(preflightBytes),
       source: bootstrap.source,
     },
@@ -414,12 +414,13 @@ async function main() {
     "compiler",
   );
   const { chromium } = await import("@playwright/test");
-  const browser = await chromium.launch({ headless: true });
+  const browserExecutable = chromium.executablePath();
+  const browser = await chromium.launch({ headless: true, executablePath: browserExecutable });
   const rows = {},
     controls = {};
   let environment;
   try {
-    environment = await browserIdentity(browser, chromium.executablePath());
+    environment = await browserIdentity(browser, browserExecutable);
     if (
       environment.playwrightVersion !== profile.browserPolicy.playwrightTestVersion ||
       environment.playwrightCoreVersion !== profile.browserPolicy.playwrightCoreVersion ||
@@ -777,6 +778,7 @@ async function main() {
       sha256(await readFile(fromRoot("scripts/wind-compatibility/structure.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/oxide-scanner.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/reference.mjs"))),
+      sha256(await readFile(fromRoot("scripts/wind-compatibility/reference-module-graph.mjs"))),
     ]),
     lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
     browserEnvironment: environment,

@@ -180,6 +180,7 @@ export async function browserIdentity(browser, executable) {
     version: browser.version(),
     executable,
     executableSha256: executable ? sha256(await readFile(executable)) : null,
+    launchExecutableKind: "chromium-full-explicit",
     platform: process.platform,
     osVersion: release(),
     architecture: process.arch,
