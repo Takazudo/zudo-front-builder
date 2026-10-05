@@ -10,9 +10,9 @@
 //! Mirrored 1:1 by `MarkdownFeaturesConfig` and `FeatureToggle` in
 //! `packages/zfb/src/config.ts` for the TypeScript loader.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::directives::{DirectiveDef, DirectiveKind};
 
@@ -142,6 +142,101 @@ pub struct LinkValidationConfig {
     /// `false` (warn-only; build continues).
     #[serde(default)]
     pub fail_on_broken: Option<bool>,
+
+    /// Component names and the prop whose non-empty string literal declares
+    /// the rendered DOM id, for example `{ "EvidenceAnchor": "id" }`.
+    ///
+    /// This is an explicit assertion by the project: the named component must
+    /// emit the selected prop as an `id`. Names are case-sensitive and use the
+    /// exact MDX JSX name (`UI.Anchor` for a supported member name). Names are
+    /// checked with the same MDX parser used for content, including its Unicode
+    /// identifier support. Prop names use MDX JSX attribute-name syntax.
+    /// Entries merge by key through config presets: the first declared preset
+    /// wins duplicate entries over later presets, and the project config wins
+    /// over every preset.
+    ///
+    /// The map is opt-in and absent by default. It only declares which literal
+    /// prop the fragment collector may register; it does not make expression,
+    /// spread, or empty values statically knowable. Each registered literal
+    /// contributes one static anchor candidate for ordinary fragment checks.
+    #[serde(default, deserialize_with = "deserialize_anchor_components")]
+    pub anchor_components: Option<BTreeMap<String, String>>,
+}
+
+fn deserialize_anchor_components<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let components = Option::<BTreeMap<String, String>>::deserialize(deserializer)?;
+    if let Some(components) = &components {
+        for (component, prop) in components {
+            if !is_supported_jsx_tag_name(component) {
+                return Err(de::Error::custom(format!(
+                    "anchorComponents key {component:?} is not an exact supported MDX JSX name"
+                )));
+            }
+            if component.contains(':') {
+                return Err(de::Error::custom(format!(
+                    "anchorComponents key {component:?} must be a JSX component or member name, not a namespaced name"
+                )));
+            }
+            if !is_supported_jsx_attribute_name(prop) {
+                return Err(de::Error::custom(format!(
+                    "anchorComponents[{component:?}] value {prop:?} is not a supported MDX JSX attribute name"
+                )));
+            }
+        }
+    }
+    Ok(components)
+}
+
+/// Check a tag name by parsing a minimal JSX element and comparing the
+/// parser's normalized name with the configured string. This follows MDX's
+/// actual identifier/member grammar instead of a handwritten ASCII-only
+/// approximation, while requiring the map key to use the exact parsed form.
+fn is_supported_jsx_tag_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let source = format!("<{name} />");
+    let Ok(markdown::mdast::Node::Root(root)) =
+        markdown::to_mdast(&source, &markdown::ParseOptions::mdx())
+    else {
+        return false;
+    };
+    matches!(
+        root.children.as_slice(),
+        [markdown::mdast::Node::MdxJsxFlowElement(element)]
+            if element.name.as_deref() == Some(name)
+    )
+}
+
+/// Check an attribute name against the same MDX JSX parser and ensure it is
+/// the only attribute on the synthetic element, so malformed/injected text
+/// cannot be accepted as a property name.
+fn is_supported_jsx_attribute_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let source = format!("<ZfbAnchorContract {name}=\"value\" />");
+    let Ok(markdown::mdast::Node::Root(root)) =
+        markdown::to_mdast(&source, &markdown::ParseOptions::mdx())
+    else {
+        return false;
+    };
+    matches!(
+        root.children.as_slice(),
+        [markdown::mdast::Node::MdxJsxFlowElement(element)]
+            if element.name.as_deref() == Some("ZfbAnchorContract")
+                && matches!(
+                    element.attributes.as_slice(),
+                    [markdown::mdast::AttributeContent::Property(property)]
+                        if property.name == name
+                            && matches!(property.value.as_ref(), Some(markdown::mdast::AttributeValue::Literal(value)) if value == "value")
+                )
+    )
 }
 
 /// Options for the `transclude` feature.
@@ -729,5 +824,92 @@ mod tests {
             err_msg.contains("githubAutolinks") || err_msg.contains("unknown field"),
             "error must mention the unknown field; got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn link_validation_anchor_components_default_to_absent() {
+        let absent = LinkValidationConfig::default();
+        assert_eq!(absent.fail_on_broken, None);
+        assert_eq!(absent.anchor_components, None);
+
+        let empty: LinkValidationConfig =
+            serde_json::from_value(serde_json::json!({})).expect("empty options deserialize");
+        assert_eq!(empty, absent);
+
+        let features: MarkdownFeaturesConfig =
+            serde_json::from_value(serde_json::json!({ "linkValidation": {} }))
+                .expect("legacy linkValidation options remain valid");
+        assert_eq!(
+            features.link_validation,
+            Some(LinkValidationConfig::default())
+        );
+    }
+
+    #[test]
+    fn link_validation_anchor_components_accepts_exact_mdx_component_names() {
+        let cfg: MarkdownFeaturesConfig = serde_json::from_value(serde_json::json!({
+            "linkValidation": {
+                "anchorComponents": {
+                    "EvidenceAnchor": "id",
+                    "UI.Anchor": "anchorId",
+                    "ΔAnchor": "data-anchor-id"
+                }
+            }
+        }))
+        .expect("simple, member, and Unicode MDX JSX names deserialize");
+        let config = cfg.link_validation.expect("linkValidation present");
+        let anchors = config
+            .anchor_components
+            .as_ref()
+            .expect("anchorComponents present");
+        assert_eq!(
+            anchors.get("EvidenceAnchor").map(String::as_str),
+            Some("id")
+        );
+        assert_eq!(
+            anchors.get("UI.Anchor").map(String::as_str),
+            Some("anchorId")
+        );
+        assert_eq!(
+            anchors.get("ΔAnchor").map(String::as_str),
+            Some("data-anchor-id")
+        );
+
+        let serialized = serde_json::to_value(config).expect("config serializes");
+        assert_eq!(
+            serialized["anchorComponents"]["UI.Anchor"],
+            serde_json::json!("anchorId")
+        );
+    }
+
+    #[test]
+    fn link_validation_anchor_components_rejects_unusable_names_and_props() {
+        for component_name in [
+            "",
+            "Evidence Anchor",
+            "EvidenceAnchor/child",
+            "UI..Anchor",
+            "svg:path",
+        ] {
+            let json = serde_json::json!({
+                "anchorComponents": { (component_name): "id" }
+            });
+            let result: Result<LinkValidationConfig, _> = serde_json::from_value(json);
+            assert!(
+                result.is_err(),
+                "unsupported component name {component_name:?} must be rejected"
+            );
+        }
+
+        for prop_name in ["", "id value", "id=other", "id\" /><Other"] {
+            let json = serde_json::json!({
+                "anchorComponents": { "EvidenceAnchor": (prop_name) }
+            });
+            let result: Result<LinkValidationConfig, _> = serde_json::from_value(json);
+            assert!(
+                result.is_err(),
+                "unsupported prop name {prop_name:?} must be rejected"
+            );
+        }
     }
 }

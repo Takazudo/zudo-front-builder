@@ -9184,6 +9184,65 @@ mod tests {
         assert_eq!(directives.len(), 2, "both map entries present");
     }
 
+    #[test]
+    fn preset_link_validation_anchor_components_merge_with_deterministic_precedence() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({
+                    "markdown": { "features": { "linkValidation": { "anchorComponents": {
+                        "EvidenceAnchor": "id",
+                        "PresetOneAnchor": "target",
+                        "UserWinsAnchor": "presetId"
+                    } } } }
+                }),
+                serde_json::json!({
+                    "markdown": { "features": { "linkValidation": { "anchorComponents": {
+                        "EvidenceAnchor": "anchorId",
+                        "PresetTwoAnchor": "name",
+                        "UserWinsAnchor": "laterId"
+                    } } } }
+                }),
+            ],
+            serde_json::json!({
+                "markdown": { "features": { "linkValidation": { "anchorComponents": {
+                    "UserWinsAnchor": "userId",
+                    "UserAnchor": "htmlId"
+                } } } }
+            }),
+        );
+        let anchors = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present")
+            .link_validation
+            .expect("linkValidation present")
+            .anchor_components
+            .expect("anchorComponents present");
+
+        assert_eq!(
+            anchors.get("EvidenceAnchor").map(String::as_str),
+            Some("id")
+        );
+        assert_eq!(
+            anchors.get("PresetOneAnchor").map(String::as_str),
+            Some("target")
+        );
+        assert_eq!(
+            anchors.get("PresetTwoAnchor").map(String::as_str),
+            Some("name")
+        );
+        assert_eq!(
+            anchors.get("UserWinsAnchor").map(String::as_str),
+            Some("userId")
+        );
+        assert_eq!(
+            anchors.get("UserAnchor").map(String::as_str),
+            Some("htmlId")
+        );
+        assert_eq!(anchors.len(), 5, "all non-colliding entries survive");
+    }
+
     // --- additive-array order across presets + user ---------------------------
 
     /// `presets: [a, b]` each contributing `plugins` plus a user plugin →

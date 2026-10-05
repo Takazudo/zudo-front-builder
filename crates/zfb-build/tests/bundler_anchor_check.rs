@@ -120,6 +120,7 @@ fn armed_link_validation_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec
         features: Some(MarkdownFeaturesConfig {
             link_validation: Some(LinkValidationConfig {
                 fail_on_broken: Some(fail_on_broken),
+                anchor_components: None,
             }),
             ..Default::default()
         }),
@@ -128,12 +129,85 @@ fn armed_link_validation_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec
     }
 }
 
+fn declared_anchor_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec {
+    let mut spec = armed_link_validation_spec(root, fail_on_broken);
+    spec.features
+        .as_mut()
+        .unwrap()
+        .link_validation
+        .as_mut()
+        .unwrap()
+        .anchor_components = Some(BTreeMap::from([
+        ("EvidenceAnchor".into(), "id".into()),
+        ("UI.Anchor".into(), "anchorId".into()),
+    ]));
+    spec
+}
+
+#[test]
+fn declared_component_anchors_resolve_cross_file_fragments_on_both_bundle_ticks() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write_common_dirs(root);
+    fs::write(
+        root.join("content/docs/target.mdx"),
+        "---\ntitle: Target\n---\n\n<EvidenceAnchor id=\"top\" />\n\n<Note><EvidenceAnchor id=\"nested\" /></Note>\n\n| Target |\n| --- |\n| <UI.Anchor anchorId=\"table\" /> |\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/source.mdx"),
+        "---\ntitle: Source\n---\n\n[top](./target.mdx#top) [nested](./target.mdx#nested) [table](./target.mdx#table)\n",
+    )
+    .unwrap();
+    let spec = declared_anchor_spec(root, true);
+    for tick in 1..=2 {
+        let input = make_base_input(
+            root,
+            &esbuild,
+            &format!("dist-declared-{tick}"),
+            spec.clone(),
+        );
+        bundle(input).expect("declared cross-file anchors must resolve on fresh and warm ticks");
+    }
+}
+
+#[test]
+fn undeclared_component_anchor_still_fails_cross_file_strict_validation() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write_common_dirs(root);
+    fs::write(root.join("content/docs/target.mdx"),
+        "---\ntitle: Target\n---\n\n<EvidenceAnchor id=\"declared\" />\n\n<OtherAnchor id=\"unlisted\" />\n").unwrap();
+    fs::write(
+        root.join("content/docs/source.mdx"),
+        "---\ntitle: Source\n---\n\n[ok](./target.mdx#declared) [bad](./target.mdx#unlisted)\n",
+    )
+    .unwrap();
+    let input = make_base_input(
+        root,
+        &esbuild,
+        "dist-declared-negative",
+        declared_anchor_spec(root, true),
+    );
+    let err = bundle(input).expect_err("unlisted component cannot validate a fragment");
+    assert!(err.to_string().contains("unlisted"), "{err}");
+}
+
 /// Arm `PipelineSpec` with both `linkValidation` and `transclude` enabled.
 fn armed_link_validation_with_transclude_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec {
     PipelineSpec {
         features: Some(MarkdownFeaturesConfig {
             link_validation: Some(LinkValidationConfig {
                 fail_on_broken: Some(fail_on_broken),
+                anchor_components: None,
             }),
             transclude: Some(TranscludeConfig::default()),
             ..Default::default()

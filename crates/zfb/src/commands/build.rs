@@ -9593,6 +9593,7 @@ mod tests {
                 features: Some(crate::config::MarkdownFeaturesConfig {
                     link_validation: Some(crate::config::LinkValidationConfig {
                         fail_on_broken: Some(false),
+                        anchor_components: None,
                     }),
                     ..crate::config::MarkdownFeaturesConfig::default()
                 }),
@@ -9621,6 +9622,7 @@ mod tests {
                     reading_time: Some(crate::config::ReadingTimeFeature::Bool(true)),
                     link_validation: Some(crate::config::LinkValidationConfig {
                         fail_on_broken: None,
+                        anchor_components: None,
                     }),
                     ..crate::config::MarkdownFeaturesConfig::default()
                 }),

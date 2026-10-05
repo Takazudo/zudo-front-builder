@@ -1322,6 +1322,7 @@ mod tests {
             None,
             LinkValidationConfig {
                 fail_on_broken: Some(true),
+                anchor_components: None,
             },
             false,
         );

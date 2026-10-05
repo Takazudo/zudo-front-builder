@@ -283,6 +283,7 @@ fn fail_on_broken_true_emits_error() {
     let md = "[foo](#no-such-heading)\n";
     let cfg = LinkValidationConfig {
         fail_on_broken: Some(true),
+        anchor_components: None,
     };
     let diags = run(md, source, PathBuf::from("/project"), &mut registry, cfg);
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");

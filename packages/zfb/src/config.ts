@@ -1159,6 +1159,21 @@ export type LinkValidationConfig = {
    * Default: `false` (warn-only).
    */
   failOnBroken?: boolean;
+
+  /**
+   * Exact MDX JSX component or member name to the prop that carries its DOM
+   * id, for example `{ EvidenceAnchor: "id", "UI.Anchor": "anchorId" }`.
+   *
+   * A declaration asserts that the component emits the named prop as an id.
+   * Names are case-sensitive and use the parsed MDX JSX spelling; supported
+   * Unicode identifiers remain valid. Values must be MDX JSX attribute names.
+   * Only non-empty string literal prop values are statically knowable.
+   * Each registered literal contributes one static anchor candidate for the
+   * usual fragment checks.
+   * Across presets, the first declared preset wins duplicate entries; the
+   * project config overrides entries from every preset.
+   */
+  anchorComponents?: Record<string, string>;
 };
 
 /**
