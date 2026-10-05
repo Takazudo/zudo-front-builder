@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, lstat, realpath } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 
 export const PIN = Object.freeze({
   package: 'tailwindcss', version: '4.3.2', tag: 'v4.3.2',
@@ -11,6 +11,7 @@ export const PIN = Object.freeze({
   archiveSha256: '1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3',
   sourcePrefix: 'tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/packages/tailwindcss/src/',
 });
+export const WIND_SOURCE_SHA = '8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b';
 export const digest = (data) => createHash('sha256').update(data).digest('hex');
 
 export function archiveSources(bytes) {
@@ -152,9 +153,30 @@ const issue = (n) => `https://github.com/Takazudo/zudo-front-builder/issues/${n}
 const nativeCandidate = (name) => /^(?:table(?:-|$)|inline-table$|contents$|flow-root$|list-item$|run-in$|appearance-|order-|basis-|fill-|stroke-|sr-only$|not-sr-only$|forced-color-adjust-|pointer-events-|select-)/.test(name);
 const tracking = (name) => /^(?:ring|animate)/.test(name) ? issue(3372) : /^(?:space-|divide-)/.test(name) ? issue(3386) : null;
 function windExact(name, catalog) {
-  return catalog.entries.find((entry) => entry.examples?.some((example) => example.candidate === name) ||
-    entry.acceptedValues?.some((value) => value.kind === 'exact' && (value.suffix === null ? entry.root : `${entry.root}-${value.suffix}`) === name));
+  return catalog.entries.find((entry) => entry.acceptedValues?.some((value) => {
+    if (!['exact', 'keyword'].includes(value.kind)) return false;
+    const positive = value.suffix === null ? entry.root : `${entry.root}-${value.suffix}`;
+    if (name === positive) return true;
+    return entry.negativePolicy === 'allowed' && name === `-${positive}` && value.suffix !== 'auto';
+  }));
 }
+
+const axisSemantics = {
+  mx: ['margin-inline', 'margin-left/right'], my: ['margin-block', 'margin-top/bottom'],
+  px: ['padding-inline', 'padding-left/right'], py: ['padding-block', 'padding-top/bottom'],
+  'inset-x': ['inset-inline', 'left/right'], 'inset-y': ['inset-block', 'top/bottom'],
+  'scroll-mx': ['scroll-margin-inline', 'scroll-margin-left/right'],
+  'scroll-my': ['scroll-margin-block', 'scroll-margin-top/bottom'],
+};
+function axisReview(kind, name) {
+  if (!kind.startsWith('utility')) return null;
+  const normalized = name.startsWith('-') ? name.slice(1) : name;
+  const root = Object.keys(axisSemantics).find((value) => normalized === value || normalized.startsWith(`${value}-`));
+  if (!root) return null;
+  const [upstream, wind] = axisSemantics[root];
+  return `Tailwind ${upstream} uses logical axes; Wind ${wind} uses physical axes. Review horizontal and vertical writing modes.`;
+}
+
 function sourceEvidence(windSha, catalog, profile, upstream) {
   return { status: 'source-inspected', windGitSha: windSha, windSpecVersion: catalog.specVersion,
     windSpecRevision: catalog.specRevision, referenceVersion: upstream.pin.version,
@@ -164,6 +186,7 @@ function sourceEvidence(windSha, catalog, profile, upstream) {
     caseIds: [], buildSha: null, browserEnvironment: null, reportId: null };
 }
 export function makeInventory(upstream, catalog, profile, windSha, variantSource, docsEvidence, runtime) {
+  if (windSha !== WIND_SOURCE_SHA) throw Error('Unreviewed Wind source SHA');
   if (runtime?.package !== 'tailwindcss' || runtime.version !== upstream.pin.version || runtime.artifactSha256 !== '3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62') throw Error('Runtime keyset identity mismatch');
   if (!variantSource?.includes('pub struct VariantVocabulary')) throw Error('Wind variant source missing');
   const windStates = [...variantSource.match(/pub\(crate\) fn is_state[\s\S]*?\[([\s\S]*?)\]/)?.[1].matchAll(/\"([^\"]+)\"/g) ?? []].map((m) => m[1]);
@@ -185,16 +208,17 @@ export function makeInventory(upstream, catalog, profile, windSha, variantSource
     const id = `${kind}:${name}`;
     const constraint = kind === 'utility-pattern' ? (upstream.functionalConstraints[name] ?? { domain: 'runtime-registered-root-source-review', themeKeys: [], bareValueHandler: false, negative: name.startsWith('-'), fractions: false, staticValueKeys: [] }) : null;
     const exact = kind === 'utility-static' ? windExact(name, catalog) : null;
-    const family = kind === 'utility-pattern' ? catalog.entries.find((e) => e.root === name) : null;
+    const family = kind === 'utility-pattern' ? catalog.entries.find((e) => e.root === name || (name.startsWith('-') && e.root === name.slice(1) && e.negativePolicy === 'allowed')) : null;
     const candidate = kind.startsWith('utility') && nativeCandidate(name);
-    const special = name === 'mx-auto';
+    const axisDifference = axisReview(kind, name);
+    const special = Boolean(axisDifference && exact);
     const variant = variantMapping(kind, name);
     const mapping = variant ?? (exact ? { kind: 'exact-catalog', catalogId: exact.id, wind: name } : family ? { kind: 'root-only-unverified', catalogId: family.id, wind: `${name}-<value>` } : null);
     return { id, upstream: { kind, name, representation: kind === 'utility-pattern' ? `${name}-<value>` : kind === 'variant-functional' ? (name === '@' ? '@<container-name>' : `${name}-<value>`) : kind === 'variant-compound' ? `${name}-<variant>` : name, constraints: constraint },
       windMapping: mapping, configurationRequirement: variant?.requirement ?? (kind === 'utility-pattern' ? (constraint?.themeKeys.length ? `Upstream theme keys: ${constraint.themeKeys.join(', ')}; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant.` : 'Pattern domain requires case-specific source review; no default token guarantee.') : family?.tokenCategories?.length ? `Configure Wind ${family.tokenCategories.join(', ')} token for named values.` : 'No configuration established for this row.'),
       implementation: variant ? 'source-inspected-variant-parser' : exact ? 'source-inspected-exact-registration' : family ? 'root-collision-unverified' : 'not-established',
       disposition: special ? 'reviewed-difference' : variant ? 'candidate-mapping-untested' : kind.startsWith('variant') ? 'variant-unmapped' : exact ? 'candidate-mapping-untested' : family ? 'requires-review' : candidate ? 'native-css-review-candidate' : tracking(name) ? 'excluded-deferred' : 'unmapped-upstream-registration',
-      semanticDifference: special ? 'Tailwind margin-inline:auto; Wind margin-left/right:auto. Test horizontal and vertical writing modes.' : null,
+      semanticDifference: axisDifference,
       alternative: candidate ? 'Review native CSS and accessibility behavior; no automatic adoption.' : null,
       trackingIssue: tracking(name), evidence: sourceEvidence(windSha, catalog, profile, upstream) };
   });
@@ -248,6 +272,7 @@ export function validateInventory(inventory, upstream, catalog, profile, variant
   const fail = (reason) => { throw Error(reason); };
   if (inventory.schemaVersion !== 1 || inventory.kind !== 'wind-compatibility-inventory') fail('Inventory schema');
   if (JSON.stringify(inventory.upstreamPin) !== JSON.stringify(upstream.pin) || JSON.stringify(inventory.upstreamSourceDigests) !== JSON.stringify(upstream.sourceDigests)) fail('Stale upstream source');
+  if (inventory.wind?.gitSha !== WIND_SOURCE_SHA) fail('Unreviewed Wind source SHA');
   if (inventory.runtimeDigest !== digest(JSON.stringify(runtime))) fail('Runtime keyset drift');
   if (inventory.catalogDigest !== digest(JSON.stringify(catalog)) || inventory.profileDigest !== digest(JSON.stringify(profile))) fail('Catalog/profile content drift');
   if (inventory.wind.specVersion !== catalog.specVersion || inventory.wind.specRevision !== catalog.specRevision || inventory.wind.catalogEntryCount !== catalog.entries.length) fail('Stale Wind catalog');
@@ -288,16 +313,20 @@ export function validateInventory(inventory, upstream, catalog, profile, variant
     if (row.id !== `${row.upstream.kind}:${row.upstream.name}` || !row.disposition || !row.configurationRequirement || !row.evidence || !row.implementation) fail(`Incomplete row ${row.id}`);
     if (row.windMapping && (!row.windMapping.wind || (row.windMapping.catalogId && !catalogIds.has(row.windMapping.catalogId)))) fail(`Stale mapping ${row.id}`);
     if (row.windMapping?.kind === 'exact-catalog' && windExact(row.upstream.name, catalog)?.id !== row.windMapping.catalogId) fail(`Incorrect exact mapping ${row.id}`);
-    if (row.windMapping?.kind === 'root-only-unverified' && !catalog.entries.some((entry) => entry.id === row.windMapping.catalogId && entry.root === row.upstream.name)) fail(`Incorrect root mapping ${row.id}`);
+    if (row.windMapping?.kind === 'root-only-unverified' && !catalog.entries.some((entry) => entry.id === row.windMapping.catalogId && (entry.root === row.upstream.name || (row.upstream.name.startsWith('-') && entry.root === row.upstream.name.slice(1) && entry.negativePolicy === 'allowed')))) fail(`Incorrect root mapping ${row.id}`);
     if (row.upstream.kind === 'utility-pattern' && JSON.stringify(row.upstream.constraints) !== JSON.stringify(upstream.functionalConstraints[row.upstream.name] ?? { domain: 'runtime-registered-root-source-review', themeKeys: [], bareValueHandler: false, negative: row.upstream.name.startsWith('-'), fractions: false, staticValueKeys: [] })) fail(`Stale pattern constraint ${row.id}`);
     if (row.implementation === 'source-inspected-exact-registration' && !row.windMapping) fail(`Missing mapping ${row.id}`);
     if (row.evidence.status !== 'source-inspected' || row.evidence.windGitSha !== inventory.wind.gitSha || row.evidence.referenceVersion !== upstream.pin.version || row.evidence.reportId !== null || row.evidence.browserEnvironment !== null) fail(`Invalid evidence ${row.id}`);
     if (row.trackingIssue && !/^https:\/\/github\.com\/Takazudo\/zudo-front-builder\/issues\/\d+$/.test(row.trackingIssue)) fail(`Stale tracking syntax ${row.id}`);
   }
+  if (!variantSource || !docsEvidence) fail('Canonical replay inputs missing');
+  const canonical = makeInventory(upstream, catalog, profile, WIND_SOURCE_SHA, variantSource, docsEvidence, runtime);
+  if (JSON.stringify(inventory) !== JSON.stringify(canonical)) fail('Inventory differs from reviewed source-derived contract');
   return { rows: inventory.rows.length, kinds: Object.fromEntries(['utility-static','utility-pattern','variant-static','variant-functional','variant-compound'].map((k) => [k, inventory.rows.filter((r) => r.upstream.kind === k).length])) };
 }
 
 export async function verifyRuntime(runtime, tarballPath, modulePath) {
+  if (basename(modulePath) !== 'lib.mjs' || await realpath(modulePath) !== resolve(await realpath(dirname(modulePath)), 'lib.mjs')) throw Error('Unverified compiler entrypoint');
   const tarball = await readFile(tarballPath);
   if (digest(tarball) !== runtime.artifactSha256) throw Error('Pinned npm tarball digest mismatch');
   const tar = gunzipSync(tarball);
@@ -314,7 +343,9 @@ export async function verifyRuntime(runtime, tarballPath, modulePath) {
   }
   if (manifest?.name !== runtime.package || manifest?.version !== runtime.version || !modules.has('lib.mjs')) throw Error('Npm package identity mismatch');
   for (const [name, bytes] of modules) {
-    const extracted = await readFile(resolve(dirname(modulePath), name));
+    const file = resolve(dirname(modulePath), name);
+    if (!(await lstat(file)).isFile() || await realpath(file) !== resolve(await realpath(dirname(file)), name)) throw Error(`Unverified compiler module ${name}`);
+    const extracted = await readFile(file);
     if (digest(bytes) !== digest(extracted)) throw Error(`Extracted compiler module ${name} differs from tarball`);
   }
   const { __unstable__loadDesignSystem } = await import(pathToFileURL(modulePath).href);

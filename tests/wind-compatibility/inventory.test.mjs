@@ -88,6 +88,44 @@ test('reverse Wind membership and content pins catch same-count changes', () => 
   assert.throws(() => validateInventory(wrongMapping, upstream, catalog, profile, variantSource, docsEvidence, runtime));
 });
 
+test('every runtime static keyword intersection has its exact Wind catalog mapping', () => {
+  let intersections = 0;
+  for (const row of inventory.rows.filter((item) => item.upstream.kind === 'utility-static'))
+    for (const entry of catalog.entries)
+      for (const value of entry.acceptedValues ?? [])
+        if (value.kind === 'keyword' && row.upstream.name === `${entry.root}-${value.suffix}`) {
+          intersections++;
+          assert.equal(row.windMapping?.catalogId, entry.id, row.id);
+          assert.equal(row.implementation, 'source-inspected-exact-registration', row.id);
+        }
+  assert.equal(intersections, 238);
+  for (const name of ['mx-auto', 'my-auto', 'm-auto', 'cursor-pointer', 'h-full', '-m-px'])
+    assert.equal(inventory.rows.find((row) => row.id === `utility-static:${name}`).windMapping?.kind, 'exact-catalog');
+});
+
+test('related logical and physical axis cases remain explicit reviewed differences', () => {
+  for (const name of ['mx-auto', 'my-auto', 'mx-px', 'my-px', 'px-px', 'py-px', 'inset-x-auto', 'scroll-mx-px']) {
+    const row = inventory.rows.find((item) => item.id === `utility-static:${name}`);
+    assert.match(row.semanticDifference, /logical axes.*physical axes/);
+    assert.equal(row.disposition, 'reviewed-difference');
+  }
+  for (const name of ['mx', 'my', 'px', 'py', '-mx', '-my', '-inset-x', '-scroll-mx']) {
+    const row = inventory.rows.find((item) => item.id === `utility-pattern:${name}`);
+    assert.match(row.semanticDifference, /logical axes.*physical axes/);
+    assert.equal(row.disposition, 'requires-review');
+  }
+});
+
+test('forged evidence, semantic differences, mappings and pattern claims fail canonical replay', () => {
+  const mutate = (change) => { const value = copy(); change(value); assert.throws(() => validateInventory(value, upstream, catalog, profile, variantSource, docsEvidence, runtime), /reviewed source-derived contract/); };
+  mutate((value) => { const row = value.profileCases.find((item) => item.id === 'profile:block'); row.evidence.status = 'independently-differential-tested'; row.evidence.reportId = 'fabricated'; row.evidence.browserEnvironment = 'fabricated'; });
+  mutate((value) => { value.profileCases.find((item) => item.id === 'profile:contents-gap').gapKind = null; });
+  mutate((value) => { value.rows.find((item) => item.id === 'utility-static:mx-auto').semanticDifference = null; });
+  mutate((value) => { value.rows.find((item) => item.id === 'variant-static:hover').windMapping.wind = 'disabled'; });
+  mutate((value) => { const row = value.configuredPatterns.find((item) => item.id === 'pattern:arbitrary'); row.wind = '<any-arbitrary>'; row.disposition = 'supported'; });
+  mutate((value) => { value.windEntries[0].evidence.reportId = 'fabricated'; });
+});
+
 test('profile evidence never claims an executed report or browser', () => {
   for (const row of [...inventory.rows, ...inventory.profileCases]) {
     assert.equal(row.evidence.status, 'source-inspected');
@@ -115,5 +153,39 @@ if (process.env.WIND_NPM_TARBALL && process.env.WIND_COMPILER_MODULE) test('tamp
     assert(chunk);
     await writeFile(join(directory, chunk), 'tampered');
     await assert.rejects(verifyRuntime(runtime, process.env.WIND_NPM_TARBALL, join(directory, 'lib.mjs')), /differs from tarball/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+if (process.env.WIND_NPM_TARBALL && process.env.WIND_COMPILER_MODULE) test('unverified extra compiler entrypoint is rejected', async () => {
+  const { mkdtemp, readdir, copyFile, writeFile, rm } = await import('node:fs/promises');
+  const { dirname, join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { verifyRuntime } = await import('../../scripts/wind-compatibility/inventory.mjs');
+  const directory = await mkdtemp(join(tmpdir(), 'wind-inventory-entry-'));
+  try {
+    for (const name of (await readdir(dirname(process.env.WIND_COMPILER_MODULE))).filter((item) => item.endsWith('.mjs')))
+      await copyFile(join(dirname(process.env.WIND_COMPILER_MODULE), name), join(directory, name));
+    await writeFile(join(directory, 'evil.mjs'), 'export const fake = true;');
+    await assert.rejects(verifyRuntime(runtime, process.env.WIND_NPM_TARBALL, join(directory, 'evil.mjs')), /Unverified compiler entrypoint/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+if (process.env.WIND_NPM_TARBALL && process.env.WIND_COMPILER_MODULE) test('symlinked lib entrypoint cannot redirect imported chunks', async () => {
+  const { mkdtemp, readdir, copyFile, symlink, rm } = await import('node:fs/promises');
+  const { dirname, join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { verifyRuntime } = await import('../../scripts/wind-compatibility/inventory.mjs');
+  const directory = await mkdtemp(join(tmpdir(), 'wind-inventory-symlink-'));
+  try {
+    const safe = join(directory, 'safe');
+    const alternate = join(directory, 'alternate');
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(safe); await mkdir(alternate);
+    for (const name of (await readdir(dirname(process.env.WIND_COMPILER_MODULE))).filter((item) => item.endsWith('.mjs')))
+      await copyFile(join(dirname(process.env.WIND_COMPILER_MODULE), name), join(safe, name));
+    await copyFile(process.env.WIND_COMPILER_MODULE, join(alternate, 'lib.mjs'));
+    await rm(join(safe, 'lib.mjs'));
+    await symlink(join(alternate, 'lib.mjs'), join(safe, 'lib.mjs'));
+    await assert.rejects(verifyRuntime(runtime, process.env.WIND_NPM_TARBALL, join(safe, 'lib.mjs')), /Unverified compiler entrypoint/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
-import { archiveSources, extractSurface, makeInventory, validateInventory, loadJson, digest, verifyRuntime } from './inventory.mjs';
+import { archiveSources, extractSurface, makeInventory, validateInventory, loadJson, digest, verifyRuntime, WIND_SOURCE_SHA } from './inventory.mjs';
 
 const root = new URL('../../', import.meta.url);
 const at = (path) => new URL(path, root);
@@ -19,7 +18,7 @@ if (command === 'extract') {
   if (!process.argv[4] || !process.argv[5]) throw Error('extract requires npm tarball and verified extracted dist/lib.mjs paths');
   await verifyRuntime(runtime, process.argv[4], process.argv[5]);
   const upstream = extractSurface(archiveSources(await readFile(archive)));
-  const windSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root }).toString().trim();
+  const windSha = WIND_SOURCE_SHA;
   const inventory = makeInventory(upstream, catalog, profile, windSha, variantSource, docsEvidence, runtime);
   validateInventory(inventory, upstream, catalog, profile, variantSource, docsEvidence, runtime);
   await writeFile(sourcePath, JSON.stringify(upstream, null, 2) + '\n');
