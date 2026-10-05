@@ -79,6 +79,36 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   await consumer.click();
   await expect(consumer).toHaveText("Consumer A: 1");
 
+  const mdxCounter = page.locator("#mdx-counter");
+  await expect(mdxCounter).toHaveText("Counter: 0");
+  const defaultMapIsland = page.locator('[data-zfb-island="Counter"]');
+  await expect(defaultMapIsland).toHaveCount(1);
+  await expect(defaultMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await defaultMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe("BODY");
+  expect(
+    await mdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "Counter", parentElementCount: 1 });
+  await mdxCounter.click();
+  await expect(mdxCounter).toHaveText("Counter: 1");
+
+  const namedMdxCounter = page.locator("#mdx-named-counter");
+  await expect(namedMdxCounter).toHaveText("Named counter: 0");
+  const namedMapIsland = page.locator('[data-zfb-island="NamedCounter"]');
+  await expect(namedMapIsland).toHaveCount(1);
+  await expect(namedMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await namedMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe("BODY");
+  expect(
+    await namedMdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "NamedCounter", parentElementCount: 1 });
+  await namedMdxCounter.click();
+  await expect(namedMdxCounter).toHaveText("Named counter: 1");
+
   const localHelper = page.locator("#live-counter").first();
   await expect(localHelper).toHaveText("Live helper: LOCAL_LIVE_RESOURCE 0");
   await localHelper.click();
