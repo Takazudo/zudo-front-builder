@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 8,
+  "specRevision": 9,
   "entries": [
     {
       "id": "v1.block",
@@ -8304,6 +8304,71 @@
           "kind": "keyword",
           "suffix": "wait",
           "emittedValue": "wait"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "help",
+          "emittedValue": "help"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "none",
+          "emittedValue": "none"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "progress",
+          "emittedValue": "progress"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "crosshair",
+          "emittedValue": "crosshair"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "cell",
+          "emittedValue": "cell"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "copy",
+          "emittedValue": "copy"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "alias",
+          "emittedValue": "alias"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "no-drop",
+          "emittedValue": "no-drop"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "context-menu",
+          "emittedValue": "context-menu"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "vertical-text",
+          "emittedValue": "vertical-text"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "all-scroll",
+          "emittedValue": "all-scroll"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "zoom-in",
+          "emittedValue": "zoom-in"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "zoom-out",
+          "emittedValue": "zoom-out"
         },
         {
           "kind": "keyword",

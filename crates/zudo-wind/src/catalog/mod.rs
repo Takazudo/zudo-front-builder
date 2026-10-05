@@ -303,7 +303,7 @@ mod tests {
             ("ease-[ease-in]", "ease-[bogus]"),
             ("translate-x-0", "translate-x-1/0"),
             ("rotate-90", "rotate-361"),
-            ("cursor-pointer", "cursor-zoom-in"),
+            ("cursor-pointer", "cursor-diagonal-resize"),
             ("list-inside", "list-start"),
             ("aspect-1/2", "aspect-0/2"),
             ("scroll-mt-2", "scroll-mt-missing"),

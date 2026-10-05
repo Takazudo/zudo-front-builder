@@ -2,6 +2,22 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { openFixture, readReport, readStylesheet } from "./helpers.mjs";
 
+const CURSOR_KEYWORDS = [
+  "help",
+  "none",
+  "progress",
+  "crosshair",
+  "cell",
+  "copy",
+  "alias",
+  "no-drop",
+  "context-menu",
+  "vertical-text",
+  "all-scroll",
+  "zoom-in",
+  "zoom-out",
+];
+
 const ADDED = [
   ["wrap-anywhere", "v1.wrap-anywhere"],
   ["decoration-panel", "v1.decoration.color"],
@@ -11,11 +27,12 @@ const ADDED = [
   ["md:visible", "v1.visible"],
   ["cursor-col-resize", "v1.cursor"],
   ["focus:cursor-row-resize", "v1.cursor"],
+  ...CURSOR_KEYWORDS.map((keyword) => [`cursor-${keyword}`, "v1.cursor"]),
   ["underline-offset-4", "v1.underline-offset"],
   ["hover:underline-offset-[6px]", "v1.underline-offset"],
 ];
 
-test("W-A09 applies the six added utility groups under base, state, and media variants", async ({
+test("W-A09 applies added utility groups under base, state, and media variants", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -43,6 +60,14 @@ test("W-A09 applies the six added utility groups under base, state, and media va
   await expect(visibility).toHaveCSS("visibility", "visible");
   await page.setViewportSize({ width: 600, height: 768 });
   await expect(visibility).toHaveCSS("visibility", "hidden");
+});
+
+test("W-A09 computes each added standard cursor keyword", async ({ page }) => {
+  await openFixture(page, "w-a09");
+
+  for (const keyword of CURSOR_KEYWORDS) {
+    await expect(page.locator(`#cursor-${keyword}`)).toHaveCSS("cursor", keyword);
+  }
 });
 
 test("W-A09 reports explain metadata, a clean audit, and deterministic output", async () => {
