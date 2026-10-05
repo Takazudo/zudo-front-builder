@@ -36,6 +36,10 @@ Only concrete targets of reachable `<Island>` boundaries receive public markers.
 
 The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
 
+The scanner also resolves edges registered by plugin `setup`: exact `addAlias` rewrites and `addVirtualModule` specifiers. A `tsconfig.json` `compilerOptions.paths` mapping takes priority when it resolves a matching specifier; if every mapped target misses, lookup falls through to the exact plugin alias, then a registered virtual module, followed by `baseUrl` and package lookup.
+
+A virtual module can statically import or re-export a real module, and the scanner follows that file. The module carrying `"use client"` must be a real file, though it may re-export a function defined in another real file. The exported function still needs to be the one child of a reachable `<Island>` boundary; the directive by itself does not register a target. A `"use client"` directive or `import.meta.glob` directly inside a virtual source is warned about and skipped. Put those constructs in real files and reach them through the virtual module. Bare imports from inside a virtual source that resolve to an installed or workspace package, or to another virtual module, are also skipped. See [Plugins](./plugins.mdx) for the `setup` registration details.
+
 For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child:
 
 ```tsx
