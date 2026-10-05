@@ -566,6 +566,7 @@ export default defineConfig({
 ## 未対応の機能と代替方法
 
 - 暗黙のパレットや余白スケールはありません。プロジェクトの値を `wind.tokens` に宣言します。
+- shadow に色を合成する機能はありません。`shadow-<color>` と有効な `shadow-<color>/<opacity>`（`/0`～`/100`）は `colors` トークンを shadow に適用しません。色を `shadows` トークンに含めるか、完全な `box-shadow` を CSS に記述してクラスを予約してください。同名の `colors` と `shadows` トークンがある場合、slash のない `shadow-<name>` は shadow トークンとして解決しますが、slash 修飾子は未対応です。`shadow-none` と `shadow-[0_1px_2px_#000]` のような完全な任意値は使えます。
 - ring、animation、scale、transform 文字列、任意プロパティのユーティリティはありません。手書きの CSS または CSS Module に宣言します。
 - 属性や任意セレクタのバリアント、名前付き group や peer はありません。手書きのセレクタを使います。
 - プラグイン定義のクラスや `@apply` 展開はありません。対応するユーティリティにはカタログの候補を使い、独自の宣言は CSS に残します。

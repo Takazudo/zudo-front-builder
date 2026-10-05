@@ -190,6 +190,32 @@ impl Catalog {
             .copied()
             .collect();
         if successful.is_empty() {
+            // `shadow` is a catalog root, so the foreign-family vocabulary
+            // cannot explain this colors-only suffix.
+            let valid_shadow_color_opacity = candidate
+                .utility
+                .slash_modifier
+                .as_deref()
+                .is_none_or(|modifier| modifier.parse::<u8>().is_ok_and(|opacity| opacity <= 100));
+            if !candidate.utility.negative
+                && candidate.utility.arbitrary_value.is_none()
+                && valid_shadow_color_opacity
+            {
+                if let Some((_, suffix)) = leading.iter().copied().find(|(entry, suffix)| {
+                    entry.root == "shadow"
+                        && !suffix.is_empty()
+                        && tokens.contains(crate::TokenCategory::Color, suffix)
+                        && !tokens.contains(crate::TokenCategory::Shadow, suffix)
+                }) {
+                    return invalid(
+                        candidate,
+                        origin,
+                        DiagnosticCode::Zw004,
+                        &shadow_color_hint(candidate, suffix),
+                        Some("R20"),
+                    );
+                }
+            }
             // A vocabulary name can share a catalog root's prefix
             // (`inline-table` under `inline`); after a catalog value fails, it
             // is foreign, not a bad value. Successful configured tokens above
@@ -749,6 +775,13 @@ fn attempted_categories_message(
         "value is not valid for any of {} or {last}",
         properties.join(", ")
     ))
+}
+
+fn shadow_color_hint(candidate: &Candidate, color: &str) -> String {
+    let class = serde_json::to_string(&candidate.raw).expect("candidate is a string");
+    format!(
+        "{color} is a colors token, but zudo-wind v1 does not compose colors into shadow values. The shadow root accepts complete values: none, arbitrary box-shadow values, or shadows tokens. Move the tint into a shadows token, or author the complete box-shadow in CSS and reserve {class} with wind.authoredClasses"
+    )
 }
 
 fn is_color_entry(entry: &CatalogEntry) -> bool {
