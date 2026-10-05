@@ -229,6 +229,33 @@ async function findFrame(page, index) {
   return { locator, frame };
 }
 
+// Locator element evaluation initializes Playwright's injected script in the
+// script-disabled srcdoc. Its capture listeners are then blocked by Chromium
+// during real input. Direct Frame.evaluate reads the same DOM styles without
+// installing those listeners; keep the pointer and keyboard actions genuine.
+async function readComputedFrameStyle(frame, selector, properties) {
+  return frame.evaluate(
+    ({ selector: targetSelector, properties: requestedProperties }) => {
+      const element = document.querySelector(targetSelector);
+      if (!element) throw new Error(`Missing preview element: ${targetSelector}`);
+      const style = getComputedStyle(element);
+      return Object.fromEntries(requestedProperties.map((property) => [property, style[property]]));
+    },
+    { selector, properties },
+  );
+}
+
+async function readFrameFocusState(frame, selector) {
+  return frame.evaluate((targetSelector) => {
+    const element = document.querySelector(targetSelector);
+    if (!element) throw new Error(`Missing preview element: ${targetSelector}`);
+    return {
+      active: document.activeElement === element,
+      focusVisible: element.matches(":focus-visible"),
+    };
+  }, selector);
+}
+
 async function inspectFrame(frame) {
   return frame.evaluate(() => {
     const demo = document.querySelector(".wind-demo") ?? document.body.firstElementChild;
@@ -764,29 +791,39 @@ async function assertRepresentativeUtilityBehavior(page, testCase) {
 
   if (testCase.family === "duration") {
     const { frame } = await frameForExample(page, testCase, "compare-durations");
+    const buttonSelector = ".wind-demo-trigger";
     const button = frame.locator(".wind-demo-trigger").first();
-    const initial = await button.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return { duration: style.transitionDuration, easing: style.transitionTimingFunction };
-    });
-    assert.deepEqual(initial, { duration: "0.15s", easing: "ease" });
+    const initial = await readComputedFrameStyle(frame, buttonSelector, [
+      "transitionDuration",
+      "transitionTimingFunction",
+    ]);
+    assert.deepEqual(initial, { transitionDuration: "0.15s", transitionTimingFunction: "ease" });
 
     await button.hover();
     await expect
-      .poll(() => button.evaluate((element) => getComputedStyle(element).translate))
+      .poll(
+        async () => (await readComputedFrameStyle(frame, buttonSelector, ["translate"])).translate,
+      )
       .toContain("8px");
 
     await frame.locator("body").click({ position: { x: 2, y: 2 } });
     await page.keyboard.press("Tab");
-    await expect(button).toBeFocused();
-    assert.equal(await button.evaluate((element) => element.matches(":focus-visible")), true);
+    const focusState = await readFrameFocusState(frame, buttonSelector);
+    assert.equal(focusState.active, true);
+    assert.equal(focusState.focusVisible, true);
     await expect
-      .poll(() => button.evaluate((element) => getComputedStyle(element).translate))
+      .poll(
+        async () => (await readComputedFrameStyle(frame, buttonSelector, ["translate"])).translate,
+      )
       .toContain("8px");
 
     await page.emulateMedia({ reducedMotion: "reduce" });
     await expect
-      .poll(() => button.evaluate((element) => getComputedStyle(element).transitionDuration))
+      .poll(
+        async () =>
+          (await readComputedFrameStyle(frame, buttonSelector, ["transitionDuration"]))
+            .transitionDuration,
+      )
       .toBe("0s");
   }
 
@@ -861,12 +898,14 @@ async function assertGuideVariants(page, testCase) {
   const mobile = controls.getByRole("button", { name: testCase.labels.mobile });
   const full = controls.getByRole("button", { name: testCase.labels.full });
   await full.click();
-  const columnCount = () =>
-    responsive.frame
-      .locator(".wind-demo-board")
-      .evaluate(
-        (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
-      );
+  const columnCount = async () => {
+    const { gridTemplateColumns } = await readComputedFrameStyle(
+      responsive.frame,
+      ".wind-demo-board",
+      ["gridTemplateColumns"],
+    );
+    return gridTemplateColumns.trim().split(/\s+/).length;
+  };
   await expect.poll(columnCount).toBe(2);
   await mobile.click();
   await expect(mobile).toHaveAttribute("aria-pressed", "true");
@@ -875,15 +914,16 @@ async function assertGuideVariants(page, testCase) {
   await expect.poll(columnCount).toBe(2);
 
   const { frame: darkFrame } = await frameForExample(page, testCase, "dark-surface");
-  const darkSurface = darkFrame.locator('[data-theme="dark"]');
-  const colors = await darkSurface.evaluate((element) => {
+  const colors = await darkFrame.evaluate((selector) => {
+    const element = document.querySelector(selector);
+    if (!element) throw new Error(`Missing preview element: ${selector}`);
     const style = getComputedStyle(element);
     return {
       attribute: element.getAttribute("data-theme"),
       background: style.backgroundColor,
       color: style.color,
     };
-  });
+  }, '[data-theme="dark"]');
   assert.deepEqual(colors, {
     attribute: "dark",
     background: "rgb(38, 52, 73)",
@@ -892,19 +932,20 @@ async function assertGuideVariants(page, testCase) {
 
   const { frame: relationFrame } = await frameForExample(page, testCase, "group-and-peer");
   const group = relationFrame.locator(".wind-demo-link.group");
-  const groupedText = group.locator(".group-hover\\:text-accent");
-  const beforeHover = await groupedText.evaluate((element) => getComputedStyle(element).color);
+  const groupTextColor = async () =>
+    (await readComputedFrameStyle(relationFrame, ".group-hover\\:text-accent", ["color"])).color;
+  const beforeHover = await groupTextColor();
   await group.hover();
-  await expect
-    .poll(() => groupedText.evaluate((element) => getComputedStyle(element).color))
-    .toBe("rgb(91, 91, 214)");
+  await expect.poll(groupTextColor).toBe("rgb(91, 91, 214)");
   assert.notEqual(beforeHover, "rgb(91, 91, 214)");
 
   const peer = relationFrame.locator("input.peer");
-  const peerText = relationFrame.locator(".peer-focus\\:text-accent");
   await peer.focus();
   await expect
-    .poll(() => peerText.evaluate((element) => getComputedStyle(element).color))
+    .poll(
+      async () =>
+        (await readComputedFrameStyle(relationFrame, ".peer-focus\\:text-accent", ["color"])).color,
+    )
     .toBe("rgb(91, 91, 214)");
 }
 
