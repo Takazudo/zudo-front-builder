@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -65,10 +65,39 @@ test("manifest check requires a registry-key position, not a stray marker string
   );
 });
 
-test("positive fixture passes all eight route/marker pairs and both halves", () => {
+test(`positive fixture passes all ${EXPECTED_ISLANDS.length * 2} route/marker pairs and both halves`, () => {
   const dist = fixtureDist();
   try {
     assert.deepEqual(checkIslandMarkers(dist).findings, []);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+
+test("the EN and JA pilot routes require zudo-doc HtmlPreview island markers", () => {
+  const dist = fixtureDist();
+  try {
+    for (const localePrefix of ["", "ja/"]) {
+      for (const family of ["gap", "padding"]) {
+        assert.ok(
+          EXPECTED_ISLANDS.some(
+            ({ route, marker }) =>
+              route === `docs/zudo-wind/utilities/${family}` &&
+              marker === "HtmlPreviewWrapperInner",
+          ),
+        );
+        const htmlPath = join(
+          dist,
+          localePrefix,
+          "docs",
+          "zudo-wind",
+          "utilities",
+          family,
+          "index.html",
+        );
+        assert.match(readFileSync(htmlPath, "utf8"), /data-zfb-island=HtmlPreviewWrapperInner/);
+      }
+    }
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }

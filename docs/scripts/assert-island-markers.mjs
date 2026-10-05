@@ -4,13 +4,16 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Keep the route/marker contract in one place. Adding another playground is a
-// single-line change here; both the default locale and `ja` are expanded below.
+// Keep the route/marker contract in one place; both the default locale and
+// `ja` are expanded below. The wind examples use zudo-doc's installed
+// HtmlPreview island, so a static page marker alone is not enough.
 export const EXPECTED_ISLANDS = [
   { route: "docs/playground/render", marker: "RenderPlayground" },
   { route: "docs/playground/compile", marker: "CompilePlayground" },
   { route: "docs/playground/parse", marker: "ParsePlayground" },
   { route: "docs/playground/highlight", marker: "HighlightPlayground" },
+  { route: "docs/zudo-wind/utilities/gap", marker: "HtmlPreviewWrapperInner" },
+  { route: "docs/zudo-wind/utilities/padding", marker: "HtmlPreviewWrapperInner" },
 ];
 
 export const EXPECTED_LOCALES = ["", "ja/"];
