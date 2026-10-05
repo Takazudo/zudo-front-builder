@@ -313,6 +313,138 @@ export const Page = () => (
 }
 
 #[test]
+fn literal_punctuation_is_filtered_only_outside_balanced_arbitrary_forms() {
+    let source = r#"const noise = "class=\"swatch\" system-ui, /* */ @media + * = 100% #fff";
+const kept = "text-[#fff] w-[calc(100%+2px)] content-['a,b+#@%'] bg-[url('data:image/svg+xml,#fff')] クリア";
+const broken = "w-[calc(100%+2px]";
+const node = <div className="system-ui, @media w-[calc(100%+2px]" />;"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Tsx);
+    let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+    for noise in [
+        "class=\"swatch\"",
+        "system-ui,",
+        "/*",
+        "*/",
+        "@media",
+        "+",
+        "*",
+        "=",
+        "100%",
+        "#fff",
+    ] {
+        assert!(
+            !result
+                .candidates
+                .iter()
+                .any(|candidate| candidate.text == noise
+                    && candidate
+                        .occurrences
+                        .iter()
+                        .any(|o| o.position_kind == PositionKind::Literal)),
+            "literal {noise:?}: {found:?}"
+        );
+    }
+    for kept in [
+        "text-[#fff]",
+        "w-[calc(100%+2px)]",
+        "content-['a,b+#@%']",
+        "bg-[url('data:image/svg+xml,#fff')]",
+        "クリア",
+    ] {
+        assert!(found.contains(&kept), "missing {kept:?}: {found:?}");
+    }
+    assert!(result
+        .candidates
+        .iter()
+        .find(|c| c.text == "w-[calc(100%+2px]")
+        .is_some_and(|c| c
+            .occurrences
+            .iter()
+            .all(|o| o.position_kind == PositionKind::Class)));
+    for class_error in ["system-ui,", "@media"] {
+        assert!(result
+            .candidates
+            .iter()
+            .find(|c| c.text == class_error)
+            .is_some_and(|c| c
+                .occurrences
+                .iter()
+                .any(|o| o.position_kind == PositionKind::Class)));
+    }
+}
+
+#[test]
+fn embedded_markup_templates_use_class_attributes_without_raw_tokens() {
+    for (source, kind) in [
+        (
+            r#"const html = '<div class=\"px-2\" style=\"color: red\">x</div>'"#,
+            SourceKind::Ts,
+        ),
+        (
+            r#"<Preview html={`<div class="px-2" style="color: red">x</div>`} />"#,
+            SourceKind::Mdx,
+        ),
+        (
+            r#"<Preview html={`<div className="px-2">x</div>`} />"#,
+            SourceKind::Tsx,
+        ),
+    ] {
+        let result = extract_candidates(source.as_bytes(), kind);
+        let class = result
+            .candidates
+            .iter()
+            .find(|c| c.text == "px-2")
+            .expect("embedded class");
+        assert_eq!(class.occurrences.len(), 1, "{kind:?}: {result:?}");
+        assert_eq!(class.occurrences[0].position_kind, PositionKind::Class);
+        assert!(
+            !result
+                .candidates
+                .iter()
+                .any(|c| c.text == "class=\"px-2\"" || c.text == "style=\"color:"),
+            "{kind:?}: {result:?}"
+        );
+    }
+    let html = extract_candidates(br#"<div class="px-2"></div>"#, SourceKind::Html);
+    assert!(html
+        .candidates
+        .iter()
+        .find(|c| c.text == "px-2")
+        .is_some_and(|c| c.occurrences[0].position_kind == PositionKind::Class));
+
+    let actual_class = extract_candidates(
+        br#"const node = <div className={'<i class="bad,'} />;"#,
+        SourceKind::Tsx,
+    );
+    assert!(
+        actual_class
+            .candidates
+            .iter()
+            .any(|c| c.text == "class=\"bad,"
+                && c.occurrences
+                    .iter()
+                    .any(|o| o.position_kind == PositionKind::Class)),
+        "{actual_class:?}"
+    );
+}
+
+#[test]
+fn concatenated_url_literals_stay_skipped() {
+    let source = r#"const cdn = "https://cdn.example.test/app" + suffix;
+const image = `data:image/svg+xml,${svg}`;
+const className = "text-[#fff]";"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Ts);
+    assert!(
+        !result
+            .candidates
+            .iter()
+            .any(|c| c.text.starts_with("https://") || c.text.starts_with("data:")),
+        "{result:?}"
+    );
+    assert!(result.candidates.iter().any(|c| c.text == "text-[#fff]"));
+}
+
+#[test]
 fn style_element_css_and_hidden_inputs_are_not_candidates() {
     let source = br#"const critical = `.x { display: grid }`;
 export const Layout = () => (
