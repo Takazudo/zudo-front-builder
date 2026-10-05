@@ -290,7 +290,7 @@ const anchorContract = JSON.parse(
 );
 const records = loadRecords(root);
 const preview = loadPreviewContext(root, records);
-const options = { editorial, preview, allowMissingEditorial: true };
+const options = { editorial, preview };
 
 describe("reader-first wind pages", () => {
   it("preserves all family/entry membership, old root and nested anchors, and nonpilot bytes in both locales", () => {
@@ -311,7 +311,7 @@ describe("reader-first wind pages", () => {
         const newIds = extractAllHeadingIds(after.get(name));
         for (const id of anchorContract.locales[locale][name]) expect(newIds).toContain(id);
         expect(new Set(newIds).size).toBe(newIds.length);
-        if (!editorial.has(family.id)) expect(after.get(name)).toBe(before.get(name));
+        expect(editorial.has(family.id)).toBe(true);
         for (const entry of family.entries) expect(after.get(name)).toContain(`\`${entry}\``);
         expect(after.get("index.mdx")).toContain(`](${name})`);
       }
@@ -346,13 +346,21 @@ describe("reader-first wind pages", () => {
     expect(pages.get("padding.mdx")).toContain("padding-left: 2rem");
   });
 
-  it("requires exhaustive bilingual schemas and supports explicit transitional missing records only", () => {
+  it("requires exhaustive bilingual schemas and rejects every missing family record", () => {
     expect(() =>
       renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, {
         editorial: new Map(),
         preview,
       }),
     ).toThrow("Missing editorial family display");
+    const partial = new Map(editorial);
+    partial.delete("padding");
+    expect(() =>
+      renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, {
+        editorial: partial,
+        preview,
+      }),
+    ).toThrow("Missing editorial family padding");
     const gap = WIND_REFERENCE_FAMILIES.find((family) => family.id === "gap");
     const record = structuredClone(editorial.get("gap"));
     record.lookup = record.lookup.filter((row) => row.entry !== "v1.gap-y");

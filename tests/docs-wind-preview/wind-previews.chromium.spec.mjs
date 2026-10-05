@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
-import { exampleSource } from "../../docs/scripts/wind-preview-assets.mjs";
+import { exampleSource, loadRecords } from "../../docs/scripts/wind-preview-assets.mjs";
+import { WIND_REFERENCE_FAMILIES } from "../../docs/scripts/wind-reference-families.mjs";
+import { WIND_GUIDE_PAGES } from "../../docs/scripts/generate-wind-guide-previews.mjs";
 import { contrastRatioSrgb } from "./srgb-contrast.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -75,7 +77,7 @@ const LOCALES = {
   },
 };
 
-const FAMILIES = {
+const PILOT_EXPECTATIONS = {
   gap: {
     spacing: {
       "grid-gap": ["16px", "16px"],
@@ -95,53 +97,102 @@ const FAMILIES = {
   },
 };
 
-function examplesFor(family) {
-  const record = JSON.parse(
-    readFileSync(join(REPO_ROOT, `docs/wind-examples/${family}.json`), "utf8"),
-  );
-  const examples = record.examples.map((example) => {
-    const asset = MANIFEST.examples.find(
-      (item) => item.family === family && item.id === example.id,
-    );
-    assert.ok(asset, `asset manifest entry is missing for ${family}/${example.id}`);
-    assert.equal(
-      asset.kind,
-      "positive",
-      `${family}/${example.id} is not a runnable positive sample`,
-    );
-    const html = readFileSync(join(REPO_ROOT, "docs/public", asset.htmlPath), "utf8");
-    const css = readFileSync(join(REPO_ROOT, "docs/public", asset.cssPath), "utf8");
-    assert.equal(
-      html,
-      exampleSource(example),
-      `${family}/${example.id} HTML asset differs from its source record`,
-    );
-    assert.equal(digest(html), asset.htmlSha256, `${family}/${example.id} HTML digest is stale`);
-    assert.equal(digest(css), asset.cssSha256, `${family}/${example.id} CSS digest is stale`);
-    return { ...example, asset, html, css };
-  });
+const RECORDS = new Map(loadRecords(REPO_ROOT).map((record) => [record.family, record]));
+const MANIFEST_ENTRIES = new Map(
+  MANIFEST.examples.map((entry) => [`${entry.family}/${entry.id}`, entry]),
+);
 
-  assert.deepEqual(
-    examples.map((example) => example.id),
-    Object.keys(FAMILIES[family].spacing ?? FAMILIES[family].padding),
-    `${family} preview records are in the accepted sample order`,
+function withVerifiedAsset(family, example) {
+  const asset = MANIFEST_ENTRIES.get(`${family}/${example.id}`);
+  assert.ok(asset, `asset manifest entry is missing for ${family}/${example.id}`);
+  assert.equal(asset.kind, "positive", `${family}/${example.id} is not a runnable sample`);
+  const html = readFileSync(join(REPO_ROOT, "docs/public", asset.htmlPath), "utf8");
+  const css = readFileSync(join(REPO_ROOT, "docs/public", asset.cssPath), "utf8");
+  assert.equal(
+    html,
+    exampleSource(example),
+    `${family}/${example.id} HTML asset differs from its source record`,
   );
+  assert.equal(digest(html), asset.htmlSha256, `${family}/${example.id} HTML digest is stale`);
+  assert.equal(digest(css), asset.cssSha256, `${family}/${example.id} CSS digest is stale`);
+  return { ...example, family, asset, html, css };
+}
+
+function utilityExamplesFor(family) {
+  const record = RECORDS.get(family);
+  assert.ok(record, `utility example record is missing for ${family}`);
+  const examples = record.examples
+    .filter((example) => example.kind === "positive")
+    .map((example) => withVerifiedAsset(family, example));
+  if (PILOT_EXPECTATIONS[family]) {
+    assert.deepEqual(
+      examples.map((example) => example.id),
+      Object.keys(PILOT_EXPECTATIONS[family].spacing ?? PILOT_EXPECTATIONS[family].padding),
+      `${family} pilot samples keep their approved order`,
+    );
+  }
   return examples;
 }
 
-const CASES = Object.entries(LOCALES).flatMap(([locale, labels]) =>
-  Object.keys(FAMILIES).map((family) => {
-    const examples = examplesFor(family);
-    const route = `docs/zudo-wind/utilities/${family}/`;
-    const localePath = `${labels.segment}${route}`;
-    const baselineRoute = `${labels.segment}${route}index.html`;
-    assert.ok(
-      ANCHOR_BASELINE[baselineRoute],
-      `built anchor baseline is missing for ${baselineRoute}`,
-    );
-    return { locale, labels, family, examples, route, localePath, baselineRoute };
-  }),
+const GUIDE_MARKER = /\{\/\* wind-preview: ([a-z0-9-]+)\/([a-z0-9-]+) ("(?:[^"\\]|\\.)*") \*\/\}/g;
+
+function guidePreviewRecords(page) {
+  if (page === "index") return { examples: [], diagnostics: [] };
+  const family = `guide-${page}`;
+  const localeSource = `docs/src/content/docs/zudo-wind/${page}.mdx`;
+  const source = readFileSync(join(REPO_ROOT, localeSource), "utf8");
+  const examples = [];
+  const diagnostics = [];
+  for (const [, markerFamily, id] of source.matchAll(GUIDE_MARKER)) {
+    assert.equal(markerFamily, family, `${localeSource} preview family`);
+    const example = RECORDS.get(family)?.examples.find((item) => item.id === id);
+    assert.ok(example, `${localeSource} references a missing record ${markerFamily}/${id}`);
+    if (example.kind === "positive") examples.push(withVerifiedAsset(family, example));
+    else diagnostics.push({ ...example, family });
+  }
+  return { examples, diagnostics };
+}
+
+function casesForRoute(locale, labels, { family, kind, page }) {
+  const route =
+    kind === "utility"
+      ? `docs/zudo-wind/utilities/${family}/`
+      : page === "index"
+        ? "docs/zudo-wind/"
+        : `docs/zudo-wind/${page}/`;
+  const localePath = `${labels.segment}${route}`;
+  const baselineRoute = `${labels.segment}${route}index.html`;
+  assert.ok(
+    ANCHOR_BASELINE[baselineRoute],
+    `built anchor baseline is missing for ${baselineRoute}`,
+  );
+  const content =
+    kind === "utility"
+      ? { examples: utilityExamplesFor(family), diagnostics: [] }
+      : guidePreviewRecords(page);
+  return {
+    locale,
+    labels,
+    family: family ?? `guide-${page}`,
+    kind,
+    page,
+    examples: content.examples,
+    diagnostics: content.diagnostics,
+    route,
+    localePath,
+    baselineRoute,
+  };
+}
+
+const UTILITY_CASES = Object.entries(LOCALES).flatMap(([locale, labels]) =>
+  WIND_REFERENCE_FAMILIES.map(({ id: family }) =>
+    casesForRoute(locale, labels, { family, kind: "utility" }),
+  ),
 );
+const GUIDE_CASES = Object.entries(LOCALES).flatMap(([locale, labels]) =>
+  WIND_GUIDE_PAGES.map((page) => casesForRoute(locale, labels, { page, kind: "guide" })),
+);
+const CASES = [...UTILITY_CASES, ...GUIDE_CASES];
 
 function collectPageErrors(page) {
   const errors = [];
@@ -179,12 +230,8 @@ async function findFrame(page, index) {
 }
 
 async function inspectFrame(frame) {
-  const demo = frame.locator(".wind-demo");
-  await expect
-    .poll(() => demo.evaluate((element) => getComputedStyle(element).fontSize))
-    .toBe("14px");
   return frame.evaluate(() => {
-    const demo = document.querySelector(".wind-demo");
+    const demo = document.querySelector(".wind-demo") ?? document.body.firstElementChild;
     const style = getComputedStyle(demo);
     const bodyStyle = getComputedStyle(document.body);
     return {
@@ -215,6 +262,22 @@ async function scrollAndWaitForHydration(page, count) {
   }
 }
 
+async function waitForDocumentStyles(page) {
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('link[rel="stylesheet"]')].every(
+          (stylesheet) => stylesheet.disabled || Boolean(stylesheet.sheet),
+        ),
+      ),
+    )
+    .toBe(true);
+  await page.evaluate(async () => {
+    await document.fonts?.ready;
+    return true;
+  });
+}
+
 async function captureFreshScreenshot(browser, testCase, width, height) {
   const context = await browser.newContext({
     baseURL: PREVIEW_ORIGIN,
@@ -229,7 +292,12 @@ async function captureFreshScreenshot(browser, testCase, width, height) {
     const firstMarker = page.locator(PREVIEW_MARKER).first();
     await page.locator("iframe").first().scrollIntoViewIfNeeded();
     await expect(firstMarker).toHaveAttribute("data-zfb-island-mounted", "");
+    await waitForDocumentStyles(page);
     const first = await findFrame(page, 0);
+    await first.frame.evaluate(async () => {
+      await document.fonts?.ready;
+      return true;
+    });
     const firstFrameStyle = await inspectFrame(first.frame);
     assert.equal(
       firstFrameStyle.styleText,
@@ -404,18 +472,23 @@ async function checkPreviewSource(page, preview, example, index, labels) {
   const sourceToggle = preview.locator("button[aria-expanded]").first();
   await expect(sourceToggle).toHaveAttribute("aria-expanded", "true");
   const codeBlocks = preview.locator("pre code");
-  await expect(codeBlocks).toHaveCount(2);
+  const panels = [
+    { label: "HTML", value: example.html.trim() },
+    { label: "CSS", value: example.css.trim() },
+    ...(example.head ? [{ label: "Head", value: example.head.trim() }] : []),
+  ];
+  await expect(codeBlocks).toHaveCount(panels.length);
   await expect(preview.getByText("HTML", { exact: true })).toBeVisible();
   await expect(preview.getByText("CSS", { exact: true })).toBeVisible();
-  const expectedHtml = example.html.trim();
-  const expectedCss = example.css.trim();
-  await expect
-    .poll(() => codeBlocks.nth(0).evaluate((node) => node.textContent))
-    .toBe(expectedHtml);
-  await expect.poll(() => codeBlocks.nth(1).evaluate((node) => node.textContent)).toBe(expectedCss);
+  for (let codeIndex = 0; codeIndex < panels.length; codeIndex += 1) {
+    await expect(preview.getByText(panels[codeIndex].label, { exact: true })).toBeVisible();
+    await expect
+      .poll(() => codeBlocks.nth(codeIndex).evaluate((node) => node.textContent))
+      .toBe(panels[codeIndex].value);
+  }
 
-  if (index === 0) {
-    const clipboardExamples = [expectedHtml, expectedCss];
+  if (index === 0 && isControlPilotExample(example)) {
+    const clipboardExamples = panels.map((panel) => panel.value);
     for (let codeIndex = 0; codeIndex < clipboardExamples.length; codeIndex += 1) {
       const code = codeBlocks.nth(codeIndex);
       await code.hover();
@@ -452,6 +525,12 @@ async function checkPreviewSource(page, preview, example, index, labels) {
     await expect(full).toHaveAttribute("aria-pressed", "true");
     await expect(preview.locator(".resize-x")).toHaveAttribute("style", /width:\s*100%/);
   }
+}
+
+function isControlPilotExample(example) {
+  return (
+    example.family === "gap" || example.family === "padding" || example.family === "scroll-margin"
+  );
 }
 
 async function readResolvedThemeColors(page) {
@@ -549,8 +628,273 @@ async function checkThemeContrast(page, previewFrame, labels) {
   );
 }
 
+async function frameForExample(page, testCase, id) {
+  const index = testCase.examples.findIndex((example) => example.id === id);
+  assert.notEqual(index, -1, `${testCase.family}/${id} positive preview is missing`);
+  return findFrame(page, index);
+}
+
+async function assertRepresentativeUtilityBehavior(page, testCase) {
+  if (testCase.locale !== "en") return;
+
+  if (testCase.family === "grid") {
+    const { frame } = await frameForExample(page, testCase, "grid-tracks");
+    const grid = frame.locator(".wind-demo-frame.grid-cols-3");
+    const layout = await grid.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { columns: style.gridTemplateColumns, display: style.display };
+    });
+    assert.equal(layout.display, "grid");
+    assert.equal(layout.columns.split(/\s+/).length, 3);
+  }
+
+  if (testCase.family === "margin") {
+    const { frame } = await frameForExample(page, testCase, "negative-margin");
+    const margins = await frame.locator(".wind-demo-negative-card").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { left: style.marginLeft, top: style.marginTop };
+    });
+    assert.deepEqual(margins, { left: "-16px", top: "-12px" });
+  }
+
+  if (testCase.family === "child-space") {
+    const { frame } = await frameForExample(page, testCase, "vertical-hidden-siblings");
+    const stack = frame.locator(".wind-demo-stack");
+    const spacing = await stack.evaluate((element) => {
+      const children = [...element.children];
+      return {
+        hiddenAttrDisplay: getComputedStyle(children.find((child) => child.hasAttribute("hidden")))
+          .display,
+        hiddenByScaffold: getComputedStyle(
+          children.find((child) => child.classList.contains("wind-demo-display-none")),
+        ).display,
+        finalMarginTop: getComputedStyle(children.at(-1)).marginTop,
+      };
+    });
+    assert.deepEqual(spacing, {
+      hiddenAttrDisplay: "none",
+      hiddenByScaffold: "none",
+      finalMarginTop: "12px",
+    });
+  }
+
+  if (testCase.family === "divide-width") {
+    const { frame } = await frameForExample(page, testCase, "vertical-dividers");
+    const dividers = await frame.locator(".wind-demo-vertical-list").evaluate((element) => {
+      const children = [...element.children];
+      return {
+        first: getComputedStyle(children[0]).borderTopWidth,
+        hidden: getComputedStyle(children[1]).borderTopWidth,
+        next: getComputedStyle(children[2]).borderTopWidth,
+      };
+    });
+    assert.deepEqual(dividers, { first: "0px", hidden: "0px", next: "2px" });
+  }
+
+  if (testCase.family === "text-layout") {
+    const { frame } = await frameForExample(page, testCase, "whitespace");
+    assert.equal(
+      await frame
+        .locator(".whitespace-pre-wrap")
+        .evaluate((element) => getComputedStyle(element).whiteSpace),
+      "pre-wrap",
+    );
+  }
+
+  if (testCase.family === "miscellaneous") {
+    const { frame } = await frameForExample(page, testCase, "object-fit-options");
+    const image = frame.locator("img.object-cover");
+    await expect
+      .poll(() => image.evaluate((element) => element.complete && element.naturalWidth))
+      .toBe(160);
+    const dimensions = await image.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        fit: style.objectFit,
+        naturalHeight: element.naturalHeight,
+        naturalWidth: element.naturalWidth,
+      };
+    });
+    assert.deepEqual(dimensions, { fit: "cover", naturalHeight: 100, naturalWidth: 160 });
+  }
+
+  if (testCase.family === "scroll-margin") {
+    const { frame } = await frameForExample(page, testCase, "top-offset");
+    const hostUrl = page.url();
+    const scroller = frame.locator(".wind-demo-scroller");
+    const target = frame.locator("#top-target");
+    await frame.locator('a[href="#top-target"]').click();
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const movement = await frame.evaluate(() => {
+      const scrollerElement = document.querySelector(".wind-demo-scroller");
+      const targetElement = document.querySelector("#top-target");
+      return {
+        marginTop: getComputedStyle(targetElement).scrollMarginTop,
+        targetOffset:
+          targetElement.getBoundingClientRect().top - scrollerElement.getBoundingClientRect().top,
+      };
+    });
+    assert.equal(movement.marginTop, "32px");
+    assert.ok(
+      movement.targetOffset >= 32,
+      `fragment scroll respected scroll-margin-top: ${movement.targetOffset}px`,
+    );
+    assert.equal(page.url(), hostUrl, "the fragment stayed inside the native about:srcdoc preview");
+    assert.match(frame.url(), /^about:srcdoc(?:#top-target)?$/);
+  }
+
+  if (testCase.family === "duration") {
+    const { frame } = await frameForExample(page, testCase, "compare-durations");
+    const button = frame.locator(".wind-demo-trigger").first();
+    const initial = await button.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { duration: style.transitionDuration, easing: style.transitionTimingFunction };
+    });
+    assert.deepEqual(initial, { duration: "0.15s", easing: "ease" });
+
+    await button.hover();
+    await expect
+      .poll(() => button.evaluate((element) => getComputedStyle(element).translate))
+      .toContain("8px");
+
+    await frame.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("Tab");
+    await expect(button).toBeFocused();
+    assert.equal(await button.evaluate((element) => element.matches(":focus-visible")), true);
+    await expect
+      .poll(() => button.evaluate((element) => getComputedStyle(element).translate))
+      .toContain("8px");
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect
+      .poll(() => button.evaluate((element) => getComputedStyle(element).transitionDuration))
+      .toBe("0s");
+  }
+
+  if (testCase.family === "translate") {
+    const { frame } = await frameForExample(page, testCase, "compose-axes");
+    const composition = await frame.locator(".wind-demo-piece").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { rotate: style.rotate, transform: style.transform, translate: style.translate };
+    });
+    assert.equal(composition.rotate, "12deg");
+    assert.equal(composition.translate, "32px 16px");
+    assert.equal(composition.transform, "none");
+  }
+}
+
+async function assertGuideResetAndCascade(page, testCase) {
+  if (testCase.locale !== "en" || testCase.page !== "cascade-and-reset") return;
+
+  async function readReset(id) {
+    const { frame } = await frameForExample(page, testCase, id);
+    return frame.evaluate(() => {
+      const body = getComputedStyle(document.body);
+      const heading = getComputedStyle(document.querySelector("h2"));
+      const list = getComputedStyle(document.querySelector("ul"));
+      const button = getComputedStyle(document.querySelector("button"));
+      return {
+        bodyMargin: body.margin,
+        buttonFontFamily: button.fontFamily,
+        headingFontSize: heading.fontSize,
+        headingFontWeight: heading.fontWeight,
+        listPaddingLeft: list.paddingLeft,
+        listStyleType: list.listStyleType,
+      };
+    });
+  }
+
+  const none = await readReset("reset-none");
+  const minimal = await readReset("reset-minimal");
+  const owned = await readReset("reset-owned");
+  assert.equal(none.bodyMargin, "8px");
+  assert.equal(minimal.bodyMargin, "0px");
+  assert.equal(owned.bodyMargin, "0px");
+  assert.equal(none.headingFontSize, minimal.headingFontSize);
+  assert.equal(none.headingFontWeight, minimal.headingFontWeight);
+  assert.equal(none.listStyleType, "disc");
+  assert.equal(minimal.listStyleType, "disc");
+  assert.equal(none.listPaddingLeft, "40px");
+  assert.equal(minimal.listPaddingLeft, "40px");
+  assert.equal(owned.headingFontSize, "16px");
+  assert.equal(owned.headingFontWeight, "400");
+  assert.equal(owned.listStyleType, "none");
+  assert.equal(owned.listPaddingLeft, "0px");
+  assert.notEqual(none.buttonFontFamily, minimal.buttonFontFamily);
+
+  async function readCascade(id) {
+    const { frame } = await frameForExample(page, testCase, id);
+    return frame
+      .locator(".wind-demo-box")
+      .evaluate((element) => getComputedStyle(element).paddingTop);
+  }
+  assert.equal(await readCascade("layered-authored"), "16px");
+  assert.equal(await readCascade("after-authored"), "16px");
+  assert.equal(await readCascade("before-authored"), "8px");
+}
+
+async function assertGuideVariants(page, testCase) {
+  if (testCase.locale !== "en" || testCase.page !== "variants") return;
+
+  const responsive = await frameForExample(page, testCase, "responsive-grid");
+  const preview = responsive.locator.locator("xpath=../../..");
+  const controls = preview.getByRole("group", { name: testCase.labels.viewportLabel });
+  const mobile = controls.getByRole("button", { name: testCase.labels.mobile });
+  const full = controls.getByRole("button", { name: testCase.labels.full });
+  await full.click();
+  const columnCount = () =>
+    responsive.frame
+      .locator(".wind-demo-board")
+      .evaluate(
+        (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+      );
+  await expect.poll(columnCount).toBe(2);
+  await mobile.click();
+  await expect(mobile).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(columnCount).toBe(1);
+  await full.click();
+  await expect.poll(columnCount).toBe(2);
+
+  const { frame: darkFrame } = await frameForExample(page, testCase, "dark-surface");
+  const darkSurface = darkFrame.locator('[data-theme="dark"]');
+  const colors = await darkSurface.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      attribute: element.getAttribute("data-theme"),
+      background: style.backgroundColor,
+      color: style.color,
+    };
+  });
+  assert.deepEqual(colors, {
+    attribute: "dark",
+    background: "rgb(38, 52, 73)",
+    color: "rgb(245, 247, 251)",
+  });
+
+  const { frame: relationFrame } = await frameForExample(page, testCase, "group-and-peer");
+  const group = relationFrame.locator(".wind-demo-link.group");
+  const groupedText = group.locator(".group-hover\\:text-accent");
+  const beforeHover = await groupedText.evaluate((element) => getComputedStyle(element).color);
+  await group.hover();
+  await expect
+    .poll(() => groupedText.evaluate((element) => getComputedStyle(element).color))
+    .toBe("rgb(91, 91, 214)");
+  assert.notEqual(beforeHover, "rgb(91, 91, 214)");
+
+  const peer = relationFrame.locator("input.peer");
+  const peerText = relationFrame.locator(".peer-focus\\:text-accent");
+  await peer.focus();
+  await expect
+    .poll(() => peerText.evaluate((element) => getComputedStyle(element).color))
+    .toBe("rgb(91, 91, 214)");
+}
+
+assert.equal(UTILITY_CASES.length, 94, "all 47 utility families have EN and JA browser cases");
+assert.equal(GUIDE_CASES.length, 20, "all ten guide pages have EN and JA browser cases");
+
 for (const testCase of CASES) {
-  test(`${testCase.locale} ${testCase.family}: installed HtmlPreview renders authentic source and wind CSS`, async ({
+  const routeName = testCase.kind === "utility" ? testCase.family : `guide ${testCase.page}`;
+  test(`${testCase.locale} ${routeName}: installed HtmlPreview matches every positive source and asset`, async ({
     browser,
     page,
   }) => {
@@ -572,11 +916,12 @@ for (const testCase of CASES) {
       );
 
       const style = await inspectFrame(frame);
-      assert.equal(
-        style.bodyMargin,
-        "8px",
-        "preflight=false leaves the browser body margin intact",
-      );
+      if (testCase.kind === "utility")
+        assert.equal(
+          style.bodyMargin,
+          "8px",
+          "preflight=false leaves the browser body margin intact",
+        );
       assert.equal(
         style.headStyleCount,
         1,
@@ -597,15 +942,12 @@ for (const testCase of CASES) {
       );
 
       if (testCase.family === "gap") {
+        const expected = PILOT_EXPECTATIONS.gap.spacing[example.id];
         assert.equal(style.display, "grid", `${example.id} emits a grid container`);
-        assert.equal(
-          style.columnGap,
-          FAMILIES.gap.spacing[example.id][0],
-          `${example.id} column gap`,
-        );
-        assert.equal(style.rowGap, FAMILIES.gap.spacing[example.id][1], `${example.id} row gap`);
-      } else {
-        const expected = FAMILIES.padding.padding[example.id];
+        assert.equal(style.columnGap, expected[0], `${example.id} column gap`);
+        assert.equal(style.rowGap, expected[1], `${example.id} row gap`);
+      } else if (testCase.family === "padding") {
+        const expected = PILOT_EXPECTATIONS.padding.padding[example.id];
         assert.deepEqual(
           [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
           expected,
@@ -617,18 +959,33 @@ for (const testCase of CASES) {
       await checkPreviewSource(page, preview, example, index, testCase.labels);
     }
 
-    const firstFrame = await findFrame(page, 0);
-    await checkThemeContrast(page, firstFrame.frame, testCase.labels);
-    await checkOldTechnicalHash(page, testCase);
-    await switchLocaleAndCheckRemount(page, testCase);
-    await checkNativeCopyAfterRemount(page, testCase);
-    await checkSharedNativeWrapState(page);
-
-    if (CAPTURE_SCREENSHOTS) {
-      await captureFreshScreenshot(browser, testCase, 1440, 1000);
-      await captureFreshScreenshot(browser, testCase, 390, 844);
+    for (const diagnostic of testCase.diagnostics) {
+      for (const expected of diagnostic.expectedDiagnostics ?? []) {
+        await expect(page.locator("body")).toContainText(`${expected.code} (${expected.severity})`);
+      }
     }
 
-    assertNoPageErrors(errors, `${testCase.locale}/${testCase.family}`);
+    const isPilot =
+      testCase.kind === "utility" && Object.hasOwn(PILOT_EXPECTATIONS, testCase.family);
+    if (isPilot) {
+      const firstFrame = await findFrame(page, 0);
+      await checkThemeContrast(page, firstFrame.frame, testCase.labels);
+      await checkOldTechnicalHash(page, testCase);
+      await switchLocaleAndCheckRemount(page, testCase);
+      await checkNativeCopyAfterRemount(page, testCase);
+      await checkSharedNativeWrapState(page);
+
+      if (CAPTURE_SCREENSHOTS) {
+        await captureFreshScreenshot(browser, testCase, 1440, 1000);
+        await captureFreshScreenshot(browser, testCase, 390, 844);
+      }
+    } else if (testCase.kind === "utility") {
+      await assertRepresentativeUtilityBehavior(page, testCase);
+    } else {
+      await assertGuideResetAndCascade(page, testCase);
+      await assertGuideVariants(page, testCase);
+    }
+
+    assertNoPageErrors(errors, `${testCase.locale}/${routeName}`);
   });
 }

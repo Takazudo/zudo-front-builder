@@ -453,3 +453,52 @@ test("required Docs gate fails closed for preview failures, cancellation and une
   ])
     assert.equal(evaluate(overrides), 1, JSON.stringify(overrides));
 });
+
+test("the required Docs gate changed-file closures cover content, assets, tests, and compiler inputs", () => {
+  const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/docs-checks.yml"), "utf8");
+  const docsFilter = workflow.split("            docs:")[1]?.split("            wind_previews:")[0];
+  const windFilter = workflow.split("            wind_previews:")[1]?.split("\n\n  build:")[0];
+  assert.ok(docsFilter);
+  assert.ok(windFilter);
+  for (const path of [
+    "docs/**",
+    "scripts/__tests__/generate-wind-reference.test.mjs",
+    "tests/docs-wind-preview/**",
+    "crates/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "package.json",
+    ".npmrc",
+  ])
+    assert.ok(docsFilter.includes(`- '${path}'`), `docs closure is missing ${path}`);
+  for (const path of [
+    "docs/wind-examples/**",
+    "docs/public/wind-examples/**",
+    "docs/scripts/**",
+    "tests/docs-wind-preview/**",
+    "crates/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "package.json",
+    ".npmrc",
+  ])
+    assert.ok(windFilter.includes(`- '${path}'`), `wind compiler closure is missing ${path}`);
+  for (const contract of [
+    "generate-wind-guide-previews.mjs --check",
+    "generate-wind-reference.mjs --locale en --check",
+    "generate-wind-reference.mjs --locale ja --check",
+    "audit-wind-docs-coverage.test.mjs",
+    "vp test run scripts/__tests__/generate-wind-reference.test.mjs",
+    "audit-wind-built-anchors.mjs docs/dist",
+    "audit-wind-built-links.mjs docs/dist",
+    "WIND_DOCS_BASE: /wind-docs-preview/",
+  ])
+    assert.ok(workflow.includes(contract), `Docs gate job is missing ${contract}`);
+  assert.match(workflow, /docs-gate:[\s\S]*?if: \$\{\{ always\(\) \}\}/);
+});

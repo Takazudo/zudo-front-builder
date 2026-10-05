@@ -90,6 +90,7 @@ jobs:
           filters: |
             docs:
               - 'docs/**'
+              - 'scripts/__tests__/generate-wind-reference.test.mjs'
               - 'tests/docs-wind-preview/**'
               - 'crates/**'
               - 'Cargo.toml'
@@ -144,6 +145,18 @@ jobs:
       - name: Check generated guide preview sources
         run: node docs/scripts/generate-wind-guide-previews.mjs --check
 
+      - name: Check generated English utility references
+        run: node docs/scripts/generate-wind-reference.mjs --locale en --check
+
+      - name: Check generated Japanese utility references
+        run: node docs/scripts/generate-wind-reference.mjs --locale ja --check
+
+      - name: Audit exact wind docs and source coverage
+        run: node --test docs/scripts/__tests__/audit-wind-docs-coverage.test.mjs
+
+      - name: Test utility reference generator contract
+        run: pnpm exec vp test run scripts/__tests__/generate-wind-reference.test.mjs
+
       - name: Build docs
         run: pnpm --filter docs build
 
@@ -160,10 +173,13 @@ jobs:
         run: pnpm --filter docs check:wrangler-pin
 
       - name: Test built docs verification contracts
-        run: node --test docs/scripts/__tests__/audit-wind-built-anchors.test.mjs docs/scripts/__tests__/build-wind-docs-base.test.mjs docs/scripts/__tests__/assert-island-markers.test.mjs docs/scripts/__tests__/wind-pilot-assets.test.mjs docs/scripts/__tests__/generate-wind-guide-previews.test.mjs
+        run: node --test docs/scripts/__tests__/audit-wind-built-anchors.test.mjs docs/scripts/__tests__/build-wind-docs-base.test.mjs docs/scripts/__tests__/assert-island-markers.test.mjs docs/scripts/__tests__/wind-pilot-assets.test.mjs docs/scripts/__tests__/generate-wind-guide-previews.test.mjs docs/scripts/__tests__/audit-wind-built-links.test.mjs
 
       - name: Audit preserved built routes and anchors
         run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
+
+      - name: Audit built Markdown links and fragments
+        run: node docs/scripts/audit-wind-built-links.mjs docs/dist
 
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
@@ -178,6 +194,9 @@ jobs:
 
       - name: Audit subpath built routes and anchors
         run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
+
+      - name: Audit subpath Markdown links and fragments
+        run: node docs/scripts/audit-wind-built-links.mjs docs/dist
 
       - name: Confirm subpath docs previews in Chromium
         env:

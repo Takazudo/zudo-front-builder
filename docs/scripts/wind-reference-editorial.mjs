@@ -113,6 +113,8 @@ export function validateEditorial(record, family, examples, entriesById, assets)
         fail(`${label}: invalid ${locale} example reference`);
       ids.add(item.id);
     }
+    if (ids.size !== byId.size || [...byId.keys()].some((id) => !ids.has(id)))
+      fail(`${label}: ${locale} must explain every preview record`);
     if (record.lookup.some((row) => !ids.has(row.example)))
       fail(`${label}: ${locale} must explain every lookup example`);
   }

@@ -85,27 +85,17 @@ test(`positive fixture passes all ${EXPECTED_ISLANDS.length * 2} route/marker pa
   }
 });
 
-test("the EN and JA pilot routes require zudo-doc HtmlPreview island markers", () => {
+test("all 47 EN and JA family routes require zudo-doc HtmlPreview island markers", () => {
   const dist = fixtureDist();
   try {
     for (const localePrefix of ["", "ja/"]) {
-      for (const family of ["gap", "padding"]) {
-        assert.ok(
-          EXPECTED_ISLANDS.some(
-            ({ route, marker }) =>
-              route === `docs/zudo-wind/utilities/${family}` &&
-              marker === "HtmlPreviewWrapperInner",
-          ),
-        );
-        const htmlPath = join(
-          dist,
-          localePrefix,
-          "docs",
-          "zudo-wind",
-          "utilities",
-          family,
-          "index.html",
-        );
+      const previewRoutes = EXPECTED_ISLANDS.filter(
+        ({ route, marker }) =>
+          route.startsWith("docs/zudo-wind/utilities/") && marker === "HtmlPreviewWrapperInner",
+      );
+      assert.equal(previewRoutes.length, 47);
+      for (const { route } of previewRoutes) {
+        const htmlPath = join(dist, localePrefix, ...route.split("/"), "index.html");
         assert.match(readFileSync(htmlPath, "utf8"), /data-zfb-island=HtmlPreviewWrapperInner/);
       }
     }

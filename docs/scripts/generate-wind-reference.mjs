@@ -331,9 +331,6 @@ function renderEntry(entry, strings) {
   ].join("\n");
 }
 
-// Deliberate rollout allowance; #3708 removes it after all 47 records are authored.
-export const TRANSITIONAL_ALLOW_MISSING_EDITORIAL = true;
-
 function expression(value) {
   // JSON literals preserve exact bytes and keep user text inside an MDX expression.
   return JSON.stringify(value)
@@ -438,14 +435,13 @@ export function renderReferencePages(catalog, strings, families, options = {}) {
   const entriesById = validateCatalogFamilies(catalog, families);
   validateLocaleStrings(strings, families);
 
-  const { editorial, preview, locale = "en", allowMissingEditorial = false } = options;
+  const { editorial, preview, locale = "en" } = options;
   if (editorial) {
     for (const id of editorial.keys())
       if (!families.some((family) => family.id === id))
         throw new Error(`Unknown editorial family ${id}`);
-    if (!allowMissingEditorial)
-      for (const family of families)
-        if (!editorial.has(family.id)) throw new Error(`Missing editorial family ${family.id}`);
+    for (const family of families)
+      if (!editorial.has(family.id)) throw new Error(`Missing editorial family ${family.id}`);
   }
   const output = new Map();
   const indexRows = [];
@@ -610,7 +606,6 @@ async function runCli(args) {
     editorial,
     preview,
     locale: options.locale,
-    allowMissingEditorial: TRANSITIONAL_ALLOW_MISSING_EDITORIAL,
   });
   const outputDir = join(
     REPO_ROOT,
