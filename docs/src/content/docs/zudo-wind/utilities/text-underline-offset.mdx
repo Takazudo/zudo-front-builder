@@ -5,9 +5,78 @@ sidebar_position: 66
 generated: true
 ---
 
-Set the underline offset in whole pixels or as an arbitrary nonnegative length.
+Move an existing underline away from or toward the text. The offset affects underline placement, not whether an underline is drawn.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `underline-offset-4` | `text-underline-offset: 4px;` |
+| `underline-offset-[0.15em]` | `text-underline-offset: 0.15em;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. These links use their browser-provided underline so the example isolates text-underline-offset. wind-demo only styles the container and link color.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare fixed and relative offsets
+
+The first links use pixel offsets; the last uses em so its distance follows the text size.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-offsets\"\u003e\n  \u003cp\u003e\u003ca href=\"#offset-2\" class=\"underline-offset-2\"\u003eTwo pixels / 2px\u003c/a\u003e\u003c/p\u003e\n  \u003cp\u003e\u003ca href=\"#offset-4\" class=\"underline-offset-4\"\u003eFour pixels / 4px\u003c/a\u003e\u003c/p\u003e\n  \u003cp\u003e\u003ca href=\"#offset-em\" class=\"underline-offset-[0.15em]\"\u003eRelative to text size / 文字サイズに応じた長さ\u003c/a\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-offsets {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem 1rem;\n}\n\n.wind-demo-offsets p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-offsets p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-offsets a {\n  color: inherit;\n}\n.underline-offset-2 {\n  text-underline-offset: 2px;\n}\n.underline-offset-4 {\n  text-underline-offset: 4px;\n}\n.underline-offset-\\[0\\.15em\\] {\n  text-underline-offset: 0.15em;\n}\n"} title={"Compare fixed and relative offsets"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-offsets": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "underline-offset-2",
+        "underline-offset-4",
+        "underline-offset-[0.15em]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-offsets { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }
+.wind-demo-offsets p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-offsets p:last-child { border-bottom: 0; }
+.wind-demo-offsets a { color: inherit; }
+```
+
+</Details>
+
+## Custom and named values
+
+An integer suffix such as underline-offset-4 means 4px. Arbitrary bracket values can use supported nonnegative lengths such as underline-offset-[0.15em], which scales with the font size. The catalog does not define named offset tokens, percentages, negative values, or an auto keyword for this family. Keep enough distance for the underline to remain associated with the text.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## underline-offset
 
@@ -40,3 +109,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `underline-offset-4` | `text-underline-offset: 4px` |
+
+</Details>

@@ -5,9 +5,225 @@ sidebar_position: 40
 generated: true
 ---
 
-文字の整列、空白、折り返し、省略表示を設定します。
+文字揃え、空白や改行の扱い、長い単語や1行テキストの収め方を調整します。まず通常の折り返しを使い、内容と幅に合わせて必要な挙動を選びます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `text-center` | `text-align: center;` |
+| `whitespace-pre-wrap` | `white-space: pre-wrap;` |
+| `break-all` | `word-break: break-all;` |
+| `break-normal` | `overflow-wrap: normal; word-break: normal;` |
+| `break-words` | `overflow-wrap: break-word;` |
+| `wrap-anywhere` | `overflow-wrap: anywhere;` |
+| `truncate` | `overflow: hidden; text-overflow: ellipsis; white-space: nowrap;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。折り返しを確認しやすい固定幅は wind-demo CSS で指定します。この CSS は text-align、white-space、word-break、overflow-wrap、truncate を設定しません。日本語はブラウザーが許可する自然な文字境界で折り返します。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 文字揃えと文章の方向
+
+固定幅の行で物理方向の揃え方と論理的な start、end を比べます。RTL の行では start が方向に従う様子を示します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-align\"\u003e\n  \u003cp class=\"text-left\"\u003eLeft: The same sentence wraps inside this box. / 左寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-center\"\u003eCenter: The same sentence wraps inside this box. / 中央寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-right\"\u003eRight: The same sentence wraps inside this box. / 右寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-justify\"\u003eJustified copy uses the available line width. / 両端揃えは行幅を使います。\u003c/p\u003e\n  \u003cp dir=\"ltr\" class=\"text-start\"\u003eLogical start in left-to-right text. / 左から始まる文章です。\u003c/p\u003e\n  \u003cp dir=\"rtl\" class=\"text-start\"\u003eLogical start in right-to-left text. / 右から始まる文章です。\u003c/p\u003e\n  \u003cp dir=\"rtl\" class=\"text-end\"\u003eLogical end in right-to-left text. / 右から始まる文章です。\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-align {\n  max-width: 23rem;\n  color: #223247;\n}\n\n.wind-demo-align p {\n  margin: 0 0 .55rem;\n  border: 1px solid #b7c5d4;\n  padding: .45rem .65rem;\n}\n\n.wind-demo-align p:last-child {\n  margin-bottom: 0;\n}\n.text-center {\n  text-align: center;\n}\n.text-end {\n  text-align: end;\n}\n.text-justify {\n  text-align: justify;\n}\n.text-left {\n  text-align: left;\n}\n.text-right {\n  text-align: right;\n}\n.text-start {\n  text-align: start;\n}\n"} title={"文字揃えと文章の方向"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-align": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-left",
+        "text-center",
+        "text-right",
+        "text-justify",
+        "text-start",
+        "text-end"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-align { max-width: 23rem; color: #223247; }
+.wind-demo-align p { margin: 0 0 0.55rem; border: 1px solid #b7c5d4; padding: 0.45rem 0.65rem; }
+.wind-demo-align p:last-child { margin-bottom: 0; }
+```
+
+</Details>
+
+### 空白の保持と折り畳み
+
+6種類の white-space を同じ空白とソース内改行に適用し、挙動を比較します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-whitespace\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003enormal\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-normal\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003enowrap\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-nowrap\"\u003eAlpha  beta 日本語 line space  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre-line\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre-line\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre-wrap\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre-wrap\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003ebreak-spaces\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-break-spaces\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-whitespace {\n  max-width: 24rem;\n  color: #223247;\n}\n\n.wind-demo-whitespace p {\n  display: flex;\n  align-items: flex-start;\n  gap: .5rem;\n  margin: 0;\n  padding: .4rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-whitespace p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  flex: 0 0 5.5rem;\n  color: #5d6c7c;\n  font-size: .75rem;\n}\n\n.wind-demo-sample {\n  min-width: 0;\n  flex: 1;\n  border-left: 2px solid #b7c5d4;\n  padding-left: .5rem;\n}\n.whitespace-break-spaces {\n  white-space: break-spaces;\n}\n.whitespace-normal {\n  white-space: normal;\n}\n.whitespace-nowrap {\n  white-space: nowrap;\n}\n.whitespace-pre {\n  white-space: pre;\n}\n.whitespace-pre-line {\n  white-space: pre-line;\n}\n.whitespace-pre-wrap {\n  white-space: pre-wrap;\n}\n"} title={"空白の保持と折り畳み"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-whitespace": true,
+      "wind-demo-label": true,
+      "wind-demo-sample": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "whitespace-normal",
+        "whitespace-nowrap",
+        "whitespace-pre",
+        "whitespace-pre-line",
+        "whitespace-pre-wrap",
+        "whitespace-break-spaces"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-whitespace { max-width: 24rem; color: #223247; }
+.wind-demo-whitespace p { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.4rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-whitespace p:last-child { border-bottom: 0; }
+.wind-demo-label { flex: 0 0 5.5rem; color: #5d6c7c; font-size: 0.75rem; }
+.wind-demo-sample { min-width: 0; flex: 1; border-left: 2px solid #b7c5d4; padding-left: 0.5rem; }
+```
+
+</Details>
+
+### 分割できない識別子を扱う
+
+長いURLで通常のはみ出し、文字分割、緊急折り返し、anywhere の違いを同じ幅で比べます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-wrap-grid\"\u003e\n  \u003cp class=\"wind-demo-wrap-box break-normal\"\u003e\u003cstrong\u003enormal\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box break-all\"\u003e\u003cstrong\u003ebreak-all\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box break-words\"\u003e\u003cstrong\u003ebreak-words\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box wrap-anywhere\"\u003e\u003cstrong\u003eanywhere\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-wrap-grid {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n  gap: .65rem;\n  max-width: 28rem;\n}\n\n.wind-demo-wrap-box {\n  min-width: 0;\n  margin: 0;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem;\n}\n\n.wind-demo-wrap-box strong {\n  display: block;\n  margin-bottom: .3rem;\n  color: #5d6c7c;\n  font-size: .75rem;\n}\n.break-all {\n  word-break: break-all;\n}\n.break-normal {\n  overflow-wrap: normal;\n  word-break: normal;\n}\n.break-words {\n  overflow-wrap: break-word;\n}\n.wrap-anywhere {\n  overflow-wrap: anywhere;\n}\n"} title={"分割できない識別子を扱う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-wrap-grid": true,
+      "wind-demo-wrap-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "break-normal",
+        "break-all",
+        "break-words",
+        "wrap-anywhere"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; max-width: 28rem; }
+.wind-demo-wrap-box { min-width: 0; margin: 0; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }
+.wind-demo-wrap-box strong { display: block; margin-bottom: 0.3rem; color: #5d6c7c; font-size: 0.75rem; }
+```
+
+</Details>
+
+### 幅に合わせて1行を省略する
+
+truncate は overflow hidden、ellipsis、nowrap を指定します。デモの幅制限により省略位置が見えます。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-truncate truncate\"\u003eA long title needs a single-line preview when the card has limited room / 長い見出しを狭いカード幅に収める\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-truncate {\n  width: 15rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem;\n}\n.truncate {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n"} title={"幅に合わせて1行を省略する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-truncate": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "truncate"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-truncate { width: 15rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+text-left、text-center、text-right、text-justify、text-start、text-end は文字揃えを制御します。start と end は要素の方向に従います。whitespace-* は空白やソース内の改行を畳むか保持するか、折り返すかを選びます。break-all は任意の文字間で分割し、break-words は長い単語の緊急折り返しを許可し、wrap-anywhere は min-content の幅にも影響します。break-normal は通常の word-break と overflow-wrap に戻します。truncate は overflow hidden、ellipsis、nowrap をまとめて指定するため、切り詰めるには実際の幅制限が必要です。日本語は通常の行分割でも文字単位で折り返せるため、長い英数字の識別子と日本語の文章を合わせて確認してください。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## text
 
@@ -259,3 +475,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `truncate` | `overflow: hidden`; `text-overflow: ellipsis`; `white-space: nowrap` |
+
+</Details>
