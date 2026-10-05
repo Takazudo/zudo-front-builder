@@ -1036,6 +1036,13 @@ pub enum WindUtilityPlacement {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WindSources {
+    /// Whether a claimed workspace root package is scanned implicitly. Omission enables it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_bool"
+    )]
+    pub root_package: Option<bool>,
     /// Globs excluded from every source root under the declaring root.
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -1055,7 +1062,8 @@ pub struct WindSources {
 
 impl WindSources {
     fn is_empty(&self) -> bool {
-        self.exclude.is_empty()
+        self.root_package.is_none()
+            && self.exclude.is_empty()
             && self.roots.is_empty()
             && self.package_roots.is_empty()
             && self.class_helpers.is_empty()
@@ -1063,8 +1071,18 @@ impl WindSources {
     }
 }
 
-/// One `wind.sources` object and the package that declared it. `None` means
-/// the project root.
+// Serde's Option<bool> accepts JSON null as None. A present declaration must
+// be a boolean, even when a later project or preset value overrides it.
+fn deserialize_present_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
+}
+
+/// One `wind.sources` object and the package that declared it. `None` can
+/// also denote an inline preset; declaration order, not this marker, sets
+/// scalar precedence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindSourceDeclaration {
     pub source_package: Option<String>,
@@ -2892,6 +2910,11 @@ fn take_wind_sources(
     };
     let sources: WindSources =
         serde_path_to_error::deserialize(sources).map_err(|e| format!("wind.sources: {e}"))?;
+    // Arrays retain their declaration provenance, while this scalar follows
+    // the ordinary value merge: first preset wins, then an explicit host value.
+    if let Some(root_package) = sources.root_package {
+        value["wind"]["sources"] = serde_json::json!({ "rootPackage": root_package });
+    }
     Ok(Some(WindSourceDeclaration {
         source_package,
         sources,
@@ -2908,7 +2931,9 @@ fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclarati
         .into_iter()
         .filter(|declaration| !declaration.sources.is_empty())
         .collect();
+    let root_package = wind.sources.root_package;
     wind.sources = WindSources {
+        root_package,
         exclude: declarations
             .iter()
             .flat_map(|declaration| declaration.sources.exclude.iter().cloned())
@@ -4295,6 +4320,7 @@ mod tests {
                 source_package: None,
                 sources: WindSources {
                     exclude: vec!["src/**".into()],
+                    root_package: None,
                     roots: Vec::new(),
                     package_roots: Vec::new(),
                     class_helpers: Vec::new(),
@@ -4340,12 +4366,174 @@ mod tests {
     }
 
     #[test]
+    fn wind_root_package_presence_and_serialization() {
+        for (source, expected) in [
+            (serde_json::json!({}), None),
+            (serde_json::json!({"rootPackage": true}), Some(true)),
+            (serde_json::json!({"rootPackage": false}), Some(false)),
+        ] {
+            let sources: WindSources = serde_json::from_value(source).unwrap();
+            assert_eq!(sources.root_package, expected);
+            assert_eq!(sources.is_empty(), expected.is_none());
+            let serialized = serde_json::to_value(&sources).unwrap();
+            assert_eq!(
+                serialized.get("rootPackage").and_then(|v| v.as_bool()),
+                expected
+            );
+        }
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("false"),
+            serde_json::json!(0),
+        ] {
+            let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+                "wind": { "sources": { "rootPackage": invalid } }
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("wind.sources.rootPackage"), "{error}");
+        }
+        let config = config_with_wind(serde_json::json!({"sources":{"rootPackage":false}}));
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["wind"]["sources"]["rootPackage"], false);
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind expected")
+        };
+        assert_eq!(wind.source_declarations().len(), 1);
+    }
+
+    #[test]
+    fn wind_root_package_scalar_follows_preset_order_and_host_override() {
+        for (presets, host, expected) in [
+            (vec![true, false], None, Some(true)),
+            (vec![false, true], None, Some(false)),
+            (vec![false, true], Some(true), Some(true)),
+            (vec![true, false], Some(false), Some(false)),
+        ] {
+            let config = merge_presets_to_config(
+                presets
+                    .into_iter()
+                    .map(|root_package| {
+                        serde_json::json!({
+                            "wind": { "sources": { "rootPackage": root_package } }
+                        })
+                    })
+                    .collect(),
+                match host {
+                    Some(root_package) => {
+                        serde_json::json!({"wind": {"sources": {"rootPackage": root_package}}})
+                    }
+                    None => serde_json::json!({"wind": {}}),
+                },
+            );
+            let Some(WindSetting::Enabled(wind)) = config.wind else {
+                panic!("wind expected")
+            };
+            assert_eq!(wind.sources.root_package, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn wind_root_package_loaders_validate_every_declaration() {
+        for ts in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join(if ts {
+                "zfb.config.ts"
+            } else {
+                "zfb.config.json"
+            });
+            for (config_value, expected) in [
+                (serde_json::json!({"wind":{}}), None),
+                (
+                    serde_json::json!({"wind":{"sources":{"rootPackage":true}}}),
+                    Some(true),
+                ),
+                (
+                    serde_json::json!({"wind":{"sources":{"rootPackage":false}}}),
+                    Some(false),
+                ),
+                (
+                    serde_json::json!({"presets":[{"wind":{"sources":{"rootPackage":false}}}],"wind":{}}),
+                    Some(false),
+                ),
+                (
+                    serde_json::json!({"presets":[{"wind":{"sources":{"rootPackage":false}}},{"wind":{"sources":{"rootPackage":true}}}],"wind":{}}),
+                    Some(false),
+                ),
+                (
+                    serde_json::json!({"presets":[{"wind":{"sources":{"rootPackage":false}}},{"wind":{"sources":{"rootPackage":true}}}],"wind":{"sources":{"rootPackage":true}}}),
+                    Some(true),
+                ),
+            ] {
+                tokio::fs::write(
+                    &path,
+                    if ts {
+                        "export default {};".to_owned()
+                    } else {
+                        config_value.to_string()
+                    },
+                )
+                .await
+                .unwrap();
+                let options = LoadOptions {
+                    test_default_export_json: ts.then(|| {
+                        serde_json::json!({"config":config_value,"plugins":[]}).to_string()
+                    }),
+                    ..LoadOptions::default()
+                };
+                let config = load_from_dir_with_options(tmp.path(), &options)
+                    .await
+                    .unwrap();
+                let Some(WindSetting::Enabled(wind)) = config.wind else {
+                    panic!("wind expected")
+                };
+                assert_eq!(wind.sources.root_package, expected);
+            }
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!("false"),
+                serde_json::json!(1),
+            ] {
+                for preset in [false, true] {
+                    let config_value = if preset {
+                        serde_json::json!({"presets":[{"wind":{"sources":{"rootPackage":invalid}}}],"wind":{"sources":{"rootPackage":true}}})
+                    } else {
+                        serde_json::json!({"wind":{"sources":{"rootPackage":invalid}}})
+                    };
+                    tokio::fs::write(
+                        &path,
+                        if ts {
+                            "export default {};".to_owned()
+                        } else {
+                            config_value.to_string()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let options = LoadOptions {
+                        test_default_export_json: ts.then(|| {
+                            serde_json::json!({"config":config_value,"plugins":[]}).to_string()
+                        }),
+                        ..LoadOptions::default()
+                    };
+                    let error = load_from_dir_with_options(tmp.path(), &options)
+                        .await
+                        .unwrap_err()
+                        .to_string();
+                    assert!(error.contains("rootPackage"), "{ts} {preset}: {error}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wind_validation_rejects_malformed_sources_with_their_origin() {
         let wind = WindConfig {
             source_declarations: vec![WindSourceDeclaration {
                 source_package: Some("@example/preset".into()),
                 sources: WindSources {
                     exclude: vec!["src/**".into(), "src/[".into()],
+                    root_package: None,
                     roots: Vec::new(),
                     package_roots: Vec::new(),
                     class_helpers: Vec::new(),
