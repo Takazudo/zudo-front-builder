@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 9,
+  "specRevision": 10,
   "entries": [
     {
       "id": "v1.block",
@@ -579,9 +579,9 @@
       "id": "v1.inset",
       "root": "inset",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -665,9 +665,9 @@
       "id": "v1.inset-x",
       "root": "inset-x",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -733,9 +733,9 @@
       "id": "v1.inset-y",
       "root": "inset-y",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -801,9 +801,9 @@
       "id": "v1.bottom",
       "root": "bottom",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -860,9 +860,9 @@
       "id": "v1.left",
       "root": "left",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -919,9 +919,9 @@
       "id": "v1.right",
       "root": "right",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -978,9 +978,9 @@
       "id": "v1.top",
       "root": "top",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
