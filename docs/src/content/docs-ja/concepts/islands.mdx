@@ -53,7 +53,7 @@ import { Counter } from "./counter";
   : <Island><Summary /></Island>}
 ```
 
-衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias は関数の marker を変えません。`displayName` は未設定か、関数本来の名前と同じである必要があります。ターゲット名の変更には使えません。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
+衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias でもマーカーは変わりません。スキャナーは `displayName` ではなく、定義元の関数名を使います。サーバーレンダリング時、`displayName` は未設定か関数名と一致している必要があります。一致しない値でターゲット名を変更することはできず、zfb は `ZR_ISLAND_IDENTITY` で失敗します。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
 
 同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。以下はパターンを示す簡略版です。同梱のテンプレートはアイコンに `Show` を使い、ユーティリティクラスと SVG のマークアップも含みます。
 

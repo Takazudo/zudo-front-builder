@@ -44,7 +44,7 @@ const html = renderToString(<main>{root}</main>);
 
 ラッパーは div です。コンポーネントマーカーは data-zfb-island または data-zfb-island-skip-ssr のどちらか一つだけです。さらに data-when、data-zfb-transport="json/1"、data-zfb-protocol="zudo-react/1"、空ではない data-zfb-build の識別子、props が空でも data-props を持ちます。属性はこの順に出力され、media モードの場合だけ data-when と transport の間に data-media が入ります。data-when のデフォルトは load で、idle、visible、media も使えます。media には空でない data-media クエリーが必要です。skip-SSR オプションは専用マーカーを選び、子を実行せずに identity と props を検証し、内部のハイドレーションマーカーなしで fallback をレンダリングします。
 
-コンポーネント名とビルドの識別子は、生成された zfb メタデータとクライアントの RootOptions に一致する必要があります。displayName が衝突するコンポーネント、無名コンポーネント、未登録のコンポーネントは島の子にできません。スキャナーへの登録、スケジュール、永続化には既存の zfb の島連携を使ってください。詳しくは[島のガイド](../concepts/islands.mdx)を参照してください。
+コンポーネント名とビルドの識別子は、生成された zfb メタデータとクライアントの RootOptions に一致する必要があります。スキャナーのマーカーは定義元の関数名であり、`displayName` は読み取りません。サーバーレンダリング時、`displayName` は未設定か、その関数名と一致している必要があります。一致しない値ではターゲット名が変わらず、`ZR_ISLAND_IDENTITY` で失敗します。無名または未登録のコンポーネントも島の子にできません。スキャナーへの登録、スケジュール、永続化には既存の zfb の島連携を使ってください。詳しくは[島のガイド](../concepts/islands.mdx)を参照してください。
 
 ラッパーは zfb が保持します。zudo-react のマーカーはラッパー内の範囲だけを示すので、周囲の文書にマーカーは付きません。各ルートは独立したマーカー番号を持ち、作成者がグローバルな要素 ID や独自のコンポーネントレジストリーを用意する必要はありません。
 
