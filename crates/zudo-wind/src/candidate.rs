@@ -52,7 +52,7 @@ pub fn parse_candidate(
     // Reserved forms have priority over unknown variants and outer punctuation.
     for variant in &parts.variants {
         if (variant.starts_with("group-") || variant.starts_with("peer-"))
-            && variant.split('[').next().unwrap_or(variant).contains('/')
+            && tokenizer::split(variant).is_ok_and(|parts| parts.slash.is_some())
         {
             return Err(unsupported(
                 text,
@@ -713,6 +713,11 @@ mod tests {
     fn r07_named_relation_forms() {
         rejected("group/menu", DiagnosticCode::Zw004, "R07");
         rejected("group-hover/menu:block", DiagnosticCode::Zw004, "R07");
+        rejected(
+            "group-data-[state=open]/menu:block",
+            DiagnosticCode::Zw004,
+            "R07",
+        );
     }
 
     #[test]
