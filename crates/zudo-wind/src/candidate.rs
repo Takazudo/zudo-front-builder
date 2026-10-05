@@ -41,10 +41,18 @@ pub fn parse_candidate(
         ),
     })?;
 
+    if text.chars().any(char::is_whitespace) || text.chars().any(char::is_control) {
+        return Err(Diagnostic::parse(
+            text,
+            DiagnosticCode::Zw001,
+            "R03",
+            "invalid outer candidate characters",
+        ));
+    }
     // Reserved forms have priority over unknown variants and outer punctuation.
     for variant in &parts.variants {
-        if variant.starts_with("group-") && variant.contains('/')
-            || variant.starts_with("peer-") && variant.contains('/')
+        if (variant.starts_with("group-") || variant.starts_with("peer-"))
+            && tokenizer::split(variant).is_ok_and(|parts| parts.slash.is_some())
         {
             return Err(unsupported(
                 text,
@@ -52,7 +60,31 @@ pub fn parse_candidate(
                 "named relation variants are unsupported",
             ));
         }
-        if variant.starts_with("aria-") || variant.starts_with("data-") {
+        if variant.starts_with("aria-")
+            || variant.starts_with("data-")
+            || ["group-aria-", "group-data-", "peer-aria-", "peer-data-"]
+                .iter()
+                .any(|prefix| variant.starts_with(prefix))
+        {
+            if variant.contains('[')
+                && (!valid_bracket_variant(variant)
+                    || ![
+                        "aria-",
+                        "data-",
+                        "group-aria-",
+                        "group-data-",
+                        "peer-aria-",
+                        "peer-data-",
+                    ]
+                    .contains(&variant.split_once('[').map_or("", |(head, _)| head)))
+            {
+                return Err(Diagnostic::parse(
+                    text,
+                    DiagnosticCode::Zw001,
+                    "R03",
+                    "invalid outer candidate characters",
+                ));
+            }
             return Err(unsupported(
                 text,
                 "R08",
@@ -60,10 +92,45 @@ pub fn parse_candidate(
             ));
         }
         if variant.starts_with('[') {
+            if !valid_bracket_variant(variant) {
+                return Err(Diagnostic::parse(
+                    text,
+                    DiagnosticCode::Zw001,
+                    "R03",
+                    "invalid outer candidate characters",
+                ));
+            }
             return Err(unsupported(
                 text,
                 "R09",
                 "arbitrary-selector variants are unsupported",
+            ));
+        }
+        if ["has-", "not-", "nth-", "nth-last-", "supports-"]
+            .iter()
+            .any(|prefix| {
+                variant
+                    .strip_prefix(prefix)
+                    .is_some_and(|tail| tail.starts_with('['))
+            })
+            && valid_bracket_variant(variant)
+        {
+            return Err(unsupported(
+                text,
+                "R09",
+                "arbitrary-selector variants are unsupported",
+            ));
+        }
+        if ["min-", "max-"].iter().any(|prefix| {
+            variant
+                .strip_prefix(prefix)
+                .is_some_and(|tail| tail.starts_with('['))
+        }) && valid_bracket_variant(variant)
+        {
+            return Err(unsupported(
+                text,
+                "R24",
+                "arbitrary breakpoint variants are unsupported; configure wind.breakpoints",
             ));
         }
     }
@@ -84,10 +151,7 @@ pub fn parse_candidate(
             "important modifiers are unsupported",
         ));
     }
-    if text.chars().any(char::is_whitespace)
-        || text.chars().any(char::is_control)
-        || parts.variants.iter().any(|part| !valid_outer(part))
-    {
+    if parts.variants.iter().any(|part| !valid_outer(part)) {
         return Err(Diagnostic::parse(
             text,
             DiagnosticCode::Zw001,
@@ -236,6 +300,54 @@ fn valid_outer(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+}
+
+fn valid_bracket_variant(value: &str) -> bool {
+    let Some(open) = value.find('[') else {
+        return false;
+    };
+    if !value.ends_with(']')
+        || value.len() <= open + 2
+        || !valid_outer(&value[..open])
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let mut depth = 0;
+    let mut quote = None;
+    let mut escape = false;
+    for (offset, ch) in value[open..].char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            continue;
+        }
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 && open + offset != value.len() - 1 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0 && quote.is_none() && !escape
 }
 
 fn valid_authored_identifier(value: &str) -> bool {
@@ -601,12 +713,27 @@ mod tests {
     fn r07_named_relation_forms() {
         rejected("group/menu", DiagnosticCode::Zw004, "R07");
         rejected("group-hover/menu:block", DiagnosticCode::Zw004, "R07");
+        rejected(
+            "group-data-[state=open]/menu:block",
+            DiagnosticCode::Zw004,
+            "R07",
+        );
     }
 
     #[test]
     fn r08_attribute_variants() {
         rejected("aria-pressed:block", DiagnosticCode::Zw004, "R08");
         rejected("data-[state=open]:block", DiagnosticCode::Zw004, "R08");
+        for variant in [
+            "group-aria-[expanded=true]",
+            "group-data-[current=true]",
+            "group-data-[value='[']",
+            "group-data-[value=foo/bar]",
+            "peer-aria-[pressed=true]",
+            "peer-data-[state=open]",
+        ] {
+            rejected(&format!("{variant}:block"), DiagnosticCode::Zw004, "R08");
+        }
     }
 
     #[test]
@@ -617,6 +744,39 @@ mod tests {
             DiagnosticCode::Zw004,
             "R09",
         );
+        for variant in [
+            "has-[:focus-visible]",
+            "has-[\\]]",
+            "not-[:first-child]",
+            "nth-[2]",
+            "nth-last-[3n+1]",
+            "supports-[display:grid]",
+        ] {
+            rejected(&format!("{variant}:block"), DiagnosticCode::Zw004, "R09");
+        }
+    }
+
+    #[test]
+    fn functional_breakpoints_and_malformed_controls() {
+        for variant in ["min-[56rem]", "max-[42rem]"] {
+            rejected(&format!("{variant}:block"), DiagnosticCode::Zw004, "R24");
+        }
+        for text in [
+            "min-[]:block",
+            "has-[]:block",
+            "group-data-[]:block",
+            "group-data-foo[bar]:block",
+            "group-data-foo-[bar]:block",
+            "min-[56rem]junk:block",
+            "has-[x][y]:block",
+            "[&_a]junk:block",
+        ] {
+            rejected(text, DiagnosticCode::Zw001, "R03");
+        }
+        for text in ["min-[56rem:block", "has-[:focus-visible:block"] {
+            rejected(text, DiagnosticCode::Zw001, "R02");
+        }
+        rejected("custom-[state=open]:block", DiagnosticCode::Zw001, "R03");
     }
 
     #[test]
