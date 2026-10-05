@@ -1,0 +1,8 @@
+{
+  "caseId": "breakpoint-block",
+  "reset": "none",
+  "explicitCandidates": ["sm:block"],
+  "breakpoints": {
+    "sm": 640
+  }
+}

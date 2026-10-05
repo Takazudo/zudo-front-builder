@@ -1,0 +1,6 @@
+{
+  "caseId": "html",
+  "reset": "none",
+  "sourceFile": "index.html",
+  "expectedCandidates": ["block", "hidden"]
+}

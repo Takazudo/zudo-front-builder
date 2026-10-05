@@ -1,0 +1,11 @@
+{
+  "caseId": "named-spacing",
+  "reset": "none",
+  "explicitCandidates": ["p-hsp-sm"],
+  "spacing": {
+    "hsp-sm": "17px"
+  },
+  "colors": {
+    "surface": "#123456"
+  }
+}
