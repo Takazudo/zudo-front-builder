@@ -4,6 +4,57 @@ description: See how the source plan finds complete candidates and how explicit 
 sidebar_position: 4
 ---
 
+## Make candidates discoverable
+
+The docs shell uses Tailwind CSS; source discovery and generated rules here belong to zudo-wind. The extractor reads files without running the app, so keep each possible class complete in source:
+
+~~~tsx
+function ActionButton({ active }: { active: boolean }) {
+  const buttonClass = active
+    ? "bg-accent text-white"
+    : "bg-muted text-white";
+
+  return <button className={buttonClass}>Continue</button>;
+}
+~~~
+
+A finite conditional exposes both complete alternatives. A runtime prefix joined to a value does not form a candidate. Put a complete app-owned candidate that cannot appear in source in an owner-keyed <code>wind.safelist</code>.
+
+| Need | Use |
+| --- | --- |
+| App classes written in source | Build or standalone source plan |
+| Finite app candidate absent from scanned files | <code>wind.safelist</code> |
+| Classes shipped by a package | Versioned manifest in <code>wind.manifests</code> |
+| Paths that should stay out | <code>wind.sources.exclude</code> |
+| Package directory containing class-bearing files | <code>wind.sources.packageRoots</code> |
+
+Generate a package stylesheet and candidate manifest from the package directory:
+
+~~~sh
+zfb css --input src/styles.css --output dist/ui.css \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind manifest --producer ui --output dist/wind.json \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind audit --plan build
+~~~
+
+The consumer declares producer <code>ui</code> and supplies every token used by the manifest. This sample compiles two complete candidates with configured colors and spacing:
+
+{/* wind-preview: guide-sources-and-candidates/static-status "See complete candidates resolve" */}
+{/* wind-preview:end */}
+
+An explicit glob whose every match is excluded fails with ZW010. If some matches remain, zfb warns and scans those files. These records show the exact all-excluded and partial-exclusion source plans:
+
+{/* wind-preview: guide-sources-and-candidates/excluded-all "All matches excluded: error" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-sources-and-candidates/excluded-partial "Some matches excluded: warning" */}
+{/* wind-preview:end */}
+
+The extractor does not execute application code or infer classes from runtime values.
+
+<Details title="Technical reference">
+
 ## The source plan
 
 The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
@@ -107,3 +158,5 @@ The source index tracks which owners supplied each candidate. Additions, removal
 - [Utility grammar](./utility-grammar.mdx)
 - [Diagnostics and tools](./diagnostics-and-tools.mdx)
 - [Utility reference](./utilities/index.mdx)
+
+</Details>

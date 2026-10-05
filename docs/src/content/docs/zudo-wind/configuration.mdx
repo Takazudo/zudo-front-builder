@@ -4,6 +4,53 @@ description: Configure zudo-wind generation, tokens, breakpoints, source candida
 sidebar_position: 2
 ---
 
+## Configure the workspace
+
+The documentation shell still uses Tailwind CSS. This page configures the separate zudo-wind engine that your project runs.
+
+Put engine settings under the top-level <code>wind</code> key. Configure the reset, tokens, breakpoints, and source roots your classes need:
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "minimal-v1",
+    strict: true,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    sources: {
+      exclude: ["src/**/__tests__/**"],
+      packageRoots: ["./packages/ui"]
+    },
+    safelist: { app: ["sm:hover:bg-panel"] },
+    authoredClasses: { "legacy-panel": true }
+  }
+});
+~~~
+
+Define custom properties in authored CSS when tokens reference them. Then inspect the same candidate and source plan the build will use:
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts sm:hover:bg-panel
+zfb css --input src/styles.css --output dist/app.css --project-root .
+~~~
+
+Use a safelist for complete app candidates that source discovery cannot find. Publish package-owned candidates as a manifest. Reserve a complete spelling in <code>authoredClasses</code> when CSS owns a name that overlaps a utility root.
+
+{/* wind-preview: guide-configuration/configured-panel "Inspect token-backed utility output" */}
+{/* wind-preview:end */}
+
+The sample contains compiled zudo-wind CSS with an explicit spacing unit, breakpoint, token, and reset. Its authored card styles supply context; the displayed utility classes come from the compiler.
+
+<Details title="Technical reference">
+
 ## The wind key
 
 The root configuration accepts `wind` in both `zfb.config.ts` and `zfb.config.json`. After the cutover, an absent key has the same behavior as an empty object: generation is enabled with reset `none`, empty token maps, and sources supplied by zfb's source planner.
@@ -128,3 +175,5 @@ A leftover top-level `tailwind` key is a hard error with a named migration messa
 - [Tokens](./tokens.mdx)
 - [Sources and candidates](./sources-and-candidates.mdx)
 - [Coming from Tailwind](./coming-from-tailwind.mdx)
+
+</Details>

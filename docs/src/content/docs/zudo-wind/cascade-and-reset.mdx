@@ -4,6 +4,57 @@ description: Understand reset choices, generated layers, unlayered utilities, an
 sidebar_position: 7
 ---
 
+## Choose a reset for the page
+
+The documentation chrome still uses Tailwind CSS. These isolated samples contain compiled zudo-wind CSS and browser-native styles only.
+
+| Reset | Choose it when | Browser defaults that remain |
+| --- | --- | --- |
+| <code>none</code> | Your app already owns a baseline | Heading sizes, list markers, body margin, native controls |
+| <code>minimal-v1</code> | You need box sizing, a flush body, and inherited control fonts | Heading sizes, list markers, other UA styles |
+| <code>owned-v1</code> | You want the compact reset zudo-wind owns | Focus outlines and native appearance |
+
+The same HTML is compiled three times. No scaffold CSS is added, so heading, list, margin, and control differences remain visible. In your project, compile the configured entry and audit the build plan with:
+
+~~~sh
+zfb css --input src/styles.css --output dist/app.css --project-root .
+zfb wind audit --plan build
+~~~
+
+{/* wind-preview: guide-cascade-and-reset/reset-none "Reset none: browser defaults" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/reset-minimal "Minimal reset: owned basics" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/reset-owned "Owned reset: normalized headings and lists" */}
+{/* wind-preview:end */}
+
+## Resolve a cascade tie
+
+Utilities are unlayered and beat normal declarations in named layers. For an unlayered authored selector and utility with equal specificity, placement decides which rule comes later:
+
+~~~ts
+wind: {
+  utilities: { placement: "before-authored" }
+}
+~~~
+
+The records compare an actual <code>p-4</code> rule with an authored <code>padding</code> declaration. The default puts the utility after authored global CSS; <code>before-authored</code> puts the authored rule last:
+
+{/* wind-preview: guide-cascade-and-reset/layered-authored "Unlayered utility beats a normal layered rule" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/after-authored "Default placement: utility wins an equal-specificity tie" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/before-authored "Before-authored placement: authored rule wins the tie" */}
+{/* wind-preview:end */}
+
+Placement changes source order, not selector specificity. <code>group-*</code> and <code>peer-*</code> keep their zudo-wind specificity; see [relation variant specificity](./coming-from-tailwind.mdx#relation-variant-specificity).
+
+<Details title="Technical reference">
+
 ## Layer order
 
 Whenever wind emits a reset, token, or utility rule, the generated layer prelude is:
@@ -197,3 +248,5 @@ V1 generated CSS is not minified in development or production. There is no final
 - [Utility grammar](./utility-grammar.mdx)
 - [Tokens](./tokens.mdx)
 - [Diagnostics and tools](./diagnostics-and-tools.mdx)
+
+</Details>

@@ -4,6 +4,53 @@ description: zudo-wind の生成、トークン、ブレークポイント、ソ
 sidebar_position: 2
 ---
 
+## プロジェクトを設定する
+
+このドキュメントのシェルは引き続き Tailwind CSS を使います。このページでは、利用者のプロジェクトで実行する別のエンジン zudo-wind を設定します。
+
+エンジンの設定はトップレベルの <code>wind</code> キーに置きます。必要なリセット、トークン、ブレークポイント、ソースルートを設定します。
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "minimal-v1",
+    strict: true,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } },
+    dark: { attribute: "data-theme", value: "dark" },
+    sources: {
+      exclude: ["src/**/__tests__/**"],
+      packageRoots: ["./packages/ui"]
+    },
+    safelist: { app: ["sm:hover:bg-panel"] },
+    authoredClasses: { "legacy-panel": true }
+  }
+});
+~~~
+
+トークンが参照するカスタムプロパティは手書き CSS で定義します。続けて、ビルドと同じソースプランと候補を調べます。
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts sm:hover:bg-panel
+zfb css --input src/styles.css --output dist/app.css --project-root .
+~~~
+
+ソース発見で見つからない完全なアプリ候補はセーフリストに追加します。パッケージ所有の候補はマニフェストとして公開します。CSS がユーティリティ基部と重なる名前を所有する場合は、完全な表記を <code>authoredClasses</code> に予約します。
+
+{/* wind-preview: guide-configuration/configured-panel "トークンを使うユーティリティの出力" */}
+{/* wind-preview:end */}
+
+サンプルには明示的な余白単位、ブレークポイント、トークン、リセットと、コンパイル済み zudo-wind CSS が含まれます。カードの手書きスタイルは表示の補助で、ユーティリティの CSS はコンパイラが生成します。
+
+<Details title="技術リファレンス">
+
 ## wind キー
 
 ルート設定の `wind` は `zfb.config.ts` と `zfb.config.json` の両方で使えます。切り替え後はキーを省略しても空のオブジェクトと同じです。生成が有効になり、リセットは `none`、トークンマップは空、ソースは zfb のソースプランから供給されます。
@@ -128,3 +175,5 @@ JSON でも同じオブジェクトを `wind` プロパティの値として指�
 - [トークン](./tokens.mdx)
 - [ソースと候補](./sources-and-candidates.mdx)
 - [Tailwind からの移行](./coming-from-tailwind.mdx)
+
+</Details>

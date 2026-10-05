@@ -4,6 +4,44 @@ description: Inspect candidate outcomes, source-aware diagnostics, audits, and t
 sidebar_position: 8
 ---
 
+## Triage a finding
+
+The docs shell still uses Tailwind CSS; the CLI diagnostics described here come from zudo-wind.
+
+Use the build plan to audit the files and virtual sources compiled by <code>zfb build</code> and <code>zfb dev</code>. Add an exit threshold when the audit is part of a migration check:
+
+~~~sh
+zfb wind audit --plan build --fail-on warning
+zfb wind explain --config zfb.config.ts bg-panel
+~~~
+
+Audit is informational by default: reported errors do not change the exit status unless you pass <code>--fail-on error</code> or <code>--fail-on warning</code>. <code>explain</code> follows one candidate through parsing, token lookup, selector, and ordering.
+
+ZW014 depends on where a candidate came from. A foreign utility in a class attribute warns by default and becomes an error at that position with strict mode. The same text in an unrelated literal remains audit information; a safelist or manifest entry is always strict.
+
+~~~ts
+wind: {
+  strict: true
+}
+~~~
+
+These typed source records show the warning-to-error change:
+
+{/* wind-preview: guide-diagnostics-and-tools/source-warning "Non-strict source class: warning" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-diagnostics-and-tools/source-strict "Strict source class: error" */}
+{/* wind-preview:end */}
+
+Correct a missing token or spacing unit, or reserve the exact full spelling when authored CSS owns it. For example, <code>p-4</code> needs <code>tokens.spacingUnit</code>; <code>text-link</code> needs a matching color or font-size token unless it is authored:
+
+{/* wind-preview: guide-diagnostics-and-tools/missing-spacing-unit "Missing spacing unit: ZW006" */}
+{/* wind-preview:end */}
+
+An ordinary authored name such as <code>site-header</code> needs no reservation because it does not start with a catalog utility root. These diagnostic records show source and expected severity, not runnable previews.
+
+<Details title="Technical reference">
+
 ## Four candidate outcomes
 
 A candidate has one of four results:
@@ -98,3 +136,5 @@ Every generated reset, token, registration, and utility rule uses the virtual so
 - [Cascade and reset](./cascade-and-reset.mdx)
 - [Coming from Tailwind](./coming-from-tailwind.mdx)
 - [CLI reference](../api/cli.mdx)
+
+</Details>

@@ -4,6 +4,64 @@ description: Tailwind CSS の構成要素を、zudo-wind のトークン、バ�
 sidebar_position: 9
 ---
 
+## 短い手順で移行する
+
+このガイドを載せるドキュメントサイトは、独自の chrome に引き続き Tailwind を使います。この手順とコンパイル済みサンプルが説明するのは、利用者のプロジェクトで使う zudo-wind v1 です。
+
+1. エントリーのスタイルシートと import 先から Tailwind の import とエンジンディレクティブを削除します。通常の手書き CSS と <code>@layer</code> は残します。
+2. エンジンの値をトップレベルの <code>wind</code> キーに移します。<code>spec</code> を設定し、リセットを選び、候補が使うトークンとブレークポイントを設定します。
+3. 有限の候補はソースに残します。ソースにないアプリ候補は <code>safelist</code> に、パッケージ候補はバージョン付きマニフェストに置きます。
+4. build プランを監査します。対応候補を直し、手書き名を完全一致で予約し、strict モードの前に外部ユーティリティを置き換えるか実装します。
+
+~~~ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  wind: {
+    spec: 1,
+    reset: "owned-v1",
+    strict: false,
+    tokens: {
+      spacingUnit: "0.25rem",
+      colors: { panel: "var(--app-panel)" }
+    },
+    breakpoints: { sm: { minWidthPx: 640 } }
+  }
+});
+~~~
+
+参照するカスタムプロパティは手書き CSS で宣言します。続けて完全な候補を監査、説明します。
+
+~~~sh
+zfb wind audit --plan build
+zfb wind explain --config zfb.config.ts bg-panel
+zfb wind audit --plan build --fail-on warning
+~~~
+
+プレビューではコンパイル済み zudo-wind ルールがトークンと数値余白を使います。
+
+{/* wind-preview: guide-coming-from-tailwind/token-migration "テーマ値を wind.tokens に移す" */}
+{/* wind-preview:end */}
+
+Tailwind ディレクティブが残っていると、<code>wind</code> が <code>false</code> でも ZW009 で失敗します。この型付きフィクスチャは拒否されるエントリースタイルシートを示します。
+
+{/* wind-preview: guide-coming-from-tailwind/leftover-directive "Tailwind ディレクティブの残存: ZW009" */}
+{/* wind-preview:end */}
+
+Tailwind の import も同じスタイルシート検査で ZW009 になります。
+
+{/* wind-preview: guide-coming-from-tailwind/tailwind-import "Tailwind の import: ZW009" */}
+{/* wind-preview:end */}
+
+旧来の <code>line-clamp-2</code> クラスは未対応で、ZW014 になります。失われるスタイルを調べる間は警告のままにするか、strict モードでクラス位置のエラーにします。
+
+{/* wind-preview: guide-coming-from-tailwind/unsupported-utility "クラス位置の未対応ユーティリティ: ZW014" */}
+{/* wind-preview:end */}
+
+移行できないセレクタや宣言は手書き CSS または CSS Module に記述します。以下の詳細にはリセットの正確な差、詳細度、配置の同点、未対応構文の代替策を残します。
+
+<Details title="技術リファレンス">
+
 ## 主な変更点
 
 - zudo-wind はバージョン管理されたユーティリティ言語です。v1 は `spec: 1` で識別され、見慣れた表記でも別のエンジンとの互換性は保証しません。
@@ -342,3 +400,5 @@ export default defineConfig({
 - 実行時に組み立てる候補や正規表現のセーフリストはありません。有限のリテラルマップ、所有者キー付きセーフリスト、厳格なバージョン付きパッケージマニフェストを使います。
 
 v1 カタログは[ユーティリティリファレンス](./utilities/index.mdx)、候補と移行エラーの調査は[診断とツール](./diagnostics-and-tools.mdx)を参照してください。
+
+</Details>

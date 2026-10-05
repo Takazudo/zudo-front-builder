@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-cascade-and-reset",
+  "examples": [
+    {
+      "id": "reset-none",
+      "kind": "positive",
+      "html": "<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>",
+      "utilities": ["underline"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {}
+        }
+      },
+      "head": "<base href=\"about:srcdoc\">"
+    },
+    {
+      "id": "reset-minimal",
+      "kind": "positive",
+      "html": "<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>",
+      "utilities": ["underline"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "reset": "minimal-v1",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {}
+        }
+      },
+      "head": "<base href=\"about:srcdoc\">"
+    },
+    {
+      "id": "reset-owned",
+      "kind": "positive",
+      "html": "<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>",
+      "utilities": ["underline"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "reset": "owned-v1",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {}
+        }
+      },
+      "head": "<base href=\"about:srcdoc\">"
+    },
+    {
+      "id": "layered-authored",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from an unlayered utility</p></div></div>",
+      "utilities": ["p-4"],
+      "authoredClasses": ["wind-demo-box", "wind-demo-stage"],
+      "scaffoldCss": ".wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }\n@layer components { .wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; } }\n.wind-demo-box p { margin: 0; }",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {},
+          "utilities": {
+            "placement": "after-authored"
+          }
+        }
+      }
+    },
+    {
+      "id": "after-authored",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from the later rule</p></div></div>",
+      "utilities": ["p-4"],
+      "authoredClasses": ["wind-demo-box", "wind-demo-stage"],
+      "scaffoldCss": ".wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }\n.wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; }\n.wind-demo-box p { margin: 0; }",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {},
+          "utilities": {
+            "placement": "after-authored"
+          }
+        }
+      }
+    },
+    {
+      "id": "before-authored",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from the later rule</p></div></div>",
+      "utilities": ["p-4"],
+      "authoredClasses": ["wind-demo-box", "wind-demo-stage"],
+      "scaffoldCss": ".wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }\n.wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; }\n.wind-demo-box p { margin: 0; }",
+      "config": {
+        "wind": {
+          "reset": "none",
+          "tokens": {
+            "spacingUnit": "0.25rem"
+          },
+          "breakpoints": {},
+          "utilities": {
+            "placement": "before-authored"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -4,6 +4,57 @@ description: リセットの選択、生成レイヤー、レイヤーのない�
 sidebar_position: 7
 ---
 
+## ページに合うリセットを選ぶ
+
+ドキュメントの chrome は引き続き Tailwind CSS を使います。分離サンプルに入るのはコンパイル済み zudo-wind CSS とブラウザー標準のスタイルだけです。
+
+| リセット | 選ぶ場面 | 残るブラウザー標準のスタイル |
+| --- | --- | --- |
+| <code>none</code> | アプリがすでに基準スタイルを持つ | 見出しサイズ、リストマーカー、body の余白、ネイティブコントロール |
+| <code>minimal-v1</code> | ボックスサイズ、body の余白、コントロールのフォントを揃える | 見出しサイズ、リストマーカー、ほかの UA スタイル |
+| <code>owned-v1</code> | zudo-wind が管理する小さなリセットを使う | フォーカス枠とネイティブ外観 |
+
+同じ HTML を 3 種類の設定でコンパイルします。補助 CSS は加えず、見出し、リスト、余白、コントロールの差を見えるようにします。プロジェクトでは設定済みのエントリーをコンパイルし、build のソースプランを次のように監査します。
+
+~~~sh
+zfb css --input src/styles.css --output dist/app.css --project-root .
+zfb wind audit --plan build
+~~~
+
+{/* wind-preview: guide-cascade-and-reset/reset-none "リセットなし: ブラウザー標準" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/reset-minimal "最小リセット: 管理対象の基本" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/reset-owned "所有リセット: 見出しとリストを正規化" */}
+{/* wind-preview:end */}
+
+## カスケードの同点を解決する
+
+ユーティリティはレイヤーなしで出力され、通常の宣言を持つ名前付きレイヤーに勝ちます。レイヤーなしの手書きセレクタとユーティリティの詳細度が同じなら、後に来るルールが配置で決まります。
+
+~~~ts
+wind: {
+  utilities: { placement: "before-authored" }
+}
+~~~
+
+レコードでは実際の <code>p-4</code> と手書きの <code>padding</code> 宣言を比較します。既定ではユーティリティが手書き CSS の後に置かれ、<code>before-authored</code> では手書きルールが後になります。
+
+{/* wind-preview: guide-cascade-and-reset/layered-authored "レイヤーなしのユーティリティは通常のレイヤールールに勝つ" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/after-authored "既定の配置: 同じ詳細度ではユーティリティが勝つ" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-cascade-and-reset/before-authored "before-authored: 同じ詳細度では手書きルールが勝つ" */}
+{/* wind-preview:end */}
+
+配置が変えるのはソース順であり、セレクタの詳細度ではありません。<code>group-*</code> と <code>peer-*</code> の詳細度は zudo-wind のままです。[関係バリアントの詳細度](./coming-from-tailwind.mdx#relation-variant-specificity)を参照してください。
+
+<Details title="技術リファレンス">
+
 ## レイヤーの順序
 
 wind がリセット、トークン、ユーティリティのいずれかのルールを出力するとき、生成されるレイヤーの前置きは次のとおりです。
@@ -197,3 +248,5 @@ v1 の生成 CSS は開発時も本番時も圧縮されません。最終的な
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [トークン](./tokens.mdx)
 - [診断とツール](./diagnostics-and-tools.mdx)
+
+</Details>
