@@ -182,6 +182,7 @@ predictable. An actual anchor-validation gate would be a larger, separate decisi
 The following keys are set in `zfb.config.ts`'s `zudoDoc({ ... })` call:
 
 - **siteName / siteDescription / siteUrl / githubUrl** — site identity, used in metadata and chrome
+- **base** — `/` for normal deployments. `scripts/build-wind-docs-base.mjs` temporarily sets a literal prefix for actual subpath browser verification, then restores this config. The test server mounts the untouched output at that prefix so missing asset/link rewrites fail. The pinned config evaluator has no `process` global, so do not read environment variables directly here.
 - **metaTags** — `<head>` metadata; shallow-merged wholesale (a supplied nested object replaces the package default, not patches it — all keys must be given even when only a couple differ)
 - **logo** — `/img/logo.svg`, reproducing the pre-v4 home hero mask (v4's own default is an auto-generated mark)
 - **locales** — the `ja` locale, mapped to `src/content/docs-ja`
