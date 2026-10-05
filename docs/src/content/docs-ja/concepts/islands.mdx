@@ -36,6 +36,10 @@ export default function Counter() {
 
 スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper も、動作を静的に解決できれば利用できます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
 
+スキャナーは plugin の `setup` が登録した edge も解決します。対象は完全一致する `addAlias` の書き換えと `addVirtualModule` の specifier です。同じ specifier に一致する `tsconfig.json` の `compilerOptions.paths` が解決できれば、その設定が優先されます。`paths` の候補がどれも解決できない場合は、完全一致の plugin alias、登録済み virtual module、続いて `baseUrl` と package の検索へ進みます。
+
+virtual module から実ファイルを static import／re-export すると、スキャナーはそのファイルをたどります。`"use client"` を付ける module は実ファイルに置いてください。その module は別の実ファイルで定義された関数を re-export しても構いませんが、export した関数を到達可能な `<Island>` の唯一の子として渡す必要があります。ディレクティブだけでは target は登録されません。virtual source 内に直接書いた `"use client"` ディレクティブや `import.meta.glob` は警告が出てスキップされます。これらは実ファイルに置き、そのファイルを virtual module からたどれるようにしてください。virtual source 内の bare import がインストール済み package、workspace package、または別の virtual module に解決される場合もスキップされます。`setup` の登録方法は [Plugins](./plugins.mdx) を参照してください。
+
 ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。
 
 ```tsx
