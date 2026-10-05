@@ -1,0 +1,20 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-size-caption: .875rem;
+    --zw-font-size-caption-leading: 1.45;
+    --zw-font-size-copy: 1rem;
+    --zw-font-size-copy-leading: 1.65;
+    --zw-font-size-display: 1.5rem;
+    --zw-font-size-display-leading: 1.2;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-size-custom {
+  color: #223247;
+  border-left: 3px solid #6d7f96;
+  padding: .5rem .75rem;
+}
+.text-\[20px\] {
+  font-size: 20px;
+}

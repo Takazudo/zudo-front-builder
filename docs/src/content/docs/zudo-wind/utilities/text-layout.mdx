@@ -5,9 +5,225 @@ sidebar_position: 40
 generated: true
 ---
 
-Set text alignment, whitespace handling, wrapping, and truncation behavior.
+Control where text aligns, how spaces and line breaks behave, and how long words or single lines fit a container. Start with normal wrapping; use specialized behavior only when the content and available width call for it.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `text-center` | `text-align: center;` |
+| `whitespace-pre-wrap` | `white-space: pre-wrap;` |
+| `break-all` | `word-break: break-all;` |
+| `break-normal` | `overflow-wrap: normal; word-break: normal;` |
+| `break-words` | `overflow-wrap: break-word;` |
+| `wrap-anywhere` | `overflow-wrap: anywhere;` |
+| `truncate` | `overflow: hidden; text-overflow: ellipsis; white-space: nowrap;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. These examples use fixed demo widths authored in wind-demo CSS so the wrapping behavior is visible; that CSS does not set text alignment, white-space, word-break, overflow-wrap, or truncation. Japanese text wraps at natural character boundaries where the browser allows it.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Align and follow text direction
+
+The fixed-width rows compare physical alignment with logical start and end. The RTL rows show that start follows direction.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-align\"\u003e\n  \u003cp class=\"text-left\"\u003eLeft: The same sentence wraps inside this box. / 左寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-center\"\u003eCenter: The same sentence wraps inside this box. / 中央寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-right\"\u003eRight: The same sentence wraps inside this box. / 右寄せの表示です。\u003c/p\u003e\n  \u003cp class=\"text-justify\"\u003eJustified copy uses the available line width. / 両端揃えは行幅を使います。\u003c/p\u003e\n  \u003cp dir=\"ltr\" class=\"text-start\"\u003eLogical start in left-to-right text. / 左から始まる文章です。\u003c/p\u003e\n  \u003cp dir=\"rtl\" class=\"text-start\"\u003eLogical start in right-to-left text. / 右から始まる文章です。\u003c/p\u003e\n  \u003cp dir=\"rtl\" class=\"text-end\"\u003eLogical end in right-to-left text. / 右から始まる文章です。\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-align {\n  max-width: 23rem;\n  color: #223247;\n}\n\n.wind-demo-align p {\n  margin: 0 0 .55rem;\n  border: 1px solid #b7c5d4;\n  padding: .45rem .65rem;\n}\n\n.wind-demo-align p:last-child {\n  margin-bottom: 0;\n}\n.text-center {\n  text-align: center;\n}\n.text-end {\n  text-align: end;\n}\n.text-justify {\n  text-align: justify;\n}\n.text-left {\n  text-align: left;\n}\n.text-right {\n  text-align: right;\n}\n.text-start {\n  text-align: start;\n}\n"} title={"Align and follow text direction"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-align": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-left",
+        "text-center",
+        "text-right",
+        "text-justify",
+        "text-start",
+        "text-end"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-align { max-width: 23rem; color: #223247; }
+.wind-demo-align p { margin: 0 0 0.55rem; border: 1px solid #b7c5d4; padding: 0.45rem 0.65rem; }
+.wind-demo-align p:last-child { margin-bottom: 0; }
+```
+
+</Details>
+
+### Keep or collapse whitespace
+
+Each row receives the same spaces and source line breaks so the six white-space modes can be compared directly.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-whitespace\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003enormal\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-normal\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003enowrap\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-nowrap\"\u003eAlpha  beta 日本語 line space  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre-line\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre-line\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003epre-wrap\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-pre-wrap\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003ebreak-spaces\u003c/span\u003e\u003cspan class=\"wind-demo-sample whitespace-break-spaces\"\u003eAlpha  beta\n日本語 line\nspace  end\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-whitespace {\n  max-width: 24rem;\n  color: #223247;\n}\n\n.wind-demo-whitespace p {\n  display: flex;\n  align-items: flex-start;\n  gap: .5rem;\n  margin: 0;\n  padding: .4rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-whitespace p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  flex: 0 0 5.5rem;\n  color: #5d6c7c;\n  font-size: .75rem;\n}\n\n.wind-demo-sample {\n  min-width: 0;\n  flex: 1;\n  border-left: 2px solid #b7c5d4;\n  padding-left: .5rem;\n}\n.whitespace-break-spaces {\n  white-space: break-spaces;\n}\n.whitespace-normal {\n  white-space: normal;\n}\n.whitespace-nowrap {\n  white-space: nowrap;\n}\n.whitespace-pre {\n  white-space: pre;\n}\n.whitespace-pre-line {\n  white-space: pre-line;\n}\n.whitespace-pre-wrap {\n  white-space: pre-wrap;\n}\n"} title={"Keep or collapse whitespace"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-whitespace": true,
+      "wind-demo-label": true,
+      "wind-demo-sample": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "whitespace-normal",
+        "whitespace-nowrap",
+        "whitespace-pre",
+        "whitespace-pre-line",
+        "whitespace-pre-wrap",
+        "whitespace-break-spaces"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-whitespace { max-width: 24rem; color: #223247; }
+.wind-demo-whitespace p { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.4rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-whitespace p:last-child { border-bottom: 0; }
+.wind-demo-label { flex: 0 0 5.5rem; color: #5d6c7c; font-size: 0.75rem; }
+.wind-demo-sample { min-width: 0; flex: 1; border-left: 2px solid #b7c5d4; padding-left: 0.5rem; }
+```
+
+</Details>
+
+### Handle an unbroken identifier
+
+A long URL shows normal overflow, character breaks, emergency word wrapping, and anywhere wrapping in equal-width boxes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-wrap-grid\"\u003e\n  \u003cp class=\"wind-demo-wrap-box break-normal\"\u003e\u003cstrong\u003enormal\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box break-all\"\u003e\u003cstrong\u003ebreak-all\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box break-words\"\u003e\u003cstrong\u003ebreak-words\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n  \u003cp class=\"wind-demo-wrap-box wrap-anywhere\"\u003e\u003cstrong\u003eanywhere\u003c/strong\u003e\u003cbr /\u003ehttps://example.invalid/verylongsegmentwithoutbreaks\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-wrap-grid {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n  gap: .65rem;\n  max-width: 28rem;\n}\n\n.wind-demo-wrap-box {\n  min-width: 0;\n  margin: 0;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem;\n}\n\n.wind-demo-wrap-box strong {\n  display: block;\n  margin-bottom: .3rem;\n  color: #5d6c7c;\n  font-size: .75rem;\n}\n.break-all {\n  word-break: break-all;\n}\n.break-normal {\n  overflow-wrap: normal;\n  word-break: normal;\n}\n.break-words {\n  overflow-wrap: break-word;\n}\n.wrap-anywhere {\n  overflow-wrap: anywhere;\n}\n"} title={"Handle an unbroken identifier"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-wrap-grid": true,
+      "wind-demo-wrap-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "break-normal",
+        "break-all",
+        "break-words",
+        "wrap-anywhere"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; max-width: 28rem; }
+.wind-demo-wrap-box { min-width: 0; margin: 0; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }
+.wind-demo-wrap-box strong { display: block; margin-bottom: 0.3rem; color: #5d6c7c; font-size: 0.75rem; }
+```
+
+</Details>
+
+### Trim one line to a width
+
+truncate supplies overflow hidden, ellipsis, and nowrap; the authored width makes the cutoff visible.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-truncate truncate\"\u003eA long title needs a single-line preview when the card has limited room / 長い見出しを狭いカード幅に収める\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-truncate {\n  width: 15rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .6rem;\n}\n.truncate {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n"} title={"Trim one line to a width"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-truncate": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "truncate"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-truncate { width: 15rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+text-left, text-center, text-right, text-justify, text-start, and text-end control alignment; start and end follow the element direction. whitespace-* chooses how spaces and source newlines collapse, stay, or wrap. break-all can split at any character, break-words allows an emergency break for a long word, and wrap-anywhere also changes min-content sizing. break-normal restores normal word-break and overflow-wrap. truncate combines hidden overflow, an ellipsis, and no wrapping; give the element a real width constraint or the effect has nothing to trim. For Japanese, normal line breaking already uses character-level opportunities, so compare these controls with long Latin identifiers as well as Japanese prose.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## text
 
@@ -259,3 +475,5 @@ Set text alignment, whitespace handling, wrapping, and truncation behavior.
 | Example class | Expected declarations |
 | --- | --- |
 | `truncate` | `overflow: hidden`; `text-overflow: ellipsis`; `white-space: nowrap` |
+
+</Details>

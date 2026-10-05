@@ -5,9 +5,125 @@ sidebar_position: 61
 generated: true
 ---
 
-Set list markers and whether markers appear inside or outside the content box.
+Choose a list marker and place it inside or outside the list item’s text box. These classes style semantic ul and ol elements; they do not create list structure for you.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `list-disc` | `list-style-type: disc;` |
+| `list-decimal` | `list-style-type: decimal;` |
+| `list-none` | `list-style-type: none;` |
+| `list-inside` | `list-style-position: inside;` |
+| `list-outside` | `list-style-position: outside;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The authored CSS lays out demo cards but leaves list-style-type and list-style-position to the utilities. Semantic list markup supplies the item structure.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Choose a marker type
+
+Semantic unordered and ordered lists compare disc, decimal, and no visible marker.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-list-types\"\u003e\n  \u003csection\u003e\u003cstrong\u003eBullets\u003c/strong\u003e\u003cul class=\"list-disc\"\u003e\u003cli\u003eChoose a route\u003c/li\u003e\u003cli\u003eCheck the source\u003c/li\u003e\u003c/ul\u003e\u003c/section\u003e\n  \u003csection\u003e\u003cstrong\u003eSteps\u003c/strong\u003e\u003col class=\"list-decimal\"\u003e\u003cli\u003eChoose a route\u003c/li\u003e\u003cli\u003eCheck the source\u003c/li\u003e\u003c/ol\u003e\u003c/section\u003e\n  \u003csection\u003e\u003cstrong\u003eMarker-free links\u003c/strong\u003e\u003cul class=\"list-none\"\u003e\u003cli\u003eOverview\u003c/li\u003e\u003cli\u003eReference\u003c/li\u003e\u003c/ul\u003e\u003c/section\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-list-types {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));\n  gap: .75rem;\n  color: #223247;\n}\n\n.wind-demo-list-types section {\n  border: 1px solid #b7c5d4;\n  padding: .75rem 1rem;\n}\n\n.wind-demo-list-types strong {\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.list-decimal {\n  list-style-type: decimal;\n}\n.list-disc {\n  list-style-type: disc;\n}\n.list-none {\n  list-style-type: none;\n}\n"} title={"Choose a marker type"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-list-types": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "list-disc",
+        "list-decimal",
+        "list-none"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-list-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; color: #223247; }
+.wind-demo-list-types section { border: 1px solid #b7c5d4; padding: 0.75rem 1rem; }
+.wind-demo-list-types strong { color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### Place markers with wrapped text
+
+The same long list item shows how inside and outside markers align with the second line.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-list-positions\"\u003e\n  \u003csection\u003e\u003cstrong\u003eOutside\u003c/strong\u003e\u003cul class=\"list-disc list-outside\"\u003e\u003cli\u003eA long item wraps onto a second line so the marker position stays easy to compare. / 長い項目は2行目に折り返されます。\u003c/li\u003e\u003cli\u003eAnother item\u003c/li\u003e\u003c/ul\u003e\u003c/section\u003e\n  \u003csection\u003e\u003cstrong\u003eInside\u003c/strong\u003e\u003cul class=\"list-disc list-inside\"\u003e\u003cli\u003eA long item wraps onto a second line so the marker position stays easy to compare. / 長い項目は2行目に折り返されます。\u003c/li\u003e\u003cli\u003eAnother item\u003c/li\u003e\u003c/ul\u003e\u003c/section\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-list-positions {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));\n  gap: .75rem;\n  color: #223247;\n}\n\n.wind-demo-list-positions section {\n  min-width: 0;\n  border: 1px solid #b7c5d4;\n  padding: .75rem;\n}\n\n.wind-demo-list-positions strong {\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.list-disc {\n  list-style-type: disc;\n}\n.list-inside {\n  list-style-position: inside;\n}\n.list-outside {\n  list-style-position: outside;\n}\n"} title={"Place markers with wrapped text"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-list-positions": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "list-disc",
+        "list-outside",
+        "list-inside"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-list-positions { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.75rem; color: #223247; }
+.wind-demo-list-positions section { min-width: 0; border: 1px solid #b7c5d4; padding: 0.75rem; }
+.wind-demo-list-positions strong { color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+list-disc, list-decimal, and list-none select the marker type. list-inside and list-outside control marker placement independently, so combine one marker type with one position when both matter. A list-none navigation still needs meaningful link text and accessible navigation semantics. The catalog currently exposes these fixed choices, with no named marker token or arbitrary marker syntax.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## list-decimal
 
@@ -178,3 +294,5 @@ Set list markers and whether markers appear inside or outside the content box.
 | Example class | Expected declarations |
 | --- | --- |
 | `list-outside` | `list-style-position: outside` |
+
+</Details>

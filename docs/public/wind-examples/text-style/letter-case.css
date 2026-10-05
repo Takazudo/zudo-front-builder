@@ -1,0 +1,33 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-style-stack {
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: .6rem 1rem;
+}
+
+.wind-demo-style-stack p {
+  margin: 0;
+  padding: .45rem 0;
+  border-bottom: 1px solid #d8e0e8;
+}
+
+.wind-demo-style-stack p:last-child {
+  border-bottom: 0;
+}
+.capitalize {
+  text-transform: capitalize;
+}
+.lowercase {
+  text-transform: lowercase;
+}
+.normal-case {
+  text-transform: none;
+}
+.uppercase {
+  text-transform: uppercase;
+}

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "family": "font-size",
+  "examples": [
+    {
+      "id": "size-tokens",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-size\">\n  <p class=\"text-caption\">Caption / 補足の文字: compact but readable.</p>\n  <p class=\"text-copy\">Body / 本文: choose a size that stays comfortable across a paragraph.</p>\n  <p class=\"text-display\">Display / 見出し: larger type uses a tighter paired leading.</p>\n</div>",
+      "utilities": ["text-caption", "text-copy", "text-display"],
+      "authoredClasses": ["wind-demo-size"],
+      "scaffoldCss": ".wind-demo-size { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }\n.wind-demo-size p { margin: 0; padding: 0.5rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-size p:last-child { border-bottom: 0; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontSizes": {
+              "caption": {
+                "size": "0.875rem",
+                "lineHeight": "1.45"
+              },
+              "copy": {
+                "size": "1rem",
+                "lineHeight": "1.65"
+              },
+              "display": {
+                "size": "1.5rem",
+                "lineHeight": "1.2"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "size-arbitrary",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-size-custom text-[20px]\">One-off 20px / 任意の20pxサイズ</p>",
+      "utilities": ["text-[20px]"],
+      "authoredClasses": ["wind-demo-size-custom"],
+      "scaffoldCss": ".wind-demo-size-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontSizes": {
+              "caption": {
+                "size": "0.875rem",
+                "lineHeight": "1.45"
+              },
+              "copy": {
+                "size": "1rem",
+                "lineHeight": "1.65"
+              },
+              "display": {
+                "size": "1.5rem",
+                "lineHeight": "1.2"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

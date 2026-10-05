@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "family": "line-height",
+  "examples": [
+    {
+      "id": "leading-compare",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-leading\">\n  <div><span class=\"wind-demo-label\">Compact</span><p class=\"leading-compact\">Line height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。</p></div>\n  <div><span class=\"wind-demo-label\">Copy</span><p class=\"leading-copy\">Line height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。</p></div>\n</div>",
+      "utilities": ["leading-compact", "leading-copy"],
+      "authoredClasses": ["wind-demo-leading", "wind-demo-label"],
+      "scaffoldCss": ".wind-demo-leading { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }\n.wind-demo-leading > div + div { margin-top: 1rem; border-top: 1px solid #d8e0e8; padding-top: 0.75rem; }\n.wind-demo-leading p { margin: 0.35rem 0 0; }\n.wind-demo-label { color: #5d6c7c; font-size: 0.8rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "lineHeights": {
+              "compact": "1.25",
+              "copy": "1.65"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "leading-custom",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-leading-custom leading-[1.8]\">A custom ratio can open the lines when a short block needs more air. / 短い文章では行間を広げると読みやすくなることがあります。</p>",
+      "utilities": ["leading-[1.8]"],
+      "authoredClasses": ["wind-demo-leading-custom"],
+      "scaffoldCss": ".wind-demo-leading-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "lineHeights": {
+              "compact": "1.25",
+              "copy": "1.65"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

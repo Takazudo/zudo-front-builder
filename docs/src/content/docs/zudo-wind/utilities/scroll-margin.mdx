@@ -5,9 +5,400 @@ sidebar_position: 63
 generated: true
 ---
 
-Set physical scroll margins with spacing values, including negative values.
+Use scroll-margin to add an outset around a target when the browser scrolls it into view, including fragment navigation and scroll snapping. It does not create visible layout space around the element.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `scroll-m-6` | `scroll-margin-top: 1.5rem; scroll-margin-right: 1.5rem; scroll-margin-bottom: 1.5rem; scroll-margin-left: 1.5rem;` |
+| `scroll-mx-8` | `scroll-margin-left: 2rem; scroll-margin-right: 2rem;` |
+| `scroll-my-2` | `scroll-margin-top: 0.5rem; scroll-margin-bottom: 0.5rem;` |
+| `scroll-mb-4` | `scroll-margin-bottom: 1rem;` |
+| `scroll-ml-6` | `scroll-margin-left: 1.5rem;` |
+| `scroll-mr-6` | `scroll-margin-right: 1.5rem;` |
+| `scroll-mt-8` | `scroll-margin-top: 2rem;` |
+
+<Details title={"Example setup"}>
+
+The examples explicitly use spacingUnit: "0.25rem", reset: "none", strict mode and no breakpoints. Each preview contains a real link and target inside its own scrollable frame. Its native base element points to about:srcdoc so a fragment such as #top-target resolves within the preview document. Numeric suffixes multiply spacingUnit; no Tailwind scale or theme is inherited. wind-demo classes draw only the scroll frames and targets.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Keep a fragment target below the top edge
+
+Follow the link to the target. scroll-mt-8 adds a 2rem outset at the target’s physical top side.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#top-target\"\u003eJump to the target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target scroll-mt-8\" id=\"top-target\"\u003eTarget with scroll-mt-8\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-target {\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-mt-8 {\n  scroll-margin-top: 2rem;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Keep a fragment target below the top edge"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-mt-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Set horizontal and vertical outsets
+
+The two linked targets show scroll-my-2 on a vertical scroller and scroll-mx-8 on a horizontal scroller.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller wind-demo-y-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#axis-y\"\u003eJump to the vertical target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target scroll-my-2\" id=\"axis-y\"\u003eVertical target with scroll-my-2\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-scroller wind-demo-x-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#axis-x\"\u003eJump to the horizontal target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-track\"\u003e\n      \u003csection class=\"wind-demo-target scroll-mx-8\" id=\"axis-x\"\u003eHorizontal target with scroll-mx-8\u003c/section\u003e\n    \u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-y-scroller {\n  width: 17rem;\n}\n\n.wind-demo-x-scroller {\n  width: 17rem;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-track {\n  display: flex;\n  align-items: center;\n  justify-content: flex-end;\n  width: 34rem;\n  min-height: 7rem;\n}\n\n.wind-demo-target {\n  width: 10rem;\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-mx-8 {\n  scroll-margin-left: 2rem;\n  scroll-margin-right: 2rem;\n}\n.scroll-my-2 {\n  scroll-margin-top: 0.5rem;\n  scroll-margin-bottom: 0.5rem;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Set horizontal and vertical outsets"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-y-scroller": true,
+      "wind-demo-x-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-track": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-mx-8",
+        "scroll-my-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-y-scroller { width: 17rem; }
+.wind-demo-x-scroller { width: 17rem; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-track { display: flex; align-items: center; justify-content: flex-end; width: 34rem; min-height: 7rem; }
+.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Set individual physical sides
+
+The linked targets use scroll-mb-4, scroll-ml-6 and scroll-mr-6 so each edge can be inspected separately.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#bottom-target\"\u003eJump to the bottom-margin target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target scroll-mb-4\" id=\"bottom-target\"\u003eTarget with scroll-mb-4\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-scroller wind-demo-x-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#left-target\"\u003eJump to the left-margin target\u003c/a\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#right-target\"\u003eJump to the right-margin target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-track wind-demo-edge-track\"\u003e\n      \u003csection class=\"wind-demo-target scroll-ml-6\" id=\"left-target\"\u003escroll-ml-6\u003c/section\u003e\n      \u003csection class=\"wind-demo-target scroll-mr-6\" id=\"right-target\"\u003escroll-mr-6\u003c/section\u003e\n    \u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-x-scroller {\n  width: 17rem;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-track {\n  display: flex;\n  align-items: center;\n  justify-content: flex-end;\n  width: 34rem;\n  min-height: 7rem;\n}\n\n.wind-demo-edge-track {\n  justify-content: space-between;\n}\n\n.wind-demo-target {\n  width: 10rem;\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-mb-4 {\n  scroll-margin-bottom: 1rem;\n}\n.scroll-ml-6 {\n  scroll-margin-left: 1.5rem;\n}\n.scroll-mr-6 {\n  scroll-margin-right: 1.5rem;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Set individual physical sides"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-x-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-track": true,
+      "wind-demo-edge-track": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-mb-4",
+        "scroll-ml-6",
+        "scroll-mr-6"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-x-scroller { width: 17rem; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-track { display: flex; align-items: center; justify-content: flex-end; width: 34rem; min-height: 7rem; }
+.wind-demo-edge-track { justify-content: space-between; }
+.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Set an outset on every side
+
+The target sits at the lower-right of a two-axis scroller; scroll-m-6 sets all four physical sides.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller wind-demo-two-axis-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#all-sides-target\"\u003eJump to the lower-right target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-canvas\"\u003e\n      \u003csection class=\"wind-demo-target scroll-m-6\" id=\"all-sides-target\"\u003escroll-m-6 on all four sides\u003c/section\u003e\n    \u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-two-axis-scroller {\n  width: 17rem;\n  height: 9rem;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-canvas {\n  display: flex;\n  align-items: flex-end;\n  justify-content: flex-end;\n  width: 34rem;\n  height: 20rem;\n}\n\n.wind-demo-target {\n  width: 10rem;\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-m-6 {\n  scroll-margin-top: 1.5rem;\n  scroll-margin-right: 1.5rem;\n  scroll-margin-bottom: 1.5rem;\n  scroll-margin-left: 1.5rem;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Set an outset on every side"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-two-axis-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-canvas": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-m-6"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-two-axis-scroller { width: 17rem; height: 9rem; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-canvas { display: flex; align-items: flex-end; justify-content: flex-end; width: 34rem; height: 20rem; }
+.wind-demo-target { width: 10rem; min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Name a reusable target offset
+
+The example explicitly configures tokens.spacing.sticky to 3rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#named-target\"\u003eJump to the named-token target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target scroll-mt-sticky\" id=\"named-target\"\u003escroll-mt-sticky · 3rem\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-sticky: 3rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-target {\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-mt-sticky {\n  scroll-margin-top: var(--zw-spacing-sticky);\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Name a reusable target offset"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "sticky": "3rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-mt-sticky"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Use a one-off scroll offset
+
+scroll-mt-[72px] sets the target’s top scroll margin to 72px.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#arbitrary-target\"\u003eJump to the arbitrary-value target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target scroll-mt-[72px]\" id=\"arbitrary-target\"\u003escroll-mt-[72px]\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-target {\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.scroll-mt-\\[72px\\] {\n  scroll-margin-top: 72px;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Use a one-off scroll offset"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "scroll-mt-[72px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+### Use a negative scroll margin
+
+-scroll-mt-4 uses the supported negative policy to reduce the target’s top outset by 1rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-scroller\"\u003e\n    \u003ca class=\"wind-demo-link\" href=\"#negative-target\"\u003eJump to the negative-margin target\u003c/a\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eEarlier content\u003c/div\u003e\n    \u003csection class=\"wind-demo-target -scroll-mt-4\" id=\"negative-target\"\u003e-scroll-mt-4\u003c/section\u003e\n    \u003cdiv class=\"wind-demo-spacer\"\u003eLater content\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-scroller {\n  width: 17rem;\n  height: 9rem;\n  overflow: auto;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-link {\n  display: block;\n  border-bottom: 1px solid #849bb3;\n  background: #dce8f2;\n}\n\n.wind-demo-spacer {\n  min-height: 10rem;\n  border-bottom: 1px solid #b6c5d4;\n}\n\n.wind-demo-target {\n  min-height: 4rem;\n  border: 2px solid #59718b;\n  background: #c6d8e9;\n}\n.-scroll-mt-4 {\n  scroll-margin-top: -1rem;\n}\n"} head={"\u003cbase href=\"about:srcdoc\"\u003e"} title={"Use a negative scroll margin"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-scroller": true,
+      "wind-demo-link": true,
+      "wind-demo-spacer": true,
+      "wind-demo-target": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-scroll-mt-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-scroller { width: 17rem; height: 9rem; overflow: auto; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-link { display: block; border-bottom: 1px solid #849bb3; background: #dce8f2; }
+.wind-demo-spacer { min-height: 10rem; border-bottom: 1px solid #b6c5d4; }
+.wind-demo-target { min-height: 4rem; border: 2px solid #59718b; background: #c6d8e9; }
+```
+
+</Details>
+
+## Custom and named values
+
+scroll-m-0 removes the outset and scroll-m-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit; named values such as scroll-mt-sticky need tokens.spacing; arbitrary lengths such as scroll-mt-[72px] need no spacing token. Negative values are supported with a dash before the root, as in -scroll-mt-4. The x and y roots use physical sides: scroll-mx means left and right, scroll-my means top and bottom. The side roots are also physical, not logical start/end directions. Set scroll-margin on the target whose position matters; use scroll-padding on the scroll container when you need an inset for all of its targets.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## scroll-m
 
@@ -258,3 +649,5 @@ Set physical scroll margins with spacing values, including negative values.
 | Example class | Expected declarations |
 | --- | --- |
 | `scroll-mt-0` | `scroll-margin-top: 0` |
+
+</Details>

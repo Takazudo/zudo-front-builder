@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "family": "child-space",
+  "lookup": [
+    {
+      "entry": "v1.space-x",
+      "candidate": "space-x-4",
+      "example": "horizontal-child-space"
+    },
+    {
+      "entry": "v1.space-y",
+      "candidate": "space-y-3",
+      "example": "vertical-hidden-siblings"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use space-x or space-y to add a margin to later eligible children of one parent. The parent must contain the children directly; the utility does not add padding to the parent or a gap between layout tracks.",
+      "setup": "These examples explicitly use spacingUnit: \"0.25rem\", reset: \"none\", strict mode and no breakpoints. space-x adds margin-left to later eligible siblings and space-y adds margin-top. No Tailwind scale or theme is inherited. wind-demo classes only draw the cards and frames; their CSS is shown with each preview.",
+      "customValues": "space-x-0 and space-y-0 add no margin; the px suffix means 1px. Other numeric suffixes need tokens.spacingUnit, named values need tokens.spacing, and bracket values such as space-y-[18px] can use a one-off length. Negative values are supported, so -space-x-2 can pull items together or make them overlap. The child selector filters siblings with the hidden attribute. It does not inspect computed display, so display:none without hidden still matches. These utilities follow DOM sibling order and are a margin shortcut: use gap for grids, wrapping layouts, or reversed visual order, and use explicit margins when children need different spacing.",
+      "examples": [
+        {
+          "id": "horizontal-child-space",
+          "title": "Space later children in a row",
+          "description": "space-x-4 adds 1rem of left margin to each later eligible sibling in DOM order."
+        },
+        {
+          "id": "vertical-hidden-siblings",
+          "title": "Filter children with the hidden attribute",
+          "description": "space-y-3 adds 0.75rem top margin to later siblings without hidden. A display:none scaffold child without that attribute still matches the selector, even though it cannot be seen."
+        },
+        {
+          "id": "negative-child-space",
+          "title": "Pull row items closer together",
+          "description": "-space-x-2 applies a negative left margin to later siblings, so the cards overlap."
+        },
+        {
+          "id": "named-child-space",
+          "title": "Use a named spacing token",
+          "description": "The example explicitly configures tokens.spacing.stack to 1.5rem."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "space-x と space-y は、親要素の後続する対象の子要素に margin を追加します。子要素は親の直下に並ぶ必要があります。親の padding やレイアウトトラック間の gap は設定しません。",
+      "setup": "この例では spacingUnit: \"0.25rem\"、reset: \"none\"、strict モード、空のブレークポイントを明示しています。space-x は対象となる後続の兄弟要素に margin-left、space-y は margin-top を追加します。Tailwind のスケールやテーマは継承しません。wind-demo クラスはカードと枠の表示だけを担当し、自作 CSS は各プレビューから確認できます。",
+      "customValues": "space-x-0 と space-y-0 は margin を追加せず、px 接尾辞は 1px を表します。それ以外の数値には tokens.spacingUnit、名前付きの値には tokens.spacing が必要です。space-y-[18px] のような角括弧の値では、一度だけ使う長さを指定できます。負の値も使え、-space-x-2 で項目を近づけたり重ねたりできます。子セレクターは hidden 属性のある兄弟要素を除外します。計算後の display は調べないため、hidden 属性がない display:none の要素は対象になります。対象は DOM の兄弟順です。このユーティリティは margin の省略形なので、grid、折り返すレイアウト、視覚上の順番を反転したレイアウトには gap を使い、子ごとに異なる間隔には個別の margin を使います。",
+      "examples": [
+        {
+          "id": "horizontal-child-space",
+          "title": "横並びの後続する子要素に間隔を作る",
+          "description": "space-x-4 は DOM 順で後続する対象の兄弟要素それぞれに、左 margin 1rem を追加します。"
+        },
+        {
+          "id": "vertical-hidden-siblings",
+          "title": "hidden 属性の子要素を除外する",
+          "description": "space-y-3 は hidden がない後続の兄弟要素に上 margin 0.75rem を追加します。hidden 属性を持たず display:none にした自作 CSS の子要素もセレクターの対象ですが、表示はされません。"
+        },
+        {
+          "id": "negative-child-space",
+          "title": "横並びの項目を近づける",
+          "description": "-space-x-2 は後続する兄弟要素に負の左 margin を指定し、カードを重ねます。"
+        },
+        {
+          "id": "named-child-space",
+          "title": "名前付き spacing トークンを使う",
+          "description": "tokens.spacing.stack に 1.5rem を明示的に設定しています。"
+        }
+      ]
+    }
+  }
+}

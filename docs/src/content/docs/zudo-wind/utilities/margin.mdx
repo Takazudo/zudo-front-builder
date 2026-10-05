@@ -5,9 +5,373 @@ sidebar_position: 30
 generated: true
 ---
 
-Set physical outer spacing, including supported negative values and auto margins.
+Use margin to add space outside an element’s border. It changes the space around the element in normal layout; padding adds room inside its border, while gap belongs to the parent layout container.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `m-4` | `margin-top: 1rem; margin-right: 1rem; margin-bottom: 1rem; margin-left: 1rem;` |
+| `mx-8` | `margin-left: 2rem; margin-right: 2rem;` |
+| `my-2` | `margin-top: 0.5rem; margin-bottom: 0.5rem;` |
+| `mt-2` | `margin-top: 0.5rem;` |
+| `mr-4` | `margin-right: 1rem;` |
+| `mb-6` | `margin-bottom: 1.5rem;` |
+| `ml-8` | `margin-left: 2rem;` |
+
+<Details title={"Example setup"}>
+
+The examples explicitly use spacingUnit: "0.25rem", reset: "none", strict mode and no breakpoints. Numeric suffixes multiply that unit, so m-4 emits 1rem on each physical side. No Tailwind scale or theme is inherited. wind-demo classes provide only the visible frames and cards; their CSS is shown with each preview.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Add room outside every side
+
+m-4 leaves 1rem between the card border and the dashed frame on all four sides.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card m-4\"\u003em-4 · 1rem around the card\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  width: 20rem;\n  min-height: 9rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-card {\n  width: 8rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.m-4 {\n  margin-top: 1rem;\n  margin-right: 1rem;\n  margin-bottom: 1rem;\n  margin-left: 1rem;\n}\n"} title={"Add room outside every side"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "m-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; width: 20rem; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+### Set horizontal and vertical margins
+
+mx-8 adds 2rem on the left and right; my-2 adds 0.5rem on the top and bottom.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame wind-demo-axis-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card wind-demo-axis-card mx-8 my-2\"\u003emx-8 · my-2\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  min-height: 9rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-axis-frame {\n  width: 20rem;\n}\n\n.wind-demo-card {\n  width: 8rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n\n.wind-demo-axis-card {\n  min-height: 5rem;\n}\n.mx-8 {\n  margin-left: 2rem;\n  margin-right: 2rem;\n}\n.my-2 {\n  margin-top: 0.5rem;\n  margin-bottom: 0.5rem;\n}\n"} title={"Set horizontal and vertical margins"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-axis-frame": true,
+      "wind-demo-card": true,
+      "wind-demo-axis-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "mx-8",
+        "my-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-axis-frame { width: 20rem; }
+.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+.wind-demo-axis-card { min-height: 5rem; }
+```
+
+</Details>
+
+### Adjust each physical edge
+
+The four cards use mt, mr, mb and ml so each physical side can be read independently.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame wind-demo-edge-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card mt-2\"\u003emt-2 · top\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-card mr-4\"\u003emr-4 · right\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-card mb-6\"\u003emb-6 · bottom\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-card ml-8\"\u003eml-8 · left\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  min-height: 16rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-edge-frame {\n  width: 22rem;\n}\n\n.wind-demo-card {\n  width: 8rem;\n  min-height: 2.5rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.mb-6 {\n  margin-bottom: 1.5rem;\n}\n.ml-8 {\n  margin-left: 2rem;\n}\n.mr-4 {\n  margin-right: 1rem;\n}\n.mt-2 {\n  margin-top: 0.5rem;\n}\n"} title={"Adjust each physical edge"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-edge-frame": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "mb-6",
+        "ml-8",
+        "mr-4",
+        "mt-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; min-height: 16rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-edge-frame { width: 22rem; }
+.wind-demo-card { width: 8rem; min-height: 2.5rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+### Pull an element into nearby space
+
+Negative top and left margins reduce the element’s normal-flow space and let it overlap the card above.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame wind-demo-negative-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card\"\u003eNormal flow\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-card wind-demo-negative-card -mt-3 -ml-4\"\u003e-mt-3 · -ml-4\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  width: 20rem;\n  min-height: 10rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-card {\n  width: 10rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n\n.wind-demo-negative-card {\n  background: #c6d8e9;\n}\n.-ml-4 {\n  margin-left: -1rem;\n}\n.-mt-3 {\n  margin-top: -0.75rem;\n}\n"} title={"Pull an element into nearby space"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-negative-frame": true,
+      "wind-demo-card": true,
+      "wind-demo-negative-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-ml-4",
+        "-mt-3"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; width: 20rem; min-height: 10rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-card { width: 10rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+.wind-demo-negative-card { background: #c6d8e9; }
+```
+
+</Details>
+
+### Center a fixed-width block
+
+mx-auto divides the available horizontal margin equally around the 10rem card.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame wind-demo-auto-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card wind-demo-auto-card mx-auto\"\u003emx-auto · centered block\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  min-height: 9rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-auto-frame {\n  width: 22rem;\n}\n\n.wind-demo-card {\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n\n.wind-demo-auto-card {\n  width: 10rem;\n}\n.mx-auto {\n  margin-left: auto;\n  margin-right: auto;\n}\n"} title={"Center a fixed-width block"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-auto-frame": true,
+      "wind-demo-card": true,
+      "wind-demo-auto-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "mx-auto"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-auto-frame { width: 22rem; }
+.wind-demo-card { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+.wind-demo-auto-card { width: 10rem; }
+```
+
+</Details>
+
+### Name a reusable margin
+
+The example explicitly configures tokens.spacing.section to 1.5rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card m-section\"\u003em-section · 1.5rem around the card\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-section: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  width: 20rem;\n  min-height: 10rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-card {\n  width: 8rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.m-section {\n  margin-top: var(--zw-spacing-section);\n  margin-right: var(--zw-spacing-section);\n  margin-bottom: var(--zw-spacing-section);\n  margin-left: var(--zw-spacing-section);\n}\n"} title={"Name a reusable margin"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "section": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "m-section"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; width: 20rem; min-height: 10rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+### Use a one-off length
+
+mt-[18px] sets only the physical top margin to 18px.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-frame\"\u003e\n  \u003cdiv class=\"wind-demo-card mt-[18px]\"\u003emt-[18px] · one-off length\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  display: flow-root;\n  width: 20rem;\n  min-height: 9rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-card {\n  width: 8rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.mt-\\[18px\\] {\n  margin-top: 18px;\n}\n"} title={"Use a one-off length"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "mt-[18px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { display: flow-root; width: 20rem; min-height: 9rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-card { width: 8rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+m-0 removes margin and m-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit. Named values such as m-section need tokens.spacing; arbitrary values such as mt-[18px] do not. Margin roots use physical sides: mx means left and right, my means top and bottom, and mt/mr/mb/ml name one edge. They do not follow writing direction. Margin accepts negative values by putting a dash before the root, such as -mt-3; padding and gap do not. It also accepts auto: mx-auto centers a fixed-width block when horizontal space is available, while vertical auto margins need a layout context that distributes free space.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## m
 
@@ -265,3 +629,5 @@ Set physical outer spacing, including supported negative values and auto margins
 | Example class | Expected declarations |
 | --- | --- |
 | `mt-0` | `margin-top: 0` |
+
+</Details>
