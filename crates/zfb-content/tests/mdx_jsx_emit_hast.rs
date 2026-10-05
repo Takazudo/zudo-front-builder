@@ -166,6 +166,46 @@ fn mdx_component_passthrough_survives_hast_detour() {
 }
 
 #[test]
+fn nested_markdown_intrinsics_do_not_redeclare_components_map_and_members_survive() {
+    let out = emit_with_defaults(
+        "<Note>\n\n**bold text**\n\n<UI.Anchor />\n\n<ui.Anchor />\n\n<ΔAnchor />\n\n<A\u{0301}Anchor />\n\n</Note>\n",
+    );
+
+    assert_eq!(
+        out.matches("const _components =").count(),
+        1,
+        "the generated `_components` map must have no shadow binding:\n{out}"
+    );
+    assert!(
+        !out.contains("const _components = _components._components"),
+        "emitter-owned intrinsic references must not become component bindings:\n{out}"
+    );
+    assert!(
+        out.contains("    p: \"p\",")
+            && out.contains("    strong: \"strong\",")
+            && out.contains("<_components.p>")
+            && out.contains("<_components.strong>"),
+        "nested Markdown intrinsic routes must retain their map fallbacks and JSX:\n{out}"
+    );
+
+    for binding in ["UI", "ui", "ΔAnchor", "A\u{0301}Anchor"] {
+        assert!(
+            out.contains(&format!(
+                "const {binding} = _components.{binding} ?? components.{binding};"
+            )),
+            "authored member/Unicode binding `{binding}` must survive the JsxRaw scan:\n{out}"
+        );
+    }
+    assert!(
+        out.contains("<UI.Anchor")
+            && out.contains("<ui.Anchor")
+            && out.contains("<ΔAnchor")
+            && out.contains("<A\u{0301}Anchor"),
+        "authored component references must remain in the JSX body:\n{out}"
+    );
+}
+
+#[test]
 fn bare_pipeline_runs_no_plugins_on_jsx_path() {
     // `Pipeline::with_mdx()` ships zero visitors. The hast detour
     // still runs (we built a tree, walked it, emitted JSX), but no
