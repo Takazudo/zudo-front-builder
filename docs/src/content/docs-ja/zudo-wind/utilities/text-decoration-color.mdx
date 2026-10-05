@@ -1,17 +1,23 @@
 ---
-title: テキスト装飾の色
-description: 色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。
+title: テキスト装飾
+description: カタログ値を使ってテキスト装飾の色、太さ、線種を設定します。
 sidebar_position: 65
 generated: true
 ---
 
-既存の下線、上線などの文字装飾の色を変え、文字色はそのまま保ちます。見える装飾がある要素に適用します。
+見える下線、上線などのある要素で、text-decoration の色、太さ、線種を設定します。
 
 ## クラスと CSS の早見表
 
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `decoration-accent` | `text-decoration-color: var(--zw-color-accent);` |
+| `decoration-2` | `text-decoration-thickness: 2px;` |
+| `decoration-solid` | `text-decoration-style: solid;` |
+| `decoration-double` | `text-decoration-style: double;` |
+| `decoration-dotted` | `text-decoration-style: dotted;` |
+| `decoration-dashed` | `text-decoration-style: dashed;` |
+| `decoration-wavy` | `text-decoration-style: wavy;` |
 | `decoration-[#b42318]/80` | `text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);` |
 
 <Details title={"例の設定"}>
@@ -26,9 +32,9 @@ generated: true
 
 ### 名前付き色とキーワードを使う
 
-設定済み accent、currentColor、transparent でリンクの下線色だけを変えます。
+設定済み accent、currentColor、transparent で下線色を変えます。同じプレビューで 2px の太さと各 text-decoration style も示します。
 
-<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n"} title={"名前付き色とキーワードを使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e. \u003ca href=\"#thickness\" class=\"decoration-2\"\u003e2px underline\u003c/a\u003e; style samples: \u003ca href=\"#solid\" class=\"decoration-solid\"\u003esolid\u003c/a\u003e, \u003ca href=\"#double\" class=\"decoration-double\"\u003edouble\u003c/a\u003e, \u003ca href=\"#dotted\" class=\"decoration-dotted\"\u003edotted\u003c/a\u003e, \u003ca href=\"#dashed\" class=\"decoration-dashed\"\u003edashed\u003c/a\u003e, \u003ca href=\"#wavy\" class=\"decoration-wavy\"\u003ewavy\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n.decoration-2 {\n  text-decoration-thickness: 2px;\n}\n.decoration-dashed {\n  text-decoration-style: dashed;\n}\n.decoration-dotted {\n  text-decoration-style: dotted;\n}\n.decoration-double {\n  text-decoration-style: double;\n}\n.decoration-solid {\n  text-decoration-style: solid;\n}\n.decoration-wavy {\n  text-decoration-style: wavy;\n}\n"} title={"名前付き色とキーワードを使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
 
 <Details title={"この例の設定"}>
 
@@ -51,9 +57,15 @@ generated: true
     },
     "safelist": {
       "docs-preview": [
+        "decoration-2",
         "decoration-accent",
         "decoration-current",
-        "decoration-transparent"
+        "decoration-dashed",
+        "decoration-dotted",
+        "decoration-double",
+        "decoration-solid",
+        "decoration-transparent",
+        "decoration-wavy"
       ]
     }
   }
@@ -118,7 +130,7 @@ generated: true
 
 ## 任意値と名前付きの値
 
-decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。
+decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。 整数の decoration-2 は text-decoration-thickness: 2px を出力し、0 以上の角括弧付き長さも使えます。正確な decoration-solid、-double、-dotted、-dashed、-wavy は text-decoration-style を設定します。完全な色トークンが設定されていれば style 名より優先されます。thickness/style の負数とスラッシュは拒否され、decoration-auto と decoration-from-font は未対応です。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
 
@@ -158,5 +170,207 @@ decoration-accent は tokens.colors.accent を参照します。decoration-curre
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `decoration-[red]/40` | `text-decoration-color: color-mix(in oklab, red 40%, transparent)` |
+
+## decoration
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.thickness` |
+| クラスパターン | `decoration-<suffix>` |
+| 文法 | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"text-decoration-thickness","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-thickness` (`45`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-thickness` |
+
+### 受け入れる値
+
+この項目には独立した値の定義がありません。
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-thickness` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-2` | `text-decoration-thickness: 2px` |
+
+## decoration-dashed
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.style.dashed` |
+| クラスパターン | `decoration-dashed` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-style` (`45`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"dashed"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-dashed` | `text-decoration-style: dashed` |
+
+## decoration-dotted
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.style.dotted` |
+| クラスパターン | `decoration-dotted` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-style` (`45`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"dotted"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-dotted` | `text-decoration-style: dotted` |
+
+## decoration-double
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.style.double` |
+| クラスパターン | `decoration-double` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-style` (`45`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"double"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-double` | `text-decoration-style: double` |
+
+## decoration-solid
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.style.solid` |
+| クラスパターン | `decoration-solid` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-style` (`45`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"solid"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-solid` | `text-decoration-style: solid` |
+
+## decoration-wavy
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.decoration.style.wavy` |
+| クラスパターン | `decoration-wavy` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `text-decoration-style` (`45`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `text-decoration-style` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"wavy"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-wavy` | `text-decoration-style: wavy` |
 
 </Details>

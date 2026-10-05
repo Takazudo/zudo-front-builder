@@ -444,11 +444,13 @@ A candidate can contain nested balanced delimiters, commas, colons, slashes, quo
 
 ## Values and modifiers
 
-Numeric forms use ASCII digits. A positive fraction consists of positive integers. Sizing and translate utilities accept fractions, and the aspect utility accepts a bare positive-integer ratio; color `/N` is an opacity modifier for integer `N` from 0 through 100. It emits `color-mix(in oklab, VALUE N%, transparent)`; `/0` and `/100` keep the same function form. A bracketed color can use the same modifier. A sizing slash is never interpreted as opacity.
+Numeric forms use ASCII digits. A positive fraction consists of positive integers. Sizing, translate, and inset utilities accept fractions, and the aspect utility accepts a bare positive-integer ratio; color `/N` is an opacity modifier for integer `N` from 0 through 100. It emits `color-mix(in oklab, VALUE N%, transparent)`; `/0` and `/100` keep the same function form. A bracketed color can use the same modifier. A sizing or inset slash is never interpreted as opacity.
 
 Negative prefixes are permitted only where the catalog allows them: inset and margin except `auto`, child spacing, z-index except `auto`, tracking, the outline width's offset, translate, rotate, and scroll margin. Other families reject them, including padding. For literal dimensions or numbers, the compiler applies one leading minus and normalizes negative zero to zero; for nonliteral values it emits `calc(V * -1)`. Unsupported negatives such as `-p-2` are invalid.
 
-Sizing and translate roots accept positive integer fractions, and `aspect-N/D` accepts a bare positive-integer aspect ratio. Each numerator and denominator must be from 1 through 1,000,000. Sizing fractions emit `calc(100% * N / D)`; a size fraction sets both width and height. Aspect ratios emit the ratio directly, so `aspect-4/3` produces `aspect-ratio: 4 / 3`. Bare aspect ratios do not accept zero or decimals; use an arbitrary ratio such as `aspect-[1.5/2.5]` for decimal parts, or `aspect-[var(--project-ratio)]` for a custom property. The opacity modifier is only for colors: `bg-panel/40` mixes the configured color at 40 percent in oklab against transparent. It is not accepted on padding or sizing values.
+Sizing, translate, and the seven inset roots (`inset`, `inset-x`, `inset-y`, `top`, `right`, `bottom`, `left`) accept positive integer fractions, and `aspect-N/D` accepts a bare positive-integer aspect ratio. Each numerator and denominator must be from 1 through 1,000,000. Sizing fractions emit `calc(100% * N / D)`; a size fraction sets both width and height. Aspect ratios emit the ratio directly, so `aspect-4/3` produces `aspect-ratio: 4 / 3`. Bare aspect ratios do not accept zero or decimals; use an arbitrary ratio such as `aspect-[1.5/2.5]` for decimal parts, or `aspect-[var(--project-ratio)]` for a custom property. The opacity modifier is only for colors: `bg-panel/40` mixes the configured color at 40 percent in oklab against transparent. It is not accepted on padding or sizing values.
+
+Inset fractions emit `calc(100% * N / D)` on each offset property. `left-1/2` emits `left: calc(100% * 1 / 2)`; `-top-1/2` emits `top: calc(calc(100% * 1 / 2) * -1)`. Left/right percentages use the positioned element’s containing-block width, and top/bottom its height.
 
 The `fontSizes` map stores objects with a required `size` and optional `lineHeight`. When a leading is supplied, it is emitted as a paired variable; a font-size key ending in `-leading` is reserved and invalid. `ease-in-out` is a named easing lookup for `easings.in-out`; there is no built-in easing token.
 
@@ -467,6 +469,18 @@ V1 accepts the catalog as a finite set. Its families cover display, position, in
 Several familiar prefixes remain deliberately unsupported. Ring, animation, scale, transform, and arbitrary-property utilities must be authored as CSS. The `ring-*` and `animate-*` roots are recognized so an invalid attempt receives an unsupported-language diagnostic. zudo-wind does not synthesize animation keyframes.
 
 Spec revision 4 added six small groups: `wrap-anywhere`, `decoration-<color>`, `leading-none`, the resize cursors such as `cursor-col-resize`, `visible` and `invisible`, and `underline-offset-<n>`. `leading-none` emits the constant `1` only when the project configures no `lineHeights.none` token; a configured token keeps precedence. `underline-offset-<n>` takes a whole number of pixels or an arbitrary nonnegative length, and none of these utilities accepts a negative form. Ring and animation utilities are still unsupported.
+
+Spec revision 5 added bare `outline`: it emits 1px width and solid style. Numeric `outline-2` retains 2px, so `focus-visible:outline focus-visible:outline-2` resolves to 2px by deterministic order.
+
+Revision 6 admitted `checked` for self, group, and peer states, shifting group ranks to 1–10 and peer ranks to 11–20.
+
+Revision 7 added `selection` and `pointer-coarse`/`pointer-fine`, before relation variants in canonical order.
+
+Revision 8 added `decoration-<whole integer>` as `text-decoration-thickness: <n>px`, nonnegative `decoration-[<length>]`, and exact `decoration-solid`, `decoration-double`, `decoration-dotted`, `decoration-dashed`, `decoration-wavy` as text-decoration styles. Existing decoration colors and `/N` opacity stay. `decoration-auto` and `decoration-from-font` are unsupported utility keywords; negative and slash thickness/style forms are rejected. A full configured color token wins over a style root: `colors.wavy` makes `decoration-wavy` a color. A bare `decoration-[var(--x)]` is ambiguous (ZW005); `color:` and `length:` hints are unsupported.
+
+Revision 9 added 13 cursor keywords: `help`, `none`, `progress`, `crosshair`, `cell`, `copy`, `alias`, `no-drop`, `context-menu`, `vertical-text`, `all-scroll`, `zoom-in`, and `zoom-out`. Cursor remains keyword-only with no token, negative, slash, or arbitrary form.
+
+Revision 10 added fractions to all seven inset roots. Revision 11 added `justify-self`, `justify-items`, `place-self`, and `place-content` fixed keyword roots. Revision 12 added constant `translate-x-px` and `translate-y-px`, emitting 1px on their axis variables (negative forms emit -1px); `px` remains a language constant, not a theme token. The current catalog is spec 1 revision 12.
 
 `space-x/y` set margin-left or margin-top on each later visible direct child; `divide-x/y` set a solid left or top border on those children. The selector is `C > :not([hidden]) ~ :not([hidden])`, where `C` is the complete utility subject selector. Both siblings are filtered by the `hidden` attribute. An element with `display: none` but without that attribute is not inspected. There are no reverse flags, and visual order is not inferred. A pseudo-element variant cannot be combined with these child utilities; for example, `before:divide-y` is rejected as R23/ZW005 because its child selector would target the wrong subject.
 

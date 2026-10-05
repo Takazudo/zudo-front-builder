@@ -482,11 +482,13 @@ Both resets leave native focus outlines and `appearance` alone. Neither forces a
 Rules sort by this ascending tuple:
 
 ```text
-(responsive_rank, dark_rank, relation_rank, state_rank, pseudo_rank,
+(responsive_rank, dark_rank, pointer_rank, relation_rank, state_rank, pseudo_rank,
  conflict_group_rank, scope_rank, catalog_rank, raw_candidate_utf8_bytes)
 ```
 
-The base responsive rank is 0. For each configured breakpoint in ascending width order, minimum ranks are `2*i + 1` and maximum ranks are `2*i + 2`, with `i` starting at zero. Dark has rank 0 or 1. Relation, state, and pseudo ranks follow the orders in [Variants](./variants.mdx). Conflict groups use catalog table order starting at 1. Scope ranks are broad 0, axis 1, and side or corner 2; single-property families use 0. Catalog subentries use their listed order, then root bytes; raw candidate UTF-8 bytes break the final tie. This is emitted source order; it does not replace selector specificity.
+The base responsive rank is 0. For each configured breakpoint in ascending width order, minimum ranks are `2*i + 1` and maximum ranks are `2*i + 2`, with `i` starting at zero. Dark has rank 0 or 1. Pointer rank is 0 absent, 1 coarse, or 2 fine. Relation, state, and pseudo ranks follow the orders in [Variants](./variants.mdx). Conflict groups use catalog table order starting at 1. Scope ranks are broad 0, axis 1, and side or corner 2; single-property families use 0. Catalog subentries use their listed order, then root bytes; raw candidate UTF-8 bytes break the final tie. This is emitted source order; it does not replace selector specificity.
+
+The public Rust `SortKey` carries `pointer_rank`; explain JSON exposes `sortTuple.pointerRank`, and the text sort line includes `pointer=`.
 
 HTML class order has no effect. With `spacingUnit` set to `0.25rem`, every permutation of `p-4 px-2 pl-1` resolves to top and bottom `1rem`, right `0.5rem`, and left `0.25rem`. The same rule applies to margins. `gap-4 gap-x-2 gap-y-1` produces a column gap of `0.5rem` and row gap of `0.25rem`. Same-scope ties use raw candidate bytes, so `p-2` sorts after `p-10`.
 

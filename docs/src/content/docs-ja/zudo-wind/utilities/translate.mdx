@@ -195,7 +195,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | カタログ識別子 | `v1.translate.x` |
 | クラスパターン | `translate-x-<suffix>` |
 | 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| 受け入れる値 | `2` |
+| 受け入れる値 | `3` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
 | 競合グループと順位 | `translate` (`38`) |
@@ -209,6 +209,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | 種類 | 接尾辞 | 出力される値 |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### 宣言テンプレート
@@ -223,6 +224,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `translate-x-0` | `--zw-translate-x: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-x-px` | `--zw-translate-x: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
 
 `{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
 
@@ -233,7 +235,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | カタログ識別子 | `v1.translate.y` |
 | クラスパターン | `translate-y-<suffix>` |
 | 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| 受け入れる値 | `2` |
+| 受け入れる値 | `3` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
 | 競合グループと順位 | `translate` (`38`) |
@@ -247,6 +249,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | 種類 | 接尾辞 | 出力される値 |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### 宣言テンプレート
@@ -261,6 +264,7 @@ translate-x-[11px] は名前付きトークンを追加せずに、一度だけ�
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `translate-y-0` | `--zw-translate-y: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-y-px` | `--zw-translate-y: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
 
 `{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
 

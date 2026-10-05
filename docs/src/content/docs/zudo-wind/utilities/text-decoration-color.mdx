@@ -1,17 +1,23 @@
 ---
-title: Text decoration color
-description: Set the text decoration color from a color token, a keyword, or an arbitrary color, with optional opacity.
+title: Text decoration
+description: Set text-decoration color, thickness, or style with the catalog values.
 sidebar_position: 65
 generated: true
 ---
 
-Change the color of an existing underline, overline, or other text decoration while leaving the text color alone. Put the utility on an element that has a visible decoration.
+Set text-decoration color, thickness, or style on an element with a visible underline, overline, or other text decoration.
 
 ## Quick reference
 
 | Example class | Expected declarations |
 | --- | --- |
 | `decoration-accent` | `text-decoration-color: var(--zw-color-accent);` |
+| `decoration-2` | `text-decoration-thickness: 2px;` |
+| `decoration-solid` | `text-decoration-style: solid;` |
+| `decoration-double` | `text-decoration-style: double;` |
+| `decoration-dotted` | `text-decoration-style: dotted;` |
+| `decoration-dashed` | `text-decoration-style: dashed;` |
+| `decoration-wavy` | `text-decoration-style: wavy;` |
 | `decoration-[#b42318]/80` | `text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);` |
 
 <Details title={"Example setup"}>
@@ -26,9 +32,9 @@ The shared preview base explicitly selects spec 1, reset none, strict mode, spac
 
 ### Use named and keyword colors
 
-The configured accent, currentColor, and transparent keyword change only the link underline color.
+The configured accent, currentColor, and transparent change underline color. The same preview shows a 2px thickness and each admitted text-decoration style.
 
-<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n"} title={"Use named and keyword colors"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e. \u003ca href=\"#thickness\" class=\"decoration-2\"\u003e2px underline\u003c/a\u003e; style samples: \u003ca href=\"#solid\" class=\"decoration-solid\"\u003esolid\u003c/a\u003e, \u003ca href=\"#double\" class=\"decoration-double\"\u003edouble\u003c/a\u003e, \u003ca href=\"#dotted\" class=\"decoration-dotted\"\u003edotted\u003c/a\u003e, \u003ca href=\"#dashed\" class=\"decoration-dashed\"\u003edashed\u003c/a\u003e, \u003ca href=\"#wavy\" class=\"decoration-wavy\"\u003ewavy\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n.decoration-2 {\n  text-decoration-thickness: 2px;\n}\n.decoration-dashed {\n  text-decoration-style: dashed;\n}\n.decoration-dotted {\n  text-decoration-style: dotted;\n}\n.decoration-double {\n  text-decoration-style: double;\n}\n.decoration-solid {\n  text-decoration-style: solid;\n}\n.decoration-wavy {\n  text-decoration-style: wavy;\n}\n"} title={"Use named and keyword colors"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
 
 <Details title={"Configuration for this example"}>
 
@@ -51,9 +57,15 @@ The configured accent, currentColor, and transparent keyword change only the lin
     },
     "safelist": {
       "docs-preview": [
+        "decoration-2",
         "decoration-accent",
         "decoration-current",
-        "decoration-transparent"
+        "decoration-dashed",
+        "decoration-dotted",
+        "decoration-double",
+        "decoration-solid",
+        "decoration-transparent",
+        "decoration-wavy"
       ]
     }
   }
@@ -118,7 +130,7 @@ The bracket color is parsed as CSS and /80 applies the supported opacity modifie
 
 ## Custom and named values
 
-decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured.
+decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured. Integer decoration-2 emits text-decoration-thickness: 2px; nonnegative bracketed lengths also work. Exact decoration-solid, -double, -dotted, -dashed, and -wavy set text-decoration-style. A configured full color token wins over a style spelling; negative and slash thickness/style forms are rejected. decoration-auto and decoration-from-font are not supported keywords.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 
@@ -158,5 +170,207 @@ decoration-accent resolves through tokens.colors.accent. decoration-current uses
 | Example class | Expected declarations |
 | --- | --- |
 | `decoration-[red]/40` | `text-decoration-color: color-mix(in oklab, red 40%, transparent)` |
+
+## decoration
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.thickness` |
+| Class pattern | `decoration-<suffix>` |
+| Grammar | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"text-decoration-thickness","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-thickness` (`45`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-thickness` |
+
+### Accepted values
+
+The catalog has no separate accepted-value records for this entry.
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-thickness` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-2` | `text-decoration-thickness: 2px` |
+
+## decoration-dashed
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.style.dashed` |
+| Class pattern | `decoration-dashed` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-style` (`45`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"dashed"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-dashed` | `text-decoration-style: dashed` |
+
+## decoration-dotted
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.style.dotted` |
+| Class pattern | `decoration-dotted` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-style` (`45`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"dotted"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-dotted` | `text-decoration-style: dotted` |
+
+## decoration-double
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.style.double` |
+| Class pattern | `decoration-double` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-style` (`45`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"double"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-double` | `text-decoration-style: double` |
+
+## decoration-solid
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.style.solid` |
+| Class pattern | `decoration-solid` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-style` (`45`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"solid"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-solid` | `text-decoration-style: solid` |
+
+## decoration-wavy
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.decoration.style.wavy` |
+| Class pattern | `decoration-wavy` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `text-decoration-style` (`45`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `text-decoration-style` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"wavy"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `text-decoration-style` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-wavy` | `text-decoration-style: wavy` |
 
 </Details>

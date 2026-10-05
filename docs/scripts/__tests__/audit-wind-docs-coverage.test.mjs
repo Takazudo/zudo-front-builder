@@ -6,7 +6,7 @@ test("settled bilingual wind docs coverage, source syntax, and asset inventories
   assert.deepEqual(await auditWindDocsCoverage(), {
     adjacentRoutes: 42,
     adjacentSources: 43,
-    catalogEntries: 187,
+    catalogEntries: 197,
     editorialFamilies: 47,
     examples: 168,
     guidePages: 10,

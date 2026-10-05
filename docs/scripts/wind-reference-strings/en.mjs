@@ -5,6 +5,7 @@ export const strings = {
     intro:
       "Choose a utility family by the result you want. Start with layout and spacing, then typography, surfaces, motion or interaction. Every family retains its supported values, declarations and advanced catalog reference.",
     specVersionLabel: "Catalog spec version",
+    specRevisionLabel: "Catalog spec revision",
     familyColumn: "Family",
     entryCountColumn: "Catalog entries",
   },
@@ -70,7 +71,7 @@ export const strings = {
     },
     inset: {
       title: "Inset",
-      description: "Set one or more physical offsets with spacing values, auto, or full.",
+      description: "Set physical offsets with spacing values, fractions, auto, or full.",
     },
     "flex-container": {
       title: "Flex container",
@@ -248,9 +249,8 @@ export const strings = {
         "Set vertical alignment, box sizing, object fitting, and screen-reader-only clipping.",
     },
     "text-decoration-color": {
-      title: "Text decoration color",
-      description:
-        "Set the text decoration color from a color token, a keyword, or an arbitrary color, with optional opacity.",
+      title: "Text decoration",
+      description: "Set text-decoration color, thickness, or style with the catalog values.",
     },
     "text-underline-offset": {
       title: "Underline offset",

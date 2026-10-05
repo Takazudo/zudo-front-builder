@@ -19,7 +19,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPECTED = Object.freeze({
   adjacentRoutes: 42,
   adjacentSources: 43,
-  catalogEntries: 187,
+  catalogEntries: 197,
   diagnosticExamples: 5,
   editorialFamilies: 47,
   guidePages: 10,

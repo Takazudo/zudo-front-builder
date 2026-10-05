@@ -1,11 +1,11 @@
 ---
 title: 位置オフセット
-description: 余白値、auto、full を使い、物理的な辺のオフセットを設定します。
+description: 余白値、分数、auto、full を使い、物理的な辺のオフセットを設定します。
 sidebar_position: 23
 generated: true
 ---
 
-inset で、位置指定された箱を包含ブロックのどの端に置くかを決めます。inset は4辺すべて、inset-x と inset-y はそれぞれ左右と上下、top/right/bottom/left は個別の端を指定します。
+inset で、余白値や分数を使い、位置指定された箱を包含ブロックのどの端に置くかを決めます。inset は4辺すべて、inset-x と inset-y はそれぞれ左右と上下、top/right/bottom/left は個別の端を指定します。
 
 ## クラスと CSS の早見表
 
@@ -246,7 +246,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 
 ## 任意値と名前付きの値
 
-数値オフセットは明示した spacingUnit 0.25rem を使い、4 は 1rem です。0、px、full、auto はトークン不要です。left-nudge のような名前付き値には tokens.spacing が必要です。top-[calc(100%_+_8px)] のような任意値も使えます。-top-2 のように負の値も指定できます。inset 自体は要素を位置指定しません。
+数値オフセットは明示した spacingUnit 0.25rem を使い、4 は 1rem です。0、px、full、auto はトークン不要です。left-nudge のような名前付き値には tokens.spacing が必要です。top-[calc(100%_+_8px)] のような任意値も使えます。-top-2 のように負の値も指定できます。inset 自体は要素を位置指定しません。 left-1/2 のような分数は left: calc(100% * 1 / 2)、-top-1/2 は top: calc(calc(100% * 1 / 2) * -1) を出力します。左右のパーセンテージは包含ブロックの幅、上下は高さを基準にします。分子と分母はそれぞれ 1～1,000,000 の正の整数です。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
 
@@ -258,7 +258,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.inset` |
 | クラスパターン | `inset-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -298,7 +298,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.inset-x` |
 | クラスパターン | `inset-x-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -336,7 +336,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.inset-y` |
 | クラスパターン | `inset-y-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -374,7 +374,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.bottom` |
 | クラスパターン | `bottom-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -411,7 +411,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.left` |
 | クラスパターン | `left-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -448,7 +448,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.right` |
 | クラスパターン | `right-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |
@@ -485,7 +485,7 @@ top-0、right-0、bottom-0、left-0 で各タイルを relative 枠の四隅に�
 | --- | --- |
 | カタログ識別子 | `v1.top` |
 | クラスパターン | `top-<suffix>` |
-| 文法 | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 文法 | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | 受け入れる値 | `4` |
 | トークンカテゴリ | `spacing` |
 | 負の値の規則 | `allowed` |

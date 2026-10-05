@@ -8,6 +8,36 @@
       "example": "decoration-token"
     },
     {
+      "entry": "v1.decoration.thickness",
+      "candidate": "decoration-2",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.style.solid",
+      "candidate": "decoration-solid",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.style.double",
+      "candidate": "decoration-double",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.style.dotted",
+      "candidate": "decoration-dotted",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.style.dashed",
+      "candidate": "decoration-dashed",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.style.wavy",
+      "candidate": "decoration-wavy",
+      "example": "decoration-token"
+    },
+    {
       "entry": "v1.decoration.color",
       "candidate": "decoration-[#b42318]/80",
       "example": "decoration-arbitrary"
@@ -15,14 +45,14 @@
   ],
   "locales": {
     "en": {
-      "purpose": "Change the color of an existing underline, overline, or other text decoration while leaving the text color alone. Put the utility on an element that has a visible decoration.",
+      "purpose": "Set text-decoration color, thickness, or style on an element with a visible underline, overline, or other text decoration.",
       "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The named example declares tokens.colors.accent. Authored CSS sets a readable text color and preserves the browser’s link underline; it does not set text-decoration-color.",
-      "customValues": "decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured.",
+      "customValues": "decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured. Integer decoration-2 emits text-decoration-thickness: 2px; nonnegative bracketed lengths also work. Exact decoration-solid, -double, -dotted, -dashed, and -wavy set text-decoration-style. A configured full color token wins over a style spelling; negative and slash thickness/style forms are rejected. decoration-auto and decoration-from-font are not supported keywords.",
       "examples": [
         {
           "id": "decoration-token",
           "title": "Use named and keyword colors",
-          "description": "The configured accent, currentColor, and transparent keyword change only the link underline color."
+          "description": "The configured accent, currentColor, and transparent change underline color. The same preview shows a 2px thickness and each admitted text-decoration style."
         },
         {
           "id": "decoration-arbitrary",
@@ -32,14 +62,14 @@
       ]
     },
     "ja": {
-      "purpose": "既存の下線、上線などの文字装飾の色を変え、文字色はそのまま保ちます。見える装飾がある要素に適用します。",
+      "purpose": "見える下線、上線などのある要素で、text-decoration の色、太さ、線種を設定します。",
       "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。名前付きの例では tokens.colors.accent を設定します。自作 CSS は読みやすい文字色を指定してブラウザー標準のリンク下線を残し、text-decoration-color は指定しません。",
-      "customValues": "decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。",
+      "customValues": "decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。 整数の decoration-2 は text-decoration-thickness: 2px を出力し、0 以上の角括弧付き長さも使えます。正確な decoration-solid、-double、-dotted、-dashed、-wavy は text-decoration-style を設定します。完全な色トークンが設定されていれば style 名より優先されます。thickness/style の負数とスラッシュは拒否され、decoration-auto と decoration-from-font は未対応です。",
       "examples": [
         {
           "id": "decoration-token",
           "title": "名前付き色とキーワードを使う",
-          "description": "設定済み accent、currentColor、transparent でリンクの下線色だけを変えます。"
+          "description": "設定済み accent、currentColor、transparent で下線色を変えます。同じプレビューで 2px の太さと各 text-decoration style も示します。"
         },
         {
           "id": "decoration-arbitrary",

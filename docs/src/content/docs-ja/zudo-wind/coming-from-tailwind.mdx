@@ -396,27 +396,31 @@ v1 は色パレットや余白スケールを同梱しません。名前付き�
 
 ## バリアントと文法
 
-次の表は各構成要素に対する v1 の扱いを示します。対応する連鎖はレスポンシブ、ダーク、関係、状態、疑似要素、ユーティリティの順で、カテゴリは重複できません。
+次の表は各構成要素に対する v1 の扱いを示します。対応する連鎖はレスポンシブ、ダーク、pointer、関係、状態、疑似要素、ユーティリティの順で、カテゴリは重複できません。
 
 | 構成要素 | 仕様上の扱いと規則 |
 | --- | --- |
 | `max-*` を含むブレークポイント | **変更して採用 (W02)。** 各名前に正の整数の `minWidthPx` を設定します。`sm` は最小幅、`max-sm` はその幅より下の排他的な範囲です。幅はピクセルで、ルートのフォントサイズには追従しません。 |
 | `dark` | **変更して採用 (W09)。** 属性と値を設定するまで無効です。条件は要素自身または祖先に一致し、詳細度を増やしません。 |
-| 状態バリアント | **採用 (W03)。** `hover`、`focus`、`focus-visible`、`active`、`disabled`、`focus-within`、`open`、`first`、`last` を使えます。すべての hover 条件には hover 対応のメディアクエリが付きます。 |
+| 状態バリアント | **採用 (W03)。** `hover`、`focus`、`focus-visible`、`active`、`disabled`、`checked`、`focus-within`、`open`、`first`、`last` を使えます。すべての hover 条件には hover 対応のメディアクエリが付きます。 |
 | `first` と `last` | **採用 (W03)。** それぞれ `:first-child` と `:last-child` を対象にします。 |
 | 名前付き形式を含む `group-*` と `peer-*` | **変更して採用 (W04)。** 名前のない `group` と `peer` マーカーは対応する状態で使えます。group は祖先、peer は前の兄弟要素です。マーカーは単独で置き、CSS は出力しません。`group/menu` や `group-hover/menu:block` のような名前付き形式は拒否されます。 |
-| 疑似要素バリアント | **採用 (W05)。** `before`、`after`、`marker`、`placeholder`、`backdrop` を使えます。`before` と `after` は `content` 宣言を追加しないため、必要なら手書きします。 |
+| 疑似要素バリアント | **採用 (W05)。** `before`、`after`、`marker`、`placeholder`、`backdrop`、`selection` を使えます。`before` と `after` は `content` 宣言を追加しないため、必要なら手書きします。 |
 | `aria-*` と `data-[...]` のバリアント | **診断で拒否 (W06)。** 属性バリアントは ZW004 です。セレクタは手書きの CSS に置きます。 |
 | 任意セレクタのバリアント | **診断で拒否 (W07)。** `[&_a]:underline` のようなセレクタは ZW004 です。手書きの CSS に記述します。 |
-| バリアントの連鎖 | **変更して採用 (W08)。** レスポンシブ、ダーク、関係、状態、疑似要素をそれぞれ最大 1 つ、指定順に使います。各機能とトークンが設定済みなら `sm:dark:hover:bg-panel` は正規形です。重複や順序違いは診断されます。 |
+| バリアントの連鎖 | **変更して採用 (W08)。** レスポンシブ、ダーク、pointer、関係、状態、疑似要素をそれぞれ最大 1 つ、指定順に使います。各機能とトークンが設定済みなら `sm:dark:hover:bg-panel` は正規形です。重複や順序違いは診断されます。 |
 | 色の不透明度修飾子 | **採用 (W10)。** 色の接尾辞には 0～100 の整数を指定し、設定された色を透明色と oklab で混ぜます。`bg-panel/40` は有効です。余白やサイズには適用できません。 |
-| 分数 | **変更して採用 (W11)。** 対象となるサイズと移動の基部に加え、アスペクト比にも正の整数比を指定できます。`w-1/2` は利用可能なサイズ基準の半分、`aspect-4/3` は `aspect-ratio: 4 / 3` です。アスペクト比の分子と分母はそれぞれ 1～1,000,000 です。小数には `aspect-[1.5/2.5]` のような任意値を使います。サイズのスラッシュは色の不透明度を意味しません。 |
+| 分数 | **変更して採用 (W11)。** 対象となるサイズ、移動、7つの inset 基部に加え、アスペクト比にも正の整数比を指定できます。`w-1/2` は利用可能なサイズ基準の半分、`aspect-4/3` は `aspect-ratio: 4 / 3` です。アスペクト比の分子と分母はそれぞれ 1～1,000,000 です。小数には `aspect-[1.5/2.5]` のような任意値を使います。`left-1/2` は `left: calc(100% * 1 / 2)` を出力し、負の inset 分数も使えます。サイズまたは inset のスラッシュは色の不透明度を意味しません。 |
 | トランジション | **現在の v1 の動作。** `transition-shadow` は `box-shadow` を設定し、`transition-colors` は `outline-color` を含みます。`transition-none` 以外のトランジション系ユーティリティは 150ms の時間を設定し、`wind.defaultTransitionTimingFunction` を使います。デフォルトは `ease` です。Tailwind 4 のデフォルト時間関数を保つには `cubic-bezier(0.4, 0, 0.2, 1)` を設定します。同じバリアント区画では明示した `ease-*` ユーティリティが優先されます。 |
 | 任意の値 | **変更して採用 (W12)。** 対応するユーティリティの基部には、CSS プロパティの検証を通る、対応の取れた角括弧値を付けられます。空白にはアンダースコアを使い、エスケープしたものは文字どおり残ります。Tailwind は `calc()` の演算子の前後に自動で空白を入れていましたが、zudo-wind は入れません。`w-[calc(100vw_-_2rem)]` と書いてください。`w-[calc(100vw-2rem)]` にはエラーでその綴りを提案します。`text-[color:var(--x)]` のようなデータ型ヒントには対応しません。曖昧な変数には名前付きトークンを使ってください。`url()` と、宣言などの構文を注入する値は拒否されます。 |
 | 任意のプロパティ | **診断で拒否 (W13)。** `[overflow-wrap:anywhere]` のようなトークンは ZW004 です。宣言は手書きの CSS または CSS Module に置きます。 |
 | `!important` の表記 | **診断で拒否 (W14)。** 先頭と末尾のどちらも ZW004 です。意図的な important 宣言は手書きの CSS に置きます。 |
 | 負のユーティリティ | **採用 (W15)。** 負の値を許可するカタログ群だけが符号を受け入れ、群で定義された方法で値に適用します。`-mt-2` は有効、`-p-2` は無効です。 |
 | `space-*` と `divide-*` | **変更して採用 (W20)。** `hidden` 属性で絞られた後続の表示対象の直接の子を対象にします。前者は対応する margin、後者は実線の左または上のボーダーを設定します。逆方向フラグはなく、疑似要素バリアントとも組み合わせられません。 |
+
+`pointer-coarse` と `pointer-fine` は設定不要です。`any-pointer-*`、`motion-*`、`print`、`portrait`、任意の `[@media(...)]` は未対応です（ZW002/R04、任意セレクターは ZW004/R09）。`checked:`、`group-checked:`、`peer-checked:`、`max-sm:peer-checked:visible` は使えますが、`indeterminate`、`required`、`invalid` は未対応です。`selection:` は content を生成せずに使えます。標準的な `focus-visible:outline focus-visible:outline-2` は計算上の outline 幅 2px に解決します。
+
+装飾の厚さと style は `decoration-<整数>`、0 以上の `decoration-[<length>]`、正確な `decoration-solid|double|dotted|dashed|wavy` を使います。thickness/style の負数やスラッシュ、`decoration-auto`、`decoration-from-font` は未対応です。設定済みの完全な色トークンは style 名より優先です。`colors: { wavy: "#123456", "dotted-muted": "#123456" }` なら `decoration-wavy` と `decoration-dotted-muted/40` は text-decoration-color を出力します。トークンがなければ `decoration-wavy` は text-decoration-style を出力します。`solid`、`double`、`dotted`、`dashed` は以前から色トークン名として予約されていましたが、`wavy` は予約されていませんでした。衝突する名前で両方必要なら `.decorated { text-decoration-style: wavy; text-decoration-color: var(--zw-color-wavy); }` を手書きし、audit が診断する場合は `decorated` を `wind.authoredClasses` に登録してください。
 
 候補の文法では区切りを分割する前に角括弧、丸括弧、引用符の対応を取るため、角括弧値内のコロンやスラッシュはバリアントや修飾子の区切りにはなりません。完全なカタログは[バリアント](./variants.mdx)、[ユーティリティの文法](./utility-grammar.mdx)、[ユーティリティリファレンス](./utilities/index.mdx)を参照してください。
 
@@ -482,6 +486,8 @@ Tailwind は `group-hover:text-accent` を `.group-hover\:text-accent:is(:where(
 | 構文不正、未対応、または未知の明示的なユーティリティ入力 | 診断を出して処理が失敗します。未知の明示的なセーフリストやマニフェスト項目は失敗しますが、関連するユーティリティ基部を持たないクラス位置の名前は通常のままです。 |
 
 `zfb wind audit` は、通常のクラス位置の名前、不足または使われていない候補、動的な断片、同じクラスリストリテラル内のプロパティ競合を列挙します。意図的な手書きクラスとスペルミスしたユーティリティの区別に役立ちますが、代替の候補は推測しません。ユーティリティ基部から始まる手書きクラスは、`{ "text-link": true }` のように `wind.authoredClasses` に完全な候補表記を追加して予約します。`hover:text-link` のような候補ではバリアント連鎖も含めます。一致すると、その候補はすべての発生元でユーティリティの検証、診断、CSS 生成を抑止します。それ以外の場合はユーティリティの綴りを直すか、不足トークンを宣言します。[診断とツール](./diagnostics-and-tools.mdx)を参照してください。
+
+ZW014 移行語彙 v4 は論理方向の `ms-*`／`me-*`、`ps-*`／`pe-*`、`start-*`／`end-*`、`border-s`／`border-e` を報告します。`margin-inline-*`、`padding-inline-*`、`inset-inline-*`、`border-inline-*` の CSS を自作してください。isolation、float、clear、`word-break`／`break-*`、transform origin、filter、backdrop-filter、text-shadow、グラデーションも対象です。完全なクラス名を `wind.authoredClasses` に予約し、CSS を自作してください。合成 CSS は生成されません。`origin-story`、`float-label`、`clear-fix` は自作クラスとして残り、実際に解決するカタログ／トークンユーティリティが優先です。グラデーションには `bg-gradient-to-*`、`bg-linear-to-*`、整数角度の `bg-linear-*`、`bg-radial` と角括弧付き値、`bg-conic` と整数角度、宣言済み色・`current`・`transparent`・角括弧付き色／位置の `from-*`／`via-*`／`to-*` を含みます。`background-image` を自作します。角括弧なしの stop percentage（`from-10%`、`via-30%`、`to-90%`）は parser が拒否し、`from-[60%]` は ZW014 に到達します。
 
 ## 移行例
 

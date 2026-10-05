@@ -23,6 +23,26 @@
       "example": "alignment-grid"
     },
     {
+      "entry": "v1.justify-items",
+      "candidate": "justify-items-center",
+      "example": "alignment-grid"
+    },
+    {
+      "entry": "v1.justify-self",
+      "candidate": "justify-self-end",
+      "example": "alignment-grid"
+    },
+    {
+      "entry": "v1.place-content",
+      "candidate": "place-content-between",
+      "example": "alignment-grid"
+    },
+    {
+      "entry": "v1.place-self",
+      "candidate": "place-self-start",
+      "example": "alignment-grid"
+    },
+    {
       "entry": "v1.self",
       "candidate": "self-start",
       "example": "alignment-grid"
@@ -32,7 +52,7 @@
     "en": {
       "purpose": "Use alignment utilities on a flex or grid container to position its children. items aligns along a flex container’s cross axis and the grid block axis; justify controls the main axis in flex layouts, place-items combines both grid item axes, and self overrides one item.",
       "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
-      "customValues": "These roots accept a fixed keyword set. items and self support start, end, center, baseline, and stretch; justify supports start, end, center, between, around, and evenly; place-items supports start, end, center, and stretch. The container must provide the relevant layout context and available space.",
+      "customValues": "These roots accept fixed keywords. Newly admitted justify-self, justify-items, and place-self use start, end, center, stretch, baseline. Place-content uses start, end, center, stretch, between (space-between), around (space-around), and evenly (space-evenly). Place-self sets align-self and justify-self; place-content sets align-content and justify-content. Existing place-items is unchanged. The new roots do not admit flex-start or flex-end as utility suffixes; CSS itself may use those values, and existing items, self, and justify retain their flex-start/flex-end emissions.",
       "examples": [
         {
           "id": "alignment-flex",
@@ -42,14 +62,14 @@
         {
           "id": "alignment-grid",
           "title": "Align grid items on both axes",
-          "description": "place-items-center centers each item in its cell on both axes; self-start changes one item without moving the others."
+          "description": "place-items-center centers grid items, justify-items-center controls the inline axis, place-content-between distributes the grid tracks, and separate tiles demonstrate justify-self-end, place-self-start, and self-start."
         }
       ]
     },
     "ja": {
       "purpose": "flex または grid コンテナで子要素の位置を調整します。items は flex の交差軸と grid の block 軸を整列し、justify は flex レイアウトの主軸、place-items は grid item の両軸を扱います。self は個別の項目を上書きします。",
       "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
-      "customValues": "各 root が受け取る値は固定キーワードです。items と self は start、end、center、baseline、stretch、justify は start、end、center、between、around、evenly、place-items は start、end、center、stretch に対応します。指定先には該当するレイアウトコンテキストと空間が必要です。",
+      "customValues": "各基部は固定キーワードを受け付けます。新しい justify-self、justify-items、place-self は start、end、center、stretch、baseline を使います。place-content は start、end、center、stretch、between（space-between）、around（space-around）、evenly（space-evenly）を使います。place-self は align-self と justify-self、place-content は align-content と justify-content を設定します。既存の place-items は変わりません。新しい基部では flex-start／flex-end をユーティリティの接尾辞として使えませんが、CSS 一般では有効で、既存の items、self、justify の出力も変わりません。",
       "examples": [
         {
           "id": "alignment-flex",
@@ -59,7 +79,7 @@
         {
           "id": "alignment-grid",
           "title": "grid item を両軸で整列",
-          "description": "place-items-center は各セルの中央に項目を配置し、self-start は他の項目を動かさず1つだけ開始位置に移します。"
+          "description": "place-items-center は grid item を中央に置き、justify-items-center は inline 軸を整列し、place-content-between はトラックを分配します。別々のタイルで justify-self-end、place-self-start、self-start を示します。"
         }
       ]
     }

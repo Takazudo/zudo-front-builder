@@ -36,8 +36,20 @@
 .grid-rows-2 {
   grid-template-rows: repeat(2,minmax(0,1fr));
 }
+.justify-items-center {
+  justify-items: center;
+}
+.justify-self-end {
+  justify-self: end;
+}
+.place-content-between {
+  place-content: space-between;
+}
 .place-items-center {
   place-items: center;
+}
+.place-self-start {
+  place-self: start;
 }
 .self-start {
   align-self: flex-start;

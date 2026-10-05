@@ -3,6 +3,7 @@ import {
   compareGeneratedPages,
   escapeTableCell,
   renderReferencePages,
+  validateCatalogFamilies,
 } from "../../docs/scripts/generate-wind-reference.mjs";
 
 const catalog = {
@@ -70,6 +71,7 @@ const strings = {
     description: "Browse the utility catalog.",
     intro: "Browse generated entries.",
     specVersionLabel: "Catalog spec version",
+    specRevisionLabel: "Catalog spec revision",
     familyColumn: "Family",
     entryCountColumn: "Entries",
   },
@@ -116,6 +118,28 @@ const strings = {
 };
 
 describe("generate-wind-reference", () => {
+  it("maps only the three revision 8 decoration groups onto their existing page", () => {
+    const decoration = structuredClone(catalog.entries[0]);
+    decoration.id = "v1.decoration.style.wavy";
+    decoration.root = "decoration-wavy";
+    decoration.conflictGroup = "text-decoration-style";
+    decoration.conflictGroupRank = 45;
+    const mapped = [{ id: "text-decoration-color", entries: [decoration.id] }];
+    expect(validateCatalogFamilies({ entries: [decoration] }, mapped).get(decoration.id)).toEqual(
+      decoration,
+    );
+    for (const [group, rank] of [
+      ["text-decoration-other", 45],
+      ["text-decoration-style", 44],
+    ]) {
+      expect(() =>
+        validateCatalogFamilies(
+          { entries: [{ ...decoration, conflictGroup: group, conflictGroupRank: rank }] },
+          mapped,
+        ),
+      ).toThrow("declares conflict group");
+    }
+  });
   it("writes Japanese frontmatter without unnecessary quotes", () => {
     const localized = structuredClone(strings);
     localized.index.title = "ユーティリティリファレンス";
@@ -295,7 +319,7 @@ const options = { editorial, preview };
 describe("reader-first wind pages", () => {
   it("preserves all family/entry membership, old root and nested anchors, and nonpilot bytes in both locales", () => {
     expect(WIND_REFERENCE_FAMILIES).toHaveLength(47);
-    expect(WIND_REFERENCE_FAMILIES.flatMap((family) => family.entries)).toHaveLength(187);
+    expect(WIND_REFERENCE_FAMILIES.flatMap((family) => family.entries)).toHaveLength(197);
     for (const [locale, localized] of [
       ["en", en],
       ["ja", ja],

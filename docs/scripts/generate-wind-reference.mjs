@@ -21,6 +21,7 @@ const REQUIRED_STRING_PATHS = [
   "index.description",
   "index.intro",
   "index.specVersionLabel",
+  "index.specRevisionLabel",
   "index.familyColumn",
   "index.entryCountColumn",
   "labels.field",
@@ -214,7 +215,15 @@ export function validateCatalogFamilies(catalog, families) {
         throw new Error(`Utility family "${family.id}" names missing catalog entry "${entryId}".`);
       }
       const catalogEntry = entriesById.get(entryId);
-      if (catalogEntry.conflictGroup !== family.id) {
+      // The three decoration declaration groups share one existing reference page
+      // and catalog rank. Keep every other family bound to its own conflict group.
+      const sharedDecorationGroup =
+        family.id === "text-decoration-color" &&
+        catalogEntry.conflictGroupRank === 45 &&
+        ["text-decoration-color", "text-decoration-thickness", "text-decoration-style"].includes(
+          catalogEntry.conflictGroup,
+        );
+      if (catalogEntry.conflictGroup !== family.id && !sharedDecorationGroup) {
         throw new Error(
           `Catalog entry "${entryId}" declares conflict group "${catalogEntry.conflictGroup}" but is assigned to family "${family.id}".`,
         );
@@ -513,6 +522,9 @@ export function renderReferencePages(catalog, strings, families, options = {}) {
     ),
     "",
     `${escapeMdxText(strings.index.specVersionLabel)}: ${codeSpan(catalog.specVersion)}.`,
+    ...(catalog.specRevision === undefined
+      ? []
+      : [`${escapeMdxText(strings.index.specRevisionLabel)}: ${codeSpan(catalog.specRevision)}.`]),
     "",
     '<CategoryNav category="zudo-wind/utilities" />',
     "",
