@@ -1,5 +1,4 @@
 ---
 title: Seed
 ---
-
-Seed body.
+Seed body
