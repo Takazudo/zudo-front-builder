@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use zfb_css::{extract_candidates, PositiveRoot, SourceExclusion, SourceKind, SourcePlan};
+use zfb_css::{
+    extract_candidates_with_options, ExtractionOptions, PositiveRoot, SourceExclusion, SourceKind,
+    SourcePlan,
+};
 
 use super::build::root_package_css_excluded_dirs;
 use crate::config::{Config, WindSetting};
@@ -31,6 +34,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub role_classes: BTreeSet<String>,
     pub manifests: BTreeMap<String, PathBuf>,
     pub safelist: BTreeMap<String, BTreeSet<String>>,
+    pub extraction_options: ExtractionOptions,
     pub zfb_written_roots: Vec<PathBuf>,
 }
 
@@ -83,6 +87,7 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
     let project = absolute(&inputs.first_party_root, &inputs.project_root);
     let first_party = absolute(&project, &inputs.first_party_root);
     let mut plan = SourcePlan::default();
+    plan.extraction_options = inputs.extraction_options.clone();
     for path in [&inputs.configured_output_dir, &inputs.pass_output_dir]
         .into_iter()
         .chain(&inputs.zfb_written_roots)
@@ -159,11 +164,15 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
     }
     plan.roots.sort();
     for (specifier, source) in &inputs.plugin_virtual_modules {
-        let candidates = extract_candidates(source.as_bytes(), SourceKind::Tsx)
-            .candidates
-            .into_iter()
-            .map(|candidate| candidate.text)
-            .collect();
+        let candidates = extract_candidates_with_options(
+            source.as_bytes(),
+            SourceKind::Tsx,
+            &plan.extraction_options,
+        )
+        .candidates
+        .into_iter()
+        .map(|candidate| candidate.text)
+        .collect();
         plan.generated_sources
             .insert(format!("plugin/{specifier}"), candidates);
     }
@@ -623,11 +632,18 @@ pub(crate) fn gather_css_source_plan_inputs(
     let manifests =
         resolve_declared_manifest_paths_with(&project_root, config, resolve_manifest_path)?;
     let mut safelist = BTreeMap::new();
+    let mut extraction_options = ExtractionOptions::default();
     let mut declared_package_roots = Vec::new();
     let mut declared_project_roots = Vec::new();
     let mut author_exclusions = Vec::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
+        extraction_options
+            .class_helpers
+            .extend(wind.sources.class_helpers.iter().cloned());
         for declaration in wind.source_declarations() {
+            extraction_options
+                .class_helpers
+                .extend(declaration.sources.class_helpers.iter().cloned());
             let origin = declaration.origin();
             let declaring_dir = resolve_source_declaring_dir(
                 wind.declaring_dir(&project_root),
@@ -694,6 +710,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         role_classes,
         manifests,
         safelist,
+        extraction_options,
         zfb_written_roots: zfb_written_roots.to_vec(),
     })
 }
@@ -746,6 +763,39 @@ mod tests {
             index.replace_safelist(owner, values.iter().cloned());
         }
         index.live_set()
+    }
+
+    #[test]
+    fn helper_options_change_plan_identity_and_reach_plugin_extraction() {
+        let (_temp, mut inputs) = fixture();
+        inputs.plugin_virtual_modules.insert(
+            "virtual:page".into(),
+            "export const Page = () => <div class={ctl(\"text-xl\")} />;".into(),
+        );
+        let default = build_css_source_plan(&inputs);
+        assert!(default.generated_sources["plugin/virtual:page"].contains("text-xl"));
+        inputs.extraction_options.class_helpers.insert("ctl".into());
+        let configured = build_css_source_plan(&inputs);
+        assert_ne!(default, configured);
+        assert!(configured.extraction_options.class_helpers.contains("ctl"));
+        let config = sources_config(vec![(None, serde_json::json!({"classHelpers": ["ctl"]}))]);
+        let gathered = gather(&inputs, &config).unwrap();
+        assert!(gathered.extraction_options.class_helpers.contains("ctl"));
+        let configured_plan = build_css_source_plan(&gathered);
+        let extraction = extract_candidates_with_options(
+            gathered.plugin_virtual_modules["virtual:page"].as_bytes(),
+            SourceKind::Tsx,
+            &configured_plan.extraction_options,
+        );
+        let candidate = extraction
+            .candidates
+            .iter()
+            .find(|c| c.text == "text-xl")
+            .unwrap();
+        assert!(candidate
+            .occurrences
+            .iter()
+            .all(|o| o.position_kind == zfb_css::PositionKind::Class));
     }
 
     #[test]

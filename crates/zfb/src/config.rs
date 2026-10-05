@@ -1037,11 +1037,17 @@ pub struct WindSources {
     /// Package directories scanned as roots, including their `dist` and `node_modules`.
     #[serde(default)]
     pub package_roots: Vec<String>,
+    /// Explicit local helpers whose arguments are class lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub class_helpers: Vec<String>,
 }
 
 impl WindSources {
     fn is_empty(&self) -> bool {
-        self.exclude.is_empty() && self.roots.is_empty() && self.package_roots.is_empty()
+        self.exclude.is_empty()
+            && self.roots.is_empty()
+            && self.package_roots.is_empty()
+            && self.class_helpers.is_empty()
     }
 }
 
@@ -2890,6 +2896,12 @@ fn apply_wind_sources(config: &mut Config, declarations: Vec<WindSourceDeclarati
             .iter()
             .flat_map(|declaration| declaration.sources.package_roots.iter().cloned())
             .collect(),
+        class_helpers: declarations
+            .iter()
+            .flat_map(|declaration| declaration.sources.class_helpers.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
     };
     wind.source_declarations = declarations;
 }
@@ -3094,6 +3106,11 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
 
     for declaration in wind.source_declarations() {
         let origin = declaration.origin();
+        for (index, helper) in declaration.sources.class_helpers.iter().enumerate() {
+            if !is_wind_class_helper_identifier(helper) {
+                bail!("wind.sources.classHelpers[{index}] {helper:?} declared by {origin}: must be a JavaScript identifier");
+            }
+        }
         for (index, root) in declaration.sources.roots.iter().enumerate() {
             if let Err(message) = validate_wind_project_root(root) {
                 bail!("wind.sources.roots[{index}] {root:?} declared by {origin}: {message}");
@@ -3113,6 +3130,65 @@ fn validate_wind_config(wind: &WindConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_wind_class_helper_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| unicode_id_start::is_id_start(c) || c == '_' || c == '$')
+        && chars.all(|c| {
+            unicode_id_start::is_id_continue(c) || matches!(c, '_' | '$' | '\u{200c}' | '\u{200d}')
+        })
+        && !matches!(
+            name,
+            "await"
+                | "break"
+                | "case"
+                | "catch"
+                | "class"
+                | "const"
+                | "continue"
+                | "debugger"
+                | "default"
+                | "delete"
+                | "do"
+                | "else"
+                | "enum"
+                | "export"
+                | "extends"
+                | "false"
+                | "finally"
+                | "for"
+                | "function"
+                | "if"
+                | "import"
+                | "implements"
+                | "in"
+                | "interface"
+                | "instanceof"
+                | "let"
+                | "new"
+                | "null"
+                | "package"
+                | "private"
+                | "protected"
+                | "public"
+                | "return"
+                | "super"
+                | "switch"
+                | "static"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "typeof"
+                | "var"
+                | "void"
+                | "while"
+                | "with"
+                | "yield"
+        )
 }
 
 fn validate_wind_project_root(root: &str) -> Result<(), &'static str> {
@@ -3875,6 +3951,38 @@ mod tests {
     }
 
     #[test]
+    fn wind_class_helpers_merge_presets_and_project_and_validate_identifiers() {
+        let config = merge_presets_to_config(
+            vec![
+                serde_json::json!({"wind": {"sources": {"classHelpers": ["ctl", "cn"]}}}),
+                serde_json::json!({"wind": {"sources": {"classHelpers": ["tw", "ctl"]}}}),
+            ],
+            serde_json::json!({"wind": {"sources": {"classHelpers": ["$classes", "tw"]}}}),
+        );
+        let Some(WindSetting::Enabled(wind)) = config.wind else {
+            panic!("wind object expected")
+        };
+        assert_eq!(wind.sources.class_helpers, ["$classes", "cn", "ctl", "tw"]);
+        assert!(is_wind_class_helper_identifier("élément"));
+        assert!(is_wind_class_helper_identifier("class\u{200c}list"));
+        assert_eq!(wind.source_declarations().len(), 3);
+        for invalid in ["", "a-b", "member.ctl", "1ctl", "ctl name", "for"] {
+            let wind = WindConfig {
+                sources: WindSources {
+                    class_helpers: vec![invalid.into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let error = validate_wind_config(&wind).unwrap_err().to_string();
+            assert!(
+                error.contains("wind.sources.classHelpers[0]"),
+                "{invalid}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn wind_sources_without_presets_belong_to_the_project() {
         let config = config_with_wind(serde_json::json!({
             "sources": { "exclude": ["src/**"] }
@@ -3890,6 +3998,7 @@ mod tests {
                     exclude: vec!["src/**".into()],
                     roots: Vec::new(),
                     package_roots: Vec::new(),
+                    class_helpers: Vec::new(),
                 },
             }]
         );
@@ -3939,6 +4048,7 @@ mod tests {
                     exclude: vec!["src/**".into(), "src/[".into()],
                     roots: Vec::new(),
                     package_roots: Vec::new(),
+                    class_helpers: Vec::new(),
                 },
             }],
             ..Default::default()
