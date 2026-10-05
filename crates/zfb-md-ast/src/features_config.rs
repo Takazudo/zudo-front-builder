@@ -159,7 +159,11 @@ pub struct LinkValidationConfig {
     /// prop the fragment collector may register; it does not make expression,
     /// spread, or empty values statically knowable. Each registered literal
     /// contributes one static anchor candidate for ordinary fragment checks.
-    #[serde(default, deserialize_with = "deserialize_anchor_components")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_anchor_components",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub anchor_components: Option<BTreeMap<String, String>>,
 }
 
@@ -831,10 +835,19 @@ mod tests {
         let absent = LinkValidationConfig::default();
         assert_eq!(absent.fail_on_broken, None);
         assert_eq!(absent.anchor_components, None);
+        assert_eq!(
+            serde_json::to_value(&absent).expect("default config serializes"),
+            serde_json::json!({ "failOnBroken": null }),
+            "an absent anchorComponents option must retain the historical JSON shape"
+        );
 
         let empty: LinkValidationConfig =
             serde_json::from_value(serde_json::json!({})).expect("empty options deserialize");
         assert_eq!(empty, absent);
+        assert_eq!(
+            serde_json::to_value(&empty).expect("deserialized empty options serialize"),
+            serde_json::to_value(&absent).expect("default config serializes")
+        );
 
         let features: MarkdownFeaturesConfig =
             serde_json::from_value(serde_json::json!({ "linkValidation": {} }))
@@ -842,6 +855,11 @@ mod tests {
         assert_eq!(
             features.link_validation,
             Some(LinkValidationConfig::default())
+        );
+        assert_eq!(
+            serde_json::to_value(&features).expect("features serialize")["linkValidation"],
+            serde_json::json!({ "failOnBroken": null }),
+            "an armed linkValidation feature without anchorComponents must keep its old JSON shape"
         );
     }
 
@@ -857,7 +875,10 @@ mod tests {
             }
         }))
         .expect("simple, member, and Unicode MDX JSX names deserialize");
-        let config = cfg.link_validation.expect("linkValidation present");
+        let config = cfg
+            .link_validation
+            .as_ref()
+            .expect("linkValidation present");
         let anchors = config
             .anchor_components
             .as_ref()
@@ -875,10 +896,15 @@ mod tests {
             Some("data-anchor-id")
         );
 
-        let serialized = serde_json::to_value(config).expect("config serializes");
+        let serialized = serde_json::to_value(&cfg).expect("features serialize");
         assert_eq!(
-            serialized["anchorComponents"]["UI.Anchor"],
-            serde_json::json!("anchorId")
+            serialized["linkValidation"]["anchorComponents"],
+            serde_json::json!({
+                "EvidenceAnchor": "id",
+                "UI.Anchor": "anchorId",
+                "ΔAnchor": "data-anchor-id"
+            }),
+            "an explicit component map must remain in serialized config"
         );
     }
 
