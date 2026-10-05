@@ -686,18 +686,10 @@
     }
   ],
   "sourceCrossCheck": {
-    "testsInspected": [
-      "utilities.test.ts",
-      "variants.test.ts",
-      "compat/legacy-utilities.test.ts"
-    ],
+    "testsInspected": ["utilities.test.ts", "variants.test.ts", "compat/legacy-utilities.test.ts"],
     "testExamples": {
       "mx-auto": {
-        "utilities.test.ts": [
-          2054,
-          2117,
-          2129
-        ],
+        "utilities.test.ts": [2054, 2117, 2129],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
@@ -707,49 +699,22 @@
         "compat/legacy-utilities.test.ts": []
       },
       "table": {
-        "utilities.test.ts": [
-          3100,
-          3101,
-          3102,
-          3103,
-          3104,
-          3105,
-          3106,
-          3107
-        ],
+        "utilities.test.ts": [3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
       "appearance-none": {
-        "utilities.test.ts": [
-          8663,
-          8669,
-          8677,
-          8679
-        ],
+        "utilities.test.ts": [8663, 8669, 8677, 8679],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
       "order-first": {
-        "utilities.test.ts": [
-          1305,
-          1327,
-          1344,
-          1353,
-          1361,
-          1364,
-          1372,
-          1375
-        ],
+        "utilities.test.ts": [1305, 1327, 1344, 1353, 1361, 1364, 1372, 1375],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
       "basis-auto": {
-        "utilities.test.ts": [
-          4906,
-          4928,
-          4950
-        ],
+        "utilities.test.ts": [4906, 4928, 4950],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
@@ -759,16 +724,7 @@
         "compat/legacy-utilities.test.ts": []
       },
       "sr-only": {
-        "utilities.test.ts": [
-          8,
-          9,
-          11,
-          24,
-          27,
-          28,
-          30,
-          42
-        ],
+        "utilities.test.ts": [8, 9, 11, 24, 27, 28, 30, 42],
         "variants.test.ts": [],
         "compat/legacy-utilities.test.ts": []
       },
@@ -34838,15 +34794,11 @@
         "representation": "animate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--animate"
-          ],
+          "themeKeys": ["--animate"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -34882,16 +34834,11 @@
         "representation": "aspect-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--aspect"
-          ],
+          "themeKeys": ["--aspect"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "auto",
-            "square"
-          ]
+          "staticValueKeys": ["auto", "square"]
         }
       },
       "windMapping": {
@@ -34931,19 +34878,11 @@
         "representation": "auto-cols-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-auto-columns",
-            "--spacing"
-          ],
+          "themeKeys": ["--grid-auto-columns", "--spacing"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "auto",
-            "min",
-            "max",
-            "fr"
-          ]
+          "staticValueKeys": ["auto", "min", "max", "fr"]
         }
       },
       "windMapping": null,
@@ -34979,19 +34918,11 @@
         "representation": "auto-rows-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-auto-rows",
-            "--spacing"
-          ],
+          "themeKeys": ["--grid-auto-rows", "--spacing"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "auto",
-            "min",
-            "max",
-            "fr"
-          ]
+          "staticValueKeys": ["auto", "min", "max", "fr"]
         }
       },
       "windMapping": null,
@@ -35027,10 +34958,7 @@
         "representation": "backdrop-blur-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-blur",
-            "--blur"
-          ],
+          "themeKeys": ["--backdrop-blur", "--blur"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
@@ -35070,10 +34998,7 @@
         "representation": "backdrop-brightness-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-brightness",
-            "--brightness"
-          ],
+          "themeKeys": ["--backdrop-brightness", "--brightness"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35113,10 +35038,7 @@
         "representation": "backdrop-contrast-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-contrast",
-            "--contrast"
-          ],
+          "themeKeys": ["--backdrop-contrast", "--contrast"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35196,10 +35118,7 @@
         "representation": "backdrop-grayscale-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-grayscale",
-            "--grayscale"
-          ],
+          "themeKeys": ["--backdrop-grayscale", "--grayscale"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35239,10 +35158,7 @@
         "representation": "backdrop-hue-rotate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-hue-rotate",
-            "--hue-rotate"
-          ],
+          "themeKeys": ["--backdrop-hue-rotate", "--hue-rotate"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -35282,10 +35198,7 @@
         "representation": "backdrop-invert-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-invert",
-            "--invert"
-          ],
+          "themeKeys": ["--backdrop-invert", "--invert"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35325,10 +35238,7 @@
         "representation": "backdrop-opacity-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-opacity",
-            "--opacity"
-          ],
+          "themeKeys": ["--backdrop-opacity", "--opacity"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35368,10 +35278,7 @@
         "representation": "backdrop-saturate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-saturate",
-            "--saturate"
-          ],
+          "themeKeys": ["--backdrop-saturate", "--saturate"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35411,10 +35318,7 @@
         "representation": "backdrop-sepia-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--backdrop-sepia",
-            "--sepia"
-          ],
+          "themeKeys": ["--backdrop-sepia", "--sepia"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -35454,11 +35358,7 @@
         "representation": "basis-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--flex-basis",
-            "--spacing",
-            "--container"
-          ],
+          "themeKeys": ["--flex-basis", "--spacing", "--container"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": true,
@@ -35786,16 +35686,11 @@
         "representation": "blur-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--blur",
-            "--backdrop-blur"
-          ],
+          "themeKeys": ["--blur", "--backdrop-blur"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -36178,13 +36073,7 @@
           "bareValueHandler": false,
           "negative": true,
           "fractions": true,
-          "staticValueKeys": [
-            "center",
-            "top",
-            "right",
-            "bottom",
-            "left"
-          ]
+          "staticValueKeys": ["center", "top", "right", "bottom", "left"]
         }
       },
       "windMapping": null,
@@ -36231,13 +36120,7 @@
           "bareValueHandler": false,
           "negative": true,
           "fractions": true,
-          "staticValueKeys": [
-            "center",
-            "top",
-            "right",
-            "bottom",
-            "left"
-          ]
+          "staticValueKeys": ["center", "top", "right", "bottom", "left"]
         }
       },
       "windMapping": null,
@@ -36284,13 +36167,7 @@
           "bareValueHandler": false,
           "negative": true,
           "fractions": true,
-          "staticValueKeys": [
-            "center",
-            "top",
-            "right",
-            "bottom",
-            "left"
-          ]
+          "staticValueKeys": ["center", "top", "right", "bottom", "left"]
         }
       },
       "windMapping": null,
@@ -36502,10 +36379,7 @@
         "representation": "brightness-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--brightness",
-            "--backdrop-brightness"
-          ],
+          "themeKeys": ["--brightness", "--backdrop-brightness"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -36585,15 +36459,11 @@
         "representation": "col-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-column"
-          ],
+          "themeKeys": ["--grid-column"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": null,
@@ -36629,15 +36499,11 @@
         "representation": "col-end-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-column-end"
-          ],
+          "themeKeys": ["--grid-column-end"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -36681,9 +36547,7 @@
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "full"
-          ]
+          "staticValueKeys": ["full"]
         }
       },
       "windMapping": {
@@ -36723,15 +36587,11 @@
         "representation": "col-start-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-column-start"
-          ],
+          "themeKeys": ["--grid-column-start"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -36771,16 +36631,11 @@
         "representation": "columns-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--columns",
-            "--container"
-          ],
+          "themeKeys": ["--columns", "--container"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": null,
@@ -36816,17 +36671,11 @@
         "representation": "contain-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--leading",
-            "--spacing",
-            "--tracking"
-          ],
+          "themeKeys": ["--leading", "--spacing", "--tracking"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -36862,9 +36711,7 @@
         "representation": "content-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--content"
-          ],
+          "themeKeys": ["--content"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
@@ -36904,10 +36751,7 @@
         "representation": "contrast-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--contrast",
-            "--backdrop-contrast"
-          ],
+          "themeKeys": ["--contrast", "--backdrop-contrast"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -36947,9 +36791,7 @@
         "representation": "cursor-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--cursor"
-          ],
+          "themeKeys": ["--cursor"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
@@ -37037,18 +36879,11 @@
         "representation": "delay-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--transition-delay",
-            "--transition-duration",
-            "--ease"
-          ],
+          "themeKeys": ["--transition-delay", "--transition-duration", "--ease"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "initial",
-            "linear"
-          ]
+          "staticValueKeys": ["initial", "linear"]
         }
       },
       "windMapping": null,
@@ -37128,11 +36963,7 @@
         "representation": "divide-x-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--default-border-width",
-            "--divide-width",
-            "--border-width"
-          ],
+          "themeKeys": ["--default-border-width", "--divide-width", "--border-width"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -37176,11 +37007,7 @@
         "representation": "divide-y-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--default-border-width",
-            "--divide-width",
-            "--border-width"
-          ],
+          "themeKeys": ["--default-border-width", "--divide-width", "--border-width"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -37308,16 +37135,11 @@
         "representation": "ease-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--ease"
-          ],
+          "themeKeys": ["--ease"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "initial",
-            "linear"
-          ]
+          "staticValueKeys": ["initial", "linear"]
         }
       },
       "windMapping": {
@@ -37765,11 +37587,7 @@
         "representation": "gap-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--gap",
-            "--spacing",
-            "--space"
-          ],
+          "themeKeys": ["--gap", "--spacing", "--space"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -37813,11 +37631,7 @@
         "representation": "gap-x-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--gap",
-            "--spacing",
-            "--space"
-          ],
+          "themeKeys": ["--gap", "--spacing", "--space"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -37861,11 +37675,7 @@
         "representation": "gap-y-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--gap",
-            "--spacing",
-            "--space"
-          ],
+          "themeKeys": ["--gap", "--spacing", "--space"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -37909,10 +37719,7 @@
         "representation": "grayscale-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grayscale",
-            "--backdrop-grayscale"
-          ],
+          "themeKeys": ["--grayscale", "--backdrop-grayscale"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -37952,16 +37759,11 @@
         "representation": "grid-cols-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-template-columns"
-          ],
+          "themeKeys": ["--grid-template-columns"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none",
-            "subgrid"
-          ]
+          "staticValueKeys": ["none", "subgrid"]
         }
       },
       "windMapping": {
@@ -38001,16 +37803,11 @@
         "representation": "grid-rows-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-template-rows"
-          ],
+          "themeKeys": ["--grid-template-rows"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none",
-            "subgrid"
-          ]
+          "staticValueKeys": ["none", "subgrid"]
         }
       },
       "windMapping": {
@@ -38138,9 +37935,7 @@
         "representation": "hue-rotate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--hue-rotate"
-          ],
+          "themeKeys": ["--hue-rotate"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -38180,10 +37975,7 @@
         "representation": "indent-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--text-indent",
-            "--spacing"
-          ],
+          "themeKeys": ["--text-indent", "--spacing"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -38639,10 +38431,7 @@
         "representation": "invert-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--invert",
-            "--backdrop-invert"
-          ],
+          "themeKeys": ["--invert", "--backdrop-invert"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -38682,16 +38471,11 @@
         "representation": "leading-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--leading",
-            "--spacing"
-          ],
+          "themeKeys": ["--leading", "--spacing"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": {
@@ -38775,15 +38559,11 @@
         "representation": "line-clamp-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--line-clamp"
-          ],
+          "themeKeys": ["--line-clamp"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -38819,17 +38599,11 @@
         "representation": "list-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--list-style-type"
-          ],
+          "themeKeys": ["--list-style-type"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none",
-            "disc",
-            "decimal"
-          ]
+          "staticValueKeys": ["none", "disc", "decimal"]
         }
       },
       "windMapping": null,
@@ -38865,15 +38639,11 @@
         "representation": "list-image-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--list-style-image"
-          ],
+          "themeKeys": ["--list-style-image"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -40753,19 +40523,11 @@
         "representation": "object-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--object-position"
-          ],
+          "themeKeys": ["--object-position"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "top",
-            "bottom",
-            "left",
-            "right",
-            "center"
-          ]
+          "staticValueKeys": ["top", "bottom", "left", "right", "center"]
         }
       },
       "windMapping": null,
@@ -40801,9 +40563,7 @@
         "representation": "opacity-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--opacity"
-          ],
+          "themeKeys": ["--opacity"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -40847,16 +40607,11 @@
         "representation": "order-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--order"
-          ],
+          "themeKeys": ["--order"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "first",
-            "last"
-          ]
+          "staticValueKeys": ["first", "last"]
         }
       },
       "windMapping": null,
@@ -40892,19 +40647,11 @@
         "representation": "origin-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--transform-origin"
-          ],
+          "themeKeys": ["--transform-origin"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "center",
-            "top",
-            "right",
-            "bottom",
-            "left"
-          ]
+          "staticValueKeys": ["center", "top", "right", "bottom", "left"]
         }
       },
       "windMapping": null,
@@ -40984,10 +40731,7 @@
         "representation": "outline-offset-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--outline-offset",
-            "--opacity"
-          ],
+          "themeKeys": ["--outline-offset", "--opacity"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -41239,15 +40983,11 @@
         "representation": "perspective-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--perspective"
-          ],
+          "themeKeys": ["--perspective"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "none"
-          ]
+          "staticValueKeys": ["none"]
         }
       },
       "windMapping": null,
@@ -41283,19 +41023,11 @@
         "representation": "perspective-origin-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--perspective-origin"
-          ],
+          "themeKeys": ["--perspective-origin"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "center",
-            "top",
-            "right",
-            "bottom",
-            "left"
-          ]
+          "staticValueKeys": ["center", "top", "right", "bottom", "left"]
         }
       },
       "windMapping": null,
@@ -42555,15 +42287,11 @@
         "representation": "row-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-row"
-          ],
+          "themeKeys": ["--grid-row"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": null,
@@ -42599,15 +42327,11 @@
         "representation": "row-end-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-row-end"
-          ],
+          "themeKeys": ["--grid-row-end"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -42651,9 +42375,7 @@
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
-          "staticValueKeys": [
-            "full"
-          ]
+          "staticValueKeys": ["full"]
         }
       },
       "windMapping": {
@@ -42693,15 +42415,11 @@
         "representation": "row-start-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--grid-row-start"
-          ],
+          "themeKeys": ["--grid-row-start"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -42741,10 +42459,7 @@
         "representation": "saturate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--saturate",
-            "--backdrop-saturate"
-          ],
+          "themeKeys": ["--saturate", "--backdrop-saturate"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -43932,10 +43647,7 @@
         "representation": "sepia-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--sepia",
-            "--backdrop-sepia"
-          ],
+          "themeKeys": ["--sepia", "--backdrop-sepia"],
           "bareValueHandler": true,
           "negative": false,
           "fractions": false,
@@ -44063,10 +43775,7 @@
         "representation": "size-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--size",
-            "--spacing"
-          ],
+          "themeKeys": ["--size", "--spacing"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": true,
@@ -44110,9 +43819,7 @@
         "representation": "skew-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--skew"
-          ],
+          "themeKeys": ["--skew"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -44152,9 +43859,7 @@
         "representation": "skew-x-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--skew"
-          ],
+          "themeKeys": ["--skew"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -44194,9 +43899,7 @@
         "representation": "skew-y-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--skew"
-          ],
+          "themeKeys": ["--skew"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
@@ -44236,10 +43939,7 @@
         "representation": "space-x-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--space",
-            "--spacing"
-          ],
+          "themeKeys": ["--space", "--spacing"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -44283,10 +43983,7 @@
         "representation": "space-y-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--space",
-            "--spacing"
-          ],
+          "themeKeys": ["--space", "--spacing"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -44618,9 +44315,7 @@
         "representation": "tracking-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--tracking"
-          ],
+          "themeKeys": ["--tracking"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": false,
@@ -44704,9 +44399,7 @@
         "representation": "transition-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--transition-property"
-          ],
+          "themeKeys": ["--transition-property"],
           "bareValueHandler": false,
           "negative": false,
           "fractions": false,
@@ -44750,10 +44443,7 @@
         "representation": "translate-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--translate",
-            "--spacing"
-          ],
+          "themeKeys": ["--translate", "--spacing"],
           "bareValueHandler": false,
           "negative": true,
           "fractions": true,
@@ -44921,15 +44611,11 @@
         "representation": "underline-offset-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--text-underline-offset"
-          ],
+          "themeKeys": ["--text-underline-offset"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -45093,15 +44779,11 @@
         "representation": "z-<value>",
         "constraints": {
           "domain": "source-inspected-functional-registration",
-          "themeKeys": [
-            "--z-index"
-          ],
+          "themeKeys": ["--z-index"],
           "bareValueHandler": true,
           "negative": true,
           "fractions": false,
-          "staticValueKeys": [
-            "auto"
-          ]
+          "staticValueKeys": ["auto"]
         }
       },
       "windMapping": {
@@ -48055,10 +47737,7 @@
       "id": "wind:v1.block",
       "catalogId": "v1.block",
       "root": "block",
-      "upstreamRowIds": [
-        "utility-static:block",
-        "utility-pattern:block"
-      ],
+      "upstreamRowIds": ["utility-static:block", "utility-pattern:block"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48082,10 +47761,7 @@
       "id": "wind:v1.flex",
       "catalogId": "v1.flex",
       "root": "flex",
-      "upstreamRowIds": [
-        "utility-static:flex",
-        "utility-pattern:flex"
-      ],
+      "upstreamRowIds": ["utility-static:flex", "utility-pattern:flex"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48109,9 +47785,7 @@
       "id": "wind:v1.grid",
       "catalogId": "v1.grid",
       "root": "grid",
-      "upstreamRowIds": [
-        "utility-static:grid"
-      ],
+      "upstreamRowIds": ["utility-static:grid"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48135,9 +47809,7 @@
       "id": "wind:v1.hidden",
       "catalogId": "v1.hidden",
       "root": "hidden",
-      "upstreamRowIds": [
-        "utility-static:hidden"
-      ],
+      "upstreamRowIds": ["utility-static:hidden"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48161,10 +47833,7 @@
       "id": "wind:v1.inline",
       "catalogId": "v1.inline",
       "root": "inline",
-      "upstreamRowIds": [
-        "utility-static:inline",
-        "utility-pattern:inline"
-      ],
+      "upstreamRowIds": ["utility-static:inline", "utility-pattern:inline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48188,9 +47857,7 @@
       "id": "wind:v1.inline-block",
       "catalogId": "v1.inline-block",
       "root": "inline-block",
-      "upstreamRowIds": [
-        "utility-static:inline-block"
-      ],
+      "upstreamRowIds": ["utility-static:inline-block"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48214,9 +47881,7 @@
       "id": "wind:v1.inline-flex",
       "catalogId": "v1.inline-flex",
       "root": "inline-flex",
-      "upstreamRowIds": [
-        "utility-static:inline-flex"
-      ],
+      "upstreamRowIds": ["utility-static:inline-flex"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48240,9 +47905,7 @@
       "id": "wind:v1.inline-grid",
       "catalogId": "v1.inline-grid",
       "root": "inline-grid",
-      "upstreamRowIds": [
-        "utility-static:inline-grid"
-      ],
+      "upstreamRowIds": ["utility-static:inline-grid"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48266,9 +47929,7 @@
       "id": "wind:v1.absolute",
       "catalogId": "v1.absolute",
       "root": "absolute",
-      "upstreamRowIds": [
-        "utility-static:absolute"
-      ],
+      "upstreamRowIds": ["utility-static:absolute"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48292,9 +47953,7 @@
       "id": "wind:v1.fixed",
       "catalogId": "v1.fixed",
       "root": "fixed",
-      "upstreamRowIds": [
-        "utility-static:fixed"
-      ],
+      "upstreamRowIds": ["utility-static:fixed"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48318,9 +47977,7 @@
       "id": "wind:v1.relative",
       "catalogId": "v1.relative",
       "root": "relative",
-      "upstreamRowIds": [
-        "utility-static:relative"
-      ],
+      "upstreamRowIds": ["utility-static:relative"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48344,9 +48001,7 @@
       "id": "wind:v1.static",
       "catalogId": "v1.static",
       "root": "static",
-      "upstreamRowIds": [
-        "utility-static:static"
-      ],
+      "upstreamRowIds": ["utility-static:static"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48370,9 +48025,7 @@
       "id": "wind:v1.sticky",
       "catalogId": "v1.sticky",
       "root": "sticky",
-      "upstreamRowIds": [
-        "utility-static:sticky"
-      ],
+      "upstreamRowIds": ["utility-static:sticky"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48620,9 +48273,7 @@
       "id": "wind:v1.flex-col",
       "catalogId": "v1.flex-col",
       "root": "flex-col",
-      "upstreamRowIds": [
-        "utility-static:flex-col"
-      ],
+      "upstreamRowIds": ["utility-static:flex-col"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48646,9 +48297,7 @@
       "id": "wind:v1.flex-col-reverse",
       "catalogId": "v1.flex-col-reverse",
       "root": "flex-col-reverse",
-      "upstreamRowIds": [
-        "utility-static:flex-col-reverse"
-      ],
+      "upstreamRowIds": ["utility-static:flex-col-reverse"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48672,9 +48321,7 @@
       "id": "wind:v1.flex-nowrap",
       "catalogId": "v1.flex-nowrap",
       "root": "flex-nowrap",
-      "upstreamRowIds": [
-        "utility-static:flex-nowrap"
-      ],
+      "upstreamRowIds": ["utility-static:flex-nowrap"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48698,9 +48345,7 @@
       "id": "wind:v1.flex-row",
       "catalogId": "v1.flex-row",
       "root": "flex-row",
-      "upstreamRowIds": [
-        "utility-static:flex-row"
-      ],
+      "upstreamRowIds": ["utility-static:flex-row"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48724,9 +48369,7 @@
       "id": "wind:v1.flex-row-reverse",
       "catalogId": "v1.flex-row-reverse",
       "root": "flex-row-reverse",
-      "upstreamRowIds": [
-        "utility-static:flex-row-reverse"
-      ],
+      "upstreamRowIds": ["utility-static:flex-row-reverse"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48750,9 +48393,7 @@
       "id": "wind:v1.flex-wrap",
       "catalogId": "v1.flex-wrap",
       "root": "flex-wrap",
-      "upstreamRowIds": [
-        "utility-static:flex-wrap"
-      ],
+      "upstreamRowIds": ["utility-static:flex-wrap"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48776,9 +48417,7 @@
       "id": "wind:v1.flex-wrap-reverse",
       "catalogId": "v1.flex-wrap-reverse",
       "root": "flex-wrap-reverse",
-      "upstreamRowIds": [
-        "utility-static:flex-wrap-reverse"
-      ],
+      "upstreamRowIds": ["utility-static:flex-wrap-reverse"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48826,9 +48465,7 @@
       "id": "wind:v1.flex-auto",
       "catalogId": "v1.flex-auto",
       "root": "flex-auto",
-      "upstreamRowIds": [
-        "utility-static:flex-auto"
-      ],
+      "upstreamRowIds": ["utility-static:flex-auto"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48852,9 +48489,7 @@
       "id": "wind:v1.flex-initial",
       "catalogId": "v1.flex-initial",
       "root": "flex-initial",
-      "upstreamRowIds": [
-        "utility-static:flex-initial"
-      ],
+      "upstreamRowIds": ["utility-static:flex-initial"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48878,9 +48513,7 @@
       "id": "wind:v1.flex-none",
       "catalogId": "v1.flex-none",
       "root": "flex-none",
-      "upstreamRowIds": [
-        "utility-static:flex-none"
-      ],
+      "upstreamRowIds": ["utility-static:flex-none"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48904,9 +48537,7 @@
       "id": "wind:v1.grow",
       "catalogId": "v1.grow",
       "root": "grow",
-      "upstreamRowIds": [
-        "utility-pattern:grow"
-      ],
+      "upstreamRowIds": ["utility-pattern:grow"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48930,9 +48561,7 @@
       "id": "wind:v1.shrink",
       "catalogId": "v1.shrink",
       "root": "shrink",
-      "upstreamRowIds": [
-        "utility-pattern:shrink"
-      ],
+      "upstreamRowIds": ["utility-pattern:shrink"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48956,9 +48585,7 @@
       "id": "wind:v1.col-end",
       "catalogId": "v1.col-end",
       "root": "col-end",
-      "upstreamRowIds": [
-        "utility-pattern:col-end"
-      ],
+      "upstreamRowIds": ["utility-pattern:col-end"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -48982,9 +48609,7 @@
       "id": "wind:v1.col-span",
       "catalogId": "v1.col-span",
       "root": "col-span",
-      "upstreamRowIds": [
-        "utility-pattern:col-span"
-      ],
+      "upstreamRowIds": ["utility-pattern:col-span"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49008,9 +48633,7 @@
       "id": "wind:v1.col-start",
       "catalogId": "v1.col-start",
       "root": "col-start",
-      "upstreamRowIds": [
-        "utility-pattern:col-start"
-      ],
+      "upstreamRowIds": ["utility-pattern:col-start"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49034,9 +48657,7 @@
       "id": "wind:v1.grid-cols",
       "catalogId": "v1.grid-cols",
       "root": "grid-cols",
-      "upstreamRowIds": [
-        "utility-pattern:grid-cols"
-      ],
+      "upstreamRowIds": ["utility-pattern:grid-cols"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49060,9 +48681,7 @@
       "id": "wind:v1.grid-rows",
       "catalogId": "v1.grid-rows",
       "root": "grid-rows",
-      "upstreamRowIds": [
-        "utility-pattern:grid-rows"
-      ],
+      "upstreamRowIds": ["utility-pattern:grid-rows"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49086,9 +48705,7 @@
       "id": "wind:v1.row-end",
       "catalogId": "v1.row-end",
       "root": "row-end",
-      "upstreamRowIds": [
-        "utility-pattern:row-end"
-      ],
+      "upstreamRowIds": ["utility-pattern:row-end"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49112,9 +48729,7 @@
       "id": "wind:v1.row-span",
       "catalogId": "v1.row-span",
       "root": "row-span",
-      "upstreamRowIds": [
-        "utility-pattern:row-span"
-      ],
+      "upstreamRowIds": ["utility-pattern:row-span"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49138,9 +48753,7 @@
       "id": "wind:v1.row-start",
       "catalogId": "v1.row-start",
       "root": "row-start",
-      "upstreamRowIds": [
-        "utility-pattern:row-start"
-      ],
+      "upstreamRowIds": ["utility-pattern:row-start"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49645,10 +49258,7 @@
       "id": "wind:v1.p",
       "catalogId": "v1.p",
       "root": "p",
-      "upstreamRowIds": [
-        "utility-static:p-px",
-        "utility-pattern:p"
-      ],
+      "upstreamRowIds": ["utility-static:p-px", "utility-pattern:p"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49672,10 +49282,7 @@
       "id": "wind:v1.px",
       "catalogId": "v1.px",
       "root": "px",
-      "upstreamRowIds": [
-        "utility-static:px-px",
-        "utility-pattern:px"
-      ],
+      "upstreamRowIds": ["utility-static:px-px", "utility-pattern:px"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49699,10 +49306,7 @@
       "id": "wind:v1.py",
       "catalogId": "v1.py",
       "root": "py",
-      "upstreamRowIds": [
-        "utility-static:py-px",
-        "utility-pattern:py"
-      ],
+      "upstreamRowIds": ["utility-static:py-px", "utility-pattern:py"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49726,10 +49330,7 @@
       "id": "wind:v1.pb",
       "catalogId": "v1.pb",
       "root": "pb",
-      "upstreamRowIds": [
-        "utility-static:pb-px",
-        "utility-pattern:pb"
-      ],
+      "upstreamRowIds": ["utility-static:pb-px", "utility-pattern:pb"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49753,10 +49354,7 @@
       "id": "wind:v1.pl",
       "catalogId": "v1.pl",
       "root": "pl",
-      "upstreamRowIds": [
-        "utility-static:pl-px",
-        "utility-pattern:pl"
-      ],
+      "upstreamRowIds": ["utility-static:pl-px", "utility-pattern:pl"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49780,10 +49378,7 @@
       "id": "wind:v1.pr",
       "catalogId": "v1.pr",
       "root": "pr",
-      "upstreamRowIds": [
-        "utility-static:pr-px",
-        "utility-pattern:pr"
-      ],
+      "upstreamRowIds": ["utility-static:pr-px", "utility-pattern:pr"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -49807,10 +49402,7 @@
       "id": "wind:v1.pt",
       "catalogId": "v1.pt",
       "root": "pt",
-      "upstreamRowIds": [
-        "utility-static:pt-px",
-        "utility-pattern:pt"
-      ],
+      "upstreamRowIds": ["utility-static:pt-px", "utility-pattern:pt"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50044,10 +49636,7 @@
       "id": "wind:v1.gap",
       "catalogId": "v1.gap",
       "root": "gap",
-      "upstreamRowIds": [
-        "utility-static:gap-px",
-        "utility-pattern:gap"
-      ],
+      "upstreamRowIds": ["utility-static:gap-px", "utility-pattern:gap"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50071,10 +49660,7 @@
       "id": "wind:v1.gap-x",
       "catalogId": "v1.gap-x",
       "root": "gap-x",
-      "upstreamRowIds": [
-        "utility-static:gap-x-px",
-        "utility-pattern:gap-x"
-      ],
+      "upstreamRowIds": ["utility-static:gap-x-px", "utility-pattern:gap-x"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50098,10 +49684,7 @@
       "id": "wind:v1.gap-y",
       "catalogId": "v1.gap-y",
       "root": "gap-y",
-      "upstreamRowIds": [
-        "utility-static:gap-y-px",
-        "utility-pattern:gap-y"
-      ],
+      "upstreamRowIds": ["utility-static:gap-y-px", "utility-pattern:gap-y"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50357,10 +49940,7 @@
       "id": "wind:v1.z",
       "catalogId": "v1.z",
       "root": "z",
-      "upstreamRowIds": [
-        "utility-pattern:-z",
-        "utility-pattern:z"
-      ],
+      "upstreamRowIds": ["utility-pattern:-z", "utility-pattern:z"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50384,9 +49964,7 @@
       "id": "wind:v1.font.family",
       "catalogId": "v1.font.family",
       "root": "font",
-      "upstreamRowIds": [
-        "utility-pattern:font"
-      ],
+      "upstreamRowIds": ["utility-pattern:font"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50434,9 +50012,7 @@
       "id": "wind:v1.text.size",
       "catalogId": "v1.text.size",
       "root": "text",
-      "upstreamRowIds": [
-        "utility-pattern:text"
-      ],
+      "upstreamRowIds": ["utility-pattern:text"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50460,9 +50036,7 @@
       "id": "wind:v1.leading",
       "catalogId": "v1.leading",
       "root": "leading",
-      "upstreamRowIds": [
-        "utility-pattern:leading"
-      ],
+      "upstreamRowIds": ["utility-pattern:leading"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50486,10 +50060,7 @@
       "id": "wind:v1.tracking",
       "catalogId": "v1.tracking",
       "root": "tracking",
-      "upstreamRowIds": [
-        "utility-pattern:-tracking",
-        "utility-pattern:tracking"
-      ],
+      "upstreamRowIds": ["utility-pattern:-tracking", "utility-pattern:tracking"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50575,9 +50146,7 @@
       "id": "wind:v1.break-all",
       "catalogId": "v1.break-all",
       "root": "break-all",
-      "upstreamRowIds": [
-        "utility-static:break-all"
-      ],
+      "upstreamRowIds": ["utility-static:break-all"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50601,9 +50170,7 @@
       "id": "wind:v1.break-normal",
       "catalogId": "v1.break-normal",
       "root": "break-normal",
-      "upstreamRowIds": [
-        "utility-static:break-normal"
-      ],
+      "upstreamRowIds": ["utility-static:break-normal"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50627,9 +50194,7 @@
       "id": "wind:v1.break-words",
       "catalogId": "v1.break-words",
       "root": "break-words",
-      "upstreamRowIds": [
-        "utility-static:break-words"
-      ],
+      "upstreamRowIds": ["utility-static:break-words"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50653,9 +50218,7 @@
       "id": "wind:v1.wrap-anywhere",
       "catalogId": "v1.wrap-anywhere",
       "root": "wrap-anywhere",
-      "upstreamRowIds": [
-        "utility-static:wrap-anywhere"
-      ],
+      "upstreamRowIds": ["utility-static:wrap-anywhere"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50679,9 +50242,7 @@
       "id": "wind:v1.truncate",
       "catalogId": "v1.truncate",
       "root": "truncate",
-      "upstreamRowIds": [
-        "utility-static:truncate"
-      ],
+      "upstreamRowIds": ["utility-static:truncate"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50705,9 +50266,7 @@
       "id": "wind:v1.line-through",
       "catalogId": "v1.line-through",
       "root": "line-through",
-      "upstreamRowIds": [
-        "utility-static:line-through"
-      ],
+      "upstreamRowIds": ["utility-static:line-through"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50731,9 +50290,7 @@
       "id": "wind:v1.no-underline",
       "catalogId": "v1.no-underline",
       "root": "no-underline",
-      "upstreamRowIds": [
-        "utility-static:no-underline"
-      ],
+      "upstreamRowIds": ["utility-static:no-underline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50757,9 +50314,7 @@
       "id": "wind:v1.overline",
       "catalogId": "v1.overline",
       "root": "overline",
-      "upstreamRowIds": [
-        "utility-static:overline"
-      ],
+      "upstreamRowIds": ["utility-static:overline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50783,9 +50338,7 @@
       "id": "wind:v1.underline",
       "catalogId": "v1.underline",
       "root": "underline",
-      "upstreamRowIds": [
-        "utility-static:underline"
-      ],
+      "upstreamRowIds": ["utility-static:underline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50809,9 +50362,7 @@
       "id": "wind:v1.capitalize",
       "catalogId": "v1.capitalize",
       "root": "capitalize",
-      "upstreamRowIds": [
-        "utility-static:capitalize"
-      ],
+      "upstreamRowIds": ["utility-static:capitalize"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50835,9 +50386,7 @@
       "id": "wind:v1.lowercase",
       "catalogId": "v1.lowercase",
       "root": "lowercase",
-      "upstreamRowIds": [
-        "utility-static:lowercase"
-      ],
+      "upstreamRowIds": ["utility-static:lowercase"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50861,9 +50410,7 @@
       "id": "wind:v1.normal-case",
       "catalogId": "v1.normal-case",
       "root": "normal-case",
-      "upstreamRowIds": [
-        "utility-static:normal-case"
-      ],
+      "upstreamRowIds": ["utility-static:normal-case"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50887,9 +50434,7 @@
       "id": "wind:v1.uppercase",
       "catalogId": "v1.uppercase",
       "root": "uppercase",
-      "upstreamRowIds": [
-        "utility-static:uppercase"
-      ],
+      "upstreamRowIds": ["utility-static:uppercase"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50913,9 +50458,7 @@
       "id": "wind:v1.italic",
       "catalogId": "v1.italic",
       "root": "italic",
-      "upstreamRowIds": [
-        "utility-static:italic"
-      ],
+      "upstreamRowIds": ["utility-static:italic"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50939,9 +50482,7 @@
       "id": "wind:v1.not-italic",
       "catalogId": "v1.not-italic",
       "root": "not-italic",
-      "upstreamRowIds": [
-        "utility-static:not-italic"
-      ],
+      "upstreamRowIds": ["utility-static:not-italic"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50965,9 +50506,7 @@
       "id": "wind:v1.tabular-nums",
       "catalogId": "v1.tabular-nums",
       "root": "tabular-nums",
-      "upstreamRowIds": [
-        "utility-static:tabular-nums"
-      ],
+      "upstreamRowIds": ["utility-static:tabular-nums"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -50991,9 +50530,7 @@
       "id": "wind:v1.antialiased",
       "catalogId": "v1.antialiased",
       "root": "antialiased",
-      "upstreamRowIds": [
-        "utility-static:antialiased"
-      ],
+      "upstreamRowIds": ["utility-static:antialiased"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51041,9 +50578,7 @@
       "id": "wind:v1.background",
       "catalogId": "v1.background",
       "root": "bg",
-      "upstreamRowIds": [
-        "utility-pattern:bg"
-      ],
+      "upstreamRowIds": ["utility-pattern:bg"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51067,9 +50602,7 @@
       "id": "wind:v1.border.width",
       "catalogId": "v1.border.width",
       "root": "border",
-      "upstreamRowIds": [
-        "utility-pattern:border"
-      ],
+      "upstreamRowIds": ["utility-pattern:border"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51093,9 +50626,7 @@
       "id": "wind:v1.border.width.x",
       "catalogId": "v1.border.width.x",
       "root": "border-x",
-      "upstreamRowIds": [
-        "utility-pattern:border-x"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-x"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51119,9 +50650,7 @@
       "id": "wind:v1.border.width.y",
       "catalogId": "v1.border.width.y",
       "root": "border-y",
-      "upstreamRowIds": [
-        "utility-pattern:border-y"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-y"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51145,9 +50674,7 @@
       "id": "wind:v1.border.width.b",
       "catalogId": "v1.border.width.b",
       "root": "border-b",
-      "upstreamRowIds": [
-        "utility-pattern:border-b"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-b"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51171,9 +50698,7 @@
       "id": "wind:v1.border.width.l",
       "catalogId": "v1.border.width.l",
       "root": "border-l",
-      "upstreamRowIds": [
-        "utility-pattern:border-l"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-l"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51197,9 +50722,7 @@
       "id": "wind:v1.border.width.r",
       "catalogId": "v1.border.width.r",
       "root": "border-r",
-      "upstreamRowIds": [
-        "utility-pattern:border-r"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-r"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51223,9 +50746,7 @@
       "id": "wind:v1.border.width.t",
       "catalogId": "v1.border.width.t",
       "root": "border-t",
-      "upstreamRowIds": [
-        "utility-pattern:border-t"
-      ],
+      "upstreamRowIds": ["utility-pattern:border-t"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51417,9 +50938,7 @@
       "id": "wind:v1.border.style.dashed",
       "catalogId": "v1.border.style.dashed",
       "root": "border-dashed",
-      "upstreamRowIds": [
-        "utility-static:border-dashed"
-      ],
+      "upstreamRowIds": ["utility-static:border-dashed"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51443,9 +50962,7 @@
       "id": "wind:v1.border.style.dotted",
       "catalogId": "v1.border.style.dotted",
       "root": "border-dotted",
-      "upstreamRowIds": [
-        "utility-static:border-dotted"
-      ],
+      "upstreamRowIds": ["utility-static:border-dotted"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51469,9 +50986,7 @@
       "id": "wind:v1.border.style.double",
       "catalogId": "v1.border.style.double",
       "root": "border-double",
-      "upstreamRowIds": [
-        "utility-static:border-double"
-      ],
+      "upstreamRowIds": ["utility-static:border-double"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51495,9 +51010,7 @@
       "id": "wind:v1.border.style.none",
       "catalogId": "v1.border.style.none",
       "root": "border-none",
-      "upstreamRowIds": [
-        "utility-static:border-none"
-      ],
+      "upstreamRowIds": ["utility-static:border-none"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51521,9 +51034,7 @@
       "id": "wind:v1.border.style.solid",
       "catalogId": "v1.border.style.solid",
       "root": "border-solid",
-      "upstreamRowIds": [
-        "utility-static:border-solid"
-      ],
+      "upstreamRowIds": ["utility-static:border-solid"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51547,9 +51058,7 @@
       "id": "wind:v1.border.style.collapse",
       "catalogId": "v1.border.style.collapse",
       "root": "border-collapse",
-      "upstreamRowIds": [
-        "utility-static:border-collapse"
-      ],
+      "upstreamRowIds": ["utility-static:border-collapse"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51597,9 +51106,7 @@
       "id": "wind:v1.rounded",
       "catalogId": "v1.rounded",
       "root": "rounded",
-      "upstreamRowIds": [
-        "utility-pattern:rounded"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51623,9 +51130,7 @@
       "id": "wind:v1.rounded-b",
       "catalogId": "v1.rounded-b",
       "root": "rounded-b",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-b"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-b"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51649,9 +51154,7 @@
       "id": "wind:v1.rounded-l",
       "catalogId": "v1.rounded-l",
       "root": "rounded-l",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-l"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-l"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51675,9 +51178,7 @@
       "id": "wind:v1.rounded-r",
       "catalogId": "v1.rounded-r",
       "root": "rounded-r",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-r"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-r"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51701,9 +51202,7 @@
       "id": "wind:v1.rounded-t",
       "catalogId": "v1.rounded-t",
       "root": "rounded-t",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-t"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-t"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51727,9 +51226,7 @@
       "id": "wind:v1.rounded-bl",
       "catalogId": "v1.rounded-bl",
       "root": "rounded-bl",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-bl"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-bl"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51753,9 +51250,7 @@
       "id": "wind:v1.rounded-br",
       "catalogId": "v1.rounded-br",
       "root": "rounded-br",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-br"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-br"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51779,9 +51274,7 @@
       "id": "wind:v1.rounded-tl",
       "catalogId": "v1.rounded-tl",
       "root": "rounded-tl",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-tl"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-tl"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51805,9 +51298,7 @@
       "id": "wind:v1.rounded-tr",
       "catalogId": "v1.rounded-tr",
       "root": "rounded-tr",
-      "upstreamRowIds": [
-        "utility-pattern:rounded-tr"
-      ],
+      "upstreamRowIds": ["utility-pattern:rounded-tr"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51831,9 +51322,7 @@
       "id": "wind:v1.divide.width.x",
       "catalogId": "v1.divide.width.x",
       "root": "divide-x",
-      "upstreamRowIds": [
-        "utility-pattern:divide-x"
-      ],
+      "upstreamRowIds": ["utility-pattern:divide-x"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51857,9 +51346,7 @@
       "id": "wind:v1.divide.width.y",
       "catalogId": "v1.divide.width.y",
       "root": "divide-y",
-      "upstreamRowIds": [
-        "utility-pattern:divide-y"
-      ],
+      "upstreamRowIds": ["utility-pattern:divide-y"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51883,9 +51370,7 @@
       "id": "wind:v1.divide.color",
       "catalogId": "v1.divide.color",
       "root": "divide",
-      "upstreamRowIds": [
-        "utility-pattern:divide"
-      ],
+      "upstreamRowIds": ["utility-pattern:divide"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51909,9 +51394,7 @@
       "id": "wind:v1.outline.width",
       "catalogId": "v1.outline.width",
       "root": "outline",
-      "upstreamRowIds": [
-        "utility-pattern:outline"
-      ],
+      "upstreamRowIds": ["utility-pattern:outline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51935,10 +51418,7 @@
       "id": "wind:v1.outline.offset",
       "catalogId": "v1.outline.offset",
       "root": "outline-offset",
-      "upstreamRowIds": [
-        "utility-pattern:-outline-offset",
-        "utility-pattern:outline-offset"
-      ],
+      "upstreamRowIds": ["utility-pattern:-outline-offset", "utility-pattern:outline-offset"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -51986,9 +51466,7 @@
       "id": "wind:v1.outline.style.dashed",
       "catalogId": "v1.outline.style.dashed",
       "root": "outline-dashed",
-      "upstreamRowIds": [
-        "utility-static:outline-dashed"
-      ],
+      "upstreamRowIds": ["utility-static:outline-dashed"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52012,9 +51490,7 @@
       "id": "wind:v1.outline.style.dotted",
       "catalogId": "v1.outline.style.dotted",
       "root": "outline-dotted",
-      "upstreamRowIds": [
-        "utility-static:outline-dotted"
-      ],
+      "upstreamRowIds": ["utility-static:outline-dotted"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52038,9 +51514,7 @@
       "id": "wind:v1.outline.style.double",
       "catalogId": "v1.outline.style.double",
       "root": "outline-double",
-      "upstreamRowIds": [
-        "utility-static:outline-double"
-      ],
+      "upstreamRowIds": ["utility-static:outline-double"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52064,9 +51538,7 @@
       "id": "wind:v1.outline.style.none",
       "catalogId": "v1.outline.style.none",
       "root": "outline-none",
-      "upstreamRowIds": [
-        "utility-static:outline-none"
-      ],
+      "upstreamRowIds": ["utility-static:outline-none"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52090,9 +51562,7 @@
       "id": "wind:v1.outline.style.solid",
       "catalogId": "v1.outline.style.solid",
       "root": "outline-solid",
-      "upstreamRowIds": [
-        "utility-static:outline-solid"
-      ],
+      "upstreamRowIds": ["utility-static:outline-solid"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52116,9 +51586,7 @@
       "id": "wind:v1.shadow",
       "catalogId": "v1.shadow",
       "root": "shadow",
-      "upstreamRowIds": [
-        "utility-pattern:shadow"
-      ],
+      "upstreamRowIds": ["utility-pattern:shadow"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52142,9 +51610,7 @@
       "id": "wind:v1.opacity",
       "catalogId": "v1.opacity",
       "root": "opacity",
-      "upstreamRowIds": [
-        "utility-pattern:opacity"
-      ],
+      "upstreamRowIds": ["utility-pattern:opacity"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52168,9 +51634,7 @@
       "id": "wind:v1.transition",
       "catalogId": "v1.transition",
       "root": "transition",
-      "upstreamRowIds": [
-        "utility-pattern:transition"
-      ],
+      "upstreamRowIds": ["utility-pattern:transition"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52194,9 +51658,7 @@
       "id": "wind:v1.duration",
       "catalogId": "v1.duration",
       "root": "duration",
-      "upstreamRowIds": [
-        "utility-pattern:duration"
-      ],
+      "upstreamRowIds": ["utility-pattern:duration"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52220,9 +51682,7 @@
       "id": "wind:v1.ease",
       "catalogId": "v1.ease",
       "root": "ease",
-      "upstreamRowIds": [
-        "utility-pattern:ease"
-      ],
+      "upstreamRowIds": ["utility-pattern:ease"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52308,10 +51768,7 @@
       "id": "wind:v1.rotate",
       "catalogId": "v1.rotate",
       "root": "rotate",
-      "upstreamRowIds": [
-        "utility-pattern:-rotate",
-        "utility-pattern:rotate"
-      ],
+      "upstreamRowIds": ["utility-pattern:-rotate", "utility-pattern:rotate"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52335,9 +51792,7 @@
       "id": "wind:v1.accent",
       "catalogId": "v1.accent",
       "root": "accent",
-      "upstreamRowIds": [
-        "utility-pattern:accent"
-      ],
+      "upstreamRowIds": ["utility-pattern:accent"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52556,9 +52011,7 @@
       "id": "wind:v1.list-inside",
       "catalogId": "v1.list-inside",
       "root": "list-inside",
-      "upstreamRowIds": [
-        "utility-static:list-inside"
-      ],
+      "upstreamRowIds": ["utility-static:list-inside"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52606,9 +52059,7 @@
       "id": "wind:v1.list-outside",
       "catalogId": "v1.list-outside",
       "root": "list-outside",
-      "upstreamRowIds": [
-        "utility-static:list-outside"
-      ],
+      "upstreamRowIds": ["utility-static:list-outside"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52632,9 +52083,7 @@
       "id": "wind:v1.aspect",
       "catalogId": "v1.aspect",
       "root": "aspect",
-      "upstreamRowIds": [
-        "utility-pattern:aspect"
-      ],
+      "upstreamRowIds": ["utility-pattern:aspect"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52861,9 +52310,7 @@
       "id": "wind:v1.align-baseline",
       "catalogId": "v1.align-baseline",
       "root": "align-baseline",
-      "upstreamRowIds": [
-        "utility-static:align-baseline"
-      ],
+      "upstreamRowIds": ["utility-static:align-baseline"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52887,9 +52334,7 @@
       "id": "wind:v1.align-bottom",
       "catalogId": "v1.align-bottom",
       "root": "align-bottom",
-      "upstreamRowIds": [
-        "utility-static:align-bottom"
-      ],
+      "upstreamRowIds": ["utility-static:align-bottom"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52913,9 +52358,7 @@
       "id": "wind:v1.align-middle",
       "catalogId": "v1.align-middle",
       "root": "align-middle",
-      "upstreamRowIds": [
-        "utility-static:align-middle"
-      ],
+      "upstreamRowIds": ["utility-static:align-middle"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52939,9 +52382,7 @@
       "id": "wind:v1.align-top",
       "catalogId": "v1.align-top",
       "root": "align-top",
-      "upstreamRowIds": [
-        "utility-static:align-top"
-      ],
+      "upstreamRowIds": ["utility-static:align-top"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52965,9 +52406,7 @@
       "id": "wind:v1.box-border",
       "catalogId": "v1.box-border",
       "root": "box-border",
-      "upstreamRowIds": [
-        "utility-static:box-border"
-      ],
+      "upstreamRowIds": ["utility-static:box-border"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -52991,9 +52430,7 @@
       "id": "wind:v1.box-content",
       "catalogId": "v1.box-content",
       "root": "box-content",
-      "upstreamRowIds": [
-        "utility-static:box-content"
-      ],
+      "upstreamRowIds": ["utility-static:box-content"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53017,9 +52454,7 @@
       "id": "wind:v1.object-contain",
       "catalogId": "v1.object-contain",
       "root": "object-contain",
-      "upstreamRowIds": [
-        "utility-static:object-contain"
-      ],
+      "upstreamRowIds": ["utility-static:object-contain"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53043,9 +52478,7 @@
       "id": "wind:v1.object-cover",
       "catalogId": "v1.object-cover",
       "root": "object-cover",
-      "upstreamRowIds": [
-        "utility-static:object-cover"
-      ],
+      "upstreamRowIds": ["utility-static:object-cover"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53069,9 +52502,7 @@
       "id": "wind:v1.object-fill",
       "catalogId": "v1.object-fill",
       "root": "object-fill",
-      "upstreamRowIds": [
-        "utility-static:object-fill"
-      ],
+      "upstreamRowIds": ["utility-static:object-fill"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53095,9 +52526,7 @@
       "id": "wind:v1.object-none",
       "catalogId": "v1.object-none",
       "root": "object-none",
-      "upstreamRowIds": [
-        "utility-static:object-none"
-      ],
+      "upstreamRowIds": ["utility-static:object-none"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53121,9 +52550,7 @@
       "id": "wind:v1.object-scale-down",
       "catalogId": "v1.object-scale-down",
       "root": "object-scale-down",
-      "upstreamRowIds": [
-        "utility-static:object-scale-down"
-      ],
+      "upstreamRowIds": ["utility-static:object-scale-down"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53147,9 +52574,7 @@
       "id": "wind:v1.sr-only",
       "catalogId": "v1.sr-only",
       "root": "sr-only",
-      "upstreamRowIds": [
-        "utility-static:sr-only"
-      ],
+      "upstreamRowIds": ["utility-static:sr-only"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53173,9 +52598,7 @@
       "id": "wind:v1.decoration.color",
       "catalogId": "v1.decoration.color",
       "root": "decoration",
-      "upstreamRowIds": [
-        "utility-pattern:decoration"
-      ],
+      "upstreamRowIds": ["utility-pattern:decoration"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53223,9 +52646,7 @@
       "id": "wind:v1.decoration.style.dashed",
       "catalogId": "v1.decoration.style.dashed",
       "root": "decoration-dashed",
-      "upstreamRowIds": [
-        "utility-static:decoration-dashed"
-      ],
+      "upstreamRowIds": ["utility-static:decoration-dashed"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53249,9 +52670,7 @@
       "id": "wind:v1.decoration.style.dotted",
       "catalogId": "v1.decoration.style.dotted",
       "root": "decoration-dotted",
-      "upstreamRowIds": [
-        "utility-static:decoration-dotted"
-      ],
+      "upstreamRowIds": ["utility-static:decoration-dotted"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53275,9 +52694,7 @@
       "id": "wind:v1.decoration.style.double",
       "catalogId": "v1.decoration.style.double",
       "root": "decoration-double",
-      "upstreamRowIds": [
-        "utility-static:decoration-double"
-      ],
+      "upstreamRowIds": ["utility-static:decoration-double"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53301,9 +52718,7 @@
       "id": "wind:v1.decoration.style.solid",
       "catalogId": "v1.decoration.style.solid",
       "root": "decoration-solid",
-      "upstreamRowIds": [
-        "utility-static:decoration-solid"
-      ],
+      "upstreamRowIds": ["utility-static:decoration-solid"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53327,9 +52742,7 @@
       "id": "wind:v1.decoration.style.wavy",
       "catalogId": "v1.decoration.style.wavy",
       "root": "decoration-wavy",
-      "upstreamRowIds": [
-        "utility-static:decoration-wavy"
-      ],
+      "upstreamRowIds": ["utility-static:decoration-wavy"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53353,9 +52766,7 @@
       "id": "wind:v1.underline-offset",
       "catalogId": "v1.underline-offset",
       "root": "underline-offset",
-      "upstreamRowIds": [
-        "utility-pattern:underline-offset"
-      ],
+      "upstreamRowIds": ["utility-pattern:underline-offset"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53379,9 +52790,7 @@
       "id": "wind:v1.invisible",
       "catalogId": "v1.invisible",
       "root": "invisible",
-      "upstreamRowIds": [
-        "utility-static:invisible"
-      ],
+      "upstreamRowIds": ["utility-static:invisible"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53405,9 +52814,7 @@
       "id": "wind:v1.visible",
       "catalogId": "v1.visible",
       "root": "visible",
-      "upstreamRowIds": [
-        "utility-static:visible"
-      ],
+      "upstreamRowIds": ["utility-static:visible"],
       "disposition": "upstream-registration-mapped-unverified",
       "evidence": {
         "status": "source-inspected",
@@ -53438,9 +52845,7 @@
       "disposition": "equivalent-shared",
       "semanticDifference": "display:block",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53453,9 +52858,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "block"
-        ],
+        "caseIds": ["block"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53470,9 +52873,7 @@
       "disposition": "equivalent-shared",
       "semanticDifference": "display:none; none is not a display utility spelling",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53485,9 +52886,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "hidden"
-        ],
+        "caseIds": ["hidden"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53502,9 +52901,7 @@
       "disposition": "equivalent-shared",
       "semanticDifference": "display:inline-flex",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53517,9 +52914,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "inline-flex"
-        ],
+        "caseIds": ["inline-flex"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53534,10 +52929,7 @@
       "disposition": "intentional-difference",
       "semanticDifference": "Wind margin-left/right:auto; reference margin-inline:auto",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "physical-logical-margin",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53550,9 +52942,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "mx-auto"
-        ],
+        "caseIds": ["mx-auto"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53567,9 +52957,7 @@
       "disposition": "equivalent-shared",
       "semanticDifference": "repeat(2,minmax(0,1fr)); use a grid container in geometry cases",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53582,9 +52970,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "grid-cols-2"
-        ],
+        "caseIds": ["grid-cols-2"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53599,10 +52985,7 @@
       "disposition": "intentional-difference",
       "semanticDifference": "Wind emits zero padding; empty-theme reference omits candidate",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "zero-without-theme",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["zero-without-theme", "wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53615,9 +52998,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "p-0-empty"
-        ],
+        "caseIds": ["p-0-empty"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53649,9 +53030,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "p-0-mapped"
-        ],
+        "caseIds": ["p-0-mapped"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53683,9 +53062,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "named-spacing"
-        ],
+        "caseIds": ["named-spacing"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53700,10 +53077,7 @@
       "disposition": "equivalent-mapped",
       "semanticDifference": "Wind tokens.colors.surface=#123456; reference --color-surface:#123456",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "named-token-representation",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53716,9 +53090,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "named-color"
-        ],
+        "caseIds": ["named-color"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53733,9 +53105,7 @@
       "disposition": "intentional-difference",
       "semanticDifference": "No spacingUnit or spacing token: no utility CSS on either side; diagnostics are independently asserted",
       "gapKind": "missing-default-token",
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ],
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53748,9 +53118,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "unconfigured-p-4"
-        ],
+        "caseIds": ["unconfigured-p-4"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53765,9 +53133,7 @@
       "disposition": "intentional-difference",
       "semanticDifference": "No palette: no utility CSS on either side; missing token is not a missing family",
       "gapKind": "missing-default-token",
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ],
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53780,9 +53146,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "undeclared-palette"
-        ],
+        "caseIds": ["undeclared-palette"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53814,9 +53178,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "configured-p-4"
-        ],
+        "caseIds": ["configured-p-4"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53844,9 +53206,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "contents-gap"
-        ],
+        "caseIds": ["contents-gap"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53861,10 +53221,7 @@
       "disposition": "equivalent-shared",
       "semanticDifference": "Test hover active/inactive and hover capability; preserve media and specificity",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53877,9 +53234,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "hover-block"
-        ],
+        "caseIds": ["hover-block"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
@@ -53894,10 +53249,7 @@
       "disposition": "equivalent-mapped",
       "semanticDifference": "Wind breakpoints.sm=640; reference --breakpoint-sm:640px; test below/at/above boundary",
       "gapKind": null,
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ],
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
       "evidence": {
         "status": "source-inspected",
         "windGitSha": "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b",
@@ -53910,9 +53262,7 @@
         "profileId": "wind-preset-free",
         "profileVersion": 1,
         "profileRevision": 1,
-        "caseIds": [
-          "breakpoint-block"
-        ],
+        "caseIds": ["breakpoint-block"],
         "buildSha": null,
         "browserEnvironment": null,
         "reportId": null
