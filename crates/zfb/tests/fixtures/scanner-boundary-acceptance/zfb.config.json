@@ -1,3 +1,9 @@
 {
-  "wind": false
+  "wind": false,
+  "collections": [
+    {
+      "name": "content",
+      "path": "content"
+    }
+  ]
 }
