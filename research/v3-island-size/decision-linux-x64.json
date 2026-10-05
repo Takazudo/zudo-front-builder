@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "4abd29569138c97ae746aec967438b6ceac34961",
+  "baselineSourceSha": "2ffc69d647bf0518c0d449e9a0abd7a473c1fe51",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63212,
-        "gzip": 21137
+        "raw": 64661,
+        "gzip": 21548
       },
       "scalar-signal": {
-        "raw": 63220,
-        "gzip": 21136
+        "raw": 64669,
+        "gzip": 21546
       },
       "show-for": {
-        "raw": 63366,
-        "gzip": 21216
+        "raw": 64815,
+        "gzip": 21625
       },
       "model": {
-        "raw": 63211,
-        "gzip": 21142
+        "raw": 64660,
+        "gzip": 21548
       },
       "blog-theme": {
-        "raw": 63561,
-        "gzip": 21279
+        "raw": 65010,
+        "gzip": 21689
       },
       "json-api": {
-        "raw": 63366,
-        "gzip": 21230
+        "raw": 64815,
+        "gzip": 21637
       },
       "multi-island": {
-        "raw": 63488,
-        "gzip": 21238
+        "raw": 64937,
+        "gzip": 21650
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63274,
-        "gzip": 21159
+        "raw": 64723,
+        "gzip": 21571
       },
       "scalar-signal": {
-        "raw": 63282,
-        "gzip": 21160
+        "raw": 64731,
+        "gzip": 21573
       },
       "show-for": {
-        "raw": 63428,
-        "gzip": 21246
+        "raw": 64877,
+        "gzip": 21660
       },
       "model": {
-        "raw": 63273,
-        "gzip": 21173
+        "raw": 64722,
+        "gzip": 21583
       },
       "blog-theme": {
-        "raw": 63623,
-        "gzip": 21299
+        "raw": 65072,
+        "gzip": 21711
       },
       "json-api": {
-        "raw": 63428,
-        "gzip": 21253
+        "raw": 64877,
+        "gzip": 21665
       },
       "multi-island": {
-        "raw": 63550,
-        "gzip": 21263
+        "raw": 64999,
+        "gzip": 21673
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v3.2.0 ceilings measured after SWC 74 and the rb vocabulary fix on the pinned CI toolchain; gzip bytes are platform-specific.",
+  "platformStatus": "Linux x64 has exact zero-allowance v3.2.0 ceilings measured after the script rawHtml closing-boundary guard on the pinned CI toolchain; gzip bytes are platform-specific.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37235606093,
-    "jobId": 111533958718,
-    "sourceSha": "4abd29569138c97ae746aec967438b6ceac34961",
-    "note": "Full saved workspace and packed eight-fixture matrices, two byte-identical passes each, in temporary ruby-linux-island-size-evidence artifact. This includes the rb vocabulary change and SWC 74. Earlier exact ceilings remain in git history."
+    "runId": 37254863769,
+    "jobId": 111589659768,
+    "sourceSha": "2ffc69d647bf0518c0d449e9a0abd7a473c1fe51",
+    "note": "Complete workspace and packed eight-fixture matrices, two byte-identical passes each, saved in bounded-fixes-linux-island-size-evidence. Includes SWC 74, rb support and the script rawHtml closing-boundary guard. Prior exact ceilings remain in git history."
   }
 }

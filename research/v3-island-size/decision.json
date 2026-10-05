@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "69030f99a4105957bdda0ffdb3a3a26381d739ec",
+  "baselineSourceSha": "35bee65b022645286aac6d9778c434c99a6ad21a",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63209,
-        "gzip": 21133
+        "raw": 64661,
+        "gzip": 21548
       },
       "scalar-signal": {
-        "raw": 63217,
-        "gzip": 21133
+        "raw": 64669,
+        "gzip": 21546
       },
       "show-for": {
-        "raw": 63363,
-        "gzip": 21213
+        "raw": 64815,
+        "gzip": 21625
       },
       "model": {
-        "raw": 63208,
-        "gzip": 21138
+        "raw": 64660,
+        "gzip": 21548
       },
       "blog-theme": {
-        "raw": 63558,
-        "gzip": 21278
+        "raw": 65010,
+        "gzip": 21689
       },
       "json-api": {
-        "raw": 63363,
-        "gzip": 21227
+        "raw": 64815,
+        "gzip": 21637
       },
       "multi-island": {
-        "raw": 63485,
-        "gzip": 21239
+        "raw": 64937,
+        "gzip": 21650
       }
     },
     "packed": {
@@ -77,42 +77,44 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63271,
-        "gzip": 21156
+        "raw": 64723,
+        "gzip": 21571
       },
       "scalar-signal": {
-        "raw": 63279,
-        "gzip": 21160
+        "raw": 64731,
+        "gzip": 21573
       },
       "show-for": {
-        "raw": 63425,
-        "gzip": 21244
+        "raw": 64877,
+        "gzip": 21660
       },
       "model": {
-        "raw": 63270,
-        "gzip": 21168
+        "raw": 64722,
+        "gzip": 21583
       },
       "blog-theme": {
-        "raw": 63620,
-        "gzip": 21297
+        "raw": 65072,
+        "gzip": 21711
       },
       "json-api": {
-        "raw": 63425,
-        "gzip": 21253
+        "raw": 64877,
+        "gzip": 21665
       },
       "multi-island": {
-        "raw": 63547,
-        "gzip": 21258
+        "raw": 64999,
+        "gzip": 21673
       }
     }
   },
-  "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v3.2.0 ceilings measured locally after SWC 74; the terminal sweep epic will remeasure after later product changes. Linux x64 uses its separately measured contract.",
+  "proposedCiLane": "No permanent Darwin size lane; Linux x64 enforcement remains in .github/workflows/health.yml jobs.health.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v3.2.0 ceilings from the final combined sweep on a real macos-15 arm64 runner. Linux x64 retains its independently measured contract.",
   "baselineEvidence": {
-    "event": "local",
-    "sourceSha": "69030f99a4105957bdda0ffdb3a3a26381d739ec",
-    "workspaceReport": "worktrees/_manager/darwin-size-69030f99/real-workspace/report.md",
-    "packedReport": "worktrees/_manager/darwin-size-69030f99/real-packed/report.md",
-    "note": "Full real workspace and packed eight-fixture matrices passed with two identical inventories each; modeled workspace and packed sidecars were also saved. Exact raw and gzip totals were remeasured after SWC 74, and allowance remains zero. The earlier Darwin contract remains in git history."
+    "event": "pull_request",
+    "runId": 37259456004,
+    "runUrl": "https://github.com/Takazudo/zudo-front-builder/actions/runs/37259456004",
+    "sourceSha": "35bee65b022645286aac6d9778c434c99a6ad21a",
+    "artifact": "bounded-fixes-darwin-island-size-evidence",
+    "report": "research/v3-island-size/final-sweep-darwin-report.md",
+    "note": "Complete real workspace and packed eight-fixture matrices, two identical saved dist inventories per fixture. Original run failed only against the older SWC-only ceilings. Refreshed exact ceilings retain zero allowance and are checked against the original saved bytes."
   }
 }
