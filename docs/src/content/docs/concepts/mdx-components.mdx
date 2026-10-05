@@ -180,25 +180,79 @@ There is a deliberate behavioural difference between lowercase HTML tags and Pas
 A `components` map is a plain JavaScript object resolved at SSR time. It cannot cross the hydration boundary as JSON, because the values are function references. This means:
 
 - Components in the map are **server-side only**. They render on the server and their HTML is delivered to the browser as static markup.
-- If a component in your map needs client-side interactivity (state, event handlers, browser APIs), wrap the interactive part in an `<Island>` component instead of putting the interactive component directly in the map.
+- If a component in your map needs client-side interactivity (state, event handlers, browser APIs), keep the map wrapper on the server and put a fixed client component inside `<Island>`. Only JSON-serializable props can cross the island boundary.
 
 ```tsx
-// Correct: interactive content goes through Island
-import { Island } from "zfb";
-import MyCounter from "./my-counter";
+// components/counter.tsx
+"use client";
+import { signal } from "zfb/zudo-react";
 
-function WrappedCounter() {
+export default function Counter() {
+  const count = signal(0);
   return (
-    <Island>
-      <MyCounter />
-    </Island>
+    <button on:click={() => { count.value += 1; }}>
+      Count: {count}
+    </button>
   );
 }
 
-export default { div: WrappedCounter };
+export function NamedCounter() {
+  const count = signal(0);
+  return (
+    <button on:click={() => { count.value += 1; }}>
+      Named counter: {count}
+    </button>
+  );
+}
 ```
 
-The `components` map runs through SSR; `<Island>` is the escape hatch for the browser.
+```tsx
+// mdx-components.tsx (project root)
+import { Island } from "zfb";
+import Counter from "./components/counter";
+
+function WrappedCounter() {
+  return (
+    <>
+      <Island when="load">
+        <Counter />
+      </Island>
+    </>
+  );
+}
+
+export default { Counter: WrappedCounter };
+```
+
+```tsx
+// pages/_mdx-components.tsx
+import { Island } from "zfb";
+import { NamedCounter } from "../components/counter";
+
+function WrappedNamedCounter() {
+  return (
+    <>
+      <Island when="load">
+        <NamedCounter />
+      </Island>
+    </>
+  );
+}
+
+export const components = { NamedCounter: WrappedNamedCounter };
+```
+
+This named export is a page-scoped map for `NamedCounter`. The root `mdx-components.tsx` form uses its default export for `Counter`: `export default { Counter: WrappedCounter };` For an MDX entry that uses both `<Counter />` and `<NamedCounter />`, pass both maps to the collection entry when rendering the body:
+
+```tsx
+// pages/blog/[slug].tsx — `post` is the selected collection entry
+import defaultComponents from "../../mdx-components";
+import { components as pageComponents } from "../_mdx-components";
+
+<post.Content components={{ ...defaultComponents, ...pageComponents }} />
+```
+
+The Fragment adds no DOM element. It leaves `<Island>` as the direct boundary around the fixed `Counter` target, which lets the production scanner register the same target for SSR and the browser. The scanner requires a concrete target, so dynamically selecting a component remains unsupported. The root `mdx-components.tsx` default map is installed globally for SSR. If it contains an Island wrapper, import it into a page and pass it to `<post.Content components={...} />` as shown so the static scanner can reach its fixed target. The server-side map itself is never serialized; only the island's JSON-compatible props are sent to the client.
 
 ## Deferred open item — `wrapper`
 
