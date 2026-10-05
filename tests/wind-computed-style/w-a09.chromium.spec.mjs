@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { openFixture, readReport, readStylesheet } from "./helpers.mjs";
 
@@ -46,6 +47,12 @@ test("W-A09 applies the six added utility groups under base, state, and media va
 
 test("W-A09 reports explain metadata, a clean audit, and deterministic output", async () => {
   const report = await readReport("w-a09");
+  const catalog = JSON.parse(
+    await readFile(
+      new URL("../../crates/zudo-wind/catalog/zudo-wind-catalog.v1.json", import.meta.url),
+      "utf8",
+    ),
+  );
   const firstCss = await readStylesheet("w-a09");
   const secondCss = await readStylesheet("w-a09", "wind-order-2.css");
 
@@ -58,7 +65,7 @@ test("W-A09 reports explain metadata, a clean audit, and deterministic output", 
     expect(report.explanations[candidate]).toMatchObject({
       outcome: "resolved_utility",
       entryIdentifier,
-      specRevision: 4,
+      specRevision: catalog.specRevision,
     });
     expect(report.diagnostics.some((diagnostic) => diagnostic.candidate === candidate)).toBe(false);
     expect(report.audit.diagnostics.some((diagnostic) => diagnostic.candidate === candidate)).toBe(
