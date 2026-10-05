@@ -166,7 +166,7 @@ impl Catalog {
             matching
         };
         let Some(longest) = matching.iter().map(|(entry, _)| entry.root.len()).max() else {
-            return match super::migration::foreign_family(candidate) {
+            return match super::migration::foreign_family(candidate, tokens) {
                 Some(family) => foreign(candidate, origin, family),
                 None => unknown_root(candidate, origin),
             };
@@ -192,7 +192,7 @@ impl Catalog {
         if successful.is_empty() {
             // A vocabulary name can share a catalog root's prefix
             // (`inline-table` under `inline`); it is foreign, not a bad value.
-            if let Some(family) = super::migration::foreign_family(candidate) {
+            if let Some(family) = super::migration::foreign_family(candidate, tokens) {
                 return foreign(candidate, origin, family);
             }
         }

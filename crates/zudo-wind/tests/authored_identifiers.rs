@@ -449,3 +449,118 @@ fn plausible_authored_names_near_foreign_roots_stay_ordinary_under_strict() {
         assert!(is_ordinary(&result, text), "{text}");
     }
 }
+
+#[test]
+fn bounded_release_families_report_zw014_at_source_and_json_positions() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "isolate",
+        "isolation-auto",
+        "float-right",
+        "clear-both",
+        "break-keep",
+        "break-before-page",
+        "break-after-avoid",
+        "break-inside-avoid-column",
+        "origin-left",
+        "brightness-0",
+        "contrast-125",
+        "saturate-150",
+        "-hue-rotate-90",
+        "grayscale",
+        "invert-0",
+        "sepia",
+        "blur-sm",
+        "drop-shadow",
+        "filter-none",
+        "filter-[url(#fx)]",
+        "backdrop-filter-none",
+        "backdrop-filter-[url(#fx)]",
+        "backdrop-blur-sm",
+        "backdrop-brightness-50",
+        "backdrop-opacity-70",
+        "text-shadow-none",
+        "text-shadow-md",
+    ] {
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), config()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::Warning)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        let json = serde_json::to_value(&explanation).unwrap();
+        assert_eq!(json["diagnostics"][0]["code"], "ZW014", "{text}");
+        assert_eq!(json["diagnostics"][0]["candidate"], text, "{text}");
+    }
+    assert_eq!(
+        outcome(&compile_at("isolate", manifest(), config()), "isolate"),
+        Some((DiagnosticCode::Zw014, Severity::Error))
+    );
+    assert_eq!(
+        outcome(
+            &compile_at(
+                "text-shadow-none",
+                source(SourcePositionKind::Literal),
+                strict
+            ),
+            "text-shadow-none"
+        ),
+        Some((DiagnosticCode::Zw014, Severity::AuditInfo))
+    );
+}
+
+#[test]
+fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "origin-story",
+        "float-label",
+        "clear-fix",
+        "to-do",
+        "from-top",
+    ] {
+        let result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
+        assert_eq!(outcome(&result, text), None, "{text}");
+        assert!(is_ordinary(&result, text), "{text}");
+    }
+    for text in ["break-all", "break-words", "break-normal", "text-center"] {
+        assert_eq!(
+            explain(text, &config()).outcome,
+            ExplanationOutcome::ResolvedUtility,
+            "{text}"
+        );
+    }
+    strict.authored_classes.insert("float-right".into(), true);
+    let authored = compile_at("float-right", source(SourcePositionKind::Class), strict);
+    assert_eq!(outcome(&authored, "float-right"), None);
+    assert!(is_ordinary(&authored, "float-right"));
+    let mut configured = config();
+    configured.tokens.font_sizes.insert(
+        "shadow-md".into(),
+        zudo_wind::FontSizeToken {
+            size: "1rem".into(),
+            line_height: None,
+        },
+    );
+    let resolved = explain("text-shadow-md", &configured);
+    assert_eq!(resolved.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(resolved.entry_identifier.as_deref(), Some("v1.text.size"));
+}
