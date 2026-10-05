@@ -1,11 +1,154 @@
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { flush, h, signal, type Diagnostic } from "../../zudo-react/index.js";
+import { For, Show, flush, h, signal, type Diagnostic } from "../../zudo-react/index.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
 import { hydrate, mount } from "../../zudo-react/client.js";
 import { report } from "../../zudo-react/root.js";
 const identity = { component: "Demo", build: "b1" };
+function containerFor(node: ReturnType<typeof h>): Element {
+  const host = document.createElement("div");
+  document.body.append(host);
+  host.innerHTML = renderToString(islandRoot(node, { identity }));
+  return host.firstElementChild!;
+}
 beforeEach(() => document.body.replaceChildren());
 afterEach(() => vi.restoreAllMocks());
+for (const attach of [mount, hydrate]) {
+  it(`${attach.name} removes a Show branch inserted after an initially false root`, async () => {
+    const visible = signal(false);
+    function Demo() {
+      return Show({ when: visible, children: () => h("p", null, "later") });
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    expect(container.querySelector("p")).toBeNull();
+    visible.value = true;
+    await flush();
+    expect(container.querySelector("p")?.textContent).toBe("later");
+    handle.unmount();
+    expect(container.childNodes).toHaveLength(0);
+  });
+
+  it(`${attach.name} removes an initially shown branch after it turns false`, async () => {
+    const visible = signal(true);
+    function Demo() {
+      return Show({ when: visible, children: () => h("p", null, "shown") });
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    expect(container.querySelector("p")?.textContent).toBe("shown");
+    visible.value = false;
+    await flush();
+    expect(container.querySelector("p")).toBeNull();
+    handle.unmount();
+    expect(container.childNodes).toHaveLength(0);
+  });
+
+  it(`${attach.name} removes the current Show fallback and preserves foreign siblings`, async () => {
+    const visible = signal(true);
+    function Demo() {
+      return Show({
+        when: visible,
+        children: () => h("p", null, "shown"),
+        fallback: () => h("aside", null, "fallback"),
+      });
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    const comments = [...container.childNodes].filter(
+      (node) => node.nodeType === Node.COMMENT_NODE,
+    );
+    const start = comments.find((node) => node.textContent?.includes(":s:"))!;
+    const end = comments.find(
+      (node) =>
+        node.textContent ===
+        `/${start.textContent?.split(":")[0]}:${start.textContent?.split(":")[1]}:${start.textContent?.split(":")[2]}`,
+    );
+    // Place foreign nodes on both sides of the dynamic range, inside the root component markers.
+    const before = document.createElement("i");
+    const after = document.createElement("i");
+    before.textContent = "before";
+    after.textContent = "after";
+    container.insertBefore(before, start);
+    container.insertBefore(after, end!.nextSibling);
+    visible.value = false;
+    await flush();
+    expect(container.querySelector("p")).toBeNull();
+    expect(container.querySelector("aside")?.textContent).toBe("fallback");
+    handle.dispose();
+    expect(container.querySelector("aside")).not.toBeNull();
+    handle.unmount();
+    expect([...container.childNodes]).toEqual([before, after]);
+    handle.unmount();
+    expect([...container.childNodes]).toEqual([before, after]);
+  });
+
+  it(`${attach.name} removes newly inserted and moved root For items`, async () => {
+    const items = signal(["a", "b"]);
+    function Demo() {
+      return For({ each: items, by: (item) => item, children: (item) => h("p", null, item) });
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    const original = [...container.querySelectorAll("p")];
+    items.value = ["b", "c", "a"];
+    await flush();
+    expect([...container.querySelectorAll("p")].map((node) => node.textContent)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+    expect(container.querySelectorAll("p")[0]).toBe(original[1]);
+    items.value = ["c", "a"];
+    await flush();
+    expect(original[1].isConnected).toBe(false);
+    handle.unmount();
+    expect(container.childNodes).toHaveLength(0);
+  });
+
+  it(`${attach.name} removes nested dynamic ranges and an empty reactive text slot`, async () => {
+    const visible = signal(false);
+    const items = signal(["a"]);
+    const text = signal("");
+    function Demo() {
+      return [
+        Show({
+          when: visible,
+          children: () =>
+            For({ each: items, by: (item) => item, children: (item) => h("b", null, item) }),
+        }),
+        text,
+      ];
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    visible.value = true;
+    await flush();
+    items.value = ["a", "b"];
+    text.value = "tail";
+    await flush();
+    expect([...container.querySelectorAll("b")].map((node) => node.textContent)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(container.textContent).toBe("abtail");
+    handle.unmount();
+    expect(container.childNodes).toHaveLength(0);
+  });
+
+  it(`${attach.name} removes an intrinsic wrapper after a nested Show update`, async () => {
+    const visible = signal(false);
+    function Demo() {
+      return h("section", null, Show({ when: visible, children: () => h("p", null, "yes") }));
+    }
+    const container = containerFor(h(Demo, {}));
+    const handle = attach(h(Demo, {}), container, { identity })!;
+    visible.value = true;
+    await flush();
+    expect(container.querySelector("section p")?.textContent).toBe("yes");
+    handle.unmount();
+    expect(container.childNodes).toHaveLength(0);
+  });
+}
 it("stores a shared-symbol handle and stale disposal cannot remove a replacement", () => {
   function Demo() {
     return h("p", { children: "value" });
