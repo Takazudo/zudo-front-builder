@@ -758,6 +758,20 @@ jobs:
             --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
             --contract research/v3-island-size/decision-linux-x64.json
 
+      # Keep the emitted JS and both-pass dist inventories for byte-level
+      # comparison when an exact gzip ceiling fails (issue #3767). These two
+      # measurement trees are small; omit the packed tarballs and native binary.
+      - name: Upload island-size measurement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: island-size-linux-x64
+          path: |
+            target/island-size/real-workspace/
+            target/island-size/real-packed/
+          if-no-files-found: warn
+          retention-days: 7
+
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
   # Without this job the cfg(feature = "embed_v8") gates can rot
