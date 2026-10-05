@@ -52,6 +52,8 @@ hidden 属性は真偽値だけを受け付け、until-found は使えません�
 
 有限の HTML 語彙には、`meta[property]`、`link[as]`、`integrity`、外部 script の `script[defer]` など、標準的な head とメタデータの属性が含まれます。Open Graph タグ、preload リンク、defer 付き script は通常の JSX として書けるため、`rawHtml` で囲む必要はありません。属性値の扱いは HTML の分類に従います。真偽値属性は存在の有無で表し、`spellcheck` などの列挙値は文字列または真偽値、`download` はオーバーロード属性、`ol[start]` は数値を受け付けます。未知の標準属性名は引き続きエラーになり、カスタム要素の属性は引き続き文字列のみです。
 
+タグと属性の全一覧、値の分類、オープンエンドの名前パターン、拒否される React 形式の綴りと候補は、[対応する HTML と SVG の語彙](./vocabulary.mdx)を参照してください。
+
 SVG 要素は v1 で定められた次の範囲を使えます。svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、defs、symbol、use、clipPath、mask、linearGradient、radialGradient、stop、title、desc、foreignObject、pattern、filter、marker、image です。対応する SVG 表記には viewBox、preserveAspectRatio、xlink:href、xml:lang、stroke-width、fill-rule、stroke-linecap があります。svg から SVG 名前空間が始まります。foreignObject 内の子は HTML の規則に従い、その中に svg があれば SVG に戻ります。未対応の SVG タグや属性は名前を示してエラーになります。
 
 ## スタイルとイベント
@@ -90,7 +92,7 @@ CSS 文字列は、検証対象のオブジェクト形式で表しにくい CSS
 
 既知の `on:<name>` prop では、ハンドラーのイベント型は名前に応じたネイティブ型になります。たとえば `on:submit` は `SubmitEvent`、`on:keydown` は `KeyboardEvent` です。`currentTarget` はその prop を持つ要素の型になりますが、`target` の型は絞り込まれません。未知のイベント名やカスタムイベント名には、単一のイベントを受け取る任意のハンドラーを指定できます。`currentTarget` が設定されるのはイベント処理中だけです。`await` の後でも要素が必要なら、その前に保存してください。合成イベントやイベント委譲はありません。ランタイムは所有スコープとともにリスナーを削除します。リスナーが返した Promise が reject された場合、後でスコープが破棄されても報告されます。
 
-onload など小文字の文字列イベント属性は、別形式の静的なインラインハンドラーです。ランタイムは通常の HTML 属性としてエスケープし、評価はしません。同じイベントにインライン属性と関数リスナーを両方指定しないでください。React 式の onClick と、関数値の onclick は拒否されます。
+`onload` など小文字の文字列イベント属性は、別形式のインラインハンドラーです。リアクティブな文字列を含む文字列値を受け付け、null と undefined では属性を省略します。レンダラーは文字列をエスケープしてブラウザーのインラインハンドラー属性として出力し、更新します。zudo-react の関数リスナーには変換しません。イベント時にブラウザーがこの文字列を実行することがあるため、信頼できる文字列だけを使ってください。同じイベントにインライン属性と関数リスナーを両方指定しないでください。React 形式の `onClick` と関数値の `onclick` は拒否されます。関数リスナーには `on:click` を使います。
 
 ref は初期値が null の current フィールドを持つ単純なオブジェクトです。ランタイムは有効化コールバックより前にすべての ref を設定します。コールバック ref や ref ファクトリはありません。
 

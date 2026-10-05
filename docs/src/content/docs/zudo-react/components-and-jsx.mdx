@@ -52,6 +52,8 @@ An `ol` accepts a numeric or string `start` value and a boolean `reversed` attri
 
 The finite HTML vocabulary includes standard head and metadata attributes such as `meta[property]`, `link[as]`, `integrity`, and external `script[defer]`. Write Open Graph tags, preload links, and deferred scripts as ordinary JSX; these do not need a `rawHtml` wrapper. Attribute values keep their HTML categories: true booleans use presence, enumerated values such as `spellcheck` accept strings or booleans, `download` is overloaded, and `ol[start]` is numeric. Unknown standard names remain errors, and custom elements keep their string-only attribute contract.
 
+See the [supported HTML and SVG vocabulary](./vocabulary.mdx) for the complete tag and attribute sets, value categories, open-ended name families, and rejected React-spelling suggestions.
+
 SVG elements use a finite v1 subset: svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, defs, symbol, use, clipPath, mask, linearGradient, radialGradient, stop, title, desc, foreignObject, pattern, filter, marker, and image. Supported SVG spellings include viewBox, preserveAspectRatio, xlink:href, xml:lang, stroke-width, fill-rule, and stroke-linecap. The namespace begins at svg. Children inside foreignObject use HTML rules, and a nested svg switches back to SVG. Unsupported SVG tags or attributes fail by name.
 
 ## Styles and events
@@ -90,7 +92,7 @@ Function listeners use a native, case-sensitive event name after on:, with an op
 
 For a known `on:<name>` prop, the handler receives that name's native event type: `on:submit` receives `SubmitEvent`, and `on:keydown` receives `KeyboardEvent`. Its `currentTarget` is typed as the element carrying the prop; `target` is not refined. Unknown or custom event names accept any single-event handler. `currentTarget` is available only while the event is being dispatched, so capture the element before an `await` if the handler needs it afterward. There is no synthetic event system or event delegation. The runtime removes listeners with their owning scope. A rejected promise returned by a listener is reported, including if the scope is later disposed.
 
-Lowercase string event attributes such as onload are a separate, static inline-handler form. The runtime escapes them as ordinary HTML attributes and never evaluates them. Do not supply both an inline attribute and a function listener for the same event. The React-style onClick spelling and function-valued onclick are rejected.
+Lowercase string event attributes such as `onload` are a separate inline-handler form. They accept strings, including reactive string values; null and undefined omit the attribute. The renderer escapes the text and writes the browser's inline-handler attribute, but does not turn it into a zudo-react listener. The browser may execute that text when the event fires, so use trusted strings. Do not supply both an inline attribute and a function listener for the same event. React-style `onClick` and function-valued `onclick` are rejected; use `on:click` for a function listener.
 
 Refs are simple objects with a current field, initially null. The runtime assigns all refs before activation callbacks. There are no callback refs or ref factories.
 

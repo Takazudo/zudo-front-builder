@@ -88,6 +88,8 @@ serializeProps({
 
 `zfb build` や `zfb dev` のサーバーレンダリングが要素を拒否すると、エラーには 3 種類の情報が含まれます。次の順に読んでください。
 
+`ZR_TAG` は現在の HTML または SVG 語彙にないタグを示します。`ZR_ATTRIBUTE` は未対応の属性名、または適用される値の規則に合わない値を示します。これにはカスタム要素の文字列のみの規則も含まれます。全一覧と正確なメッセージ例は[対応する HTML と SVG の語彙](./vocabulary.mdx)を参照してください。
+
 ~~~text
 [zudo-react] ZR_PROP_DIALECT render static-render root: use `autocomplete` instead of `autoComplete` — at components/search-field.tsx:4:7
 [zfb-runtime] render threw for "/": ZR_PROP_DIALECT: input.autoComplete (use `autocomplete` instead of `autoComplete`) at root in static render
