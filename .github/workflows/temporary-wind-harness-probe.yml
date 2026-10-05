@@ -1,4 +1,4 @@
-# Preliminary adapter probe only; this does not satisfy #3832 corpus integration.
+# Full manager integration probe for #3832; temporary workflow, never merge into product.
 name: Temporary preset-free Wind harness probe
 on:
   pull_request:
@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 1ef5bbcc42cfa89ccdf1dfd540779b146cb45d4e
+          ref: 3e261c0aaeb597d93bb21d54a0fb8d10b2992378
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = 1ef5bbcc42cfa89ccdf1dfd540779b146cb45d4e
+          test "$(git rev-parse HEAD)" = 3e261c0aaeb597d93bb21d54a0fb8d10b2992378
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
@@ -60,17 +60,38 @@ jobs:
       - name: Contract tests with all pinned-input cases enabled
         run: |
           set -euo pipefail
-          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
+          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
           cargo test --locked -p zudo-wind --test empty_token_contracts 2>&1 | tee /tmp/wind-harness-evidence/rust-empty-token.log
       - name: Build exact Wind adapter artifact
+        id: wind_build
         run: node scripts/wind-compatibility/differential-runner.mjs build-wind /tmp/wind-harness-evidence/wind-build.json
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
       - name: Actual compiler, extractor and isolated browser pilot
         run: |
           set -euo pipefail
           wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
           node scripts/wind-compatibility/differential-runner.mjs --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output /tmp/wind-harness-evidence/pilot
-      # Broader corpus is still being implemented separately; no admission claim.
+      - name: Execute declared corpus browser matrix
+        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
+          result=0
+          for engine in chromium firefox webkit; do
+            extra=()
+            if [ "$engine" = chromium ]; then
+              extra=(--pilot-report /tmp/wind-harness-evidence/pilot/report.json)
+            fi
+            if node scripts/wind-compatibility/corpus-runner.mjs --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output "/tmp/wind-harness-evidence/corpus-$engine" --engine "$engine" "${extra[@]}" > "/tmp/wind-harness-evidence/corpus-$engine.log" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            cat "/tmp/wind-harness-evidence/corpus-$engine.log"
+            printf '%s\n' "$status" > "/tmp/wind-harness-evidence/corpus-$engine.exit"
+            if [ "$status" -ne 0 ]; then result=1; fi
+          done
+          exit "$result"
       - name: Preserve original evidence even on failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
