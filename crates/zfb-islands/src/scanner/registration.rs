@@ -9,6 +9,7 @@
 //! demanded unresolved or opaque child flows become source-located errors.
 
 use super::*;
+use std::rc::Rc;
 use swc_core::common::{Span, Spanned};
 use swc_core::ecma::ast::{
     ArrowExpr, CallExpr, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild,
@@ -57,11 +58,153 @@ enum FactoryKind {
     Jsx,
 }
 
-#[derive(Clone)]
+// Shared within one discovery pass; binding lookups must not clone the AST.
 struct SourceModule {
     ast: Module,
     source: String,
     client: bool,
+}
+
+/// Declaration facts only: resolving aliases still uses Discovery's cycle guard.
+/// Keep function bodies out of this index so nested declarations do not clone
+/// the surrounding AST. SWC IDs distinguish same-spelled lexical bindings.
+#[derive(Default)]
+struct NestedBindings {
+    names: Vec<swc_core::ecma::ast::Ident>,
+    functions: HashMap<swc_core::ecma::ast::Id, (String, Span)>,
+    variables: HashMap<swc_core::ecma::ast::Id, NestedVariable>,
+    #[cfg(test)]
+    expression_visits: usize,
+}
+
+struct NestedVariable {
+    kind: swc_core::ecma::ast::VarDeclKind,
+    init: Option<NestedInitializer>,
+}
+
+enum NestedInitializer {
+    Function { marker: String, span: Span },
+    Alias(swc_core::ecma::ast::Ident),
+    Unsupported,
+}
+
+impl Visit for NestedBindings {
+    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
+        self.names.push(node.ident.clone());
+        self.functions.insert(
+            node.ident.to_id(),
+            (node.ident.sym.to_string(), node.function.span),
+        );
+        node.visit_children_with(self);
+    }
+
+    fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
+        for declaration in &node.decls {
+            let Pat::Ident(binding) = &declaration.name else {
+                continue;
+            };
+            self.names.push(binding.id.clone());
+            let init = declaration
+                .init
+                .as_deref()
+                .map(|init| match unwrap_expr(init) {
+                    Expr::Fn(function) => NestedInitializer::Function {
+                        marker: function
+                            .ident
+                            .as_ref()
+                            .map(|name| name.sym.to_string())
+                            .unwrap_or_else(|| binding.id.sym.to_string()),
+                        span: function.function.span,
+                    },
+                    Expr::Arrow(arrow) => NestedInitializer::Function {
+                        marker: binding.id.sym.to_string(),
+                        span: arrow.span,
+                    },
+                    Expr::Ident(alias) => NestedInitializer::Alias(alias.clone()),
+                    _ => NestedInitializer::Unsupported,
+                });
+            self.variables.insert(
+                binding.id.to_id(),
+                NestedVariable {
+                    kind: node.kind,
+                    init,
+                },
+            );
+        }
+        node.visit_children_with(self);
+    }
+
+    #[cfg(test)]
+    fn visit_expr(&mut self, node: &Expr) {
+        self.expression_visits += 1;
+        node.visit_children_with(self);
+    }
+}
+
+type FunctionReturn = (Expr, Vec<Pat>);
+type FunctionReturnIndex = HashMap<u32, Rc<FunctionReturn>>;
+
+/// Gather the same declarations the former NestedReturnFinder searched, but
+/// visit the module once rather than once per function summary.
+struct ReturnCollector<'a> {
+    returns: FunctionReturnIndex,
+    owned_factory_sites: &'a HashSet<u32>,
+    #[cfg(test)]
+    expression_visits: usize,
+}
+
+impl ReturnCollector<'_> {
+    fn record(&mut self, position: u32, returned: Option<FunctionReturn>) {
+        if let Some((expr, params)) = returned {
+            // All other return expressions are Ordinary in summarize_wrapper.
+            // Do not retain large ordinary object/literal returns in the index.
+            if matches!(unwrap_expr(&expr), Expr::JSXElement(_) | Expr::Call(_)) {
+                self.returns.insert(position, Rc::new((expr, params)));
+            }
+        }
+    }
+
+    fn record_function(&mut self, function: &swc_core::ecma::ast::Function) {
+        self.record(
+            function.span.lo.0,
+            body_return(
+                function.body.as_ref(),
+                function
+                    .params
+                    .iter()
+                    .map(|param| param.pat.clone())
+                    .collect(),
+                self.owned_factory_sites,
+            ),
+        );
+    }
+}
+
+impl Visit for ReturnCollector<'_> {
+    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
+        self.record_function(&node.function);
+        node.visit_children_with(self);
+    }
+
+    fn visit_var_declarator(&mut self, node: &VarDeclarator) {
+        if let Some(init) = node.init.as_deref().map(unwrap_expr) {
+            match init {
+                Expr::Arrow(arrow) => self.record(
+                    arrow.span.lo.0,
+                    arrow_return(arrow, self.owned_factory_sites),
+                ),
+                Expr::Fn(function) => self.record_function(&function.function),
+                _ => {}
+            }
+        }
+        node.visit_children_with(self);
+    }
+
+    #[cfg(test)]
+    fn visit_expr(&mut self, node: &Expr) {
+        self.expression_visits += 1;
+        node.visit_children_with(self);
+    }
 }
 
 #[derive(Clone)]
@@ -124,26 +267,45 @@ impl Visit for FormCollector {
 
 struct Discovery<'a, R: Resolver> {
     resolver: &'a R,
-    modules: BTreeMap<PathBuf, SourceModule>,
+    modules: BTreeMap<PathBuf, Rc<SourceModule>>,
     resolving: HashSet<(PathBuf, String)>,
     summarizing: HashSet<Definition>,
     summary_cache: BTreeMap<Definition, WrapperSummary>,
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
+    owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
+    nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
+    function_returns: HashMap<PathBuf, Rc<FunctionReturnIndex>>,
+    primed_modules: HashSet<PathBuf>,
+    #[cfg(test)]
+    function_return_expression_visits: usize,
+    #[cfg(test)]
+    nested_binding_expression_visits: usize,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
     fn new(resolver: &'a R, modules: BTreeMap<PathBuf, SourceModule>) -> Self {
         Self {
             resolver,
-            modules,
+            modules: modules
+                .into_iter()
+                .map(|(path, module)| (path, Rc::new(module)))
+                .collect(),
             resolving: HashSet::new(),
             summarizing: HashSet::new(),
             summary_cache: BTreeMap::new(),
             deferred_forward_sites: HashSet::new(),
+            owned_factory_sites: HashMap::new(),
+            nested_bindings: HashMap::new(),
+            function_returns: HashMap::new(),
+            primed_modules: HashSet::new(),
+            #[cfg(test)]
+            function_return_expression_visits: 0,
+            #[cfg(test)]
+            nested_binding_expression_visits: 0,
         }
     }
 
-    fn module(&mut self, path: &Path) -> ScanResult<SourceModule> {
+    fn module(&mut self, path: &Path) -> ScanResult<Rc<SourceModule>> {
         if let Some(module) = self.modules.get(path) {
             return Ok(module.clone());
         }
@@ -165,11 +327,11 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         let parsed = parse_module(path, &source)?;
         let client = has_use_client_directive(&parsed);
         let (ast, _) = resolve_worker_bindings(parsed);
-        let module = SourceModule {
+        let module = Rc::new(SourceModule {
             ast,
             source,
             client,
-        };
+        });
         self.modules.insert(path.to_path_buf(), module.clone());
         Ok(module)
     }
@@ -433,72 +595,28 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 _ => {}
             }
         }
-        // Wrappers may be local to a page function. SWC's syntax context
-        // distinguishes that binding from same-spelled module imports.
-        struct NestedFinder {
-            id: swc_core::ecma::ast::Id,
-            function: Option<swc_core::ecma::ast::FnDecl>,
-            variable: Option<(swc_core::ecma::ast::VarDeclKind, VarDeclarator)>,
+        // Large packed dependencies contain many nested locals, parameters,
+        // and globals. A missing name must not trigger a fresh full AST walk
+        // for every reference (#3648, fixed-scanner CPU profiles).
+        let bindings = self.nested_bindings(path)?;
+        let id = ident.to_id();
+        if let Some((marker, span)) = bindings.functions.get(&id) {
+            return Ok(self.definition(path, &ident.sym, marker.clone(), *span));
         }
-        impl Visit for NestedFinder {
-            fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
-                if node.ident.to_id() == self.id {
-                    self.function = Some(node.clone());
-                } else {
-                    node.visit_children_with(self);
-                }
-            }
-
-            fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
-                for declaration in &node.decls {
-                    if let Pat::Ident(binding) = &declaration.name {
-                        if binding.id.to_id() == self.id {
-                            self.variable = Some((node.kind, declaration.clone()));
-                            return;
-                        }
-                    }
-                }
-                node.visit_children_with(self);
-            }
-        }
-        let mut finder = NestedFinder {
-            id: ident.to_id(),
-            function: None,
-            variable: None,
-        };
-        module.ast.visit_with(&mut finder);
-        if let Some(function) = finder.function {
-            return Ok(self.definition(
-                path,
-                &function.ident.sym,
-                function.ident.sym.to_string(),
-                function.function.span,
-            ));
-        }
-        if let Some((kind, variable)) = finder.variable {
-            if kind != swc_core::ecma::ast::VarDeclKind::Const {
+        if let Some(variable) = bindings.variables.get(&id) {
+            if variable.kind != swc_core::ecma::ast::VarDeclKind::Const {
                 return Ok(Value::Unsupported(format!(
                     "mutable target binding {} is not a stable function",
                     ident.sym
                 )));
             }
-            if let Some(init) = variable.init {
-                return match unwrap_expr(&init) {
-                    Expr::Fn(function) => Ok(self.definition(
-                        path,
-                        &ident.sym,
-                        function
-                            .ident
-                            .as_ref()
-                            .map(|name| name.sym.to_string())
-                            .unwrap_or_else(|| ident.sym.to_string()),
-                        function.function.span,
-                    )),
-                    Expr::Arrow(arrow) => {
-                        Ok(self.definition(path, &ident.sym, ident.sym.to_string(), arrow.span))
+            if let Some(init) = &variable.init {
+                return match init {
+                    NestedInitializer::Function { marker, span } => {
+                        Ok(self.definition(path, &ident.sym, marker.clone(), *span))
                     }
-                    Expr::Ident(alias) => self.resolve_local(path, alias),
-                    _ => Ok(Value::Unsupported(format!(
+                    NestedInitializer::Alias(alias) => self.resolve_local(path, alias),
+                    NestedInitializer::Unsupported => Ok(Value::Unsupported(format!(
                         "target {} has unsupported initializer",
                         ident.sym
                     ))),
@@ -506,6 +624,23 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             }
         }
         Ok(Value::Other)
+    }
+
+    fn nested_bindings(&mut self, path: &Path) -> ScanResult<Rc<NestedBindings>> {
+        if let Some(bindings) = self.nested_bindings.get(path) {
+            return Ok(Rc::clone(bindings));
+        }
+        let module = self.module(path)?;
+        let mut bindings = NestedBindings::default();
+        module.ast.visit_with(&mut bindings);
+        #[cfg(test)]
+        {
+            self.nested_binding_expression_visits += bindings.expression_visits;
+        }
+        let bindings = Rc::new(bindings);
+        self.nested_bindings
+            .insert(path.to_path_buf(), Rc::clone(&bindings));
+        Ok(bindings)
     }
 
     fn resolve_export(&mut self, path: &Path, name: &str) -> ScanResult<Value> {
@@ -830,6 +965,19 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         path: &Path,
         ident: &swc_core::ecma::ast::Ident,
     ) -> ScanResult<Option<Box<Expr>>> {
+        // Parameters and globals cannot have a local const initializer. Reuse
+        // the declaration index so wrapper forwarding does not scan the whole
+        // module again for each incoming child/props reference.
+        if !self
+            .nested_bindings(path)?
+            .variables
+            .get(&ident.to_id())
+            .is_some_and(|variable| {
+                variable.kind == swc_core::ecma::ast::VarDeclKind::Const && variable.init.is_some()
+            })
+        {
+            return Ok(None);
+        }
         let module = self.module(path)?;
         struct Finder {
             id: swc_core::ecma::ast::Id,
@@ -1126,11 +1274,13 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         }
     }
 
-    fn function_return(
-        &mut self,
-        function: &FunctionValue,
-    ) -> ScanResult<Option<(Expr, Vec<Pat>)>> {
-        let path = &function.definition.module;
+    /// Classify each module's factory calls once. A compiled package can put
+    /// hundreds of functions in one module; repeating this walk for every
+    /// function multiplies binding resolution and filesystem work (#3648).
+    fn owned_factory_sites(&mut self, path: &Path) -> ScanResult<Rc<HashSet<u32>>> {
+        if let Some(sites) = self.owned_factory_sites.get(path) {
+            return Ok(Rc::clone(sites));
+        }
         let module = self.module(path)?;
         // Owned description factories are pure with respect to the incoming
         // wrapper props. Their arguments may read those props as runtime
@@ -1147,65 +1297,23 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 }
             }
         }
-        for item in &module.ast.body {
-            let declaration = match item {
-                ModuleItem::Stmt(Stmt::Decl(decl)) => Some(decl),
-                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => Some(&export.decl),
-                _ => None,
-            };
-            if let Some(declaration) = declaration {
-                match declaration {
-                    Decl::Fn(decl)
-                        if decl.ident.sym == function.definition.binding
-                            && decl.function.span.lo.0 == function.definition.position =>
-                    {
-                        let params = decl
-                            .function
-                            .params
-                            .iter()
-                            .map(|param| param.pat.clone())
-                            .collect();
-                        let body = decl.function.body.as_ref();
-                        return Ok(body_return(body, params, &owned_factory_sites));
-                    }
-                    Decl::Var(variable) => {
-                        for declarator in &variable.decls {
-                            let Pat::Ident(binding) = &declarator.name else {
-                                continue;
-                            };
-                            if binding.id.sym != function.definition.binding {
-                                continue;
-                            }
-                            let init_position = match declarator.init.as_deref().map(unwrap_expr) {
-                                Some(Expr::Arrow(arrow)) => arrow.span.lo.0,
-                                Some(Expr::Fn(inner)) => inner.function.span.lo.0,
-                                _ => 0,
-                            };
-                            if init_position != function.definition.position {
-                                continue;
-                            }
-                            return Ok(match declarator.init.as_deref().map(unwrap_expr) {
-                                Some(Expr::Arrow(arrow)) => {
-                                    arrow_return(arrow, &owned_factory_sites)
-                                }
-                                Some(Expr::Fn(function)) => body_return(
-                                    function.function.body.as_ref(),
-                                    function
-                                        .function
-                                        .params
-                                        .iter()
-                                        .map(|param| param.pat.clone())
-                                        .collect(),
-                                    &owned_factory_sites,
-                                ),
-                                _ => None,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if function.definition.binding == "default" {
+        let sites = Rc::new(owned_factory_sites);
+        self.owned_factory_sites
+            .insert(path.to_path_buf(), Rc::clone(&sites));
+        Ok(sites)
+    }
+
+    fn function_return(
+        &mut self,
+        function: &FunctionValue,
+    ) -> ScanResult<Option<Rc<FunctionReturn>>> {
+        let path = &function.definition.module;
+        let module = self.module(path)?;
+        let owned_factory_sites = self.owned_factory_sites(path)?;
+        // Preserve the existing default-export branch. Other supported
+        // declarations are located by their unique source span in the index.
+        if function.definition.binding == "default" {
+            for item in &module.ast.body {
                 if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default)) = item {
                     if let DefaultDecl::Fn(decl) = &default.decl {
                         return Ok(body_return(
@@ -1216,11 +1324,12 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                 .map(|param| param.pat.clone())
                                 .collect(),
                             &owned_factory_sites,
-                        ));
+                        )
+                        .map(Rc::new));
                     }
                 }
                 if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default)) = item {
-                    return Ok(match unwrap_expr(&default.expr) {
+                    let returned = match unwrap_expr(&default.expr) {
                         Expr::Arrow(arrow) => arrow_return(arrow, &owned_factory_sites),
                         Expr::Fn(decl) => body_return(
                             decl.function.body.as_ref(),
@@ -1232,68 +1341,39 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                             &owned_factory_sites,
                         ),
                         _ => None,
-                    });
+                    };
+                    return Ok(returned.map(Rc::new));
                 }
             }
         }
-        struct NestedReturnFinder<'a> {
-            position: u32,
-            result: Option<(Expr, Vec<Pat>)>,
-            owned_factory_sites: &'a HashSet<u32>,
-        }
-        impl Visit for NestedReturnFinder<'_> {
-            fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
-                if node.function.span.lo.0 == self.position {
-                    self.result = body_return(
-                        node.function.body.as_ref(),
-                        node.function
-                            .params
-                            .iter()
-                            .map(|param| param.pat.clone())
-                            .collect(),
-                        self.owned_factory_sites,
-                    );
-                } else {
-                    node.visit_children_with(self);
-                }
-            }
+        let returns = self.function_return_index(path, &owned_factory_sites)?;
+        Ok(returns.get(&function.definition.position).cloned())
+    }
 
-            fn visit_var_declarator(&mut self, node: &VarDeclarator) {
-                if let Some(init) = node.init.as_deref().map(unwrap_expr) {
-                    match init {
-                        Expr::Arrow(arrow) if arrow.span.lo.0 == self.position => {
-                            self.result = arrow_return(arrow, self.owned_factory_sites);
-                            return;
-                        }
-                        Expr::Fn(inner) if inner.function.span.lo.0 == self.position => {
-                            self.result = body_return(
-                                inner.function.body.as_ref(),
-                                inner
-                                    .function
-                                    .params
-                                    .iter()
-                                    .map(|param| param.pat.clone())
-                                    .collect(),
-                                self.owned_factory_sites,
-                            );
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                node.visit_children_with(self);
-            }
+    fn function_return_index(
+        &mut self,
+        path: &Path,
+        owned_factory_sites: &HashSet<u32>,
+    ) -> ScanResult<Rc<FunctionReturnIndex>> {
+        if let Some(returns) = self.function_returns.get(path) {
+            return Ok(Rc::clone(returns));
         }
-        let mut finder = NestedReturnFinder {
-            position: function.definition.position,
-            result: None,
-            owned_factory_sites: &owned_factory_sites,
+        let module = self.module(path)?;
+        let mut collector = ReturnCollector {
+            returns: HashMap::new(),
+            owned_factory_sites,
+            #[cfg(test)]
+            expression_visits: 0,
         };
-        module.ast.visit_with(&mut finder);
-        if finder.result.is_some() {
-            return Ok(finder.result);
+        module.ast.visit_with(&mut collector);
+        #[cfg(test)]
+        {
+            self.function_return_expression_visits += collector.expression_visits;
         }
-        Ok(None)
+        let returns = Rc::new(collector.returns);
+        self.function_returns
+            .insert(path.to_path_buf(), Rc::clone(&returns));
+        Ok(returns)
     }
 
     fn summarize_wrapper(&mut self, function: &FunctionValue) -> ScanResult<WrapperSummary> {
@@ -1326,20 +1406,21 @@ impl<'a, R: Resolver> Discovery<'a, R> {
 
     fn summarize_wrapper_inner(&mut self, function: &FunctionValue) -> ScanResult<WrapperSummary> {
         let path = &function.definition.module;
-        let Some((returned, params)) = self.function_return(function)? else {
+        let Some(returned) = self.function_return(function)? else {
             return Ok(WrapperSummary::Ordinary);
         };
-        let returned = unwrap_expr(&returned);
+        let (returned, params) = returned.as_ref();
+        let returned = unwrap_expr(returned);
         match returned {
             Expr::JSXElement(element) => {
                 let value = self.resolve_jsx_name(path, &element.opening.name)?;
                 let summary = match value {
                     Value::Boundary => {
                         let child = self.child_from_jsx_boundary(path, element)?;
-                        self.summarize_child(path, child, &params, &Form::Jsx((**element).clone()))?
+                        self.summarize_child(path, child, params, &Form::Jsx((**element).clone()))?
                     }
                     Value::Function(inner) => {
-                        self.compose_wrapper_jsx(path, element, &params, &inner)?
+                        self.compose_wrapper_jsx(path, element, params, &inner)?
                     }
                     _ => WrapperSummary::Ordinary,
                 };
@@ -1355,11 +1436,9 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                             Some(Expr::Object(object)) => self.child_from_object(path, object)?,
                             _ => Child::Dynamic("boundary wrapper props are dynamic".into()),
                         };
-                        self.summarize_child(path, child, &params, &Form::Call(call.clone()))
+                        self.summarize_child(path, child, params, &Form::Call(call.clone()))
                     }
-                    Value::Function(inner) => {
-                        self.compose_wrapper_call(path, call, &params, &inner)
-                    }
+                    Value::Function(inner) => self.compose_wrapper_call(path, call, params, &inner),
                     Value::Factory(kind) => {
                         let Some(first) = call.args.first().filter(|arg| arg.spread.is_none())
                         else {
@@ -1369,12 +1448,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                             Value::Boundary => {
                                 let child =
                                     self.child_from_call_props(path, call, kind == FactoryKind::H)?;
-                                self.summarize_child(
-                                    path,
-                                    child,
-                                    &params,
-                                    &Form::Call(call.clone()),
-                                )
+                                self.summarize_child(path, child, params, &Form::Call(call.clone()))
                             }
                             Value::Function(inner) => match self.summarize_wrapper(&inner)? {
                                 WrapperSummary::Fixed(target) => Ok(WrapperSummary::Fixed(target)),
@@ -1387,7 +1461,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                     self.summarize_child(
                                         path,
                                         child,
-                                        &params,
+                                        params,
                                         &Form::Call(call.clone()),
                                     )
                                 }
@@ -1781,7 +1855,12 @@ impl<'a, R: Resolver> Discovery<'a, R> {
     }
 
     fn prime_wrapper_summaries(&mut self) -> ScanResult<()> {
-        let paths: Vec<PathBuf> = self.modules.keys().cloned().collect();
+        let paths: Vec<PathBuf> = self
+            .modules
+            .keys()
+            .filter(|path| !self.primed_modules.contains(*path))
+            .cloned()
+            .collect();
         for path in paths {
             let module = self.module(&path)?;
             let mut names = Vec::new();
@@ -1813,26 +1892,8 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     }
                 }
             }
-            struct NestedNames {
-                names: Vec<swc_core::ecma::ast::Ident>,
-            }
-            impl Visit for NestedNames {
-                fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
-                    self.names.push(node.ident.clone());
-                    node.visit_children_with(self);
-                }
-                fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
-                    for declarator in &node.decls {
-                        if let Pat::Ident(binding) = &declarator.name {
-                            self.names.push(binding.id.clone());
-                        }
-                    }
-                    node.visit_children_with(self);
-                }
-            }
-            let mut nested = NestedNames { names: Vec::new() };
-            module.ast.visit_with(&mut nested);
-            names.extend(nested.names);
+            // Retain the original top-level-first, then nested source order.
+            names.extend(self.nested_bindings(&path)?.names.iter().cloned());
             let mut seen_names = HashSet::new();
             names.retain(|ident| seen_names.insert(ident.to_id()));
             for ident in names {
@@ -1845,6 +1906,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     self.summarize_wrapper(&function)?;
                 }
             }
+            self.primed_modules.insert(path);
         }
         Ok(())
     }
@@ -2177,6 +2239,297 @@ mod tests {
             .iter()
             .map(|island| island.marker_name.clone())
             .collect()
+    }
+
+    #[test]
+    fn packed_module_wrapper_priming_has_a_linear_ast_budget() {
+        const FUNCTIONS: usize = 96;
+        let path = PathBuf::from("/proj/packed.tsx");
+        let mut source =
+            String::from("import { Island } from '@takazudo/zfb'; function outer() {\n");
+        for index in 0..FUNCTIONS {
+            source.push_str(&format!(
+                "function wrapper{index}({{ children }}) {{ return <Island>{{children}}</Island>; }}\n"
+            ));
+        }
+        source.push_str("return null; }");
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = InMemoryResolver::new().with_file(path.clone(), source.clone());
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        discovery.prime_wrapper_summaries().unwrap();
+        for index in 0..FUNCTIONS {
+            assert!(discovery.summary_cache.iter().any(|(definition, summary)| {
+                definition.binding == format!("wrapper{index}")
+                    && matches!(summary, WrapperSummary::ForwardChild)
+            }));
+        }
+        assert_eq!(discovery.deferred_forward_sites.len(), FUNCTIONS);
+        let first_pass = (
+            discovery.nested_binding_expression_visits,
+            discovery.function_return_expression_visits,
+        );
+        assert!(first_pass.0 > 0 && first_pass.1 > 0);
+        assert!(
+            first_pass.0 + first_pass.1 < FUNCTIONS * 8,
+            "AST visits: {first_pass:?}"
+        );
+        // Discovery revisits priming when demanded imports load more modules.
+        // Already-primed modules must retain their summaries without AST work.
+        discovery.prime_wrapper_summaries().unwrap();
+        assert_eq!(
+            first_pass,
+            (
+                discovery.nested_binding_expression_visits,
+                discovery.function_return_expression_visits,
+            )
+        );
+        assert_eq!(discovery.deferred_forward_sites.len(), FUNCTIONS);
+        let later_path = PathBuf::from("/proj/later.tsx");
+        let later_source = "import { Island } from '@takazudo/zfb'; export function Later({ children }) { return <Island>{children}</Island>; }";
+        let (ast, _) = resolve_worker_bindings(parse_module(&later_path, later_source).unwrap());
+        discovery.modules.insert(
+            later_path,
+            Rc::new(SourceModule {
+                ast,
+                source: later_source.into(),
+                client: false,
+            }),
+        );
+        discovery.prime_wrapper_summaries().unwrap();
+        assert!(discovery.summary_cache.iter().any(|(definition, summary)| {
+            definition.binding == "Later" && matches!(summary, WrapperSummary::ForwardChild)
+        }));
+        assert_eq!(discovery.deferred_forward_sites.len(), FUNCTIONS + 1);
+        let extra_visits = discovery.nested_binding_expression_visits
+            + discovery.function_return_expression_visits
+            - first_pass.0
+            - first_pass.1;
+        assert!(
+            extra_visits > 0 && extra_visits < 16,
+            "new module AST visits: {extra_visits}"
+        );
+    }
+
+    #[test]
+    fn return_index_preserves_supported_default_wrapper_forms() {
+        for definition in [
+            "export default function ({ children }) { return <Island>{children}</Island>; }",
+            "export default ({ children }) => <Island>{children}</Island>;",
+            "const Wrap = function ({ children }) { return <Island>{children}</Island>; }; export default Wrap;",
+            "function Wrap({ children }) { return <Island>{children}</Island>; } export default Wrap;",
+        ] {
+            let wrapper = format!("import {{ Island }} from '@takazudo/zfb'; {definition}");
+            let islands = scan(&[
+                ("pages/home.tsx", "import Wrap from '../wrapper'; import { Counter } from '../counter'; export default function Page() { return <Wrap><Counter /></Wrap>; }"),
+                ("wrapper.tsx", &wrapper),
+                ("counter.tsx", "'use client'; export function Counter() { return null; }"),
+            ]).unwrap();
+            assert_eq!(markers(&islands), ["Counter"], "{definition}");
+        }
+    }
+
+    #[test]
+    fn dependency_member_target_keeps_a_source_located_diagnostic() {
+        let error = scan(&[
+            (
+                "pages/home.tsx",
+                "import '../factory'; export default function Page() { return <html />; }",
+            ),
+            (
+                "factory.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                export function createPanel(deps) {
+                    const Panel = deps.Panel;
+                    function PanelIsland() { return <Island><Panel /></Island>; }
+                    return PanelIsland;
+                }
+            "#,
+            ),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("/proj/factory.tsx:"), "{error}");
+        assert!(
+            error.contains("target Panel has unsupported initializer"),
+            "{error}"
+        );
+        assert!(error.contains("export a named function"), "{error}");
+    }
+
+    #[test]
+    fn packed_module_nested_binding_search_has_a_linear_ast_budget() {
+        const FUNCTIONS: usize = 96;
+        let path = PathBuf::from("/proj/packed.ts");
+        let mut source = String::from("function outer() {\n");
+        for index in 0..FUNCTIONS {
+            source.push_str(&format!(
+                "function helper{index}(callback{index}) {{ const alias{index} = callback{index}; return missing{index}(alias{index}); }}\n"
+            ));
+        }
+        source.push_str("return null; }");
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = InMemoryResolver::new().with_file(path.clone(), source.clone());
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        struct Names(Vec<swc_core::ecma::ast::Ident>);
+        impl Visit for Names {
+            fn visit_ident(&mut self, ident: &swc_core::ecma::ast::Ident) {
+                self.0.push(ident.clone());
+            }
+        }
+        let mut names = Names(Vec::new());
+        discovery.module(&path).unwrap().ast.visit_with(&mut names);
+        let mut seen = HashSet::new();
+        names.0.retain(|ident| seen.insert(ident.to_id()));
+        for _ in 0..3 {
+            let mut functions = 0;
+            let mut missing = 0;
+            for ident in &names.0 {
+                let value = discovery.resolve_local(&path, ident).unwrap();
+                if ident.sym.starts_with("helper") {
+                    let Value::Function(function) = value else {
+                        panic!("nested helper must retain its function identity");
+                    };
+                    assert_eq!(function.marker, ident.sym.to_string());
+                    functions += 1;
+                } else if ident.sym.starts_with("missing")
+                    || ident.sym.starts_with("callback")
+                    || ident.sym.starts_with("alias")
+                {
+                    assert!(matches!(value, Value::Other));
+                    missing += 1;
+                }
+            }
+            assert_eq!(functions, FUNCTIONS);
+            assert_eq!(missing, FUNCTIONS * 3);
+        }
+        // Measure AST work, not elapsed time. Parameters, globals and aliases
+        // must not each walk every packed function again, including on misses.
+        assert!(discovery.nested_binding_expression_visits > 0);
+        assert!(
+            discovery.nested_binding_expression_visits < FUNCTIONS * 8,
+            "{} AST expression visits for {FUNCTIONS} packed functions",
+            discovery.nested_binding_expression_visits,
+        );
+    }
+
+    #[test]
+    fn indexed_nested_wrapper_alias_keeps_parameter_shadowing() {
+        let islands = scan(&[
+            (
+                "pages/home.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                import { Counter } from '../counter';
+                export default function Page() {
+                    const Fixed = () => <Island><Counter /></Island>;
+                    const Alias = Fixed;
+                    function Ordinary(Alias) { return <Alias />; }
+                    return <Alias />;
+                }
+            "#,
+            ),
+            (
+                "counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[test]
+    fn indexed_nested_alias_cycle_keeps_a_finite_diagnostic() {
+        let error = scan(&[(
+            "pages/home.tsx",
+            r#"
+            import { Island } from '@takazudo/zfb';
+            import { h } from '@takazudo/zfb/zudo-react';
+            export default function Page() {
+                const First = Second;
+                const Second = First;
+                return h(Island, { children: h(First, {}) });
+            }
+        "#,
+        )])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("recursive binding"), "{error}");
+        assert!(error.contains("/proj/pages/home.tsx:"), "{error}");
+    }
+
+    #[test]
+    fn packed_module_factory_resolution_scales_with_call_sites() {
+        struct CountingResolver {
+            inner: InMemoryResolver,
+            demands: std::cell::Cell<usize>,
+        }
+        impl Resolver for CountingResolver {
+            fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.inner.resolve(dir, specifier)
+            }
+            fn resolve_demanded(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.demands.set(self.demands.get() + 1);
+                self.inner.resolve(dir, specifier)
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                self.inner.read(path)
+            }
+        }
+        const FUNCTIONS: usize = 48;
+        let mut source = String::from(
+            "import { h } from './factory';\nimport { Island } from '@takazudo/zfb';\nimport { Counter } from './counter';\n",
+        );
+        for index in 0..FUNCTIONS {
+            source.push_str(&format!(
+                "function helper{index}() {{ return h('span', {{ children: '{index}' }}); }}\n"
+            ));
+        }
+        source.push_str(
+            "export default function Page() { return h(Island, { children: h(Counter, {}) }); }",
+        );
+        let resolver = CountingResolver {
+            inner: InMemoryResolver::new()
+                .with_file("/proj/page.ts", source)
+                .with_file(
+                    "/proj/factory.ts",
+                    "export { h } from '@takazudo/zfb/zudo-react';",
+                )
+                .with_file(
+                    "/proj/counter.ts",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            demands: std::cell::Cell::new(0),
+        };
+        let islands = scan_islands(&[PathBuf::from("/proj/page.ts")], &resolver).unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+        // Allow classification, summary, and form walks plus fixed overhead.
+        // Resolving every call again for each helper exceeds this linear budget.
+        assert!(
+            resolver.demands.get() < FUNCTIONS * 10,
+            "factory classification repeated across functions: {} resolutions for {FUNCTIONS} functions",
+            resolver.demands.get(),
+        );
     }
 
     #[test]
