@@ -198,7 +198,18 @@ impl Catalog {
                 );
             }
         }
-        let (entry, suffix) = successful.first().copied().unwrap_or(leading[0]);
+        let (entry, suffix) = successful.first().copied().unwrap_or_else(|| {
+            leading
+                .iter()
+                .copied()
+                .find(|(entry, _)| {
+                    (!candidate.utility.negative || entry.negative)
+                        && (candidate.utility.slash_modifier.is_none()
+                            || entry.grammar.allows_fraction_slash
+                            || entry.grammar.allows_color_opacity)
+                })
+                .unwrap_or(leading[0])
+        });
         if entry.selector_shape == SelectorShape::LaterVisibleSiblings
             && candidate
                 .variants
