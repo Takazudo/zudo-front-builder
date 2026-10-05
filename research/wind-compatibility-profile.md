@@ -129,6 +129,18 @@ A reviewed difference is successful verification of two stated outcomes, not equ
 An extra selector, missing declaration, changed condition, or expanded exception fails.
 Do not normalize away custom properties, layers, resets, specificity or source order.
 
+`wind-layer-order-prelude` accounts for the exact first statement
+`@layer zw-reset, zw-tokens, zfb-hi, base, components;` once per nonempty Wind
+generated stylesheet, with no corresponding Wind statement on the reference side.
+Its JSON membership includes the twelve required cases that expect Wind output;
+`unconfigured-p-4`, `undeclared-palette` and `contents-gap` expect no prelude when
+run alone with their empty configuration. Derive expected nonemptiness from the
+fixture's reset, configured-token or resolved-utility contract, never from actual
+output. Composed cases and reset/token-only controls count one prelude for the
+whole generated stylesheet, not once per utility or case. An expected empty
+stylesheet must have none. Preserve and compare the statement: missing, duplicate,
+reordered or differently named layers, and any unexplained extra rules, still fail.
+
 Current source corrects a planning-era claim: **Wind named tokens use variables**
 (`catalog/resolve.rs` → `var(--zw-...)`, `token_vars.rs` → configured variables in
 `zw-tokens`), whereas intrinsic zero and numeric spacing use literals. Therefore:
@@ -139,7 +151,12 @@ Current source corrects a planning-era claim: **Wind named tokens use variables*
   theme-rule/layer structure. The reference `:root, :host` rule holding only explicit
   tokens is expected; it is not a leaked stock theme. Compare computed values and
   nested token-scope controls; do not claim interchangeable custom-property APIs.
-- Numeric scaling: reference variable calculation versus Wind computed literal.
+- Numeric scaling: reference `--spacing:0.25rem` in its `:root, :host` theme rule
+  and variable calculation versus Wind `--zw-spacing-unit:0.25rem` in
+  `@layer zw-tokens { :root { ... } }` and the utility's computed literal. The
+  `numeric-scale-representation` difference counts both sides' configured token
+  rules/layers as well as utility values; composition shares each token declaration
+  once per generated stylesheet. Extra declarations/rules/layers still fail.
   Runtime overrides of these implementation variables are not promised equivalent.
 - Variants: reference nested selectors/media versus Wind flat media/rules. Structural
   analysis must resolve nesting while preserving conditions, specificity and order;
@@ -244,4 +261,4 @@ no utility or harness, activates no watcher, and changes no release/ruleset poli
 
 | Profile | Date | Decision |
 | --- | --- | --- |
-| 1 / 1 | 2026-10-06 | #3826: initial bounded preset-free promise, exact required cases/differences and browser scope; source correction for Wind named variables; no compatibility baseline admitted. |
+| 1 / 1 | 2026-10-06 | #3826: initial bounded preset-free promise, exact required cases/differences and browser scope; source correction for Wind named variables; initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind prelude and numeric scale token rule/layer; no compatibility baseline admitted. |

@@ -23,7 +23,8 @@
       "crates/zudo-wind/src/emit.rs",
       "crates/zudo-wind/src/config.rs",
       "crates/zudo-wind/src/diagnostic.rs",
-      "crates/zudo-wind/src/variant.rs"
+      "crates/zudo-wind/src/variant.rs",
+      "crates/zudo-wind/src/layers.rs"
     ]
   },
   "referencePolicy": {
@@ -150,7 +151,9 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [],
+      "reviewedDifferenceIds": [
+        "wind-layer-order-prelude"
+      ],
       "expectedContract": "display:block",
       "evidence": {
         "sourceInspected": {
@@ -168,7 +171,9 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [],
+      "reviewedDifferenceIds": [
+        "wind-layer-order-prelude"
+      ],
       "expectedContract": "display:none; none is not a display utility spelling",
       "evidence": {
         "sourceInspected": {
@@ -186,7 +191,9 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [],
+      "reviewedDifferenceIds": [
+        "wind-layer-order-prelude"
+      ],
       "expectedContract": "display:inline-flex",
       "evidence": {
         "sourceInspected": {
@@ -205,7 +212,8 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
       "reviewedDifferenceIds": [
-        "physical-logical-margin"
+        "physical-logical-margin",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind margin-left/right:auto; reference margin-inline:auto",
       "evidence": {
@@ -224,7 +232,9 @@
       "disposition": "equivalent-shared",
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
-      "reviewedDifferenceIds": [],
+      "reviewedDifferenceIds": [
+        "wind-layer-order-prelude"
+      ],
       "expectedContract": "repeat(2,minmax(0,1fr)); use a grid container in geometry cases",
       "evidence": {
         "sourceInspected": {
@@ -243,7 +253,8 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
       "reviewedDifferenceIds": [
-        "zero-without-theme"
+        "zero-without-theme",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind emits zero padding; empty-theme reference omits candidate",
       "evidence": {
@@ -264,7 +275,8 @@
       "windTokenFreeGuarantee": true,
       "reviewedDifferenceIds": [
         "zero-variable-indirection",
-        "padding-expansion"
+        "padding-expansion",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Explicit reference --spacing-0:0px; Wind remains token-free",
       "evidence": {
@@ -285,7 +297,8 @@
       "windTokenFreeGuarantee": false,
       "reviewedDifferenceIds": [
         "named-token-representation",
-        "padding-expansion"
+        "padding-expansion",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind tokens.spacing.hsp-sm=17px; reference --spacing-hsp-sm:17px",
       "evidence": {
@@ -305,7 +318,8 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
       "reviewedDifferenceIds": [
-        "named-token-representation"
+        "named-token-representation",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind tokens.colors.surface=#123456; reference --color-surface:#123456",
       "evidence": {
@@ -366,7 +380,8 @@
       "windTokenFreeGuarantee": false,
       "reviewedDifferenceIds": [
         "numeric-scale-representation",
-        "padding-expansion"
+        "padding-expansion",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind spacingUnit=0.25rem; reference --spacing:0.25rem; computed padding 1rem",
       "evidence": {
@@ -405,7 +420,8 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
       "reviewedDifferenceIds": [
-        "variant-nesting"
+        "variant-nesting",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Test hover active/inactive and hover capability; preserve media and specificity",
       "evidence": {
@@ -425,7 +441,8 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": false,
       "reviewedDifferenceIds": [
-        "variant-nesting"
+        "variant-nesting",
+        "wind-layer-order-prelude"
       ],
       "expectedContract": "Wind breakpoints.sm=640; reference --breakpoint-sm:640px; test below/at/above boundary",
       "evidence": {
@@ -501,7 +518,7 @@
         "configured-p-4"
       ],
       "kind": "structural",
-      "scope": "Reference configured --spacing calculation versus Wind computed literal; no runtime variable override equivalence promised."
+      "scope": "Reference configured --spacing:0.25rem in its :root,:host theme rule and padding calculation versus Wind --zw-spacing-unit:0.25rem in @layer zw-tokens/:root and computed literal utility padding. Compare and count both token rules/layers and utility values; shared token declarations occur once per generated stylesheet in composition. No runtime variable override equivalence promised; extra declarations/rules/layers fail."
     },
     {
       "id": "missing-token-diagnostics",
@@ -520,6 +537,41 @@
       ],
       "kind": "structural",
       "scope": "Reference nested selector/media representation versus Wind flat rules; retain conditions, specificity, and ordering during structural analysis."
+    },
+    {
+      "id": "wind-layer-order-prelude",
+      "caseIds": [
+        "block",
+        "hidden",
+        "inline-flex",
+        "mx-auto",
+        "grid-cols-2",
+        "p-0-empty",
+        "p-0-mapped",
+        "named-spacing",
+        "named-color",
+        "configured-p-4",
+        "hover-block",
+        "breakpoint-block"
+      ],
+      "kind": "structural",
+      "scope": "Exact Wind layer-order statement is first and occurs once per expected nonempty generated stylesheet; the reference has no corresponding Wind statement. Compare and count it without removing it. Composition shares one occurrence across all member cases. Extra, missing, reordered or differently named layers/statements remain failures.",
+      "statement": "@layer zw-reset, zw-tokens, zfb-hi, base, components;",
+      "countUnit": "generated-stylesheet",
+      "expectedOccurrences": {
+        "wind": 1,
+        "reference": 0
+      },
+      "standaloneAbsentCaseIds": [
+        "unconfigured-p-4",
+        "undeclared-palette",
+        "contents-gap"
+      ],
+      "emptyStylesheetExpectedOccurrences": {
+        "wind": 0,
+        "reference": 0
+      },
+      "compositionRule": "Derive expected nonemptiness from the fixture contract (reset, configured tokens, or resolved utility output), never from actual output. Assert one prelude for the whole nonempty generated stylesheet, including reset/token-only controls, not one per utility/case. An expected empty stylesheet must have none."
     }
   ],
   "coverage": {
@@ -640,7 +692,7 @@
       "revision": 1,
       "date": "2026-10-06",
       "issue": 3826,
-      "change": "Initial bounded preset-free promise; no baseline admitted. Current-source named token indirection corrects the planning-era literal claim."
+      "change": "Initial bounded preset-free promise; no baseline admitted. Current-source named token indirection corrects the planning-era literal claim. Initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind layer-order prelude and the numeric scale token rule/layer."
     }
   ]
 }
