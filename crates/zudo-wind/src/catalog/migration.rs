@@ -6,7 +6,7 @@ use crate::{Candidate, TokenCategory, ValidatedTokens};
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 3;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -34,8 +34,79 @@ pub struct ForeignFamily {
 use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword, Token};
 
 const DISPLAY: &str = "a display declaration";
+const GRADIENT: &str = "a background-image gradient declaration";
+const LINEAR_GRADIENT: &str = "a background-image: linear-gradient(...) declaration";
+const RADIAL_GRADIENT: &str = "a background-image: radial-gradient(...) declaration";
+const CONIC_GRADIENT: &str = "a background-image: conic-gradient(...) declaration";
+
+const LEGACY_GRADIENT_DIRECTIONS: &[ForeignValue] = &[
+    Keyword("to-t"),
+    Keyword("to-tr"),
+    Keyword("to-r"),
+    Keyword("to-br"),
+    Keyword("to-b"),
+    Keyword("to-bl"),
+    Keyword("to-l"),
+    Keyword("to-tl"),
+    Arbitrary,
+];
+
+const LINEAR_GRADIENT_DIRECTIONS: &[ForeignValue] = &[
+    Keyword("to-t"),
+    Keyword("to-tr"),
+    Keyword("to-r"),
+    Keyword("to-br"),
+    Keyword("to-b"),
+    Keyword("to-bl"),
+    Keyword("to-l"),
+    Keyword("to-tl"),
+    Integer,
+    Arbitrary,
+];
+
+const GRADIENT_STOP_VALUES: &[ForeignValue] = &[
+    Token(TokenCategory::Color),
+    Keyword("current"),
+    Keyword("transparent"),
+    Arbitrary,
+];
 
 const FAMILIES: &[ForeignFamily] = &[
+    ForeignFamily {
+        root: "bg-linear",
+        values: LINEAR_GRADIENT_DIRECTIONS,
+        alternative: LINEAR_GRADIENT,
+    },
+    ForeignFamily {
+        root: "bg-gradient",
+        values: LEGACY_GRADIENT_DIRECTIONS,
+        alternative: LINEAR_GRADIENT,
+    },
+    ForeignFamily {
+        root: "bg-radial",
+        values: &[Bare, Arbitrary],
+        alternative: RADIAL_GRADIENT,
+    },
+    ForeignFamily {
+        root: "bg-conic",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: CONIC_GRADIENT,
+    },
+    ForeignFamily {
+        root: "from",
+        values: GRADIENT_STOP_VALUES,
+        alternative: GRADIENT,
+    },
+    ForeignFamily {
+        root: "via",
+        values: GRADIENT_STOP_VALUES,
+        alternative: GRADIENT,
+    },
+    ForeignFamily {
+        root: "to",
+        values: GRADIENT_STOP_VALUES,
+        alternative: GRADIENT,
+    },
     ForeignFamily {
         root: "isolate",
         values: &[Bare],
@@ -454,6 +525,17 @@ mod tests {
     #[test]
     fn listed_migration_names_match_their_family() {
         for (text, root) in [
+            ("bg-linear-to-r", "bg-linear"),
+            ("bg-linear-45", "bg-linear"),
+            ("-bg-linear-45", "bg-linear"),
+            ("bg-linear-[135deg]", "bg-linear"),
+            ("bg-gradient-to-b", "bg-gradient"),
+            ("bg-radial", "bg-radial"),
+            ("bg-radial-[at_25%_25%]", "bg-radial"),
+            ("bg-conic", "bg-conic"),
+            ("bg-conic-45", "bg-conic"),
+            ("-bg-conic-45", "bg-conic"),
+            ("bg-conic-[from_90deg]", "bg-conic"),
             ("table", "table"),
             ("table-row", "table"),
             ("contents", "contents"),
@@ -574,5 +656,46 @@ mod tests {
             "black",
             &tokens
         ));
+    }
+
+    #[test]
+    fn gradient_stops_require_color_tokens_or_supported_value_forms() {
+        let mut config = crate::TokenConfig::default();
+        config.colors.insert("zd-black".into(), "#000".into());
+        config
+            .shadows
+            .insert("shadow-only".into(), "0 1px 2px #000".into());
+        let tokens = config.validate().unwrap();
+        let vocabulary = VariantVocabulary::default();
+
+        for (text, root) in [
+            ("from-zd-black", "from"),
+            ("via-zd-black", "via"),
+            ("to-zd-black", "to"),
+            ("from-zd-black/70", "from"),
+            ("to-transparent", "to"),
+            ("via-current", "via"),
+            ("from-[#8B1E1E]", "from"),
+            ("to-[60%]", "to"),
+        ] {
+            let candidate = parse_candidate(text, &vocabulary).unwrap();
+            assert_eq!(
+                foreign_family(&candidate, &tokens).map(|family| family.root),
+                Some(root),
+                "{text}"
+            );
+        }
+
+        for text in [
+            "from-missing-color",
+            "from-shadow-only",
+            "bg-gradient-45",
+            "to-do",
+            "from-top",
+            "via-route",
+        ] {
+            let candidate = parse_candidate(text, &vocabulary).unwrap();
+            assert_eq!(foreign_family(&candidate, &tokens), None, "{text}");
+        }
     }
 }

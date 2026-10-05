@@ -12,7 +12,11 @@ use zudo_wind::{
 fn config() -> WindConfig {
     let mut config = WindConfig::default();
     config.tokens.spacing_unit = Some("0.25rem".to_owned());
-    config.tokens.colors = BTreeMap::from([("ink".to_owned(), "#111".to_owned())]);
+    config.tokens.colors = BTreeMap::from([
+        ("ink".to_owned(), "#111".to_owned()),
+        ("zd-black".to_owned(), "#000".to_owned()),
+        ("zd-white".to_owned(), "#fff".to_owned()),
+    ]);
     config
 }
 
@@ -182,6 +186,10 @@ fn exact_authored_suppression_wins_before_parsing() {
         "card__x-[1px]",
         "line-clamp-2",
         "text-link",
+        "bg-linear-to-r",
+        "from-zd-black/70",
+        "from-[60%]",
+        "-from-zd-black",
         "p-[",
     ] {
         let mut config = config();
@@ -207,6 +215,29 @@ fn exact_authored_suppression_wins_before_parsing() {
 }
 
 const FOREIGN: &[&str] = &[
+    // Consumer report #3657: real v3/v4 gradient roots and stop spellings.
+    "bg-linear-to-r",
+    "bg-linear-to-br",
+    "bg-linear-45",
+    "-bg-linear-45",
+    "bg-linear-[135deg]",
+    "bg-gradient-to-b",
+    "bg-gradient-to-l",
+    "bg-radial",
+    "bg-radial-[at_25%_25%]",
+    "bg-conic",
+    "bg-conic-45",
+    "-bg-conic-45",
+    "bg-conic-[from_90deg]",
+    "from-zd-white",
+    "via-zd-black",
+    "to-zd-black",
+    "to-transparent",
+    "from-zd-black/70",
+    "from-[#8B1E1E]",
+    "to-[#3A0000]",
+    "from-[60%]",
+    "from-[15%]",
     // These share a prefix with a catalog root (`inline`, `list`, ...), so
     // the vocabulary must win when the root cannot resolve the suffix.
     "inline-table",
@@ -420,7 +451,15 @@ fn low_confidence_literals_never_become_strict() {
 
 #[test]
 fn foreign_names_fail_from_manifests_and_safelists_regardless_of_strict() {
-    for text in ["line-clamp-2", "container", "basis-1/2"] {
+    for text in [
+        "line-clamp-2",
+        "container",
+        "basis-1/2",
+        "bg-linear-to-r",
+        "bg-gradient-to-b",
+        "from-zd-black/70",
+        "from-[60%]",
+    ] {
         let manifest = compile_at(text, manifest(), config());
         assert_eq!(
             outcome(&manifest, text),
@@ -455,6 +494,21 @@ fn bounded_release_families_report_zw014_at_source_and_json_positions() {
     let mut strict = config();
     strict.strict = true;
     for text in [
+        "bg-linear-to-r",
+        "bg-linear-[135deg]",
+        "-bg-linear-45",
+        "bg-gradient-to-b",
+        "bg-radial-[at_25%_25%]",
+        "bg-conic-45",
+        "-bg-conic-45",
+        "from-zd-white",
+        "via-zd-black",
+        "to-zd-black",
+        "to-transparent",
+        "from-zd-black/70",
+        "from-[#8B1E1E]",
+        "to-[#3A0000]",
+        "from-[60%]",
         "isolate",
         "isolation-auto",
         "float-right",
@@ -508,6 +562,29 @@ fn bounded_release_families_report_zw014_at_source_and_json_positions() {
         let json = serde_json::to_value(&explanation).unwrap();
         assert_eq!(json["diagnostics"][0]["code"], "ZW014", "{text}");
         assert_eq!(json["diagnostics"][0]["candidate"], text, "{text}");
+        if text.starts_with("bg-linear")
+            || text.starts_with("bg-gradient")
+            || text.starts_with("bg-radial")
+            || text.starts_with("bg-conic")
+            || text.starts_with("from-")
+            || text.starts_with("via-")
+            || text.starts_with("to-")
+        {
+            let alternative = if text.starts_with("bg-radial") {
+                "background-image: radial-gradient(...) declaration"
+            } else if text.starts_with("bg-conic") {
+                "background-image: conic-gradient(...) declaration"
+            } else if text.starts_with("bg-linear") || text.starts_with("bg-gradient") {
+                "background-image: linear-gradient(...) declaration"
+            } else {
+                "background-image gradient declaration"
+            };
+            assert!(
+                explanation.diagnostics[0].message.contains(alternative),
+                "{}",
+                explanation.diagnostics[0].message
+            );
+        }
     }
     assert_eq!(
         outcome(&compile_at("isolate", manifest(), config()), "isolate"),
@@ -536,6 +613,7 @@ fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
         "clear-fix",
         "to-do",
         "from-top",
+        "via-route",
     ] {
         let result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
         assert_eq!(outcome(&result, text), None, "{text}");
@@ -552,6 +630,21 @@ fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
     let authored = compile_at("float-right", source(SourcePositionKind::Class), strict);
     assert_eq!(outcome(&authored, "float-right"), None);
     assert!(is_ordinary(&authored, "float-right"));
+
+    let malformed_gradient_alias = compile_at(
+        "bg-gradient-45",
+        source(SourcePositionKind::Class),
+        config(),
+    );
+    assert_eq!(
+        outcome(&malformed_gradient_alias, "bg-gradient-45"),
+        Some((DiagnosticCode::Zw006, Severity::Error))
+    );
+    assert_eq!(
+        explain("bg-gradient-45", &config()).outcome,
+        ExplanationOutcome::Invalid
+    );
+
     let mut configured = config();
     configured.tokens.font_sizes.insert(
         "shadow-md".into(),
@@ -563,4 +656,30 @@ fn authored_neighbors_and_successful_utilities_keep_their_meaning() {
     let resolved = explain("text-shadow-md", &configured);
     assert_eq!(resolved.outcome, ExplanationOutcome::ResolvedUtility);
     assert_eq!(resolved.entry_identifier.as_deref(), Some("v1.text.size"));
+}
+
+#[test]
+fn successful_gradient_named_color_tokens_keep_catalog_precedence() {
+    let mut configured = config();
+    configured
+        .tokens
+        .colors
+        .insert("linear-to-r".into(), "#f00".into());
+    let resolved = explain("bg-linear-to-r", &configured);
+    assert_eq!(resolved.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(resolved.entry_identifier.as_deref(), Some("v1.background"));
+    assert_eq!(resolved.declarations[0].property, "background-color");
+    assert_eq!(
+        resolved.declarations[0].value,
+        "var(--zw-color-linear-to-r)"
+    );
+
+    configured
+        .tokens
+        .shadows
+        .insert("shadow-only".into(), "0 1px 2px #000".into());
+    assert_eq!(
+        explain("from-shadow-only", &configured).outcome,
+        ExplanationOutcome::Ordinary
+    );
 }
