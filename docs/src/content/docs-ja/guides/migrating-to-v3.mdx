@@ -76,6 +76,27 @@ hook を使うコンポーネントは、セットアップ時に一度実行さ
 
 ビルドや dev のレンダリングが React 形式の綴りを拒否すると、代わりに使う綴りを示し、JSX であれば要素を記述したファイル、行、列も示します。事前に `zfb check` を実行する必要はありません。この位置と、構造上の文脈や生成されたバンドルのスタックとの違いは、[サーバーレンダリング](../zudo-react/server-rendering.mdx)の「レンダリング失敗の読み方」を参照してください。
 
+### zudo-react の JSX と ESLint
+
+React 向け ESLint ルールは、zudo-react が必要とする表記を拒否することがあります。`eslint-plugin-react` の recommended config には `react/no-unknown-property` が含まれ、`class`、`for`、`crossorigin` を React 式の表記として報告し、`className`、`htmlFor`、`crossOrigin` へ自動修正する場合があります。また `on:click` も未知のプロパティとして報告します。`ignore` オプションは属性名の文字列配列なので、`on:<event>[:capture]` のような任意のリスナー表記全体は除外できません。[`no-unknown-property` ルール](https://github.com/jsx-eslint/eslint-plugin-react/blob/master/docs/rules/no-unknown-property.md)を参照してください。
+
+このルールは、zfb が zudo-react でコンパイルする JSX ファイルだけで無効にします。自動変換は `React` の識別子を使わないため、同じファイルでは `react/jsx-uses-react` と `react/react-in-jsx-scope` も無効にします。React hooks または Fast Refresh のルールも適用している場合は、それらのルールやプリセットを React で描画するファイルだけに移すか、zudo-react のファイルに限って現在有効な該当ルールを無効にします。対象となるルールは `react-hooks/rules-of-hooks`、`react-hooks/exhaustive-deps`、`react-refresh/only-export-components` です。zudo-react コンポーネントは React hooks の代わりに signal と scope を使い、React Refresh ルールは zfb が提供しない Fast Refresh 連携を検査します。React を引き続き使うファイルでは、これらのプラグインとルールを維持してください。現在の React Hooks プリセットには他の React 固有ルールも含まれるため、この一覧は既知の移行時の競合だけを示し、それ以外のルールが zudo-react と互換であるとは保証しません。[React Hooks の lint ルール](https://react.dev/reference/eslint-plugin-react-hooks)と[React Refresh ルール](https://github.com/ArnaudBarre/eslint-plugin-react-refresh)を参照してください。
+
+Flat config を使う混在プロジェクトでは、React プリセットより後に次の override を追加します。サンプルの glob は zudo-react で描画する実ファイルに置き換えてください。hooks と refresh のルール ID は、それぞれのプラグインをすでに設定している場合だけ追加し、各プリセット自体は React で描画するファイルに限定します。ESLint の[flat config ガイド](https://eslint.org/docs/latest/use/configure/configuration-files)も参照してください。
+
+```js
+{
+  files: ["components/zudo-react/**/*.{js,jsx,ts,tsx}"], // zudo-react の実ソースに置き換える
+  rules: {
+    "react/no-unknown-property": "off",
+    "react/jsx-uses-react": "off",
+    "react/react-in-jsx-scope": "off",
+  },
+}
+```
+
+zudo-react の契約は TypeScript と renderer で確認します。上記のとおり `tsconfig.json` の JSX 設定を zudo-react に向けて `zfb check` を実行し、`zfb build` または `zfb dev` で renderer が示す表記エラーとソース位置を確認してください。ESLint の提案や自動修正が renderer の契約を変えることはありません。
+
 `<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../concepts/islands.mdx)も参照してください。
 
 ### 任意の島 prop
@@ -141,7 +162,7 @@ export default defineConfig({
 1. 設定プリセットを先に更新し、対応する v3 パッケージとバイナリを導入します。`zfb --version` と `package.json` を確認します。
 2. `framework` を削除し、`tailwind` を `wind` または `wind: false` に置き換えます。`zfb check` で削除済みキーと無効な内部データを確認します。
 3. Tailwind のインポートとディレクティブを削除し、トークンとリセットを設定したうえで、代表的なページの `html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認します。プロジェクトの入出力パスを指定して `zfb css --input <entry.css> --output <output.css>` を実行します。
-4. `zfb check`、エディター、テストファイルの型検査用に tsconfig の JSX 設定を合わせ、必要に応じてテストランナーの JSX 変換を別途設定します。ファイル単位の `@jsxImportSource` pragma を削除し、依存関係、コンポーネント、島、フォームモデルを更新します。`zfb check` を実行し、型エラーを修正します。
+4. `zfb check`、エディター、テストファイルの型検査用に tsconfig の JSX 設定を合わせ、必要に応じてテストランナーの JSX 変換を別途設定します。ファイル単位の `@jsxImportSource` pragma を削除し、依存関係、コンポーネント、島、フォームモデルを更新します。React の表記・hooks・refresh ルールは React を使うファイルに限定し、[zudo-react 用の ESLint override](#コンポーネントと島-zudo-react-の-jsx-と-eslint)は zudo-react のファイルだけに適用します。その後 `zfb check` を実行し、型エラーを修正します。
 5. md-wasm 呼び出しから `jsxRuntime` を削除し、コンパイル済み出力の利用側を更新します。パッケージの TypeScript チェックを実行します。
 6. 動的に組み立てる有限のクラスを完全なリテラルかマニフェストに置き換えます。CI または pre-push のチェックとして `zfb wind audit --fail-on error` を使い、代表的なクラスに対して `zfb wind explain <candidate>` を実行します。多数の候補を調べるときは、`zfb wind audit --json --severity warning` と `zfb wind explain --stdin --json` で、機械可読な結果を 1 回のプロセスで得られます。
 7. ビルドスクリプトから Tailwind の環境変数を削除します。`zfb build` を実行し、主要ページ、島、フォーム、スタイルをブラウザーで比較します。

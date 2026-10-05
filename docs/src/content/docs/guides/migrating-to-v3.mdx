@@ -76,6 +76,27 @@ Check hand-authored raw HTML tables in `.mdx` and `.md` files during migration. 
 
 A build or dev render that rejects a React-style spelling names the supported spelling and, for JSX, the authored file, line, and column of the element. `zfb check` is not required first. See [Read a render failure](../zudo-react/server-rendering.mdx#read-a-render-failure) for how that location differs from the structural context and the generated bundle stack.
 
+### Linting zudo-react JSX
+
+React ESLint rules can reject spellings that zudo-react requires. In `eslint-plugin-react`, `react/no-unknown-property` is part of the recommended config: it treats `class`, `for`, and `crossorigin` as React-style errors and can autofix them to `className`, `htmlFor`, and `crossOrigin`. It also reports `on:click` as unknown. Its `ignore` option accepts exact names, so it cannot cover the open-ended `on:<event>[:capture]` listener form. See the [`no-unknown-property` rule](https://github.com/jsx-eslint/eslint-plugin-react/blob/master/docs/rules/no-unknown-property.md).
+
+Turn off that rule only for JSX files zfb compiles with zudo-react. The automatic transform also has no `React` binding, so disable `react/jsx-uses-react` and `react/react-in-jsx-scope` on those same files. If your config enables React hook or Fast Refresh rules there, move those rules or presets to React-rendered files, or disable the relevant configured rules on the zudo-react files: `react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps`, and `react-refresh/only-export-components`. zudo-react components use signals and scopes instead of React hooks, and the React Refresh rule checks a Fast Refresh integration that zfb does not provide. Keep these plugins and their rules on files that still use React. Current React Hooks presets include additional React-specific rules; this list describes known migration conflicts and does not certify other rules for zudo-react. See the [React Hooks lint rules](https://react.dev/reference/eslint-plugin-react-hooks) and [React Refresh rule](https://github.com/ArnaudBarre/eslint-plugin-react-refresh).
+
+In a mixed project using flat config, add an override after the React presets. Replace the sample glob with the exact files rendered by zudo-react. Add the hooks and refresh rule IDs above to a matching override only if those plugins are already configured; keep their presets scoped to React-rendered files. ESLint documents this file matching in its [flat config guide](https://eslint.org/docs/latest/use/configure/configuration-files).
+
+```js
+{
+  files: ["components/zudo-react/**/*.{js,jsx,ts,tsx}"], // replace with your zudo-react source files
+  rules: {
+    "react/no-unknown-property": "off",
+    "react/jsx-uses-react": "off",
+    "react/react-in-jsx-scope": "off",
+  },
+}
+```
+
+Use TypeScript and the renderer to check the zudo-react contract: point `tsconfig.json` at the zudo-react JSX types as described above, then run `zfb check`; `zfb build` and `zfb dev` report renderer spelling errors with the supported name and source location. ESLint rule suggestions and autofixes do not change that contract.
+
 `<Island>` remains the build-time wrapper for a component. Its transport is stricter: use one component child, JSON props, and an identity that agrees with the source scanner. Hand-authored wrappers need the complete valid metadata. Hydration adopts matching server markup or fails closed per island; skipped SSR roots use `data-when` scheduling and replace fallback after a successful client mount. Review form behavior because supported controls use explicit writable models, single-select only, and the DOM value wins during hydration. See the [islands guide](../concepts/islands.mdx).
 
 ### Optional island props
@@ -148,7 +169,7 @@ Ship package components using imports from `@takazudo/zfb/zudo-react` and the sa
 1. Upgrade configuration presets, then install matching v3 packages and binary; run `zfb --version` and inspect `package.json`.
 2. Remove `framework` and replace `tailwind` with `wind` or `wind: false`; run `zfb check` to catch removed keys and invalid nested data.
 3. Remove Tailwind imports and directives, set tokens and a reset, then check font stacks on `html` and `code`/`pre`, `sub`/`sup`, `::placeholder`, `::file-selector-button`, and `[hidden]` on representative pages. Run `zfb css --input <entry.css> --output <output.css>` using your project's entry and output paths.
-4. Set the tsconfig JSX options for `zfb check`, editor, and test-file type checks; configure test-runner JSX transforms separately. Remove per-file `@jsxImportSource` pragmas, update dependencies, components, islands, and form models, then run `zfb check` and fix type errors.
+4. Set the tsconfig JSX options for `zfb check`, editor, and test-file type checks; configure test-runner JSX transforms separately. Remove per-file `@jsxImportSource` pragmas, update dependencies, components, islands, and form models, and scope React spelling, hooks, and refresh rules to the JSX files that still use React. Apply the [zudo-react ESLint override](#components-and-islands-linting-zudo-react-jsx) only to zudo-react files, then run `zfb check` and fix type errors.
 5. Remove `jsxRuntime` from md-wasm calls and update compiled-output consumers; run your package's TypeScript check.
 6. Replace finite dynamic classes with complete literals or a manifest; use `zfb wind audit --fail-on error` as a CI or pre-push gate, and run `zfb wind explain <candidate>` on representative classes. For a large inventory, `zfb wind audit --json --severity warning` and `zfb wind explain --stdin --json` give machine-readable results in one process.
 7. Remove Tailwind environment overrides from build scripts; run `zfb build` and compare key pages, islands, controls, and styles in a browser.
