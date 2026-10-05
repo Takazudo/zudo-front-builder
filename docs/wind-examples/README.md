@@ -22,6 +22,11 @@ Each `<family>.json` has `schemaVersion: 1`, a stable `family` slug and an
   Use the `wind-demo` namespace; utilities and scaffolding must be disjoint.
 - `scaffoldCss`: standalone authored demonstration CSS. Its class selectors must
   be declared scaffolding. It cannot import the host stylesheet or Tailwind.
+- Positive fragment-link examples may set `head: '<base href="about:srcdoc">'`.
+  This exact value keeps links such as `href="#target"` in the preview document
+  instead of inheriting the host page's base URL. The installed HtmlPreview shows
+  this metadata in its native Head source panel. Other head markup is rejected;
+  examples cannot introduce scripts, stylesheets or arbitrary document metadata.
 - Optional `config`: recursive overrides to the shared compiler configuration.
   `null` removes a key, permitting missing-token teaching fixtures. Do not
   override candidate-source declarations. Only diagnostic fixtures may set
@@ -70,6 +75,8 @@ output including declared scaffold CSS, with trailing whitespace normalized to
 one final newline. Its sibling `.html` is the exact source
 record plus a final newline. `manifest.json` records hashes of HTML, input CSS,
 merged configuration, compiled CSS, and the workspace compiler source closure.
+It also hashes optional preview head metadata, so changing a fragment base requires
+regeneration even when the utility CSS remains identical.
 No binary path, temporary directory, timestamp, or machine-specific binary hash
 enters the assets. Freshness compares exact bytes and the complete inventory,
 including removed examples. A stale artifact fails without rewriting it.
