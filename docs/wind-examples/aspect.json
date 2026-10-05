@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "family": "aspect",
+  "examples": [
+    {
+      "id": "aspect-common",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">The ratio determines height from width when height is automatic.</p>\n  <div class=\"wind-demo-frame w-72\">\n    <div class=\"wind-demo-art aspect-video w-full\">aspect-video 16:9</div>\n    <div class=\"wind-demo-art aspect-square w-24\">aspect-square</div>\n    <div class=\"wind-demo-art aspect-3/2 w-48\">aspect-3/2</div>\n  </div>\n</div>",
+      "utilities": [
+        "aspect-3/2",
+        "aspect-square",
+        "aspect-video",
+        "w-24",
+        "w-48",
+        "w-72",
+        "w-full"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-art", "wind-demo-frame", "wind-demo-note"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n"
+    },
+    {
+      "id": "aspect-auto",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame flex items-start gap-2\">\n    <div class=\"wind-demo-art aspect-auto h-16 w-24\">auto: explicit height</div>\n    <div class=\"wind-demo-art aspect-4/3 w-24\">custom ratio</div>\n  </div>\n</div>",
+      "utilities": ["aspect-4/3", "aspect-auto", "flex", "gap-2", "h-16", "items-start", "w-24"],
+      "authoredClasses": ["wind-demo", "wind-demo-art", "wind-demo-frame"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n"
+    }
+  ]
+}

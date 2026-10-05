@@ -5,9 +5,131 @@ sidebar_position: 36
 generated: true
 ---
 
-設定済みフォントウェイトを選ぶか、任意のウェイト値を指定します。
+フォントファミリーやサイズを変えずに、文字の線の太さを調整します。繰り返し使う役割には名前付きの重みを、設定した尺度にない値には任意の数値を使います。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `font-medium` | `font-weight: var(--zw-font-weight-medium);` |
+| `font-[550]` | `font-weight: 550;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は tokens.fontWeights に regular 400、medium 500、strong 700 を設定します。wind-demo クラスはラベルと枠だけを整え、font-weight は指定しません。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 名前付きの太さを比べる
+
+周囲のレイアウトと文章をそろえ、設定した3段階の線の太さを比べます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-weight\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eRegular\u003c/span\u003e\u003cspan class=\"font-regular\"\u003eThe same words at regular weight\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eMedium\u003c/span\u003e\u003cspan class=\"font-medium\"\u003eThe same words at medium weight\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eStrong\u003c/span\u003e\u003cspan class=\"font-strong\"\u003eThe same words at strong weight\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-weight-medium: 500;\n    --zw-font-weight-regular: 400;\n    --zw-font-weight-strong: 700;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-weight {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-weight p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-weight p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  display: inline-block;\n  width: 5.5rem;\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.font-medium {\n  font-weight: var(--zw-font-weight-medium);\n}\n.font-regular {\n  font-weight: var(--zw-font-weight-regular);\n}\n.font-strong {\n  font-weight: var(--zw-font-weight-strong);\n}\n"} title={"名前付きの太さを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontWeights": {
+        "regular": "400",
+        "medium": "500",
+        "strong": "700"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-weight": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-regular",
+        "font-medium",
+        "font-strong"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-weight { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-weight p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-weight p:last-child { border-bottom: 0; }
+.wind-demo-label { display: inline-block; width: 5.5rem; color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### 中間の数値を指定する
+
+font-[550] は 550 を要求し、font-medium は設定した 500 のトークンを使います。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-weight-line\"\u003eCompare \u003cspan class=\"font-medium\"\u003emedium\u003c/span\u003e with \u003cspan class=\"font-[550]\"\u003ean arbitrary 550\u003c/span\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-weight-medium: 500;\n    --zw-font-weight-regular: 400;\n    --zw-font-weight-strong: 700;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-weight-line {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.font-\\[550\\] {\n  font-weight: 550;\n}\n.font-medium {\n  font-weight: var(--zw-font-weight-medium);\n}\n"} title={"中間の数値を指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontWeights": {
+        "regular": "400",
+        "medium": "500",
+        "strong": "700"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-weight-line": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-medium",
+        "font-[550]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-weight-line { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+font-medium は tokens.fontWeights.medium を参照します。font-[550] のようなクラスは検証済みの任意の font-weight 値を指定します。見た目に反映できる重みは選択したフォントに依存します。ブラウザーによる擬似的な太字化や可変フォントの軸によっても印象が変わります。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## font
 
@@ -40,3 +162,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `font-[400]` | `font-weight: 400` |
+
+</Details>

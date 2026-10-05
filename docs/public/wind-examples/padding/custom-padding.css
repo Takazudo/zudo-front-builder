@@ -1,0 +1,29 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-card: 1.5rem;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-cell {
+  background: #dce8f2;
+  border: 1px solid #849bb3;
+  min-width: 3rem;
+  text-align: center;
+}
+
+.wind-demo-content {
+  background: #fff;
+  border: 1px dashed #849bb3;
+}
+.p-card {
+  padding-top: var(--zw-spacing-card);
+  padding-right: var(--zw-spacing-card);
+  padding-bottom: var(--zw-spacing-card);
+  padding-left: var(--zw-spacing-card);
+}

@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "family": "grid",
+  "lookup": [
+    {
+      "entry": "v1.grid-cols",
+      "candidate": "grid-cols-3",
+      "example": "grid-tracks"
+    },
+    {
+      "entry": "v1.grid-rows",
+      "candidate": "grid-rows-2",
+      "example": "grid-tracks"
+    },
+    {
+      "entry": "v1.col-span",
+      "candidate": "col-span-2",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.col-start",
+      "candidate": "col-start-2",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.col-end",
+      "candidate": "col-end-4",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.row-span",
+      "candidate": "row-span-2",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.row-start",
+      "candidate": "row-start-2",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.row-end",
+      "candidate": "row-end-4",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.grid-cols",
+      "candidate": "grid-cols-[7rem_1fr]",
+      "example": "grid-custom-tracks"
+    },
+    {
+      "entry": "v1.grid-rows",
+      "candidate": "grid-rows-[auto_1fr]",
+      "example": "grid-custom-tracks"
+    },
+    {
+      "entry": "v1.col-start",
+      "candidate": "col-start-auto",
+      "example": "grid-placement"
+    },
+    {
+      "entry": "v1.row-end",
+      "candidate": "row-end-auto",
+      "example": "grid-placement"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use grid-template utilities to define rows and columns, then place children by spanning tracks or choosing their start and end lines. Grid works well for two-dimensional layouts where both axes matter.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "grid-cols-N and grid-rows-N accept integers from 1 through 12; none and subgrid are also supported. col-span-N and row-span-N accept 1 through 12, while start/end line numbers accept 1 through 13 and auto. span-full maps to 1 / -1. Template utilities also accept arbitrary CSS track lists; encode spaces with underscores, for example grid-cols-[7rem_1fr].",
+      "examples": [
+        {
+          "id": "grid-tracks",
+          "title": "Define columns and rows",
+          "description": "grid-cols-3 creates three equal columns and grid-rows-2 creates two equal rows for automatic placement."
+        },
+        {
+          "id": "grid-placement",
+          "title": "Place items on grid lines",
+          "description": "col-span-2 and row-span-2 cover multiple tracks; start and end utilities place items against numbered lines. auto returns placement to automatic flow."
+        },
+        {
+          "id": "grid-custom-tracks",
+          "title": "Mix fixed and flexible tracks",
+          "description": "The arbitrary values define a 7rem column beside a flexible track and an automatic row beside a flexible row."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "grid-template で列と行を定義し、子要素は複数トラックをまたがせたり、開始線と終了線を指定して配置したりします。両方の軸を扱うレイアウトには grid が向いています。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "grid-cols-N と grid-rows-N は 1〜12 の整数を受け取り、none と subgrid も使えます。col-span-N と row-span-N は 1〜12、start/end の線番号は 1〜13 と auto に対応します。span-full は 1 / -1 です。テンプレートには CSS の任意トラックリストも指定でき、grid-cols-[7rem_1fr] のように空白をアンダースコアで表します。",
+      "examples": [
+        {
+          "id": "grid-tracks",
+          "title": "列と行を定義",
+          "description": "grid-cols-3 は等幅の列を3本、grid-rows-2 は等高の行を2本作り、自動配置に使います。"
+        },
+        {
+          "id": "grid-placement",
+          "title": "グリッド線に沿って配置",
+          "description": "col-span-2 と row-span-2 は複数トラックをまたぎ、start/end は番号付きの線に合わせます。auto にすると自動配置に戻ります。"
+        },
+        {
+          "id": "grid-custom-tracks",
+          "title": "固定幅と可変幅を組み合わせる",
+          "description": "任意値で 7rem の列と可変列、auto の行と可変行を定義します。"
+        }
+      ]
+    }
+  }
+}

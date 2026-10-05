@@ -3,7 +3,7 @@ export const strings = {
     title: "Utility reference",
     description: "Browse the closed zudo-wind v1 utility catalog by family and declaration.",
     intro:
-      "Browse the generated reference for every utility family in the closed zudo-wind v1 catalog. Each family page lists its grammar, values, declarations, and catalog examples.",
+      "Choose a utility family by the result you want. Start with layout and spacing, then typography, surfaces, motion or interaction. Every family retains its supported values, declarations and advanced catalog reference.",
     specVersionLabel: "Catalog spec version",
     familyColumn: "Family",
     entryCountColumn: "Catalog entries",
@@ -46,6 +46,18 @@ export const strings = {
   links: {
     utilityGrammar: "Utility grammar",
     variants: "Variants",
+  },
+  reader: {
+    lookup: "Quick reference",
+    setup: "Example setup",
+    workedExamples: "Examples in use",
+    customValues: "Custom and named values",
+    technical: "Catalog details",
+    config: "Configuration for this example",
+    scaffold: "Authored demonstration CSS",
+    diagnostics: "Expected diagnostics",
+    taskColumn: "Use it to",
+    browse: "Choose by task",
   },
   families: {
     display: {

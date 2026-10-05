@@ -5,9 +5,86 @@ sidebar_position: 50
 generated: true
 ---
 
-長さでアウトラインの幅またはオフセットを設定します。負の値はオフセットのみ使えます。
+アウトラインの太さと要素からの距離を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `outline-2` | `outline-width: 2px; outline-style: solid;` |
+| `outline-offset-4` | `outline-offset: 4px;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 線と対象要素の間隔を調整する
+
+outline-2 が 2px の線を描き、outline-offset-4 が 4px 離します。設定済みの色で境界を見分けやすくしています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline bg-panel text-ink p-3 outline-2 outline-offset-4 outline-focus\"\u003eFocus indicator · 2px line · 4px offset\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline {\n  display: inline-block;\n  margin: .8rem;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-4 {\n  outline-offset: 4px;\n}\n.outline-focus {\n  outline-color: var(--zw-color-focus);\n}\n"} title={"線と対象要素の間隔を調整する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "outline-2",
+        "outline-focus",
+        "outline-offset-4",
+        "p-3",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-outline { display: inline-block; margin: 0.8rem; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+outline-2 はピクセル幅を使い、幅とともに solid スタイルも設定します。角括弧には検証済み CSS 長さを指定できます。outline-offset-4 はアウトラインと要素の間を 4px 離します。offset は整数ピクセルまたは任意の長さを受け取り、負数も使えます。アウトラインはレイアウト上の場所を取りません。幅と offset は別のカタログ項目なので個別に調整できます。操作可能なコントロールではフォーカス表示を維持してください。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## outline
 
@@ -73,3 +150,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `outline-offset-2` | `outline-offset: 2px` |
+
+</Details>

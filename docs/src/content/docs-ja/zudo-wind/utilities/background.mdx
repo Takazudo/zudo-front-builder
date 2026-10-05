@@ -5,9 +5,139 @@ sidebar_position: 43
 generated: true
 ---
 
-設定された値または検証済みの任意の色から背景色を設定します。
+文字色とは独立して、要素の背景色を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `bg-panel` | `background-color: var(--zw-color-panel);` |
+| `bg-accent/18` | `background-color: color-mix(in oklab, var(--zw-color-accent) 18%, transparent);` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 前景色と背景色のトークンを組み合わせる
+
+明るい panel と濃い accent を設定し、各面で読みやすくなるよう文字色を別に指定しています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-backgrounds\"\u003e\u003cdiv class=\"wind-demo-card bg-panel text-ink\"\u003eLight panel · configured surface\u003c/div\u003e\u003cdiv class=\"wind-demo-card bg-accent text-white\"\u003eDark accent · white text\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-backgrounds {\n  max-width: 30rem;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-card {\n  margin: 0 0 .65rem;\n  padding: .8rem 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.text-white {\n  color: var(--zw-color-white);\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n"} title={"前景色と背景色のトークンを組み合わせる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-backgrounds": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "bg-panel",
+        "text-ink",
+        "text-white"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-backgrounds { max-width: 30rem; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-card { margin: 0 0 0.65rem; padding: 0.8rem 1rem; }
+```
+
+</Details>
+
+### 文字を薄くせず背景に色を加える
+
+bg-accent/18 は背景色だけを透明色と混ぜ、text-ink は不透明のままです。もう一方は個別の CSS 色を使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-backgrounds\"\u003e\u003cdiv class=\"wind-demo-card bg-accent/18 text-ink\"\u003eAccent at 18 percent over the white preview page\u003c/div\u003e\u003cdiv class=\"wind-demo-card bg-[#e7f0f5] text-ink\"\u003eCustom pale surface\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-backgrounds {\n  max-width: 30rem;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-card {\n  margin: 0 0 .65rem;\n  padding: .8rem 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-\\[\\#e7f0f5\\] {\n  background-color: #e7f0f5;\n}\n.bg-accent\\/18 {\n  background-color: color-mix(in oklab, var(--zw-color-accent) 18%, transparent);\n}\n"} title={"文字を薄くせず背景に色を加える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-backgrounds": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-[#e7f0f5]",
+        "bg-accent/18",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-backgrounds { max-width: 30rem; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-card { margin: 0 0 0.65rem; padding: 0.8rem 1rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+bg-panel のような名前は tokens.colors に設定します。bg-current と bg-transparent もキーワードとして使えます。bg-[#e7f0f5] のように角括弧で CSS 色を指定できます。色のスラッシュ修飾子には 0〜100 の整数を使い、背景色だけを transparent と混ぜます。要素内の文字全体が薄くなるわけではありません。Tailwind のパレットは仮定しません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## bg
 
@@ -43,3 +173,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `bg-[red]/40` | `background-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

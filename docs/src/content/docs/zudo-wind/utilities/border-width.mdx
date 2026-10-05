@@ -5,9 +5,146 @@ sidebar_position: 44
 generated: true
 ---
 
-Set physical border widths in pixels and establish a solid border style.
+Set the thickness of a physical border on every side, an axis, or one edge.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border` | `border-top-width: 1px; border-top-style: solid; border-right-width: 1px; border-right-style: solid; border-bottom-width: 1px; border-bottom-style: solid; border-left-width: 1px; border-left-style: solid;` |
+| `border-x-4` | `border-left-width: 4px; border-left-style: solid; border-right-width: 4px; border-right-style: solid;` |
+| `border-y-2` | `border-top-width: 2px; border-top-style: solid; border-bottom-width: 2px; border-bottom-style: solid;` |
+| `border-b-[3px]` | `border-bottom-width: 3px; border-bottom-style: solid;` |
+| `border-l-4` | `border-left-width: 4px; border-left-style: solid;` |
+| `border-r-2` | `border-right-width: 2px; border-right-style: solid;` |
+| `border-t-4` | `border-top-width: 4px; border-top-style: solid;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Set all sides or a physical axis
+
+border is 1px on all sides; x maps to left and right, and y maps to top and bottom. Numeric widths are pixels.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-widths\"\u003e\u003cdiv class=\"wind-demo-box border p-2\"\u003eborder · 1px on all sides\u003c/div\u003e\u003cdiv class=\"wind-demo-box border-x-4 p-2\"\u003eborder-x-4 · left and right\u003c/div\u003e\u003cdiv class=\"wind-demo-box border-y-2 p-2\"\u003eborder-y-2 · top and bottom\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-widths {\n  max-width: 32rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border {\n  border-top-width: 1px;\n  border-top-style: solid;\n  border-right-width: 1px;\n  border-right-style: solid;\n  border-bottom-width: 1px;\n  border-bottom-style: solid;\n  border-left-width: 1px;\n  border-left-style: solid;\n}\n.border-x-4 {\n  border-left-width: 4px;\n  border-left-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n}\n.border-y-2 {\n  border-top-width: 2px;\n  border-top-style: solid;\n  border-bottom-width: 2px;\n  border-bottom-style: solid;\n}\n"} title={"Set all sides or a physical axis"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-box": true,
+      "wind-demo-widths": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border",
+        "border-x-4",
+        "border-y-2",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-widths { max-width: 32rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+### Tune one edge at a time
+
+The four utilities target the named physical edge; border-b-[3px] supplies a one-off pixel width.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-widths\"\u003e\u003cdiv class=\"wind-demo-box border-t-4 p-2\"\u003etop · 4px\u003c/div\u003e\u003cdiv class=\"wind-demo-box border-r-2 p-2\"\u003eright · 2px\u003c/div\u003e\u003cdiv class=\"wind-demo-box border-b-[3px] p-2\"\u003ebottom · 3px\u003c/div\u003e\u003cdiv class=\"wind-demo-box border-l-4 p-2\"\u003eleft · 4px\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-widths {\n  max-width: 32rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-b-\\[3px\\] {\n  border-bottom-width: 3px;\n  border-bottom-style: solid;\n}\n.border-l-4 {\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-r-2 {\n  border-right-width: 2px;\n  border-right-style: solid;\n}\n.border-t-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n}\n"} title={"Tune one edge at a time"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-box": true,
+      "wind-demo-widths": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-b-[3px]",
+        "border-l-4",
+        "border-r-2",
+        "border-t-4",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-widths { max-width: 32rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+## Custom and named values
+
+The bare border utility emits a 1px solid border on all four sides. Integer suffixes are pixel lengths: border-x-4 means 4px on the left and right, while border-y-2 means 2px on the top and bottom. The x/y names refer to physical sides, not writing-mode-aware logical axes. border-t, border-r, border-b, and border-l target individual edges. Bracket values accept validated CSS lengths. These widths do not use spacingUnit and cannot be negative; each width utility also sets that edge’s style to solid.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## border
 
@@ -263,3 +400,5 @@ Set physical border widths in pixels and establish a solid border style.
 | Example class | Expected declarations |
 | --- | --- |
 | `border-t` | `border-top-width: 1px`; `border-top-style: solid` |
+
+</Details>

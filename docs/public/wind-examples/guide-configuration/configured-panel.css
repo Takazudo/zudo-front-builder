@@ -1,0 +1,39 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-panel: #eaf2ff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-card {
+  max-width: 24rem;
+  border: 1px solid #b6c4d2;
+  border-radius: .5rem;
+  color: #172b4d;
+}
+
+.wind-demo-card h2 {
+  margin: 0 0 .5rem;
+  font-size: 1.1rem;
+}
+
+.wind-demo-card p {
+  margin: 0;
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}
+.bg-panel {
+  background-color: var(--zw-color-panel);
+}
+@media (min-width: 640px) {
+  .sm\:p-8 {
+    padding-top: 2rem;
+    padding-right: 2rem;
+    padding-bottom: 2rem;
+    padding-left: 2rem;
+  }
+}

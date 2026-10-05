@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-utility-grammar",
+  "examples": [
+    {
+      "id": "unconfigured-breakpoint",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"md:block\">md:block</div>",
+      "utilities": ["md:block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW002",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "calc-needs-underscores",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"w-[calc(100vw-2rem)]\">w-[calc(100vw-2rem)]</div>",
+      "utilities": ["w-[calc(100vw-2rem)]"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unsupported-type-hint",
+      "kind": "expected-diagnostic",
+      "html": "<span class=\"text-[color:var(--project-ink)]\">text-[color:var(--project-ink)]</span>",
+      "utilities": ["text-[color:var(--project-ink)]"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "arbitrary-property",
+      "kind": "expected-diagnostic",
+      "html": "<p class=\"[overflow-wrap:anywhere]\">[overflow-wrap:anywhere]</p>",
+      "utilities": ["[overflow-wrap:anywhere]"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "unsupported-ring",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"ring-2\">ring-2</div>",
+      "utilities": ["ring-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW004",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "negative-padding",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"-p-2\">-p-2</div>",
+      "utilities": ["-p-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW005",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "empty-variant-segment",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"hover::block\">hover::block</div>",
+      "utilities": ["hover::block"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "expectedDiagnostics": [
+        {
+          "code": "ZW001",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "foreign-utility-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<div class=\"line-clamp-2\">line-clamp-2</div>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": false
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "id": "foreign-utility-strict-error",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<div class=\"line-clamp-2\">line-clamp-2</div>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": true
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-ink: #253047;
+    --zw-color-night: #263449;
+    --zw-color-night-ink: #f5f7fb;
+    --zw-color-paper: #f5f7fb;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-dark-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .75rem;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-color-card {
+  border: 1px solid #8797aa;
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}
+.text-ink {
+  color: var(--zw-color-ink);
+}
+.bg-paper {
+  background-color: var(--zw-color-paper);
+}
+.dark\:text-night-ink:where([data-theme="dark"], [data-theme="dark"] *) {
+  color: var(--zw-color-night-ink);
+}
+.dark\:bg-night:where([data-theme="dark"], [data-theme="dark"] *) {
+  background-color: var(--zw-color-night);
+}

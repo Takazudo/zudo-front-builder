@@ -5,9 +5,96 @@ sidebar_position: 52
 generated: true
 ---
 
-none を含む、対応するアウトラインの線種を選びます。
+対応するアウトラインの線種を選びます。アウトラインを消す指定もあります。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `outline-dashed` | `outline-style: dashed;` |
+| `outline-dotted` | `outline-style: dotted;` |
+| `outline-double` | `outline-style: double;` |
+| `outline-none` | `outline-style: none;` |
+| `outline-solid` | `outline-style: solid;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### アウトラインのパターンを比べる
+
+各タイルでは幅、距離、設定済みの色と一つの線種を組み合わせます。none の例は枠線を残し、アウトライン自体が消えることを示します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-grid\"\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-solid\"\u003esolid\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-dashed\"\u003edashed\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-dotted\"\u003edotted\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-double\"\u003edouble\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-none\"\u003enone · border remains\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-grid {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 1.2rem;\n  max-width: 32rem;\n  padding: .8rem;\n  color: #16324f;\n  font: 13px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-outline-box {\n  display: inline-block;\n  margin: .25rem;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-2 {\n  border-top-width: 2px;\n  border-top-style: solid;\n  border-right-width: 2px;\n  border-right-style: solid;\n  border-bottom-width: 2px;\n  border-bottom-style: solid;\n  border-left-width: 2px;\n  border-left-style: solid;\n}\n.border-focus {\n  border-top-color: var(--zw-color-focus);\n  border-right-color: var(--zw-color-focus);\n  border-bottom-color: var(--zw-color-focus);\n  border-left-color: var(--zw-color-focus);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-2 {\n  outline-offset: 2px;\n}\n.outline-focus {\n  outline-color: var(--zw-color-focus);\n}\n.outline-dashed {\n  outline-style: dashed;\n}\n.outline-dotted {\n  outline-style: dotted;\n}\n.outline-double {\n  outline-style: double;\n}\n.outline-none {\n  outline-style: none;\n}\n.outline-solid {\n  outline-style: solid;\n}\n"} title={"アウトラインのパターンを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline-box": true,
+      "wind-demo-outline-grid": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-2",
+        "border-focus",
+        "outline-2",
+        "outline-dashed",
+        "outline-dotted",
+        "outline-double",
+        "outline-focus",
+        "outline-none",
+        "outline-offset-2",
+        "outline-solid",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-outline-grid { display: flex; flex-wrap: wrap; gap: 1.2rem; max-width: 32rem; padding: 0.8rem; color: #16324f; font: 13px/1.4 system-ui, sans-serif; }
+.wind-demo-outline-box { display: inline-block; margin: 0.25rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+outline-solid、outline-dashed、outline-dotted、outline-double、outline-none は完全一致のクラスで outline-style を設定します。幅と色は含まれないため、見える線には幅と色のユーティリティも組み合わせます。outline-none はアウトラインを完全に削除します。使う場合は、明確な別のフォーカス表示を用意してください。カタログには Tailwind の outline-hidden は含まれません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## outline-dashed
 
@@ -178,3 +265,5 @@ none を含む、対応するアウトラインの線種を選びます。
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `outline-solid` | `outline-style: solid` |
+
+</Details>

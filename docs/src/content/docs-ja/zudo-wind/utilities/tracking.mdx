@@ -5,9 +5,127 @@ sidebar_position: 39
 generated: true
 ---
 
-設定済みトークンまたは任意の値で字間を設定します。負の値も使えます。
+文字と文字の間隔を調整します。短い見出しでは少し詰めたり広げたりできますが、長い文章には標準的で読みやすい間隔が向いています。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `tracking-tight` | `letter-spacing: var(--zw-tracking-tight);` |
+| `tracking-[0.12em]` | `letter-spacing: 0.12em;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は tokens.letterSpacings を宣言します。wind-demo は枠、折り返しの安全策、ラベル、色だけを設定し、文字間隔は tracking クラスが決めます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 名前付きの字間を比べる
+
+同じ短い日英ラベルに、負と正の設定値をそれぞれ適用します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-tracking\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eTight\u003c/span\u003e\u003cspan class=\"tracking-tight\"\u003eSHORT LABEL / 短いラベル\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eWide\u003c/span\u003e\u003cspan class=\"tracking-wide\"\u003eSHORT LABEL / 短いラベル\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-tracking-tight: -.03em;\n    --zw-tracking-wide: .1em;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tracking {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n  overflow-wrap: anywhere;\n}\n\n.wind-demo-tracking p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-tracking p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  display: inline-block;\n  width: 4rem;\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.tracking-tight {\n  letter-spacing: var(--zw-tracking-tight);\n}\n.tracking-wide {\n  letter-spacing: var(--zw-tracking-wide);\n}\n"} title={"名前付きの字間を比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "letterSpacings": {
+        "tight": "-0.03em",
+        "wide": "0.1em"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-tracking": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "tracking-tight",
+        "tracking-wide"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-tracking { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; overflow-wrap: anywhere; }
+.wind-demo-tracking p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-tracking p:last-child { border-bottom: 0; }
+.wind-demo-label { display: inline-block; width: 4rem; color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### 一度だけ任意値を使う
+
+tracking-[0.12em] でトークンを増やさず、短いラベルの字間を広げます。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-tracking-custom tracking-[0.12em]\"\u003eA little extra space / 少し広めの字間\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-tracking-tight: -.03em;\n    --zw-tracking-wide: .1em;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tracking-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.tracking-\\[0\\.12em\\] {\n  letter-spacing: 0.12em;\n}\n"} title={"一度だけ任意値を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "letterSpacings": {
+        "tight": "-0.03em",
+        "wide": "0.1em"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-tracking-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "tracking-[0.12em]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-tracking-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+tracking-tight は tokens.letterSpacings.tight を参照します。負の値で文字を詰めることもできます。tracking-[0.12em] のような任意値は letter-spacing の CSS として検証されます。広い字間は段落や日本語を読みにくくすることがあるため、短いラベルや意図した表示に限って使うとよいでしょう。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## tracking
 
@@ -40,3 +158,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `tracking-[0.08em]` | `letter-spacing: 0.08em` |
+
+</Details>

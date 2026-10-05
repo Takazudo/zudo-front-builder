@@ -1,0 +1,41 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-type-grid {
+  max-width: 28rem;
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: 1rem;
+}
+
+.wind-demo-type-grid > p {
+  margin: 0 0 .85rem;
+}
+
+.wind-demo-type-grid > p:last-child {
+  margin: .85rem 0 0;
+  border-top: 1px solid #d8e0e8;
+  padding-top: .75rem;
+}
+
+.wind-demo-number-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .35rem 1rem;
+}
+.italic {
+  font-style: italic;
+}
+.not-italic {
+  font-style: normal;
+}
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+.antialiased {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

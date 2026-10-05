@@ -4,6 +4,200 @@ description: ソースプランが完全な候補を見つける方法と、明�
 sidebar_position: 4
 ---
 
+## 候補を発見できるようにする
+
+ドキュメントのシェルは Tailwind CSS を使います。このページで説明するソース発見と生成ルールは zudo-wind のものです。抽出器はアプリを実行せずにファイルを読むため、可能なクラスを完全な表記でソースに残します。
+
+~~~tsx
+function ActionButton({ active }: { active: boolean }) {
+  const buttonClass = active
+    ? "bg-accent text-white"
+    : "bg-muted text-white";
+
+  return <button className={buttonClass}>Continue</button>;
+}
+~~~
+
+有限の条件式なら完全な候補が両方とも見つかります。実行時の値と接頭辞を連結しても候補にはなりません。ソースに現れない完全なアプリ候補は、所有者 ID ごとの <code>wind.safelist</code> に置きます。
+
+| 必要なもの | 使用するもの |
+| --- | --- |
+| ソースに書かれたアプリのクラス | build または単独コマンドのソースプラン |
+| 走査ファイルに現れない有限のアプリ候補 | <code>wind.safelist</code> |
+| パッケージが公開するクラス | <code>wind.manifests</code> のバージョン付きマニフェスト |
+| 常に走査対象から外すパス | <code>wind.sources.exclude</code> |
+| クラスを含むファイルがあるパッケージ | <code>wind.sources.packageRoots</code> |
+
+パッケージのディレクトリからスタイルシートと候補マニフェストを生成します。
+
+~~~sh
+zfb css --input src/styles.css --output dist/ui.css \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind manifest --producer ui --output dist/wind.json \
+  --config wind.config.json --no-auto-source --source 'src/**/*.tsx'
+zfb wind audit --plan build
+~~~
+
+利用側は生成者 <code>ui</code> を指定し、マニフェストが使うトークンをすべて設定します。このサンプルは設定済みの色と余白で 2 つの完全な候補をコンパイルします。
+
+{/* wind-preview: guide-sources-and-candidates/static-status "完全な候補が解決される様子" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-status\"><p class=\"bg-accent text-white p-2\">Ready</p><p class=\"bg-muted text-white p-2\">Queued</p></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #155eef;\n    --zw-color-muted: #475467;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-status {\n  max-width: 18rem;\n}\n\n.wind-demo-status p {\n  margin: 0 0 .5rem;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.text-white {\n  color: var(--zw-color-white);\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n.bg-muted {\n  background-color: var(--zw-color-muted);\n}\n"} title={"完全な候補が解決される様子"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#155eef",
+        "muted": "#475467",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-status": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "bg-muted",
+        "p-2",
+        "text-white"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-status { max-width: 18rem; }
+.wind-demo-status p { margin: 0 0 0.5rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+明示した glob の一致がすべて除外されると ZW010 で失敗します。一部が残る場合は警告し、そのファイルを走査します。次のレコードは全除外と一部除外のソースプランを示します。
+
+{/* wind-preview: guide-sources-and-candidates/excluded-all "一致がすべて除外: エラー" */}
+
+```html
+<p class="p-4">Excluded source</p>
+```
+
+sample.html と excluded.html は上記と同じ HTML を含みます。設定で excluded.html を除外します。
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source 'excluded.html' --no-auto-source --no-default-highlight-styles
+```
+
+期待される診断: `ZW010 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-sources-and-candidates/excluded-partial "一部の一致を除外: 警告" */}
+
+```html
+<p class="p-4">Accepted source</p>
+```
+
+sample.html と excluded.html は上記と同じ HTML を含みます。設定で excluded.html を除外します。
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source '*.html' --no-auto-source --no-default-highlight-styles
+```
+
+期待される診断: `ZW010 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+抽出器はアプリケーションを実行せず、実行時の値からクラスを推測しません。
+
+<Details title="技術リファレンス">
+
 ## ソースプラン
 
 ソースプランは build と dev が走査するすべての入力を決めます。プロジェクトの規約上のルート、宣言されたパッケージルート、ミラールート、明示的なコマンドラインのソース、生成されたソース、候補マニフェストを含められます。パスは、それを指定したプロジェクト、パッケージ、プリセット、設定を基準に解決します。プロセスの作業ディレクトリは基準になりません。
@@ -107,3 +301,5 @@ CSS で自分で書くルールのために、完全な候補表記を予約す�
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [診断とツール](./diagnostics-and-tools.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
+
+</Details>

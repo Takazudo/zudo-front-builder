@@ -1,0 +1,26 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #5b5bd6;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-mark {
+  display: flex;
+  align-items: center;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-mark:before {
+  content: "";
+  inline-size: .75rem;
+  block-size: .75rem;
+  border-radius: 50%;
+  margin-inline-end: .5rem;
+}
+.before\:block::before {
+  display: block;
+}
+.before\:bg-accent::before {
+  background-color: var(--zw-color-accent);
+}

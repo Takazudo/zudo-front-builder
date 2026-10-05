@@ -5,9 +5,223 @@ sidebar_position: 31
 generated: true
 ---
 
-レイアウトコンテナ内の項目間の行・列の間隔を設定します。
+グリッドやフレックスのコンテナに gap を指定して、項目の間隔を作ります。コンテナの内側の余白ではなく、トラックや項目の間に空間を追加します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `gap-4` | `column-gap: 1rem; row-gap: 1rem;` |
+| `gap-x-8` | `column-gap: 2rem;` |
+| `gap-y-2` | `row-gap: 0.5rem;` |
+| `gap-gutter` | `column-gap: var(--zw-spacing-gutter); row-gap: var(--zw-spacing-gutter);` |
+| `gap-[18px]` | `column-gap: 18px; row-gap: 18px;` |
+
+<Details title={"例の設定"}>
+
+この例では spacingUnit: "0.25rem"、reset: "none"、strict モード、空のブレークポイントを明示しています。数値の接尾辞に単位を掛けるため、gap-4 は 1rem の長さを直接出力します。Tailwind のスケールやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、各プレビューから CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 項目の間隔をそろえる
+
+コンテナに gap-4 を指定します。各タイルの内側の余白は p-2 で設定します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-4\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n"} title={"項目の間隔をそろえる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-4",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### 行と列の間隔を変える
+
+gap-x-8 で列間を 2rem、gap-y-2 で行間を 0.5rem にします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-x-8 gap-y-2\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-x-8 {\n  column-gap: 2rem;\n}\n.gap-y-2 {\n  row-gap: 0.5rem;\n}\n"} title={"行と列の間隔を変える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-x-8",
+        "gap-y-2",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### 間隔に名前を付ける
+
+tokens.spacing.gutter に 1.5rem を明示的に設定しています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-gutter\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-gutter: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-gutter {\n  column-gap: var(--zw-spacing-gutter);\n  row-gap: var(--zw-spacing-gutter);\n}\n"} title={"間隔に名前を付ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "gutter": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-gutter",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### 個別の長さを指定する
+
+gap-[18px] は両方の gap プロパティに 18px を出力します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-[18px]\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-\\[18px\\] {\n  column-gap: 18px;\n  row-gap: 18px;\n}\n"} title={"個別の長さを指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-[18px]",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+gap-0 は間隔をなくし、gap-px はトークンなしで 1px を指定します。それ以外の数値には tokens.spacingUnit が必要です。gutter の例のような名前付きの値は tokens.spacing で設定します。gap-[18px] などの任意値はスケール不要です。負の間隔は使えません。任意値の calc 内の空白はアンダースコアで表します。gap-x は column-gap、gap-y は row-gap を設定します。フレックスでは、項目間と行間への作用は flex-direction に従います。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## gap
 
@@ -114,3 +328,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `gap-y-0` | `row-gap: 0` |
+
+</Details>

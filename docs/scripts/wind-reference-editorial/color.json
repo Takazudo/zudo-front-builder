@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "color",
+  "lookup": [
+    {
+      "entry": "v1.text.color",
+      "candidate": "text-ink",
+      "example": "named-colors"
+    },
+    {
+      "entry": "v1.text.color",
+      "candidate": "text-[#8b1e3f]/90",
+      "example": "custom-color"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set the foreground color of text while leaving its background and surrounding layout alone.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "Names such as text-ink resolve only through tokens.colors. The literal keywords text-current and text-transparent are also accepted. Bracket values such as text-[#8b1e3f] are parsed as CSS colors. A slash modifier accepts an integer from 0 to 100 and mixes that color with transparent in Oklab; text-accent/85 therefore fades the color itself. This family has no built-in palette.",
+      "examples": [
+        {
+          "id": "named-colors",
+          "title": "Use configured text colors",
+          "description": "text-ink and text-accent resolve through this example’s explicit color tokens; /85 adjusts only the accent color."
+        },
+        {
+          "id": "custom-color",
+          "title": "Add a one-off color",
+          "description": "The bracket value is a validated CSS color, and /90 applies the supported color-opacity modifier."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "文字の前景色を指定します。背景色や周囲のレイアウトには作用しません。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "text-ink のような名前は tokens.colors に設定した値だけを参照します。text-current と text-transparent もキーワードとして使えます。text-[#8b1e3f] のような角括弧の値は CSS 色として検証されます。スラッシュ修飾子には 0〜100 の整数を指定でき、色を Oklab で transparent と混ぜます。text-accent/85 は文字色自体を薄くします。このファミリーに組み込みパレットはありません。",
+      "examples": [
+        {
+          "id": "named-colors",
+          "title": "設定した文字色を使う",
+          "description": "text-ink と text-accent は例に明示した色トークンを参照し、/85 はアクセント色だけを調整します。"
+        },
+        {
+          "id": "custom-color",
+          "title": "個別の色を指定する",
+          "description": "角括弧の値は CSS 色として検証され、/90 は対応する色の不透明度修飾子を適用します。"
+        }
+      ]
+    }
+  }
+}

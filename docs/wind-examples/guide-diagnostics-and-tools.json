@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "family": "guide-diagnostics-and-tools",
+  "examples": [
+    {
+      "id": "source-warning",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<p class=\"line-clamp-2\">Two-line label</p>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": false
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "id": "source-strict",
+      "kind": "expected-diagnostic",
+      "candidateOrigin": "source",
+      "html": "<p class=\"line-clamp-2\">Two-line label</p>",
+      "utilities": ["line-clamp-2"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "strict": true
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW014",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "id": "missing-spacing-unit",
+      "kind": "expected-diagnostic",
+      "html": "<div class=\"p-4\">p-4 requires tokens.spacingUnit</div>",
+      "utilities": ["p-4"],
+      "authoredClasses": [],
+      "scaffoldCss": "",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacingUnit": null
+          }
+        }
+      },
+      "expectedDiagnostics": [
+        {
+          "code": "ZW006",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}

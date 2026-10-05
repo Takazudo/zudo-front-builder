@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "family": "transition",
+  "lookup": [
+    {
+      "entry": "v1.transition",
+      "candidate": "transition-colors",
+      "example": "color-transition"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose which CSS properties change smoothly when a state or value changes. Pair a transition utility with state variants such as hover or focus-visible on a real control.",
+      "setup": "Every preview uses spec: 1, reset: \"none\", strict mode, an explicit spacingUnit of \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". Transition utilities other than transition-none set 150ms and use that configured timing function. Buttons respond to both pointer hover and keyboard focus. The authored demo CSS removes transition time when prefers-reduced-motion is reduce; the utility examples use only short, user-triggered changes.",
+      "customValues": "transition, transition-all, transition-colors, transition-opacity, transition-shadow, transition-transform, and transition-none are the supported keywords. A one-off property list can use an arbitrary form such as transition-[border-color]. No named transition-property tokens are built in. transition-none emits only transition-property: none, so it does not set the default duration or easing.",
+      "examples": [
+        {
+          "id": "color-transition",
+          "title": "Respond to hover and keyboard focus",
+          "description": "transition-colors uses the built-in 150ms and ease defaults while the button background changes on hover or focus-visible."
+        },
+        {
+          "id": "custom-property",
+          "title": "Transition one chosen property",
+          "description": "transition-[border-color] narrows the animated property set; the same focus and hover state changes the border color."
+        },
+        {
+          "id": "instant-change",
+          "title": "Skip interpolation",
+          "description": "transition-none makes the same state change immediate. It emits no duration or timing-function declarations."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "状態や値が変わったときに滑らかに変化させる CSS プロパティを選びます。hover や focus-visible などの状態バリアントと、実際に操作できる要素に組み合わせます。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。transition-none 以外のトランジション系ユーティリティは 150ms と設定済みのタイミング関数を使います。ボタンはポインターの hover とキーボードの focus の両方に反応します。prefers-reduced-motion が reduce の場合は、自作デモ CSS が時間を 0 にします。ユーティリティの例は短く、操作したときだけ変化します。",
+      "customValues": "使えるキーワードは transition、transition-all、transition-colors、transition-opacity、transition-shadow、transition-transform、transition-none です。transition-[border-color] のように任意のプロパティリストも指定できます。組み込みの名前付き transition-property トークンはありません。transition-none は transition-property: none だけを出力し、時間やイージングの初期値は設定しません。",
+      "examples": [
+        {
+          "id": "color-transition",
+          "title": "hover とキーボードフォーカスに反応する",
+          "description": "transition-colors は組み込みの 150ms と ease を使い、hover または focus-visible でボタンの背景色を変えます。"
+        },
+        {
+          "id": "custom-property",
+          "title": "対象のプロパティを一つ選ぶ",
+          "description": "transition-[border-color] で対象を絞り、focus と hover で境界線の色を変えます。"
+        },
+        {
+          "id": "instant-change",
+          "title": "補間を止める",
+          "description": "transition-none を使うと同じ状態変化が即時に切り替わります。時間とタイミング関数の宣言は出力しません。"
+        }
+      ]
+    }
+  }
+}

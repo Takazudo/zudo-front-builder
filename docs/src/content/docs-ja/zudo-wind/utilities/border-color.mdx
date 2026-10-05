@@ -5,9 +5,148 @@ sidebar_position: 45
 generated: true
 ---
 
-設定された値または検証済みの任意の色から各辺のボーダー色を設定します。
+ボーダー全体、軸、または物理的な一辺に色を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-ink` | `border-top-color: var(--zw-color-ink); border-right-color: var(--zw-color-ink); border-bottom-color: var(--zw-color-ink); border-left-color: var(--zw-color-ink);` |
+| `border-x-accent/85` | `border-left-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent); border-right-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);` |
+| `border-y-focus` | `border-top-color: var(--zw-color-focus); border-bottom-color: var(--zw-color-focus);` |
+| `border-b-alert/90` | `border-bottom-color: color-mix(in oklab, var(--zw-color-alert) 90%, transparent);` |
+| `border-l-ink` | `border-left-color: var(--zw-color-ink);` |
+| `border-r-accent` | `border-right-color: var(--zw-color-accent);` |
+| `border-t-focus` | `border-top-color: var(--zw-color-focus);` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 全体または軸の両側に色を付ける
+
+border-ink は四辺、border-x-accent/85 は左右、border-y-focus は上下を着色します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-border-colors\"\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-ink p-2\"\u003eborder-ink · all sides\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-x-accent/85 p-2\"\u003eborder-x-accent/85 · left and right\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-y-focus p-2\"\u003eborder-y-focus · top and bottom\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-border-colors {\n  max-width: 34rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-color-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-ink {\n  border-top-color: var(--zw-color-ink);\n  border-right-color: var(--zw-color-ink);\n  border-bottom-color: var(--zw-color-ink);\n  border-left-color: var(--zw-color-ink);\n}\n.border-x-accent\\/85 {\n  border-left-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);\n  border-right-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);\n}\n.border-y-focus {\n  border-top-color: var(--zw-color-focus);\n  border-bottom-color: var(--zw-color-focus);\n}\n"} title={"全体または軸の両側に色を付ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-border-colors": true,
+      "wind-demo-color-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-4",
+        "border-ink",
+        "border-x-accent/85",
+        "border-y-focus",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-color-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+### 辺ごとに色を分ける
+
+辺別ユーティリティは指定した物理辺だけを変え、border-4 が見える幅を与えます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-border-colors\"\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-t-focus p-2\"\u003etop · focus\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-r-accent p-2\"\u003eright · accent\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-b-alert/90 p-2\"\u003ebottom · alert\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-l-ink p-2\"\u003eleft · ink\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-border-colors {\n  max-width: 34rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-color-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-b-alert\\/90 {\n  border-bottom-color: color-mix(in oklab, var(--zw-color-alert) 90%, transparent);\n}\n.border-l-ink {\n  border-left-color: var(--zw-color-ink);\n}\n.border-r-accent {\n  border-right-color: var(--zw-color-accent);\n}\n.border-t-focus {\n  border-top-color: var(--zw-color-focus);\n}\n"} title={"辺ごとに色を分ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-border-colors": true,
+      "wind-demo-color-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-4",
+        "border-b-alert/90",
+        "border-l-ink",
+        "border-r-accent",
+        "border-t-focus",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-color-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+border-ink のような名前は tokens.colors に設定します。既定パレットはありません。border-current と border-transparent も使えます。border-x-accent/85 のような色のスラッシュ修飾子には 0〜100 の整数を指定します。角括弧には検証済み CSS 色を指定できます。border、border-x、border-y と辺別の形は物理辺を選びます。色を見せるには幅ユーティリティと組み合わせます。幅と色は同じクラス根を共有するため、数値の接尾辞は幅、設定済み色名は色として解釈されます。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## border
 
@@ -258,3 +397,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `border-t-[red]/40` | `border-top-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "family": "inset",
+  "examples": [
+    {
+      "id": "inset-fill",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"absolute inset-4 wind-demo-highlight\">Same offset on all four sides</div>\n  </div>\n</div>",
+      "utilities": ["absolute", "h-36", "inset-4", "relative", "w-72"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-highlight"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }\n"
+    },
+    {
+      "id": "inset-axes",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"absolute inset-x-4 top-4 h-10 wind-demo-tile\">Left and right inset</div>\n    <div class=\"absolute inset-y-4 right-4 w-12 wind-demo-alt\">Top and bottom inset</div>\n  </div>\n</div>",
+      "utilities": [
+        "absolute",
+        "h-10",
+        "h-36",
+        "inset-x-4",
+        "inset-y-4",
+        "relative",
+        "right-4",
+        "top-4",
+        "w-12",
+        "w-72"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-alt", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "inset-edges",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"absolute top-0 left-0 size-8 wind-demo-tile\">TL</div>\n    <div class=\"absolute top-0 right-0 size-8 wind-demo-alt\">TR</div>\n    <div class=\"absolute bottom-0 left-0 size-8 wind-demo-alt\">BL</div>\n    <div class=\"absolute bottom-0 right-0 size-8 wind-demo-tile\">BR</div>\n  </div>\n</div>",
+      "utilities": [
+        "absolute",
+        "bottom-0",
+        "h-36",
+        "left-0",
+        "relative",
+        "right-0",
+        "size-8",
+        "top-0",
+        "w-72"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-alt", "wind-demo-frame", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "inset-custom",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"absolute -top-2 left-nudge wind-demo-highlight\">Negative top; named left token</div>\n  </div>\n</div>",
+      "utilities": ["-top-2", "absolute", "h-36", "left-nudge", "relative", "w-72"],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-highlight"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "nudge": "1rem"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ export const strings = {
     description:
       "有限の zudo-wind v1 ユーティリティカタログを、ユーティリティ群と宣言から参照します。",
     intro:
-      "有限の zudo-wind v1 カタログに含まれるすべてのユーティリティ群の生成リファレンスです。各ページに文法、値、宣言、カタログの例を掲載します。",
+      "実現したい用途からユーティリティ群を選びます。レイアウトと余白、文字、背景や境界線、動き、操作の順に探せます。各ページには対応する値、宣言、詳細なカタログ情報も残しています。",
     specVersionLabel: "カタログの仕様バージョン",
     familyColumn: "ユーティリティ群",
     entryCountColumn: "カタログ項目数",
@@ -47,6 +47,18 @@ export const strings = {
   links: {
     utilityGrammar: "ユーティリティの文法",
     variants: "バリアント",
+  },
+  reader: {
+    lookup: "クラスと CSS の早見表",
+    setup: "例の設定",
+    workedExamples: "使い方の例",
+    customValues: "任意値と名前付きの値",
+    technical: "カタログの詳細",
+    config: "この例の設定",
+    scaffold: "デモ用の自作 CSS",
+    diagnostics: "期待される診断",
+    taskColumn: "用途",
+    browse: "用途から選ぶ",
   },
   families: {
     display: {

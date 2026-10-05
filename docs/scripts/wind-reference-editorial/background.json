@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "background",
+  "lookup": [
+    {
+      "entry": "v1.background",
+      "candidate": "bg-panel",
+      "example": "surface-colors"
+    },
+    {
+      "entry": "v1.background",
+      "candidate": "bg-accent/18",
+      "example": "color-opacity"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set an element’s background color independently of its text color.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "A name such as bg-panel must be declared under tokens.colors. The keywords bg-current and bg-transparent are also supported. Arbitrary CSS colors use brackets, for example bg-[#e7f0f5]. Color slash opacity accepts whole-number percentages from 0 through 100 and mixes only the background color with transparent. It does not make the element’s text transparent. No Tailwind palette is assumed.",
+      "examples": [
+        {
+          "id": "surface-colors",
+          "title": "Combine foreground and surface tokens",
+          "description": "The light panel and dark accent are configured colors; text utilities keep the foreground readable on each surface."
+        },
+        {
+          "id": "color-opacity",
+          "title": "Tint a surface without fading its text",
+          "description": "bg-accent/18 blends the background color with transparency while text-ink stays fully opaque; the second card uses a one-off CSS color."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "文字色とは独立して、要素の背景色を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "bg-panel のような名前は tokens.colors に設定します。bg-current と bg-transparent もキーワードとして使えます。bg-[#e7f0f5] のように角括弧で CSS 色を指定できます。色のスラッシュ修飾子には 0〜100 の整数を使い、背景色だけを transparent と混ぜます。要素内の文字全体が薄くなるわけではありません。Tailwind のパレットは仮定しません。",
+      "examples": [
+        {
+          "id": "surface-colors",
+          "title": "前景色と背景色のトークンを組み合わせる",
+          "description": "明るい panel と濃い accent を設定し、各面で読みやすくなるよう文字色を別に指定しています。"
+        },
+        {
+          "id": "color-opacity",
+          "title": "文字を薄くせず背景に色を加える",
+          "description": "bg-accent/18 は背景色だけを透明色と混ぜ、text-ink は不透明のままです。もう一方は個別の CSS 色を使います。"
+        }
+      ]
+    }
+  }
+}

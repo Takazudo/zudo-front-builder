@@ -1,0 +1,99 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.45 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-alt {
+  border-color: #b39761;
+  background: #efe5cb;
+  color: #483a1d;
+}
+
+.wind-demo-frame {
+  border: 1px solid #9aaabd;
+  background: #f8fafc;
+  padding: .75rem;
+}
+
+.wind-demo-note {
+  color: #53677f;
+  font-size: .875rem;
+}
+
+.wind-demo-tile {
+  border: 1px solid #849bb3;
+  background: #dce8f2;
+  color: #203046;
+  padding: .5rem;
+  text-align: center;
+}
+.grid {
+  display: grid;
+}
+.col-end-3 {
+  grid-column-end: 3;
+}
+.col-end-4 {
+  grid-column-end: 4;
+}
+.col-end-5 {
+  grid-column-end: 5;
+}
+.col-span-2 {
+  grid-column: span 2 / span 2;
+}
+.col-start-1 {
+  grid-column-start: 1;
+}
+.col-start-2 {
+  grid-column-start: 2;
+}
+.col-start-3 {
+  grid-column-start: 3;
+}
+.col-start-auto {
+  grid-column-start: auto;
+}
+.grid-cols-4 {
+  grid-template-columns: repeat(4,minmax(0,1fr));
+}
+.grid-rows-4 {
+  grid-template-rows: repeat(4,minmax(0,1fr));
+}
+.row-end-2 {
+  grid-row-end: 2;
+}
+.row-end-4 {
+  grid-row-end: 4;
+}
+.row-end-5 {
+  grid-row-end: 5;
+}
+.row-end-auto {
+  grid-row-end: auto;
+}
+.row-span-2 {
+  grid-row: span 2 / span 2;
+}
+.row-start-1 {
+  grid-row-start: 1;
+}
+.row-start-2 {
+  grid-row-start: 2;
+}
+.row-start-3 {
+  grid-row-start: 3;
+}
+.row-start-4 {
+  grid-row-start: 4;
+}
+.gap-2 {
+  column-gap: 0.5rem;
+  row-gap: 0.5rem;
+}

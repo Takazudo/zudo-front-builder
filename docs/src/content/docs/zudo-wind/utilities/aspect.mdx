@@ -5,9 +5,139 @@ sidebar_position: 62
 generated: true
 ---
 
-Set an automatic, named, or arbitrary aspect ratio.
+Use aspect-ratio to preserve a frame shape while its width changes, which is useful for media cards, thumbnails, and embeds. The ratio determines the other dimension when that dimension is automatic.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `aspect-video` | `aspect-ratio: 16 / 9;` |
+| `aspect-square` | `aspect-ratio: 1 / 1;` |
+| `aspect-3/2` | `aspect-ratio: 3 / 2;` |
+| `aspect-auto` | `aspect-ratio: auto;` |
+| `aspect-4/3` | `aspect-ratio: 4 / 3;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare common ratios
+
+The wide frame uses 16:9, the square frame uses 1:1, and aspect-3/2 creates a wider-than-tall rectangle.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe ratio determines height from width when height is automatic.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-72\"\u003e\n    \u003cdiv class=\"wind-demo-art aspect-video w-full\"\u003easpect-video 16:9\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-square w-24\"\u003easpect-square\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-3/2 w-48\"\u003easpect-3/2\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-art {\n  border: 1px solid #849bb3;\n  background: linear-gradient(135deg, #dce8f2, #9bb5cc);\n  color: #203046;\n  text-align: center;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-48 {\n  width: 12rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n.aspect-3\\/2 {\n  aspect-ratio: 3 / 2;\n}\n.aspect-square {\n  aspect-ratio: 1 / 1;\n}\n.aspect-video {\n  aspect-ratio: 16 / 9;\n}\n"} title={"Compare common ratios"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-art": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "aspect-3/2",
+        "aspect-square",
+        "aspect-video",
+        "w-24",
+        "w-48",
+        "w-72",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+```
+
+</Details>
+
+### Leave the ratio automatic
+
+aspect-auto lets the explicit h-16 set height; aspect-4/3 derives height from its width.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-start gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-art aspect-auto h-16 w-24\"\u003eauto: explicit height\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-4/3 w-24\"\u003ecustom ratio\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-art {\n  border: 1px solid #849bb3;\n  background: linear-gradient(135deg, #dce8f2, #9bb5cc);\n  color: #203046;\n  text-align: center;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n.flex {\n  display: flex;\n}\n.items-start {\n  align-items: flex-start;\n}\n.h-16 {\n  height: 4rem;\n}\n.w-24 {\n  width: 6rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.aspect-4\\/3 {\n  aspect-ratio: 4 / 3;\n}\n.aspect-auto {\n  aspect-ratio: auto;\n}\n"} title={"Leave the ratio automatic"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-art": true,
+      "wind-demo-frame": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "aspect-4/3",
+        "aspect-auto",
+        "flex",
+        "gap-2",
+        "h-16",
+        "items-start",
+        "w-24"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+The named values are auto, square (1:1), and video (16:9). Numeric fractions such as aspect-3/2 are supported, as are arbitrary CSS values in brackets. No aspect token is inherited or required. aspect-auto leaves the ratio automatic so another sizing rule or intrinsic content can determine the shape.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## aspect
 
@@ -44,3 +174,5 @@ Set an automatic, named, or arbitrary aspect ratio.
 | Example class | Expected declarations |
 | --- | --- |
 | `aspect-16/9` | `aspect-ratio: 16 / 9` |
+
+</Details>

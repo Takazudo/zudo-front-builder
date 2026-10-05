@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "family": "padding",
+  "examples": [
+    {
+      "id": "all-sides",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-cell p-4\">\n  <div class=\"wind-demo-content\">p-4 · 1rem</div>\n</div>",
+      "utilities": ["p-4"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell", "wind-demo-content"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }\n"
+    },
+    {
+      "id": "axis-padding",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-cell px-8 py-2\">\n  <div class=\"wind-demo-content\">px-8 py-2 · 2rem / 0.5rem</div>\n</div>",
+      "utilities": ["px-8", "py-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell", "wind-demo-content"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }\n"
+    },
+    {
+      "id": "edge-padding",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-cell pt-2 pr-4 pb-6 pl-8\">\n  <div class=\"wind-demo-content\">pt-2 pr-4 pb-6 pl-8 · 0.5 / 1 / 1.5 / 2rem</div>\n</div>",
+      "utilities": ["pt-2", "pr-4", "pb-6", "pl-8"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell", "wind-demo-content"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }\n"
+    },
+    {
+      "id": "custom-padding",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-cell p-card\">\n  <div class=\"wind-demo-content\">p-card · 1.5rem</div>\n</div>",
+      "utilities": ["p-card"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell", "wind-demo-content"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "card": "1.5rem"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "arbitrary-padding",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-cell p-[18px]\">\n  <div class=\"wind-demo-content\">p-[18px] · 18px</div>\n</div>",
+      "utilities": ["p-[18px]"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell", "wind-demo-content"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }\n"
+    }
+  ]
+}

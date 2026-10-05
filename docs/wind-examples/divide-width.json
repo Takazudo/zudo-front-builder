@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "family": "divide-width",
+  "examples": [
+    {
+      "id": "vertical-dividers",
+      "kind": "positive",
+      "html": "<ul class=\"wind-demo-vertical-list divide-y-2\"><li class=\"wind-demo-item\">Visible item A</li><li class=\"wind-demo-item\" hidden>Hidden child in the source</li><li class=\"wind-demo-item\">Visible item B</li><li class=\"wind-demo-item\">Visible item C</li></ul>",
+      "utilities": ["divide-y-2"],
+      "authoredClasses": ["wind-demo-item", "wind-demo-vertical-list"],
+      "scaffoldCss": ".wind-demo-vertical-list { max-width: 27rem; margin: 0; padding: 0; list-style: none; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-item { padding: 0.7rem 0.2rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "horizontal-dividers",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-horizontal divide-x-3\"><div class=\"wind-demo-item\">First</div><div class=\"wind-demo-item\">Second</div><div class=\"wind-demo-item\">Third</div></div>",
+      "utilities": ["divide-x-3"],
+      "authoredClasses": ["wind-demo-horizontal", "wind-demo-item"],
+      "scaffoldCss": ".wind-demo-horizontal { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 30rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }\n.wind-demo-item { padding: 0.7rem 0.8rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

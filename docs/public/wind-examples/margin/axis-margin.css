@@ -1,0 +1,41 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-frame {
+  display: flow-root;
+  min-height: 9rem;
+  border: 2px dashed #849bb3;
+  background: #eef3f8;
+}
+
+.wind-demo-axis-frame {
+  width: 20rem;
+}
+
+.wind-demo-card {
+  width: 8rem;
+  min-height: 3rem;
+  border: 1px solid #59718b;
+  background: #dce8f2;
+  text-align: center;
+}
+
+.wind-demo-axis-card {
+  min-height: 5rem;
+}
+.mx-8 {
+  margin-left: 2rem;
+  margin-right: 2rem;
+}
+.my-2 {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}

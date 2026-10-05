@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "family": "text-layout",
+  "lookup": [
+    {
+      "entry": "v1.text.align",
+      "candidate": "text-center",
+      "example": "text-alignment"
+    },
+    {
+      "entry": "v1.whitespace",
+      "candidate": "whitespace-pre-wrap",
+      "example": "whitespace"
+    },
+    {
+      "entry": "v1.break-all",
+      "candidate": "break-all",
+      "example": "word-wrapping"
+    },
+    {
+      "entry": "v1.break-normal",
+      "candidate": "break-normal",
+      "example": "word-wrapping"
+    },
+    {
+      "entry": "v1.break-words",
+      "candidate": "break-words",
+      "example": "word-wrapping"
+    },
+    {
+      "entry": "v1.wrap-anywhere",
+      "candidate": "wrap-anywhere",
+      "example": "word-wrapping"
+    },
+    {
+      "entry": "v1.truncate",
+      "candidate": "truncate",
+      "example": "truncate-line"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Control where text aligns, how spaces and line breaks behave, and how long words or single lines fit a container. Start with normal wrapping; use specialized behavior only when the content and available width call for it.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. These examples use fixed demo widths authored in wind-demo CSS so the wrapping behavior is visible; that CSS does not set text alignment, white-space, word-break, overflow-wrap, or truncation. Japanese text wraps at natural character boundaries where the browser allows it.",
+      "customValues": "text-left, text-center, text-right, text-justify, text-start, and text-end control alignment; start and end follow the element direction. whitespace-* chooses how spaces and source newlines collapse, stay, or wrap. break-all can split at any character, break-words allows an emergency break for a long word, and wrap-anywhere also changes min-content sizing. break-normal restores normal word-break and overflow-wrap. truncate combines hidden overflow, an ellipsis, and no wrapping; give the element a real width constraint or the effect has nothing to trim. For Japanese, normal line breaking already uses character-level opportunities, so compare these controls with long Latin identifiers as well as Japanese prose.",
+      "examples": [
+        {
+          "id": "text-alignment",
+          "title": "Align and follow text direction",
+          "description": "The fixed-width rows compare physical alignment with logical start and end. The RTL rows show that start follows direction."
+        },
+        {
+          "id": "whitespace",
+          "title": "Keep or collapse whitespace",
+          "description": "Each row receives the same spaces and source line breaks so the six white-space modes can be compared directly."
+        },
+        {
+          "id": "word-wrapping",
+          "title": "Handle an unbroken identifier",
+          "description": "A long URL shows normal overflow, character breaks, emergency word wrapping, and anywhere wrapping in equal-width boxes."
+        },
+        {
+          "id": "truncate-line",
+          "title": "Trim one line to a width",
+          "description": "truncate supplies overflow hidden, ellipsis, and nowrap; the authored width makes the cutoff visible."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "文字揃え、空白や改行の扱い、長い単語や1行テキストの収め方を調整します。まず通常の折り返しを使い、内容と幅に合わせて必要な挙動を選びます。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。折り返しを確認しやすい固定幅は wind-demo CSS で指定します。この CSS は text-align、white-space、word-break、overflow-wrap、truncate を設定しません。日本語はブラウザーが許可する自然な文字境界で折り返します。",
+      "customValues": "text-left、text-center、text-right、text-justify、text-start、text-end は文字揃えを制御します。start と end は要素の方向に従います。whitespace-* は空白やソース内の改行を畳むか保持するか、折り返すかを選びます。break-all は任意の文字間で分割し、break-words は長い単語の緊急折り返しを許可し、wrap-anywhere は min-content の幅にも影響します。break-normal は通常の word-break と overflow-wrap に戻します。truncate は overflow hidden、ellipsis、nowrap をまとめて指定するため、切り詰めるには実際の幅制限が必要です。日本語は通常の行分割でも文字単位で折り返せるため、長い英数字の識別子と日本語の文章を合わせて確認してください。",
+      "examples": [
+        {
+          "id": "text-alignment",
+          "title": "文字揃えと文章の方向",
+          "description": "固定幅の行で物理方向の揃え方と論理的な start、end を比べます。RTL の行では start が方向に従う様子を示します。"
+        },
+        {
+          "id": "whitespace",
+          "title": "空白の保持と折り畳み",
+          "description": "6種類の white-space を同じ空白とソース内改行に適用し、挙動を比較します。"
+        },
+        {
+          "id": "word-wrapping",
+          "title": "分割できない識別子を扱う",
+          "description": "長いURLで通常のはみ出し、文字分割、緊急折り返し、anywhere の違いを同じ幅で比べます。"
+        },
+        {
+          "id": "truncate-line",
+          "title": "幅に合わせて1行を省略する",
+          "description": "truncate は overflow hidden、ellipsis、nowrap を指定します。デモの幅制限により省略位置が見えます。"
+        }
+      ]
+    }
+  }
+}
