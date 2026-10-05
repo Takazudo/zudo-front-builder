@@ -261,3 +261,46 @@ fn check(source: &str) {
         }
     }
 }
+
+#[test]
+fn positions_across_raw_newlines_and_multibyte_prefixes() {
+    let source = "—\n<div class='line'>日本語</div>\n\n😀<div class='block'>x</div>\n";
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for (text, line) in [("line", 2), ("block", 4)] {
+        let occurrence = class_occurrence(&result, text);
+        assert_eq!(occurrence.byte_offset, source.find(text).unwrap());
+        assert_eq!(occurrence.line, line);
+    }
+}
+
+#[test]
+fn repeated_generated_html_classes_keep_raw_positions() {
+    let mut source = String::from("// — 日本語\nexport default [");
+    for index in 0..500 {
+        if index != 0 {
+            source.push(',');
+        }
+        let html =
+            format!("<span>guide — 日本語 \\n</span><span class=\"line block\">{index}</span>");
+        source.push_str("{\"body\":");
+        source.push_str(&serde_json::to_string(&html).unwrap());
+        source.push('}');
+    }
+    source.push_str("];\n");
+    let result = extract_candidates(source.as_bytes(), SourceKind::Ts);
+    assert_positions(&source, &result);
+    for text in ["line", "block"] {
+        let candidate = result.candidates.iter().find(|c| c.text == text).unwrap();
+        let classes: Vec<_> = candidate
+            .occurrences
+            .iter()
+            .filter(|o| o.position_kind == PositionKind::Class)
+            .collect();
+        assert_eq!(classes.len(), 500, "{text}");
+        assert!(classes.iter().all(|o| o.line == 2), "{text}");
+        assert!(classes
+            .iter()
+            .all(|o| &source[o.byte_offset..o.byte_offset + o.byte_length] == text));
+    }
+}

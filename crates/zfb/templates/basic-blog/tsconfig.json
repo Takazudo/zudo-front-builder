@@ -16,7 +16,6 @@
     "jsxImportSource": "@takazudo/zfb/zudo-react",
     "allowSyntheticDefaultImports": true,
     "verbatimModuleSyntax": false,
-    "baseUrl": ".",
     "paths": {
       "~/*": ["./*"]
     },

@@ -162,4 +162,17 @@ describe.each(["hydrate", "mount"] as const)("%s rawHtml reserved boundaries", (
     expect(attach(h(demo("<i data-zfb-island>"), {}), container, options())).toBeNull();
     expect(diagnostics[0]?.code).toBe("ZR_RAW_HTML");
   });
+
+  it("rejects a script payload that consumes its closing tag", () => {
+    const scriptDemo = (payload: string) =>
+      function Demo() {
+        return h("script", { rawHtml: payload });
+      };
+    const host = document.createElement("div");
+    document.body.append(host);
+    host.innerHTML = renderToString(islandRoot(h(scriptDemo("safe"), {}), { identity }));
+    const container = host.firstElementChild!;
+    expect(attach(h(scriptDemo("<!--<script>"), {}), container, options())).toBeNull();
+    expect(diagnostics[0]?.code).toBe("ZR_RAW_HTML");
+  });
 });
