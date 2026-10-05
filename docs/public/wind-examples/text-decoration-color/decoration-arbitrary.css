@@ -1,0 +1,21 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #a23862;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-decoration {
+  max-width: 34rem;
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: .8rem;
+  line-height: 1.8;
+}
+
+.wind-demo-decoration a {
+  color: inherit;
+}
+.decoration-\[\#b42318\]\/80 {
+  text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);
+}
