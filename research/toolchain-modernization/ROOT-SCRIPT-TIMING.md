@@ -1,81 +1,75 @@
-# Root scripts timing: harness and evidence gates (#3640)
+# Root scripts timing: Darwin and Linux evidence (#3640)
 
-This note prepares the repeated per-test timing work requested by #3640. The harness is ready for
-the manager's controlled runs; no new measurement is claimed here. The historical Darwin sample
-below is the issue's planning baseline, not evidence for this head or for loaded conditions.
+Five idle passes and five bounded CPU-load passes completed on each requested platform. The
+results below preserve the existing timeout guards; no run approached the 5 s `scripts` timeout.
 
-## Harness
+## Source and toolchain
 
-[`scripts/root-script-timing.mjs`](../../scripts/root-script-timing.mjs) invokes only the root
-Vitest `scripts` project, sequentially, with `--reporter=json` and a distinct JSON file for every
-pass. It writes a per-pass provenance JSON plus batch `summary.json` and `summary.md`. The summary
-reports p50/p90/p99/max across individual test observations and per-test distributions over all
-passes, with the 20 largest observed test maxima.
-Percentile ranks use the repository's locked nearest-rank quantile convention from the supervisor
-timeline summary. Each run also records Vitest's total, passed, failed, pending, and todo test counts
-so a partial or changed corpus is visible alongside the timed samples.
+All 20 passes ran from the same clean CI merge-ref source, `8f1a1ea46ee1868716fb0c75dbe27885d69a5ee3`
+(`refs/pull/3694/merge`). The runner versions recorded in every provenance file are Node 24.14.0,
+pnpm 12.8.2, Vite+ 1.0.0, Vite 8.3.1, and Vitest 5.0.1.
 
-The harness captures Node, pnpm, Vite+, Vite, Vitest, OS release and architecture, CPU model and
-available/logical core counts, total and starting free memory, load average, source SHA/branch/dirty
-state, and recognized GitHub Actions run identifiers. Each raw report is hashed and linked from its
-provenance record. Passes run serially so no timing batch overlaps its own runs.
+Both matrix jobs passed in [GitHub Actions run 37254881043](https://github.com/Takazudo/zudo-front-builder/actions/runs/37254881043),
+attempt 1. The uploaded artifacts are `root-script-timing-ubuntu-24.04` and
+`root-script-timing-macos-15`. Each contains five Vitest JSON files and five matching provenance
+files for each profile, plus `summary.json` and `summary.md`. The batch IDs are:
 
-CPU mode starts a user-selected number of Node worker threads, capped at four and at the host's
-available parallelism. Each worker runs a fixed-size integer loop without creating files, child
-processes, or growing memory. The workers start before Vitest and are stopped in `finally`, including
-when the command fails. SIGINT/SIGTERM is forwarded only to the runner's detached process group;
-after five seconds the harness sends SIGKILL to that same group and still cleans up its workers.
-The cleanup test uses an idle worker and a simulated runner failure; it does not conduct a loaded
-measurement.
-
-Artifacts go under the requested output directory in a unique batch subdirectory. Point it at a
-temporary directory or upload the directory from CI; do not commit raw reports.
-
-## Reproduction commands
-
-On Darwin, run each profile as its own foreground command when the machine is idle and has no
-overlapping build:
-
-```sh
-node scripts/root-script-timing.mjs --profile idle --runs 5 --output-dir "$TMPDIR/zfb-root-script-timing"
-node scripts/root-script-timing.mjs --profile cpu --runs 5 --output-dir "$TMPDIR/zfb-root-script-timing"
-```
-
-On Linux CI, run the same two commands after checkout and dependency installation, in one job step
-with no concurrent build/test step in that job:
-
-```sh
-node scripts/root-script-timing.mjs --profile idle --runs 5 --output-dir "$RUNNER_TEMP/zfb-root-script-timing"
-node scripts/root-script-timing.mjs --profile cpu --runs 5 --output-dir "$RUNNER_TEMP/zfb-root-script-timing"
-```
-
-Upload the full `$RUNNER_TEMP/zfb-root-script-timing` directory as a CI artifact, retaining its
-workflow run URL, run ID, attempt, and commit SHA. The manager owns temporary Linux workflow wiring
-and its removal after preserving the artifact and run URL. If it shares a diagnostic step with the
-rawHtml size check, both outputs can live under `$RUNNER_TEMP/epic-diagnostics` and be uploaded
-together. Do not add a standing workflow lane for this one-off evidence.
-
-Vite+ reports its bundled runner in `pnpm exec vp --version`; record that output with the measured
-artifacts rather than relying on the older runner name in source documentation. The current
-worktree reports Vite+ 1.0.0, Vite 8.3.1, and Vitest 5.0.1.
-
-## Evidence status
-
-| Platform / condition | Evidence required | Status |
+| Runner | Idle batch | CPU-load batch |
 | --- | --- | --- |
-| Darwin arm64, idle | 5 sequential passes, per-test JSON and provenance | Pending manager run |
-| Darwin arm64, bounded CPU load | 5 sequential passes, per-test JSON and provenance | Pending manager run |
-| Linux CI x64, idle | 5 sequential passes, CI artifact and traceable run URL | Pending manager run |
-| Linux CI x64, bounded CPU load | 5 sequential passes, CI artifact and traceable run URL | Pending manager run |
+| `ubuntu-24.04` | `idle-2026-10-05T02-18-52-869Z` | `cpu-2026-10-05T02-19-09-231Z` |
+| `macos-15` | `idle-2026-10-05T02-19-02-217Z` | `cpu-2026-10-05T02-19-19-623Z` |
 
-The issue's prior Darwin arm64 / 8 GiB sample at `70699ac` passed 438/438 with p50 0.30 ms,
-p90 18.90 ms, p99 1039.03 ms, and max 2262.31 ms. It is a single idle sample on an older SHA. The
-issue also says the available Linux sample was a local container, not Linux CI. Neither completes
-the platform/condition matrix above.
+I verified all 20 raw JSON SHA-256 values against their provenance records. Every run reports 442
+tests passed, zero failed/pending/todo, exit code 0, and 442 numeric per-test durations. Each batch
+contains 2,210 per-test observations. The raw reports and per-test distributions remain in the CI
+artifacts; no generated timing data is committed to the repository.
 
-The repository remains at `scripts.testTimeout = 5000` ms and
-`scripts-subprocess.testTimeout = 90000` ms. The 90 s project remains limited to suites that await
-subprocess work. No timeout or suite placement change is supported until representative healthy
-Darwin and Linux CI distributions are attached with the source and environment provenance. Slow
-tests and any possible memory-starvation signatures must be reviewed against their run logs before
-calling them hangs. Keep source issue #3630 open until both platform/condition evidence sets exist.
+## Per-test timing distributions
+
+Percentiles use the repository's locked nearest-rank convention and are calculated over individual
+test observations pooled across the five runs in that row.
+
+| Platform | Condition | Load workers | Passes / tests each | Samples | p50 | p90 | p99 | Max |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| macOS 15 arm64 | Idle | 0 | 5 / 442 passed | 2,210 | 0.18 ms | 4.81 ms | 150.99 ms | 282.19 ms |
+| macOS 15 arm64 | Bounded CPU load | 1 | 5 / 442 passed | 2,210 | 0.19 ms | 5.04 ms | 159.94 ms | 726.79 ms |
+| Ubuntu 24.04 x64 | Idle | 0 | 5 / 442 passed | 2,210 | 0.53 ms | 9.82 ms | 110.83 ms | 264.04 ms |
+| Ubuntu 24.04 x64 | Bounded CPU load | 2 | 5 / 442 passed | 2,210 | 0.63 ms | 15.92 ms | 182.72 ms | 458.02 ms |
+
+The load profile used one worker on macOS's three available CPUs and two workers on Linux's four.
+The slowest per-test observations across all four batches were:
+
+| Test | Condition | Max |
+| --- | --- | ---: |
+| `smoke-clean-room.test.mjs`: waits for the intended release, then pins all probes and npx | macOS CPU load | 726.79 ms |
+| `smoke-clean-room.test.mjs`: pins a scheduled moving channel after one resolution | macOS CPU load | 498.80 ms |
+| `smoke-clean-room.test.mjs`: fails a permanently stale release channel before install | macOS CPU load | 465.30 ms |
+| `changelog-layout.test.mjs`: computes the next position for every current lane | Linux CPU load | 458.02 ms |
+| `smoke-clean-room.test.mjs`: rejects an unavailable or invalid registry response | macOS CPU load | 359.19 ms |
+
+## Host details and limits
+
+| Runner | OS image | CPU | RAM | `os.freemem()` at pass start | 1-minute load average at pass start |
+| --- | --- | --- | ---: | ---: | ---: |
+| `ubuntu-24.04` (`ubuntu24`, image `20260927.320.1`) | Linux 6.17.0-1022-azure | AMD EPYC 7763, 4 available CPUs | 15.6 GiB | 13.8–14.4 GiB | Idle 0.49–1.13; CPU load 1.44–2.20 |
+| `macos-15` (`macos15`, image `20260907.0337.1`) | Darwin 24.6.0 | Apple M1 (Virtual), 3 available CPUs | 7.0 GiB | Idle 0.39–0.52 GiB; CPU load 0.30–0.38 GiB | Idle 5.58–6.22; CPU load 6.20–9.00 |
+
+The timing steps ran serially after setup, with no overlapping build or test job. The macOS load
+average includes earlier setup/install activity and is not a measurement of test-time contention.
+On macOS, `os.freemem()` reports free pages and excludes reclaimable memory; this snapshot alone
+does not establish memory starvation or pressure. All measured tests passed, and the artifacts show
+no timeout failures. The CPU batches exited 0 after the harness's `finally` cleanup; it creates no
+standalone burner process. The run does not provide a direct macOS memory-pressure reading.
+
+## Timeout recommendation
+
+Keep `scripts.testTimeout` at 5,000 ms. The slowest test observation was 726.79 ms, about 6.9 times
+below that guard, and the measured p99 values were 110.83–182.72 ms. These representative CI runs
+do not support shortening the guard or changing suite placement.
+
+Keep `scripts-subprocess.testTimeout` at 90,000 ms as well. These timing runs measured only the
+`scripts` project; the four awaited-subprocess suites in `scripts-subprocess` were not part of the
+corpus, so this data cannot justify changing that outer guard.
+
+The temporary evidence workflow was removed after both artifacts were captured. The four requested
+Darwin/Linux idle/CPU evidence cells are complete; source issue #3630's evidence gate is satisfied.
