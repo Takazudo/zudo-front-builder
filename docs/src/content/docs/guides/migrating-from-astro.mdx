@@ -87,7 +87,7 @@ See [`defineConfig`](../api/define-config.mdx) for the full shape.
 
 Astro uses `client:load`, `client:visible`, and friends as JSX attributes
 on imported framework components. zfb uses a file-level `"use client"`
-directive instead — the same pattern Next.js App Router popularized:
+directive and an explicit `<Island>` boundary:
 
 ```tsx
 "use client";
@@ -123,7 +123,7 @@ A few Astro features have direct zfb equivalents under a different name:
   (the same SPA router with view-transition animations that Astro's
   `<ClientRouter />` provides).
 - **Islands / client directives** — replaced by the `"use client"` file
-  directive and an explicit `<Island>` boundary (the Next.js App Router pattern); see [Islands](../concepts/islands.mdx).
+  directive and an explicit `<Island>` boundary; see [Islands](../concepts/islands.mdx).
 
 Some features have no current equivalent: an integrations marketplace, Astro
 DB, and server endpoints. If your site relies on these, evaluate whether

@@ -154,7 +154,7 @@ zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.
 
 `zfb build --warnings-json warnings.json` は診断をファイルに保存します。`schemaVersion: 1`、`command: "build"`、`status`、`diagnostics` を持ちます。`status` は `success`、`failed`、`incomplete` のいずれかで、後者 2 つの診断は部分的な場合があります。レコードは決定的な順序で並びます。同じ警告が複数回発生した場合は各発生が残ります。警告は従来の終了コードを変更しません。
 
-警告のない成功したビルドも `diagnostics: []` を書き込みます。早期に失敗したビルドは、それまでに得られた診断（空の場合もあります）を `failed` レポートに書き込みます。出力先の親ディレクトリは事前に存在している必要があります。書き込み失敗は報告され、ビルドコマンドも失敗します。
+診断のない成功したビルドは `diagnostics: []` を書き込みます。早期に失敗したビルドは、それまでに得られた診断（空の場合もあります）を `failed` レポートに書き込みます。出力先の親ディレクトリは事前に存在している必要があります。書き込み失敗は報告され、ビルドコマンドも失敗します。
 
 各レコードには `code`、`severity`、`message` があり、`sourceId`、`file`、`line`、`byteColumn` は分かる場合のみ付きます。`byteColumn` は 1 始まりの UTF-8 バイト列です。`sourceId` は不透明な識別子で、必ずしもパスではありません。文言ではなくコードを機械処理に使い、未知のコードも許容してください。
 
@@ -450,7 +450,7 @@ zfb preview --host --outdir public
 zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
-このコマンドは 2 つのチェックと JSX pragma の警告を実行します。
+このコマンドは TypeScript、コレクションスキーマ、SSR ルートを検査し、JSX pragma の警告も報告します。
 
 1. **TypeScript** — `tsc --noEmit` をサブプロセスとして呼び出します。`zfb.config.ts`、コレクションスキーマ、`src/` の型エラーを捕捉します。
 2. **コレクションスキーマの検証** — 各コレクションエントリのフロントマターを、`zfb.config.json`/`zfb.config.ts` の各コレクションの `schema` フィールドで宣言された JSON Schema に対して検証します。ビルド自体はフロントマターを検証しないため、これが強制の関門となります。

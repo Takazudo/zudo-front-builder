@@ -63,7 +63,7 @@ Zod はありません。スキーマの検証には最小限の JSON-Schema 方
 
 ## アイランド
 
-Astro はインポートしたフレームワークコンポーネントの JSX 属性として `client:load`、`client:visible` などを使います。zfb はその代わりにファイルレベルの `"use client"` ディレクティブを使います — Next.js App Router が広めたのと同じパターンです:
+Astro はインポートしたフレームワークコンポーネントの JSX 属性として `client:load`、`client:visible` などを使います。zfb はその代わりにファイルレベルの `"use client"` ディレクティブと明示的な `<Island>` 境界を使います:
 
 ```tsx
 "use client";
@@ -98,7 +98,7 @@ export default function DocsLayout({ children }) {
   （Astro の `<ClientRouter />` が提供するのと同じ、ビュートランジションアニメーション付きの
   SPA ルーターです）。
 - **アイランド / クライアントディレクティブ** — `"use client"` と明示的な `<Island>` に
-  置き換えられています（Next.js App Router のパターン）。[アイランド](../concepts/islands.mdx)を参照してください。
+  置き換えられています。[アイランド](../concepts/islands.mdx)を参照してください。
 
 現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
 

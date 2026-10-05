@@ -308,17 +308,16 @@ fn collect_authored_pragma_warnings(
         project_root.join(out_dir)
     };
     let mut files = Vec::new();
-    fn walk(
-        dir: &Path,
-        root: &Path,
-        output: &Path,
-        scratch: &Path,
-        files: &mut Vec<PathBuf>,
-    ) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
+    fn walk(dir: &Path, root: &Path, output: &Path, scratch: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
             let path = entry.path();
-            let ty = entry.file_type()?;
+            let Ok(ty) = entry.file_type() else {
+                continue;
+            };
             if ty.is_symlink() || path.starts_with(output) || path.starts_with(scratch) {
                 continue;
             }
@@ -333,7 +332,7 @@ fn collect_authored_pragma_warnings(
                 {
                     continue;
                 }
-                walk(&path, root, output, scratch, files)?;
+                walk(&path, root, output, scratch, files);
             } else if ty.is_file()
                 && matches!(
                     path.extension().and_then(|s| s.to_str()),
@@ -345,11 +344,10 @@ fn collect_authored_pragma_warnings(
                 }
             }
         }
-        Ok(())
     }
     // The new advisory must not make an otherwise successful check fail
     // because an unrelated directory cannot be read.
-    let _ = walk(
+    walk(
         project_root,
         project_root,
         &output,
