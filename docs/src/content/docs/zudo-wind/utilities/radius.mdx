@@ -5,9 +5,166 @@ sidebar_position: 47
 generated: true
 ---
 
-Set all corners, edge corners, or a single corner with configured radius values.
+Round all corners, a physical side’s pair of corners, or one corner.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rounded-card` | `border-top-left-radius: var(--zw-radius-card); border-top-right-radius: var(--zw-radius-card); border-bottom-right-radius: var(--zw-radius-card); border-bottom-left-radius: var(--zw-radius-card);` |
+| `rounded-b-card` | `border-bottom-right-radius: var(--zw-radius-card); border-bottom-left-radius: var(--zw-radius-card);` |
+| `rounded-l-card` | `border-top-left-radius: var(--zw-radius-card); border-bottom-left-radius: var(--zw-radius-card);` |
+| `rounded-r-card` | `border-top-right-radius: var(--zw-radius-card); border-bottom-right-radius: var(--zw-radius-card);` |
+| `rounded-t-card` | `border-top-left-radius: var(--zw-radius-card); border-top-right-radius: var(--zw-radius-card);` |
+| `rounded-bl-card` | `border-bottom-left-radius: var(--zw-radius-card);` |
+| `rounded-br-card` | `border-bottom-right-radius: var(--zw-radius-card);` |
+| `rounded-tl-card` | `border-top-left-radius: var(--zw-radius-card);` |
+| `rounded-tr-card` | `border-top-right-radius: var(--zw-radius-card);` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Round sides and individual corners
+
+Every card uses the same explicitly configured card radius; only the selected side or corner changes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-radius-grid\"\u003e\u003cdiv class=\"wind-demo-radius-card rounded-card bg-panel text-ink p-2\"\u003eall\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-t-card bg-panel text-ink p-2\"\u003etop\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-r-card bg-panel text-ink p-2\"\u003eright\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-b-card bg-panel text-ink p-2\"\u003ebottom\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-l-card bg-panel text-ink p-2\"\u003eleft\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-tl-card bg-panel text-ink p-2\"\u003etop-left\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-tr-card bg-panel text-ink p-2\"\u003etop-right\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-br-card bg-panel text-ink p-2\"\u003ebottom-right\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-card rounded-bl-card bg-panel text-ink p-2\"\u003ebottom-left\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-radius-card: .75rem;\n    --zw-radius-pill: 9999px;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-radius-grid {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(5rem, 1fr));\n  gap: .6rem;\n  max-width: 27rem;\n}\n\n.wind-demo-radius-card {\n  display: grid;\n  place-items: center;\n  min-height: 3.2rem;\n  text-align: center;\n  font: 12px / 1.25 system-ui, sans-serif;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n.rounded-b-card {\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n.rounded-l-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n.rounded-r-card {\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n}\n.rounded-t-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n}\n.rounded-bl-card {\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n.rounded-br-card {\n  border-bottom-right-radius: var(--zw-radius-card);\n}\n.rounded-tl-card {\n  border-top-left-radius: var(--zw-radius-card);\n}\n.rounded-tr-card {\n  border-top-right-radius: var(--zw-radius-card);\n}\n"} title={"Round sides and individual corners"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      },
+      "radii": {
+        "card": "0.75rem",
+        "pill": "9999px"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-radius-card": true,
+      "wind-demo-radius-grid": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-2",
+        "rounded-b-card",
+        "rounded-bl-card",
+        "rounded-br-card",
+        "rounded-card",
+        "rounded-l-card",
+        "rounded-r-card",
+        "rounded-t-card",
+        "rounded-tl-card",
+        "rounded-tr-card",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-radius-grid { display: grid; grid-template-columns: repeat(3, minmax(5rem, 1fr)); gap: 0.6rem; max-width: 27rem; }
+.wind-demo-radius-card { display: grid; place-items: center; min-height: 3.2rem; text-align: center; font: 12px/1.25 system-ui, sans-serif; }
+```
+
+</Details>
+
+### Use a named, built-in, or one-off value
+
+The pill name is configured, the bracket value is 18px, and full and none use the supported keywords.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-radius-values\"\u003e\u003cdiv class=\"wind-demo-radius-value rounded-pill bg-panel text-ink p-2\"\u003enamed pill\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-value rounded-[18px] bg-panel text-ink p-2\"\u003ecustom 18px\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-value rounded-full bg-panel text-ink p-2\"\u003efull\u003c/div\u003e\u003cdiv class=\"wind-demo-radius-value rounded-none bg-panel text-ink p-2\"\u003enone\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-radius-card: .75rem;\n    --zw-radius-pill: 9999px;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-radius-values {\n  display: flex;\n  flex-wrap: wrap;\n  gap: .7rem;\n  max-width: 30rem;\n}\n\n.wind-demo-radius-value {\n  display: inline-block;\n  font: 13px / 1.4 system-ui, sans-serif;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-\\[18px\\] {\n  border-top-left-radius: 18px;\n  border-top-right-radius: 18px;\n  border-bottom-right-radius: 18px;\n  border-bottom-left-radius: 18px;\n}\n.rounded-full {\n  border-top-left-radius: 9999px;\n  border-top-right-radius: 9999px;\n  border-bottom-right-radius: 9999px;\n  border-bottom-left-radius: 9999px;\n}\n.rounded-none {\n  border-top-left-radius: 0;\n  border-top-right-radius: 0;\n  border-bottom-right-radius: 0;\n  border-bottom-left-radius: 0;\n}\n.rounded-pill {\n  border-top-left-radius: var(--zw-radius-pill);\n  border-top-right-radius: var(--zw-radius-pill);\n  border-bottom-right-radius: var(--zw-radius-pill);\n  border-bottom-left-radius: var(--zw-radius-pill);\n}\n"} title={"Use a named, built-in, or one-off value"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      },
+      "radii": {
+        "card": "0.75rem",
+        "pill": "9999px"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-radius-value": true,
+      "wind-demo-radius-values": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-2",
+        "rounded-[18px]",
+        "rounded-full",
+        "rounded-none",
+        "rounded-pill",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-radius-values { display: flex; flex-wrap: wrap; gap: 0.7rem; max-width: 30rem; }
+.wind-demo-radius-value { display: inline-block; font: 13px/1.4 system-ui, sans-serif; }
+```
+
+</Details>
+
+## Custom and named values
+
+Named values resolve through tokens.radii; rounded-card is configured as 0.75rem and rounded-pill as 9999px. The built-in keywords rounded-none and rounded-full map to 0 and 9999px. Bracket values such as rounded-[18px] accept validated CSS lengths. Side names are physical: t, r, b, and l select top, right, bottom, and left; two-letter forms select one corner. Values cannot be negative. No default radius scale is inherited.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## rounded
 
@@ -330,3 +487,5 @@ Set all corners, edge corners, or a single corner with configured radius values.
 | Example class | Expected declarations |
 | --- | --- |
 | `rounded-tr-full` | `border-top-right-radius: 9999px` |
+
+</Details>

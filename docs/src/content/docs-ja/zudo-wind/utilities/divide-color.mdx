@@ -5,9 +5,83 @@ sidebar_position: 49
 generated: true
 ---
 
-グループ内で後続の表示対象の兄弟要素のボーダー色を設定します。
+後続する表示中の直下の子要素に、区切り線の色を設定します。線幅は divide-width と組み合わせます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `divide-accent/75` | `border-top-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-right-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-bottom-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent); border-left-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 表示中の行の区切り色を変える
+
+divide-accent/75 が色を設定し、divide-y-2 が上ボーダーを用意します。hidden の行はセレクターから除外されます。
+
+<HtmlPreview html={"\u003cul class=\"wind-demo-divider-list divide-y-2 divide-accent/75\"\u003e\u003cli class=\"wind-demo-divider-item\"\u003eFirst visible row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\" hidden\u003eHidden source row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\"\u003eNext visible row\u003c/li\u003e\u003cli class=\"wind-demo-divider-item\"\u003eLast visible row\u003c/li\u003e\u003c/ul\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-divider-list {\n  max-width: 28rem;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-divider-item {\n  padding: .75rem .2rem;\n}\n.divide-y-2 \u003e :not([hidden]) ~ :not([hidden]) {\n  border-top-width: 2px;\n  border-top-style: solid;\n}\n.divide-accent\\/75 \u003e :not([hidden]) ~ :not([hidden]) {\n  border-top-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-right-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-bottom-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n  border-left-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);\n}\n"} title={"表示中の行の区切り色を変える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-divider-item": true,
+      "wind-demo-divider-list": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "divide-accent/75",
+        "divide-y-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-divider-list { max-width: 28rem; margin: 0; padding: 0; list-style: none; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-divider-item { padding: 0.75rem 0.2rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+名前は tokens.colors に設定した値だけを参照します。divide-current、divide-transparent と検証済みの角括弧色も使えます。スラッシュには 0〜100 の整数を指定し、色を Oklab で transparent と混ぜます。divide の色ルールは、該当する後続の子要素に四辺すべての border-color を設定します。線の幅と方向には divide-x または divide-y を組み合わせます。hidden 属性の子要素は除外されるため、次の表示中の子は直前の表示中の子との間で区切られます。コンテナ自身の色を変えるユーティリティではありません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## divide
 
@@ -46,3 +120,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `divide-[red]/40` | `border-top-color: color-mix(in oklab, red 40%, transparent)`; `border-right-color: color-mix(in oklab, red 40%, transparent)`; `border-bottom-color: color-mix(in oklab, red 40%, transparent)`; `border-left-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>
