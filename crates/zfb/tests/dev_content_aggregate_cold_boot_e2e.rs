@@ -1465,3 +1465,252 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         ),
     }
 }
+
+// #3823: each request-order case is an independent nextest test. The
+// detail-first title+body case is expected to expose the current defect;
+// its assertion cannot prevent either control from executing.
+#[derive(Clone, Copy, Debug)]
+enum DeletionSequence {
+    DetailFirstTitleAndBody,
+    IndexBeforeDelete,
+    TitleOnly,
+}
+
+fn deletion_sequence_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-deletion-sequence")
+}
+
+fn sequence_entry(title: &str, body: &str) -> String {
+    format!("---\ntitle: {title}\n---\n\n{body}\n")
+}
+
+/// Poll the actual index response; a disk-only check would miss request-time
+/// lazy rendering. Keep the last response and request count in failure output.
+async fn poll_sequence_index_without_slug(
+    client: &reqwest::Client,
+    url: &str,
+    slug: &str,
+) -> Result<String, String> {
+    let start = Instant::now();
+    let mut attempts = 0;
+    let mut last = String::from("no response");
+    while start.elapsed() < SCENARIO_DEADLINE {
+        attempts += 1;
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                if status == 200 && !body.contains(slug) {
+                    eprintln!(
+                        "[deletion-sequence] GET / retracted {slug} after {attempts} requests in {:?}",
+                        start.elapsed()
+                    );
+                    return Ok(body);
+                }
+                last = format!("status {status}; body {body}");
+            }
+            Err(error) => last = format!("request error: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Err(format!(
+        "GET / still contains {slug} after {attempts} requests in {:?}; last observation: {last}",
+        start.elapsed()
+    ))
+}
+
+async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Result<u16, String> {
+    let start = Instant::now();
+    let mut attempts = 0;
+    let mut last = String::from("no response");
+    while start.elapsed() < SCENARIO_DEADLINE {
+        attempts += 1;
+        match client.get(url).send().await {
+            Ok(response) if response.status().as_u16() == 404 => {
+                eprintln!(
+                    "[deletion-sequence] deleted detail returned 404 after {attempts} requests in {:?}",
+                    start.elapsed()
+                );
+                return Ok(404);
+            }
+            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Err(error) => last = format!("request error: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Err(format!(
+        "deleted detail did not return 404 after {attempts} requests in {:?}; last observation: {last}",
+        start.elapsed()
+    ))
+}
+
+async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[deletion-sequence] no esbuild binary available; skipping {sequence:?}");
+        return;
+    };
+
+    let temp = tempfile::tempdir().expect("create deletion-sequence fixture root");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&deletion_sequence_fixture_dir(), &root).expect("copy deletion-sequence fixture");
+    assert!(!root.join(".zfb-build").exists(), "fixture must start cold");
+    fs::create_dir_all(root.join("data")).expect("create watched data directory");
+    let probe = root.join("data/handshake-probe.json");
+    fs::write(&probe, "{\"revision\":0}\n").expect("seed watcher probe");
+    let mut session = spawn_dev(root, &esbuild, DevMode::Lazy, Some("cold"));
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) = boot_and_handshake_banner_only(&mut session, &probe).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let route_count = parse_cold_lazy_route_count(&read_log(&session.stdout_path));
+        assert!(
+            matches!(route_count, Some(n) if n > 0),
+            "{sequence:?}: cold-lazy boot was not confirmed; count {route_count:?}\n{}",
+            session.logs()
+        );
+
+        let slug = "watch-sequence";
+        let source = session.root.join(format!("content/docs/{slug}.md"));
+        let detail_url = format!("{base}/{slug}/");
+        let index_url = format!("{base}/");
+        let first_title = "FIRST_SEQUENCE_TITLE";
+        let updated_title = "UPDATED_SEQUENCE_TITLE";
+        let first_body = "FIRST_SEQUENCE_BODY";
+        let updated_body = if matches!(sequence, DeletionSequence::TitleOnly) {
+            first_body
+        } else {
+            "UPDATED_SEQUENCE_BODY"
+        };
+        let started = Instant::now();
+
+        fs::write(&source, sequence_entry(first_title, first_body))
+            .expect("create collection entry");
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            first_title,
+            "created detail title",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            first_body,
+            "created detail body",
+            &session,
+        )
+        .await;
+        eprintln!(
+            "[deletion-sequence] {sequence:?} created detail observed at {:?}",
+            started.elapsed()
+        );
+
+        fs::write(&source, sequence_entry(updated_title, updated_body))
+            .expect("edit collection entry");
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            updated_title,
+            "edited detail title",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            updated_body,
+            "edited detail body",
+            &session,
+        )
+        .await;
+        eprintln!("[deletion-sequence] {sequence:?} edited detail observed at {:?}; title={updated_title}; body={updated_body}", started.elapsed());
+
+        if matches!(sequence, DeletionSequence::IndexBeforeDelete) {
+            poll_until_response_contains(
+                &client,
+                &index_url,
+                updated_title,
+                "control index before unlink",
+                &session,
+            )
+            .await;
+            eprintln!(
+                "[deletion-sequence] {sequence:?} updated index observed before unlink at {:?}",
+                started.elapsed()
+            );
+        }
+
+        let index_file = session.html_root().join("index.html");
+        eprintln!(
+            "[deletion-sequence] {sequence:?} before unlink at {:?}: index_exists={}, index_contains_slug={}",
+            started.elapsed(),
+            index_file.exists(),
+            fs::read_to_string(&index_file).map(|s| s.contains(slug)).unwrap_or(false)
+        );
+        fs::remove_file(&source).expect("delete collection entry");
+        eprintln!(
+            "[deletion-sequence] {sequence:?} unlinked at {:?}; GET / polling begins",
+            started.elapsed()
+        );
+
+        // Keep both post-delete observations even if the index is stale.
+        let index_result = poll_sequence_index_without_slug(&client, &index_url, slug).await;
+        let detail_result = poll_sequence_deleted_detail(&client, &detail_url).await;
+        let diagnostic_logs = if std::env::var_os("ZFB_DELETION_DIAGNOSTIC").is_some() {
+            session.logs()
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "[deletion-sequence] {sequence:?} final at {:?}: index={:?}; detail={detail_result:?}; index_disk_contains_slug={}\n{}",
+            started.elapsed(),
+            index_result,
+            fs::read_to_string(&index_file).map(|s| s.contains(slug)).unwrap_or(false),
+            diagnostic_logs
+        );
+        assert!(
+            index_result.is_ok(),
+            "{sequence:?}: {}\n{}",
+            index_result.unwrap_err(),
+            session.logs()
+        );
+        assert!(
+            detail_result.is_ok(),
+            "{sequence:?}: {}\n{}",
+            detail_result.unwrap_err(),
+            session.logs()
+        );
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(Duration::from_secs(360), body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] deletion sequence {sequence:?} exceeded 360s; process group {pgid} will be killed.\n{}",
+            session.logs()
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_deleted_entry_detail_first_title_and_body() {
+    run_deleted_collection_entry_sequence(DeletionSequence::DetailFirstTitleAndBody).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_deleted_entry_index_before_delete_control() {
+    run_deleted_collection_entry_sequence(DeletionSequence::IndexBeforeDelete).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_deleted_entry_title_only_control() {
+    run_deleted_collection_entry_sequence(DeletionSequence::TitleOnly).await;
+}
