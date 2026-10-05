@@ -1467,8 +1467,8 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
 }
 
 // #3823: each request-order case is an independent nextest test. The
-// detail-first title+body case is expected to expose the current defect;
-// its assertion cannot prevent either control from executing.
+// index-before-delete case is the passing request-order control; both cold,
+// detail-first cases must pass after the deletion invalidation fix.
 #[derive(Clone, Copy, Debug)]
 enum DeletionSequence {
     DetailFirstTitleAndBody,
@@ -1706,6 +1706,6 @@ async fn cold_lazy_deleted_entry_index_before_delete_control() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn cold_lazy_deleted_entry_title_only_control() {
+async fn cold_lazy_deleted_entry_title_only() {
     run_deleted_collection_entry_sequence(DeletionSequence::TitleOnly).await;
 }
