@@ -159,6 +159,7 @@ Paths beginning with `./` or `../` resolve from the project root, meaning the di
 ```ts
 wind: {
   sources: {
+    rootPackage: false,
     roots: ["src", "tests"],
     exclude: ["src/**/__tests__/**", "worker"],
     classHelpers: ["uiClasses"],
@@ -167,6 +168,14 @@ wind: {
   }
 }
 ```
+
+`sources.rootPackage` controls the implicit Wind scan of a workspace root package when
+`pnpm-workspace.yaml` explicitly claims `.`. It defaults to `true`; set it to `false` to skip only
+that source, or to `true` to keep it explicit. Project roots, imported sources, declared
+`sources.roots` and `sources.packageRoots`, manifests, and safelists remain independent inputs.
+When presets set this scalar, the first preset that supplies it wins; an explicit project value
+overrides presets, and a project omission inherits the preset value. Without a preset value,
+omission means `true`.
 
 Each `exclude` entry is a glob matched against paths relative to its declaring root: the project root (the `--config` file's directory when one is selected), or the preset package for a declaration from `definePreset()`. A pattern excludes a path when it matches the path or one of its parent directories, so `worker` or `worker/` excludes everything under `worker/`. `*` does not cross `/`; use `**` for any depth. Exclusions apply to every source root, win over explicit `--source` files, and only remove files under their own declaring root. Negated (`!`), absolute, and `..` patterns are rejected. Test files are not excluded unless a pattern names them.
 

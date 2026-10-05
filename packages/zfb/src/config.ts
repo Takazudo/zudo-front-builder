@@ -127,7 +127,11 @@ export type WindConfig = {
    * `class` and `className` cannot be ignored.
    */
   sources?: {
-    /** Omission scans a claimed workspace root package; false skips only that implicit Wind scan. */
+    /**
+     * Include the workspace root package as an implicit Wind source when
+     * pnpm-workspace.yaml claims `.`. Omission defaults to true; false skips
+     * only this implicit source.
+     */
     rootPackage?: boolean;
     exclude?: string[];
     roots?: string[];
