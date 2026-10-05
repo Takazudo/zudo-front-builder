@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { openFixture, readReport } from "./helpers.mjs";
 
@@ -16,6 +17,12 @@ test("decoration color, thickness, and style apply together and respond to hover
 
 test("decoration fixture reports all three catalog members without diagnostics", async () => {
   const report = await readReport("w-decoration");
+  const catalog = JSON.parse(
+    await readFile(
+      new URL("../../crates/zudo-wind/catalog/zudo-wind-catalog.v1.json", import.meta.url),
+      "utf8",
+    ),
+  );
   for (const [candidate, entryIdentifier] of [
     ["decoration-panel", "v1.decoration.color"],
     ["decoration-2", "v1.decoration.thickness"],
@@ -26,7 +33,7 @@ test("decoration fixture reports all three catalog members without diagnostics",
     expect(report.explanations[candidate]).toMatchObject({
       outcome: "resolved_utility",
       entryIdentifier,
-      specRevision: 8,
+      specRevision: catalog.specRevision,
     });
     expect(report.diagnostics.some((diagnostic) => diagnostic.candidate === candidate)).toBe(false);
   }
