@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { exampleSource } from "../../docs/scripts/wind-preview-assets.mjs";
+import { contrastRatioSrgb } from "./srgb-contrast.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const BASE_PATH = normalizeBase(process.env.WIND_DOCS_BASE ?? "/");
@@ -45,36 +46,6 @@ function publicPath(path) {
 
 function digest(text) {
   return createHash("sha256").update(text).digest("hex");
-}
-
-function oklchRelativeLuminance(color) {
-  const match = color.match(/^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*[\d.]+%?)?\s*\)$/);
-  assert.ok(
-    match,
-    `expected the installed site palette to expose an OKLCH color, received ${color}`,
-  );
-  const lightness = Number(match[1]);
-  const chroma = Number(match[2]);
-  const hue = (Number(match[3]) * Math.PI) / 180;
-  const a = chroma * Math.cos(hue);
-  const b = chroma * Math.sin(hue);
-  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  const linearRgb = [
-    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
-  ].map((channel) => Math.min(1, Math.max(0, channel)));
-  return linearRgb[0] * 0.2126 + linearRgb[1] * 0.7152 + linearRgb[2] * 0.0722;
-}
-
-function contrastRatio(foreground, background) {
-  const first = oklchRelativeLuminance(foreground);
-  const second = oklchRelativeLuminance(background);
-  const lighter = Math.max(first, second);
-  const darker = Math.min(first, second);
-  return (lighter + 0.05) / (darker + 0.05);
 }
 
 const LOCALES = {
@@ -194,7 +165,7 @@ function assertNoPageErrors(errors, context) {
 }
 
 function pageUrl(testCase) {
-  return publicPath(`${testCase.localePath}`);
+  return publicPath(testCase.localePath.replace(/\/$/, ""));
 }
 
 async function findFrame(page, index) {
@@ -467,25 +438,57 @@ async function checkPreviewSource(page, preview, example, index, labels) {
   }
 }
 
-async function checkThemeContrast(page, previewFrame, labels) {
-  const before = await page.evaluate(() => {
-    const root = getComputedStyle(document.documentElement);
-    return {
-      background: root.getPropertyValue("--color-bg").trim(),
-      foreground: root.getPropertyValue("--color-fg").trim(),
-    };
+async function readResolvedThemeColors(page) {
+  return page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText =
+      "position:fixed;visibility:hidden;pointer-events:none;color:var(--color-fg);background-color:var(--color-bg)";
+    document.body.append(probe);
+    try {
+      const styles = getComputedStyle(probe);
+      const foreground = styles.color;
+      const background = styles.backgroundColor;
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { colorSpace: "srgb" });
+      if (!context) throw new Error("sRGB canvas context is unavailable");
+      const sample = (color) => {
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        return Array.from(context.getImageData(0, 0, 1, 1).data);
+      };
+      const foregroundSrgb = sample(foreground);
+      const backgroundSrgb = sample(background);
+      return {
+        background,
+        backgroundSrgb,
+        colorScheme: getComputedStyle(document.documentElement).colorScheme,
+        foreground,
+        foregroundSrgb,
+        theme: document.documentElement.getAttribute("data-theme"),
+      };
+    } finally {
+      probe.remove();
+    }
   });
+}
+
+function assertOpaqueThemeColors(colors, context) {
+  assert.ok(colors.foreground, `${context} foreground token resolves`);
+  assert.ok(colors.background, `${context} background token resolves`);
+  assert.equal(colors.foregroundSrgb[3], 255, `${context} foreground is opaque`);
+  assert.equal(colors.backgroundSrgb[3], 255, `${context} background is opaque`);
+}
+
+async function checkThemeContrast(page, previewFrame, labels) {
+  const before = await readResolvedThemeColors(page);
+  assertOpaqueThemeColors(before, "light theme");
+  assert.notEqual(before.theme, "dark", "light scheme is active before the contrast check");
   assert.ok(
-    before.background && before.foreground,
-    "site theme foreground/background tokens exist",
-  );
-  assert.notEqual(
-    before.background,
-    before.foreground,
-    "site foreground contrasts with its background",
-  );
-  assert.ok(
-    contrastRatio(before.foreground, before.background) >= 4.5,
+    contrastRatioSrgb(before.foregroundSrgb, before.backgroundSrgb) >= 4.5,
     "light theme foreground/background meet WCAG AA contrast for text",
   );
 
@@ -498,22 +501,21 @@ async function checkThemeContrast(page, previewFrame, labels) {
   await page.getByRole("menuitemradio", { name: labels.dark, exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
-  const after = await page.evaluate(() => {
-    const root = getComputedStyle(document.documentElement);
-    return {
-      background: root.getPropertyValue("--color-bg").trim(),
-      foreground: root.getPropertyValue("--color-fg").trim(),
-    };
-  });
-  assert.notEqual(after.background, before.background, "dark theme changes the docs surface");
-  assert.notEqual(after.foreground, before.foreground, "dark theme changes the docs text color");
-  assert.notEqual(
-    after.background,
-    after.foreground,
-    "dark theme foreground contrasts with its background",
+  const after = await readResolvedThemeColors(page);
+  assertOpaqueThemeColors(after, "dark theme");
+  assert.equal(after.theme, "dark", "dark scheme is active");
+  assert.notDeepEqual(
+    after.backgroundSrgb,
+    before.backgroundSrgb,
+    "dark theme changes the docs surface",
+  );
+  assert.notDeepEqual(
+    after.foregroundSrgb,
+    before.foregroundSrgb,
+    "dark theme changes the docs text color",
   );
   assert.ok(
-    contrastRatio(after.foreground, after.background) >= 4.5,
+    contrastRatioSrgb(after.foregroundSrgb, after.backgroundSrgb) >= 4.5,
     "dark theme foreground/background meet WCAG AA contrast for text",
   );
   const previewColorAfter = await previewFrame.evaluate(

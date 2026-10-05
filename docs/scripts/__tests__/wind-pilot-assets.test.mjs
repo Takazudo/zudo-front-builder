@@ -7,6 +7,7 @@ import { CODE_BLOCK_ENHANCER_SCRIPT } from "@takazudo/zudo-doc/code-syntax";
 import { buildWindPreviewEnhancerScript } from "../../src/components/wind-preview-enhancer-script.mjs";
 import { validateEditorial } from "../wind-reference-editorial.mjs";
 import { exampleSource, REPO_ROOT } from "../wind-preview-assets.mjs";
+import { contrastRatioSrgb } from "../../../tests/docs-wind-preview/srgb-contrast.mjs";
 
 const sha256 = (content) => createHash("sha256").update(content).digest("hex");
 
@@ -124,4 +125,14 @@ test("editorial validation honors only catalog-marked optional font leading", ()
 
   assert.doesNotThrow(() => validate(fontSize));
   assert.throws(() => validate(textColor), /catalog properties color/);
+});
+
+test("sRGB contrast uses WCAG relative luminance from painted 8-bit channels", () => {
+  assert.equal(contrastRatioSrgb([0, 0, 0, 255], [255, 255, 255, 255]), 21);
+  assert.equal(contrastRatioSrgb([127, 127, 127, 255], [127, 127, 127, 255]), 1);
+  assert.equal(
+    contrastRatioSrgb([0, 0, 0, 255], [255, 255, 255, 255]),
+    contrastRatioSrgb([255, 255, 255, 255], [0, 0, 0, 255]),
+  );
+  assert.throws(() => contrastRatioSrgb([-1, 0, 0], [255, 255, 255]), /integer values/);
 });
