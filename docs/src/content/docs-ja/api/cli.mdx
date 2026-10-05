@@ -111,6 +111,8 @@ zfb dev --host 192.168.1.10 --port 4321
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
+          [--strict-content-bridge | --no-strict-content-bridge]
+          [--strict-plain-css-imports | --no-strict-plain-css-imports]
           [--scratch-dir <path>] [--warnings-json <file>]
           [--define <KEY=EXPR>]...
 ```
@@ -124,6 +126,10 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
 | `--strict-broken` | boolean flag | config/default | マークダウンのリンク検証が壊れたリンクを見つけたとき、このビルドを失敗させます（非ゼロ終了）。`strictBrokenLinks: false` または設定の省略より優先されます。`linkValidation` の設定がまったくないプロジェクトでは、何もしないのではなく、デフォルト設定でリンク検証を強制的に有効化します。 |
 | `--no-strict-broken` | boolean flag | config/default | このビルドを壊れたリンクで失敗させません。config や preset の `strictBrokenLinks: true` より優先されます。無効にするのはトップレベルの strict オーバーレイだけで、`failOnBroken: true` を明示的に設定した `linkValidation` ブロックは有効なままです。 |
+| `--strict-content-bridge` | boolean flag | config/default | MDX ブリッジ用にパースできないコンテンツコレクションの `.md` / `.mdx` エントリが `<pre data-zfb-content-fallback>` にフォールバックする場合、このビルドを失敗させます（非ゼロ終了）。`strictContentBridge: false` または設定の省略より優先されます。 |
+| `--no-strict-content-bridge` | boolean flag | config/default | MDX コンテンツブリッジのフォールバックではこのビルドを失敗させません。zfb は引き続き警告を出してフォールバックを出力します。config や preset の `strictContentBridge: true` より優先されます。 |
+| `--strict-plain-css-imports` | boolean flag | config/default | esbuild が JavaScript / TypeScript からのプレーンな `.css` import を解決したものの、CSS のバイト列が出力されない場合にこのビルドを失敗させます。`strictPlainCssImports: false` または設定の省略より優先されます。 |
+| `--no-strict-plain-css-imports` | boolean flag | config/default | 出力されないプレーン CSS import を警告にとどめてビルドを続けます。config や preset の `strictPlainCssImports: true` より優先されます。 |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | このビルド専用の、zfb の生成物を置くディレクトリを指定します。出力ディレクトリは引き続き共有されます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 | `--warnings-json` | path | なし | ビルド診断を schemaVersion 1 の JSON ファイルに書き込みます。失敗したビルドのレポートは部分的な場合があります。 |
 | `--define` | `KEY=EXPR`（複数指定可） | なし | このビルドに限った esbuild の define を追加し、`bundle.define` をキー単位で上書きします。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
@@ -131,6 +137,8 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
 
 壊れたリンクによる strict なゲートも同様にデフォルトではオフです。`--strict-broken` と `--no-strict-broken` は排他で、同時に渡すとエラーになります。どちらも `strictBrokenLinks` 設定フィールドより優先され、その設定フィールドがデフォルトの `false` より優先されます。どちらのフラグも `zfb build` にのみ影響します。`zfb dev` が strict オーバーレイを見ることはなく、自分で書いた `linkValidation` 設定どおりのリンク検証の挙動をそのまま保ちます。`resolveMarkdownLinks.onBrokenLinks` との違いを含む挙動の全体は[リンク検証 — strict モード](../markdown-features/link-validation.mdx)を参照してください。
+
+MDX コンテンツブリッジとプレーン CSS import のゲートもデフォルトではオフです。それぞれの有効・無効フラグを同時に渡すとエラーになり、どちらかを明示すると対応する設定フィールド（デフォルト `false`）より優先されます。これらのフラグが影響するのは `zfb build` だけです。`zfb dev` は引き続き MDX のフォールバックを警告して配信し、プレーン CSS import の警告もエラーにしません。設定フィールドは [define-config](./define-config.mdx) を参照してください。
 
 ### 環境変数
 
@@ -147,6 +155,10 @@ zfb build --minify-html
 zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
+zfb build --strict-content-bridge
+zfb build --no-strict-content-bridge
+zfb build --strict-plain-css-imports
+zfb build --no-strict-plain-css-imports
 zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
 
