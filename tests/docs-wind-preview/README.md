@@ -27,3 +27,10 @@ and rejects requests outside it. It does not rewrite emitted HTML or URLs.
 Screenshots are captured from fresh contexts at 1440×1000 and 390×844 under
 `$TMPDIR/zfb-wind-doc-preview-screenshots` (override with
 `WIND_DOCS_SCREENSHOT_DIR`). Set `WIND_DOCS_CAPTURE_SCREENSHOTS=0` to skip them.
+
+Failure traces retain actions, screenshots and source files, with DOM snapshots
+disabled. HtmlPreview uses sandboxed `about:srcdoc` documents without script
+permission; Playwright's DOM snapshotter injects an init script into every frame,
+which produces a blocked-script console warning there. The suite still fails on
+console errors, page errors, failed requests and local HTTP errors, but traces do
+not include HAR-style network events.

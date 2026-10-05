@@ -33,7 +33,12 @@ export default defineConfig({
     browserName: "chromium",
     colorScheme: "light",
     viewport: { width: 1440, height: 1000 },
-    trace: "retain-on-failure",
+    trace: {
+      mode: "retain-on-failure",
+      snapshots: false,
+      screenshots: true,
+      sources: true,
+    },
   },
   projects: [
     {

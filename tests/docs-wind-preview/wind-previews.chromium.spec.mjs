@@ -195,6 +195,7 @@ async function inspectFrame(frame) {
       hasLinkedStylesheet: Boolean(document.head.querySelector('link[rel="stylesheet"]')),
       htmlLang: document.documentElement.lang,
       htmlTheme: document.documentElement.getAttribute("data-theme"),
+      scriptCount: document.querySelectorAll("script").length,
       paddingBottom: style.paddingBottom,
       paddingLeft: style.paddingLeft,
       paddingRight: style.paddingRight,
@@ -225,9 +226,24 @@ async function captureFreshScreenshot(browser, testCase, width, height) {
   try {
     await page.goto(pageUrl(testCase), { waitUntil: "networkidle" });
     await expect(page.locator("iframe")).toHaveCount(testCase.examples.length);
+    const firstMarker = page.locator(PREVIEW_MARKER).first();
+    await page.locator("iframe").first().scrollIntoViewIfNeeded();
+    await expect(firstMarker).toHaveAttribute("data-zfb-island-mounted", "");
     const first = await findFrame(page, 0);
-    await expect.poll(() => first.frame.locator(".wind-demo").count()).toBe(1);
-    await first.locator.scrollIntoViewIfNeeded();
+    const firstFrameStyle = await inspectFrame(first.frame);
+    assert.equal(
+      firstFrameStyle.styleText,
+      testCase.examples[0].css,
+      `${testCase.locale}/${testCase.family} screenshot iframe CSS matches its generated asset`,
+    );
+    const preview = first.locator.locator("xpath=../../..");
+    await expect
+      .poll(() => preview.locator(".zd-html-preview-code pre.hi-root code").count())
+      .toBe(2);
+    await expect
+      .poll(() => preview.locator(".zd-html-preview-code .code-btn-copy").count())
+      .toBe(2);
+    await page.waitForLoadState("networkidle");
     mkdirSync(SCREENSHOT_DIR, { recursive: true });
     const filepath = join(
       SCREENSHOT_DIR,
@@ -571,6 +587,7 @@ for (const testCase of CASES) {
         false,
         "the frame does not load host or Tailwind stylesheets",
       );
+      assert.equal(style.scriptCount, 0, "the authored preview document contains no scripts");
       assert.equal(style.htmlLang, testCase.labels.lang);
       assert.equal(style.htmlTheme, null, "the iframe does not inherit host theme attributes");
       assert.equal(
