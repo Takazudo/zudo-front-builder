@@ -72,7 +72,7 @@ pub use walk::{
 
 pub const SPEC_VERSION: u32 = 1;
 
-pub const SPEC_REVISION: u32 = 4;
+pub const SPEC_REVISION: u32 = 5;
 
 pub mod extract;
 pub use extract::{

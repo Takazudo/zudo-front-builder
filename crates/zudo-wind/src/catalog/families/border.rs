@@ -310,7 +310,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         30,
         0,
         &["outline-width"],
-        &[ValueKind::Integer, ValueKind::Arbitrary],
+        &[ValueKind::Exact, ValueKind::Integer, ValueKind::Arbitrary],
         &[],
         &[],
         Some("outline-width"),
@@ -321,6 +321,9 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         "2px",
     );
     set_id(&mut outline_width, "v1.outline.width");
+    // The bare utility has Tailwind's fixed 1px width; numeric suffixes keep
+    // resolving through the same entry and declaration templates.
+    outline_width.fixed_value = Some("1px".to_owned());
     set_templates(
         &mut outline_width,
         &[resolved("outline-width"), fixed("outline-style", "solid")],

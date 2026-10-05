@@ -292,6 +292,7 @@ mod tests {
             ("rounded-full", "rounded-missing"),
             ("divide-y", "divide-z"),
             ("divide-[red]", "divide-[url(x)]"),
+            ("outline", "outline-wavy"),
             ("outline-2", "outline-wavy"),
             ("outline-[red]", "outline-[url(x)]"),
             ("outline-none", "outline-wavy"),
