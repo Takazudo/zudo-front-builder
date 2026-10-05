@@ -182,10 +182,22 @@ pub fn explain_with_generation_and_token_overrides(
     }
     let parsed = match parse_candidate(candidate, &validated.vocabulary) {
         Ok(parsed) => parsed,
-        Err(mut diagnostic) => {
-            diagnostic.origin = Some(Box::new(explain_origin(candidate)));
+        Err(_) => {
+            let origin = explain_origin(candidate);
+            let result = compile_validated(
+                &[OriginCandidate {
+                    text: candidate.to_owned(),
+                    origin: origin.clone(),
+                }],
+                &validated,
+            );
             output.outcome = ExplanationOutcome::Invalid;
-            output.diagnostics.push(diagnostic_view(&diagnostic));
+            output.diagnostics = result
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.origin.as_deref() == Some(&origin))
+                .map(diagnostic_view)
+                .collect();
             return output;
         }
     };
