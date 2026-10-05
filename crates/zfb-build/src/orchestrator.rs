@@ -3089,7 +3089,14 @@ mod tests {
             "/proj/content/deleted.mdx",
             "/proj/src/removed-directory",
         ] {
-            let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], &[], true);
+            // Only the unknown Content removal takes the conservative page
+            // fallback; other removed classes remain narrowly selected.
+            let pages = if path == "/proj/content/deleted.mdx" {
+                CSS_CHANGE_ALL_PAGES
+            } else {
+                &[]
+            };
+            let plan = css_change_tick(&[(path, ChangeKind::Removed)], &[], pages, true);
             assert_css_change_paths(&plan, &[], &[path]);
         }
     }
