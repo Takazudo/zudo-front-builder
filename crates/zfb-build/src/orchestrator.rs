@@ -1519,14 +1519,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     );
                     p.into_inner()
                 });
-                let mut affected = std::collections::BTreeSet::new();
-                let mut unknown_content = false;
-                for path in &removed {
+                // Inspect the whole batch before mutating the graph. Removing
+                // a page first also removes its outgoing Content edges, so a
+                // later content removal must not become spuriously unknown.
+                let unknown_content = removed.iter().any(|path| {
                     // A failed provenance reconciliation may have cleared
                     // Content edges before the watcher reports removal. An
                     // empty reverse entry is also unknown (`knows` is false).
-                    // Check before remove_node destroys the evidence, using
-                    // the same fallback predicate as plan_for_changes.
                     let class = classify_change_with_content_roots(
                         path,
                         &self.config.project_root,
@@ -1534,9 +1533,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         |p| graph.is_global(p),
                     );
                     let dirty: PageSelection = graph.dirty_pages(path).into();
-                    if class == PathClass::Content && dirty.is_empty() && !graph.knows(path) {
-                        unknown_content = true;
-                    }
+                    class == PathClass::Content && dirty.is_empty() && !graph.knows(path)
+                });
+                let mut affected = std::collections::BTreeSet::new();
+                for path in &removed {
                     affected.extend(graph.remove_node(path));
                 }
                 (affected, unknown_content)
@@ -2619,6 +2619,61 @@ mod tests {
             plans[0].pages,
             PageSelection::Specific([pid("/proj/pages/c.tsx")].into()),
         );
+    }
+
+    #[test]
+    fn removed_page_and_its_known_content_stay_precise_in_either_order() {
+        let page = PathBuf::from("/proj/pages/detail.tsx");
+        let content = PathBuf::from("/proj/content/post.md");
+        let unrelated = pid("/proj/pages/unrelated.tsx");
+        for page_first in [false, true] {
+            let mut graph = DependencyGraph::new();
+            graph.upsert(PageDeps::new(
+                PageId::new(page.clone()),
+                vec![(content.clone(), DepKind::Content)],
+            ));
+            graph.upsert(PageDeps::new(unrelated.clone(), vec![]));
+            let pipeline = CountingPipeline::default();
+            let applies = pipeline.applies.clone();
+            let orch = BuildOrchestrator::new(
+                OrchestratorConfig::new(
+                    "/proj",
+                    vec![PathBuf::from("pages"), PathBuf::from("content")],
+                ),
+                Arc::new(Mutex::new(graph)),
+                pipeline,
+            );
+            let removals = if page_first {
+                vec![page.clone(), content.clone()]
+            } else {
+                vec![content.clone(), page.clone()]
+            };
+            let dist = tempfile::tempdir().unwrap();
+            orch.tick_with_kinds(
+                removals
+                    .into_iter()
+                    .map(|path| (path, ChangeKind::Removed))
+                    .collect(),
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+            let plans = applies.lock().unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(
+                plans[0].pages,
+                PageSelection::Specific([PageId::new(page.clone())].into()),
+                "batch order must not select unrelated pages (page first: {page_first})"
+            );
+            assert!(
+                plans[0].rerun_islands,
+                "page removal must retain its boundary refresh"
+            );
+            assert!(
+                plans[0].ssr_reload_needed,
+                "removals must refresh the renderer"
+            );
+        }
     }
 
     #[test]
