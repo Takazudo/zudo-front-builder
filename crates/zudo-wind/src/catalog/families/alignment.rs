@@ -6,28 +6,53 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         ("self", "align-self"),
         ("justify", "justify-content"),
         ("place-items", "place-items"),
+        ("justify-items", "justify-items"),
+        ("justify-self", "justify-self"),
+        ("place-content", "place-content"),
+        ("place-self", "place-self"),
     ] {
-        let mut keywords = vec![
-            ("start", "flex-start"),
-            ("end", "flex-end"),
-            ("center", "center"),
-        ];
-        if root == "justify" {
-            keywords.extend([
+        let keywords = match root {
+            // Keep the original alignment utility spellings and outputs stable.
+            "items" | "self" => vec![
+                ("start", "flex-start"),
+                ("end", "flex-end"),
+                ("center", "center"),
+                ("baseline", "baseline"),
+                ("stretch", "stretch"),
+            ],
+            "justify" => vec![
+                ("start", "flex-start"),
+                ("end", "flex-end"),
+                ("center", "center"),
                 ("between", "space-between"),
                 ("around", "space-around"),
                 ("evenly", "space-evenly"),
-            ]);
-        } else {
-            if root != "place-items" {
-                keywords.push(("baseline", "baseline"));
-            }
-            keywords.push(("stretch", "stretch"));
-            if root == "place-items" {
-                keywords[0] = ("start", "start");
-                keywords[1] = ("end", "end");
-            }
-        }
+            ],
+            "place-items" => vec![
+                ("start", "start"),
+                ("end", "end"),
+                ("center", "center"),
+                ("stretch", "stretch"),
+            ],
+            "justify-items" | "justify-self" | "place-self" => vec![
+                ("start", "start"),
+                ("end", "end"),
+                ("center", "center"),
+                ("stretch", "stretch"),
+                ("baseline", "baseline"),
+            ],
+            "place-content" => vec![
+                ("start", "start"),
+                ("end", "end"),
+                ("center", "center"),
+                ("stretch", "stretch"),
+                ("between", "space-between"),
+                ("around", "space-around"),
+                ("evenly", "space-evenly"),
+            ],
+            _ => unreachable!("alignment roots are listed explicitly above"),
+        };
+
         entries.push(entry(
             root,
             "alignment",
