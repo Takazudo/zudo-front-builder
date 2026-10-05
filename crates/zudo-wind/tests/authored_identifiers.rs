@@ -528,9 +528,9 @@ fn bounded_release_families_report_zw014_at_source_and_json_positions() {
         "blur-sm",
         "drop-shadow",
         "filter-none",
-        "filter-[url(#fx)]",
+        "filter-[blur(2px)]",
         "backdrop-filter-none",
-        "backdrop-filter-[url(#fx)]",
+        "backdrop-filter-[blur(2px)]",
         "backdrop-blur-sm",
         "backdrop-brightness-50",
         "backdrop-opacity-70",
@@ -601,6 +601,26 @@ fn bounded_release_families_report_zw014_at_source_and_json_positions() {
         ),
         Some((DiagnosticCode::Zw014, Severity::AuditInfo))
     );
+}
+
+#[test]
+fn foreign_filter_values_preserve_url_rejection() {
+    for text in ["filter-[url(#fx)]", "backdrop-filter-[url(#fx)]"] {
+        let result = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&result, text),
+            Some((DiagnosticCode::Zw005, Severity::Error))
+        );
+        assert!(result.stylesheet.is_empty(), "{text}");
+        let explanation = explain(text, &config());
+        assert_eq!(explanation.outcome, ExplanationOutcome::Invalid, "{text}");
+        assert!(explanation.declarations.is_empty(), "{text}");
+        assert_eq!(
+            explanation.diagnostics[0].rejection_id.as_deref(),
+            Some("R16"),
+            "{text}"
+        );
+    }
 }
 
 #[test]
