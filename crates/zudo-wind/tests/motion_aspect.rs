@@ -25,6 +25,63 @@ fn new_motion_and_aspect_classes_emit_css_with_variants() {
 }
 
 #[test]
+fn translate_px_keywords_compose_both_axes_and_support_negative_variants() {
+    let result = compile(&common::input(&[
+        "translate-x-px",
+        "translate-y-px",
+        "-translate-x-px",
+        "hover:-translate-y-px",
+    ]));
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+
+    for (candidate, property, value) in [
+        ("translate-x-px", "--zw-translate-x", "1px"),
+        ("translate-y-px", "--zw-translate-y", "1px"),
+        ("-translate-x-px", "--zw-translate-x", "-1px"),
+        ("hover:-translate-y-px", "--zw-translate-y", "-1px"),
+    ] {
+        let rule = result
+            .rules
+            .iter()
+            .find(|rule| rule.candidate == candidate)
+            .unwrap_or_else(|| panic!("missing compiled rule for {candidate}"));
+        let resolved = rule.resolved.as_ref().unwrap();
+        assert_eq!(resolved.declarations[0].property, property, "{candidate}");
+        assert_eq!(resolved.declarations[0].value, value, "{candidate}");
+        assert_eq!(
+            resolved.declarations[1].property, "translate",
+            "{candidate}"
+        );
+        assert_eq!(
+            resolved.declarations[1].value, "var(--zw-translate-x) var(--zw-translate-y)",
+            "{candidate}"
+        );
+    }
+
+    assert_eq!(
+        result
+            .parts
+            .registrations
+            .matches("@property --zw-translate-x")
+            .count(),
+        1
+    );
+    assert_eq!(
+        result
+            .parts
+            .registrations
+            .matches("@property --zw-translate-y")
+            .count(),
+        1
+    );
+    assert!(result.parts.utilities.contains("--zw-translate-x: 1px;"));
+    assert!(result.parts.utilities.contains("--zw-translate-y: 1px;"));
+    assert!(result.parts.utilities.contains("--zw-translate-x: -1px;"));
+    assert!(result.parts.utilities.contains("--zw-translate-y: -1px;"));
+    assert!(result.parts.utilities.contains(":hover"));
+}
+
+#[test]
 fn explanation_reports_new_rules_and_decimal_hint() {
     let config = WindConfig::default();
     for (candidate, property, value) in [

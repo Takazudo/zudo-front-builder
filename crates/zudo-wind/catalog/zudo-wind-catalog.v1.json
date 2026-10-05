@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 11,
+  "specRevision": 12,
   "entries": [
     {
       "id": "v1.block",
@@ -8304,6 +8304,11 @@
         },
         {
           "kind": "keyword",
+          "suffix": "px",
+          "emittedValue": "1px"
+        },
+        {
+          "kind": "keyword",
           "suffix": "full",
           "emittedValue": "100%"
         }
@@ -8355,6 +8360,19 @@
               "value": "var(--zw-translate-x) var(--zw-translate-y)"
             }
           ]
+        },
+        {
+          "candidate": "translate-x-px",
+          "declarations": [
+            {
+              "property": "--zw-translate-x",
+              "value": "1px"
+            },
+            {
+              "property": "translate",
+              "value": "var(--zw-translate-x) var(--zw-translate-y)"
+            }
+          ]
         }
       ]
     },
@@ -8372,6 +8390,11 @@
           "kind": "keyword",
           "suffix": "0",
           "emittedValue": "0"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "px",
+          "emittedValue": "1px"
         },
         {
           "kind": "keyword",
@@ -8420,6 +8443,19 @@
             {
               "property": "--zw-translate-y",
               "value": "0"
+            },
+            {
+              "property": "translate",
+              "value": "var(--zw-translate-x) var(--zw-translate-y)"
+            }
+          ]
+        },
+        {
+          "candidate": "translate-y-px",
+          "declarations": [
+            {
+              "property": "--zw-translate-y",
+              "value": "1px"
             },
             {
               "property": "translate",
