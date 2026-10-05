@@ -35,8 +35,9 @@
     {
       "id": "z-custom",
       "kind": "positive",
-      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">A named layer can document the role of an overlay.</p>\n  <div class=\"wind-demo-frame relative w-72 h-36\">\n    <div class=\"absolute top-4 left-4 size-16 z-[-1] wind-demo-muted\">negative</div>\n    <div class=\"absolute top-8 left-10 z-dialog size-16 wind-demo-highlight\">dialog</div>\n    <div class=\"absolute bottom-2 right-2 z-auto wind-demo-tile\">auto</div>\n  </div>\n</div>",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">A named layer can document the role of an overlay.</p>\n  <div class=\"wind-demo-frame relative z-0 w-72 h-36\">\n    <div class=\"absolute top-4 left-4 size-16 -z-[1] wind-demo-muted\">negative</div>\n    <div class=\"absolute top-8 left-10 z-dialog size-16 wind-demo-highlight\">dialog</div>\n    <div class=\"absolute bottom-2 right-2 z-auto wind-demo-tile\">auto</div>\n  </div>\n</div>",
       "utilities": [
+        "-z-[1]",
         "absolute",
         "bottom-2",
         "h-36",
@@ -48,7 +49,7 @@
         "top-4",
         "top-8",
         "w-72",
-        "z-[-1]",
+        "z-0",
         "z-auto",
         "z-dialog"
       ],
