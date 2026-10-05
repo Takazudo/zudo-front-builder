@@ -1,0 +1,51 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-ink: #203046;
+    --zw-color-panel: #f4f1ec;
+    --zw-radius-card: .5rem;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-grid {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-card {
+  border: 1px solid #8797aa;
+}
+
+.wind-demo-title {
+  margin: 0 0 .5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.grid {
+  display: grid;
+}
+.grid-cols-2 {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}
+.gap-4 {
+  column-gap: 1rem;
+  row-gap: 1rem;
+}
+.text-ink {
+  color: var(--zw-color-ink);
+}
+.bg-panel {
+  background-color: var(--zw-color-panel);
+}
+.rounded-card {
+  border-top-left-radius: var(--zw-radius-card);
+  border-top-right-radius: var(--zw-radius-card);
+  border-bottom-right-radius: var(--zw-radius-card);
+  border-bottom-left-radius: var(--zw-radius-card);
+}
