@@ -355,6 +355,44 @@ jobs:
       # integration tests run below.
       - run: cargo build --workspace --all-targets
 
+      - name: Temporary exact package graph verification for issue 3648
+        shell: bash
+        run: |
+          ZFB_GRAPH_SOURCE="$RUNNER_TEMP/zudo-doc-3648"
+          ZFB_GRAPH_SITE="$RUNNER_TEMP/zfb-package-graph-3648"
+          ZFB_GRAPH_BIN="$RUNNER_TEMP/zfb-package-graph-bin"
+          mkdir -p "$ZFB_GRAPH_SOURCE" "$ZFB_GRAPH_SITE/pages" "$ZFB_GRAPH_SITE/node_modules/@takazudo" "$ZFB_GRAPH_BIN" target/package-graph-evidence
+          git -C "$ZFB_GRAPH_SOURCE" init
+          git -C "$ZFB_GRAPH_SOURCE" remote add origin https://github.com/zudolab/zudo-doc.git
+          git -C "$ZFB_GRAPH_SOURCE" fetch --depth 1 origin ac3c4bd8eb11d257b7246815146f4b8f47f598a6
+          git -C "$ZFB_GRAPH_SOURCE" checkout --detach FETCH_HEAD
+          printf '#!/bin/sh\nexec corepack pnpm@10.30.3 "$@"\n' > "$ZFB_GRAPH_BIN/pnpm"
+          chmod +x "$ZFB_GRAPH_BIN/pnpm"
+          PATH="$ZFB_GRAPH_BIN:$PATH" pnpm --dir "$ZFB_GRAPH_SOURCE" install --ignore-scripts --frozen-lockfile
+          PATH="$ZFB_GRAPH_BIN:$PATH" pnpm --dir "$ZFB_GRAPH_SOURCE" build:workspace
+          ln -s "$ZFB_GRAPH_SOURCE/packages/zudo-doc" "$ZFB_GRAPH_SITE/node_modules/@takazudo/zudo-doc"
+          printf 'export default { wind: false };\n' > "$ZFB_GRAPH_SITE/zfb.config.ts"
+          cat > "$ZFB_GRAPH_SITE/pages/index.tsx" <<'PAGE'
+          import { createChrome } from "@takazudo/zudo-doc/chrome";
+          export default function Page() {
+            return <html><body>Probe</body></html>;
+          }
+          PAGE
+          git rev-parse HEAD > target/package-graph-evidence/source-sha.txt
+          timeout 90s target/debug/examples/package_graph_probe "$ZFB_GRAPH_SITE" 2>&1 | tee target/package-graph-evidence/scanner.log
+          ZFB_GRAPH_CLI="$GITHUB_WORKSPACE/target/debug/zfb"
+          (cd "$ZFB_GRAPH_SITE" && ZFB_BUILD_TIMING=1 ZFB_DEV_TIMING=1 timeout 90s "$ZFB_GRAPH_CLI" build) 2>&1 | tee target/package-graph-evidence/build.log
+          test -f "$ZFB_GRAPH_SITE/dist/index.html"
+
+      - name: Upload temporary package graph evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-graph-3648-evidence
+          path: target/package-graph-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+
       # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
       # generated artifact. Regenerate it from the checked-in grammar sources
       # and fail on any source-versus-generated drift. The generator changes to
