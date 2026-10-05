@@ -21,16 +21,18 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{CrossBinaryE2eLock, locate_esbuild, zfb_binary};
 
 const EXPECTED_MARKERS: &[&str] = &[
     "ConsumerA",
     "ConsumerB",
+    "Counter",
     "EqualDisplayName",
     "InnerName",
     "InferredArrow",
     "LiveCounter",
     "NamedDefault",
+    "NamedCounter",
     "PackedCounter",
     "PreferredTarget",
     "default",
@@ -525,6 +527,27 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         expected_marker_set(),
         "SSR must emit exactly the concrete target markers"
     );
+    for marker in ["Counter", "NamedCounter"] {
+        assert_eq!(
+            extract_html_markers(&html)
+                .iter()
+                .filter(|actual| actual.as_str() == marker)
+                .count(),
+            1,
+            "the collection MDX map must render one {marker} island"
+        );
+    }
+    for marker in ["Counter", "NamedCounter"] {
+        let marker_attribute = format!("data-zfb-island=\"{marker}\"");
+        let attributes = html
+            .split_once(&marker_attribute)
+            .and_then(|(_, rest)| rest.split_once('>').map(|(attributes, _)| attributes))
+            .unwrap_or_else(|| panic!("missing SSR opening tag for {marker}: {html}"));
+        assert!(
+            attributes.contains("data-props=\"{}\""),
+            "MDX {marker} island must serialize only its empty JSON props: {attributes}"
+        );
+    }
     assert!(
         !html.contains("readState"),
         "unused duplicate helper exports must not become SSR island markers"
@@ -880,6 +903,75 @@ export default function Home() {
     assert!(diagnostic.contains("displayName"), "{diagnostic}");
     assert!(diagnostic.contains("PretendName"), "{diagnostic}");
     assert_no_published_islands(&conflicting_display_name);
+
+    // The originally documented shape stores a direct Island-returning
+    // wrapper in an object. Keep this opaque-container rejection while the
+    // supported fragment recipe is covered by the positive collection fixture.
+    let opaque_map_wrapper = scratch.path().join("opaque-map-wrapper");
+    make_minimal_project(&opaque_map_wrapper);
+    write(
+        &opaque_map_wrapper,
+        "zfb.config.json",
+        r#"{"wind":false,"collections":[{"name":"content","path":"content"}]}"#,
+    );
+    write(
+        &opaque_map_wrapper,
+        "components/counter.tsx",
+        r#""use client";
+import { signal } from "@takazudo/zfb/zudo-react";
+export default function Counter() {
+  const count = signal(0);
+  return <button on:click={() => { count.value += 1; }}>Count: {count}</button>;
+}
+"#,
+    );
+    write(
+        &opaque_map_wrapper,
+        "pages/_mdx-components.tsx",
+        r#"import { Island } from "@takazudo/zfb";
+import Counter from "../components/counter";
+function WrappedCounter() {
+  return <Island when="load"><Counter /></Island>;
+}
+export const components = { Counter: WrappedCounter };
+"#,
+    );
+    write(
+        &opaque_map_wrapper,
+        "content/index.mdx",
+        "---\ntitle: Opaque map wrapper\n---\n\n<Counter />\n",
+    );
+    write(
+        &opaque_map_wrapper,
+        "pages/index.tsx",
+        r#"import { getCollection } from "@takazudo/zfb/content";
+import { components } from "./_mdx-components";
+export default function Home() {
+  const entry = getCollection("content").find((candidate) => candidate.slug === "index");
+  return <html><body>{entry ? <entry.Content components={components} /> : null}</body></html>;
+}
+"#,
+    );
+    let rejected = run_build(&opaque_map_wrapper, &esbuild);
+    assert!(
+        !rejected.status.success(),
+        "a direct Island-returning wrapper in a components object must remain rejected\n{}",
+        combined_output(&rejected)
+    );
+    let diagnostic = combined_output(&rejected);
+    assert!(
+        diagnostic.contains("unsupported island registration"),
+        "the opaque map wrapper needs the existing named scanner diagnostic: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("boundary wrapper escapes into an opaque container"),
+        "the opaque map wrapper diagnostic changed: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("pages/_mdx-components.tsx"),
+        "the opaque map wrapper diagnostic must locate its source: {diagnostic}"
+    );
+    assert_no_published_islands(&opaque_map_wrapper);
 
     // Unsupported dynamic child selection is an actionable production error,
     // never a warning that publishes a successful empty registry.

@@ -869,6 +869,18 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
     assert_success(&build, "build-parity zfb build");
     let build_css_path = find_build_css(&build_project);
     let build_css = fs::read(&build_css_path).expect("read hashed build stylesheet");
+    let build_css_text = String::from_utf8_lossy(&build_css);
+    for declaration in [
+        "border-top-width: 8px;",
+        "border-top-style: solid;",
+        "min-width: 30%;",
+        "margin-top: -1px;",
+    ] {
+        assert!(
+            build_css_text.contains(declaration),
+            "production build omitted multiline JSX declaration {declaration}:\n{build_css_text}"
+        );
+    }
 
     // `zfb build` scans its conventional roots; the explicit standalone root
     // scans the same source tree. Both plans exclude build output, and the
@@ -1915,6 +1927,173 @@ fn css_command_bem_reset_only_project_builds() {
     for authored in ["admonition__title", "card_title", "block__el--mod"] {
         assert!(!css.contains(authored), "{authored} generated CSS:\n{css}");
     }
+}
+
+#[test]
+fn css_command_multiline_jsx_classes_match_single_line_output() {
+    let multiline = concat!(
+        "// 日本語 😀\r\n",
+        "export const Probe = () => <div class=\"\r\n",
+        "  border-t-[8px]\r\n",
+        "  min-w-[30%]\r\n",
+        "  -mt-[1px]\r\n",
+        "  flex\r\n",
+        "\" />;\r\n",
+    );
+    let single_line = concat!(
+        "// 日本語 😀\r\n",
+        "export const Probe = () => <div class=\"border-t-[8px] min-w-[30%] -mt-[1px] flex\" />;\r\n",
+    );
+    let temp = wind_classification_fixture(r#"{"spec":1,"reset":"none","strict":true}"#, multiline);
+
+    let multiline_run = run_css(
+        temp.path(),
+        "entry.css",
+        "multiline.css",
+        Some("."),
+        &["src/card.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_success(
+        &multiline_run,
+        "strict CSS compile from multiline JSX class",
+    );
+    let multiline_css = fs::read(temp.path().join("multiline.css")).expect("read multiline CSS");
+
+    let manifest_flags = [
+        "--producer",
+        "multiline-jsx-cli-regression",
+        "--output",
+        "wind-manifest.json",
+        "--project-root",
+        ".",
+        "--no-auto-source",
+        "--source",
+        "src/card.tsx",
+        "--json",
+    ];
+    let multiline_manifest = run_wind_manifest(temp.path(), &manifest_flags);
+    assert_success(
+        &multiline_manifest,
+        "candidate inventory from multiline JSX class",
+    );
+    let multiline_inventory: serde_json::Value =
+        serde_json::from_slice(&multiline_manifest.stdout).expect("parse multiline manifest JSON");
+    assert_eq!(
+        multiline_inventory["classification"]["candidates"],
+        serde_json::json!(["-mt-[1px]", "border-t-[8px]", "flex", "min-w-[30%]"])
+    );
+
+    fs::write(temp.path().join("src/card.tsx"), single_line).expect("write single-line source");
+    let single_line_run = run_css(
+        temp.path(),
+        "entry.css",
+        "single-line.css",
+        Some("."),
+        &["src/card.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_success(
+        &single_line_run,
+        "strict CSS compile from single-line JSX class",
+    );
+    let single_line_css =
+        fs::read(temp.path().join("single-line.css")).expect("read single-line CSS");
+    assert_eq!(
+        multiline_css, single_line_css,
+        "source line breaks must not change emitted CSS"
+    );
+
+    let single_line_manifest = run_wind_manifest(temp.path(), &manifest_flags);
+    assert_success(
+        &single_line_manifest,
+        "candidate inventory from single-line JSX class",
+    );
+    let single_line_inventory: serde_json::Value =
+        serde_json::from_slice(&single_line_manifest.stdout)
+            .expect("parse single-line manifest JSON");
+    assert_eq!(
+        multiline_inventory["classification"]["candidates"],
+        single_line_inventory["classification"]["candidates"],
+        "multiline and single-line JSX must expose the same exact candidate inventory"
+    );
+
+    let css = String::from_utf8(multiline_css).expect("wind output must be UTF-8 CSS");
+    for declaration in [
+        "border-top-width: 8px;",
+        "border-top-style: solid;",
+        "min-width: 30%;",
+        "margin-top: -1px;",
+        "display: flex;",
+    ] {
+        assert!(
+            css.contains(declaration),
+            "{declaration} missing from emitted CSS:\n{css}"
+        );
+    }
+}
+
+#[test]
+fn css_command_multiline_jsx_invalid_class_keeps_utf8_crlf_source_position() {
+    let source = concat!(
+        "// 日本語 😀\r\n",
+        "export const Probe = () => <div class=\"\r\n",
+        "  flex\r\n",
+        "  rounded-missing\r\n",
+        "\" />;\r\n",
+    );
+    let temp = wind_classification_fixture(r#"{"spec":1,"reset":"none","strict":true}"#, source);
+    let output = run_css(
+        temp.path(),
+        "entry.css",
+        "out.css",
+        Some("."),
+        &["src/card.tsx"],
+        &["--no-auto-source"],
+    );
+    assert_failure(
+        &output,
+        "strict CSS compile with an invalid multiline JSX class",
+    );
+
+    let candidate = "rounded-missing";
+    let byte_offset = source.find(candidate).expect("candidate byte offset");
+    let before = &source[..byte_offset];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |at| at + 1);
+    let byte_column = byte_offset - line_start + 1;
+    let stderr = process_stderr(&output);
+    assert!(
+        stderr.lines().any(|diagnostic| {
+            diagnostic.contains(&format!(
+                "card.tsx:{line}:{byte_column}: ZW006 {candidate}:"
+            ))
+        }),
+        "CSS diagnostic must preserve the source byte line and column:\n{stderr}"
+    );
+
+    let audit = run_wind_audit(temp.path(), &["--json"]);
+    let audit_json: serde_json::Value = serde_json::from_slice(&audit.stdout)
+        .unwrap_or_else(|error| panic!("{error}:\n{}", process_stdout(&audit)));
+    let diagnostics = audit_json["report"]["diagnostics"]
+        .as_array()
+        .expect("audit JSON diagnostics");
+    let candidate_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["candidate"] == candidate)
+        .collect();
+    assert_eq!(candidate_diagnostics.len(), 1, "{audit_json}");
+    let diagnostic = candidate_diagnostics[0];
+    assert_eq!(diagnostic["code"], "ZW006");
+    let origin = &diagnostic["origin"];
+    assert_eq!(origin["byteOffset"], byte_offset);
+    assert_eq!(origin["line"], line);
+    assert_eq!(origin["byteColumn"], byte_column);
+    assert_eq!(origin["byteLength"], candidate.len());
+    assert_eq!(origin["positionKind"], "class");
+    assert!(origin["sourceId"]
+        .as_str()
+        .is_some_and(|source_id| source_id.ends_with("src/card.tsx")));
 }
 
 #[test]

@@ -1,14 +1,17 @@
 mod class_expression;
 
+use std::collections::BTreeSet;
+
 use super::{Collector, NoteKind, PositionKind};
 
 /// Scans every literal, then upgrades the complete strings whose value
 /// provably reaches a class attribute to class positions.
 pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
-    let masked = mask_ignored_attribute_expressions(source, &out.options.ignore_attributes);
+    let jsx = collect_jsx_spans(source);
+    let masked = mask_ignored_attribute_expressions(source, &out.options.ignore_attributes, &jsx);
     let source = masked.as_deref().unwrap_or(source);
-    scan_literals(source, base, out);
-    class_expression::Module::new(source, base, out.options.class_helpers.clone()).scan(out);
+    scan_literals(source, base, out, &jsx);
+    class_expression::Module::new(source, base, out.options.class_helpers.clone(), &jsx).scan(out);
 }
 
 /// Hide the complete expression of a known non-class JSX prop from both
@@ -17,12 +20,17 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
 fn mask_ignored_attribute_expressions(
     source: &str,
     ignore_attributes: &std::collections::BTreeSet<String>,
+    jsx: &JsxSpans,
 ) -> Option<String> {
     let bytes = source.as_bytes();
     let mut masked = bytes.to_vec();
     let mut changed = false;
     let mut i = 0;
     while i < bytes.len() {
+        if let Some(end) = jsx.text_end(i) {
+            i = end;
+            continue;
+        }
         if bytes[i..].starts_with(b"//") {
             i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
             continue;
@@ -35,9 +43,10 @@ fn mask_ignored_attribute_expressions(
         }
         if matches!(bytes[i], b'\'' | b'"' | b'`') {
             let quote = bytes[i];
+            let direct_jsx = jsx.quotes.contains(&i);
             i += 1;
             while i < bytes.len() {
-                if bytes[i] == b'\\' {
+                if !direct_jsx && bytes[i] == b'\\' {
                     i = (i + 2).min(bytes.len());
                 } else if bytes[i] == quote {
                     i += 1;
@@ -64,10 +73,14 @@ fn mask_ignored_attribute_expressions(
     changed.then(|| String::from_utf8(masked).expect("mask preserves UTF-8"))
 }
 
-fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
+fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>, jsx: &JsxSpans) {
     let bytes = source.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
+        if let Some(end) = jsx.text_end(i) {
+            i = end;
+            continue;
+        }
         if bytes[i..].starts_with(b"//") {
             i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
             continue;
@@ -80,6 +93,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
         }
         if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
             let quote = bytes[i];
+            let direct_jsx = jsx.quotes.contains(&i);
             let class = class_context(&source[..i]);
             let known_non_class =
                 !class && known_non_class_context(&source[..i], &out.options.ignore_attributes);
@@ -88,7 +102,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
             let mut segment = i;
             let mut left = false;
             while i < bytes.len() {
-                if bytes[i] == b'\\' {
+                if !direct_jsx && bytes[i] == b'\\' {
                     i = (i + 2).min(bytes.len());
                     continue;
                 }
@@ -106,6 +120,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             true,
                             true,
                             left,
+                            !direct_jsx,
                         );
                     }
                     let expression_start = i + 2;
@@ -114,11 +129,9 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     // source and has no closing `}` to strip.
                     let body_end = if source[..i].ends_with('}') { i - 1 } else { i };
                     if !known_non_class && body_end > expression_start {
-                        scan_literals(
-                            &source[expression_start..body_end],
-                            base + expression_start,
-                            out,
-                        );
+                        let expression = &source[expression_start..body_end];
+                        let nested_jsx = collect_jsx_spans(expression);
+                        scan_literals(expression, base + expression_start, out, &nested_jsx);
                     }
                     segment = i;
                     left = true;
@@ -141,12 +154,13 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             true,
                             right,
                             left,
+                            !direct_jsx,
                         );
                     }
                     i += 1;
                     break;
                 }
-                if quote != b'`' && bytes[i] == b'\n' {
+                if quote != b'`' && !direct_jsx && bytes[i] == b'\n' {
                     break;
                 }
                 i += 1;
@@ -210,6 +224,182 @@ fn class_context(prefix: &str) -> bool {
         .next()
         .unwrap_or("");
     !matches!(preceding_word, "const" | "let" | "var")
+}
+
+/// The two consumers use these same opening-byte offsets. Walking forward
+/// avoids rescanning the whole module for each attribute and gives JSX quoted
+/// values their own (non-JavaScript) backslash and newline rules.
+struct JsxSpans {
+    quotes: BTreeSet<usize>,
+    text: Vec<(usize, usize)>,
+}
+
+impl JsxSpans {
+    fn text_end(&self, at: usize) -> Option<usize> {
+        let index = self.text.partition_point(|&(start, _)| start <= at);
+        index
+            .checked_sub(1)
+            .and_then(|previous| self.text.get(previous))
+            .and_then(|&(_, end)| (at < end).then_some(end))
+    }
+}
+
+fn collect_jsx_spans(source: &str) -> JsxSpans {
+    let bytes = source.as_bytes();
+    let mut quotes = BTreeSet::new();
+    let mut text = Vec::<(usize, usize)>::new();
+    let mut tags = Vec::<usize>::new();
+    // Each child frame stores its expression depth and the tag-stack depth at
+    // entry. A nested element suspends either a parent child expression or an
+    // outer tag attribute expression until it closes.
+    let mut children = Vec::<(usize, usize)>::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let in_children = children
+            .last()
+            .is_some_and(|&(_, tag_depth)| tags.len() == tag_depth);
+        let jsx_text = in_children && children.last().is_some_and(|&(depth, _)| depth == 0);
+        if jsx_text && !matches!(bytes[i], b'<' | b'{' | b'}') {
+            if let Some((_, end)) = text.last_mut() {
+                if *end == i {
+                    *end = i + 1;
+                } else {
+                    text.push((i, i + 1));
+                }
+            } else {
+                text.push((i, i + 1));
+            }
+        }
+        if bytes[i..].starts_with(b"//") && !jsx_text {
+            i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") && !jsx_text {
+            i = source[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + n + 4);
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            let direct =
+                quote != b'`' && tags.last() == Some(&0) && attribute_assignment(&source[..i]);
+            if direct {
+                quotes.insert(i);
+            }
+            if jsx_text {
+                i += 1;
+                continue;
+            }
+            i += 1;
+            while i < bytes.len() {
+                if !direct && bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else if !direct && quote != b'`' && bytes[i] == b'\n' {
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'/'
+            && tags.last().is_none_or(|depth| *depth > 0)
+            && !jsx_text
+            && regex_context(&source[..i])
+        {
+            i += 1;
+            let mut bracket = false;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'[' {
+                    bracket = true;
+                } else if bytes[i] == b']' {
+                    bracket = false;
+                } else if bytes[i] == b'/' && !bracket {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"</") && jsx_text {
+            i = source[i..].find('>').map_or(bytes.len(), |n| i + n + 1);
+            children.pop();
+            continue;
+        }
+        if bytes[i..].starts_with(b"<>") && (jsx_text || jsx_start_context_in_js(&source[..i])) {
+            children.push((0, tags.len()));
+            i += 2;
+            continue;
+        }
+        let tag_name = source.get(i + 1..).and_then(|tail| tail.chars().next());
+        if bytes[i] == b'<'
+            && tag_name.is_some_and(unicode_id_start::is_id_start)
+            && (jsx_text || jsx_start_context_in_js(&source[..i]))
+        {
+            tags.push(0);
+            i += 1;
+            continue;
+        }
+        if in_children {
+            if let Some((expression, _)) = children.last_mut() {
+                match bytes[i] {
+                    b'{' => *expression += 1,
+                    b'}' => *expression = expression.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        } else if let Some(depth) = tags.last_mut() {
+            match bytes[i] {
+                b'{' => *depth += 1,
+                b'}' => *depth = depth.saturating_sub(1),
+                b'>' if *depth == 0 => {
+                    let self_closing = source[..i].trim_end().ends_with('/');
+                    tags.pop();
+                    if !self_closing {
+                        children.push((0, tags.len()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    JsxSpans { quotes, text }
+}
+
+/// A direct attribute quote must follow `name =` inside a tag; expression
+/// braces are checked by the caller. The surrounding tag is checked once by
+/// the forward lexical walk, so this suffix check is bounded to the name.
+fn attribute_assignment(prefix: &str) -> bool {
+    let Some(before) = prefix.trim_end().strip_suffix('=') else {
+        return false;
+    };
+    let before = before.trim_end();
+    let name = before
+        .rsplit(|c: char| {
+            !(unicode_id_start::is_id_continue(c)
+                || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}'))
+        })
+        .next()
+        .unwrap_or("");
+    if name.is_empty() {
+        return false;
+    }
+    let before_name = before.strip_suffix(name).unwrap_or("");
+    // JSX needs whitespace between a tag/previous attribute and this name.
+    if !before_name.ends_with(char::is_whitespace) || before_name.trim_end().ends_with('.') {
+        return false;
+    }
+    true
 }
 
 /// A literal that is a module specifier (`import`/`export … from`,
@@ -284,9 +474,12 @@ fn jsx_tag_attribute_context(prefix: &str) -> bool {
         }
         if matches!(bytes[i], b'\'' | b'"' | b'`') {
             let quote = bytes[i];
+            let direct_jsx = quote != b'`'
+                && tag_braces.last() == Some(&0)
+                && attribute_assignment(&prefix[..i]);
             i += 1;
             while i < bytes.len() {
-                if bytes[i] == b'\\' {
+                if !direct_jsx && bytes[i] == b'\\' {
                     i = (i + 2).min(bytes.len());
                 } else if bytes[i] == quote {
                     i += 1;
@@ -297,7 +490,30 @@ fn jsx_tag_attribute_context(prefix: &str) -> bool {
             }
             continue;
         }
-        if bytes[i] == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+        if bytes[i] == b'/' && regex_context(&prefix[..i]) {
+            i += 1;
+            let mut bracket = false;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'[' {
+                    bracket = true;
+                } else if bytes[i] == b']' {
+                    bracket = false;
+                } else if bytes[i] == b'/' && !bracket {
+                    break;
+                }
+                i += 1;
+            }
+        } else if bytes[i] == b'<'
+            && prefix
+                .get(i + 1..)
+                .and_then(|tail| tail.chars().next())
+                .is_some_and(unicode_id_start::is_id_start)
+            && jsx_start_context(&prefix[..i])
+        {
             if tag_braces.last().is_none_or(|depth| *depth > 0) {
                 tag_braces.push(0);
             }
@@ -314,6 +530,44 @@ fn jsx_tag_attribute_context(prefix: &str) -> bool {
         i += 1;
     }
     tag_braces.last() == Some(&0)
+}
+
+fn jsx_start_context_in_js(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    let Some(last) = trimmed.chars().next_back() else {
+        return true;
+    };
+    if matches!(
+        last,
+        '=' | '(' | '[' | '{' | ',' | ':' | '?' | '>' | ';' | '&' | '|' | '!'
+    ) {
+        return true;
+    }
+    let word = trimmed
+        .rsplit(|c: char| c.is_whitespace() || !c.is_ascii_alphanumeric())
+        .next()
+        .unwrap_or("");
+    matches!(word, "return" | "yield" | "throw" | "case")
+}
+
+fn jsx_start_context(prefix: &str) -> bool {
+    if jsx_start_context_in_js(prefix) {
+        return true;
+    }
+    let trimmed = prefix.trim_end();
+    // The legacy ignored-attribute context walk has no JSX child stack.
+    // Permit text between two known tag delimiters there; the direct quote
+    // prepass above instead uses its explicit child depth.
+    if let Some(end) = trimmed.rfind('>') {
+        if trimmed[..end].rfind('<').is_some()
+            && !trimmed[end + 1..]
+                .chars()
+                .any(|c| matches!(c, '{' | '}' | ';'))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// CSS text of a `<style>` element: `<style>{`…`}</style>` or the
@@ -400,12 +654,17 @@ fn emit(
     embedded: bool,
     right: bool,
     left: bool,
+    decode_escapes: bool,
 ) {
     if start >= end {
         return;
     }
     let raw = &source[start..end];
-    let (decoded, source_map) = decode(raw);
+    let (decoded, source_map) = if decode_escapes {
+        decode(raw)
+    } else {
+        (raw.to_owned(), (0..=raw.len()).collect())
+    };
     let kind = if class {
         PositionKind::Class
     } else {

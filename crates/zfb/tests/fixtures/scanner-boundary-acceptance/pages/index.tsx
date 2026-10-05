@@ -3,6 +3,9 @@ import { Island as Boundary } from "@takazudo/zfb";
 import { h as makeNode } from "@takazudo/zfb/zudo-react";
 import { jsx as makeJsx, jsxs as makeJsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 import { jsxDEV as makeJsxDev } from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+import { getCollection } from "@takazudo/zfb/content";
+import defaultMdxComponents from "../mdx-components";
+import { components as namedMdxComponents } from "./_mdx-components";
 import PackedDefault, {
   PackedCounter as PackedNamed,
   PackedForwardBoundary,
@@ -30,6 +33,9 @@ import AnonymousDefault from "../components/anonymous-default";
 void (0 as unknown as TypeOnlyIsland);
 
 export default function Home() {
+  const entry = getCollection("content").find((candidate) => candidate.slug === "index");
+  const mdxComponents = { ...defaultMdxComponents, ...namedMdxComponents };
+
   function ShadowedBoundary({ children }: { children: unknown }) {
     const Island = UnrelatedIsland;
     return <Island>{children as never}</Island>;
@@ -104,6 +110,7 @@ export default function Home() {
         <ShadowedBoundary>
           <NeverRegistered label="shadowed Island binding" />
         </ShadowedBoundary>
+        {entry ? <entry.Content components={mdxComponents} /> : <p>Missing MDX entry</p>}
       </body>
     </html>
   );
