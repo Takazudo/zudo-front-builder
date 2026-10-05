@@ -1,0 +1,33 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-align-line {
+  margin: 0;
+  max-width: 38rem;
+  border-bottom: 1px solid #a7bacd;
+  color: #24364b;
+  font: 16px / 3 system-ui, sans-serif;
+}
+
+.wind-demo-swatch {
+  border: 1px solid #6c88a4;
+  background: #e4eff9;
+  padding: .2rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.align-baseline {
+  vertical-align: baseline;
+}
+.align-bottom {
+  vertical-align: bottom;
+}
+.align-middle {
+  vertical-align: middle;
+}
+.align-top {
+  vertical-align: top;
+}
