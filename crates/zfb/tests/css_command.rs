@@ -883,6 +883,75 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
 }
 
 #[test]
+fn declared_project_root_matches_build_css_and_both_audit_plans() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[declared_project_root] no esbuild binary available; skipping");
+        return;
+    };
+    let temp = copied_fixture("css-build-parity");
+    let project = temp.path();
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{"wind":{"sources":{"roots":["./widgets"]}}}"#,
+    )
+    .unwrap();
+    fs::create_dir(project.join("widgets")).unwrap();
+    fs::write(
+        project.join("widgets/card.tsx"),
+        "export const card = <div class=\"bg-[#f10a55] custom-root-audit-probe\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("widgets/types.d.ts"),
+        "export declare const ghost: 'bg-[#d0d0d0]';\n",
+    )
+    .unwrap();
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn build with declared root");
+    assert_success(&build, "declared-root build");
+    let build_css = fs::read_to_string(find_build_css(project)).unwrap();
+
+    let css = run_css(
+        project,
+        "styles/global.css",
+        "standalone.css",
+        Some("."),
+        &[],
+        &[],
+    );
+    assert_success(&css, "declared-root standalone css");
+    let standalone_css = fs::read_to_string(project.join("standalone.css")).unwrap();
+    for (mode, output) in [("build", &build_css), ("css", &standalone_css)] {
+        assert!(output.contains("f10a55"), "{mode} omitted widgets/card.tsx");
+        assert!(
+            !output.contains("d0d0d0"),
+            "{mode} included widgets/types.d.ts"
+        );
+    }
+
+    for mode in ["build", "standalone"] {
+        let audit = run_wind_audit(project, &["--plan", mode]);
+        assert_success(&audit, &format!("declared-root {mode} audit"));
+        let report = process_stdout(&audit);
+        assert!(
+            report.contains("root root/widgets widgets (required)"),
+            "{report}"
+        );
+        assert!(
+            report.contains("excluded **/*.d.ts (declaration files)"),
+            "{report}"
+        );
+        assert!(report.contains("custom-root-audit-probe"), "{report}");
+        assert!(!report.contains("d0d0d0"), "{report}");
+    }
+}
+
+#[test]
 fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
