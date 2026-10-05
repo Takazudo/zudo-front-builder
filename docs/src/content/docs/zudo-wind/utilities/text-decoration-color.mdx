@@ -5,9 +5,124 @@ sidebar_position: 65
 generated: true
 ---
 
-Set the text decoration color from a color token, a keyword, or an arbitrary color, with optional opacity.
+Change the color of an existing underline, overline, or other text decoration while leaving the text color alone. Put the utility on an element that has a visible decoration.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `decoration-accent` | `text-decoration-color: var(--zw-color-accent);` |
+| `decoration-[#b42318]/80` | `text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The named example declares tokens.colors.accent. Authored CSS sets a readable text color and preserves the browser’s link underline; it does not set text-decoration-color.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Use named and keyword colors
+
+The configured accent, currentColor, and transparent keyword change only the link underline color.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n"} title={"Use named and keyword colors"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#a23862"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-decoration": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "decoration-accent",
+        "decoration-current",
+        "decoration-transparent"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }
+.wind-demo-decoration a { color: inherit; }
+```
+
+</Details>
+
+### Add an arbitrary color and opacity
+
+The bracket color is parsed as CSS and /80 applies the supported opacity modifier while the text stays its inherited color.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eAn \u003ca href=\"#custom\" class=\"decoration-[#b42318]/80\"\u003earbitrary red decoration at 80 percent opacity\u003c/a\u003e keeps the text color unchanged.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-\\[\\#b42318\\]\\/80 {\n  text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);\n}\n"} title={"Add an arbitrary color and opacity"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#a23862"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-decoration": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "decoration-[#b42318]/80"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }
+.wind-demo-decoration a { color: inherit; }
+```
+
+</Details>
+
+## Custom and named values
+
+decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## decoration
 
@@ -43,3 +158,5 @@ Set the text decoration color from a color token, a keyword, or an arbitrary col
 | Example class | Expected declarations |
 | --- | --- |
 | `decoration-[red]/40` | `text-decoration-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

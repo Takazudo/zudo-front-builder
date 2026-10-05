@@ -1,0 +1,31 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-list-types {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: .75rem;
+  color: #223247;
+}
+
+.wind-demo-list-types section {
+  border: 1px solid #b7c5d4;
+  padding: .75rem 1rem;
+}
+
+.wind-demo-list-types strong {
+  color: #5d6c7c;
+  font-size: .8rem;
+}
+.list-decimal {
+  list-style-type: decimal;
+}
+.list-disc {
+  list-style-type: disc;
+}
+.list-none {
+  list-style-type: none;
+}

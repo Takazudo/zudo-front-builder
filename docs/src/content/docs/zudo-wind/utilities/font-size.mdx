@@ -5,9 +5,146 @@ sidebar_position: 37
 generated: true
 ---
 
-Set font size from a configured token or an arbitrary CSS font-size value.
+Set the size of text for a role such as a caption, paragraph, or heading. A configured font-size token can pair size with its own line height; an arbitrary size lets one element use a validated CSS value.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `text-copy` | `font-size: var(--zw-font-size-copy); line-height: var(--zw-font-size-copy-leading);` |
+| `text-[20px]` | `font-size: 20px;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example declares tokens.fontSizes with size and lineHeight values. A named text token emits both properties when its lineHeight is present; the arbitrary text-[20px] sample emits font-size only. wind-demo supplies borders and spacing, not typography.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare paired size tokens
+
+Each token configures both size and leading, with a tighter paired line height for the larger display role.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-size\"\u003e\n  \u003cp class=\"text-caption\"\u003eCaption / 補足の文字: compact but readable.\u003c/p\u003e\n  \u003cp class=\"text-copy\"\u003eBody / 本文: choose a size that stays comfortable across a paragraph.\u003c/p\u003e\n  \u003cp class=\"text-display\"\u003eDisplay / 見出し: larger type uses a tighter paired leading.\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-size-caption: .875rem;\n    --zw-font-size-caption-leading: 1.45;\n    --zw-font-size-copy: 1rem;\n    --zw-font-size-copy-leading: 1.65;\n    --zw-font-size-display: 1.5rem;\n    --zw-font-size-display-leading: 1.2;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-size {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-size p {\n  margin: 0;\n  padding: .5rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-size p:last-child {\n  border-bottom: 0;\n}\n.text-caption {\n  font-size: var(--zw-font-size-caption);\n  line-height: var(--zw-font-size-caption-leading);\n}\n.text-copy {\n  font-size: var(--zw-font-size-copy);\n  line-height: var(--zw-font-size-copy-leading);\n}\n.text-display {\n  font-size: var(--zw-font-size-display);\n  line-height: var(--zw-font-size-display-leading);\n}\n"} title={"Compare paired size tokens"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontSizes": {
+        "caption": {
+          "size": "0.875rem",
+          "lineHeight": "1.45"
+        },
+        "copy": {
+          "size": "1rem",
+          "lineHeight": "1.65"
+        },
+        "display": {
+          "size": "1.5rem",
+          "lineHeight": "1.2"
+        }
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-size": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-caption",
+        "text-copy",
+        "text-display"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-size { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-size p { margin: 0; padding: 0.5rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-size p:last-child { border-bottom: 0; }
+```
+
+</Details>
+
+### Set a one-off size
+
+text-[20px] emits the validated font-size and leaves line-height to the browser or another explicit utility.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-size-custom text-[20px]\"\u003eOne-off 20px / 任意の20pxサイズ\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-size-caption: .875rem;\n    --zw-font-size-caption-leading: 1.45;\n    --zw-font-size-copy: 1rem;\n    --zw-font-size-copy-leading: 1.65;\n    --zw-font-size-display: 1.5rem;\n    --zw-font-size-display-leading: 1.2;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-size-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.text-\\[20px\\] {\n  font-size: 20px;\n}\n"} title={"Set a one-off size"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontSizes": {
+        "caption": {
+          "size": "0.875rem",
+          "lineHeight": "1.45"
+        },
+        "copy": {
+          "size": "1rem",
+          "lineHeight": "1.65"
+        },
+        "display": {
+          "size": "1.5rem",
+          "lineHeight": "1.2"
+        }
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-size-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-[20px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-size-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Use text-copy for a configured token or text-[20px] for a one-off CSS font-size. Named font-size keys share the text root with colors, so the configuration must keep those token names disjoint. Paired leading is part of the configured font-size token; an arbitrary size without slash syntax does not invent a line height. Choose line height separately when the surrounding text needs a specific rhythm.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## text
 
@@ -41,3 +178,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `text-[1rem]` | `font-size: 1rem` |
+
+</Details>

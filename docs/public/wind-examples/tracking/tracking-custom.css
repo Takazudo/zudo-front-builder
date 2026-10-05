@@ -1,0 +1,16 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-tracking-tight: -.03em;
+    --zw-tracking-wide: .1em;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-tracking-custom {
+  color: #223247;
+  border-left: 3px solid #6d7f96;
+  padding: .5rem .75rem;
+}
+.tracking-\[0\.12em\] {
+  letter-spacing: 0.12em;
+}

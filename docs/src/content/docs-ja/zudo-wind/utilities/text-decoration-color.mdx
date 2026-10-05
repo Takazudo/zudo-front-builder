@@ -5,9 +5,124 @@ sidebar_position: 65
 generated: true
 ---
 
-色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。
+既存の下線、上線などの文字装飾の色を変え、文字色はそのまま保ちます。見える装飾がある要素に適用します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `decoration-accent` | `text-decoration-color: var(--zw-color-accent);` |
+| `decoration-[#b42318]/80` | `text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。名前付きの例では tokens.colors.accent を設定します。自作 CSS は読みやすい文字色を指定してブラウザー標準のリンク下線を残し、text-decoration-color は指定しません。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 名前付き色とキーワードを使う
+
+設定済み accent、currentColor、transparent でリンクの下線色だけを変えます。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eA \u003ca href=\"#accent\" class=\"decoration-accent\"\u003econfigured accent underline\u003c/a\u003e, a \u003ca href=\"#current\" class=\"decoration-current\"\u003ecurrent-color underline\u003c/a\u003e, and a \u003ca href=\"#transparent\" class=\"decoration-transparent\"\u003etransparent underline\u003c/a\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-accent {\n  text-decoration-color: var(--zw-color-accent);\n}\n.decoration-current {\n  text-decoration-color: currentColor;\n}\n.decoration-transparent {\n  text-decoration-color: transparent;\n}\n"} title={"名前付き色とキーワードを使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#a23862"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-decoration": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "decoration-accent",
+        "decoration-current",
+        "decoration-transparent"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }
+.wind-demo-decoration a { color: inherit; }
+```
+
+</Details>
+
+### 任意色と不透明度を加える
+
+角括弧の色を CSS として検証し、/80 で対応する不透明度を適用します。文字色は継承した色のままです。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-decoration\"\u003eAn \u003ca href=\"#custom\" class=\"decoration-[#b42318]/80\"\u003earbitrary red decoration at 80 percent opacity\u003c/a\u003e keeps the text color unchanged.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #a23862;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-decoration {\n  max-width: 34rem;\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: .8rem;\n  line-height: 1.8;\n}\n\n.wind-demo-decoration a {\n  color: inherit;\n}\n.decoration-\\[\\#b42318\\]\\/80 {\n  text-decoration-color: color-mix(in oklab, #b42318 80%, transparent);\n}\n"} title={"任意色と不透明度を加える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#a23862"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-decoration": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "decoration-[#b42318]/80"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-decoration { max-width: 34rem; color: #223247; border: 1px solid #b7c5d4; padding: 0.8rem; line-height: 1.8; }
+.wind-demo-decoration a { color: inherit; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## decoration
 
@@ -43,3 +158,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `decoration-[red]/40` | `text-decoration-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

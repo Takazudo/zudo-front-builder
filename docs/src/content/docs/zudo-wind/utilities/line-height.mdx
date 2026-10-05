@@ -5,9 +5,127 @@ sidebar_position: 38
 generated: true
 ---
 
-Set line height from a configured token or an arbitrary CSS value; leading-none falls back to 1 when no none token is configured.
+Control the distance between lines of text. A compact leading suits short labels and larger headings; a more open value can make body copy easier to follow.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `leading-copy` | `line-height: var(--zw-leading-copy);` |
+| `leading-[1.8]` | `line-height: 1.8;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each token example declares tokens.lineHeights. The named copy and compact values are ratios, while leading-[1.8] is an arbitrary ratio. No font-size token is implied by a leading utility.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare named line heights
+
+The paragraphs use the same copy but different configured ratios, making the baseline spacing visible.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-leading\"\u003e\n  \u003cdiv\u003e\u003cspan class=\"wind-demo-label\"\u003eCompact\u003c/span\u003e\u003cp class=\"leading-compact\"\u003eLine height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。\u003c/p\u003e\u003c/div\u003e\n  \u003cdiv\u003e\u003cspan class=\"wind-demo-label\"\u003eCopy\u003c/span\u003e\u003cp class=\"leading-copy\"\u003eLine height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。\u003c/p\u003e\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-leading-compact: 1.25;\n    --zw-leading-copy: 1.65;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-leading {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-leading \u003e div + div {\n  margin-top: 1rem;\n  border-top: 1px solid #d8e0e8;\n  padding-top: .75rem;\n}\n\n.wind-demo-leading p {\n  margin: .35rem 0 0;\n}\n\n.wind-demo-label {\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.leading-compact {\n  line-height: var(--zw-leading-compact);\n}\n.leading-copy {\n  line-height: var(--zw-leading-copy);\n}\n"} title={"Compare named line heights"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "lineHeights": {
+        "compact": "1.25",
+        "copy": "1.65"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-leading": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "leading-compact",
+        "leading-copy"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-leading { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-leading > div + div { margin-top: 1rem; border-top: 1px solid #d8e0e8; padding-top: 0.75rem; }
+.wind-demo-leading p { margin: 0.35rem 0 0; }
+.wind-demo-label { color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### Choose a custom ratio
+
+leading-[1.8] increases line spacing for one block without adding a named token.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-leading-custom leading-[1.8]\"\u003eA custom ratio can open the lines when a short block needs more air. / 短い文章では行間を広げると読みやすくなることがあります。\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-leading-compact: 1.25;\n    --zw-leading-copy: 1.65;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-leading-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.leading-\\[1\\.8\\] {\n  line-height: 1.8;\n}\n"} title={"Choose a custom ratio"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "lineHeights": {
+        "compact": "1.25",
+        "copy": "1.65"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-leading-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "leading-[1.8]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-leading-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Use a name such as leading-copy when a ratio belongs to a reusable text role. leading-none emits the configured lineHeights.none token when one exists and otherwise falls back to 1. Arbitrary bracket values accept validated line-height CSS such as a unitless ratio or length. Line height inherits, so apply it at the smallest block that should share the rhythm.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## leading
 
@@ -42,3 +160,5 @@ Set line height from a configured token or an arbitrary CSS value; leading-none 
 | Example class | Expected declarations |
 | --- | --- |
 | `leading-[1.5]` | `line-height: 1.5` |
+
+</Details>

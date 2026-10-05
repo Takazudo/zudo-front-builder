@@ -1,0 +1,39 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-size-caption: .875rem;
+    --zw-font-size-caption-leading: 1.45;
+    --zw-font-size-copy: 1rem;
+    --zw-font-size-copy-leading: 1.65;
+    --zw-font-size-display: 1.5rem;
+    --zw-font-size-display-leading: 1.2;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-size {
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: 1rem;
+}
+
+.wind-demo-size p {
+  margin: 0;
+  padding: .5rem 0;
+  border-bottom: 1px solid #d8e0e8;
+}
+
+.wind-demo-size p:last-child {
+  border-bottom: 0;
+}
+.text-caption {
+  font-size: var(--zw-font-size-caption);
+  line-height: var(--zw-font-size-caption-leading);
+}
+.text-copy {
+  font-size: var(--zw-font-size-copy);
+  line-height: var(--zw-font-size-copy-leading);
+}
+.text-display {
+  font-size: var(--zw-font-size-display);
+  line-height: var(--zw-font-size-display-leading);
+}

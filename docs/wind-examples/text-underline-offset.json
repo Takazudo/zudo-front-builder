@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "family": "text-underline-offset",
+  "examples": [
+    {
+      "id": "underline-offsets",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-offsets\">\n  <p><a href=\"#offset-2\" class=\"underline-offset-2\">Two pixels / 2px</a></p>\n  <p><a href=\"#offset-4\" class=\"underline-offset-4\">Four pixels / 4px</a></p>\n  <p><a href=\"#offset-em\" class=\"underline-offset-[0.15em]\">Relative to text size / 文字サイズに応じた長さ</a></p>\n</div>",
+      "utilities": ["underline-offset-2", "underline-offset-4", "underline-offset-[0.15em]"],
+      "authoredClasses": ["wind-demo-offsets"],
+      "scaffoldCss": ".wind-demo-offsets { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }\n.wind-demo-offsets p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-offsets p:last-child { border-bottom: 0; }\n.wind-demo-offsets a { color: inherit; }\n"
+    }
+  ]
+}

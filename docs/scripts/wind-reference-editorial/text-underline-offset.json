@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "family": "text-underline-offset",
+  "lookup": [
+    {
+      "entry": "v1.underline-offset",
+      "candidate": "underline-offset-4",
+      "example": "underline-offsets"
+    },
+    {
+      "entry": "v1.underline-offset",
+      "candidate": "underline-offset-[0.15em]",
+      "example": "underline-offsets"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Move an existing underline away from or toward the text. The offset affects underline placement, not whether an underline is drawn.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. These links use their browser-provided underline so the example isolates text-underline-offset. wind-demo only styles the container and link color.",
+      "customValues": "An integer suffix such as underline-offset-4 means 4px. Arbitrary bracket values can use supported nonnegative lengths such as underline-offset-[0.15em], which scales with the font size. The catalog does not define named offset tokens, percentages, negative values, or an auto keyword for this family. Keep enough distance for the underline to remain associated with the text.",
+      "examples": [
+        {
+          "id": "underline-offsets",
+          "title": "Compare fixed and relative offsets",
+          "description": "The first links use pixel offsets; the last uses em so its distance follows the text size."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "既存の下線を文字から離したり近づけたりします。オフセットは下線の位置を変えますが、下線の有無は切り替えません。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。ブラウザー標準のリンク下線を使い、text-underline-offset の違いが分かるようにしています。wind-demo はコンテナとリンク色のみを整えます。",
+      "customValues": "underline-offset-4 のような整数の接尾辞は 4px です。underline-offset-[0.15em] のような任意値では、文字サイズに合わせて変化する長さを指定できます。このファミリーには名前付きオフセット、割合、負の値、auto キーワードはありません。下線と文字の関係が分かる範囲で間隔を調整します。",
+      "examples": [
+        {
+          "id": "underline-offsets",
+          "title": "固定値と相対値を比べる",
+          "description": "前の2つはピクセル単位、最後は文字サイズに応じて変わる em 単位のオフセットです。"
+        }
+      ]
+    }
+  }
+}

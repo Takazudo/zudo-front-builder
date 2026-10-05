@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "tracking",
+  "lookup": [
+    {
+      "entry": "v1.tracking",
+      "candidate": "tracking-tight",
+      "example": "tracking-compare"
+    },
+    {
+      "entry": "v1.tracking",
+      "candidate": "tracking-[0.12em]",
+      "example": "tracking-custom"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Adjust the spacing between letters. Slightly tight tracking can suit a short display label, while neutral or open spacing is often easier to read in longer passages.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example declares tokens.letterSpacings. wind-demo only supplies a border, wrapping safety, labels, and color; the tracking classes control letter spacing.",
+      "customValues": "tracking-tight resolves through tokens.letterSpacings.tight. Negative values are supported and can pull letters closer together. Arbitrary values such as tracking-[0.12em] are validated as letter-spacing CSS. Use modest changes: wide tracking can make paragraphs and Japanese text harder to read, so reserve it for short labels or deliberate display treatments.",
+      "examples": [
+        {
+          "id": "tracking-compare",
+          "title": "Compare named letter spacing",
+          "description": "The same short bilingual label uses one negative and one positive configured value."
+        },
+        {
+          "id": "tracking-custom",
+          "title": "Apply a one-off value",
+          "description": "tracking-[0.12em] gives a short label extra spacing without adding another token."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "文字と文字の間隔を調整します。短い見出しでは少し詰めたり広げたりできますが、長い文章には標準的で読みやすい間隔が向いています。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は tokens.letterSpacings を宣言します。wind-demo は枠、折り返しの安全策、ラベル、色だけを設定し、文字間隔は tracking クラスが決めます。",
+      "customValues": "tracking-tight は tokens.letterSpacings.tight を参照します。負の値で文字を詰めることもできます。tracking-[0.12em] のような任意値は letter-spacing の CSS として検証されます。広い字間は段落や日本語を読みにくくすることがあるため、短いラベルや意図した表示に限って使うとよいでしょう。",
+      "examples": [
+        {
+          "id": "tracking-compare",
+          "title": "名前付きの字間を比べる",
+          "description": "同じ短い日英ラベルに、負と正の設定値をそれぞれ適用します。"
+        },
+        {
+          "id": "tracking-custom",
+          "title": "一度だけ任意値を使う",
+          "description": "tracking-[0.12em] でトークンを増やさず、短いラベルの字間を広げます。"
+        }
+      ]
+    }
+  }
+}

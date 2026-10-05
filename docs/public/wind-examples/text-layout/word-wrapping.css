@@ -1,0 +1,40 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-wrap-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+  max-width: 28rem;
+}
+
+.wind-demo-wrap-box {
+  min-width: 0;
+  margin: 0;
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: .6rem;
+}
+
+.wind-demo-wrap-box strong {
+  display: block;
+  margin-bottom: .3rem;
+  color: #5d6c7c;
+  font-size: .75rem;
+}
+.break-all {
+  word-break: break-all;
+}
+.break-normal {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.break-words {
+  overflow-wrap: break-word;
+}
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+}
