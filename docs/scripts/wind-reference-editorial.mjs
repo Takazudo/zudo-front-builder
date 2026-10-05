@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { exampleAssetPath, exampleSource, mergeConfig } from "./wind-preview-assets.mjs";
+import {
+  exampleAssetPath,
+  exampleSource,
+  exampleInput,
+  exampleCompilerConfig,
+} from "./wind-preview-assets.mjs";
 
 const fail = (message) => {
   throw new Error(message);
@@ -169,15 +174,7 @@ export function loadPreviewContext(root, exampleRecords) {
   const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
   for (const record of exampleRecords)
     for (const example of record.examples) {
-      const config = mergeConfig(baseConfig, example.config);
-      if (example.kind === "positive") config.wind.strict = true;
-      config.wind.authoredClasses = Object.fromEntries(
-        example.authoredClasses.map((name) => [name, true]),
-      );
-      config.wind.safelist =
-        example.kind === "positive" || example.candidateOrigin !== "source"
-          ? { "docs-preview": example.utilities }
-          : {};
+      const config = exampleCompilerConfig(baseConfig, example);
       const html = exampleSource(example);
       if (example.kind !== "positive") {
         assets.set(`${record.family}/${example.id}`, { html, config });
@@ -200,7 +197,7 @@ export function loadPreviewContext(root, exampleRecords) {
         provenance.htmlSha256 !== hash(html) ||
         provenance.headSha256 !== hash(example.head ?? "") ||
         provenance.cssSha256 !== hash(css) ||
-        provenance.inputSha256 !== hash(`${example.scaffoldCss.trimEnd()}\n`) ||
+        provenance.inputSha256 !== hash(exampleInput(example)) ||
         provenance.configSha256 !== hash(`${JSON.stringify(config, null, 2)}\n`)
       )
         fail(`Stale preview source/CSS: ${record.family}/${example.id}; regenerate preview assets`);

@@ -118,3 +118,23 @@ configuration and authored scaffold in disclosures. Diagnostic records render
 source and expected codes instead of an iframe. Do not hand-edit generated blocks
 or duplicate their HTML/CSS elsewhere. Use `guide-` family names for guide records
 to keep their identities distinct from utility families.
+
+Operational rejection lessons have two diagnostic-only fields. Neither is allowed
+on a positive preview, and neither changes the normal candidate-intent contract:
+
+- `diagnosticStylesheet`: a separate CSS entry containing a rejected Tailwind
+  directive, with expected `ZW009` / `error`. Keep `scaffoldCss` empty. A single
+  quoted `@import "tailwindcss"` or `tailwindcss/...` import is also accepted as
+  a rejection lesson; ordinary imports remain rejected. The guide generator displays these exact CSS bytes as source,
+  never an iframe. This field does not allow Tailwind directives in scaffolding.
+- `sourceExclusion: "all" | "partial"`: writes both `sample.html` and
+  `excluded.html` from the same record HTML, and configures
+  `wind.sources.exclude: ["excluded.html"]`. The `all` case explicitly reads
+  `excluded.html` and expects `ZW010` / `error`; `partial` reads `*.html` and
+  expects `ZW010` / `warning`. The generated lesson shows the two filenames,
+  actual source glob and merged config. Arbitrary source-plan overrides remain
+  rejected, and these records produce no preview assets.
+
+`exampleInput`, `exampleSources`, and `exampleCompilerConfig` supply the same
+stylesheet, source declaration, and configuration to compilation and guide source
+rendering. Source-exclusion mode is also recorded in the freshness manifest.

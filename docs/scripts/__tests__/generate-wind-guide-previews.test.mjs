@@ -54,3 +54,24 @@ test("missing records and malformed markers fail closed", () => {
     /Malformed/,
   );
 });
+test("operational diagnostic blocks show the actual CSS and bounded source plan", () => {
+  const negative = {
+    ...example,
+    kind: "expected-diagnostic",
+    scaffoldCss: "",
+    diagnosticStylesheet: "@apply p-4;",
+    expectedDiagnostics: [{ code: "ZW009", severity: "error" }],
+  };
+  const ctx = { ...context, examples: new Map([["guide-test", { examples: [negative] }]]) };
+  const cssLesson = renderGuidePreviews(source, "en", ctx);
+  assert.match(cssLesson, /```css\n@apply p-4;/);
+  assert.ok(!cssLesson.includes("<HtmlPreview"));
+  delete negative.diagnosticStylesheet;
+  negative.sourceExclusion = "partial";
+  negative.expectedDiagnostics = [{ code: "ZW010", severity: "warning" }];
+  const sourceLesson = renderGuidePreviews(source, "ja", ctx);
+  assert.ok(sourceLesson.includes("--source '*.html' --no-auto-source"));
+  assert.match(sourceLesson, /sample.html と excluded.html/);
+  assert.match(sourceLesson, /ZW010 \(warning\)/);
+  assert.ok(!sourceLesson.includes("<HtmlPreview"));
+});
