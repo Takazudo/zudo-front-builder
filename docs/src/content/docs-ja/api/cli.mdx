@@ -349,12 +349,12 @@ zfb wind explain -- -mt-4
 ```sh
 zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
                [--plan standalone|build]
-               [--severity error|warning|auditInfo] [--json]
+               [--severity error|warning|auditInfo] [--group] [--json]
 ```
 
 `--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
-`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
+`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--group` はテキスト出力専用です。未認識クラスは候補名ごと、dead class と診断は候補名・コード・severity ごとにまとめ、出現数と決定的なレポート順で最初に現れる origin を表示します。診断の要約には、最初の発生位置のメッセージと、あれば推奨表記も残ります。既定のテキスト形式と終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。`--json` と `--group` を同時に指定しても JSON ドキュメントと出現ごとの配列は変わりません。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
