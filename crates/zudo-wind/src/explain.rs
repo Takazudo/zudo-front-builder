@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::{
     compile_validated, parse_candidate, Catalog, Diagnostic, DiagnosticCode, Origin,
-    OriginCandidate, RuleKind, Severity, SortKey, SourcePositionKind, TokenCategory,
+    OriginCandidate, RuleKind, Severity, SortKey, SourcePositionKind, TokenCategory, TokenOverride,
     ValidatedTokens, ValueStatus, WindConfig, SPEC_REVISION, SPEC_VERSION,
 };
 
@@ -56,6 +56,16 @@ pub struct TokenResolution {
     pub variable: String,
     pub configured_value: Option<String>,
     pub category_unverified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_override: Option<HostTokenOverride>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostTokenOverride {
+    pub preset_index: usize,
+    pub previous_value: serde_json::Value,
+    pub final_value: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -114,7 +124,7 @@ pub struct OriginView {
 /// Explains one candidate using the supplied configuration. It never fails:
 /// invalid candidates and configuration are represented as structured output.
 pub fn explain(candidate: &str, config: &WindConfig) -> Explanation {
-    explain_with_generation(candidate, config, true)
+    explain_with_generation_and_token_overrides(candidate, config, true, &[])
 }
 
 /// Explicitly represents the `wind: false` command outcome without validating
@@ -141,6 +151,16 @@ pub fn explain_with_generation(
     candidate: &str,
     config: &WindConfig,
     generation_enabled: bool,
+) -> Explanation {
+    explain_with_generation_and_token_overrides(candidate, config, generation_enabled, &[])
+}
+
+/// Explains one candidate with merge provenance retained by the host config loader.
+pub fn explain_with_generation_and_token_overrides(
+    candidate: &str,
+    config: &WindConfig,
+    generation_enabled: bool,
+    token_overrides: &[TokenOverride],
 ) -> Explanation {
     if !generation_enabled {
         return explain_disabled(candidate);
@@ -214,8 +234,13 @@ pub fn explain_with_generation(
                 .iter()
                 .find(|entry| entry.id == resolved.entry_id)
             {
-                output.token_resolutions =
-                    token_resolutions(&parsed, entry, &validated.tokens, &resolved.declarations);
+                output.token_resolutions = token_resolutions(
+                    &parsed,
+                    entry,
+                    &validated.tokens,
+                    &resolved.declarations,
+                    token_overrides,
+                );
             }
             return output;
         }
@@ -286,6 +311,12 @@ pub fn render_explanation(explanation: &Explanation) -> String {
                 ""
             }
         ));
+        if let Some(host_override) = &token.host_override {
+            output.push_str(&format!(
+                "  origin: host override of preset[{}]: {} -> {}\n",
+                host_override.preset_index, host_override.previous_value, host_override.final_value
+            ));
+        }
     }
     if let Some(selector) = &explanation.selector {
         output.push_str(&format!("selector: {selector}\n"));
@@ -468,6 +499,7 @@ fn token_resolutions(
     entry: &crate::CatalogEntry,
     tokens: &ValidatedTokens,
     declarations: &[crate::Declaration],
+    token_overrides: &[TokenOverride],
 ) -> Vec<TokenResolution> {
     let mut resolutions = Vec::new();
     let referenced_variables = declarations
@@ -494,6 +526,7 @@ fn token_resolutions(
                 .copied()
                 .unwrap_or(ValueStatus::Verified)
                 == ValueStatus::CategoryUnverified,
+            host_override: None,
         });
     }
 
@@ -515,12 +548,14 @@ fn token_resolutions(
                 .copied()
                 .unwrap_or(ValueStatus::Verified)
                 == ValueStatus::CategoryUnverified;
+            let host_override = host_token_override(*category, &name, token_overrides);
             resolutions.push(TokenResolution {
                 token_name: name,
                 category: category.config_name().to_owned(),
                 variable,
                 configured_value,
                 category_unverified: unverified,
+                host_override,
             });
         }
     }
@@ -545,6 +580,11 @@ fn token_resolutions(
                         .copied()
                         .unwrap_or(ValueStatus::Verified)
                         == ValueStatus::CategoryUnverified,
+                    host_override: host_token_override(
+                        TokenCategory::FontSize,
+                        name,
+                        token_overrides,
+                    ),
                 });
             }
         }
@@ -555,6 +595,21 @@ fn token_resolutions(
             .then(a.token_name.cmp(&b.token_name))
     });
     resolutions
+}
+
+fn host_token_override(
+    category: TokenCategory,
+    name: &str,
+    token_overrides: &[TokenOverride],
+) -> Option<HostTokenOverride> {
+    token_overrides
+        .iter()
+        .find(|over| over.category == category && over.name == name)
+        .map(|over| HostTokenOverride {
+            preset_index: over.preset_index,
+            previous_value: over.previous_value.clone(),
+            final_value: over.final_value.clone(),
+        })
 }
 
 fn token_names(tokens: &ValidatedTokens, category: TokenCategory) -> Vec<String> {
@@ -684,6 +739,7 @@ fn diagnostic_code_name(code: DiagnosticCode) -> &'static str {
         DiagnosticCode::Zw012 => "ZW012",
         DiagnosticCode::Zw013 => "ZW013",
         DiagnosticCode::Zw014 => "ZW014",
+        DiagnosticCode::Zw015 => "ZW015",
     }
 }
 
@@ -694,6 +750,34 @@ mod tests {
     use crate::{BreakpointConfig, DarkModeConfig, FontSizeToken, TokenConfig};
 
     use super::*;
+
+    #[test]
+    fn diagnostic_code_name_registry_is_unique() {
+        let codes = [
+            DiagnosticCode::Zw001,
+            DiagnosticCode::Zw002,
+            DiagnosticCode::Zw003,
+            DiagnosticCode::Zw004,
+            DiagnosticCode::Zw005,
+            DiagnosticCode::Zw006,
+            DiagnosticCode::Zw007,
+            DiagnosticCode::Zw008,
+            DiagnosticCode::Zw009,
+            DiagnosticCode::Zw010,
+            DiagnosticCode::Zw011,
+            DiagnosticCode::Zw012,
+            DiagnosticCode::Zw013,
+            DiagnosticCode::Zw014,
+            DiagnosticCode::Zw015,
+        ];
+        let names = codes.map(diagnostic_code_name);
+        let unique = names
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), names.len());
+        assert_eq!(names[14], "ZW015");
+    }
 
     fn configured() -> WindConfig {
         WindConfig {
@@ -741,6 +825,7 @@ mod tests {
                 variable: "--zw-color-panel".to_owned(),
                 configured_value: Some("var(--project-panel)".to_owned()),
                 category_unverified: true,
+                host_override: None,
             }]
         );
         assert_eq!(
@@ -783,6 +868,53 @@ mod tests {
     }
 
     #[test]
+    fn explanation_snapshots_host_override_origin_in_text_and_json() {
+        let override_entry = TokenOverride {
+            category: TokenCategory::Color,
+            name: "panel".to_owned(),
+            preset_index: 1,
+            previous_value: serde_json::json!("var(--preset-panel)"),
+            final_value: serde_json::json!("var(--project-panel)"),
+        };
+        let explanation = explain_with_generation_and_token_overrides(
+            "bg-panel",
+            &configured(),
+            true,
+            &[override_entry],
+        );
+
+        assert_eq!(
+            explanation.token_resolutions[0].host_override,
+            Some(HostTokenOverride {
+                preset_index: 1,
+                previous_value: serde_json::json!("var(--preset-panel)"),
+                final_value: serde_json::json!("var(--project-panel)"),
+            })
+        );
+        let rendered = render_explanation(&explanation);
+        assert!(rendered.contains(
+            "  origin: host override of preset[1]: \"var(--preset-panel)\" -> \"var(--project-panel)\"\n"
+        ), "{rendered}");
+
+        let json = serde_json::to_value(&explanation).unwrap();
+        assert_eq!(
+            json["tokenResolutions"][0]["hostOverride"],
+            serde_json::json!({
+                "presetIndex": 1,
+                "previousValue": "var(--preset-panel)",
+                "finalValue": "var(--project-panel)"
+            })
+        );
+        assert!(json.get("sourcePath").is_none());
+
+        let without_metadata = explain("bg-panel", &configured());
+        let without_metadata_json = serde_json::to_value(without_metadata).unwrap();
+        assert!(without_metadata_json["tokenResolutions"][0]
+            .get("hostOverride")
+            .is_none());
+    }
+
+    #[test]
     fn explanation_resolves_spacing_unit_and_paired_font_size_tokens() {
         let spacing = explain("p-4", &configured());
         assert_eq!(spacing.value_status.as_deref(), Some("verified"));
@@ -794,6 +926,7 @@ mod tests {
                 variable: "--zw-spacing-unit".to_owned(),
                 configured_value: Some("0.25rem".to_owned()),
                 category_unverified: false,
+                host_override: None,
             }]
         );
 
