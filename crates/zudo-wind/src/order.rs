@@ -26,6 +26,7 @@ pub(crate) fn state_rank(state: &str) -> u8 {
         "focus-visible" => 7,
         "active" => 8,
         "disabled" => 9,
+        "checked" => 10,
         _ => unreachable!("validated state"),
     }
 }
@@ -73,7 +74,7 @@ pub(crate) fn sort_key(
             }
             VariantKind::Dark => key.dark_rank = 1,
             VariantKind::Relation { peer, state } => {
-                key.relation_rank = state_rank(state) + if *peer { 9 } else { 0 }
+                key.relation_rank = state_rank(state) + if *peer { 10 } else { 0 }
             }
             VariantKind::State(state) => key.state_rank = state_rank(state),
             VariantKind::PseudoElement(pseudo) => {

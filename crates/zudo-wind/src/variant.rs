@@ -155,6 +155,7 @@ pub(crate) fn is_state(state: &str) -> bool {
         "focus-visible",
         "active",
         "disabled",
+        "checked",
         "first",
         "last",
         "focus-within",
