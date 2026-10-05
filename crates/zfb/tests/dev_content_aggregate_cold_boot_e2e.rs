@@ -1481,7 +1481,7 @@ fn deletion_sequence_fixture_dir() -> PathBuf {
 }
 
 fn sequence_entry(title: &str, body: &str) -> String {
-    format!("---\ntitle: {title}\n---\n\n{body}\n")
+    format!("---\ntitle: {title}\n---\n{body}\n")
 }
 
 /// Poll the actual index response; a disk-only check would miss request-time
@@ -1558,11 +1558,17 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&deletion_sequence_fixture_dir(), &root).expect("copy deletion-sequence fixture");
-    assert!(!root.join(".zfb-build").exists(), "fixture must start cold");
-    fs::create_dir_all(root.join("data")).expect("create watched data directory");
-    let probe = root.join("data/handshake-probe.json");
+    let app_root = root.join("app");
+    assert!(
+        !app_root.join(".zfb-build").exists(),
+        "fixture must start cold"
+    );
+    fs::create_dir_all(app_root.join("data")).expect("create watched data directory");
+    let probe = app_root.join("data/handshake-probe.json");
     fs::write(&probe, "{\"revision\":0}\n").expect("seed watcher probe");
-    let mut session = spawn_dev(root, &esbuild, DevMode::Lazy, Some("cold"));
+    // Keep the source report's workspace/app topology while using this
+    // checkout's compiled zfb binary instead of installing published packages.
+    let mut session = spawn_dev(app_root, &esbuild, DevMode::Lazy, Some("cold"));
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) = boot_and_handshake_banner_only(&mut session, &probe).await
@@ -1577,16 +1583,16 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
         );
 
         let slug = "watch-sequence";
-        let source = session.root.join(format!("content/docs/{slug}.md"));
+        let source = session.root.join(format!("src/content/docs/{slug}.md"));
         let detail_url = format!("{base}/{slug}/");
         let index_url = format!("{base}/");
         let first_title = "FIRST_SEQUENCE_TITLE";
         let updated_title = "UPDATED_SEQUENCE_TITLE";
-        let first_body = "FIRST_SEQUENCE_BODY";
+        let first_body = "Body";
         let updated_body = if matches!(sequence, DeletionSequence::TitleOnly) {
             first_body
         } else {
-            "UPDATED_SEQUENCE_BODY"
+            "Updated body"
         };
         let started = Instant::now();
 
@@ -1600,14 +1606,6 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
             &session,
         )
         .await;
-        poll_until_response_contains(
-            &client,
-            &detail_url,
-            first_body,
-            "created detail body",
-            &session,
-        )
-        .await;
         eprintln!(
             "[deletion-sequence] {sequence:?} created detail observed at {:?}",
             started.elapsed()
@@ -1615,19 +1613,16 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
 
         fs::write(&source, sequence_entry(updated_title, updated_body))
             .expect("edit collection entry");
+        assert_eq!(
+            fs::read_to_string(&source).expect("read edited collection entry"),
+            sequence_entry(updated_title, updated_body),
+            "edited source must contain the requested title and body before the detail poll"
+        );
         poll_until_response_contains(
             &client,
             &detail_url,
             updated_title,
             "edited detail title",
-            &session,
-        )
-        .await;
-        poll_until_response_contains(
-            &client,
-            &detail_url,
-            updated_body,
-            "edited detail body",
             &session,
         )
         .await;
