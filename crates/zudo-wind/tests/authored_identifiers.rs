@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use zudo_wind::catalog::migration::MIGRATION_VOCABULARY_VERSION;
 use zudo_wind::{
     compile, explain, CompileInput, CompileResult, DiagnosticCode, ExplanationOutcome, Origin,
     OriginCandidate, Severity, SourcePositionKind, WindConfig,
@@ -249,8 +250,9 @@ fn foreign_names_warn_by_default_and_error_under_strict_at_class_positions() {
         assert!(!default.has_errors(), "{text}");
         let message = &default.diagnostics[0].message;
         assert!(
-            message.contains("unsupported foreign utility (migration vocabulary v1)")
-                && message.contains("no CSS is generated")
+            message.contains(&format!(
+                "unsupported foreign utility (migration vocabulary v{MIGRATION_VOCABULARY_VERSION})"
+            )) && message.contains("no CSS is generated")
                 && message.contains("wind.authoredClasses"),
             "{message}"
         );
@@ -267,6 +269,133 @@ fn foreign_names_warn_by_default_and_error_under_strict_at_class_positions() {
         assert_eq!(
             explanation.outcome,
             ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn extra_arbitrary_suffix_never_emits_shorter_root_css() {
+    for text in [
+        "border-zzz-[3px]",
+        "ml-zzz-[3px]",
+        "p-s-[3px]",
+        "text-zzz-[red]",
+        "bg-foo-[red]",
+    ] {
+        let result = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&result, text),
+            Some((DiagnosticCode::Zw005, Severity::Error)),
+            "{text}"
+        );
+        let explanation = explain(text, &config());
+        assert_eq!(explanation.outcome, ExplanationOutcome::Invalid, "{text}");
+        assert!(explanation.declarations.is_empty(), "{text}");
+        assert!(explanation.entry_identifier.is_none(), "{text}");
+    }
+
+    for text in [
+        "border-[3px]",
+        "ml-[3px]",
+        "p-[3px]",
+        "text-[red]",
+        "bg-[red]",
+    ] {
+        assert_eq!(
+            explain(text, &config()).outcome,
+            ExplanationOutcome::ResolvedUtility,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn logical_names_report_zw014_with_origin_and_json_diagnostics() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "ms-auto",
+        "-me-hsp-md",
+        "ms-[3px]",
+        "pe-hsp-xl",
+        "ps-[3px]",
+        "start-0",
+        "end-[3px]",
+        "border-s",
+        "border-e",
+        "border-s-2",
+        "border-e-accent",
+        "border-s-[3px]",
+        "border-e-[red]",
+    ] {
+        let default = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&default, text),
+            Some((DiagnosticCode::Zw014, Severity::Warning)),
+            "{text}"
+        );
+        let strict_result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
+        assert_eq!(
+            outcome(&strict_result, text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(&compile_at(text, manifest(), config()), text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Literal), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::AuditInfo)),
+            "{text}"
+        );
+
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        assert!(explanation.declarations.is_empty(), "{text}");
+        let json = serde_json::to_value(&explanation).unwrap();
+        assert_eq!(json["outcome"], "foreign_utility", "{text}");
+        assert_eq!(json["diagnostics"][0]["code"], "ZW014", "{text}");
+        assert_eq!(json["diagnostics"][0]["candidate"], text, "{text}");
+    }
+}
+
+#[test]
+fn configured_tokens_and_authored_classes_keep_their_existing_meaning() {
+    let mut config = config();
+    config
+        .tokens
+        .colors
+        .insert("s-accent".to_owned(), "#f00".to_owned());
+    let token = explain("border-s-accent", &config);
+    assert_eq!(token.outcome, ExplanationOutcome::ResolvedUtility);
+    assert_eq!(token.entry_identifier.as_deref(), Some("v1.border.color"));
+
+    config
+        .authored_classes
+        .insert("border-s-[3px]".to_owned(), true);
+    config.authored_classes.insert("ms-card".to_owned(), true);
+    for text in ["border-s-[3px]", "ms-card"] {
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), config.clone()),
+                text
+            ),
+            None,
+            "{text}"
+        );
+        assert_eq!(
+            explain(text, &config).outcome,
+            ExplanationOutcome::Ordinary,
             "{text}"
         );
     }

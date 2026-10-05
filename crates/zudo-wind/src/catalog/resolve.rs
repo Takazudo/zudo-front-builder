@@ -453,13 +453,25 @@ fn match_priority(
             .any(|kind| matches!(kind, ValueKind::Scale | ValueKind::Integer))
     {
         3
-    } else if candidate.utility.arbitrary_value.is_some()
+    } else if full_arbitrary_suffix(suffix, candidate)
         && grammar.accepted_kinds.contains(&ValueKind::Arbitrary)
     {
         5
     } else {
         6
     }
+}
+
+/// A bracket value belongs only to the root immediately before `-[`.
+/// A shorter root must not consume `border-s-[3px]` as `border-[3px]`.
+fn full_arbitrary_suffix(suffix: &str, candidate: &Candidate) -> bool {
+    let Some(value) = candidate.utility.arbitrary_value.as_deref() else {
+        return false;
+    };
+    suffix
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        == Some(value)
 }
 
 fn resolve_value(
@@ -470,6 +482,13 @@ fn resolve_value(
 ) -> Result<(String, ValueStatus), ValueError> {
     let grammar = &entry.grammar;
     let modifier = candidate.utility.slash_modifier.as_deref();
+    if candidate.utility.arbitrary_value.is_some() && !full_arbitrary_suffix(suffix, candidate) {
+        return Err((
+            DiagnosticCode::Zw005,
+            "arbitrary value must immediately follow the utility root".to_owned(),
+            Some("R15"),
+        ));
+    }
     if suffix.is_empty() {
         if let Some((_, value)) = grammar.keywords.iter().find(|(key, _)| key.is_empty()) {
             return Ok(((*value).to_owned(), ValueStatus::Verified));
