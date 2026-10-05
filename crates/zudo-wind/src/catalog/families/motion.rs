@@ -55,6 +55,16 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             ("transition-timing-function", "ease"),
         ],
     );
+    transition.default_overrides = vec![
+        DefaultOverride {
+            property: "transition-duration",
+            overriding_entry_id: "v1.duration",
+        },
+        DefaultOverride {
+            property: "transition-timing-function",
+            overriding_entry_id: "v1.ease",
+        },
+    ];
     entries.push(transition);
 
     let mut duration = entry(

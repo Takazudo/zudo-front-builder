@@ -70,6 +70,18 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             })
             .collect::<Vec<_>>();
         set_templates(&mut width, &templates, &expected);
+        width.default_overrides = sides
+            .iter()
+            .map(|side| DefaultOverride {
+                property: match *side {
+                    "top" => "border-top-style",
+                    "right" => "border-right-style",
+                    "bottom" => "border-bottom-style",
+                    _ => "border-left-style",
+                },
+                overriding_entry_id: "v1.border.style",
+            })
+            .collect();
         entries.push(width);
 
         let properties = sides
@@ -329,6 +341,10 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         &[resolved("outline-width"), fixed("outline-style", "solid")],
         &[("outline-width", "2px"), ("outline-style", "solid")],
     );
+    outline_width.default_overrides.push(DefaultOverride {
+        property: "outline-style",
+        overriding_entry_id: "v1.outline.style",
+    });
     entries.push(outline_width);
 
     let mut outline_offset = entry(

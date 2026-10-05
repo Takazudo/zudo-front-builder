@@ -522,6 +522,12 @@ fn source_origin(source_id: &str, occurrence: &crate::Occurrence) -> Origin {
 }
 
 fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
+    let catalog = Catalog::v1();
+    let entries = catalog
+        .entries()
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
     let mut literals: BTreeMap<(String, usize, usize), Vec<RuleOccurrence<'_>>> = BTreeMap::new();
     for rule in rules {
         let Some(resolved) = &rule.resolved else {
@@ -579,9 +585,27 @@ fn find_conflicts(rules: &[RuleMetadata]) -> Vec<AuditConflict> {
                 {
                     continue;
                 }
+                let default_overrides = left
+                    .rule
+                    .resolved
+                    .as_ref()
+                    .and_then(|resolved| entries.get(resolved.entry_id.as_str()))
+                    .map(|entry| entry.default_overrides.as_slice())
+                    .unwrap_or_default();
+                let right_entry_id = right
+                    .rule
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.entry_id.as_str())
+                    .unwrap_or_default();
                 let overlapping_properties = left
                     .properties
                     .intersection(&right.properties)
+                    .filter(|property| {
+                        !default_overrides
+                            .iter()
+                            .any(|default| default.matches(property, right_entry_id))
+                    })
                     .cloned()
                     .collect::<Vec<_>>();
                 if overlapping_properties.is_empty() {
@@ -940,6 +964,199 @@ mod tests {
             .unrecognized_classes
             .iter()
             .any(|class| class.candidate == "made-up-module"));
+    }
+
+    #[test]
+    fn catalog_default_overrides_do_not_hide_genuine_conflicts() {
+        let markup = br#"<div class="border border-dashed"></div>
+<div class="border-2 border-dotted"></div>
+<div class="border-b border-dashed"></div>
+<div class="outline-2 outline-dashed"></div>
+<div class="transition-opacity duration-300 ease-[ease-in]"></div>
+<div class="transition-colors duration-500"></div>
+<div class="duration-300 transition-all"></div>
+<div class="hover:border hover:border-dashed"></div>
+<div class="hover:transition-opacity hover:duration-300"></div>
+<div class="border-dashed border-dotted"></div>
+<div class="duration-300 duration-500"></div>
+<div class="transition-opacity transition-all"></div>
+<div class="sr-only p-4"></div>
+<div class="border border-b-2"></div>
+<div class="border hover:border-dashed"></div>"#;
+        let input = AuditInput::single(
+            "src/defaults.html",
+            extract_candidates(markup, SourceKind::Html),
+        );
+        let config = WindConfig {
+            tokens: TokenConfig {
+                spacing_unit: Some("0.25rem".to_owned()),
+                ..TokenConfig::default()
+            },
+            ..WindConfig::default()
+        };
+        let report = audit(&input, &config);
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|item| item.severity != "error"));
+        let conflicts = report
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                (
+                    conflict.first_candidate.as_str(),
+                    conflict.second_candidate.as_str(),
+                    conflict
+                        .overlapping_properties
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            conflicts,
+            [
+                (
+                    "border-dashed",
+                    "border-dotted",
+                    vec![
+                        "border-bottom-style",
+                        "border-left-style",
+                        "border-right-style",
+                        "border-top-style"
+                    ]
+                ),
+                ("duration-300", "duration-500", vec!["transition-duration"]),
+                (
+                    "transition-all",
+                    "transition-opacity",
+                    vec![
+                        "transition-duration",
+                        "transition-property",
+                        "transition-timing-function"
+                    ]
+                ),
+                (
+                    "p-4",
+                    "sr-only",
+                    vec![
+                        "padding-bottom",
+                        "padding-left",
+                        "padding-right",
+                        "padding-top"
+                    ]
+                ),
+                (
+                    "border",
+                    "border-b-2",
+                    vec!["border-bottom-style", "border-bottom-width"]
+                ),
+            ]
+        );
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|item| item.code == "ZW013")
+                .count(),
+            conflicts.len()
+        );
+        let json: serde_json::Value = serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+        assert_eq!(json["conflicts"].as_array().unwrap().len(), conflicts.len());
+        assert_eq!(
+            json["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["code"] == "ZW013")
+                .count(),
+            conflicts.len()
+        );
+        let rendered = render_audit(&report);
+        assert_eq!(rendered.matches(" overlap [").count(), conflicts.len());
+        assert_eq!(rendered.matches("ZW013 auditInfo").count(), conflicts.len());
+
+        let reversed = br#"<div class="duration-300 transition-opacity border-dashed border outline-dashed outline-2 ease-[ease-in]"></div>"#;
+        let forward = br#"<div class="transition-opacity duration-300 border border-dashed outline-2 outline-dashed ease-[ease-in]"></div>"#;
+        for markup in [forward.as_slice(), reversed.as_slice()] {
+            let report = audit(
+                &AuditInput::single(
+                    "src/order.html",
+                    extract_candidates(markup, SourceKind::Html),
+                ),
+                &config,
+            );
+            assert!(report.conflicts.is_empty());
+            assert!(report
+                .diagnostics
+                .iter()
+                .all(|item| item.severity != "error"));
+            assert!(!render_audit(&report).contains("ZW013"));
+            let json: serde_json::Value =
+                serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+            assert_eq!(json["conflicts"], serde_json::json!([]));
+        }
+        let css_for = |markup: &[u8]| {
+            let extraction = extract_candidates(markup, SourceKind::Html);
+            let candidates = extraction
+                .candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate
+                        .occurrences
+                        .iter()
+                        .map(|occurrence| OriginCandidate {
+                            text: candidate.text.clone(),
+                            origin: source_origin("src/order.html", occurrence),
+                        })
+                })
+                .collect();
+            let result = crate::compile(&crate::CompileInput {
+                candidates,
+                config: config.clone(),
+            });
+            assert!(!result.has_errors());
+            result.stylesheet
+        };
+        assert_eq!(css_for(forward), css_for(reversed));
+
+        // A future rule that also writes a genuine shared property must keep
+        // that property visible after its designated default is removed.
+        let extraction = extract_candidates(
+            br#"<div class="border-b border-dashed"></div>"#,
+            SourceKind::Html,
+        );
+        let candidates = extraction
+            .candidates
+            .iter()
+            .flat_map(|candidate| {
+                candidate
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| OriginCandidate {
+                        text: candidate.text.clone(),
+                        origin: source_origin("src/mixed.html", occurrence),
+                    })
+            })
+            .collect();
+        let mut compiled = crate::compile(&crate::CompileInput {
+            candidates,
+            config: config.clone(),
+        });
+        for rule in &mut compiled.rules {
+            rule.resolved
+                .as_mut()
+                .unwrap()
+                .declarations
+                .push(crate::Declaration {
+                    property: "border-top-color".to_owned(),
+                    value: "red".to_owned(),
+                });
+        }
+        let mixed = find_conflicts(&compiled.rules);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].overlapping_properties, ["border-top-color"]);
     }
 
     #[test]

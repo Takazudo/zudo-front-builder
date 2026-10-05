@@ -85,6 +85,24 @@ pub struct DeclarationTemplate {
     pub value: EmissionValue,
 }
 
+/// An implicit declaration that a specific later catalog family is meant to override.
+/// This is audit metadata only; it does not affect emitted CSS or catalog export.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DefaultOverride {
+    pub property: &'static str,
+    pub overriding_entry_id: &'static str,
+}
+
+impl DefaultOverride {
+    pub fn matches(self, property: &str, entry_id: &str) -> bool {
+        self.property == property
+            && (entry_id == self.overriding_entry_id
+                || entry_id
+                    .strip_prefix(self.overriding_entry_id)
+                    .is_some_and(|suffix| suffix.starts_with('.')))
+    }
+}
+
 /// Registration metadata needed by the stylesheet emitter when a rule uses
 /// CSS individual translate properties.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +123,8 @@ pub struct CatalogEntry {
     /// Per-property emission details. This extends the batch-A shared-value
     /// shape for v1 entries that have fixed companion values or optional output.
     pub declaration_templates: Vec<DeclarationTemplate>,
+    /// Default writes paired with their designated overriding catalog entries.
+    pub default_overrides: Vec<DefaultOverride>,
     /// CSS registrations required by a resolved rule, deduplicated by the
     /// stylesheet emitter before output.
     pub registrations: Vec<Registration>,
