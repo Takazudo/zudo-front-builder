@@ -91,9 +91,9 @@ outline-2 はピクセル幅を使い、幅とともに solid スタイルも設
 | フィールド | 値 |
 | --- | --- |
 | カタログ識別子 | `v1.outline.width` |
-| クラスパターン | `outline-<suffix>` |
-| 文法 | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"outline-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| 受け入れる値 | この項目には独立した値の定義がありません。 |
+| クラスパターン | `outline` or `outline-<suffix>` |
+| 文法 | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"outline-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
 | トークンカテゴリ | トークンカテゴリなし |
 | 負の値の規則 | `forbidden` |
 | 競合グループと順位 | `outline-width` (`30`) |
@@ -104,7 +104,9 @@ outline-2 はピクセル幅を使い、幅とともに solid スタイルも設
 
 ### 受け入れる値
 
-この項目には独立した値の定義がありません。
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
 
 ### 宣言テンプレート
 

@@ -15,8 +15,8 @@ mod typography;
 mod z_index;
 
 use super::{
-    CatalogEntry, Declaration, DeclarationTemplate, EmissionValue, Example, Registration,
-    SelectorShape, ValueGrammar, ValueKind,
+    CatalogEntry, Declaration, DeclarationTemplate, DefaultOverride, EmissionValue, Example,
+    Registration, SelectorShape, ValueGrammar, ValueKind,
 };
 use crate::TokenCategory;
 
@@ -74,6 +74,7 @@ pub(super) fn entry(
         grammar: ValueGrammar::new(kinds, keywords, categories, arbitrary_property, fraction),
         emitter: properties.to_vec(),
         declaration_templates,
+        default_overrides: Vec::new(),
         registrations: Vec::new(),
         fixed_value: kinds
             .contains(&ValueKind::Exact)

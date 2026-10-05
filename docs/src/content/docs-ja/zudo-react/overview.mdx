@@ -12,7 +12,7 @@ zudo-react は **@takazudo/zfb** に同梱される JSX ランタイムです。
 
 ## JSX を設定する
 
-zudo-react を含むバージョンの zfb パッケージをインストールし、自動 JSX 変換がそのランタイムエントリを使うよう設定します。
+zudo-react を含むバージョンの zfb パッケージをインストールします。`zfb build` と `zfb dev` は、プロジェクトに `tsconfig.json` がなくても、ページ、コンポーネント、アイランドの JSX を自動変換と固定の import source `@takazudo/zfb/zudo-react` でコンパイルします。プロジェクトの `tsconfig.json` にある `jsx` と `jsxImportSource` はこの変換に影響しません。ファイル単位の `@jsxImportSource` pragma はそのファイルの build 変換を上書きできますが、React や Preact の pragma を指定しても、それらのレンダラーがサポートされるわけではありません。`zfb check`、エディター、TypeScript によるテストファイルの型検査で同じランタイムの JSX 型を使うには、次の設定を `tsconfig.json` に追加します。テストランナーの変換設定は、ランナー自身の設定ファイルに指定してください。
 
 ~~~json
 {
@@ -24,6 +24,8 @@ zudo-react を含むバージョンの zfb パッケージをインストール�
 ~~~
 
 コンパイラーは本番用ヘルパーを **@takazudo/zfb/zudo-react/jsx-runtime** から解決します。開発用の変換には **@takazudo/zfb/zudo-react/jsx-dev-runtime** を使います。どちらもパッケージのサブパスであり、zudo-react は独立したパッケージではありません。
+
+`zfb check` の TypeScript 検査にはプロジェクトの `tsconfig.json` が必要です。`zfb check --skip-tsc` はその検査を省略し、ほかのチェックを実行します。[`zfb check`](../api/cli.mdx) を参照してください。
 
 ランタイムの値はコアエントリからインポートします。
 

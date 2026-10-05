@@ -706,7 +706,10 @@ fn round_dimension(v: f64) -> Option<u32> {
 /// Emit a warning via `ctx.diagnostics` (no-op when `diagnostics` is `None`).
 fn emit_warning(ctx: &mut BuildContext<'_>, message: String) {
     if let Some(sink) = ctx.diagnostics.as_mut() {
-        sink.emit(MarkdownDiagnostic::warning(message));
+        sink.emit(
+            MarkdownDiagnostic::warning(message)
+                .with_code(zfb_md_ast::diagnostics::codes::IMAGE_DIMENSIONS),
+        );
     }
 }
 

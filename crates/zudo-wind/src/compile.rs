@@ -200,6 +200,50 @@ pub fn compile_validated(
                 ) {
                     diagnostic.severity = Severity::AuditInfo;
                 }
+                // A rejected variant must not hide a separately recognized
+                // migration utility. Reparse only the structural utility;
+                // keep the authored candidate and origin on both diagnostics.
+                if diagnostic.code == crate::DiagnosticCode::Zw004 {
+                    if let Ok(parts) = crate::structural_split(&input.text) {
+                        if !parts.variants.is_empty() {
+                            if let Ok(mut utility) =
+                                parse_candidate(parts.utility, &config.vocabulary)
+                            {
+                                utility.raw = input.text.clone();
+                                let foreign = catalog.resolve(
+                                    &utility,
+                                    &config.tokens,
+                                    &input.origin,
+                                    &config.authored_classes,
+                                );
+                                let migration = match foreign {
+                                    Resolution::Diagnostic(diagnostic)
+                                    | Resolution::Failure(diagnostic)
+                                        if diagnostic.code == crate::DiagnosticCode::Zw014 =>
+                                    {
+                                        Some(diagnostic)
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(mut migration) = migration {
+                                    if config.strict
+                                        && migration.severity == Severity::Warning
+                                        && matches!(
+                                            input.origin,
+                                            Origin::Source {
+                                                position_kind: SourcePositionKind::Class,
+                                                ..
+                                            }
+                                        )
+                                    {
+                                        migration.severity = Severity::Error;
+                                    }
+                                    result.diagnostics.push(migration);
+                                }
+                            }
+                        }
+                    }
+                }
                 diagnostic.origin = Some(Box::new(input.origin));
                 result.diagnostics.push(diagnostic);
                 continue;

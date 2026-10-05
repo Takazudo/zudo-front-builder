@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 4,
+  "specRevision": 12,
   "entries": [
     {
       "id": "v1.block",
@@ -579,9 +579,9 @@
       "id": "v1.inset",
       "root": "inset",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -665,9 +665,9 @@
       "id": "v1.inset-x",
       "root": "inset-x",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -733,9 +733,9 @@
       "id": "v1.inset-y",
       "root": "inset-y",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -801,9 +801,9 @@
       "id": "v1.bottom",
       "root": "bottom",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -860,9 +860,9 @@
       "id": "v1.left",
       "root": "left",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -919,9 +919,9 @@
       "id": "v1.right",
       "root": "right",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -978,9 +978,9 @@
       "id": "v1.top",
       "root": "top",
       "grammar": {
-        "acceptedKinds": ["keyword", "token", "scale", "arbitrary"],
+        "acceptedKinds": ["keyword", "token", "scale", "fraction", "arbitrary"],
         "arbitraryProperty": "top",
-        "allowsFractionSlash": false,
+        "allowsFractionSlash": true,
         "allowsColorOpacity": false
       },
       "acceptedValues": [
@@ -2111,6 +2111,208 @@
       ]
     },
     {
+      "id": "v1.justify-items",
+      "root": "justify-items",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["justify-items"],
+      "declarationTemplates": [
+        {
+          "property": "justify-items",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "justify-items-center",
+          "declarations": [
+            {
+              "property": "justify-items",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.justify-self",
+      "root": "justify-self",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["justify-self"],
+      "declarationTemplates": [
+        {
+          "property": "justify-self",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "justify-self-center",
+          "declarations": [
+            {
+              "property": "justify-self",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.place-content",
+      "root": "place-content",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "between",
+          "emittedValue": "space-between"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "around",
+          "emittedValue": "space-around"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "evenly",
+          "emittedValue": "space-evenly"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["place-content"],
+      "declarationTemplates": [
+        {
+          "property": "place-content",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "place-content-center",
+          "declarations": [
+            {
+              "property": "place-content",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "v1.place-items",
       "root": "place-items",
       "grammar": {
@@ -2163,6 +2365,70 @@
           "declarations": [
             {
               "property": "place-items",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.place-self",
+      "root": "place-self",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["place-self"],
+      "declarationTemplates": [
+        {
+          "property": "place-self",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "place-self-center",
+          "declarations": [
+            {
+              "property": "place-self",
               "value": "center"
             }
           ]
@@ -7415,12 +7681,18 @@
       "id": "v1.outline.width",
       "root": "outline",
       "grammar": {
-        "acceptedKinds": ["integer", "arbitrary"],
+        "acceptedKinds": ["exact", "integer", "arbitrary"],
         "arbitraryProperty": "outline-width",
         "allowsFractionSlash": false,
         "allowsColorOpacity": false
       },
-      "acceptedValues": [],
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "1px"
+        }
+      ],
       "tokenCategories": [],
       "negativePolicy": "forbidden",
       "conflictGroup": "outline-width",
@@ -8032,6 +8304,11 @@
         },
         {
           "kind": "keyword",
+          "suffix": "px",
+          "emittedValue": "1px"
+        },
+        {
+          "kind": "keyword",
           "suffix": "full",
           "emittedValue": "100%"
         }
@@ -8083,6 +8360,19 @@
               "value": "var(--zw-translate-x) var(--zw-translate-y)"
             }
           ]
+        },
+        {
+          "candidate": "translate-x-px",
+          "declarations": [
+            {
+              "property": "--zw-translate-x",
+              "value": "1px"
+            },
+            {
+              "property": "translate",
+              "value": "var(--zw-translate-x) var(--zw-translate-y)"
+            }
+          ]
         }
       ]
     },
@@ -8100,6 +8390,11 @@
           "kind": "keyword",
           "suffix": "0",
           "emittedValue": "0"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "px",
+          "emittedValue": "1px"
         },
         {
           "kind": "keyword",
@@ -8148,6 +8443,19 @@
             {
               "property": "--zw-translate-y",
               "value": "0"
+            },
+            {
+              "property": "translate",
+              "value": "var(--zw-translate-x) var(--zw-translate-y)"
+            }
+          ]
+        },
+        {
+          "candidate": "translate-y-px",
+          "declarations": [
+            {
+              "property": "--zw-translate-y",
+              "value": "1px"
             },
             {
               "property": "translate",
@@ -8298,6 +8606,71 @@
           "kind": "keyword",
           "suffix": "wait",
           "emittedValue": "wait"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "help",
+          "emittedValue": "help"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "none",
+          "emittedValue": "none"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "progress",
+          "emittedValue": "progress"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "crosshair",
+          "emittedValue": "crosshair"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "cell",
+          "emittedValue": "cell"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "copy",
+          "emittedValue": "copy"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "alias",
+          "emittedValue": "alias"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "no-drop",
+          "emittedValue": "no-drop"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "context-menu",
+          "emittedValue": "context-menu"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "vertical-text",
+          "emittedValue": "vertical-text"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "all-scroll",
+          "emittedValue": "all-scroll"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "zoom-in",
+          "emittedValue": "zoom-in"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "zoom-out",
+          "emittedValue": "zoom-out"
         },
         {
           "kind": "keyword",
@@ -9886,6 +10259,264 @@
             {
               "property": "text-decoration-color",
               "value": "color-mix(in oklab, red 40%, transparent)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.thickness",
+      "root": "decoration",
+      "grammar": {
+        "acceptedKinds": ["integer", "arbitrary"],
+        "arbitraryProperty": "text-decoration-thickness",
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-thickness",
+      "conflictGroupRank": 45,
+      "orderRank": 1,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-thickness"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-thickness",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-2",
+          "declarations": [
+            {
+              "property": "text-decoration-thickness",
+              "value": "2px"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.style.dashed",
+      "root": "decoration-dashed",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "dashed"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-style",
+      "conflictGroupRank": 45,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-style"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-style",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-dashed",
+          "declarations": [
+            {
+              "property": "text-decoration-style",
+              "value": "dashed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.style.dotted",
+      "root": "decoration-dotted",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "dotted"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-style",
+      "conflictGroupRank": 45,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-style"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-style",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-dotted",
+          "declarations": [
+            {
+              "property": "text-decoration-style",
+              "value": "dotted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.style.double",
+      "root": "decoration-double",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "double"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-style",
+      "conflictGroupRank": 45,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-style"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-style",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-double",
+          "declarations": [
+            {
+              "property": "text-decoration-style",
+              "value": "double"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.style.solid",
+      "root": "decoration-solid",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "solid"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-style",
+      "conflictGroupRank": 45,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-style"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-style",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-solid",
+          "declarations": [
+            {
+              "property": "text-decoration-style",
+              "value": "solid"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.decoration.style.wavy",
+      "root": "decoration-wavy",
+      "grammar": {
+        "acceptedKinds": ["exact"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "wavy"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "text-decoration-style",
+      "conflictGroupRank": 45,
+      "orderRank": 2,
+      "selectorShape": "ownElement",
+      "emitter": ["text-decoration-style"],
+      "declarationTemplates": [
+        {
+          "property": "text-decoration-style",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "decoration-wavy",
+          "declarations": [
+            {
+              "property": "text-decoration-style",
+              "value": "wavy"
             }
           ]
         }

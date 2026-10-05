@@ -1,10 +1,14 @@
 //! Reference-counted candidate ownership across files, manifests and safelist owners.
-use crate::{extract_candidates, ExpandedFile, ExtractionResult, SourceId, SourceKind};
+use crate::{
+    extract_candidates_with_options, ExpandedFile, ExtractionOptions, ExtractionResult, SourceId,
+    SourceKind,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CandidateIndex {
+    options: ExtractionOptions,
     sources: BTreeMap<SourceId, BTreeSet<String>>,
     manifests: BTreeMap<String, BTreeSet<String>>,
     safelist: BTreeMap<String, BTreeSet<String>>,
@@ -12,6 +16,12 @@ pub struct CandidateIndex {
 }
 
 impl CandidateIndex {
+    pub fn with_options(options: ExtractionOptions) -> Self {
+        Self {
+            options,
+            ..Self::default()
+        }
+    }
     fn subtract(&mut self, old: BTreeSet<String>) {
         for candidate in old {
             if let Some(count) = self.counts.get_mut(&candidate) {
@@ -94,7 +104,7 @@ impl CandidateIndex {
     ) -> Option<ExtractionResult> {
         match bytes {
             Some(bytes) => {
-                let result = extract_candidates(bytes, kind);
+                let result = extract_candidates_with_options(bytes, kind, &self.options);
                 self.upsert(source, result.candidates.iter().map(|c| c.text.clone()));
                 Some(result)
             }

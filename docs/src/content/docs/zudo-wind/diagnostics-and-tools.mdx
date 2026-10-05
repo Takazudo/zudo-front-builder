@@ -183,6 +183,7 @@ An unrelated name such as `site-header` in a class attribute remains ordinary CS
 | ZW012 | Dynamic candidate construction; audit-only information, no utility is invented. |
 | ZW013 | Property conflict inside one class-list literal; audit-only information explains the deterministic winner. |
 | ZW014 | Unsupported foreign utility from the versioned migration vocabulary, such as `line-clamp-2` or `container`. No CSS is generated. Warning at a class position, error there under `wind.strict: true`, audit-only information for other literals, and an error from a safelist or manifest. |
+| ZW015 | Audit-only information when a host color or other token value replaces a different preset value. Build remains silent. The config key path and changed old/new values identify the origin. |
 
 Diagnostic records retain the candidate where available, severity, code, origin, message, optional suggestion, and optional rejection ID. Origins are structured by kind:
 
@@ -203,17 +204,35 @@ Occurrences are retained and ordered by origin, offset or key/index, code, and c
 
 `zfb wind audit` uses the same `source:line:column` locations; the byte offset appears only as `byteOffset` in `--json` output. A configuration error names the failing field and shows its value, bounded, instead of the whole evaluated configuration; set `ZFB_DEBUG_CONFIG=1` to print all of it.
 
-Candidate extraction skips string literals that cannot be classes, for build and audit alike: module specifiers in `import`, `export … from`, `import()`, and `require()`; literals that are only a URL or a relative path; the values of `href`, `src`, `content`, `name`, `rel`, and `type` attributes; and the CSS text of a `<style>` element. Class attributes, class helpers, and every other literal are still read, so a template constant that is not provably CSS can still contribute a candidate.
+Candidate extraction skips string literals that cannot be classes, for build and audit alike: module specifiers in `import`, `export … from`, `import()`, and `require()`; literals that are only a URL or a relative path; the values of `href`, `src`, `content`, `name`, `rel`, and `type` attributes; and the CSS text of a `<style>` element. Class attributes and class helpers are read; other eligible literals can also contribute complete candidates, including template constants not provably CSS.
+
+Speculative literal positions discard tokens containing `=`, quotes, comma, `+`, `*`, `@`, `%`, or `#` outside balanced `[…]` or `(…)`. Unicode text and punctuation inside balanced arbitrary CSS values remain eligible. An explicit class position still reports malformed candidates. When a literal parses as embedded markup, its recognized class attributes are extracted once and its raw whitespace-token pass is skipped. Pure URL or relative-path fragments beside concatenation or interpolation remain skipped.
 
 ZW001 through ZW006 are errors at class, safelist, and strict manifest origins. At lower-confidence source positions they are audit-only information; a valid complete candidate found there still emits. If a utility-root name is intended as an authored class, add its exact complete spelling to `wind.authoredClasses`, for example `authoredClasses: { "text-link": true }`. This reservation suppresses utility validation, candidate diagnostics, and generated CSS for that full candidate. Otherwise, correct the utility spelling or declare the missing token. A name with no matching utility root, such as `site-header`, remains ordinary class text.
+
+ZW013 omits catalog-declared implicit defaults overridden in the same variant bucket: border width plus border style, outline width plus outline style, and transition plus duration or ease. Genuine style/style, duration/duration, transition-property/property, sr-only/padding, and side/shorthand width conflicts still appear. Compatible `translate-x-*` and `translate-y-*` utilities in the same variant bucket also share their catalog composition declaration without a conflict. Different values on the same axis and any other overlapping properties still produce ZW013.
+
+For an undeclared color with a valid `/0`–`/100` modifier, `text-<name>`, `border-<name>`, `border-x-<name>`, `outline-<name>`, and `placeholder:text-<name>` report ZW006/R17 for the missing token. Invalid opacity, negative, and unsupported slash forms retain ZW005.
+
+A declared color used as bare `shadow-<name>` or valid `shadow-<name>/<opacity>` (`/0`–`/100`) reports ZW004/R20 with a targeted hint because v1 does not compose colors into shadow values. The shadow root accepts complete values: `none`, arbitrary `box-shadow` values, or `shadows` tokens. Fold the tint into a `shadows` token, or author the complete `box-shadow` in CSS and reserve the class with `wind.authoredClasses`. A bare same-name `shadows` token still resolves; slash modifiers remain unsupported.
+
+Well-formed `has-[…]:`, `not-[…]:`, `nth-[…]:`, `nth-last-[…]:`, and `supports-[…]:` report ZW004/R09. `min-[…]:` and `max-[…]:` report ZW004/R24 and require configured `wind.breakpoints`; `group-aria-[…]:`, `group-data-[…]:`, `peer-aria-[…]:`, and `peer-data-[…]:` report ZW004/R08. Empty, trailing, sequential, malformed, unbalanced, and unknown bracketed heads remain ZW001. A rejected functional variant wrapping a ZW014 utility can report both diagnostics for the same complete candidate and source span in explain and audit, without emitting CSS; for example `min-[56rem]:table-cell` or `has-[:focus-visible]:filter-[blur(2px)]`. Explain remains invalid. Strict mode raises a source class ZW014 warning to error; lower-confidence literals stay audit information and exact authored classes suppress both diagnostics.
+
+`wind explain --json` optionally adds `tokenResolutions[*].hostOverride` with `presetIndex`, `previousValue`, and `finalValue` only for changed preset bindings. `wind audit --json` emits ZW015 as a standard diagnostic with `severity: "auditInfo"`, category/name candidate, config key-path origin, and old/new values in the message. Both CLI envelopes retain `schemaVersion: 1`.
 
 ## Migration warnings and strict mode
 
 zudo-wind does not implement every Tailwind utility. A bounded, versioned migration vocabulary names the common Tailwind utilities it deliberately leaves out: `table` and the other table display values, `contents`, `flow-root`, `list-item`, `container`, `not-sr-only`, `line-clamp-*`, `order-*`, `basis-*`, `fill-*`, `stroke-*`, `backdrop-blur-*`, `appearance-*`, `will-change-*`, and `content-*`. Such a name is reported as ZW014, an unsupported foreign utility, rather than silently passing as ordinary class text. The diagnostic names the declaration to author instead; no guessed CSS is ever emitted. A name that only resembles a foreign utility, such as `table-wrapper` or `order-summary`, stays ordinary.
 
-ZW014 is a warning by default, so a migrating project still builds while it lists what lost its styling. Set `wind.strict: true` to make it an error at class positions. Strict mode never promotes a lower-confidence literal: a constant that never reaches a class attribute, a test title, or a URL stays audit-only information. To keep a name because CSS you wrote styles it, reserve the exact spelling with `wind.authoredClasses`.
+Migration vocabulary v4 also recognizes logical `ms-*`/`me-*`, `ps-*`/`pe-*`, `start-*`/`end-*`, and `border-s`/`border-e` (including valid arbitrary suffixes), plus isolation, float/clear, break/word-break, transform origin, filter/backdrop-filter, and text-shadow. Author the corresponding logical margin, padding, inset, and border declarations or other CSS yourself; no composed CSS is generated. A supported configured token still resolves first. `border-s-[3px]` and `border-e-[red]` report ZW014, while unknown extra suffixes such as `ml-zzz-[3px]` report ZW005.
+
+The v4 gradient vocabulary includes v3 `bg-gradient-to-*`; `bg-linear-to-*`, integer-angle `bg-linear-*`, `bg-radial` and `bg-radial-[<value>]`, `bg-conic` and integer-angle `bg-conic-*`; and `from-*`, `via-*`, `to-*` stops using a declared color, `current`, `transparent`, or a bracketed arbitrary color or position. These produce no CSS: author `background-image` and reserve each complete class in `wind.authoredClasses`. Bare `from-10%`, `via-30%`, and `to-90%` are currently rejected by the candidate parser; bracketed `from-[60%]` reaches ZW014.
+
+ZW014 is a warning by default, so a migrating project still builds while it lists what lost its styling. Set `wind.strict: true` to make it an error at class positions. Strict mode never promotes a lower-confidence literal: an eligible complete candidate in a constant that never reaches a class attribute or in a test title stays audit-only information. Pure URLs are skipped. To keep a name because CSS you wrote styles it, reserve the exact spelling with `wind.authoredClasses`.
 
 `zfb wind explain` reports such a name with the outcome `unsupported foreign utility`.
+
+The public Rust migration classifier is `foreign_family(candidate, tokens)`: it needs validated tokens to let a configured utility resolve before ZW014. The Rust catalog metadata also exposes `DefaultOverride` and `CatalogEntry.default_overrides` for the ZW013 implicit-default exceptions. The catalog and language remain at spec revision 12; serialized CLI schema versions remain 1. CSS output is unchanged by this metadata addition.
 
 ## Explain and audit
 
@@ -221,9 +240,11 @@ Run `zfb wind explain` to inspect how a candidate is parsed and resolved. Explai
 
 Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, and property conflicts within an enclosing class-list literal. It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
 
-`--plan standalone` (the default) audits the same roots as `zfb css` without `--source`: the conventional project roots plus configured `wind.sources` package roots and exclusions. `--plan build` audits the plan `zfb build` and `zfb dev` scan. It runs plugin `setup` to discover package-owned routes, sibling mirror roots, and plugin virtual modules, which are audited as `plugin/<specifier>`. It runs no `preBuild` or `postBuild` hook and writes no build output. Either mode first prints `wind audit plan: <mode>` followed by every scanned root, virtual module, manifest, and exclusion with its reason.
+`--plan standalone` (the default) audits the same roots as `zfb css` without `--source`: the conventional project roots plus configured `wind.sources.roots`, package roots, and exclusions. `--plan build` audits the plan `zfb build` and `zfb dev` scan. It runs plugin `setup` to discover package-owned routes, sibling mirror roots, and plugin virtual modules, which are audited as `plugin/<specifier>`. It runs no `preBuild` or `postBuild` hook and writes no build output. Either mode first prints `wind audit plan: <mode>` followed by every scanned root, virtual module, manifest, and exclusion with its reason.
 
 By default, a completed audit exits with status 0 even when it reports error-severity findings; stderr then recommends `--fail-on error`. `--fail-on error` fails on error-severity diagnostics, while `--fail-on warning` also fails on warnings. `auditInfo` findings do not affect either threshold. Invalid configuration and source scan failures always exit nonzero.
+
+Use `--group` for a compact text audit. It groups unrecognized names by candidate and dead-class/diagnostic occurrences by candidate, code, and severity, showing a count and deterministic first origin. Diagnostic summaries keep the message and optional suggestion from that first origin. The flag leaves default text and exit policy unchanged; with `--json` it has no effect, preserving JSON occurrence arrays. See the [CLI reference](../api/cli.mdx).
 
 `codeHighlight.roleClasses` is deliberately tolerant: a valid utility emits; an invalid or unknown role value remains an ordinary class without a build diagnostic. Audit may report that role as ignored. An exact match in `authoredClasses` suppresses utility validation, generation, and utility diagnostics at every candidate origin. It cannot suppress configuration errors or stylesheet checks.
 
@@ -237,7 +258,7 @@ The standalone `zfb css` command remains the wind compiler. When generation is e
 
 ## Generated identity
 
-Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 4. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
+Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 12. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
 
 ## See also
 

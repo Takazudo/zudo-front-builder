@@ -43,7 +43,7 @@ Each entry has the following fields:
 - `data: T` — the parsed frontmatter, typed by the generic parameter.
 - `body: string` — the raw markdown body with frontmatter stripped.
 - `module_specifier: string` — stable bridge key used internally by the renderer to look up the compiled module. `.md` / `.mdx` entries get `mdx://<collection>/<slug>#<hash>` (with the entry's markdown `body` populated); `.tsx` entries get `tsx://<collection>/<slug>#<hash>` (with an empty `body` — there's no separate markdown body). The trailing hash is derived from the compiled JSX source. Pass the specifier to a custom `Content` lookup if building your own bridge.
-- `Content: (props: ContentProps) => ContentElement` — renderable component for this entry. Renders via the renderer bridge when available; falls back to a `<pre data-zfb-content-fallback>` block in test and dev contexts where the bridge is absent.
+- `Content: (props: ContentProps) => ContentElement` — renderable component for this entry. Renders via the renderer bridge when available; falls back to a `<pre data-zfb-content-fallback>` block in test and dev contexts where the bridge is absent. In a production build, the same fallback is used if a compiled `.md`/`.mdx` module cannot be parsed for the bridge: zfb warns and skips that bridge entry. Set [`strictContentBridge`](./define-config.mdx) to `true` (or pass `--strict-content-bridge`) to fail the build and name the affected entries. This is build-only; `zfb dev` still warns and serves the fallback.
 
 ## ContentProps
 

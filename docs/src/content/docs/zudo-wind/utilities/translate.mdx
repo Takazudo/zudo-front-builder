@@ -195,7 +195,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Catalog identifier | `v1.translate.x` |
 | Class pattern | `translate-x-<suffix>` |
 | Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| Accepted values | `2` |
+| Accepted values | `3` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
 | Conflict group and rank | `translate` (`38`) |
@@ -209,6 +209,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Kind | Suffix | Emitted value |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### Declaration templates
@@ -223,6 +224,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Example class | Expected declarations |
 | --- | --- |
 | `translate-x-0` | `--zw-translate-x: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-x-px` | `--zw-translate-x: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
 
 `{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
 
@@ -233,7 +235,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Catalog identifier | `v1.translate.y` |
 | Class pattern | `translate-y-<suffix>` |
 | Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"translate","allowsFractionSlash":true,"allowsColorOpacity":false}` |
-| Accepted values | `2` |
+| Accepted values | `3` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
 | Conflict group and rank | `translate` (`38`) |
@@ -247,6 +249,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Kind | Suffix | Emitted value |
 | --- | --- | --- |
 | `keyword` | `"0"` | `"0"` |
+| `keyword` | `"px"` | `"1px"` |
 | `keyword` | `"full"` | `"100%"` |
 
 ### Declaration templates
@@ -261,6 +264,7 @@ Numeric suffixes use tokens.spacingUnit when configured. A named value such as t
 | Example class | Expected declarations |
 | --- | --- |
 | `translate-y-0` | `--zw-translate-y: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+| `translate-y-px` | `--zw-translate-y: 1px`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
 
 `{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
 

@@ -12,7 +12,7 @@ The runtime is not a React or Preact compatibility layer. It has no hooks, conte
 
 ## Configure JSX
 
-Install the zfb package version that includes zudo-react, then set the automatic JSX transform to use its runtime entry:
+Install a zfb package version that includes zudo-react. `zfb build` and `zfb dev` compile page, component, and island JSX with the automatic transform and the fixed import source `@takazudo/zfb/zudo-react`, even when the project has no `tsconfig.json`; they ignore `jsx` and `jsxImportSource` in the project's `tsconfig.json`. A per-file `@jsxImportSource` pragma can override the build transform for that file, but a React or Preact pragma does not add support for those renderers. Set the following options in `tsconfig.json` so `zfb check`, editors, and TypeScript checks of test files use the same runtime's JSX types. Configure test-runner transforms separately in the runner's config.
 
 ~~~json
 {
@@ -24,6 +24,8 @@ Install the zfb package version that includes zudo-react, then set the automatic
 ~~~
 
 The compiler resolves the production helpers from **@takazudo/zfb/zudo-react/jsx-runtime**. Development transforms use **@takazudo/zfb/zudo-react/jsx-dev-runtime**. Both are package subpaths; zudo-react is not a separate package.
+
+The TypeScript step in a full `zfb check` requires a project `tsconfig.json`; `zfb check --skip-tsc` skips that step and still runs the other checks. See [`zfb check`](../api/cli.mdx).
 
 Import runtime values from the core entry:
 

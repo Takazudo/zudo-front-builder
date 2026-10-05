@@ -226,7 +226,11 @@ fn assert_features_fingerprint_covers_every_field(
         Some(ImageDimensionsConfig { skip_remote: _ }) | None => {}
     }
     match link_validation {
-        Some(LinkValidationConfig { fail_on_broken: _ }) | None => {}
+        Some(LinkValidationConfig {
+            fail_on_broken: _,
+            anchor_components: _,
+        })
+        | None => {}
     }
     match transclude {
         Some(TranscludeConfig { max_depth: _ }) | None => {}
@@ -474,6 +478,9 @@ pub struct Pipeline {
     /// Derived purely from the `features` config (already in the
     /// fingerprint) — NEVER fingerprinted separately.
     link_validation_enabled: bool,
+    /// Declared MDX component props that emit DOM ids. Derived from the
+    /// feature config, which is already part of the canonical fingerprint.
+    anchor_components: Option<std::collections::BTreeMap<String, String>>,
     /// Severity used when promoting trusted resolver fragment metadata into
     /// the existing build-wide cross-file candidate channel.
     resolved_link_fragment_severity: Option<DiagnosticSeverity>,
@@ -609,6 +616,7 @@ impl Pipeline {
             cross_file_link_candidates: Vec::new(),
             file_headings: Vec::new(),
             link_validation_enabled: false,
+            anchor_components: None,
             resolved_link_fragment_severity: None,
             nested_code_chain_spec: None,
         }
@@ -1364,6 +1372,10 @@ impl Pipeline {
         self.link_validation_enabled
     }
 
+    pub(crate) fn anchor_components(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.anchor_components.as_ref()
+    }
+
     /// Number of buffered (not yet drained) per-file heading records
     /// (the slicing snapshot — see
     /// [`Pipeline::cross_file_link_candidates_len`]).
@@ -1956,6 +1968,10 @@ impl Pipeline {
         // features JSON in the fingerprint below — so it cannot split
         // cache keys or desynchronise store/replay.
         p.link_validation_enabled = features.link_validation.is_some();
+        p.anchor_components = features
+            .link_validation
+            .as_ref()
+            .and_then(|config| config.anchor_components.clone());
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
         // mermaid; after for post-syntect). The `_config_derived` variant

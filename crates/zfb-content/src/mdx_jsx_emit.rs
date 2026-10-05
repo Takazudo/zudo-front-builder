@@ -41,14 +41,14 @@
 //! markdown-rs with a `Message` that already carries line/column info.
 //! We surface it as [`PipelineError::Parse`] verbatim — no panics.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic};
+use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic, SourceLocation};
 use zfb_md_ast::heading_registry::{HeadingEntry as RegistryHeadingEntry, HeadingRegistry};
 use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
 use zfb_types::normalize_path_lexical;
@@ -415,7 +415,10 @@ fn mdx_to_jsx_module_inner(
             // `heading_links.rs`. No ordering constraint vs
             // `resolve_links`: `ResolveLinksPlugin` rewrites `Link`/
             // `Image` urls only, never JSX attribute values.
-            for id in collect_jsx_anchor_ids(&children) {
+            let anchor_components = pipeline_mut
+                .as_deref()
+                .and_then(Pipeline::anchor_components);
+            for id in collect_jsx_anchor_ids(&children, anchor_components) {
                 reg.insert_anchor_id(src.clone(), id);
             }
             if record_file_headings {
@@ -539,6 +542,12 @@ fn mdx_to_jsx_module_inner(
         }
         let mut bridge = HastJsxBridge::new();
         let body = bridge.emit_root(&hast);
+        // The parsed tree is authoritative for author-written component
+        // names. A raw JSX text scan cannot safely infer Unicode identifier
+        // boundaries (notably combining marks). Add exact names only when
+        // their opening tag survived into the emitted body; unreferenced
+        // footnote definitions, for example, do not render at all.
+        collect_mdast_component_names(&mdast_root, &body, &mut bridge.component_names);
         (
             body,
             bridge.html_tags,
@@ -860,22 +869,19 @@ fn walk_collect_headings(
 ///
 /// ## What is collected
 ///
-/// Only `MdxJsxFlowElement`/`MdxJsxTextElement` nodes whose `name` is an
-/// **intrinsic element** (first char NOT ASCII uppercase — the same
-/// first-char rule [`collect_jsx_component_names`] uses to tell a
-/// PascalCase component from an html tag) are inspected:
+/// `MdxJsxFlowElement`/`MdxJsxTextElement` nodes are inspected before
+/// the hast bridge collapses them to opaque JSX source:
 ///
 /// - `id="literal"` on ANY intrinsic element;
 /// - additionally, `name="literal"` when the element is specifically
 ///   `<a>` — mirrors the hast-phase `<a name>` arm in
 ///   `crate::plugins::heading_links`.
 ///
-/// A fragment (`name: None`) carries no attributes to inspect, so it
-/// contributes nothing. A **component** (`<Note id="x">`) is excluded
-/// even though it syntactically carries an `id` attribute: whether a
-/// component forwards that prop to the rendered DOM is statically
-/// unknowable, and #2224 already ruled author-written JSX attribute
-/// surfaces on components out of linkValidation's scope.
+/// - a configured component's declared prop (exact parsed name, including
+///   member and Unicode names) when its value is a nonempty literal.
+///
+/// A fragment (`name: None`) contributes nothing. An undeclared component
+/// prop is excluded: forwarding it to a DOM id is statically unknowable.
 ///
 /// ## What is excluded, and why
 ///
@@ -915,15 +921,22 @@ fn walk_collect_headings(
 /// reachable by a hast `Element` walk. See the
 /// `collect_jsx_anchor_ids_disjoint_from_structured_element_ids` unit
 /// test below.
-fn collect_jsx_anchor_ids(children: &[MdastNode]) -> Vec<String> {
+fn collect_jsx_anchor_ids(
+    children: &[MdastNode],
+    anchor_components: Option<&BTreeMap<String, String>>,
+) -> Vec<String> {
     let mut out = Vec::new();
     for node in children {
-        walk_collect_jsx_anchor_ids(node, &mut out);
+        walk_collect_jsx_anchor_ids(node, anchor_components, &mut out);
     }
     out
 }
 
-fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
+fn walk_collect_jsx_anchor_ids(
+    node: &MdastNode,
+    anchor_components: Option<&BTreeMap<String, String>>,
+    out: &mut Vec<String>,
+) {
     // See the fn doc's exclusion list: a footnote definition body is not
     // unconditionally rendered, so never descend into one here.
     if matches!(node, MdastNode::FootnoteDefinition(_)) {
@@ -935,9 +948,11 @@ fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
         _ => None,
     };
     if let Some((Some(name), attributes)) = jsx_shape {
-        if is_intrinsic_jsx_name(name) {
-            collect_literal_jsx_anchor_attrs(name, attributes, out);
-        }
+        let intrinsic = is_intrinsic_jsx_name(name);
+        let declared_prop = anchor_components
+            .and_then(|components| components.get(name))
+            .map(String::as_str);
+        collect_literal_jsx_anchor_attrs(name, attributes, intrinsic, declared_prop, out);
     }
     // Generic descent — reaches JSX bodies, block containers
     // (blockquote/list/list-item), and every other parent kind through
@@ -945,29 +960,33 @@ fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
     // than `walk_collect_headings`'s bespoke per-container match.
     if let Some(kids) = node.children() {
         for c in kids {
-            walk_collect_jsx_anchor_ids(c, out);
+            walk_collect_jsx_anchor_ids(c, anchor_components, out);
         }
     }
 }
 
-/// `true` when `name` is an intrinsic (lowercase-led) JSX tag rather
-/// than a PascalCase component — the same first-char rule
-/// [`collect_jsx_component_names`] uses. Empty names (never produced by
-/// the parser for a non-fragment element) are treated as intrinsic.
+/// `true` for lowercase-led intrinsic JSX tags, excluding member names.
+/// The same classification drives component binding emission. Empty names
+/// (never produced for a non-fragment element) are treated as intrinsic.
 fn is_intrinsic_jsx_name(name: &str) -> bool {
-    !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+    !is_component_identifier(name)
 }
 
-fn collect_literal_jsx_anchor_attrs(tag: &str, attrs: &[AttributeContent], out: &mut Vec<String>) {
+fn collect_literal_jsx_anchor_attrs(
+    tag: &str,
+    attrs: &[AttributeContent],
+    intrinsic: bool,
+    declared_prop: Option<&str>,
+    out: &mut Vec<String>,
+) {
     for a in attrs {
         // Spread attributes (`{...rest}`) are opaque at compile time —
         // excluded, never registered (see the fn doc's exclusion list).
         let AttributeContent::Property(p) = a else {
             continue;
         };
-        let is_id = p.name == "id";
-        let is_a_name = tag == "a" && p.name == "name";
-        if !is_id && !is_a_name {
+        let intrinsic_anchor = intrinsic && (p.name == "id" || (tag == "a" && p.name == "name"));
+        if !intrinsic_anchor && declared_prop != Some(p.name.as_str()) {
             continue;
         }
         // `None` (bare attribute) and `Expression` (runtime-computed)
@@ -1361,7 +1380,8 @@ impl JsxEmitter {
             // Unnamed JSX is a fragment.
             ("_Fragment".to_string(), "_Fragment".to_string())
         } else if is_component_identifier(tag) {
-            self.component_names.insert(tag.to_string());
+            self.component_names
+                .insert(tag.split('.').next().unwrap_or(tag).to_string());
             (tag.to_string(), tag.to_string())
         } else {
             self.html_tags.insert(tag.to_string());
@@ -1859,8 +1879,8 @@ fn starts_with_block_level_tag(s: &str) -> bool {
 ///
 /// We do NOT try to be a full JSX parser — the rule is:
 ///   - find `<` not preceded by `<` (skips `<<` artefacts);
-///   - the next char must be ASCII uppercase;
-///   - subsequent chars are alphanumeric / `_` / `$` / `.` (dotted
+///   - the parsed name must be a component identifier or member;
+///   - subsequent chars are Unicode alphanumeric / `_` / `$` / `.` (dotted
 ///     names like `<Foo.Bar>` are tracked under their head, which is
 ///     all the preamble emits anyway);
 ///   - skip closing tags (`</Name>`), they're picked up by the
@@ -1872,39 +1892,75 @@ fn starts_with_block_level_tag(s: &str) -> bool {
 /// would surface as a `ReferenceError` at runtime, which the existing
 /// `if (!Name) throw new Error(...)` preamble already converts into a
 /// readable diagnostic.
+fn collect_mdast_component_names(
+    node: &MdastNode,
+    body: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    let name = match node {
+        MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+        MdastNode::MdxJsxTextElement(j) => j.name.as_deref(),
+        _ => None,
+    };
+    if let Some(name) = name.filter(|name| is_component_identifier(name)) {
+        if body.contains(&format!("<{name} ")) || body.contains(&format!("<{name}>")) {
+            out.insert(name.split('.').next().unwrap_or(name).to_string());
+        }
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_mdast_component_names(child, body, out);
+        }
+    }
+}
+
 fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<String>) {
-    let bytes = jsx.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'<' {
+    while i < jsx.len() {
+        if jsx.as_bytes()[i] != b'<' {
             i += 1;
             continue;
         }
         let mut j = i + 1;
         // Skip closing tag — its open-tag counterpart will already
         // have been recorded.
-        if j < bytes.len() && bytes[j] == b'/' {
+        if jsx[j..].starts_with('/') {
             i = j + 1;
             continue;
         }
-        if j >= bytes.len() {
-            break;
-        }
-        let first = bytes[j];
-        if !first.is_ascii_uppercase() {
-            i = j;
-            continue;
-        }
         let start = j;
-        while j < bytes.len() {
-            let c = bytes[j];
-            if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'.' {
-                j += 1;
+        for c in jsx[j..].chars() {
+            if c.is_alphanumeric() || c == '_' || c == '$' || c == '.' {
+                j += c.len_utf8();
             } else {
                 break;
             }
         }
         let name = &jsx[start..j];
+        // Author JSX with Unicode continuation characters is registered
+        // from the parsed mdast above. Never truncate a spelling such as
+        // `A\u{0301}Anchor` to a spurious `A` binding here.
+        if jsx[j..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_ascii() || c == '-')
+        {
+            i = j;
+            continue;
+        }
+        // Lowercase MDX JSX nodes inside a JsxRaw body have already been
+        // emitted as `<_components.<tag>>` by the nested renderer. The
+        // separate tag scan below registers their fallback-map entries;
+        // never turn the emitter-owned `_components` object into a generated
+        // component binding of its own.
+        if name.starts_with("_components.") {
+            i = j;
+            continue;
+        }
+        if !is_component_identifier(name) {
+            i = j.max(i + 1);
+            continue;
+        }
         // Track only the head identifier — `Foo.Bar` registers as
         // `Foo`, matching what the preamble actually declares.
         let head = name.split('.').next().unwrap_or(name);
@@ -2632,10 +2688,13 @@ fn render_jsx_attrs(
                         // this iteration already pushed so no
                         // attribute-shaped gap survives in the output.
                         out.pop();
-                        diagnostics.push(MarkdownDiagnostic::warning(format!(
-                            "dropping invalid spread attribute {{{}}}: {parse_problem}",
-                            e.value
-                        )));
+                        diagnostics.push(
+                            MarkdownDiagnostic::warning(format!(
+                                "dropping invalid spread attribute {{{}}}: {parse_problem}",
+                                e.value
+                            ))
+                            .with_code(zfb_md_ast::diagnostics::codes::INVALID_MDX_SPREAD),
+                        );
                     }
                 }
             }
@@ -3282,11 +3341,13 @@ fn js_string_literal(s: &str) -> String {
     out
 }
 
-/// True if `name` looks like a JSX component identifier (starts with an
-/// ASCII uppercase letter). Lowercase / dotted names are treated as
-/// HTML tag references that resolve through the `_components` map.
+/// True for uppercase-led identifiers (including Unicode) and JSX member
+/// names. A member with a lowercase head still refers to a JavaScript
+/// object, rather than an intrinsic HTML tag.
 fn is_component_identifier(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    !name.contains('-')
+        && !name.contains(':')
+        && (name.contains('.') || name.chars().next().is_some_and(char::is_uppercase))
 }
 
 // -----------------------------------------------------------------------------
@@ -3840,6 +3901,9 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
                     p.replay_markdown_diagnostics(hit.markdown_diagnostics);
                     p.replay_cross_file_link_candidates(hit.cross_file_links);
                     p.replay_file_headings(hit.file_headings);
+                    p.extend_markdown_diagnostics(astro_client_attribute_warnings(
+                        input, file_path,
+                    ));
                 }
                 // Incremental-materialise signal (zfb#1148): the served
                 // entry's validated manifest is authoritative for the
@@ -3974,12 +4038,256 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         }
     }
 
+    if let Some(p) = pipeline {
+        // Keep these source-dependent locations out of the body-keyed cache:
+        // two documents can have the same body but different frontmatter.
+        p.extend_markdown_diagnostics(astro_client_attribute_warnings(input, file_path));
+    }
     Ok((compiled, recorded_deps))
+}
+
+/// Inspect parsed MDX component attributes, then locate the corresponding
+/// attribute token inside each parsed element's opening tag. markdown-rs
+/// exposes element spans but deliberately omits attribute spans.
+fn astro_client_attribute_warnings(input: &str, file_path: &Path) -> Vec<MarkdownDiagnostic> {
+    if ![
+        "client:load",
+        "client:idle",
+        "client:visible",
+        "client:media",
+        "client:only",
+    ]
+    .iter()
+    .any(|attr| input.contains(attr))
+    {
+        return Vec::new();
+    }
+    let options = markdown::ParseOptions {
+        constructs: constructs_for_jsx_emit(ResolvedGfmConstructs::CONSERVATIVE),
+        mdx_esm_parse: Some(Box::new(|_: &str| markdown::MdxSignal::Ok)),
+        ..markdown::ParseOptions::default()
+    };
+    let Ok(root) = markdown::to_mdast(input, &options) else {
+        return Vec::new();
+    };
+    let original = std::fs::read_to_string(file_path).ok();
+    let prefix = original.as_deref().and_then(|raw| {
+        crate::frontmatter::extract(file_path, raw)
+            .ok()
+            .and_then(|fm| {
+                (fm.body.as_deref() == Some(input)).then_some(fm.body_offset.unwrap_or(0))
+            })
+    });
+    // Only report authored coordinates when the compiled body maps exactly
+    // onto the original file, including its frontmatter byte offset.
+    let (Some(original), Some(prefix)) = (original.as_deref(), prefix) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    fn walk(
+        node: &MdastNode,
+        input: &str,
+        file_path: &Path,
+        original: &str,
+        prefix: usize,
+        out: &mut Vec<MarkdownDiagnostic>,
+    ) {
+        let element = match node {
+            MdastNode::MdxJsxFlowElement(x) => {
+                Some((x.name.as_deref(), &x.attributes, x.position.as_ref()))
+            }
+            MdastNode::MdxJsxTextElement(x) => {
+                Some((x.name.as_deref(), &x.attributes, x.position.as_ref()))
+            }
+            _ => None,
+        };
+        if let Some((Some(name), attrs, Some(pos))) = element {
+            if is_component_identifier(name) {
+                // markdown-rs stores a byte index here (its unist docs
+                // still describe a character offset).
+                if let Some(start) = input
+                    .is_char_boundary(pos.start.offset)
+                    .then_some(pos.start.offset)
+                {
+                    for (attr, byte) in opening_tag_attribute_tokens(input, start, attrs) {
+                        if !matches!(
+                            attr,
+                            "client:load"
+                                | "client:idle"
+                                | "client:visible"
+                                | "client:media"
+                                | "client:only"
+                        ) || !attrs
+                            .iter()
+                            .any(|a| matches!(a, AttributeContent::Property(p) if p.name == attr))
+                        {
+                            continue;
+                        }
+                        let absolute = prefix + byte;
+                        if !original.is_char_boundary(absolute) {
+                            continue;
+                        }
+                        let source = original;
+                        let before = &source[..absolute];
+                        let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
+                        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+                        out.push(MarkdownDiagnostic::Generic {
+                            code: Some(zfb_md_ast::diagnostics::codes::ASTRO_CLIENT_ATTRIBUTE.into()),
+                            severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Warning,
+                            message: format!("Astro `{attr}` on component `<{name}>` does not activate an island; remove it and use an explicit Island boundary"),
+                            location: Some(SourceLocation {
+                                path: Some(file_path.to_path_buf()),
+                                line: u32::try_from(line).ok(),
+                                col: u32::try_from(before[line_start..].chars().count() + 1).ok(),
+                                byte_column: u32::try_from(absolute - line_start + 1).ok(),
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, input, file_path, original, prefix, out);
+            }
+        }
+    }
+    walk(&root, input, file_path, original, prefix, &mut out);
+    out
+}
+
+/// Read attribute boundaries from the markdown parser's attribute list.
+/// Expression values carry their exact source bytes, including regexes and
+/// nested templates, so no second JavaScript lexer is needed here.
+fn opening_tag_attribute_tokens<'a>(
+    source: &'a str,
+    start: usize,
+    attrs: &[AttributeContent],
+) -> Vec<(&'a str, usize)> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'<') {
+        return Vec::new();
+    }
+    let mut i = start + 1;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'/' | b'>') {
+        i += 1;
+    }
+    let mut found = Vec::new();
+    for attr in attrs {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        match attr {
+            AttributeContent::Property(p) => {
+                if !source[i..].starts_with(&p.name) {
+                    return Vec::new();
+                }
+                let begin = i;
+                i += p.name.len();
+                found.push((&source[begin..i], begin));
+                if let Some(value) = &p.value {
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if bytes.get(i) != Some(&b'=') {
+                        return Vec::new();
+                    }
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    match value {
+                        AttributeValue::Expression(e) => {
+                            if bytes.get(i) != Some(&b'{')
+                                || !source[i + 1..].starts_with(&e.value)
+                                || bytes.get(i + e.value.len() + 1) != Some(&b'}')
+                            {
+                                return Vec::new();
+                            }
+                            i += e.value.len() + 2;
+                        }
+                        AttributeValue::Literal(_) => {
+                            let quote = bytes.get(i).copied();
+                            if matches!(quote, Some(b'\'' | b'"')) {
+                                i += 1;
+                                while i < bytes.len() {
+                                    if Some(bytes[i]) == quote {
+                                        i += 1;
+                                        break;
+                                    }
+                                    i += 1;
+                                }
+                            } else {
+                                while i < bytes.len()
+                                    && !bytes[i].is_ascii_whitespace()
+                                    && bytes[i] != b'>'
+                                {
+                                    i += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            AttributeContent::Expression(e) => {
+                if bytes.get(i) != Some(&b'{')
+                    || !source[i + 1..].starts_with(&e.value)
+                    || bytes.get(i + e.value.len() + 1) != Some(&b'}')
+                {
+                    return Vec::new();
+                }
+                i += e.value.len() + 2;
+            }
+        }
+    }
+    found
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astro_client_attributes_use_authored_frontmatter_and_utf8_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("page.mdx");
+        let body = "🦊\n\n<Widget title=\"client:idle\"\n  note={\"🦊 client:visible\"} client:load />\n<div client:only />\n";
+        std::fs::write(&file, format!("---\ntitle: Sample\n---\n{body}")).unwrap();
+        let warnings = astro_client_attribute_warnings(body, &file);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code(), "ZB014");
+        let built = warnings[0].to_build_diagnostic();
+        assert_eq!(built.line, Some(7));
+        assert_eq!(built.byte_column, Some(32));
+    }
+
+    #[test]
+    fn opening_tag_tokens_skip_attribute_looking_values() {
+        fn tokens(src: &str) -> Vec<String> {
+            let root = parse_children(src);
+            let MdastNode::MdxJsxFlowElement(element) = &root[0] else {
+                panic!("expected component");
+            };
+            opening_tag_attribute_tokens(src, 0, &element.attributes)
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect()
+        }
+        let src =
+            "<Widget title=\"client:load\" data={{ nested: 'client:idle' }} client:visible />";
+        assert_eq!(tokens(src), vec!["title", "data", "client:visible"]);
+        assert_eq!(
+            tokens("<Widget title=\"foo\\\" client:load />"),
+            vec!["title", "client:load"]
+        );
+        for value in [
+            "{ok ? { nested: 'client:idle' } : null}",
+            "{`a${`nested`}z`}",
+        ] {
+            let src = format!("<Widget data={value} client:load />");
+            assert_eq!(tokens(&src), vec!["data", "client:load"], "{src}");
+        }
+    }
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
@@ -4021,7 +4329,7 @@ mod tests {
              <Note>\n\n<a name=\"jsx-nested-name\"></a>\n\n</Note>\n\n\
              Ref[^a] end.\n\n[^a]: Body.\n",
         );
-        let ids = collect_jsx_anchor_ids(&children);
+        let ids = collect_jsx_anchor_ids(&children, None);
         assert_eq!(
             ids,
             vec!["jsx-div".to_string(), "jsx-nested-name".to_string()],
@@ -4048,10 +4356,59 @@ mod tests {
              </Note>\n",
         );
         assert_eq!(
-            collect_jsx_anchor_ids(&children),
+            collect_jsx_anchor_ids(&children, None),
             vec!["top-level".to_string(), "nested-in-component".to_string()],
             "component id excluded; `name` on a non-`<a>` tag excluded"
         );
+    }
+
+    #[test]
+    fn declared_component_anchors_require_exact_names_and_literal_props() {
+        let children = parse_children(
+            "<EvidenceAnchor id=\"top\" />\n\n\
+             <Note><EvidenceAnchor id=\"nested\" /></Note>\n\n\
+             | Target |\n| --- |\n| <UI.Anchor anchorId=\"table\" /> |\n\n\
+             <ΔAnchor data-anchor-id=\"unicode\" />\n\n\
+             <A\u{0301}Anchor id=\"combined\" />\n\n\
+             <EvidenceAnchor id={dynamic} />\n\n\
+             <EvidenceAnchor {...props} />\n\n\
+             <EvidenceAnchor id=\"\" />\n\n\
+             <EvidenceAnchor other=\"wrong-prop\" />\n\n\
+             <OtherAnchor id=\"unlisted\" />\n",
+        );
+        let declared = BTreeMap::from([
+            ("EvidenceAnchor".into(), "id".into()),
+            ("UI.Anchor".into(), "anchorId".into()),
+            ("ΔAnchor".into(), "data-anchor-id".into()),
+            ("A\u{0301}Anchor".into(), "id".into()),
+        ]);
+        assert_eq!(
+            collect_jsx_anchor_ids(&children, Some(&declared)),
+            ["top", "nested", "table", "unicode", "combined"]
+                .map(|s| s.to_string())
+                .to_vec()
+        );
+        assert!(collect_jsx_anchor_ids(&children, None).is_empty());
+    }
+
+    #[test]
+    fn member_and_unicode_components_get_valid_jsx_bindings() {
+        let source =
+            "<UI.Anchor anchorId=\"member\" />\n\n<ΔAnchor data-anchor-id=\"unicode\" />\n\n<A\u{0301}Anchor id=\"combined\" />\n";
+        let bare = mdx_to_jsx_module(source, MdxJsxOptions::default()).expect("bare emit");
+        assert!(bare.contains("const UI ="), "{bare}");
+        assert!(bare.contains("const ΔAnchor ="), "{bare}");
+        assert!(bare.contains("const A\u{0301}Anchor ="), "{bare}");
+        assert!(!bare.contains("const UI.Anchor ="), "{bare}");
+
+        let mut pipeline = Pipeline::with_defaults();
+        let emitted =
+            mdx_to_jsx_module_with_pipeline(source, MdxJsxOptions::default(), &mut pipeline)
+                .expect("pipeline emit");
+        assert!(emitted.contains("const UI ="), "{emitted}");
+        assert!(emitted.contains("const ΔAnchor ="), "{emitted}");
+        assert!(emitted.contains("const A\u{0301}Anchor ="), "{emitted}");
+        assert!(!emitted.contains("const A ="), "{emitted}");
     }
 
     /// Codex review finding (#2246): a JSX anchor inside a footnote
@@ -4070,7 +4427,7 @@ mod tests {
              [^a]: <div id=\"ghost-referenced\"></div>\n",
         );
         assert_eq!(
-            collect_jsx_anchor_ids(&children),
+            collect_jsx_anchor_ids(&children, None),
             vec!["top-level".to_string()],
             "no id from inside ANY footnote definition body — referenced \
              or not — may be collected: a definition's body only ever \
@@ -4123,7 +4480,7 @@ mod tests {
             }),
         ];
         let mut out = Vec::new();
-        collect_literal_jsx_anchor_attrs("div", &attrs, &mut out);
+        collect_literal_jsx_anchor_attrs("div", &attrs, true, None, &mut out);
         assert_eq!(
             out,
             vec!["literal-id".to_string(), "after-spread".to_string()],
@@ -5575,6 +5932,73 @@ mod tests {
                 .any(|d| matches!(d, MarkdownDiagnostic::BrokenLink { url, .. } if url == "#nope")),
             "#nope must be reported as BrokenLink: {diags:?}"
         );
+    }
+
+    #[test]
+    fn declared_anchor_verdict_and_cache_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body = "<EvidenceAnchor id=\"declared\" />\n\n[ok](#declared) [bad](#missing)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let cache = MdxModuleCache::new();
+        let declared = serde_json::json!({"linkValidation": {
+            "anchorComponents": {"EvidenceAnchor": "id"}, "failOnBroken": true
+        }});
+        let mut with_mapping = fs_features_pipeline(declared, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut with_mapping))
+            .expect("compile with declaration");
+        let diagnostics = with_mapping.take_markdown_diagnostics();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the missing fragment is broken: {diagnostics:?}"
+        );
+        assert!(
+            matches!(&diagnostics[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#missing")
+        );
+        let mapped_fp = with_mapping.config_fingerprint();
+
+        poke_sentinel(&cache);
+        let mut warm_mapping = fs_features_pipeline(
+            serde_json::json!({"linkValidation": {
+                "anchorComponents": {"EvidenceAnchor": "id"}, "failOnBroken": true
+            }}),
+            root,
+        );
+        let warm =
+            compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut warm_mapping))
+                .expect("warm compile with declaration");
+        assert_eq!(
+            warm.jsx_source, "__SENTINEL__",
+            "same declaration must hit the cache"
+        );
+        assert_eq!(warm_mapping.take_markdown_diagnostics(), diagnostics);
+
+        let mut without_mapping = fs_features_pipeline(
+            serde_json::json!({"linkValidation": {"failOnBroken": true}}),
+            root,
+        );
+        assert_ne!(mapped_fp, without_mapping.config_fingerprint());
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut without_mapping))
+            .expect("compile without declaration");
+        let diagnostics = without_mapping.take_markdown_diagnostics();
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "changed config must not replay the mapped verdict: {diagnostics:?}"
+        );
+
+        let mut changed_prop = fs_features_pipeline(
+            serde_json::json!({"linkValidation": {
+                "anchorComponents": {"EvidenceAnchor": "anchorId"}, "failOnBroken": true
+            }}),
+            root,
+        );
+        assert_ne!(mapped_fp, changed_prop.config_fingerprint());
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut changed_prop))
+            .expect("compile with changed declaration");
+        assert_eq!(changed_prop.take_markdown_diagnostics().len(), 2);
     }
 
     // zfb#954: a heading inside a JSX body has its id rendered and must

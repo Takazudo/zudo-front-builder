@@ -1,11 +1,11 @@
 ---
 title: Inset
-description: Set one or more physical offsets with spacing values, auto, or full.
+description: Set physical offsets with spacing values, fractions, auto, or full.
 sidebar_position: 23
 generated: true
 ---
 
-Use inset utilities to place a positioned box against its containing block. inset sets all four edges, inset-x and inset-y set a pair, and top/right/bottom/left target one edge.
+Use inset utilities to place a positioned box against its containing block with spacing values or fractions. inset sets all four edges, inset-x and inset-y set a pair, and top/right/bottom/left target one edge.
 
 ## Quick reference
 
@@ -246,7 +246,7 @@ top-0, right-0, bottom-0, and left-0 align each tile with one corner of the rela
 
 ## Custom and named values
 
-Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem. The 0, px, full, and auto keywords need no token. Named values such as left-nudge require tokens.spacing; arbitrary values such as top-[calc(100%_+_8px)] are also supported. Negative forms are supported, for example -top-2. Offsets do not make an element positioned.
+Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem. The 0, px, full, and auto keywords need no token. Named values such as left-nudge require tokens.spacing; arbitrary values such as top-[calc(100%_+_8px)] are also supported. Negative forms are supported, for example -top-2. Offsets do not make an element positioned. Fractions such as left-1/2 emit left: calc(100% * 1 / 2); -top-1/2 emits top: calc(calc(100% * 1 / 2) * -1). Left/right percentages use containing-block width, while top/bottom use its height. Numerator and denominator are positive integers from 1 to 1,000,000.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 
@@ -258,7 +258,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.inset` |
 | Class pattern | `inset-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -298,7 +298,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.inset-x` |
 | Class pattern | `inset-x-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -336,7 +336,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.inset-y` |
 | Class pattern | `inset-y-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -374,7 +374,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.bottom` |
 | Class pattern | `bottom-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -411,7 +411,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.left` |
 | Class pattern | `left-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -448,7 +448,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.right` |
 | Class pattern | `right-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |
@@ -485,7 +485,7 @@ Numeric offsets use the explicitly configured spacingUnit of 0.25rem; 4 is 1rem.
 | --- | --- |
 | Catalog identifier | `v1.top` |
 | Class pattern | `top-<suffix>` |
-| Grammar | `{"acceptedKinds":["keyword","token","scale","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Grammar | `{"acceptedKinds":["keyword","token","scale","fraction","arbitrary"],"arbitraryProperty":"top","allowsFractionSlash":true,"allowsColorOpacity":false}` |
 | Accepted values | `4` |
 | Token categories | `spacing` |
 | Negative-value policy | `allowed` |

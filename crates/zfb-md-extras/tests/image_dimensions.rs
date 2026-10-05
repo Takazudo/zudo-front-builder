@@ -67,6 +67,7 @@ fn get_attr<'a>(node: &'a HastNode, name: &str) -> Option<&'a str> {
 /// variant the image-dimensions plugin emits). Panics on any other variant so
 /// a test that gets an unexpected diagnostic shape fails loudly.
 fn diag_message(d: &MarkdownDiagnostic) -> &str {
+    assert_eq!(d.code(), "ZB002");
     match d {
         MarkdownDiagnostic::Generic { message, .. } => message,
         other => panic!("expected a Generic diagnostic, got {other:?}"),

@@ -68,7 +68,16 @@ export const WIND_REFERENCE_FAMILIES = Object.freeze([
   }),
   Object.freeze({
     id: "alignment",
-    entries: Object.freeze(["v1.items", "v1.justify", "v1.place-items", "v1.self"]),
+    entries: Object.freeze([
+      "v1.items",
+      "v1.justify",
+      "v1.justify-items",
+      "v1.justify-self",
+      "v1.place-content",
+      "v1.place-items",
+      "v1.place-self",
+      "v1.self",
+    ]),
   }),
   Object.freeze({
     id: "sizing",
@@ -267,7 +276,18 @@ export const WIND_REFERENCE_FAMILIES = Object.freeze([
       "v1.sr-only",
     ]),
   }),
-  Object.freeze({ id: "text-decoration-color", entries: Object.freeze(["v1.decoration.color"]) }),
+  Object.freeze({
+    id: "text-decoration-color",
+    entries: Object.freeze([
+      "v1.decoration.color",
+      "v1.decoration.thickness",
+      "v1.decoration.style.dashed",
+      "v1.decoration.style.dotted",
+      "v1.decoration.style.double",
+      "v1.decoration.style.solid",
+      "v1.decoration.style.wavy",
+    ]),
+  }),
   Object.freeze({ id: "text-underline-offset", entries: Object.freeze(["v1.underline-offset"]) }),
   Object.freeze({ id: "visibility", entries: Object.freeze(["v1.invisible", "v1.visible"]) }),
 ]);

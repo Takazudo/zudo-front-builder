@@ -81,6 +81,7 @@ serde_json = { workspace = true }
 # workspace-root Cargo.toml comment for rationale (issue #1359).
 serde_path_to_error = { workspace = true }
 tempfile = { workspace = true }
+unicode-id-start = "1.4.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tracing = "0.1"
 # Sub 211: convert relative/absolute plugin paths in zfb.config.json

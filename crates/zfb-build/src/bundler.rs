@@ -118,6 +118,17 @@ use std::collections::HashSet;
 use walkdir::WalkDir;
 
 use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
+
+fn emit_build_warning(code: &str, message: impl Into<String>, file: Option<&Path>) {
+    let mut record = zfb_types::build_diagnostics::BuildDiagnostic::new(
+        code,
+        zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
+        message,
+    );
+    record.file = file.map(|p| p.to_string_lossy().into_owned());
+    zfb_types::build_diagnostic_sink::emit(record);
+}
+
 use zfb_content::frontmatter as zfb_frontmatter;
 // Shared with `zfb_content::render_metadata`, which must strip a direct
 // page's body byte-identically to this crate or it addresses a different
@@ -1481,6 +1492,19 @@ fn bundler_timing_enabled() -> bool {
             t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
         })
         .unwrap_or(false)
+}
+
+fn bundler_phase_start(phase: &str, enabled: bool) -> Option<std::time::Instant> {
+    if !enabled {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    eprintln!("{}", format_bundler_phase_start_line(phase));
+    Some(started)
+}
+
+fn format_bundler_phase_start_line(phase: &str) -> String {
+    format!("[zfb-timing] phase={phase} event=start")
 }
 
 /// Prefix every [`ShadowSession`] tempdir carries — also the name filter
@@ -3421,8 +3445,8 @@ pub fn bundle_with_session(
     // gates + css rewrite + entry/tsconfig writes), `esbuild` (the
     // subprocess), `post` (manifest assembly after the subprocess), and
     // `teardown` (the shadow TempDir's recursive delete, timed via an
-    // explicit drop). One stderr line per successful call; error paths
-    // print nothing (the failed tick is reported by the caller anyway).
+    // explicit drop). Each stage emits a start event before work begins;
+    // the compatibility summary line remains one line per successful call.
     let timing_enabled = bundler_timing_enabled();
 
     // 2. Materialise the shadow tree.
@@ -3434,11 +3458,7 @@ pub fn bundle_with_session(
     // tempdir; `ShadowWriter::new` handles the dirty-wipe and arms the
     // dirty flag. `ZFB_KEEP_BUILD_SHADOW` never applies here — `zfb dev`
     // is the only session-mode caller and must be unaffected.
-    let materialise_start = if timing_enabled {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
+    let materialise_start = bundler_phase_start("materialise", timing_enabled);
     let (owned_work, work) = match &session {
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
@@ -4797,16 +4817,13 @@ pub fn bundle_with_session(
         // errors — the user should see all findings before the build aborts.
         for d in &all_markdown_diagnostics {
             if d.severity() < DiagnosticSeverity::Error {
-                let loc = fmt_location(d);
-                let msg = fmt_message(d);
-                if loc.is_empty() {
-                    eprintln!("zfb warn: {msg}");
-                } else {
-                    eprintln!("zfb warn: {loc}: {msg}");
-                }
+                zfb_types::build_diagnostic_sink::emit(d.to_build_diagnostic());
             }
         }
 
+        for d in &errors {
+            zfb_types::build_diagnostic_sink::emit(d.to_build_diagnostic());
+        }
         if !errors.is_empty() {
             let mut msg = format!(
                 "bundler: {} markdown diagnostic error(s) found:\n",
@@ -4845,13 +4862,27 @@ pub fn bundle_with_session(
             OnBrokenLinks::Ignore => {}
             OnBrokenLinks::Warn => {
                 for (file, url) in &all_broken_links {
-                    eprintln!(
-                        "zfb warn: broken markdown link in {file}: \
-                         {url} could not be resolved to a known doc URL"
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::BROKEN_LINK,
+                        format!(
+                            "broken markdown link: {url} could not be resolved to a known doc URL"
+                        ),
+                        Some(Path::new(file)),
                     );
                 }
             }
             OnBrokenLinks::Error => {
+                for (file, url) in &all_broken_links {
+                    let mut record = zfb_types::build_diagnostics::BuildDiagnostic::new(
+                        zfb_types::build_diagnostics::codes::BROKEN_LINK,
+                        zfb_types::build_diagnostics::DiagnosticSeverity::Error,
+                        format!(
+                            "broken markdown link: {url} could not be resolved to a known doc URL"
+                        ),
+                    );
+                    record.file = Some(file.clone());
+                    zfb_types::build_diagnostic_sink::emit(record);
+                }
                 let mut msg = format!(
                     "bundler: {} broken markdown link(s) found:\n",
                     all_broken_links.len()
@@ -5245,7 +5276,11 @@ pub fn bundle_with_session(
                     format_args!("{error:#}"),
                 );
                 tracing::warn!("{msg}");
-                eprintln!("zfb warn: {msg}");
+                emit_build_warning(
+                    zfb_types::build_diagnostics::codes::MIRROR_PREPROCESSING,
+                    msg,
+                    Some(physical),
+                );
             }
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -5440,11 +5475,7 @@ pub fn bundle_with_session(
     let materialise_ms = materialise_start.map(|t| t.elapsed().as_millis());
 
     // 6. Resolve and run esbuild (or the mock).
-    let esbuild_start = if timing_enabled {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
+    let esbuild_start = bundler_phase_start("esbuild", timing_enabled);
     fs::create_dir_all(&outdir)
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
     fs::write(outdir.join(OWNED_OUTPUT_MARKER), b"")
@@ -5500,11 +5531,7 @@ pub fn bundle_with_session(
     // invisible in `bundle(): materialise=… esbuild=… post=… teardown=…` even
     // though it used to cost ~1.2-1.4s per tick on a large SSR bundle before
     // the wasm-guard prefilter above.
-    let post_esbuild_start = if timing_enabled {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
+    let post_esbuild_start = bundler_phase_start("post-esbuild", timing_enabled);
 
     // Fail-closed `bundle.exclude` audit (#1558): whenever exclusions are
     // active, verify esbuild's metafile — the only resolver, per this
@@ -5703,11 +5730,7 @@ pub fn bundle_with_session(
 
     let post_esbuild_ms = post_esbuild_start.map(|t| t.elapsed().as_millis());
 
-    let post_start = if timing_enabled {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
+    let post_start = bundler_phase_start("post", timing_enabled);
     let manifest = BundleManifest {
         bundle_basename: bundle_path
             .file_name()
@@ -5727,11 +5750,7 @@ pub fn bundle_with_session(
     // measurable; behavior is identical (this is already the last use).
     // Session mode: `owned_work` is `None` (the persistent tree outlives
     // the call), so teardown is ~0ms by construction.
-    let teardown_start = if timing_enabled {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
+    let teardown_start = bundler_phase_start("teardown", timing_enabled);
     drop(owned_work);
     let teardown_ms = teardown_start.map(|t| t.elapsed().as_millis());
 
@@ -7826,7 +7845,11 @@ fn stage_glob_matched_files_to_fixed_point(
                         format_args!("{error:#}"),
                     );
                     tracing::warn!("{msg}");
-                    eprintln!("zfb warn: {msg}");
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::MIRROR_PREPROCESSING,
+                        msg,
+                        Some(&target),
+                    );
                     continue;
                 }
                 return Err(error).with_context(|| {
@@ -8262,7 +8285,11 @@ fn skip_dangling_symlink_or_fail<T>(
     if let Some((link, target)) = dangling_symlink_from_walk_error(&err) {
         let msg = dangling_symlink_warning_message(&link, &target);
         tracing::warn!("{msg}");
-        eprintln!("zfb warn: {msg}");
+        emit_build_warning(
+            zfb_types::build_diagnostics::codes::DANGLING_SYMLINK,
+            msg,
+            Some(&link),
+        );
         return Ok(None);
     }
     Err(err).with_context(context)
@@ -8300,7 +8327,11 @@ fn plain_css_import_dropped_warning_message(path: &Path, project_root: &Path) ->
 fn warn_dropped_plain_css_input(path: &Path, project_root: &Path) {
     let msg = plain_css_import_dropped_warning_message(path, project_root);
     tracing::warn!("{msg}");
-    eprintln!("zfb warn: {msg}");
+    emit_build_warning(
+        zfb_types::build_diagnostics::codes::DROPPED_CSS,
+        msg,
+        Some(path),
+    );
 }
 
 fn retained_dropped_plain_css_inputs(
@@ -9359,6 +9390,11 @@ fn materialise_shadow(
                         error = %err,
                         "md page frontmatter failed to parse; \
                          falling back to slug title and default lang"
+                    );
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::MARKDOWN_FRONTMATTER_FALLBACK,
+                        format!("md page frontmatter failed to parse ({err}); falling back to slug title and default lang"),
+                        Some(from),
                     );
                     (
                         serde_json::Value::Null,
@@ -14806,6 +14842,27 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    #[test]
+    fn bundler_timing_start_line_is_named_and_default_off() {
+        assert_eq!(
+            format_bundler_phase_start_line("materialise"),
+            "[zfb-timing] phase=materialise event=start"
+        );
+        assert_eq!(
+            format_bundler_phase_start_line("esbuild"),
+            "[zfb-timing] phase=esbuild event=start"
+        );
+        assert_eq!(
+            format_bundler_phase_start_line("post-esbuild"),
+            "[zfb-timing] phase=post-esbuild event=start"
+        );
+        assert_eq!(
+            format_bundler_phase_start_line("post"),
+            "[zfb-timing] phase=post event=start"
+        );
+        assert!(bundler_phase_start("materialise", false).is_none());
+    }
 
     /// Issue #3213 — an injected route's stub lives at an absolute
     /// `zfb-pkg-routes-*` path, but esbuild records it shadow-relative as

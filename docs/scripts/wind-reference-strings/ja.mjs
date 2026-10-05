@@ -6,6 +6,7 @@ export const strings = {
     intro:
       "実現したい用途からユーティリティ群を選びます。レイアウトと余白、文字、背景や境界線、動き、操作の順に探せます。各ページには対応する値、宣言、詳細なカタログ情報も残しています。",
     specVersionLabel: "カタログの仕様バージョン",
+    specRevisionLabel: "カタログの仕様リビジョン",
     familyColumn: "ユーティリティ群",
     entryCountColumn: "カタログ項目数",
   },
@@ -71,7 +72,7 @@ export const strings = {
     },
     inset: {
       title: "位置オフセット",
-      description: "余白値、auto、full を使い、物理的な辺のオフセットを設定します。",
+      description: "余白値、分数、auto、full を使い、物理的な辺のオフセットを設定します。",
     },
     "flex-container": {
       title: "フレックスコンテナ",
@@ -242,9 +243,8 @@ export const strings = {
         "縦方向の整列、ボックスサイズ、オブジェクトの収まり、スクリーンリーダー専用の切り抜きを設定します。",
     },
     "text-decoration-color": {
-      title: "テキスト装飾の色",
-      description:
-        "色トークン、キーワード、任意の色からテキスト装飾の色を設定します。不透明度も指定できます。",
+      title: "テキスト装飾",
+      description: "カタログ値を使ってテキスト装飾の色、太さ、線種を設定します。",
     },
     "text-underline-offset": {
       title: "下線のオフセット",

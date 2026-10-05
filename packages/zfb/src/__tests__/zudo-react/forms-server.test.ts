@@ -76,6 +76,38 @@ describe("server form representation", () => {
 });
 
 describe("form diagnostics", () => {
+  it.each(["color", "number", "range", "date", "time", "week", "month", "datetime-local"])(
+    "rejects defaultValue on %s while accepting a static value",
+    (type) => {
+      expect(() => renderToString(h("input", { type, defaultValue: "2" }))).toThrow(
+        "ZR_MODEL_UNSUPPORTED",
+      );
+      expect(renderToString(h("input", { type, value: "2" }))).toBe(
+        `<input type="${type}" value="2">`,
+      );
+    },
+  );
+  it("rejects defaultValue on file inputs", () => {
+    expect(() => renderToString(h("input", { type: "file", defaultValue: "x" }))).toThrow(
+      "ZR_MODEL_UNSUPPORTED",
+    );
+  });
+  it("rejects defaults on the opposite input kinds", () => {
+    expect(() => renderToString(h("input", { defaultChecked: true }))).toThrow(
+      "ZR_MODEL_UNSUPPORTED",
+    );
+    expect(() => renderToString(h("input", { type: "checkbox", defaultValue: "x" }))).toThrow(
+      "ZR_MODEL_UNSUPPORTED",
+    );
+    expect(() =>
+      renderToString(h("input", { type: "radio", name: "r", value: "x", defaultValue: "x" })),
+    ).toThrow("ZR_MODEL_CONFLICT");
+  });
+  it("renders an unmodelled radio default without a name or value", () => {
+    expect(renderToString(h("input", { type: "radio", defaultChecked: true }))).toBe(
+      '<input type="radio" checked>',
+    );
+  });
   it.each([
     [
       "model/default",

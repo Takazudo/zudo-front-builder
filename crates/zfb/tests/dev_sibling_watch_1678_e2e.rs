@@ -709,6 +709,88 @@ async fn e2e_dev_sibling_wind_utility_class_refreshes_served_css() {
     session.guard.child.try_wait().ok();
 }
 
+/// A configured in-project root outside DEFAULT_WATCH_ROOTS must receive a
+/// recursive watch and refresh the served stylesheet after an edit. This uses
+/// the existing event-driven watch-registration and output polling helpers.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_dev_declared_project_root_edit_refreshes_served_css() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[declared_project_root] no esbuild binary available; skipping");
+        return;
+    };
+
+    let workspace = tempfile::tempdir().expect("declared-root fixture tempdir");
+    let (project, _nm_handle) = write_wind_sibling_dev_fixture(workspace.path());
+    fs::write(
+        project.join("zfb.config.json"),
+        r##"{"wind":{"tokens":{"colors":{"marker":"#123456"}},"sources":{"roots":["./widgets"]}}}"##,
+    )
+    .expect("configure declared project root");
+    let widgets = project.join("widgets");
+    fs::create_dir(&widgets).expect("create widgets root");
+    let card = widgets.join("card.tsx");
+    fs::write(&card, "export const card = <span>card</span>;\n").unwrap();
+    fs::write(
+        widgets.join("types.d.ts"),
+        "export declare const ghost: 'bg-[#d0d0d0]';\n",
+    )
+    .unwrap();
+
+    let mut session = spawn_dev(&project, &esbuild);
+    let Some(port) = wait_for_ready(&mut session).await else {
+        return; // environmental skip (no V8/esbuild)
+    };
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let css_url = format!("http://localhost:{port}/assets/styles.css");
+    wait_for_watch_extra(&session, "widgets").await;
+    let initial = poll_body(
+        &client,
+        &css_url,
+        "--zw-color-marker",
+        "declared-root boot CSS",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    assert!(
+        !initial.contains("f10a55"),
+        "new utility exists before edit"
+    );
+    assert!(
+        !initial.contains("d0d0d0"),
+        "declaration utility reached CSS"
+    );
+
+    edit_until_served(
+        &client,
+        &card,
+        "export const card = <span class=\"bg-[#f10a55]\">card</span>;\n",
+        &css_url,
+        "f10a55",
+        "declared-root edit refreshes served CSS",
+        &session,
+    )
+    .await;
+    let refreshed = client
+        .get(&css_url)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !refreshed.contains("d0d0d0"),
+        "declaration utility reached CSS"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue #3163 (epic #3160) — SSR workspace-package dependency edits
 // ---------------------------------------------------------------------------

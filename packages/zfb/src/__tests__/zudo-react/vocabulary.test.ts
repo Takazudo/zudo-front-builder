@@ -1,8 +1,37 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { flush, h, signal } from "../../zudo-react/index.js";
 import { hydrate, mount } from "../../zudo-react/client.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
+import {
+  attributeError,
+  booleanAttrs,
+  commonAttrs,
+  dialectSuggestion,
+  enumeratedBooleanAttrs,
+  htmlAttrs,
+  htmlTags,
+  isDialectProp,
+  numericAttrs,
+  overloadedBooleanAttrs,
+  svgAttrs,
+  svgTags,
+} from "../../zudo-react/vocabulary.js";
 import type { Diagnostic, Signal } from "../../zudo-react/index.js";
+// @ts-expect-error The private docs generator is exercised here without adding it to the runtime API.
+import {
+  extractVocabulary,
+  generateReferencePages,
+  validateRendererPolicies,
+} from "../../../../../docs/scripts/generate-renderer-vocabulary.mjs";
+
+const vocabularySource = readFileSync(
+  resolve(process.cwd(), "src/zudo-react/vocabulary.ts"),
+  "utf8",
+);
+const renderSource = readFileSync(resolve(process.cwd(), "src/zudo-react/render-html.ts"), "utf8");
+const hydrateSource = readFileSync(resolve(process.cwd(), "src/zudo-react/hydrate.ts"), "utf8");
 
 const identity = { component: "Vocabulary", build: "b1" };
 function Vocabulary({ tag, props }: { tag: string; props: Record<string, unknown> }) {
@@ -53,6 +82,13 @@ function StandardMarkupIsland() {
 }
 
 const markupIdentity = { component: "StandardMarkupIsland", build: "b1" };
+const inlineIdentity = { component: "InlineHandlerIsland", build: "b1" };
+let inlineHandlerSignal!: Signal<string | null>;
+function InlineHandlerIsland() {
+  inlineHandlerSignal = signal<string | null>('return "ready" & <');
+  return h("button", { onclick: inlineHandlerSignal });
+}
+
 const cases: Array<[string, Record<string, unknown>, string]> = [
   [
     "meta",
@@ -99,6 +135,85 @@ const cases: Array<[string, Record<string, unknown>, string]> = [
 beforeEach(() => document.body.replaceChildren());
 
 describe("finite HTML/SVG vocabulary", () => {
+  it("keeps the generated reference in sync with the runtime source", () => {
+    expect(() => validateRendererPolicies(renderSource, hydrateSource)).not.toThrow();
+    const generated = extractVocabulary(vocabularySource);
+    expect(new Set(generated.htmlTags)).toEqual(htmlTags);
+    expect(new Set(generated.svgTags)).toEqual(svgTags);
+    expect(new Set(generated.commonAttrs)).toEqual(commonAttrs);
+    expect(new Set(generated.htmlAttrs)).toEqual(htmlAttrs);
+    expect(new Set(generated.svgAttrs)).toEqual(svgAttrs);
+    expect(new Set(generated.booleanAttrs)).toEqual(booleanAttrs);
+    expect(new Set(generated.enumeratedBooleanAttrs)).toEqual(enumeratedBooleanAttrs);
+    expect(new Set(generated.overloadedBooleanAttrs)).toEqual(overloadedBooleanAttrs);
+    expect(new Set(generated.numericAttrs)).toEqual(numericAttrs);
+
+    for (const name of generated.stringAttrs)
+      expect(attributeError(name, 1, false), name).toBe("requires a string");
+
+    for (const alias of generated.aliases) {
+      for (const namespace of ["html", "svg"] as const) {
+        const targetAllowed =
+          alias.spelling === "rawHtml"
+            ? namespace === "html"
+            : generated.commonAttrs.includes(alias.spelling) ||
+              (namespace === "svg"
+                ? generated.svgAttrs.includes(alias.spelling)
+                : generated.htmlAttrs.includes(alias.spelling));
+        const namespaceMatches = !alias.namespace || alias.namespace === namespace;
+        const legacy = generated.legacyDialect.includes(alias.name);
+        expect(isDialectProp(alias.name, namespace, false)).toBe(
+          legacy || (namespaceMatches && targetAllowed),
+        );
+        expect(dialectSuggestion(alias.name, namespace, false)).toBe(
+          namespaceMatches && targetAllowed ? alias.spelling : undefined,
+        );
+      }
+      if (!generated.legacyDialect.includes(alias.name)) {
+        expect(isDialectProp(alias.name, "html", true)).toBe(false);
+        expect(dialectSuggestion(alias.name, "html", true)).toBeUndefined();
+      }
+    }
+
+    const generatedPages = generateReferencePages(vocabularySource);
+    expect(generatedPages.size).toBe(2);
+    for (const [path, expected] of generatedPages)
+      expect(readFileSync(path, "utf8"), path).toBe(expected);
+  });
+
+  it("fails clearly when the source extraction shape or alias behavior changes", () => {
+    expect(() =>
+      extractVocabulary(vocabularySource.replace("const stringAttrs", "const stringAttributes")),
+    ).toThrow(/words set stringAttrs/);
+    expect(() =>
+      extractVocabulary(
+        vocabularySource.replace("export const htmlTags", "// export const htmlTags"),
+      ),
+    ).toThrow(/words set htmlTags/);
+    expect(() =>
+      extractVocabulary(
+        vocabularySource.replace('className: { spelling: "class" },', 'className: "class",'),
+      ),
+    ).toThrow(/unsupported propAliases entry shape/);
+    expect(() =>
+      extractVocabulary(
+        vocabularySource.replace(
+          'event === "DoubleClick" ? "dblclick" : event.toLowerCase()',
+          "event.toLowerCase()",
+        ),
+      ),
+    ).toThrow(/alias suggestion policy changed/);
+    expect(() =>
+      validateRendererPolicies(
+        renderSource.replace(
+          "const custom = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(tag);",
+          "const custom = false;",
+        ),
+        hydrateSource,
+      ),
+    ).toThrow(/server tag\/namespace policy changed/);
+  });
+
   it("renders the standard ruby base and reading elements", () => {
     expect(renderToString(h("ruby", {}, h("rb", {}, "base"), h("rt", {}, "reading")))).toBe(
       "<ruby><rb>base</rb><rt>reading</rt></ruby>",
@@ -128,6 +243,45 @@ describe("finite HTML/SVG vocabulary", () => {
     expect(renderToString(h("ol", { start: 4, reversed: false }))).toBe('<ol start="4"></ol>');
     expect(renderToString(h("script", { async: null, defer: false }))).toBe("<script></script>");
   });
+
+  it.each(["hydrate", "mount"] as const)(
+    "escapes and updates reactive lowercase inline event strings during %s",
+    async (mode) => {
+      expect(renderToString(h("button", { onclick: 'return "ready" & <' }))).toBe(
+        '<button onclick="return &quot;ready&quot; &amp; &lt;"></button>',
+      );
+
+      const host = document.createElement("div");
+      document.body.append(host);
+      host.innerHTML = renderToString(
+        islandRoot(h(InlineHandlerIsland, {}), { identity: inlineIdentity }),
+      );
+      const container = host.firstElementChild!;
+      if (mode === "mount") container.replaceChildren();
+      const diagnostics: Diagnostic[] = [];
+      const node = h(InlineHandlerIsland, {});
+      const handle =
+        mode === "hydrate"
+          ? hydrate(node, container, {
+              identity: inlineIdentity,
+              report: (item) => diagnostics.push(item),
+            })
+          : mount(node, container, {
+              identity: inlineIdentity,
+              report: (item) => diagnostics.push(item),
+            });
+
+      expect(handle).not.toBeNull();
+      expect(container.querySelector("button")?.getAttribute("onclick")).toBe('return "ready" & <');
+      inlineHandlerSignal.value = 'return "updated" & >';
+      await flush();
+      expect(container.querySelector("button")?.getAttribute("onclick")).toBe(
+        'return "updated" & >',
+      );
+      expect(diagnostics).toEqual([]);
+      handle?.dispose();
+    },
+  );
 
   it.each(["hydrate", "mount"] as const)(
     "round-trips the standard markup matrix through SSR and %s",

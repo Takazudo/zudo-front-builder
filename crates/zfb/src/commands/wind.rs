@@ -41,11 +41,17 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
     let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind explain")?;
+    let token_overrides = configured_token_overrides(&config);
     let (generation_enabled, wind_config) = configured_wind(&config);
     let explanations: Vec<_> = candidates
         .iter()
         .map(|candidate| {
-            zfb_css::explain_with_generation(candidate, &wind_config, generation_enabled)
+            zfb_css::explain_with_generation_and_token_overrides(
+                candidate,
+                &wind_config,
+                generation_enabled,
+                token_overrides,
+            )
         })
         .collect();
     if args.json {
@@ -77,11 +83,19 @@ fn stdin_candidates(input: &str) -> Vec<String> {
         .collect()
 }
 
+fn configured_token_overrides(config: &crate::config::Config) -> &[zfb_css::TokenOverride] {
+    match config.wind.as_ref() {
+        Some(crate::config::WindSetting::Enabled(wind)) => wind.token_overrides(),
+        _ => &[],
+    }
+}
+
 async fn audit(args: &WindAuditArgs) -> Result<()> {
     let fail_on = args.fail_on;
     let plan_mode = args.plan;
     let output = AuditOutput {
         json: args.json,
+        group: args.group,
         severity: args.severity,
     };
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
@@ -90,14 +104,16 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let project_config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind audit")?;
+    let token_overrides = configured_token_overrides(&project_config);
     let (generation_enabled, mut wind_config) = configured_wind(&project_config);
     if !generation_enabled {
-        let report = zfb_css::audit(
+        let report = zfb_css::audit_with_token_overrides(
             &zfb_css::AuditInput {
                 generation_enabled: false,
                 ..Default::default()
             },
             &wind_config,
+            token_overrides,
         );
         return print_audit_and_apply_exit_policy(&report, None, output, fail_on);
     }
@@ -122,9 +138,17 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let indexed = index_standalone_wind_sources(&plan)?;
     let manifest_owners = add_manifest_candidates_to_audit_config(&mut wind_config, &plan)?;
     let mut audit_sources = indexed.audit_sources;
-    append_plugin_audit_sources(&plugin_virtual_modules, &mut audit_sources);
+    append_plugin_audit_sources(
+        &plugin_virtual_modules,
+        &plan.extraction_options,
+        &mut audit_sources,
+    );
     append_role_class_audit_source(&plan, &mut audit_sources);
-    let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
+    let report = zfb_css::audit_with_token_overrides(
+        &zfb_css::AuditInput::new(audit_sources),
+        &wind_config,
+        token_overrides,
+    );
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
     print_audit_and_apply_exit_policy(&report, Some(&coverage), output, fail_on)
 }
@@ -313,6 +337,7 @@ fn origin_view_location(origin: &zfb_css::OriginView) -> String {
 #[derive(Clone, Copy)]
 struct AuditOutput {
     json: bool,
+    group: bool,
     severity: Option<WindAuditSeverity>,
 }
 
@@ -480,6 +505,11 @@ fn plan_coverage(
                         origin: Some(exclusion.origin.clone()),
                     }),
             )
+            .chain(std::iter::once(CoverageExclusion {
+                pattern: "**/*.d.ts".to_owned(),
+                reason: "declarationFiles",
+                origin: None,
+            }))
             .collect(),
     }
 }
@@ -506,6 +536,7 @@ fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
     for exclusion in &coverage.exclusions {
         let reason = match &exclusion.origin {
             Some(origin) => format!("wind.sources.exclude from {origin}"),
+            None if exclusion.reason == "declarationFiles" => "declaration files".to_owned(),
             None => "output or scratch".to_owned(),
         };
         out.push_str(&format!("  excluded {} ({reason})\n", exclusion.pattern));
@@ -517,12 +548,17 @@ fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
 /// `plugin/<specifier>` identity the build source plan uses.
 fn append_plugin_audit_sources(
     modules: &[(String, String)],
+    options: &zfb_css::ExtractionOptions,
     sources: &mut Vec<zfb_css::AuditSource>,
 ) {
     for (specifier, source) in modules {
         sources.push(zfb_css::AuditSource::new(
             format!("plugin/{specifier}"),
-            zfb_css::extract_candidates(source.as_bytes(), zfb_css::SourceKind::Tsx),
+            zfb_css::extract_candidates_with_options(
+                source.as_bytes(),
+                zfb_css::SourceKind::Tsx,
+                options,
+            ),
         ));
     }
 }
@@ -549,7 +585,12 @@ fn print_audit_and_apply_exit_policy(
         if let Some(coverage) = coverage {
             print!("{}", render_plan_coverage("audit", coverage));
         }
-        print!("{}", zfb_css::render_audit(&shown));
+        let text = if output.group {
+            zfb_css::render_audit_grouped(&shown)
+        } else {
+            zfb_css::render_audit(&shown)
+        };
+        print!("{text}");
     }
     match audit_exit(report, fail_on) {
         Ok(Some(note)) => {
@@ -1063,6 +1104,14 @@ mod tests {
                 "origin": "project"
             })
         );
+        assert_eq!(
+            serde_json::to_value(&structured).unwrap()["exclusions"][2],
+            serde_json::json!({
+                "pattern": "**/*.d.ts",
+                "reason": "declarationFiles",
+                "origin": null
+            })
+        );
         let coverage = render_plan_coverage("audit", &structured);
         assert_eq!(
             coverage,
@@ -1072,7 +1121,8 @@ mod tests {
              \x20 root package-route/node_modules/@x/docs node_modules/@x/docs (required)\n\
              \x20 virtual plugin/virtual:menu\n\
              \x20 excluded dist (output or scratch)\n\
-             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n"
+             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n\
+             \x20 excluded **/*.d.ts (declaration files)\n"
         );
         assert!(render_plan_coverage(
             "audit",
@@ -1086,7 +1136,11 @@ mod tests {
         .starts_with("wind audit plan: standalone\n"));
 
         let mut sources = Vec::new();
-        append_plugin_audit_sources(&modules, &mut sources);
+        append_plugin_audit_sources(
+            &modules,
+            &zfb_css::ExtractionOptions::default(),
+            &mut sources,
+        );
         assert_eq!(sources[0].source_id, "plugin/virtual:menu");
         assert_eq!(sources[0].extraction.candidates[0].text, "p-1");
     }

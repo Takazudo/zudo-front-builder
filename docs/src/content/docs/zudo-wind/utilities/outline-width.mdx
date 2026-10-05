@@ -91,9 +91,9 @@ outline-2 uses pixels and sets a solid outline style along with the width. Brack
 | Field | Value |
 | --- | --- |
 | Catalog identifier | `v1.outline.width` |
-| Class pattern | `outline-<suffix>` |
-| Grammar | `{"acceptedKinds":["integer","arbitrary"],"arbitraryProperty":"outline-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
-| Accepted values | The catalog has no separate accepted-value records for this entry. |
+| Class pattern | `outline` or `outline-<suffix>` |
+| Grammar | `{"acceptedKinds":["exact","integer","arbitrary"],"arbitraryProperty":"outline-width","allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
 | Token categories | No token category |
 | Negative-value policy | `forbidden` |
 | Conflict group and rank | `outline-width` (`30`) |
@@ -104,7 +104,9 @@ outline-2 uses pixels and sets a solid outline style along with the width. Brack
 
 ### Accepted values
 
-The catalog has no separate accepted-value records for this entry.
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"1px"` |
 
 ### Declaration templates
 

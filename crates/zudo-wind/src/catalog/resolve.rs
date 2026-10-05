@@ -146,9 +146,27 @@ impl Catalog {
                         .map(|suffix| (entry, suffix))
                 }
             })
+            // A static decoration style claims only its exact spelling. Its
+            // prefix still belongs to the color token lookup and diagnostics.
+            .filter(|(entry, suffix)| {
+                !entry.id.starts_with("v1.decoration.style.") || suffix.is_empty()
+            })
             .collect();
+        // Exact style roots were added after color tokens. Keep configured
+        // colors such as `wavy` and `solid-brand` on their old meaning.
+        let configured_decoration_color = name
+            .strip_prefix("decoration-")
+            .is_some_and(|suffix| tokens.contains(crate::TokenCategory::Color, suffix));
+        let matching: Vec<_> = if configured_decoration_color {
+            matching
+                .into_iter()
+                .filter(|(entry, _)| entry.id == "v1.decoration.color")
+                .collect()
+        } else {
+            matching
+        };
         let Some(longest) = matching.iter().map(|(entry, _)| entry.root.len()).max() else {
-            return match super::migration::foreign_family(candidate) {
+            return match super::migration::foreign_family(candidate, tokens) {
                 Some(family) => foreign(candidate, origin, family),
                 None => unknown_root(candidate, origin),
             };
@@ -172,9 +190,37 @@ impl Catalog {
             .copied()
             .collect();
         if successful.is_empty() {
+            // `shadow` is a catalog root, so the foreign-family vocabulary
+            // cannot explain this colors-only suffix.
+            let valid_shadow_color_opacity = candidate
+                .utility
+                .slash_modifier
+                .as_deref()
+                .is_none_or(|modifier| modifier.parse::<u8>().is_ok_and(|opacity| opacity <= 100));
+            if !candidate.utility.negative
+                && candidate.utility.arbitrary_value.is_none()
+                && valid_shadow_color_opacity
+            {
+                if let Some((_, suffix)) = leading.iter().copied().find(|(entry, suffix)| {
+                    entry.root == "shadow"
+                        && !suffix.is_empty()
+                        && tokens.contains(crate::TokenCategory::Color, suffix)
+                        && !tokens.contains(crate::TokenCategory::Shadow, suffix)
+                }) {
+                    return invalid(
+                        candidate,
+                        origin,
+                        DiagnosticCode::Zw004,
+                        &shadow_color_hint(candidate, suffix),
+                        Some("R20"),
+                    );
+                }
+            }
             // A vocabulary name can share a catalog root's prefix
-            // (`inline-table` under `inline`); it is foreign, not a bad value.
-            if let Some(family) = super::migration::foreign_family(candidate) {
+            // (`inline-table` under `inline`); after a catalog value fails, it
+            // is foreign, not a bad value. Successful configured tokens above
+            // keep their catalog meaning.
+            if let Some(family) = super::migration::foreign_family(candidate, tokens) {
                 return foreign(candidate, origin, family);
             }
         }
@@ -198,7 +244,18 @@ impl Catalog {
                 );
             }
         }
-        let (entry, suffix) = successful.first().copied().unwrap_or(leading[0]);
+        let (entry, suffix) = successful.first().copied().unwrap_or_else(|| {
+            leading
+                .iter()
+                .copied()
+                .find(|(entry, _)| {
+                    (!candidate.utility.negative || entry.negative)
+                        && (candidate.utility.slash_modifier.is_none()
+                            || entry.grammar.allows_fraction_slash
+                            || entry.grammar.allows_color_opacity)
+                })
+                .unwrap_or(leading[0])
+        });
         if entry.selector_shape == SelectorShape::LaterVisibleSiblings
             && candidate
                 .variants
@@ -442,13 +499,25 @@ fn match_priority(
             .any(|kind| matches!(kind, ValueKind::Scale | ValueKind::Integer))
     {
         3
-    } else if candidate.utility.arbitrary_value.is_some()
+    } else if full_arbitrary_suffix(suffix, candidate)
         && grammar.accepted_kinds.contains(&ValueKind::Arbitrary)
     {
         5
     } else {
         6
     }
+}
+
+/// A bracket value belongs only to the root immediately before `-[`.
+/// A shorter root must not consume `border-s-[3px]` as `border-[3px]`.
+fn full_arbitrary_suffix(suffix: &str, candidate: &Candidate) -> bool {
+    let Some(value) = candidate.utility.arbitrary_value.as_deref() else {
+        return false;
+    };
+    suffix
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        == Some(value)
 }
 
 fn resolve_value(
@@ -459,6 +528,13 @@ fn resolve_value(
 ) -> Result<(String, ValueStatus), ValueError> {
     let grammar = &entry.grammar;
     let modifier = candidate.utility.slash_modifier.as_deref();
+    if candidate.utility.arbitrary_value.is_some() && !full_arbitrary_suffix(suffix, candidate) {
+        return Err((
+            DiagnosticCode::Zw005,
+            "arbitrary value must immediately follow the utility root".to_owned(),
+            Some("R15"),
+        ));
+    }
     if suffix.is_empty() {
         if let Some((_, value)) = grammar.keywords.iter().find(|(key, _)| key.is_empty()) {
             return Ok(((*value).to_owned(), ValueStatus::Verified));
@@ -634,7 +710,9 @@ fn resolve_value(
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
                 value = normalize_ratio(&value);
             }
-            if entry.root == "underline-offset" && status == ValueStatus::Verified {
+            if (entry.root == "underline-offset" || entry.id == "v1.decoration.thickness")
+                && status == ValueStatus::Verified
+            {
                 validate_length(&value)
                     .map_err(|message| (DiagnosticCode::Zw005, message, Some("R15")))?;
             }
@@ -699,6 +777,13 @@ fn attempted_categories_message(
     ))
 }
 
+fn shadow_color_hint(candidate: &Candidate, color: &str) -> String {
+    let class = serde_json::to_string(&candidate.raw).expect("candidate is a string");
+    format!(
+        "{color} is a colors token, but zudo-wind v1 does not compose colors into shadow values. The shadow root accepts complete values: none, arbitrary box-shadow values, or shadows tokens. Move the tint into a shadows token, or author the complete box-shadow in CSS and reserve {class} with wind.authoredClasses"
+    )
+}
+
 fn is_color_entry(entry: &CatalogEntry) -> bool {
     entry
         .grammar
@@ -718,6 +803,7 @@ fn resolve_special_integer(
         || entry.id == "v1.outline.width"
         || entry.id == "v1.outline.offset"
         || entry.id == "v1.underline-offset"
+        || entry.id == "v1.decoration.thickness"
     {
         let canonical = match Decimal::parse(suffix) {
             Ok(value) => value.to_string(),

@@ -48,6 +48,7 @@ export {
   type ZfbDevMiddlewareResponse,
   type ZfbPlugin,
   type ZfbPluginLogger,
+  type ZfbPluginDiagnosticMetadata,
   type ZfbPreviewMiddlewareContext,
   type ZfbPreviewMiddlewareHandler,
 } from "./plugins.js";

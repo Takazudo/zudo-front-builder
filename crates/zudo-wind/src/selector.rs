@@ -60,6 +60,12 @@ pub(crate) fn build(
                 let test = format!("[{}={}]", dark.attribute, quoted_string(&dark.value));
                 text.push_str(&format!(":where({test}, {test} *)"));
             }
+            VariantKind::Pointer { fine } => {
+                conditions.push(format!(
+                    "(pointer: {})",
+                    if *fine { "fine" } else { "coarse" }
+                ));
+            }
             VariantKind::Relation { peer, state } => {
                 let (marker, combinator) = if *peer {
                     ("peer", " ~ ")

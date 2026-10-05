@@ -5909,6 +5909,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "unicode-id-start",
  "url",
  "walkdir",
  "zfb-binfetch",
@@ -6084,6 +6085,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "zfb-types",
 ]
 
 [[package]]
@@ -6261,4 +6263,5 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-id-start",
 ]

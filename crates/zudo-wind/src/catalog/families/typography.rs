@@ -316,6 +316,46 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
     set_id(&mut decoration, "v1.decoration.color");
     entries.push(decoration);
 
+    let mut thickness = entry(
+        "decoration",
+        "text-decoration-thickness",
+        45,
+        1,
+        &["text-decoration-thickness"],
+        &[ValueKind::Integer, ValueKind::Arbitrary],
+        &[],
+        &[],
+        Some("text-decoration-thickness"),
+        false,
+        false,
+        OWN,
+        Some("2"),
+        "2px",
+    );
+    set_id(&mut thickness, "v1.decoration.thickness");
+    entries.push(thickness);
+
+    for value in ["solid", "double", "dotted", "dashed", "wavy"] {
+        let mut style = entry(
+            &format!("decoration-{value}"),
+            "text-decoration-style",
+            45,
+            2,
+            &["text-decoration-style"],
+            STATIC,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            OWN,
+            None,
+            value,
+        );
+        set_id(&mut style, &format!("v1.decoration.style.{value}"));
+        entries.push(style);
+    }
+
     let mut underline_offset = entry(
         "underline-offset",
         "text-underline-offset",

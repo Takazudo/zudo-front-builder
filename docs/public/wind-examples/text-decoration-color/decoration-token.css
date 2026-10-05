@@ -25,3 +25,21 @@
 .decoration-transparent {
   text-decoration-color: transparent;
 }
+.decoration-2 {
+  text-decoration-thickness: 2px;
+}
+.decoration-dashed {
+  text-decoration-style: dashed;
+}
+.decoration-dotted {
+  text-decoration-style: dotted;
+}
+.decoration-double {
+  text-decoration-style: double;
+}
+.decoration-solid {
+  text-decoration-style: solid;
+}
+.decoration-wavy {
+  text-decoration-style: wavy;
+}

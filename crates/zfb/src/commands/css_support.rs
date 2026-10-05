@@ -155,12 +155,13 @@ pub(crate) fn build_standalone_wind_source_plan(
         roots: build_plan
             .roots
             .into_iter()
-            .filter(|root| root.package_root)
+            .filter(|root| root.package_root || root.label.starts_with("root/"))
             .collect(),
         exclusions: build_plan.exclusions,
         author_exclusions: build_plan.author_exclusions,
         manifests: build_plan.manifests,
         safelist: build_plan.safelist,
+        extraction_options: build_plan.extraction_options,
         generated_sources: build_plan.generated_sources,
         ..SourcePlan::default()
     };
@@ -466,7 +467,7 @@ fn glob_source_files(pattern: &Path) -> Result<Vec<PathBuf>> {
 /// same explicit plan used by both CLI commands.
 pub(crate) fn index_standalone_wind_sources(plan: &SourcePlan) -> Result<StandaloneWindIndex> {
     let expanded = zfb_css::expand_file_set(plan);
-    let mut index = CandidateIndex::default();
+    let mut index = CandidateIndex::with_options(plan.extraction_options.clone());
     let mut origins = Vec::new();
     let mut diagnostics = expanded
         .diagnostics

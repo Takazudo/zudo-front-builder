@@ -132,3 +132,58 @@ fn same_scope_uses_raw_bytes_and_transition_defaults_precede_overrides() {
                 .unwrap()
     );
 }
+
+#[test]
+fn bare_and_sized_outline_variants_resolve_and_order_deterministically() {
+    let input = common::input(&["focus-visible:outline-2", "focus-visible:outline"]);
+    let baseline = compile(&input);
+    assert!(!baseline.has_errors(), "{:?}", baseline.diagnostics);
+
+    assert_eq!(
+        baseline
+            .rules
+            .iter()
+            .map(|rule| rule.candidate.as_str())
+            .collect::<Vec<_>>(),
+        ["focus-visible:outline", "focus-visible:outline-2"]
+    );
+    assert_eq!(
+        baseline.rules[0].selector.as_deref(),
+        Some(".focus-visible\\:outline:focus-visible")
+    );
+
+    let bare = baseline.rules[0].resolved.as_ref().unwrap();
+    assert_eq!(
+        bare.declarations
+            .iter()
+            .map(|declaration| (declaration.property.as_str(), declaration.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("outline-width", "1px"), ("outline-style", "solid")]
+    );
+    let sized = baseline.rules[1].resolved.as_ref().unwrap();
+    assert_eq!(
+        sized
+            .declarations
+            .iter()
+            .map(|declaration| (declaration.property.as_str(), declaration.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("outline-width", "2px"), ("outline-style", "solid")]
+    );
+    assert!(baseline.stylesheet.contains(":focus-visible"));
+    assert!(
+        baseline
+            .stylesheet
+            .find(".focus-visible\\:outline:focus-visible {")
+            .unwrap()
+            < baseline
+                .stylesheet
+                .find(".focus-visible\\:outline-2:focus-visible {")
+                .unwrap()
+    );
+
+    for order in [[0, 1], [1, 0]] {
+        let mut permuted = input.clone();
+        permuted.candidates = order.map(|index| input.candidates[index].clone()).to_vec();
+        assert_eq!(compile(&permuted), baseline);
+    }
+}

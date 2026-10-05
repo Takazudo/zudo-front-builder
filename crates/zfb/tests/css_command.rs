@@ -90,6 +90,16 @@ fn run_wind_audit(project_root: &Path, flags: &[&str]) -> Output {
         .expect("spawn `zfb wind audit`")
 }
 
+fn run_wind_explain(project_root: &Path, candidate: &str, flags: &[&str]) -> Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "explain", candidate, "--project-root"])
+        .arg(project_root)
+        .args(flags)
+        .current_dir(project_root)
+        .output()
+        .expect("spawn `zfb wind explain`")
+}
+
 fn process_stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -883,6 +893,75 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
 }
 
 #[test]
+fn declared_project_root_matches_build_css_and_both_audit_plans() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[declared_project_root] no esbuild binary available; skipping");
+        return;
+    };
+    let temp = copied_fixture("css-build-parity");
+    let project = temp.path();
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{"wind":{"sources":{"roots":["./widgets"]}}}"#,
+    )
+    .unwrap();
+    fs::create_dir(project.join("widgets")).unwrap();
+    fs::write(
+        project.join("widgets/card.tsx"),
+        "export const card = <div class=\"bg-[#f10a55] custom-root-audit-probe\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("widgets/types.d.ts"),
+        "export declare const ghost: 'bg-[#d0d0d0]';\n",
+    )
+    .unwrap();
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn build with declared root");
+    assert_success(&build, "declared-root build");
+    let build_css = fs::read_to_string(find_build_css(project)).unwrap();
+
+    let css = run_css(
+        project,
+        "styles/global.css",
+        "standalone.css",
+        Some("."),
+        &[],
+        &[],
+    );
+    assert_success(&css, "declared-root standalone css");
+    let standalone_css = fs::read_to_string(project.join("standalone.css")).unwrap();
+    for (mode, output) in [("build", &build_css), ("css", &standalone_css)] {
+        assert!(output.contains("f10a55"), "{mode} omitted widgets/card.tsx");
+        assert!(
+            !output.contains("d0d0d0"),
+            "{mode} included widgets/types.d.ts"
+        );
+    }
+
+    for mode in ["build", "standalone"] {
+        let audit = run_wind_audit(project, &["--plan", mode]);
+        assert_success(&audit, &format!("declared-root {mode} audit"));
+        let report = process_stdout(&audit);
+        assert!(
+            report.contains("root root/widgets widgets (required)"),
+            "{report}"
+        );
+        assert!(
+            report.contains("excluded **/*.d.ts (declaration files)"),
+            "{report}"
+        );
+        assert!(report.contains("custom-root-audit-probe"), "{report}");
+        assert!(!report.contains("d0d0d0"), "{report}");
+    }
+}
+
+#[test]
 fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"sources":{"exclude":["src/**/__tests__/**"]}}}"#,
@@ -1130,6 +1209,167 @@ fn wind_audit_error_threshold_is_opt_in_and_includes_complete_report() {
 }
 
 #[test]
+fn wind_audit_translate_axes_compose_but_same_axis_conflicts_remain() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        "export default () => <div class=\"translate-x-1/2 translate-y-1/2\" />;\n",
+    );
+    for flags in [vec![], vec!["--group"]] {
+        let output = run_wind_audit(temp.path(), &flags);
+        assert!(output.status.success(), "{}", combined_output(&output));
+        assert!(!process_stdout(&output).contains("ZW013"));
+    }
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(document["report"]["conflicts"], serde_json::json!([]));
+    assert_eq!(document["report"]["diagnostics"], serde_json::json!([]));
+    assert_eq!(
+        run_wind_audit(temp.path(), &["--group", "--json"]).stdout,
+        json.stdout
+    );
+
+    fs::write(
+        temp.path().join("src/a.tsx"),
+        "export default () => <div class=\"translate-x-px translate-x-full\" />;\n",
+    )
+    .unwrap();
+    for flags in [vec![], vec!["--group"]] {
+        let output = run_wind_audit(temp.path(), &flags);
+        assert!(output.status.success(), "{}", combined_output(&output));
+        assert!(process_stdout(&output).contains("ZW013 auditInfo"));
+    }
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    assert!(json.status.success(), "{}", combined_output(&json));
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(document["report"]["conflicts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        document["report"]["conflicts"][0]["overlappingProperties"],
+        serde_json::json!(["--zw-translate-x", "translate"])
+    );
+}
+
+#[test]
+fn wind_audit_group_summarizes_text_without_changing_json_or_exit_policy() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1}}"#,
+        concat!(
+            "const saved = 'rounded-lg';\n",
+            "export default () => <div class=\"panel-card panel-card rounded-lg rounded-lg hover:rounded-lg\" />;\n",
+        ),
+    );
+    fs::write(
+        temp.path().join("src/b.tsx"),
+        "export default () => <div class=\"panel-card rounded-lg\" />;\n",
+    )
+    .expect("write second audit source");
+
+    let grouped = run_wind_audit(temp.path(), &["--group"]);
+    let grouped_stdout = process_stdout(&grouped);
+    assert!(
+        grouped.status.success(),
+        "default exit policy should remain successful\nstdout:\n{grouped_stdout}\nstderr:\n{}",
+        process_stderr(&grouped)
+    );
+    assert!(
+        grouped_stdout.contains("panel-card x3, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("rounded-lg [ZW006 error] x3, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("hover:rounded-lg [ZW006 error] x1, first at default/src:a.tsx:2:"),
+        "{grouped_stdout}"
+    );
+    assert!(
+        grouped_stdout.contains("rounded-lg [ZW006 auditInfo] x1, first at default/src:a.tsx:1:"),
+        "{grouped_stdout}"
+    );
+    assert_eq!(grouped_stdout.matches("panel-card x3,").count(), 1);
+
+    let default = run_wind_audit(temp.path(), &[]);
+    let default_stdout = process_stdout(&default);
+    assert!(default_stdout.contains("panel-card at default/src:a.tsx:2:"));
+    assert!(default_stdout.contains("panel-card at default/src:b.tsx:1:"));
+    assert_eq!(
+        default_stdout.matches("panel-card at default/src:").count(),
+        3
+    );
+    assert!(!default_stdout.contains("panel-card x3,"));
+
+    let strict = run_wind_audit(temp.path(), &["--group", "--fail-on", "error"]);
+    assert!(
+        !strict.status.success(),
+        "grouping must not hide error findings\nstdout:\n{}\nstderr:\n{}",
+        process_stdout(&strict),
+        process_stderr(&strict)
+    );
+    assert!(process_stderr(&strict).contains("--fail-on error"));
+
+    let strict_filtered = run_wind_audit(
+        temp.path(),
+        &["--group", "--fail-on", "error", "--severity", "warning"],
+    );
+    assert!(
+        !strict_filtered.status.success(),
+        "severity filtering must not change the grouped exit verdict\nstdout:\n{}\nstderr:\n{}",
+        process_stdout(&strict_filtered),
+        process_stderr(&strict_filtered)
+    );
+    assert!(process_stderr(&strict_filtered).contains("--fail-on error"));
+    let filtered_stdout = process_stdout(&strict_filtered);
+    // --severity is a minimum: warning keeps errors and hides auditInfo.
+    assert!(
+        filtered_stdout.contains("rounded-lg [ZW006 error] x3,"),
+        "{filtered_stdout}"
+    );
+    assert!(
+        !filtered_stdout.contains("rounded-lg [ZW006 auditInfo]"),
+        "{filtered_stdout}"
+    );
+
+    let json = run_wind_audit(temp.path(), &["--json"]);
+    let grouped_json = run_wind_audit(temp.path(), &["--group", "--json"]);
+    assert_eq!(grouped_json.stdout, json.stdout);
+}
+
+#[test]
+fn owned_factory_class_prop_fails_audit_and_build() {
+    let source = "import { h as make } from '@takazudo/zfb/zudo-react';\nexport default function Page() { return make('main', { class: 'rounded-missing-token' }); }\n";
+    let temp = wind_audit_fixture(r#"{"wind":{"spec":1}}"#, source);
+    fs::create_dir_all(temp.path().join("pages")).unwrap();
+    fs::write(temp.path().join("pages/index.ts"), source).unwrap();
+
+    let audit = run_wind_audit(temp.path(), &["--fail-on", "error"]);
+    let stdout = process_stdout(&audit);
+    assert!(
+        !audit.status.success(),
+        "audit accepted owned factory class:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ZW006 error") && stdout.contains("rounded-missing-token"),
+        "{stdout}"
+    );
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .output()
+        .expect("spawn build for owned factory class");
+    let output = format!("{}{}", process_stdout(&build), process_stderr(&build));
+    assert!(
+        !build.status.success(),
+        "build accepted owned factory class:\n{output}"
+    );
+    assert!(
+        output.contains("ZW006") && output.contains("rounded-missing-token"),
+        "{output}"
+    );
+}
+
+#[test]
 fn wind_audit_info_does_not_fail_warning_threshold() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,
@@ -1154,6 +1394,158 @@ fn wind_audit_info_does_not_fail_warning_threshold() {
     assert!(
         stderr.is_empty(),
         "auditInfo should not write a threshold summary:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_token_override_is_explainable_and_audit_info_only() {
+    let override_project = wind_audit_fixture(
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"bg":"#ffffff"}}}}],"wind":{"tokens":{"colors":{"bg":"#ff00ff","panel":"#eeeeee"}}}}"##,
+        "export default () => <div class=\"bg-bg\" />;\n",
+    );
+
+    let explain = run_wind_explain(override_project.path(), "bg-bg", &[]);
+    let explain_text = process_stdout(&explain);
+    assert!(
+        explain.status.success(),
+        "{explain_text}\n{}",
+        process_stderr(&explain)
+    );
+    assert!(
+        explain_text.contains("token: bg (colors) -> --zw-color-bg = #ff00ff"),
+        "{explain_text}"
+    );
+    assert!(
+        explain_text.contains("origin: host override of preset[0]: \"#ffffff\" -> \"#ff00ff\""),
+        "{explain_text}"
+    );
+
+    let explain_json = run_wind_explain(override_project.path(), "bg-bg", &["--json"]);
+    assert!(
+        explain_json.status.success(),
+        "{}",
+        process_stderr(&explain_json)
+    );
+    let explain_document: serde_json::Value =
+        serde_json::from_slice(&explain_json.stdout).expect("parse explain JSON");
+    assert_eq!(
+        explain_document["explanations"][0]["tokenResolutions"][0]["hostOverride"],
+        serde_json::json!({
+            "presetIndex": 0,
+            "previousValue": "#ffffff",
+            "finalValue": "#ff00ff"
+        })
+    );
+    assert!(explain_document.get("sourcePath").is_none());
+
+    let audit = run_wind_audit(override_project.path(), &[]);
+    let audit_text = process_stdout(&audit);
+    assert!(
+        audit.status.success(),
+        "{audit_text}\n{}",
+        process_stderr(&audit)
+    );
+    assert!(
+        audit_text.contains("ZW015 auditInfo at wind.tokens.colors.bg: colors.bg:"),
+        "{audit_text}"
+    );
+    assert!(
+        audit_text.contains("host value overrides preset[0]: \"#ffffff\" -> \"#ff00ff\""),
+        "{audit_text}"
+    );
+
+    let audit_json = run_wind_audit(override_project.path(), &["--json"]);
+    assert!(
+        audit_json.status.success(),
+        "{}",
+        process_stderr(&audit_json)
+    );
+    let audit_document: serde_json::Value =
+        serde_json::from_slice(&audit_json.stdout).expect("parse audit JSON");
+    let token_diagnostic = audit_document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "ZW015")
+        .expect("host token override audit diagnostic");
+    assert_eq!(token_diagnostic["severity"], "auditInfo");
+    assert_eq!(token_diagnostic["candidate"], "colors.bg");
+    assert_eq!(
+        token_diagnostic["origin"]["keyPath"],
+        "wind.tokens.colors.bg"
+    );
+    assert_eq!(
+        token_diagnostic["message"],
+        "host value overrides preset[0]: \"#ffffff\" -> \"#ff00ff\""
+    );
+
+    for threshold in ["error", "warning"] {
+        let strict = run_wind_audit(override_project.path(), &["--fail-on", threshold, "--json"]);
+        assert!(
+            strict.status.success(),
+            "auditInfo must not fail --fail-on {threshold}\nstdout:\n{}\nstderr:\n{}",
+            process_stdout(&strict),
+            process_stderr(&strict)
+        );
+    }
+
+    let quiet_project = wind_audit_fixture(
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"bg":"#ffffff"}}}}],"wind":{"tokens":{"colors":{"bg":"#ffffff","panel":"#eeeeee"}}}}"##,
+        "export default () => <div class=\"bg-bg\" />;\n",
+    );
+    let quiet_audit = run_wind_audit(quiet_project.path(), &["--json"]);
+    assert!(
+        quiet_audit.status.success(),
+        "{}",
+        process_stderr(&quiet_audit)
+    );
+    let quiet_document: serde_json::Value =
+        serde_json::from_slice(&quiet_audit.stdout).expect("parse quiet audit JSON");
+    assert!(!quiet_document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "ZW015"));
+}
+
+#[test]
+fn wind_token_override_does_not_warn_or_fail_a_real_build() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[wind_token_override_build] no esbuild binary available; skipping");
+        return;
+    };
+    let temp = copied_fixture("css-build-parity");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"brand":"#123456"}}}}],"wind":{"tokens":{"colors":{"brand":"#654321"}}}}"##,
+    )
+    .expect("write token override config");
+    fs::write(
+        temp.path().join("pages/index.tsx"),
+        "export default function Home() { return <main class=\"bg-brand\">quiet</main>; }\n",
+    )
+    .expect("write token override page");
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build for token override fixture");
+    let stdout = process_stdout(&build);
+    let stderr = process_stderr(&build);
+    assert!(
+        build.status.success(),
+        "build failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "token override should not warn during build:\n{stderr}"
+    );
+    let built_css = fs::read_to_string(find_build_css(temp.path())).expect("read built CSS");
+    assert!(
+        built_css.contains("#654321"),
+        "host token value missing from build CSS:\n{built_css}"
     );
 }
 
@@ -1553,6 +1945,60 @@ fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
     for selector in [".flex", ".hidden"] {
         assert!(!emitted.contains(selector), "{selector} leaked:\n{emitted}");
     }
+}
+
+#[test]
+fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"sources":{"ignoreAttributes":["css","html","title"]}}}"#,
+        "export default () => <div class=\"flex\" />;\n",
+    );
+    fs::write(
+        temp.path().join("src/demo.mdx"),
+        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+<div class="flex bg-missing-real">Real content</div>
+"#,
+    )
+    .unwrap();
+    let audit = run_wind_audit(temp.path(), &["--json"]);
+    assert!(audit.status.success(), "{}", combined_output(&audit));
+    let report: serde_json::Value = serde_json::from_slice(&audit.stdout).unwrap();
+    let diagnostics = report["report"]["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|item| item["candidate"] == "bg-missing-real"),
+        "{report}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|item| item["candidate"] == "bg-missing-preview"
+                || item["candidate"] == "irrelevant"),
+        "{report}"
+    );
+
+    fs::write(temp.path().join("entry.css"), "").unwrap();
+    let rejected = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&rejected, "real invalid MDX class");
+    let rejection = combined_output(&rejected);
+    assert!(
+        rejection.contains("ZW006") && rejection.contains("bg-missing-real"),
+        "{rejection}"
+    );
+    fs::write(
+        temp.path().join("src/demo.mdx"),
+        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+<div class="flex block">Real content</div>
+"#,
+    )
+    .unwrap();
+    let css = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&css, "mixed MDX CSS");
+    let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap();
+    assert!(emitted.contains(".flex"), "{emitted}");
+    assert!(emitted.contains(".block"), "{emitted}");
+    assert!(!emitted.contains("bg-missing-preview"), "{emitted}");
 }
 
 /// A package with no site config or pages, plus a sibling directory holding

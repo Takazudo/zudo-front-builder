@@ -6,9 +6,9 @@ use anyhow::Result;
 use zudo_wind::{CompileInput, Origin, OriginCandidate, Severity, WindConfig};
 
 use crate::{
-    dedup_diagnostics, AuthoredCssBundle, CssDiagnostic, CssDiagnosticOrigin,
-    CssDiagnosticSeverity, CssEngine, CssEngineId, CssEngineOutput, CssInputDependencyKind,
-    CssProvenance, CssProvenanceKind, WindDiagnosticsError,
+    AuthoredCssBundle, CssDiagnostic, CssDiagnosticOrigin, CssDiagnosticSeverity, CssEngine,
+    CssEngineId, CssEngineOutput, CssInputDependencyKind, CssProvenance, CssProvenanceKind,
+    WindDiagnosticsError,
 };
 
 #[derive(Debug, Clone)]
@@ -101,17 +101,13 @@ impl CssEngine for WindEngine {
                     }
                 }),
         );
-        let diagnostics = dedup_diagnostics(diagnostics);
         let errors: Vec<_> = diagnostics
             .iter()
             .filter(|d| d.severity == CssDiagnosticSeverity::Error)
             .cloned()
             .collect();
         if !errors.is_empty() {
-            return Err(WindDiagnosticsError {
-                diagnostics: errors,
-            }
-            .into());
+            return Err(WindDiagnosticsError { diagnostics }.into());
         }
         let css = compiled
             .parts
@@ -162,7 +158,8 @@ fn diagnostic_origin(origin: Option<&Origin>) -> CssDiagnosticOrigin {
             byte_offset,
             ..
         }) => CssDiagnosticOrigin {
-            path: Some(PathBuf::from(source_id)),
+            source_id: Some(source_id.clone()),
+            path: None,
             line: Some(*line),
             column: Some(*byte_column),
             byte_offset: Some(*byte_offset),
@@ -379,7 +376,7 @@ mod tests {
         assert!(class.produce_utility_css(&[]).is_err());
     }
     #[test]
-    fn failures_keep_structured_deduplicated_origins() {
+    fn failures_keep_structured_repeated_origins() {
         let source = |source_id: &str, line, byte_column, byte_offset| OriginCandidate {
             text: "rounded-missing".into(),
             origin: Origin::Source {
@@ -395,7 +392,10 @@ mod tests {
         };
         let origins = vec![
             source("default/src:a.tsx", 3, 29, 70),
+            // Identical input is one authored occurrence. A different span in
+            // the same file must survive alongside the other source origins.
             source("default/src:a.tsx", 3, 29, 70),
+            source("default/src:a.tsx", 5, 7, 110),
             source("default/src:b.tsx", 1, 12, 11),
             source("plugin/virtual:widgets", 2, 5, 30),
             OriginCandidate {
@@ -427,25 +427,24 @@ mod tests {
             .iter()
             .map(|diagnostic| diagnostic.origin.location().unwrap())
             .collect();
-        assert_eq!(locations.len(), 4, "{locations:?}");
-        for expected in [
-            "default/src:a.tsx:3:29",
-            "default/src:b.tsx:1:12",
-            "plugin/virtual:widgets:2:5",
-            "node_modules/widgets/wind.json (manifest widgets[2])",
-        ] {
-            assert!(
-                locations.iter().any(|location| location == expected),
-                "{locations:?}"
-            );
-        }
+        assert_eq!(
+            locations,
+            [
+                "default/src:a.tsx:3:29",
+                "default/src:a.tsx:5:7",
+                "default/src:b.tsx:1:12",
+                "plugin/virtual:widgets:2:5",
+                "node_modules/widgets/wind.json (manifest widgets[2])",
+            ],
+            "distinct authored occurrences survive; identical input is normalized"
+        );
         let first = &failure.diagnostics[0];
         assert_eq!(first.code, "ZW006");
         assert_eq!(first.candidate.as_deref(), Some("rounded-missing"));
         assert_eq!(first.origin.byte_offset, Some(70));
         let rendered = error.to_string();
         assert!(
-            rendered.starts_with("wind CSS failed with 4 errors:"),
+            rendered.starts_with("wind CSS failed with 5 errors:"),
             "{rendered}"
         );
         assert!(
@@ -454,8 +453,8 @@ mod tests {
         );
         assert_eq!(
             rendered.lines().count(),
-            5,
-            "one line per diagnostic: {rendered}"
+            6,
+            "one header plus five diagnostics: {rendered}"
         );
     }
 

@@ -96,8 +96,17 @@ impl ValidatedBreakpoints {
 
 fn is_reserved_variant_name(name: &str) -> bool {
     name == "dark"
+        || ["pointer-coarse", "pointer-fine"].contains(&name)
         || is_state(name)
-        || ["before", "after", "marker", "placeholder", "backdrop"].contains(&name)
+        || [
+            "before",
+            "after",
+            "marker",
+            "placeholder",
+            "backdrop",
+            "selection",
+        ]
+        .contains(&name)
         || name.starts_with("max-")
         || name.starts_with("group-")
         || name.starts_with("peer-")
@@ -157,11 +166,14 @@ mod tests {
             ("max-small".to_owned(), config(480)),
             ("Bad".to_owned(), config(640)),
             ("small".to_owned(), config(800)),
+            ("pointer-coarse".to_owned(), config(960)),
+            ("pointer-fine".to_owned(), config(1120)),
+            ("selection".to_owned(), config(1280)),
         ]);
         let (validated, diagnostics) = ValidatedBreakpoints::validate(&configured);
         assert_eq!(validated.ranked().len(), 1);
         assert_eq!(validated.ranked()[0].name, "small");
-        assert_eq!(diagnostics.len(), 3);
+        assert_eq!(diagnostics.len(), 6);
     }
 
     #[test]

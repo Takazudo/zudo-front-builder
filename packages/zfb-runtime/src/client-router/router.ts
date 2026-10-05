@@ -945,6 +945,10 @@ async function transition(
         historyCommittedEarly,
       );
     });
+    // A skipped native transition rejects ready even when its update callback
+    // succeeds (or never runs). The browser does not mark ready as handled.
+    // Update failures are reported through updateCallbackDone below.
+    currentTransition.viewTransition.ready.catch(() => {});
   } else {
     // Simulation mode requires a bit more manual work.
     // Also used when PopStateEvent.hasUAVisualTransition indicates the browser already
@@ -993,20 +997,23 @@ async function transition(
   }
   // In earlier versions was then'ed on viewTransition.ready which would not execute
   // if the visual part of the transition has errors or was skipped
-  currentTransition.viewTransition?.updateCallbackDone.finally(async () => {
-    if (domUpdateOutcome !== "swapped") return;
-    await runScripts();
-    // Mount new island markers introduced by the body swap. Fire-and-forget;
-    // each island's scheduleHydrate call is async (idle / visible). Called after
-    // runScripts() so any new mountIslands() registration from inline scripts in
-    // the new page has already run. Called before onPageLoad() per W1B §12.2.
-    mountNewIslands();
-    onPageLoad();
-    announce();
-  });
+  currentTransition.viewTransition?.updateCallbackDone.then(
+    async () => {
+      if (domUpdateOutcome !== "swapped") return;
+      await runScripts();
+      // Mount new island markers introduced by the body swap. Fire-and-forget;
+      // each island's scheduleHydrate call is async (idle / visible). Called after
+      // runScripts() so any new mountIslands() registration from inline scripts in
+      // the new page has already run. Called before onPageLoad() per W1B §12.2.
+      mountNewIslands();
+      onPageLoad();
+      announce();
+    },
+    () => {}, // the await below reports genuine update callback errors
+  );
   // finished.ready and finished.finally are the same for the simulation but not
   // necessarily for native view transition, where finished rejects when updateCallbackDone does.
-  currentTransition.viewTransition?.finished.finally(() => {
+  const clearTransition = () => {
     // exactOptionalPropertyTypes: true forbids assigning `undefined` to an optional
     // `viewTransition?: ViewTransition` slot — `delete` is the equivalent reset.
     delete currentTransition.viewTransition;
@@ -1014,7 +1021,9 @@ async function transition(
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
     document.documentElement.removeAttribute(DIRECTION_ATTR);
     document.documentElement.removeAttribute(OLD_NEW_ATTR);
-  });
+  };
+  // A discarded finally() child would itself reject on an update error.
+  currentTransition.viewTransition?.finished.then(clearTransition, clearTransition);
   try {
     // Compatibility:
     // In an earlier version we awaited viewTransition.ready, which includes animation setup.

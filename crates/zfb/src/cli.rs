@@ -176,6 +176,10 @@ pub struct WindAuditArgs {
     /// status still follows the complete report and --fail-on.
     #[arg(long, value_enum)]
     pub severity: Option<WindAuditSeverity>,
+
+    /// Summarize repeated candidates in the text report. Ignored with --json.
+    #[arg(long)]
+    pub group: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -389,6 +393,10 @@ pub fn parse_define_override(raw: &str) -> Result<(String, String), String> {
 /// Arguments for `zfb build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
+    /// Write versioned build diagnostics to this JSON file.
+    #[arg(long = "warnings-json")]
+    pub warnings_json: Option<PathBuf>,
+
     #[command(flatten)]
     pub scratch: ScratchDirArg,
 
@@ -1376,6 +1384,7 @@ mod tests {
                     assert_eq!(audit.project_root, Some(PathBuf::from("project")));
                     assert_eq!(audit.fail_on, None);
                     assert_eq!(audit.plan, WindAuditPlan::Standalone);
+                    assert!(!audit.group);
                 }
                 other => panic!("expected wind audit, got {other:?}"),
             },
@@ -1441,13 +1450,22 @@ mod tests {
 
     #[test]
     fn wind_audit_json_and_severity_parse() {
-        match Cli::try_parse_from(["zfb", "wind", "audit", "--json", "--severity", "auditInfo"])
-            .expect("wind audit parses")
-            .command
+        match Cli::try_parse_from([
+            "zfb",
+            "wind",
+            "audit",
+            "--json",
+            "--group",
+            "--severity",
+            "auditInfo",
+        ])
+        .expect("wind audit parses")
+        .command
         {
             Command::Wind(args) => match args.command {
                 WindCommand::Audit(audit) => {
                     assert!(audit.json);
+                    assert!(audit.group);
                     assert_eq!(audit.severity, Some(WindAuditSeverity::AuditInfo));
                 }
                 other => panic!("expected wind audit, got {other:?}"),

@@ -41,6 +41,39 @@ pub struct FileSet {
 /// Skipped directory names a declared package root still walks.
 pub const PACKAGE_ROOT_TRAVERSES: &[&str] = &["node_modules", "dist"];
 
+/// All source discovery paths apply this file rule before extraction.
+pub fn is_candidate_source(path: &Path, accepts_extension: impl FnOnce(&str) -> bool) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".d.ts"))
+    {
+        return false;
+    }
+    path.extension()
+        .and_then(|part| part.to_str())
+        .is_some_and(accepts_extension)
+}
+
+fn compare_roots(a: &PositiveRoot, b: &PositiveRoot) -> std::cmp::Ordering {
+    let a_project = a.label.starts_with("root/");
+    let b_project = b.label.starts_with("root/");
+    // New project roots own their overlapping files. Keep the historical
+    // label/path ordering among all pre-existing root kinds.
+    b_project.cmp(&a_project).then_with(|| {
+        if a_project && b_project {
+            b.resolved_path()
+                .components()
+                .count()
+                .cmp(&a.resolved_path().components().count())
+                .then(a.label.cmp(&b.label))
+                .then(a.path.cmp(&b.path))
+        } else {
+            a.label.cmp(&b.label).then(a.path.cmp(&b.path))
+        }
+    })
+}
+
 fn excluded(path: &Path, exclusions: &BTreeSet<PathBuf>) -> bool {
     exclusions.iter().any(|excluded| path.starts_with(excluded))
 }
@@ -174,8 +207,7 @@ fn visit_root(
         if excluded(path, exclusions) || author_excluded(path, author_exclusions) {
             continue;
         }
-        let extension = path.extension().and_then(|part| part.to_str());
-        if !extension.is_some_and(|ext| plan.extensions.contains(ext)) {
+        if !is_candidate_source(path, |ext| plan.extensions.contains(ext)) {
             continue;
         }
         let relative = if is_file {
@@ -221,7 +253,7 @@ pub fn expand_file_set(plan: &SourcePlan) -> FileSet {
         .iter()
         .chain(plan.package_sources.values())
         .collect();
-    roots.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
+    roots.sort_by(|a, b| compare_roots(a, b));
     for root in roots {
         let root_exclusions = exclusions
             .iter()
@@ -267,7 +299,7 @@ pub fn expand_changed_path(plan: &SourcePlan, changed: &Path) -> FileSet {
         .iter()
         .chain(plan.package_sources.values())
         .collect();
-    roots.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
+    roots.sort_by(|a, b| compare_roots(a, b));
     for root in roots {
         let declared = root.resolved_path();
         if !declared.exists() && !changed.starts_with(&declared) && !declared.starts_with(changed) {

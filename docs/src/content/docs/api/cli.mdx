@@ -111,8 +111,11 @@ Build the project for production. Emits static HTML (and, when an adapter is con
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
+          [--strict-content-bridge | --no-strict-content-bridge]
+          [--strict-plain-css-imports | --no-strict-plain-css-imports]
           [--emit-render-artifacts | --no-emit-render-artifacts]
-          [--scratch-dir <path>] [--define <KEY=EXPR>]...
+          [--scratch-dir <path>] [--warnings-json <file>]
+          [--define <KEY=EXPR>]...
 ```
 
 ### Flags
@@ -124,14 +127,21 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-minify-html` | boolean flag | config/default | Disable production HTML minification for this build. Overrides `minifyHtml: true` from config or presets. |
 | `--strict-broken` | boolean flag | config/default | Fail this build (non-zero exit) when markdown link validation finds a broken link. Overrides `strictBrokenLinks: false` or an omitted config value. On a project with no `linkValidation` config at all, it force-enables link validation with its defaults rather than doing nothing. |
 | `--no-strict-broken` | boolean flag | config/default | Do not fail this build on broken links. Overrides `strictBrokenLinks: true` from config or presets. Disables the top-level strict overlay only — a `linkValidation` block that explicitly sets `failOnBroken: true` stays in effect. |
+| `--strict-content-bridge` | boolean flag | config/default | Fail this build (non-zero exit) when a content-collection `.md`/`.mdx` entry's compiled JSX cannot be parsed for the MDX bridge and would render `<pre data-zfb-content-fallback>`. Overrides `strictContentBridge: false` or an omitted config value. |
+| `--no-strict-content-bridge` | boolean flag | config/default | Do not fail this build on an MDX content-bridge fallback; zfb still warns and emits the fallback. Overrides `strictContentBridge: true` from config or presets. |
+| `--strict-plain-css-imports` | boolean flag | config/default | Fail this build when esbuild resolves a plain `.css` import from JavaScript/TypeScript whose bytes are not emitted. Overrides `strictPlainCssImports: false` or an omitted config value. |
+| `--no-strict-plain-css-imports` | boolean flag | config/default | Continue with warnings for dropped plain CSS imports. Overrides `strictPlainCssImports: true` from config or presets. |
 | `--emit-render-artifacts` | boolean flag | config/default | Write a JSON render artifact under `__zfb/render/` for every markdown/MDX-backed HTML route whose page renders exactly one top-level content region. Overrides `emitRenderArtifacts: false` or an omitted config value. |
 | `--no-emit-render-artifacts` | boolean flag | config/default | Do not write render artifacts for this build. Overrides `emitRenderArtifacts: true` from config or presets. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this build its own directory for zfb's generated artifacts. The output directory is still shared. See [Scratch dirs](#scratch-dirs). |
+| `--warnings-json` | path | none | Write build diagnostics to a schemaVersion 1 JSON file. Failed build reports may be partial. |
 | `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this build, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
 
 Strict broken-link gating is likewise off by default. `--strict-broken` and `--no-strict-broken` conflict — passing both is an error — and either one overrides the `strictBrokenLinks` config field, which in turn overrides the `false` default. Both flags affect `zfb build` only; `zfb dev` never sees the strict overlay and keeps whatever link-validation behavior your own `linkValidation` config gives it. See [Link validation — Strict mode](../markdown-features/link-validation.mdx) for the full behavior, including how this differs from `resolveMarkdownLinks.onBrokenLinks`.
+
+The MDX content-bridge and plain-CSS import gates are also off by default. Each positive and negative flag pair conflicts if both flags are passed; either explicit flag overrides its matching config field, which defaults to `false`. These flags affect `zfb build` only. `zfb dev` still warns and serves an MDX fallback, and keeps plain-CSS import warnings non-fatal. See [define-config](./define-config.mdx) for the config fields.
 
 Render-artifact export is likewise off by default. `--emit-render-artifacts` and `--no-emit-render-artifacts` conflict — passing both is an error — and either one overrides the `emitRenderArtifacts` config field, which in turn overrides the `false` default. Both flags affect `zfb build` only; `zfb dev` never writes render artifacts. See [Render artifacts](../concepts/render-artifacts.mdx) for the full JSON contract, the region rule, and which routes participate.
 
@@ -150,10 +160,58 @@ zfb build --minify-html
 zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
+zfb build --strict-content-bridge
+zfb build --no-strict-content-bridge
+zfb build --strict-plain-css-imports
+zfb build --no-strict-plain-css-imports
 zfb build --emit-render-artifacts
 zfb build --no-emit-render-artifacts
 zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
+
+### Build warning JSON
+
+`zfb build --warnings-json warnings.json` writes `schemaVersion: 1`, `command: "build"`, `status`, and `diagnostics`. Status is `success`, `failed`, or `incomplete`; the latter two can contain only the diagnostics observed before termination. Records are sorted deterministically, and repeated occurrences remain separate. Warnings do not change existing exit behavior.
+
+A successful build with no diagnostics writes `diagnostics: []`. Early build failures write a `failed` report with the diagnostics available so far, which may be empty. The report path's parent directory must already exist; a write failure is reported and makes the build command fail.
+
+Each record has `code`, `severity`, and `message`. `sourceId`, `file`, `line`, and `byteColumn` are optional. `byteColumn` is a one-based UTF-8 byte column; `sourceId` is opaque and is not necessarily a path. Use codes rather than message text in automation, and allow unknown future codes.
+
+| Code | Class |
+|---|---|
+| ZB001 | Broken Markdown link |
+| ZB002 | Image dimension probe |
+| ZB003 | Plain CSS input omitted |
+| ZB004 | Dangling symlink skipped |
+| ZB005 | Foreign JSX import-source pragma |
+| ZB006 | Raw plugin-host output |
+| ZB007 | Unsupported collection file |
+| ZB008 | Mirror preprocessing fallback |
+| ZB009 | Generic Markdown diagnostic |
+| ZB010 | Plugin logger message |
+| ZB011 | Transclusion diagnostic |
+| ZB012 | Directive diagnostic |
+| ZB013 | Invalid MDX spread attribute |
+| ZB014 | Astro client attribute has no island activation effect |
+| ZB015 | Island scanner failure |
+| ZB016 | No Island target found |
+| ZB017 | Embedded tool fallback |
+| ZB018 | Prerender data extraction fallback |
+| ZB019 | SSR route contract finding |
+| ZB020 | Empty route set |
+| ZB021 | Raw adapter stderr |
+| ZB022 | Invalid asset output path |
+| ZB023 | Deferred dynamic route |
+| ZB024 | Content snapshot fallback |
+| ZB025 | Render artifact failure |
+| ZB026 | Opt-in snapshot probe failure |
+| ZB027 | Public file copy warning |
+| ZB028 | Dev Island rebundle warning |
+| ZB029 | Dev client script cleanup |
+| ZB030 | Dev client script name collision |
+| ZB031 | Markdown frontmatter fallback |
+
+ZW001–ZW014 retain their existing Wind meanings. Wind `sourceId` values are opaque. Audit-only ZW015 does not appear in build warning JSON.
 
 ## `zfb css`
 
@@ -298,12 +356,12 @@ Use `zfb wind audit` to review ordinary class-position names, missing or unused 
 ```sh
 zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
                [--plan standalone|build]
-               [--severity error|warning|auditInfo] [--json]
+               [--severity error|warning|auditInfo] [--group] [--json]
 ```
 
 `--plan standalone` (the default) audits the same roots as `zfb css` without `--source`: the conventional project roots plus configured `wind.sources` package roots and exclusions. `--plan build` audits the plan `zfb build` and `zfb dev` scan. It runs plugin `setup` to discover package-owned routes, sibling mirror roots, and plugin virtual modules, which are audited as `plugin/<specifier>`. It runs no `preBuild` or `postBuild` hook and writes no build output. Either mode first prints `wind audit plan: <mode>` followed by every scanned root, virtual module, manifest, and exclusion with its reason.
 
-`--severity` shows only diagnostics at or above that level; it filters the output and never changes the exit status. `--json` prints `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` on stdout instead of text. The coverage object lists the plan mode, roots, virtual modules, manifests, and exclusions. Each origin keeps `sourceId`, a one-based `line`, a one-based byte column `byteColumn`, and the `byteOffset` separately; fields that do not apply are `null`. Status notes and failures still go to stderr.
+`--severity` shows only diagnostics at or above that level; it filters the output and never changes the exit status. `--group` is text-only: it summarizes unrecognized classes by candidate, and dead classes and diagnostics by candidate, code, and severity, with an occurrence count and first origin. The first origin is the earliest source location in the deterministic report order; diagnostic summaries retain that occurrence's message and optional suggestion. `--group` does not change the default text format or exit status. `--json` prints `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` on stdout instead of text; combining `--group` with `--json` leaves the JSON document and its occurrence arrays unchanged. The coverage object lists the plan mode, roots, virtual modules, manifests, and exclusions. Each origin keeps `sourceId`, a one-based `line`, a one-based byte column `byteColumn`, and the `byteOffset` separately; fields that do not apply are `null`. Status notes and failures still go to stderr.
 
 A complete audit exits with status 0 by default, including when it reports error-severity findings; in that case stderr suggests `--fail-on error`. Invalid configuration or a source scan failure exits nonzero. Use `--fail-on error` to exit nonzero when the report contains error-severity diagnostics, or `--fail-on warning` to include warnings. `auditInfo` findings never trigger either threshold. With `wind: false`, the generation-disabled report exits with status 0.
 
@@ -409,18 +467,22 @@ Typecheck the project and validate content-collection frontmatter against their 
 zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
-This command runs two checks:
+This command checks TypeScript, collection schemas, and SSR routes, and reports advisory JSX pragmas:
 
 1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Catches type errors in `zfb.config.ts`, collection schemas, and `src/`.
 2. **Collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build itself does not validate frontmatter, so this is the enforcement gate.
 
+The TypeScript step uses the project's `tsconfig.json`, so a full `zfb check` requires one. Use `--skip-tsc` to run the other checks without it.
+
 Either failure mode exits with a non-zero code.
+
+The ZB005 advisory scans authored `.tsx` and `.jsx` files throughout the project, including components outside `pages/`; it excludes dependencies, generated output, scratch directories, and symlinks. It runs with `--skip-tsc` and never fails the check by itself. The SSR route-contract check also runs where routes exist: strong findings fail, while heuristic findings warn.
 
 ### Flags
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation still runs. Useful when TypeScript is not installed or for schema-only CI lanes. |
+| `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation, route checks, and JSX pragma advisories still run. Useful when TypeScript is not installed. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Validate and lock a scratch dir. `check` writes nothing into it; the flag exists so one argument list or one exported `ZFB_SCRATCH_DIR` works for every command. See [Scratch dirs](#scratch-dirs). |
 | `--define` | `KEY=EXPR`, repeatable | none | Validated only. The value does not reach `tsc`. See [Per-invocation defines](#per-invocation-defines). |
 
@@ -430,7 +492,7 @@ Either failure mode exits with a non-zero code.
 # Full check — tsc + schema validation
 zfb check
 
-# Schema-only (skip tsc)
+# Check without tsc
 zfb check --skip-tsc
 ```
 

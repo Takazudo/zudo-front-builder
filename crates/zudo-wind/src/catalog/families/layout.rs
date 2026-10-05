@@ -1,5 +1,13 @@
 use super::*;
 
+const SPACING_WITH_FRACTION: &[ValueKind] = &[
+    ValueKind::Keyword,
+    ValueKind::Token,
+    ValueKind::Scale,
+    ValueKind::Fraction,
+    ValueKind::Arbitrary,
+];
+
 pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
     for (root, value) in [
         ("block", "block"),
@@ -61,7 +69,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             3,
             rank,
             &properties,
-            SPACING,
+            SPACING_WITH_FRACTION,
             &[
                 ("auto", "auto"),
                 ("full", "100%"),
@@ -70,7 +78,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             ],
             &[TokenCategory::Spacing],
             Some("top"),
-            false,
+            true,
             true,
             OWN,
             Some("0"),

@@ -85,6 +85,24 @@ pub struct DeclarationTemplate {
     pub value: EmissionValue,
 }
 
+/// An implicit declaration that a specific later catalog family is meant to override.
+/// This is audit metadata only; it does not affect emitted CSS or catalog export.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DefaultOverride {
+    pub property: &'static str,
+    pub overriding_entry_id: &'static str,
+}
+
+impl DefaultOverride {
+    pub fn matches(self, property: &str, entry_id: &str) -> bool {
+        self.property == property
+            && (entry_id == self.overriding_entry_id
+                || entry_id
+                    .strip_prefix(self.overriding_entry_id)
+                    .is_some_and(|suffix| suffix.starts_with('.')))
+    }
+}
+
 /// Registration metadata needed by the stylesheet emitter when a rule uses
 /// CSS individual translate properties.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +123,8 @@ pub struct CatalogEntry {
     /// Per-property emission details. This extends the batch-A shared-value
     /// shape for v1 entries that have fixed companion values or optional output.
     pub declaration_templates: Vec<DeclarationTemplate>,
+    /// Default writes paired with their designated overriding catalog entries.
+    pub default_overrides: Vec<DefaultOverride>,
     /// CSS registrations required by a resolved rule, deduplicated by the
     /// stylesheet emitter before output.
     pub registrations: Vec<Registration>,
@@ -292,6 +312,7 @@ mod tests {
             ("rounded-full", "rounded-missing"),
             ("divide-y", "divide-z"),
             ("divide-[red]", "divide-[url(x)]"),
+            ("outline", "outline-wavy"),
             ("outline-2", "outline-wavy"),
             ("outline-[red]", "outline-[url(x)]"),
             ("outline-none", "outline-wavy"),
@@ -302,9 +323,10 @@ mod tests {
             ("ease-[ease-in]", "ease-[bogus]"),
             ("translate-x-0", "translate-x-1/0"),
             ("rotate-90", "rotate-361"),
-            ("cursor-pointer", "cursor-zoom-in"),
+            ("cursor-pointer", "cursor-diagonal-resize"),
             ("list-inside", "list-start"),
             ("aspect-1/2", "aspect-0/2"),
+            ("left-1/2", "p-1/2"),
             ("scroll-mt-2", "scroll-mt-missing"),
             ("sr-only", "sr-only-extra"),
         ];
@@ -323,6 +345,149 @@ mod tests {
             };
             assert!(rejected, "expected {rejected_candidate} to be rejected");
         }
+    }
+
+    #[test]
+    fn declared_shadow_colors_get_a_targeted_hint_without_changing_shadow_matches() {
+        let tokens = TokenConfig {
+            colors: BTreeMap::from([
+                ("zd-white".to_owned(), "#fff".to_owned()),
+                ("shared".to_owned(), "#123456".to_owned()),
+            ]),
+            shadows: BTreeMap::from([
+                ("lg".to_owned(), "0 1px 2px #000".to_owned()),
+                ("shared".to_owned(), "0 2px 4px #111".to_owned()),
+            ]),
+            ..TokenConfig::default()
+        }
+        .validate()
+        .expect("test tokens are valid");
+
+        for text in [
+            "shadow-zd-white",
+            "shadow-zd-white/5",
+            "hover:shadow-zd-white/5",
+        ] {
+            let diagnostic = match resolve_with(text, &tokens) {
+                Resolution::Diagnostic(diagnostic) => diagnostic,
+                other => panic!("{text}: {other:?}"),
+            };
+            assert_eq!(diagnostic.code, DiagnosticCode::Zw004, "{text}");
+            assert_eq!(diagnostic.rejection_id, Some("R20"), "{text}");
+            assert!(diagnostic.message.contains("zd-white is a colors token"));
+            assert!(diagnostic.message.contains("does not compose colors"));
+            assert!(diagnostic.message.contains("arbitrary box-shadow values"));
+            assert!(diagnostic.message.contains("shadows tokens"));
+            assert!(diagnostic.message.contains("box-shadow in CSS"));
+            assert!(diagnostic.message.contains("wind.authoredClasses"));
+        }
+
+        let missing_color = match resolve_with("shadow-missing", &tokens) {
+            Resolution::Diagnostic(diagnostic) => diagnostic,
+            other => panic!("shadow-missing: {other:?}"),
+        };
+        assert_eq!(missing_color.code, DiagnosticCode::Zw006);
+        assert!(missing_color
+            .message
+            .contains("unknown value or token missing"));
+        assert!(!missing_color.message.contains("does not compose colors"));
+
+        for text in [
+            "shadow-missing/5",
+            "shadow-shared/5",
+            "shadow-zd-white/101",
+            "-shadow-zd-white",
+        ] {
+            let diagnostic = match resolve_with(text, &tokens) {
+                Resolution::Diagnostic(diagnostic) => diagnostic,
+                other => panic!("{text}: {other:?}"),
+            };
+            assert_eq!(diagnostic.code, DiagnosticCode::Zw005, "{text}");
+            assert!(!diagnostic.message.contains("does not compose colors"));
+            if text.starts_with('-') {
+                assert!(diagnostic
+                    .message
+                    .contains("negative value is not supported"));
+            } else {
+                assert!(diagnostic
+                    .message
+                    .contains("slash modifier is not supported"));
+            }
+        }
+
+        let strict_candidate =
+            parse_candidate("shadow-zd-white/5", &VariantVocabulary::default()).unwrap();
+        assert!(matches!(
+            Catalog::v1().resolve(
+                &strict_candidate,
+                &tokens,
+                &Origin::Safelist {
+                    owner: "catalog-test".to_owned(),
+                    index: 0,
+                },
+                &BTreeSet::new(),
+            ),
+            Resolution::Failure(diagnostic)
+                if diagnostic.code == DiagnosticCode::Zw004
+                    && diagnostic.rejection_id == Some("R20")
+        ));
+
+        assert_eq!(
+            rule_with("shadow-lg", &tokens).declarations[0],
+            Declaration {
+                property: "box-shadow".to_owned(),
+                value: "var(--zw-shadow-lg)".to_owned(),
+            }
+        );
+        assert_eq!(
+            rule_with("shadow-shared", &tokens).declarations[0].value,
+            "var(--zw-shadow-shared)"
+        );
+        assert_eq!(
+            rule_with("shadow-none", &tokens).declarations[0].value,
+            "none"
+        );
+        assert_eq!(
+            rule_with("shadow-[0_1px_2px_#000]", &tokens).declarations[0].value,
+            "0 1px 2px #000"
+        );
+    }
+
+    #[test]
+    fn inset_fractions_are_enabled_on_all_seven_inset_roots() {
+        let catalog = Catalog::v1();
+        let expected_roots = [
+            "inset", "inset-x", "inset-y", "top", "right", "bottom", "left",
+        ];
+        let expected_kinds = vec![
+            ValueKind::Keyword,
+            ValueKind::Token,
+            ValueKind::Scale,
+            ValueKind::Fraction,
+            ValueKind::Arbitrary,
+        ];
+
+        for root in expected_roots {
+            let entry = catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.root == root)
+                .unwrap_or_else(|| panic!("missing inset root {root}"));
+            assert_eq!(entry.grammar.accepted_kinds, expected_kinds, "{root}");
+            assert!(entry.grammar.allows_fraction_slash, "{root}");
+            assert!(entry.negative, "{root}");
+        }
+
+        let padding = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.root == "p")
+            .expect("padding root is present");
+        assert!(!padding
+            .grammar
+            .accepted_kinds
+            .contains(&ValueKind::Fraction));
+        assert!(!padding.grammar.allows_fraction_slash);
     }
 
     #[test]

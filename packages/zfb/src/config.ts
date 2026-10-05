@@ -116,11 +116,23 @@ export type WindConfig = {
   /**
    * Source controls resolved against the declaring project or preset package.
    * `exclude` globs remove matching files from every source root under that
-   * root and win over explicit sources; `packageRoots` are `./` paths or
-   * installed package names scanned as roots, including their `dist` and
-   * `node_modules`.
+   * root and win over explicit sources; `roots` are directories below the
+   * declaring root scanned with conventional gitignore rules; `packageRoots`
+   * are `./` paths or installed package names scanned as roots, including
+   * their `dist` and `node_modules`; `classHelpers` explicitly names local
+   * functions whose string, array and object arguments are class lists.
+   * `ignoreAttributes` adds non-class attribute/prop names to the built-in
+   * `href`, `src`, `content`, `name`, `rel` and `type` set. The entire literal
+   * value is skipped, including any markup embedded in a preview prop.
+   * `class` and `className` cannot be ignored.
    */
-  sources?: { exclude?: string[]; packageRoots?: string[] };
+  sources?: {
+    exclude?: string[];
+    roots?: string[];
+    packageRoots?: string[];
+    classHelpers?: string[];
+    ignoreAttributes?: string[];
+  };
 };
 
 /**
@@ -1147,6 +1159,21 @@ export type LinkValidationConfig = {
    * Default: `false` (warn-only).
    */
   failOnBroken?: boolean;
+
+  /**
+   * Exact MDX JSX component or member name to the prop that carries its DOM
+   * id, for example `{ EvidenceAnchor: "id", "UI.Anchor": "anchorId" }`.
+   *
+   * A declaration asserts that the component emits the named prop as an id.
+   * Names are case-sensitive and use the parsed MDX JSX spelling; supported
+   * Unicode identifiers remain valid. Values must be MDX JSX attribute names.
+   * Only non-empty string literal prop values are statically knowable.
+   * Each registered literal contributes one static anchor candidate for the
+   * usual fragment checks.
+   * Across presets, the first declared preset wins duplicate entries; the
+   * project config overrides entries from every preset.
+   */
+  anchorComponents?: Record<string, string>;
 };
 
 /**

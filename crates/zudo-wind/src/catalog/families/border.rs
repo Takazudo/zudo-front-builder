@@ -70,6 +70,18 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             })
             .collect::<Vec<_>>();
         set_templates(&mut width, &templates, &expected);
+        width.default_overrides = sides
+            .iter()
+            .map(|side| DefaultOverride {
+                property: match *side {
+                    "top" => "border-top-style",
+                    "right" => "border-right-style",
+                    "bottom" => "border-bottom-style",
+                    _ => "border-left-style",
+                },
+                overriding_entry_id: "v1.border.style",
+            })
+            .collect();
         entries.push(width);
 
         let properties = sides
@@ -310,7 +322,7 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         30,
         0,
         &["outline-width"],
-        &[ValueKind::Integer, ValueKind::Arbitrary],
+        &[ValueKind::Exact, ValueKind::Integer, ValueKind::Arbitrary],
         &[],
         &[],
         Some("outline-width"),
@@ -321,11 +333,18 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
         "2px",
     );
     set_id(&mut outline_width, "v1.outline.width");
+    // The bare utility has Tailwind's fixed 1px width; numeric suffixes keep
+    // resolving through the same entry and declaration templates.
+    outline_width.fixed_value = Some("1px".to_owned());
     set_templates(
         &mut outline_width,
         &[resolved("outline-width"), fixed("outline-style", "solid")],
         &[("outline-width", "2px"), ("outline-style", "solid")],
     );
+    outline_width.default_overrides.push(DefaultOverride {
+        property: "outline-style",
+        overriding_entry_id: "v1.outline.style",
+    });
     entries.push(outline_width);
 
     let mut outline_offset = entry(

@@ -101,6 +101,13 @@ pub(crate) fn fmt_watcher_liveness_timed_out(backend: zfb_watcher::WatchBackend)
     )
 }
 
+/// Render a coded build diagnostic with the shared `zfb warn:` convention.
+/// Sink ownership and report persistence belong to the command (#3729).
+#[allow(dead_code)] // Shared entry point for the following sink integration.
+pub fn build_diagnostic(diagnostic: &zfb_types::build_diagnostics::BuildDiagnostic) {
+    zfb_types::build_diagnostic_sink::emit(diagnostic.clone());
+}
+
 /// Print an informational status message to `stdout`.
 ///
 /// Output: `info <msg>` with the `info` label rendered in cyan when colours

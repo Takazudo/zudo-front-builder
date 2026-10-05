@@ -18,6 +18,7 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
         ("focus-visible", ":focus-visible"),
         ("active", ":active"),
         ("disabled", ":disabled"),
+        ("checked", ":checked"),
     ]
     .into_iter()
     .enumerate()
@@ -25,7 +26,7 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
         for (prefix, relation_rank, classes) in [
             ("", 0, 2),
             ("group-", index + 1, 1),
-            ("peer-", index + 10, 1),
+            ("peer-", index + 11, 1),
         ] {
             let candidate = format!("{prefix}{state}:block");
             let result = compile(&common::input(&[&candidate]));
@@ -68,6 +69,76 @@ fn every_self_and_relation_state_has_exact_selector_guard_rank_and_specificity()
     }
 }
 
+#[test]
+fn checked_relation_ranks_are_unique_and_follow_disabled() {
+    let mut ranks = std::collections::BTreeSet::new();
+    for relation in ["group", "peer"] {
+        for state in [
+            "first",
+            "last",
+            "open",
+            "focus-within",
+            "hover",
+            "focus",
+            "focus-visible",
+            "active",
+            "disabled",
+            "checked",
+        ] {
+            let candidate = format!("{relation}-{state}:block");
+            let result = compile(&common::input(&[&candidate]));
+            assert!(!result.has_errors(), "{candidate}");
+            let rank = result.rules[0].sort_key.as_ref().unwrap().relation_rank;
+            assert!(ranks.insert(rank), "duplicate relation rank {rank}");
+        }
+    }
+    assert_eq!(
+        ranks.into_iter().collect::<Vec<_>>(),
+        (1..=20).collect::<Vec<_>>()
+    );
+
+    let result = compile(&common::input(&[
+        "peer-checked:block",
+        "group-checked:block",
+        "peer-disabled:block",
+        "group-disabled:block",
+    ]));
+    assert_eq!(
+        result
+            .rules
+            .iter()
+            .map(|rule| rule.candidate.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "group-disabled:block",
+            "group-checked:block",
+            "peer-disabled:block",
+            "peer-checked:block",
+        ]
+    );
+}
+
+#[test]
+fn checked_responsive_combination_keeps_canonical_variant_order() {
+    let candidate = "max-sm:peer-checked:visible";
+    let result = compile(&common::input(&[candidate]));
+    assert!(!result.has_errors());
+    let rule = &result.rules[0];
+    assert_eq!(rule.conditions, ["(width < 640px)"]);
+    assert_eq!(
+        rule.selector.as_deref(),
+        Some(":where(.peer:checked) ~ .max-sm\\:peer-checked\\:visible")
+    );
+    assert_specificity(rule.selector.as_ref().unwrap(), rule.specificity);
+
+    let rejected = compile(&common::input(&["peer-checked:max-sm:visible"]));
+    assert!(rejected.rules.is_empty());
+    assert_eq!(
+        rejected.diagnostics[0].suggested_spelling.as_deref(),
+        Some(candidate)
+    );
+}
+
 fn assert_specificity(selector: &str, expected: Specificity) {
     let css = format!("{selector} {{ display: block; }}");
     let sheet = StyleSheet::parse(&css, ParserOptions::default()).unwrap();
@@ -82,9 +153,16 @@ fn assert_specificity(selector: &str, expected: Specificity) {
 
 #[test]
 fn all_pseudo_elements_append_last_without_inventing_content() {
-    for (index, pseudo) in ["before", "after", "marker", "placeholder", "backdrop"]
-        .into_iter()
-        .enumerate()
+    for (index, pseudo) in [
+        "before",
+        "after",
+        "marker",
+        "placeholder",
+        "backdrop",
+        "selection",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let candidate = format!("dark:group-focus:focus-visible:{pseudo}:block");
         let result = compile(&common::input(&[&candidate]));
@@ -110,6 +188,66 @@ fn all_pseudo_elements_append_last_without_inventing_content() {
         assert_specificity(rule.selector.as_ref().unwrap(), rule.specificity);
         assert!(!result.stylesheet.contains("content:"));
     }
+}
+
+#[test]
+fn pointer_conditions_have_one_canonical_slot_and_zero_specificity() {
+    let result = compile(&common::input(&[
+        "sm:dark:pointer-coarse:group-hover:bg-panel",
+        "sm:dark:pointer-fine:group-hover:bg-panel",
+        "dark:group-hover:bg-panel",
+    ]));
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    let coarse = result
+        .rules
+        .iter()
+        .find(|rule| rule.candidate.contains("pointer-coarse"))
+        .unwrap();
+    assert_eq!(
+        coarse.conditions,
+        ["(min-width: 640px)", "(pointer: coarse)", "(hover: hover)"]
+    );
+    assert_eq!(coarse.sort_key.as_ref().unwrap().pointer_rank, 1);
+    assert_eq!(
+        coarse.specificity,
+        Specificity {
+            ids: 0,
+            classes: 1,
+            types: 0
+        }
+    );
+    assert_specificity(coarse.selector.as_ref().unwrap(), coarse.specificity);
+    let fine = result
+        .rules
+        .iter()
+        .find(|rule| rule.candidate.contains("pointer-fine"))
+        .unwrap();
+    assert_eq!(
+        fine.conditions,
+        ["(min-width: 640px)", "(pointer: fine)", "(hover: hover)"]
+    );
+    assert_eq!(fine.sort_key.as_ref().unwrap().pointer_rank, 2);
+    assert_eq!(result.parts.utilities.matches("@media").count(), 3);
+    assert!(result
+        .parts
+        .utilities
+        .contains("@media (min-width: 640px) and (pointer: coarse) and (hover: hover)"));
+    assert!(result
+        .parts
+        .utilities
+        .contains("@media (min-width: 640px) and (pointer: fine) and (hover: hover)"));
+    assert_eq!(
+        result
+            .rules
+            .iter()
+            .find(|rule| rule.candidate == "dark:group-hover:bg-panel")
+            .unwrap()
+            .sort_key
+            .as_ref()
+            .unwrap()
+            .pointer_rank,
+        0
+    );
 }
 
 #[test]

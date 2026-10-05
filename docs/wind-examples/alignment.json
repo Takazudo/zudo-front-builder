@@ -21,14 +21,18 @@
     {
       "id": "alignment-grid",
       "kind": "positive",
-      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">place-items sets both axes for each grid item; self overrides one item.</p>\n  <div class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center gap-2\">\n    <div class=\"wind-demo-tile\">Centered</div><div class=\"wind-demo-tile\">Centered</div>\n    <div class=\"wind-demo-tile self-start\">Self start</div><div class=\"wind-demo-tile\">Centered</div>\n  </div>\n</div>",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">place-items sets both axes for each grid item; self overrides one item.</p>\n  <div class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center justify-items-center place-content-between gap-2\">\n    <div class=\"wind-demo-tile justify-self-end\">Justify self end</div><div class=\"wind-demo-tile place-self-start\">Place self start</div>\n    <div class=\"wind-demo-tile self-start\">Self start</div><div class=\"wind-demo-tile\">Centered</div>\n  </div>\n</div>",
       "utilities": [
         "gap-2",
         "grid",
         "grid-cols-2",
         "grid-rows-2",
         "h-36",
+        "justify-items-center",
+        "justify-self-end",
+        "place-content-between",
         "place-items-center",
+        "place-self-start",
         "self-start"
       ],
       "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],

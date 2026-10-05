@@ -111,7 +111,10 @@ zfb dev --host 192.168.1.10 --port 4321
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
-          [--scratch-dir <path>] [--define <KEY=EXPR>]...
+          [--strict-content-bridge | --no-strict-content-bridge]
+          [--strict-plain-css-imports | --no-strict-plain-css-imports]
+          [--scratch-dir <path>] [--warnings-json <file>]
+          [--define <KEY=EXPR>]...
 ```
 
 ### フラグ
@@ -123,12 +126,19 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
 | `--strict-broken` | boolean flag | config/default | マークダウンのリンク検証が壊れたリンクを見つけたとき、このビルドを失敗させます（非ゼロ終了）。`strictBrokenLinks: false` または設定の省略より優先されます。`linkValidation` の設定がまったくないプロジェクトでは、何もしないのではなく、デフォルト設定でリンク検証を強制的に有効化します。 |
 | `--no-strict-broken` | boolean flag | config/default | このビルドを壊れたリンクで失敗させません。config や preset の `strictBrokenLinks: true` より優先されます。無効にするのはトップレベルの strict オーバーレイだけで、`failOnBroken: true` を明示的に設定した `linkValidation` ブロックは有効なままです。 |
+| `--strict-content-bridge` | boolean flag | config/default | MDX ブリッジ用にパースできないコンテンツコレクションの `.md` / `.mdx` エントリが `<pre data-zfb-content-fallback>` にフォールバックする場合、このビルドを失敗させます（非ゼロ終了）。`strictContentBridge: false` または設定の省略より優先されます。 |
+| `--no-strict-content-bridge` | boolean flag | config/default | MDX コンテンツブリッジのフォールバックではこのビルドを失敗させません。zfb は引き続き警告を出してフォールバックを出力します。config や preset の `strictContentBridge: true` より優先されます。 |
+| `--strict-plain-css-imports` | boolean flag | config/default | esbuild が JavaScript / TypeScript からのプレーンな `.css` import を解決したものの、CSS のバイト列が出力されない場合にこのビルドを失敗させます。`strictPlainCssImports: false` または設定の省略より優先されます。 |
+| `--no-strict-plain-css-imports` | boolean flag | config/default | 出力されないプレーン CSS import を警告にとどめてビルドを続けます。config や preset の `strictPlainCssImports: true` より優先されます。 |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | このビルド専用の、zfb の生成物を置くディレクトリを指定します。出力ディレクトリは引き続き共有されます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
+| `--warnings-json` | path | なし | ビルド診断を schemaVersion 1 の JSON ファイルに書き込みます。失敗したビルドのレポートは部分的な場合があります。 |
 | `--define` | `KEY=EXPR`（複数指定可） | なし | このビルドに限った esbuild の define を追加し、`bundle.define` をキー単位で上書きします。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
 
 HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
 
 壊れたリンクによる strict なゲートも同様にデフォルトではオフです。`--strict-broken` と `--no-strict-broken` は排他で、同時に渡すとエラーになります。どちらも `strictBrokenLinks` 設定フィールドより優先され、その設定フィールドがデフォルトの `false` より優先されます。どちらのフラグも `zfb build` にのみ影響します。`zfb dev` が strict オーバーレイを見ることはなく、自分で書いた `linkValidation` 設定どおりのリンク検証の挙動をそのまま保ちます。`resolveMarkdownLinks.onBrokenLinks` との違いを含む挙動の全体は[リンク検証 — strict モード](../markdown-features/link-validation.mdx)を参照してください。
+
+MDX コンテンツブリッジとプレーン CSS import のゲートもデフォルトではオフです。それぞれの有効・無効フラグを同時に渡すとエラーになり、どちらかを明示すると対応する設定フィールド（デフォルト `false`）より優先されます。これらのフラグが影響するのは `zfb build` だけです。`zfb dev` は引き続き MDX のフォールバックを警告して配信し、プレーン CSS import の警告もエラーにしません。設定フィールドは [define-config](./define-config.mdx) を参照してください。
 
 ### 環境変数
 
@@ -145,8 +155,56 @@ zfb build --minify-html
 zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
+zfb build --strict-content-bridge
+zfb build --no-strict-content-bridge
+zfb build --strict-plain-css-imports
+zfb build --no-strict-plain-css-imports
 zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
+
+### ビルド警告 JSON
+
+`zfb build --warnings-json warnings.json` は診断をファイルに保存します。`schemaVersion: 1`、`command: "build"`、`status`、`diagnostics` を持ちます。`status` は `success`、`failed`、`incomplete` のいずれかで、後者 2 つの診断は部分的な場合があります。レコードは決定的な順序で並びます。同じ警告が複数回発生した場合は各発生が残ります。警告は従来の終了コードを変更しません。
+
+診断のない成功したビルドは `diagnostics: []` を書き込みます。早期に失敗したビルドは、それまでに得られた診断（空の場合もあります）を `failed` レポートに書き込みます。出力先の親ディレクトリは事前に存在している必要があります。書き込み失敗は報告され、ビルドコマンドも失敗します。
+
+各レコードには `code`、`severity`、`message` があり、`sourceId`、`file`、`line`、`byteColumn` は分かる場合のみ付きます。`byteColumn` は 1 始まりの UTF-8 バイト列です。`sourceId` は不透明な識別子で、必ずしもパスではありません。文言ではなくコードを機械処理に使い、未知のコードも許容してください。
+
+| Code | 内容 |
+|---|---|
+| ZB001 | Broken Markdown link |
+| ZB002 | Image dimension probe |
+| ZB003 | Plain CSS input omitted |
+| ZB004 | Dangling symlink skipped |
+| ZB005 | Foreign JSX import-source pragma |
+| ZB006 | Raw plugin-host output |
+| ZB007 | Unsupported collection file |
+| ZB008 | Mirror preprocessing fallback |
+| ZB009 | Generic Markdown diagnostic |
+| ZB010 | Plugin logger message |
+| ZB011 | Transclusion diagnostic |
+| ZB012 | Directive diagnostic |
+| ZB013 | Invalid MDX spread attribute |
+| ZB014 | Astro の client 属性は島を起動しない |
+| ZB015 | Island scanner failure |
+| ZB016 | No Island target found |
+| ZB017 | Embedded tool fallback |
+| ZB018 | Prerender data extraction fallback |
+| ZB019 | SSR route contract finding |
+| ZB020 | Empty route set |
+| ZB021 | Raw adapter stderr |
+| ZB022 | Invalid asset output path |
+| ZB023 | Deferred dynamic route |
+| ZB024 | Content snapshot fallback |
+| ZB025 | Render artifact failure |
+| ZB026 | Opt-in snapshot probe failure |
+| ZB027 | Public file copy warning |
+| ZB028 | Dev Island rebundle warning |
+| ZB029 | Dev client script cleanup |
+| ZB030 | Dev client script name collision |
+| ZB031 | Markdown frontmatter fallback |
+
+ZW001–ZW014 は既存の Wind 診断コードです。Wind の `sourceId` は不透明です。監査専用の ZW015 はビルド警告 JSON に入りません。
 
 ## `zfb css`
 
@@ -291,12 +349,12 @@ zfb wind explain -- -mt-4
 ```sh
 zfb wind audit [--project-root <path>] [--config <file>] [--fail-on error|warning]
                [--plan standalone|build]
-               [--severity error|warning|auditInfo] [--json]
+               [--severity error|warning|auditInfo] [--group] [--json]
 ```
 
 `--plan standalone`（既定）は、`--source` なしの `zfb css` と同じルート、つまり規約上のプロジェクトルートと、設定された `wind.sources` のパッケージルートと除外を監査します。`--plan build` は `zfb build` と `zfb dev` が走査するソースプランを監査します。プラグインの `setup` を実行して、パッケージ所有のルート、兄弟ミラールート、プラグインの仮想モジュールを見つけ、仮想モジュールは `plugin/<specifier>` として監査します。`preBuild` と `postBuild` フックは実行せず、ビルド出力も書き込みません。どちらのモードでも、最初に `wind audit plan: <mode>` と、走査するすべてのルート、仮想モジュール、マニフェスト、除外とその理由を出力します。
 
-`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
+`--severity` は指定した重大度以上の診断だけを表示します。出力を絞り込むだけで、終了ステータスは変わりません。`--group` はテキスト出力専用です。未認識クラスは候補名ごと、dead class と診断は候補名・コード・severity ごとにまとめ、出現数と決定的なレポート順で最初に現れる origin を表示します。診断の要約には、最初の発生位置のメッセージと、あれば推奨表記も残ります。既定のテキスト形式と終了ステータスは変わりません。`--json` はテキストの代わりに標準出力へ `{ "schemaVersion": 1, "command": "audit", "severity", "coverage", "report" }` を出力します。`--json` と `--group` を同時に指定しても JSON ドキュメントと出現ごとの配列は変わりません。coverage オブジェクトにはプランのモード、ルート、仮想モジュール、マニフェスト、除外が入ります。各由来には `sourceId`、1 始まりの `line`、1 始まりのバイト列 `byteColumn`、別の値として `byteOffset` があり、該当しないフィールドは `null` です。状態の案内と失敗は引き続き標準エラーに出力します。
 
 監査が完了した場合、デフォルトではエラー重大度の指摘があっても終了ステータスは 0 です。その場合、標準エラーに `--fail-on error` の案内が表示されます。設定が無効な場合、またはソースの走査に失敗した場合は非ゼロで終了します。`--fail-on error` はエラー重大度の診断があると非ゼロで終了し、`--fail-on warning` は警告も対象にします。`auditInfo` の指摘はどちらのしきい値にも影響しません。`wind: false` の場合、生成無効のレポートを返して終了ステータス 0 で終了します。
 
@@ -404,18 +462,22 @@ zfb preview --host --outdir public
 zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
-このコマンドは 2 つのチェックを実行します。
+このコマンドは TypeScript、コレクションスキーマ、SSR ルートを検査し、JSX pragma の警告も報告します。
 
 1. **TypeScript** — `tsc --noEmit` をサブプロセスとして呼び出します。`zfb.config.ts`、コレクションスキーマ、`src/` の型エラーを捕捉します。
 2. **コレクションスキーマの検証** — 各コレクションエントリのフロントマターを、`zfb.config.json`/`zfb.config.ts` の各コレクションの `schema` フィールドで宣言された JSON Schema に対して検証します。ビルド自体はフロントマターを検証しないため、これが強制の関門となります。
 
+TypeScript の検査ではプロジェクトの `tsconfig.json` を使うため、通常の `zfb check` にはこのファイルが必要です。`--skip-tsc` を指定すると、このファイルがなくてもほかのチェックを実行できます。
+
 いずれの失敗モードも非ゼロのコードで終了します。
+
+ZB005 の警告は、`pages/` 外のコンポーネントも含め、プロジェクト内の authored `.tsx` / `.jsx` を調べます。依存パッケージ、生成出力、スクラッチディレクトリ、シンボリックリンクは除外します。`--skip-tsc` でも実行され、この警告だけでは check は失敗しません。ルートがある場合は SSR ルート契約も調べ、強い検出は失敗、推測的な検出は警告になります。
 
 ### フラグ
 
 | フラグ | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `--skip-tsc` | bool | `false` | `tsc --noEmit` サブプロセスをスキップします。スキーマ検証は引き続き実行されます。TypeScript がインストールされていない場合や、スキーマのみの CI レーンで便利です。 |
+| `--skip-tsc` | bool | `false` | `tsc --noEmit` サブプロセスをスキップします。スキーマ検証、ルート検査、JSX pragma の警告は引き続き実行されます。TypeScript がインストールされていない場合に使えます。 |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | スクラッチディレクトリを検証してロックします。`check` はそこに何も書き込みません。同じ引数リストや、エクスポートした `ZFB_SCRATCH_DIR` をすべてのコマンドで使えるようにするためのフラグです。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 | `--define` | `KEY=EXPR`（複数指定可） | なし | 検証のみ行います。値は `tsc` には渡りません。[呼び出し単位の define](#呼び出し単位の-define) を参照してください。 |
 
@@ -425,7 +487,7 @@ zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 # フルチェック — tsc + スキーマ検証
 zfb check
 
-# スキーマのみ（tsc をスキップ）
+# tsc なしで検査
 zfb check --skip-tsc
 ```
 

@@ -200,11 +200,13 @@ The extractor does not execute application code or infer classes from runtime va
 
 ## The source plan
 
-The source plan determines every input scanned by build and dev. It can include project conventional roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
+The source plan determines every input scanned by build and dev. It can include project conventional roots, declared source roots, declared package roots, mirror roots, explicit command-line sources, generated sources, and candidate manifests. Paths are resolved relative to the project, package, preset, or declaring config that supplied them, not the process working directory.
 
-`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources` package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
+`zfb css` and the default `zfb wind audit` use the standalone plan: the conventional roots, configured `wind.sources.roots`, package roots and exclusions, manifests, and explicit `--source` declarations. Build and dev add package-owned routes, sibling mirror roots, and plugin virtual modules. `zfb wind audit --plan build` runs that same discovery, so its inventory matches what `zfb build` compiles. Both audit modes print the roots and exclusions they cover before the report.
 
 Build and dev scan these case-sensitive extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`. The standalone `zfb css --source` path can also process `.html` and `.mjs`; these two extensions are not automatically scanned in build or dev. There is no public extension override.
+
+`wind.sources.roots` adds directories strictly below the declaring project or preset. They obey gitignore, standard skipped directories, and `wind.sources.exclude`; `packageRoots` remains a separate package traversal channel. Ordinary `.ts` and `.test.ts` files are candidates; `.d.ts` is always excluded and audit names `excluded **/*.d.ts (declaration files)`.
 
 ## What the extractor reads
 
@@ -222,6 +224,8 @@ const className = stateClasses[active ? 1 : 0];
 Both `text-muted` and `text-accent` are present as complete literals and can be extracted independently; whether they resolve as utilities still depends on configuration. Concatenating a prefix such as `bg-` with a runtime value does not form a candidate. A partial fragment such as `bg-` or `-500` is never expanded, so a dynamically constructed class is never covered. Use a literal map or an explicit candidate source for a finite set of possibilities.
 
 At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
+
+Configure `wind.sources.ignoreAttributes` for nonclass prop names such as `css`, `html`, `js`, `displayJs`, and `title`. It augments built-in `href`, `src`, `content`, `name`, `rel`, and `type`, excluding the entire prop value, even nested markup, interpolations, and class-helper calls. Class attributes elsewhere remain scanned. Speculative literals discard punctuation noise outside balanced arbitrary CSS forms but keep Unicode and punctuation inside those forms; embedded markup contributes its class attributes once. No query-selector or script-text heuristic is applied.
 
 ## Class positions and confidence
 
@@ -243,7 +247,9 @@ export const Link = ({ active }) => (
 );
 ```
 
-A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. Every other complete string, such as an unrelated constant, a test title, an import path, or a URL, is a lower-confidence literal. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+A constant is traced only when it is declared exactly once with `const` and is never imported, redeclared, or reassigned. Comparison operands, arguments to other functions, member and index access, and concatenation are not followed. An eligible complete string in an unrelated constant or test title is a lower-confidence literal. Module specifiers and pure URL or relative-path literals are skipped rather than classified as candidates. An invalid or unsupported utility at a class position fails the build like a direct class; the same text in a literal is audit-only information.
+
+`wind.sources.classHelpers` declares additional local class-list helper identifiers. Preset and project names merge deterministically without duplicates, alongside built-ins. Supported string/template, array, and object arguments contribute classes; arbitrary `cva` or `twMerge` semantics are not inferred. A value import of `h` from `@takazudo/zfb/zudo-react`, including a verified named-import alias, recognizes bare or quoted `class` and `className` keys only in its direct second-argument props object. Supported conditionals, templates, same-module constants, and configured helpers can feed those values. `className` recognition is for migration scanning only and does not make it renderer-valid. Arbitrary data objects, unrelated factories, type-only imports, shadowed bindings, labels, ternaries in unrelated positions, and props objects outside the second argument remain lower confidence. Invalid recognized candidates keep class-position errors in normal build and `wind audit --fail-on error`.
 
 ## Adding explicit candidates
 

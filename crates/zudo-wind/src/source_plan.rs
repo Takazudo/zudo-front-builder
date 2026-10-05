@@ -169,6 +169,7 @@ pub fn compile_exclusion_pattern(pattern: &str) -> Result<globset::GlobMatcher, 
 /// Full discovery declaration. Maps have independent owner/producer namespaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourcePlan {
+    pub extraction_options: crate::ExtractionOptions,
     pub roots: Vec<PositiveRoot>,
     pub exclusions: BTreeSet<PathBuf>,
     pub author_exclusions: Vec<SourceExclusion>,
@@ -182,6 +183,7 @@ pub struct SourcePlan {
 impl Default for SourcePlan {
     fn default() -> Self {
         Self {
+            extraction_options: crate::ExtractionOptions::default(),
             roots: Vec::new(),
             exclusions: BTreeSet::new(),
             author_exclusions: Vec::new(),
