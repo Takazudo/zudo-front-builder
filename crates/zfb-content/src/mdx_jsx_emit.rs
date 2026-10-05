@@ -48,7 +48,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic};
+use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic, SourceLocation};
 use zfb_md_ast::heading_registry::{HeadingEntry as RegistryHeadingEntry, HeadingRegistry};
 use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
 use zfb_types::normalize_path_lexical;
@@ -3843,6 +3843,9 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
                     p.replay_markdown_diagnostics(hit.markdown_diagnostics);
                     p.replay_cross_file_link_candidates(hit.cross_file_links);
                     p.replay_file_headings(hit.file_headings);
+                    p.extend_markdown_diagnostics(astro_client_attribute_warnings(
+                        input, file_path,
+                    ));
                 }
                 // Incremental-materialise signal (zfb#1148): the served
                 // entry's validated manifest is authoritative for the
@@ -3977,12 +3980,256 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         }
     }
 
+    if let Some(p) = pipeline.as_deref_mut() {
+        // Keep these source-dependent locations out of the body-keyed cache:
+        // two documents can have the same body but different frontmatter.
+        p.extend_markdown_diagnostics(astro_client_attribute_warnings(input, file_path));
+    }
     Ok((compiled, recorded_deps))
+}
+
+/// Inspect parsed MDX component attributes, then locate the corresponding
+/// attribute token inside each parsed element's opening tag. markdown-rs
+/// exposes element spans but deliberately omits attribute spans.
+fn astro_client_attribute_warnings(input: &str, file_path: &Path) -> Vec<MarkdownDiagnostic> {
+    if ![
+        "client:load",
+        "client:idle",
+        "client:visible",
+        "client:media",
+        "client:only",
+    ]
+    .iter()
+    .any(|attr| input.contains(attr))
+    {
+        return Vec::new();
+    }
+    let options = markdown::ParseOptions {
+        constructs: constructs_for_jsx_emit(ResolvedGfmConstructs::CONSERVATIVE),
+        mdx_esm_parse: Some(Box::new(|_: &str| markdown::MdxSignal::Ok)),
+        ..markdown::ParseOptions::default()
+    };
+    let Ok(root) = markdown::to_mdast(input, &options) else {
+        return Vec::new();
+    };
+    let original = std::fs::read_to_string(file_path).ok();
+    let prefix = original.as_deref().and_then(|raw| {
+        crate::frontmatter::extract(file_path, raw)
+            .ok()
+            .and_then(|fm| {
+                (fm.body.as_deref() == Some(input)).then_some(fm.body_offset.unwrap_or(0))
+            })
+    });
+    // Only report authored coordinates when the compiled body maps exactly
+    // onto the original file, including its frontmatter byte offset.
+    let (Some(original), Some(prefix)) = (original.as_deref(), prefix) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    fn walk(
+        node: &MdastNode,
+        input: &str,
+        file_path: &Path,
+        original: &str,
+        prefix: usize,
+        out: &mut Vec<MarkdownDiagnostic>,
+    ) {
+        let element = match node {
+            MdastNode::MdxJsxFlowElement(x) => {
+                Some((x.name.as_deref(), &x.attributes, x.position.as_ref()))
+            }
+            MdastNode::MdxJsxTextElement(x) => {
+                Some((x.name.as_deref(), &x.attributes, x.position.as_ref()))
+            }
+            _ => None,
+        };
+        if let Some((Some(name), attrs, Some(pos))) = element {
+            if is_component_identifier(name) {
+                // markdown-rs stores a byte index here (its unist docs
+                // still describe a character offset).
+                if let Some(start) = input
+                    .is_char_boundary(pos.start.offset)
+                    .then_some(pos.start.offset)
+                {
+                    for (attr, byte) in opening_tag_attribute_tokens(input, start, attrs) {
+                        if !matches!(
+                            attr,
+                            "client:load"
+                                | "client:idle"
+                                | "client:visible"
+                                | "client:media"
+                                | "client:only"
+                        ) || !attrs
+                            .iter()
+                            .any(|a| matches!(a, AttributeContent::Property(p) if p.name == attr))
+                        {
+                            continue;
+                        }
+                        let absolute = prefix + byte;
+                        if !original.is_char_boundary(absolute) {
+                            continue;
+                        }
+                        let source = original;
+                        let before = &source[..absolute];
+                        let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
+                        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+                        out.push(MarkdownDiagnostic::Generic {
+                            code: Some(zfb_md_ast::diagnostics::codes::ASTRO_CLIENT_ATTRIBUTE.into()),
+                            severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Warning,
+                            message: format!("Astro `{attr}` on component `<{name}>` does not activate an island; remove it and use an explicit Island boundary"),
+                            location: Some(SourceLocation {
+                                path: Some(file_path.to_path_buf()),
+                                line: u32::try_from(line).ok(),
+                                col: u32::try_from(before[line_start..].chars().count() + 1).ok(),
+                                byte_column: u32::try_from(absolute - line_start + 1).ok(),
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, input, file_path, original, prefix, out);
+            }
+        }
+    }
+    walk(&root, input, file_path, original, prefix, &mut out);
+    out
+}
+
+/// Read attribute boundaries from the markdown parser's attribute list.
+/// Expression values carry their exact source bytes, including regexes and
+/// nested templates, so no second JavaScript lexer is needed here.
+fn opening_tag_attribute_tokens<'a>(
+    source: &'a str,
+    start: usize,
+    attrs: &[AttributeContent],
+) -> Vec<(&'a str, usize)> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'<') {
+        return Vec::new();
+    }
+    let mut i = start + 1;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'/' | b'>') {
+        i += 1;
+    }
+    let mut found = Vec::new();
+    for attr in attrs {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        match attr {
+            AttributeContent::Property(p) => {
+                if !source[i..].starts_with(&p.name) {
+                    return Vec::new();
+                }
+                let begin = i;
+                i += p.name.len();
+                found.push((&source[begin..i], begin));
+                if let Some(value) = &p.value {
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if bytes.get(i) != Some(&b'=') {
+                        return Vec::new();
+                    }
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    match value {
+                        AttributeValue::Expression(e) => {
+                            if bytes.get(i) != Some(&b'{')
+                                || !source[i + 1..].starts_with(&e.value)
+                                || bytes.get(i + e.value.len() + 1) != Some(&b'}')
+                            {
+                                return Vec::new();
+                            }
+                            i += e.value.len() + 2;
+                        }
+                        AttributeValue::Literal(_) => {
+                            let quote = bytes.get(i).copied();
+                            if matches!(quote, Some(b'\'' | b'"')) {
+                                i += 1;
+                                while i < bytes.len() {
+                                    if Some(bytes[i]) == quote {
+                                        i += 1;
+                                        break;
+                                    }
+                                    i += 1;
+                                }
+                            } else {
+                                while i < bytes.len()
+                                    && !bytes[i].is_ascii_whitespace()
+                                    && bytes[i] != b'>'
+                                {
+                                    i += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            AttributeContent::Expression(e) => {
+                if bytes.get(i) != Some(&b'{')
+                    || !source[i + 1..].starts_with(&e.value)
+                    || bytes.get(i + e.value.len() + 1) != Some(&b'}')
+                {
+                    return Vec::new();
+                }
+                i += e.value.len() + 2;
+            }
+        }
+    }
+    found
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astro_client_attributes_use_authored_frontmatter_and_utf8_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("page.mdx");
+        let body = "🦊\n\n<Widget title=\"client:idle\"\n  note={\"🦊 client:visible\"} client:load />\n<div client:only />\n";
+        std::fs::write(&file, format!("---\ntitle: Sample\n---\n{body}")).unwrap();
+        let warnings = astro_client_attribute_warnings(body, &file);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code(), "ZB014");
+        let built = warnings[0].to_build_diagnostic();
+        assert_eq!(built.line, Some(7));
+        assert_eq!(built.byte_column, Some(32));
+    }
+
+    #[test]
+    fn opening_tag_tokens_skip_attribute_looking_values() {
+        fn tokens(src: &str) -> Vec<String> {
+            let root = parse_children(src);
+            let MdastNode::MdxJsxFlowElement(element) = &root[0] else {
+                panic!("expected component");
+            };
+            opening_tag_attribute_tokens(src, 0, &element.attributes)
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect()
+        }
+        let src =
+            "<Widget title=\"client:load\" data={{ nested: 'client:idle' }} client:visible />";
+        assert_eq!(tokens(src), vec!["title", "data", "client:visible"]);
+        assert_eq!(
+            tokens("<Widget title=\"foo\\\" client:load />"),
+            vec!["title", "client:load"]
+        );
+        for value in [
+            "{ok ? { nested: 'client:idle' } : null}",
+            "{`a${`nested`}z`}",
+        ] {
+            let src = format!("<Widget data={value} client:load />");
+            assert_eq!(tokens(&src), vec!["data", "client:load"], "{src}");
+        }
+    }
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")

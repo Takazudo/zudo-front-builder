@@ -64,7 +64,7 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
 
     // Held until `run` returns. `check` writes nothing, so there is no
     // layout to thread.
-    let _scratch = crate::commands::scratch_dir::resolve_from_env(
+    let scratch = crate::commands::scratch_dir::resolve_from_env(
         &project_root,
         &cfg,
         &cfg.out_dir,
@@ -116,6 +116,15 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
     }
     for finding in &ssr_warnings {
         output::warn(render_ssr_request_param_finding(finding));
+    }
+
+    // A file can be reached through pages, a component import, or a
+    // collection. Scan authored source once by its location, independently
+    // of tsc (including --skip-tsc).
+    for diagnostic in
+        collect_authored_pragma_warnings(&project_root, &cfg.out_dir, scratch.layout().root())
+    {
+        output::build_diagnostic(&diagnostic);
     }
 
     let tsc_failed = if args.skip_tsc {
@@ -288,6 +297,88 @@ fn collect_entry_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()
     Ok(())
 }
 
+fn collect_authored_pragma_warnings(
+    project_root: &Path,
+    out_dir: &Path,
+    scratch_root: &Path,
+) -> Vec<zfb_types::build_diagnostics::BuildDiagnostic> {
+    let output = if out_dir.is_absolute() {
+        out_dir.to_path_buf()
+    } else {
+        project_root.join(out_dir)
+    };
+    let mut files = Vec::new();
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        output: &Path,
+        scratch: &Path,
+        files: &mut Vec<PathBuf>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ty = entry.file_type()?;
+            if ty.is_symlink() || path.starts_with(output) || path.starts_with(scratch) {
+                continue;
+            }
+            if ty.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.')
+                    || matches!(
+                        name.as_ref(),
+                        "node_modules" | "target" | "worktrees" | "dist" | "coverage"
+                    )
+                {
+                    continue;
+                }
+                walk(&path, root, output, scratch, files)?;
+            } else if ty.is_file()
+                && matches!(
+                    path.extension().and_then(|s| s.to_str()),
+                    Some("tsx" | "jsx")
+                )
+            {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    files.push(rel.to_path_buf());
+                }
+            }
+        }
+        Ok(())
+    }
+    // The new advisory must not make an otherwise successful check fail
+    // because an unrelated directory cannot be read.
+    let _ = walk(
+        project_root,
+        project_root,
+        &output,
+        scratch_root,
+        &mut files,
+    );
+    files.sort();
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let source = std::fs::read_to_string(project_root.join(&file)).ok()?;
+            let pragma = zfb_build::jsx_pragma::find_jsx_import_source(
+                &source,
+                file.extension().is_some_and(|ext| ext == "tsx"),
+            )?;
+            let message = zfb_build::jsx_pragma::foreign_pragma_message(&pragma)?;
+            let mut diagnostic = zfb_types::build_diagnostics::BuildDiagnostic::new(
+                zfb_types::build_diagnostics::codes::FOREIGN_JSX_PRAGMA,
+                zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
+                message,
+            );
+            diagnostic.file = Some(zfb_types::path_to_posix_string(&file));
+            diagnostic.line = u32::try_from(pragma.line).ok();
+            diagnostic.byte_column = u32::try_from(pragma.byte_column).ok();
+            Some(diagnostic)
+        })
+        .collect()
+}
+
 fn is_entry_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
@@ -451,6 +542,44 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(p, contents).unwrap();
+    }
+
+    #[test]
+    fn pragma_advisories_include_components_and_exclude_generated_trees() {
+        let tmp = TmpDir::new("pragma-walk");
+        let root = &tmp.path;
+        let foreign = "/** @jsxImportSource preact */\nexport const A = () => <p />;\n";
+        write(root, "components/legacy.tsx", foreign);
+        write(root, "components/nested/widget.jsx", foreign);
+        write(
+            root,
+            "components/owned.tsx",
+            "/** @jsxImportSource @takazudo/zfb/zudo-react */\nexport {};\n",
+        );
+        write(
+            root,
+            "components/string.tsx",
+            "export const x = '/** @jsxImportSource preact */';\n",
+        );
+        for path in [
+            "node_modules/x/a.tsx",
+            "dist/a.tsx",
+            ".zfb-build/a.tsx",
+            "target/a.tsx",
+        ] {
+            write(root, path, foreign);
+        }
+        let warnings =
+            collect_authored_pragma_warnings(root, Path::new("dist"), &root.join(".zfb-build"));
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0].file.as_deref(), Some("components/legacy.tsx"));
+        assert_eq!(
+            warnings[1].file.as_deref(),
+            Some("components/nested/widget.jsx")
+        );
+        assert!(warnings
+            .iter()
+            .all(|d| d.code == "ZB005" && d.line == Some(1) && d.byte_column == Some(5)));
     }
 
     #[test]
