@@ -1,5 +1,6 @@
 //! Build-owned diagnostic collector. Synchronous producers use a scoped
 //! thread-local handle; async plugin readers retain an explicit sink clone.
+use std::collections::BTreeSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -14,9 +15,19 @@ pub struct BuildDiagnosticSink(Arc<BuildDiagnosticSinkInner>);
 struct BuildDiagnosticSinkInner {
     diagnostics: Mutex<Vec<BuildDiagnostic>>,
     incomplete: AtomicBool,
+    seen_foreign_pragmas: Mutex<BTreeSet<String>>,
 }
 
 impl BuildDiagnosticSink {
+    /// Reserve a source-location identity for ZB005 within this build.
+    /// Other diagnostic classes retain repeated occurrences.
+    pub fn reserve_foreign_pragma(&self, key: String) -> bool {
+        self.0
+            .seen_foreign_pragmas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key)
+    }
     pub fn push(&self, diagnostic: BuildDiagnostic) {
         self.0
             .diagnostics
@@ -102,6 +113,14 @@ pub fn in_scope() -> bool {
     ACTIVE.with(|slot| slot.borrow().is_some())
 }
 
+pub fn reserve_foreign_pragma(key: String) -> Option<bool> {
+    ACTIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|sink| sink.reserve_foreign_pragma(key))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +186,21 @@ mod tests {
             .join()
             .unwrap();
         assert_eq!(sink.snapshot_sorted()[0].message, "late");
+    }
+
+    #[test]
+    fn foreign_pragma_reservation_is_per_build_and_does_not_dedupe_other_codes() {
+        let first = BuildDiagnosticSink::default();
+        let second = BuildDiagnosticSink::default();
+        with_sink(&first, || {
+            assert_eq!(reserve_foreign_pragma("src/a.tsx:2:4".into()), Some(true));
+            assert_eq!(reserve_foreign_pragma("src/a.tsx:2:4".into()), Some(false));
+            record(warning("same"));
+            record(warning("same"));
+        });
+        with_sink(&second, || {
+            assert_eq!(reserve_foreign_pragma("src/a.tsx:2:4".into()), Some(true))
+        });
+        assert_eq!(first.snapshot_sorted().len(), 2);
     }
 }

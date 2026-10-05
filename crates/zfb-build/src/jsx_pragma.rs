@@ -30,6 +30,8 @@ pub struct JsxImportSourcePragma {
     pub line: usize,
     /// 1-based column (in characters) of that `@`.
     pub column: usize,
+    /// 1-based UTF-8 byte column of the pragma's `@`.
+    pub byte_column: usize,
 }
 
 /// Find the `@jsxImportSource` pragma esbuild would apply to `source`.
@@ -106,6 +108,7 @@ pub fn find_jsx_import_source(source: &str, tsx: bool) -> Option<JsxImportSource
         value,
         line,
         column: before[line_start..].chars().count() + 1,
+        byte_column: byte - line_start + 1,
     })
 }
 
@@ -145,18 +148,24 @@ fn pragma_args(text: &str, name: &str) -> Vec<(usize, String)> {
 /// The warning for a foreign pragma in `file` (project-relative), or `None`
 /// when the pragma names the owned runtime.
 pub fn foreign_pragma_warning(file: &Path, pragma: &JsxImportSourcePragma) -> Option<String> {
-    if pragma.value == JSX_IMPORT_SOURCE {
-        return None;
-    }
+    let message = foreign_pragma_message(pragma)?;
     Some(format!(
-        "{}:{}:{}: per-file `@jsxImportSource {}` pragma overrides the project's JSX import source; \
-         this file is compiled for the server renderer, which expects `{JSX_IMPORT_SOURCE}`. \
-         Remove the pragma, or change it to `@jsxImportSource {JSX_IMPORT_SOURCE}`",
+        "{}:{}:{}: {message}",
         path_to_posix_string(file),
         pragma.line,
         pragma.column,
-        pragma.value,
     ))
+}
+
+pub fn foreign_pragma_message(pragma: &JsxImportSourcePragma) -> Option<String> {
+    (pragma.value != JSX_IMPORT_SOURCE).then(|| {
+        format!(
+            "per-file `@jsxImportSource {}` pragma overrides the project's JSX import source; \
+         this file is compiled for the server renderer, which expects `{JSX_IMPORT_SOURCE}`. \
+         Remove the pragma, or change it to `@jsxImportSource {JSX_IMPORT_SOURCE}`",
+            pragma.value,
+        )
+    })
 }
 
 /// Warnings for every foreign pragma among `files` (project-relative paths
@@ -167,6 +176,19 @@ pub fn foreign_pragma_warnings<'a>(
     project_root: &Path,
     files: impl IntoIterator<Item = &'a Path>,
 ) -> Vec<(PathBuf, String)> {
+    foreign_pragma_findings(project_root, files)
+        .into_iter()
+        .filter_map(|(file, pragma)| {
+            foreign_pragma_warning(&file, &pragma).map(|message| (file, message))
+        })
+        .collect()
+}
+
+fn foreign_pragma_findings<'a>(
+    project_root: &Path,
+    files: impl IntoIterator<Item = &'a Path>,
+) -> Vec<(PathBuf, JsxImportSourcePragma)> {
+    let mut seen = BTreeSet::new();
     files
         .into_iter()
         .filter_map(|file| {
@@ -184,8 +206,9 @@ pub fn foreign_pragma_warnings<'a>(
             };
             let source = std::fs::read_to_string(project_root.join(file)).ok()?;
             let pragma = find_jsx_import_source(&source, tsx)?;
-            let message = foreign_pragma_warning(file, &pragma)?;
-            Some((file.to_path_buf(), message))
+            foreign_pragma_message(&pragma)?;
+            seen.insert((file.to_path_buf(), pragma.line, pragma.byte_column))
+                .then_some((file.to_path_buf(), pragma))
         })
         .collect()
 }
@@ -198,20 +221,34 @@ pub fn emit_foreign_pragma_warnings<'a>(
     project_root: &Path,
     files: impl IntoIterator<Item = &'a Path>,
 ) {
-    for (file, message) in foreign_pragma_warnings(project_root, files) {
-        let fresh = zfb_types::build_diagnostic_sink::in_scope()
-            || REPORTED
-                .lock()
-                .map(|mut reported| reported.insert(message.clone()))
-                .unwrap_or(true);
+    for (file, pragma) in foreign_pragma_findings(project_root, files) {
+        let message = foreign_pragma_warning(&file, &pragma).expect("filtered foreign pragma");
+        let key = format!(
+            "{}:{}:{}",
+            path_to_posix_string(&project_root.join(&file)),
+            pragma.line,
+            pragma.byte_column
+        );
+        let fresh = zfb_types::build_diagnostic_sink::reserve_foreign_pragma(key.clone())
+            .unwrap_or_else(|| {
+                REPORTED
+                    .lock()
+                    .map(|mut reported| reported.insert(key))
+                    .unwrap_or(true)
+            });
         if fresh {
             tracing::warn!("{message}");
+            let diagnostic_message =
+                foreign_pragma_message(&pragma).expect("filtered foreign pragma");
             let mut diagnostic = zfb_types::build_diagnostics::BuildDiagnostic::new(
                 zfb_types::build_diagnostics::codes::FOREIGN_JSX_PRAGMA,
                 zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
-                message,
+                diagnostic_message,
             );
             diagnostic.file = Some(file.to_string_lossy().into_owned());
+            // Human character and JSON byte columns have different units.
+            diagnostic.line = u32::try_from(pragma.line).ok();
+            diagnostic.byte_column = u32::try_from(pragma.byte_column).ok();
             zfb_types::build_diagnostic_sink::emit(diagnostic);
         }
     }
@@ -234,6 +271,7 @@ mod tests {
                 value: "preact".into(),
                 line: 1,
                 column: 5,
+                byte_column: 5,
             })
         );
     }
@@ -247,8 +285,15 @@ mod tests {
                 value: "react".into(),
                 line: 3,
                 column: 6,
+                byte_column: 6,
             })
         );
+    }
+
+    #[test]
+    fn reports_utf8_byte_column_separately_from_character_column() {
+        let p = pragma("/* 🦊 */ /* @jsxImportSource preact */\nexport {};\n").unwrap();
+        assert_eq!((p.line, p.column, p.byte_column), (1, 12, 15));
     }
 
     #[test]

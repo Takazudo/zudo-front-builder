@@ -112,7 +112,8 @@ Build the project for production. Emits static HTML (and, when an adapter is con
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
           [--strict-broken | --no-strict-broken]
           [--emit-render-artifacts | --no-emit-render-artifacts]
-          [--scratch-dir <path>] [--define <KEY=EXPR>]...
+          [--scratch-dir <path>] [--warnings-json <file>]
+          [--define <KEY=EXPR>]...
 ```
 
 ### Flags
@@ -127,6 +128,7 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--emit-render-artifacts` | boolean flag | config/default | Write a JSON render artifact under `__zfb/render/` for every markdown/MDX-backed HTML route whose page renders exactly one top-level content region. Overrides `emitRenderArtifacts: false` or an omitted config value. |
 | `--no-emit-render-artifacts` | boolean flag | config/default | Do not write render artifacts for this build. Overrides `emitRenderArtifacts: true` from config or presets. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this build its own directory for zfb's generated artifacts. The output directory is still shared. See [Scratch dirs](#scratch-dirs). |
+| `--warnings-json` | path | none | Write build diagnostics to a schemaVersion 1 JSON file. Failed build reports may be partial. |
 | `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this build, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
@@ -154,6 +156,50 @@ zfb build --emit-render-artifacts
 zfb build --no-emit-render-artifacts
 zfb build --scratch-dir .zfb-build/ci --define __ORIGIN__='"https://www.example.com"'
 ```
+
+### Build warning JSON
+
+`zfb build --warnings-json warnings.json` writes `schemaVersion: 1`, `command: "build"`, `status`, and `diagnostics`. Status is `success`, `failed`, or `incomplete`; the latter two can contain only the diagnostics observed before termination. Records are sorted deterministically, and repeated occurrences remain separate. Warnings do not change existing exit behavior.
+
+A successful build with no diagnostics writes `diagnostics: []`. Early build failures write a `failed` report with the diagnostics available so far, which may be empty. The report path's parent directory must already exist; a write failure is reported and makes the build command fail.
+
+Each record has `code`, `severity`, and `message`. `sourceId`, `file`, `line`, and `byteColumn` are optional. `byteColumn` is a one-based UTF-8 byte column; `sourceId` is opaque and is not necessarily a path. Use codes rather than message text in automation, and allow unknown future codes.
+
+| Code | Class |
+|---|---|
+| ZB001 | Broken Markdown link |
+| ZB002 | Image dimension probe |
+| ZB003 | Plain CSS input omitted |
+| ZB004 | Dangling symlink skipped |
+| ZB005 | Foreign JSX import-source pragma |
+| ZB006 | Raw plugin-host output |
+| ZB007 | Unsupported collection file |
+| ZB008 | Mirror preprocessing fallback |
+| ZB009 | Generic Markdown diagnostic |
+| ZB010 | Plugin logger message |
+| ZB011 | Transclusion diagnostic |
+| ZB012 | Directive diagnostic |
+| ZB013 | Invalid MDX spread attribute |
+| ZB014 | Astro client attribute has no island activation effect |
+| ZB015 | Island scanner failure |
+| ZB016 | No Island target found |
+| ZB017 | Embedded tool fallback |
+| ZB018 | Prerender data extraction fallback |
+| ZB019 | SSR route contract finding |
+| ZB020 | Empty route set |
+| ZB021 | Raw adapter stderr |
+| ZB022 | Invalid asset output path |
+| ZB023 | Deferred dynamic route |
+| ZB024 | Content snapshot fallback |
+| ZB025 | Render artifact failure |
+| ZB026 | Opt-in snapshot probe failure |
+| ZB027 | Public file copy warning |
+| ZB028 | Dev Island rebundle warning |
+| ZB029 | Dev client script cleanup |
+| ZB030 | Dev client script name collision |
+| ZB031 | Markdown frontmatter fallback |
+
+ZW001–ZW014 retain their existing Wind meanings. Wind `sourceId` values are opaque. Audit-only ZW015 does not appear in build warning JSON.
 
 ## `zfb css`
 
@@ -409,18 +455,20 @@ Typecheck the project and validate content-collection frontmatter against their 
 zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 ```
 
-This command runs two checks:
+This command checks TypeScript, collection schemas, and SSR routes, and reports advisory JSX pragmas:
 
 1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Catches type errors in `zfb.config.ts`, collection schemas, and `src/`.
 2. **Collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build itself does not validate frontmatter, so this is the enforcement gate.
 
 Either failure mode exits with a non-zero code.
 
+The ZB005 advisory scans authored `.tsx` and `.jsx` files throughout the project, including components outside `pages/`; it excludes dependencies, generated output, scratch directories, and symlinks. It runs with `--skip-tsc` and never fails the check by itself. The SSR route-contract check also runs where routes exist: strong findings fail, while heuristic findings warn.
+
 ### Flags
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation still runs. Useful when TypeScript is not installed or for schema-only CI lanes. |
+| `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation, route checks, and JSX pragma advisories still run. Useful when TypeScript is not installed. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Validate and lock a scratch dir. `check` writes nothing into it; the flag exists so one argument list or one exported `ZFB_SCRATCH_DIR` works for every command. See [Scratch dirs](#scratch-dirs). |
 | `--define` | `KEY=EXPR`, repeatable | none | Validated only. The value does not reach `tsc`. See [Per-invocation defines](#per-invocation-defines). |
 
@@ -430,7 +478,7 @@ Either failure mode exits with a non-zero code.
 # Full check — tsc + schema validation
 zfb check
 
-# Schema-only (skip tsc)
+# Check without tsc
 zfb check --skip-tsc
 ```
 

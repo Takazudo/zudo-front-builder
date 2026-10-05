@@ -67,7 +67,7 @@ fn repeated_page_warnings_and_strict_failure_keep_each_occurrence() {
     for name in ["one", "two"] {
         fs::write(
             root.join(format!("content/docs/{name}.mdx")),
-            "---\ntitle: Test\n---\n\n[missing](#absent)\n",
+            "---\ntitle: Test\n---\n\n<Widget client:load />\n[missing](#absent)\n",
         )
         .unwrap();
     }
@@ -108,6 +108,18 @@ fn repeated_page_warnings_and_strict_failure_keep_each_occurrence() {
         "{first}"
     );
     assert!(String::from_utf8_lossy(&success.stderr).contains("zfb warn: ZB001"));
+    let astro: Vec<_> = first["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "ZB014")
+        .collect();
+    assert_eq!(astro.len(), 2, "{first}");
+    assert!(
+        astro.iter().all(|d| d["line"] == 5 && d["byteColumn"] == 9),
+        "{first}"
+    );
+    assert!(String::from_utf8_lossy(&success.stderr).contains("zfb warn: ZB014"));
     assert!(first["diagnostics"]
         .as_array()
         .unwrap()

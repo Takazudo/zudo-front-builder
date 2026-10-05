@@ -44,14 +44,16 @@ Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins
 Both `ctx.logger` (available on every hook context) and the global `console` object render on the `zfb dev` / `zfb build` / `zfb preview` terminal, attributed to the plugin that produced them:
 
 ```text
-zfb <level>: [plugin:<name>] <message>
+zfb <level>: ZB010 plugin:<name>: <message>
 ```
 
 - `ctx.logger.info(msg)`, `.warn(msg)`, and `.error(msg)` each render at exactly that level.
 - `console.log`, `.info`, `.dir`, `.table`, and the rest of `console`'s stdout-side methods render at level `info`. `console.warn`, `.error`, `.trace`, `.assert`, and the rest of its stderr-side methods render at level `error` — **not** `warn`. This follows Node's own `Console` API, which has only two underlying output streams (stdout and stderr), not one per level; if you need an actual `warn`-level line, call `ctx.logger.warn(...)` instead of `console.warn(...)`.
 - Attribution follows the plugin whose code is actually executing when the call happens — including inside an `await`ed operation — so overlapping hook calls and concurrent `devMiddleware`/`previewMiddleware` request handlers are each attributed to the right plugin, never mixed up. A log line produced outside any plugin's code (host bootstrap) is attributed to `plugin-host`.
 
-A raw write to the plugin-host subprocess's own stderr that bypasses `console` entirely (e.g. from a native dependency), or a line the host could not parse at all, has no plugin to attribute and renders as `zfb warn: [plugin-host stderr] <line>` / `zfb warn: [plugin-host stdout] <line>` instead.
+A raw write to the plugin-host subprocess's own stderr that bypasses `console` entirely (e.g. from a native dependency), or a line the host could not parse at all, has no plugin to attribute and renders as `zfb warn: ZB006 plugin-host:stderr: <line>` / `zfb warn: ZB006 plugin-host:stdout: <line>` instead.
+
+`ctx.logger.info/warn/error` accept an optional second metadata argument: `{ code, sourceId, file, line, byteColumn }`. For example, `ctx.logger.warn("missing asset", { code: "my-plugin/missing-asset", file: "src/page.mdx", line: 4, byteColumn: 2 })`. The `ZfbPluginDiagnosticMetadata` type is exported from both `@takazudo/zfb/plugins` and the package root. Missing codes default to ZB010; missing source IDs default to `plugin:<name>`. Positions are positive integers, and `byteColumn` is a one-based UTF-8 byte column. Namespace plugin codes; ZB and ZW are reserved for zfb. Raw host output uses ZB006.
 
 ## Scratch space for intermediates
 

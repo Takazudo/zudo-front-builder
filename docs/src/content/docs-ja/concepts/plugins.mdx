@@ -44,14 +44,16 @@ export default definePlugin({
 `ctx.logger`（すべてのフックコンテキストで利用可能）とグローバルな `console` オブジェクトは、いずれも `zfb dev` / `zfb build` / `zfb preview` のターミナルに、それを出力したプラグインの名前が付いた形でレンダリングされます。
 
 ```text
-zfb <level>: [plugin:<name>] <message>
+zfb <level>: ZB010 plugin:<name>: <message>
 ```
 
 - `ctx.logger.info(msg)`、`.warn(msg)`、`.error(msg)` は、それぞれ宣言どおりのレベルでレンダリングされます。
 - `console.log`、`.info`、`.dir`、`.table` など `console` の stdout 側のメソッドはレベル `info` でレンダリングされます。`console.warn`、`.error`、`.trace`、`.assert` など stderr 側のメソッドはレベル `error` でレンダリングされます — `warn` では **ありません**。これは Node 自身の `Console` API の仕様に従うもので、そこにはレベルごとの出力先ではなく stdout と stderr の 2 つの出力ストリームしかありません。実際に `warn` レベルの行が必要なら、`console.warn(...)` ではなく `ctx.logger.warn(...)` を呼んでください。
 - 出力の帰属先は、その呼び出しが実行された時点で実際にスタック上にあるプラグイン（`await` された処理の内部を含む）に従います。そのため、重なり合うフック呼び出しや同時並行の `devMiddleware`／`previewMiddleware` のリクエストハンドラも、それぞれ正しいプラグインに帰属し、混ざることはありません。どのプラグインのコードの外（ホストのブートストラップ時）で出力されたログ行は `plugin-host` に帰属します。
 
-`console` を経由しないプラグインホストサブプロセス自身の stderr への生の書き込み（ネイティブ依存ライブラリからの出力など）や、ホストが解析できなかった行は、帰属させるプラグインがないため、代わりに `zfb warn: [plugin-host stderr] <line>` / `zfb warn: [plugin-host stdout] <line>` としてレンダリングされます。
+`console` を経由しないプラグインホストサブプロセス自身の stderr への生の書き込み（ネイティブ依存ライブラリからの出力など）や、ホストが解析できなかった行は、帰属させるプラグインがないため、代わりに `zfb warn: ZB006 plugin-host:stderr: <line>` / `zfb warn: ZB006 plugin-host:stdout: <line>` としてレンダリングされます。
+
+`ctx.logger.info/warn/error` は任意の第 2 引数で `{ code, sourceId, file, line, byteColumn }` を受け取ります。たとえば `ctx.logger.warn("missing asset", { code: "my-plugin/missing-asset", file: "src/page.mdx", line: 4, byteColumn: 2 })` と書けます。`ZfbPluginDiagnosticMetadata` 型は `@takazudo/zfb/plugins` とパッケージルートの両方から export されます。コード未指定時は ZB010、`sourceId` 未指定時は `plugin:<name>` です。`line` と `byteColumn` は正の整数で、`byteColumn` は 1 始まりの UTF-8 バイト列です。プラグイン固有コードは名前空間を付け、ZB / ZW は zfb 用に予約されています。生のホスト出力は ZB006 です。
 
 ## 中間ファイル用のスクラッチ領域
 
