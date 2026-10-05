@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 4,
+  "specRevision": 5,
   "entries": [
     {
       "id": "v1.block",
@@ -7415,12 +7415,18 @@
       "id": "v1.outline.width",
       "root": "outline",
       "grammar": {
-        "acceptedKinds": ["integer", "arbitrary"],
+        "acceptedKinds": ["exact", "integer", "arbitrary"],
         "arbitraryProperty": "outline-width",
         "allowsFractionSlash": false,
         "allowsColorOpacity": false
       },
-      "acceptedValues": [],
+      "acceptedValues": [
+        {
+          "kind": "exact",
+          "suffix": null,
+          "emittedValue": "1px"
+        }
+      ],
       "tokenCategories": [],
       "negativePolicy": "forbidden",
       "conflictGroup": "outline-width",
