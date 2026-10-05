@@ -268,6 +268,7 @@ fn resolver_fragment_input(
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
                 fail_on_broken: Some(true),
+                anchor_components: None,
             }),
             ..Default::default()
         }),
@@ -510,6 +511,7 @@ fn resolve_links_dir_relative_link_rewrites_to_route_url() {
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
                 fail_on_broken: Some(true),
+                anchor_components: None,
             }),
             ..Default::default()
         }),
@@ -592,6 +594,7 @@ fn resolve_links_url_space_link_from_non_index_page_rewrites_to_route_url() {
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
                 fail_on_broken: Some(true),
+                anchor_components: None,
             }),
             ..Default::default()
         }),

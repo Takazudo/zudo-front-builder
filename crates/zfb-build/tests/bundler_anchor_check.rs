@@ -120,6 +120,7 @@ fn armed_link_validation_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec
         features: Some(MarkdownFeaturesConfig {
             link_validation: Some(LinkValidationConfig {
                 fail_on_broken: Some(fail_on_broken),
+                anchor_components: None,
             }),
             ..Default::default()
         }),
@@ -134,6 +135,7 @@ fn armed_link_validation_with_transclude_spec(root: &Path, fail_on_broken: bool)
         features: Some(MarkdownFeaturesConfig {
             link_validation: Some(LinkValidationConfig {
                 fail_on_broken: Some(fail_on_broken),
+                anchor_components: None,
             }),
             transclude: Some(TranscludeConfig::default()),
             ..Default::default()
