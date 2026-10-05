@@ -5,9 +5,144 @@ sidebar_position: 51
 generated: true
 ---
 
-設定された値または検証済みの任意の色からアウトライン色を設定します。
+アウトラインの太さ、距離、線種とは独立して色を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `outline-focus/90` | `outline-color: color-mix(in oklab, var(--zw-color-focus) 90%, transparent);` |
+| `outline-[#8b1e3f]` | `outline-color: #8b1e3f;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 設定したフォーカス色を使う
+
+outline-focus/90 は明示した色トークンと色の不透明度修飾子を使います。幅と距離は別のユーティリティで指定します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-row\"\u003e\u003cdiv class=\"wind-demo-outline bg-panel text-ink p-3 outline-2 outline-offset-3 outline-focus/90\"\u003eConfigured focus color at 90 percent\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-row {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-outline {\n  display: inline-block;\n  margin: .8rem;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-3 {\n  outline-offset: 3px;\n}\n.outline-focus\\/90 {\n  outline-color: color-mix(in oklab, var(--zw-color-focus) 90%, transparent);\n}\n"} title={"設定したフォーカス色を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline": true,
+      "wind-demo-outline-row": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "outline-2",
+        "outline-focus/90",
+        "outline-offset-3",
+        "p-3",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-outline-row { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-outline { display: inline-block; margin: 0.8rem; }
+```
+
+</Details>
+
+### 個別のアウトライン色を使う
+
+角括弧内は検証済み CSS 色です。幅と距離は別のユーティリティに分けています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-row\"\u003e\u003cdiv class=\"wind-demo-outline bg-panel text-ink p-3 outline-2 outline-offset-3 outline-[#8b1e3f]\"\u003eValidated arbitrary outline color\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-row {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-outline {\n  display: inline-block;\n  margin: .8rem;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-3 {\n  outline-offset: 3px;\n}\n.outline-\\[\\#8b1e3f\\] {\n  outline-color: #8b1e3f;\n}\n"} title={"個別のアウトライン色を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline": true,
+      "wind-demo-outline-row": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "outline-2",
+        "outline-[#8b1e3f]",
+        "outline-offset-3",
+        "p-3",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-outline-row { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-outline { display: inline-block; margin: 0.8rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+名前付きの色は tokens.colors を使います。outline-current と outline-transparent もキーワードとして使えます。outline-[#8b1e3f] のような任意値は CSS 色として検証されます。スラッシュ修飾子には 0〜100 の整数を指定し、色を Oklab で transparent と混ぜます。outline の根は共有されており、整数の接尾辞は幅、設定済みの色名や CSS 色は色として解決します。自動パレットはありません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## outline
 
@@ -43,3 +178,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `outline-[red]/40` | `outline-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

@@ -1,0 +1,61 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-radius-card: .75rem;
+    --zw-radius-pill: 9999px;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-radius-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .7rem;
+  max-width: 30rem;
+}
+
+.wind-demo-radius-value {
+  display: inline-block;
+  font: 13px / 1.4 system-ui, sans-serif;
+}
+.p-2 {
+  padding-top: 0.5rem;
+  padding-right: 0.5rem;
+  padding-bottom: 0.5rem;
+  padding-left: 0.5rem;
+}
+.text-ink {
+  color: var(--zw-color-ink);
+}
+.bg-panel {
+  background-color: var(--zw-color-panel);
+}
+.rounded-\[18px\] {
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border-bottom-right-radius: 18px;
+  border-bottom-left-radius: 18px;
+}
+.rounded-full {
+  border-top-left-radius: 9999px;
+  border-top-right-radius: 9999px;
+  border-bottom-right-radius: 9999px;
+  border-bottom-left-radius: 9999px;
+}
+.rounded-none {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.rounded-pill {
+  border-top-left-radius: var(--zw-radius-pill);
+  border-top-right-radius: var(--zw-radius-pill);
+  border-bottom-right-radius: var(--zw-radius-pill);
+  border-bottom-left-radius: var(--zw-radius-pill);
+}

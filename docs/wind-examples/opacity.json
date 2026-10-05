@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "family": "opacity",
+  "examples": [
+    {
+      "id": "element-opacity",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-opacity-list\"><div class=\"wind-demo-opacity-row\"><span class=\"wind-demo-opacity-label\">100 percent</span><div class=\"wind-demo-swatch bg-accent opacity-100\"></div></div><div class=\"wind-demo-opacity-row\"><span class=\"wind-demo-opacity-label\">55 percent</span><div class=\"wind-demo-swatch bg-accent opacity-55\"></div></div><div class=\"wind-demo-opacity-row\"><span class=\"wind-demo-opacity-label\">35 percent</span><div class=\"wind-demo-swatch bg-accent opacity-[0.35]\"></div></div></div>",
+      "utilities": ["bg-accent", "opacity-100", "opacity-55", "opacity-[0.35]"],
+      "authoredClasses": [
+        "wind-demo-opacity-label",
+        "wind-demo-opacity-list",
+        "wind-demo-opacity-row",
+        "wind-demo-swatch"
+      ],
+      "scaffoldCss": ".wind-demo-opacity-list { display: grid; gap: 0.55rem; max-width: 28rem; color: #16324f; font: 14px/1.4 system-ui, sans-serif; }\n.wind-demo-opacity-row { display: grid; grid-template-columns: 8rem 1fr; align-items: center; gap: 0.8rem; }\n.wind-demo-swatch { height: 2.4rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

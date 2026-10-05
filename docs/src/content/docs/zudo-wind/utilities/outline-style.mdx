@@ -5,9 +5,96 @@ sidebar_position: 52
 generated: true
 ---
 
-Choose a supported outline line style, including none.
+Choose a supported outline line style, including a style that removes the outline.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `outline-dashed` | `outline-style: dashed;` |
+| `outline-dotted` | `outline-style: dotted;` |
+| `outline-double` | `outline-style: double;` |
+| `outline-none` | `outline-style: none;` |
+| `outline-solid` | `outline-style: solid;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare outline patterns
+
+Each tile combines a width, offset, and configured color with one exact style. The none example retains a visible border and shows that the outline itself is removed.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-outline-grid\"\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-solid\"\u003esolid\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-dashed\"\u003edashed\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-dotted\"\u003edotted\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-double\"\u003edouble\u003c/div\u003e\u003cdiv class=\"wind-demo-outline-box border-2 border-focus p-2 outline-2 outline-offset-2 outline-focus outline-none\"\u003enone · border remains\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-outline-grid {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 1.2rem;\n  max-width: 32rem;\n  padding: .8rem;\n  color: #16324f;\n  font: 13px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-outline-box {\n  display: inline-block;\n  margin: .25rem;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-2 {\n  border-top-width: 2px;\n  border-top-style: solid;\n  border-right-width: 2px;\n  border-right-style: solid;\n  border-bottom-width: 2px;\n  border-bottom-style: solid;\n  border-left-width: 2px;\n  border-left-style: solid;\n}\n.border-focus {\n  border-top-color: var(--zw-color-focus);\n  border-right-color: var(--zw-color-focus);\n  border-bottom-color: var(--zw-color-focus);\n  border-left-color: var(--zw-color-focus);\n}\n.outline-2 {\n  outline-width: 2px;\n  outline-style: solid;\n}\n.outline-offset-2 {\n  outline-offset: 2px;\n}\n.outline-focus {\n  outline-color: var(--zw-color-focus);\n}\n.outline-dashed {\n  outline-style: dashed;\n}\n.outline-dotted {\n  outline-style: dotted;\n}\n.outline-double {\n  outline-style: double;\n}\n.outline-none {\n  outline-style: none;\n}\n.outline-solid {\n  outline-style: solid;\n}\n"} title={"Compare outline patterns"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-outline-box": true,
+      "wind-demo-outline-grid": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-2",
+        "border-focus",
+        "outline-2",
+        "outline-dashed",
+        "outline-dotted",
+        "outline-double",
+        "outline-focus",
+        "outline-none",
+        "outline-offset-2",
+        "outline-solid",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-outline-grid { display: flex; flex-wrap: wrap; gap: 1.2rem; max-width: 32rem; padding: 0.8rem; color: #16324f; font: 13px/1.4 system-ui, sans-serif; }
+.wind-demo-outline-box { display: inline-block; margin: 0.25rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+The exact classes outline-solid, outline-dashed, outline-dotted, outline-double, and outline-none set outline-style. They do not supply width or color, so pair a visible style with outline width and color utilities. outline-none removes the outline completely; use it only when another clear focus indicator replaces it. The catalog does not include Tailwind’s outline-hidden utility.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## outline-dashed
 
@@ -178,3 +265,5 @@ Choose a supported outline line style, including none.
 | Example class | Expected declarations |
 | --- | --- |
 | `outline-solid` | `outline-style: solid` |
+
+</Details>

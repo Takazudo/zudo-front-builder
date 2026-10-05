@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "divide-width",
+  "lookup": [
+    {
+      "entry": "v1.divide.width.x",
+      "candidate": "divide-x-3",
+      "example": "horizontal-dividers"
+    },
+    {
+      "entry": "v1.divide.width.y",
+      "candidate": "divide-y-2",
+      "example": "vertical-dividers"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Draw a solid border on each later visible direct child to separate grouped items.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "divide-y adds a top border to later visible direct siblings; divide-x adds a left border. Both use physical sides, have a bare 1px form, accept integer pixel widths and validated bracket lengths, and set the relevant border style to solid. The first visible child receives no divider. Elements with a hidden attribute are excluded even if they occur between visible children; display:none without hidden is still a selector participant. There are no reverse flags.",
+      "examples": [
+        {
+          "id": "vertical-dividers",
+          "title": "Separate stacked children",
+          "description": "divide-y-2 places a 2px top border on later visible children. The hidden child remains in the source but is skipped by the divider selector."
+        },
+        {
+          "id": "horizontal-dividers",
+          "title": "Separate children in a row",
+          "description": "divide-x-3 places a 3px left border on each later visible direct child; the first child has no divider."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "後続する表示中の直下の子要素に solid ボーダーを付け、グループ内を区切ります。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "divide-y は後続する表示中の兄弟に上ボーダー、divide-x は左ボーダーを付けます。どちらも物理辺を使い、引数なしでは 1px、整数ではピクセル幅、角括弧では検証済み長さを指定できます。対象辺のスタイルは solid になります。最初の表示中の子には線を付けません。hidden 属性のある要素は表示中の子の間にあっても除外されます。hidden がなく display:none だけの要素はセレクターに残ります。reverse フラグはありません。",
+      "examples": [
+        {
+          "id": "vertical-dividers",
+          "title": "縦に並ぶ子要素を区切る",
+          "description": "divide-y-2 は後続する表示中の子に 2px の上線を付けます。hidden の子はソースに残りますが、セレクターから除外されます。"
+        },
+        {
+          "id": "horizontal-dividers",
+          "title": "横並びの子要素を区切る",
+          "description": "divide-x-3 は後続する直下の子に 3px の左線を付けます。最初の子には線がありません。"
+        }
+      ]
+    }
+  }
+}
