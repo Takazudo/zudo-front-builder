@@ -14,11 +14,14 @@ export interface WindExpectedDiagnostic {
 }
 export interface WindPositiveExample extends WindExampleSource {
   kind: "positive";
+  /** Keep fragment links within the isolated preview document. */
+  head?: '<base href="about:srcdoc">';
   candidateOrigin?: never;
   expectedDiagnostics?: never;
 }
 export interface WindDiagnosticExample extends WindExampleSource {
   kind: "expected-diagnostic";
+  head?: never;
   candidateOrigin?: "source" | "safelist";
   expectedDiagnostics: WindExpectedDiagnostic[];
 }

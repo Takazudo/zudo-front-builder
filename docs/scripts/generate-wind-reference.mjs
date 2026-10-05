@@ -406,7 +406,7 @@ function renderEditorial(family, record, strings, locale, preview, entriesById) 
         "",
         ...(example.kind === "positive"
           ? [
-              `<HtmlPreview html={${expression(source)}} css={${expression(asset.css)}} title={${expression(item.title)}} lang=${expression(locale)} preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />`,
+              `<HtmlPreview html={${expression(source)}} css={${expression(asset.css)}}${asset.head ? ` head={${expression(asset.head)}}` : ""} title={${expression(item.title)}} lang=${expression(locale)} preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />`,
             ]
           : [
               fenced(source, "html"),
