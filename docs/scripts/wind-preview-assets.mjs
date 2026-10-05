@@ -64,6 +64,34 @@ export function validateRecord(record) {
     if (typeof example.html !== "string" || typeof example.scaffoldCss !== "string")
       fail(`${label}: html and scaffoldCss required`);
     if (
+      example.diagnosticStylesheet !== undefined &&
+      (example.kind !== "expected-diagnostic" ||
+        typeof example.diagnosticStylesheet !== "string" ||
+        !/@(?:tailwind|apply|theme|source|utility|plugin|config|reference)\b/i.test(
+          example.diagnosticStylesheet,
+        ) ||
+        /@import\b/i.test(example.diagnosticStylesheet) ||
+        example.scaffoldCss.trim() ||
+        !example.expectedDiagnostics?.some(
+          (item) => item.code === "ZW009" && item.severity === "error",
+        ))
+    )
+      fail(
+        `${label}: diagnosticStylesheet requires a separate ZW009 error fixture without imports or scaffolding`,
+      );
+    if (
+      example.sourceExclusion !== undefined &&
+      (example.kind !== "expected-diagnostic" ||
+        !["all", "partial"].includes(example.sourceExclusion) ||
+        example.diagnosticStylesheet !== undefined ||
+        !example.expectedDiagnostics?.some(
+          (item) =>
+            item.code === "ZW010" &&
+            item.severity === (example.sourceExclusion === "all" ? "error" : "warning"),
+        ))
+    )
+      fail(`${label}: sourceExclusion requires a matching diagnostic-only ZW010 fixture`);
+    if (
       example.head !== undefined &&
       (example.kind !== "positive" || example.head !== '<base href="about:srcdoc">')
     )
@@ -153,6 +181,34 @@ export function loadRecords(root = REPO_ROOT) {
 /** Exact bytes used for displayed source, iframe markup and compiler input. */
 export function exampleSource(example) {
   return `${example.html}\n`;
+}
+
+/** The entry stylesheet stays distinct from preview scaffolding for CSS errors. */
+export function exampleInput(example) {
+  return `${(example.diagnosticStylesheet ?? example.scaffoldCss).trimEnd()}\n`;
+}
+
+export function exampleSources(example) {
+  return example.sourceExclusion === "all"
+    ? ["excluded.html"]
+    : example.sourceExclusion === "partial"
+      ? ["*.html"]
+      : ["sample.html"];
+}
+
+/** Shared by actual compilation and the displayed configuration. */
+export function exampleCompilerConfig(base, example) {
+  const config = mergeConfig(base, example.config);
+  if (example.kind === "positive") config.wind.strict = true;
+  config.wind.authoredClasses = Object.fromEntries(
+    example.authoredClasses.map((name) => [name, true]),
+  );
+  config.wind.safelist =
+    example.kind === "positive" || example.candidateOrigin !== "source"
+      ? { "docs-preview": example.utilities }
+      : {};
+  if (example.sourceExclusion) config.wind.sources = { exclude: ["excluded.html"] };
+  return config;
 }
 
 export function exampleAssetPath(family, id, extension = "css") {
@@ -254,18 +310,13 @@ export function generateAssets({ root = REPO_ROOT, compiler, check = false, run 
   try {
     for (const record of records)
       for (const example of record.examples) {
-        const config = mergeConfig(base, example.config);
-        if (example.kind === "positive") config.wind.strict = true;
-        config.wind.authoredClasses = Object.fromEntries(
-          example.authoredClasses.map((name) => [name, true]),
-        );
+        const config = exampleCompilerConfig(base, example);
         const candidateOrigin =
           example.kind === "positive" ? "safelist" : (example.candidateOrigin ?? "safelist");
-        config.wind.safelist =
-          candidateOrigin === "safelist" ? { "docs-preview": example.utilities } : {};
         const html = exampleSource(example);
-        const input = `${example.scaffoldCss.trimEnd()}\n`;
+        const input = exampleInput(example);
         writeFileSync(join(workspace, "sample.html"), html);
+        if (example.sourceExclusion) writeFileSync(join(workspace, "excluded.html"), html);
         writeFileSync(join(workspace, "input.css"), input);
         writeFileSync(join(workspace, "zfb.config.json"), json(config));
         const output = join(workspace, "compiled.css");
@@ -280,8 +331,7 @@ export function generateAssets({ root = REPO_ROOT, compiler, check = false, run 
           join(workspace, "zfb.config.json"),
           "--project-root",
           workspace,
-          "--source",
-          "sample.html",
+          ...exampleSources(example).flatMap((source) => ["--source", source]),
           "--no-auto-source",
           "--no-default-highlight-styles",
         ];
@@ -302,6 +352,7 @@ export function generateAssets({ root = REPO_ROOT, compiler, check = false, run 
           configSha256: hash(json(config)),
           expectedDiagnostics: example.expectedDiagnostics ?? [],
         };
+        if (example.sourceExclusion) entry.sourceExclusion = example.sourceExclusion;
         if (example.kind === "positive") {
           const css = `${readFileSync(output, "utf8").trimEnd()}\n`;
           if (/@layer\s+(?:theme|base)|tailwindcss|--tw-|@import\b/.test(css))

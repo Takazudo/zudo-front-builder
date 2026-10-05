@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRecords, REPO_ROOT } from "./wind-preview-assets.mjs";
+import { loadRecords, REPO_ROOT, exampleInput, exampleSources } from "./wind-preview-assets.mjs";
 import { loadPreviewContext } from "./wind-reference-editorial.mjs";
 
 const marker =
@@ -32,10 +32,16 @@ export function renderGuidePreviews(source, locale, context) {
             scaffold: "Authored demonstration CSS",
             diagnostics: "Expected diagnostics",
           };
+    const diagnosticInput = example.diagnosticStylesheet
+      ? `${fence(exampleInput(example), "css")}\n\n`
+      : "";
+    const sourcePlan = example.sourceExclusion
+      ? `\n\n${locale === "ja" ? "sample.html と excluded.html は上記と同じ HTML を含みます。設定で excluded.html を除外します。" : "sample.html and excluded.html contain the HTML above. The configuration excludes excluded.html."}\n\n${fence(`zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source '${exampleSources(example)[0]}' --no-auto-source --no-default-highlight-styles`, "sh")}`
+      : "";
     const preview =
       example.kind === "positive"
         ? `<WindPreviewEnhancer />\n\n<HtmlPreview html={${JSON.stringify(asset.html)}} css={${JSON.stringify(asset.css)}}${asset.head ? ` head={${JSON.stringify(asset.head)}}` : ""} title={${titleJson}} lang=${JSON.stringify(locale)} preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />`
-        : `${fence(asset.html, "html")}\n\n${labels.diagnostics}: ${example.expectedDiagnostics.map(({ code, severity }) => `\`${code} (${severity})\``).join(", ")}`;
+        : `${diagnosticInput}${fence(asset.html, "html")}${sourcePlan}\n\n${labels.diagnostics}: ${example.expectedDiagnostics.map(({ code, severity }) => `\`${code} (${severity})\``).join(", ")}`;
     return [
       `{/* wind-preview: ${family}/${id} ${titleJson} */}`,
       "",
