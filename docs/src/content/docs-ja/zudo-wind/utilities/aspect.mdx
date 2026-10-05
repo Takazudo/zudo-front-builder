@@ -5,9 +5,139 @@ sidebar_position: 62
 generated: true
 ---
 
-自動、名前付き、または任意のアスペクト比を設定します。
+幅が変わってもメディア枠、サムネイル、埋め込み表示の形を保つには aspect-ratio を使います。一方の寸法が auto の場合、比率からもう一方が決まります。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `aspect-video` | `aspect-ratio: 16 / 9;` |
+| `aspect-square` | `aspect-ratio: 1 / 1;` |
+| `aspect-3/2` | `aspect-ratio: 3 / 2;` |
+| `aspect-auto` | `aspect-ratio: auto;` |
+| `aspect-4/3` | `aspect-ratio: 4 / 3;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### よく使う比率を比較
+
+横長の枠は16:9、正方形は1:1、aspect-3/2 は横幅が高さより広い長方形です。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe ratio determines height from width when height is automatic.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-72\"\u003e\n    \u003cdiv class=\"wind-demo-art aspect-video w-full\"\u003easpect-video 16:9\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-square w-24\"\u003easpect-square\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-3/2 w-48\"\u003easpect-3/2\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-art {\n  border: 1px solid #849bb3;\n  background: linear-gradient(135deg, #dce8f2, #9bb5cc);\n  color: #203046;\n  text-align: center;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-48 {\n  width: 12rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n.aspect-3\\/2 {\n  aspect-ratio: 3 / 2;\n}\n.aspect-square {\n  aspect-ratio: 1 / 1;\n}\n.aspect-video {\n  aspect-ratio: 16 / 9;\n}\n"} title={"よく使う比率を比較"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-art": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "aspect-3/2",
+        "aspect-square",
+        "aspect-video",
+        "w-24",
+        "w-48",
+        "w-72",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+```
+
+</Details>
+
+### 比率を自動にする
+
+aspect-auto は明示した h-16 に高さを任せ、aspect-4/3 は幅から高さを計算します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-start gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-art aspect-auto h-16 w-24\"\u003eauto: explicit height\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-art aspect-4/3 w-24\"\u003ecustom ratio\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-art {\n  border: 1px solid #849bb3;\n  background: linear-gradient(135deg, #dce8f2, #9bb5cc);\n  color: #203046;\n  text-align: center;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n.flex {\n  display: flex;\n}\n.items-start {\n  align-items: flex-start;\n}\n.h-16 {\n  height: 4rem;\n}\n.w-24 {\n  width: 6rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.aspect-4\\/3 {\n  aspect-ratio: 4 / 3;\n}\n.aspect-auto {\n  aspect-ratio: auto;\n}\n"} title={"比率を自動にする"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-art": true,
+      "wind-demo-frame": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "aspect-4/3",
+        "aspect-auto",
+        "flex",
+        "gap-2",
+        "h-16",
+        "items-start",
+        "w-24"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-art { border: 1px solid #849bb3; background: linear-gradient(135deg, #dce8f2, #9bb5cc); color: #203046; text-align: center; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+名前付き値は auto、square（1:1）、video（16:9）です。aspect-3/2 のような数値分数と、括弧内の CSS 任意値も使えます。aspect token は継承も必須設定もありません。aspect-auto は比率を自動のままにし、別の寸法指定や内容に形を任せます。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## aspect
 
@@ -44,3 +174,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `aspect-16/9` | `aspect-ratio: 16 / 9` |
+
+</Details>

@@ -1,0 +1,36 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-frame {
+  display: flow-root;
+  min-height: 9rem;
+  border: 2px dashed #849bb3;
+  background: #eef3f8;
+}
+
+.wind-demo-auto-frame {
+  width: 22rem;
+}
+
+.wind-demo-card {
+  min-height: 3rem;
+  border: 1px solid #59718b;
+  background: #dce8f2;
+  text-align: center;
+}
+
+.wind-demo-auto-card {
+  width: 10rem;
+}
+.mx-auto {
+  margin-left: auto;
+  margin-right: auto;
+}

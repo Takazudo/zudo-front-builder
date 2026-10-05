@@ -1,0 +1,45 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.45 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-art {
+  border: 1px solid #849bb3;
+  background: linear-gradient(135deg, #dce8f2, #9bb5cc);
+  color: #203046;
+  text-align: center;
+}
+
+.wind-demo-frame {
+  border: 1px solid #9aaabd;
+  background: #f8fafc;
+  padding: .75rem;
+}
+.flex {
+  display: flex;
+}
+.items-start {
+  align-items: flex-start;
+}
+.h-16 {
+  height: 4rem;
+}
+.w-24 {
+  width: 6rem;
+}
+.gap-2 {
+  column-gap: 0.5rem;
+  row-gap: 0.5rem;
+}
+.aspect-4\/3 {
+  aspect-ratio: 4 / 3;
+}
+.aspect-auto {
+  aspect-ratio: auto;
+}

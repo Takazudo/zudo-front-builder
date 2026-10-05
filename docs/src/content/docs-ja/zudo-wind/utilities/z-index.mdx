@@ -5,9 +5,167 @@ sidebar_position: 34
 generated: true
 ---
 
-範囲付き整数、auto、設定済みトークンで重なり順を設定します。
+同じ stacking context 内で重なる位置指定要素の前後関係を z-index で決めます。要素が同じ context に属する場合、大きい数値が小さい数値より手前に描画されます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `z-10` | `z-index: 10;` |
+| `z-auto` | `z-index: auto;` |
+| `z-0` | `z-index: 0;` |
+| `z-dialog` | `z-index: var(--zw-z-dialog);` |
+| `-z-[1]` | `z-index: -1;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### カードを重ねる
+
+3つの箱は relative 親を共有します。z-20 は markup 上で先にあっても z-10 と z-0 より手前に描画されます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eAll three boxes share one positioned containing block. The higher stack level appears on top.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame relative w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute top-2 left-2 z-0 size-16 wind-demo-tile\"\u003ez-0\u003c/div\u003e\n    \u003cdiv class=\"absolute top-6 left-8 z-10 size-16 wind-demo-alt\"\u003ez-10\u003c/div\u003e\n    \u003cdiv class=\"absolute top-10 left-14 z-20 size-16 wind-demo-dark\"\u003ez-20\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-dark {\n  background: #34465c;\n  color: #fff;\n  border-color: #34465c;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.left-14 {\n  left: 3.5rem;\n}\n.left-2 {\n  left: 0.5rem;\n}\n.left-8 {\n  left: 2rem;\n}\n.top-10 {\n  top: 2.5rem;\n}\n.top-2 {\n  top: 0.5rem;\n}\n.top-6 {\n  top: 1.5rem;\n}\n.size-16 {\n  width: 4rem;\n  height: 4rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.z-0 {\n  z-index: 0;\n}\n.z-10 {\n  z-index: 10;\n}\n.z-20 {\n  z-index: 20;\n}\n"} title={"カードを重ねる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-dark": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "absolute",
+        "h-36",
+        "left-14",
+        "left-2",
+        "left-8",
+        "relative",
+        "size-16",
+        "top-10",
+        "top-2",
+        "top-6",
+        "w-72",
+        "z-0",
+        "z-10",
+        "z-20"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-dark { background: #34465c; color: #fff; border-color: #34465c; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### レイヤー名を付ける
+
+z-dialog は明示した tokens.zIndices.dialog の値を使います。-z-[1] は任意の負値を示し、z-auto は自動の積み重なりに戻します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eA named layer can document the role of an overlay.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame relative z-0 w-72 h-36\"\u003e\n    \u003cdiv class=\"absolute top-4 left-4 size-16 -z-[1] wind-demo-muted\"\u003enegative\u003c/div\u003e\n    \u003cdiv class=\"absolute top-8 left-10 z-dialog size-16 wind-demo-highlight\"\u003edialog\u003c/div\u003e\n    \u003cdiv class=\"absolute bottom-2 right-2 z-auto wind-demo-tile\"\u003eauto\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n    --zw-z-dialog: 30;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-highlight {\n  background: #f2d794;\n  color: #493810;\n  border: 1px solid #b39761;\n  text-align: center;\n}\n\n.wind-demo-muted {\n  background: #eef1f4;\n  color: #64758a;\n  border: 1px solid #cbd3dc;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.absolute {\n  position: absolute;\n}\n.relative {\n  position: relative;\n}\n.bottom-2 {\n  bottom: 0.5rem;\n}\n.left-10 {\n  left: 2.5rem;\n}\n.left-4 {\n  left: 1rem;\n}\n.right-2 {\n  right: 0.5rem;\n}\n.top-4 {\n  top: 1rem;\n}\n.top-8 {\n  top: 2rem;\n}\n.size-16 {\n  width: 4rem;\n  height: 4rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.-z-\\[1\\] {\n  z-index: -1;\n}\n.z-0 {\n  z-index: 0;\n}\n.z-auto {\n  z-index: auto;\n}\n.z-dialog {\n  z-index: var(--zw-z-dialog);\n}\n"} title={"レイヤー名を付ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "zIndices": {
+        "dialog": "30"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-highlight": true,
+      "wind-demo-muted": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-z-[1]",
+        "absolute",
+        "bottom-2",
+        "h-36",
+        "left-10",
+        "left-4",
+        "relative",
+        "right-2",
+        "size-16",
+        "top-4",
+        "top-8",
+        "w-72",
+        "z-0",
+        "z-auto",
+        "z-dialog"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-highlight { background: #f2d794; color: #493810; border: 1px solid #b39761; text-align: center; }
+.wind-demo-muted { background: #eef1f4; color: #64758a; border: 1px solid #cbd3dc; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+整数、-z-10 や -z-[1] のような負の値、auto、tokens.zIndices の名前付きトークン、z-[42] のような CSS 任意値に対応します。角括弧の外側に負の接頭辞を置きます。角括弧内に符号付き数値を置く書き方は拒否されます。このプレビューは tokens.zIndices.dialog に 30 を設定し、z-dialog という役割名で参照します。z-index は要素を移動せず、祖先の stacking context を必ずしも越えません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## z
 
@@ -42,3 +200,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `z-0` | `z-index: 0` |
+
+</Details>

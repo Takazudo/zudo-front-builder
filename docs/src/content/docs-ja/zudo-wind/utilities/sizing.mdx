@@ -5,9 +5,201 @@ sidebar_position: 28
 generated: true
 ---
 
-余白、サイズトークン、分数、キーワードを使い、幅と高さの制約を設定します。
+width、height、size で寸法を直接設定し、min/max の制約で可変範囲を決めます。w-full と max-w-* を組み合わせると、幅が親に追従しながら読みやすい最大幅で止まる内容領域を作れます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `size-12` | `width: 3rem; height: 3rem;` |
+| `h-24` | `height: 6rem;` |
+| `w-1/2` | `width: calc(100% * 1 / 2);` |
+| `max-w-64` | `max-width: 16rem;` |
+| `min-w-0` | `min-width: 0;` |
+| `min-h-24` | `min-height: 6rem;` |
+| `max-h-32` | `max-height: 8rem;` |
+| `size-card` | `width: var(--zw-size-card); height: var(--zw-size-card);` |
+| `max-w-reading` | `max-width: var(--zw-size-reading);` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 寸法を指定
+
+size-12 は幅と高さを 3rem にし、h-24 は高さを 6rem、w-1/2 は親幅の半分にします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-64 flex flex-col gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile size-12\"\u003esize-12 square\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile h-24 w-1/2\"\u003eh-24 and half width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile w-full\"\u003ew-full fills the frame\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-col {\n  flex-direction: column;\n}\n.size-12 {\n  width: 3rem;\n  height: 3rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.w-1\\/2 {\n  width: calc(100% * 1 / 2);\n}\n.w-64 {\n  width: 16rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"寸法を指定"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-col",
+        "gap-2",
+        "h-24",
+        "size-12",
+        "w-1/2",
+        "w-64",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 可変ボックスに上限と下限を設定
+
+min-w-0 は flex 子要素が縮めるようにし、max-w-48 は幅を制限します。min-h-24 は下限、max-h-32 は高さ h-48 の上限です。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eMinimums keep a box from getting smaller; maximums cap it.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-64 flex flex-row gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile min-w-0 max-w-48 w-full\"\u003emin-w-0 allows this flex item to shrink; max-w-48 caps width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile min-h-24\"\u003emin-h-24 keeps this box at least 6rem tall\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile h-48 max-h-32 overflow-hidden\"\u003eh-48 is capped by max-h-32\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile max-w-64\"\u003emax-w-64 sets a maximum width\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-row {\n  flex-direction: row;\n}\n.h-48 {\n  height: 12rem;\n}\n.max-h-32 {\n  max-height: 8rem;\n}\n.max-w-48 {\n  max-width: 12rem;\n}\n.max-w-64 {\n  max-width: 16rem;\n}\n.min-h-24 {\n  min-height: 6rem;\n}\n.min-w-0 {\n  min-width: 0;\n}\n.w-64 {\n  width: 16rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.overflow-hidden {\n  overflow: hidden;\n}\n"} title={"可変ボックスに上限と下限を設定"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-row",
+        "gap-2",
+        "h-48",
+        "max-h-32",
+        "max-w-48",
+        "max-w-64",
+        "min-h-24",
+        "min-w-0",
+        "overflow-hidden",
+        "w-64",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 名前付き値と任意値
+
+size-card は tokens.sizes.card の 5rem を使い、w-[18rem] は一回限りの値、max-w-reading は別に設定したサイズトークンを使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-full\"\u003e\n    \u003cdiv class=\"wind-demo-tile size-card\"\u003eNamed size token: card\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile w-[18rem] max-w-reading\"\u003eArbitrary width with a named maximum\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-size-card: 5rem;\n    --zw-size-reading: 20rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.size-card {\n  width: var(--zw-size-card);\n  height: var(--zw-size-card);\n}\n.max-w-reading {\n  max-width: var(--zw-size-reading);\n}\n.w-\\[18rem\\] {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n"} title={"名前付き値と任意値"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "sizes": {
+        "card": "5rem",
+        "reading": "20rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "max-w-reading",
+        "size-card",
+        "w-[18rem]",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+spacingUnit は 0.25rem に設定しているため、w-16 は 4rem です。w-1/2 のような分数、full/min/max/fit/auto/screen/dvh などの組み込み値、tokens.sizes や tokens.spacing の名前付き値、w-[18rem] のような任意 CSS 値も使えます。size は幅と高さを同時に設定します。このプレビューでは tokens.sizes.card と tokens.sizes.reading を明示します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## size
 
@@ -307,3 +499,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `w-full` | `width: 100%` |
+
+</Details>
