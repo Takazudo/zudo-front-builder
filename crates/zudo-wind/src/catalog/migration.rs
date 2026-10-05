@@ -6,7 +6,7 @@ use crate::Candidate;
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 1;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -33,6 +33,46 @@ use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword};
 const DISPLAY: &str = "a display declaration";
 
 const FAMILIES: &[ForeignFamily] = &[
+    ForeignFamily {
+        root: "ms",
+        values: &[Any],
+        alternative: "a margin-inline-start declaration",
+    },
+    ForeignFamily {
+        root: "me",
+        values: &[Any],
+        alternative: "a margin-inline-end declaration",
+    },
+    ForeignFamily {
+        root: "ps",
+        values: &[Any],
+        alternative: "a padding-inline-start declaration",
+    },
+    ForeignFamily {
+        root: "pe",
+        values: &[Any],
+        alternative: "a padding-inline-end declaration",
+    },
+    ForeignFamily {
+        root: "start",
+        values: &[Any],
+        alternative: "an inset-inline-start declaration",
+    },
+    ForeignFamily {
+        root: "end",
+        values: &[Any],
+        alternative: "an inset-inline-end declaration",
+    },
+    ForeignFamily {
+        root: "border-s",
+        values: &[Bare, Any],
+        alternative: "border-inline-start width, style or color declarations",
+    },
+    ForeignFamily {
+        root: "border-e",
+        values: &[Bare, Any],
+        alternative: "border-inline-end width, style or color declarations",
+    },
     ForeignFamily {
         root: "table",
         values: &[
@@ -188,6 +228,17 @@ mod tests {
             ("content-[\"\"]", "content"),
             ("before:content-none", "content"),
             ("container", "container"),
+            ("ms-auto", "ms"),
+            ("-me-[3px]", "me"),
+            ("ps-hsp-md", "ps"),
+            ("pe-[3px]", "pe"),
+            ("start-0", "start"),
+            ("end-[3px]", "end"),
+            ("border-s", "border-s"),
+            ("border-s-2", "border-s"),
+            ("border-s-[3px]", "border-s"),
+            ("border-e-accent", "border-e"),
+            ("border-e-[red]", "border-e"),
         ] {
             assert_eq!(family(text), Some(root), "{text}");
         }
@@ -203,6 +254,13 @@ mod tests {
             "fill-panel",
             "appearance-card",
             "contents-list",
+            "ms",
+            "me",
+            "ps",
+            "pe",
+            "start",
+            "end",
+            "border-started",
         ] {
             assert_eq!(family(text), None, "{text}");
         }
