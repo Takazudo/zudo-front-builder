@@ -279,6 +279,14 @@ async function waitForDocumentStyles(page) {
 }
 
 async function captureFreshScreenshot(browser, testCase, width, height) {
+  const screenshotExampleId = screenshotExampleIdFor(testCase) ?? testCase.examples[0]?.id;
+  const exampleIndex = testCase.examples.findIndex((example) => example.id === screenshotExampleId);
+  assert.notEqual(
+    exampleIndex,
+    -1,
+    `${testCase.family}/${screenshotExampleId} screenshot sample exists`,
+  );
+  const example = testCase.examples[exampleIndex];
   const context = await browser.newContext({
     baseURL: PREVIEW_ORIGIN,
     colorScheme: "light",
@@ -289,33 +297,34 @@ async function captureFreshScreenshot(browser, testCase, width, height) {
   try {
     await page.goto(pageUrl(testCase), { waitUntil: "networkidle" });
     await expect(page.locator("iframe")).toHaveCount(testCase.examples.length);
-    const firstMarker = page.locator(PREVIEW_MARKER).first();
-    await page.locator("iframe").first().scrollIntoViewIfNeeded();
-    await expect(firstMarker).toHaveAttribute("data-zfb-island-mounted", "");
+    const marker = page.locator(PREVIEW_MARKER).nth(exampleIndex);
+    await page.locator("iframe").nth(exampleIndex).scrollIntoViewIfNeeded();
+    await expect(marker).toHaveAttribute("data-zfb-island-mounted", "");
     await waitForDocumentStyles(page);
-    const first = await findFrame(page, 0);
-    await first.frame.evaluate(async () => {
+    const selected = await findFrame(page, exampleIndex);
+    await selected.frame.evaluate(async () => {
       await document.fonts?.ready;
       return true;
     });
-    const firstFrameStyle = await inspectFrame(first.frame);
+    const selectedFrameStyle = await inspectFrame(selected.frame);
     assert.equal(
-      firstFrameStyle.styleText,
-      testCase.examples[0].css,
+      selectedFrameStyle.styleText,
+      example.css,
       `${testCase.locale}/${testCase.family} screenshot iframe CSS matches its generated asset`,
     );
-    const preview = first.locator.locator("xpath=../../..");
+    const preview = selected.locator.locator("xpath=../../..");
+    const sourcePanelCount = 2 + (example.head ? 1 : 0);
     await expect
       .poll(() => preview.locator(".zd-html-preview-code pre.hi-root code").count())
-      .toBe(2);
+      .toBe(sourcePanelCount);
     await expect
       .poll(() => preview.locator(".zd-html-preview-code .code-btn-copy").count())
-      .toBe(2);
+      .toBe(sourcePanelCount);
     await page.waitForLoadState("networkidle");
     mkdirSync(SCREENSHOT_DIR, { recursive: true });
     const filepath = join(
       SCREENSHOT_DIR,
-      `${BASE_LABEL}-${testCase.locale}-${testCase.family}-${width}x${height}-light.png`,
+      `${BASE_LABEL}-${testCase.locale}-${testCase.kind === "guide" ? testCase.page : testCase.family}-${screenshotExampleId}-${width}x${height}-light.png`,
     );
     await page.screenshot({ path: filepath, animations: "disabled" });
     assertNoPageErrors(errors, `${testCase.locale}/${testCase.family} screenshot`);
@@ -323,6 +332,16 @@ async function captureFreshScreenshot(browser, testCase, width, height) {
   } finally {
     await context.close();
   }
+}
+
+function screenshotExampleIdFor(testCase) {
+  if (testCase.kind === "guide" && testCase.page === "cascade-and-reset") return "reset-none";
+  if (testCase.kind === "guide" && testCase.locale === "ja" && testCase.page === "variants")
+    return "dark-surface";
+  if (testCase.locale === "en" && testCase.family === "grid") return "grid-tracks";
+  if (testCase.locale === "en" && testCase.family === "miscellaneous") return "object-fit-options";
+  if (testCase.locale === "en" && testCase.family === "transition") return "color-transition";
+  return null;
 }
 
 async function switchLocaleAndCheckRemount(page, testCase) {
@@ -909,6 +928,7 @@ for (const testCase of CASES) {
     for (let index = 0; index < testCase.examples.length; index += 1) {
       const example = testCase.examples[index];
       const { locator, frame } = await findFrame(page, index);
+      await expect(locator).toHaveAttribute("sandbox", "allow-same-origin");
       await locator.scrollIntoViewIfNeeded();
       await expect(page.locator(PREVIEW_MARKER).nth(index)).toHaveAttribute(
         "data-zfb-island-mounted",
@@ -976,14 +996,25 @@ for (const testCase of CASES) {
       await checkSharedNativeWrapState(page);
 
       if (CAPTURE_SCREENSHOTS) {
-        await captureFreshScreenshot(browser, testCase, 1440, 1000);
-        await captureFreshScreenshot(browser, testCase, 390, 844);
+        for (const [width, height] of [
+          [1440, 1000],
+          [390, 844],
+        ])
+          await captureFreshScreenshot(browser, testCase, width, height);
       }
     } else if (testCase.kind === "utility") {
       await assertRepresentativeUtilityBehavior(page, testCase);
     } else {
       await assertGuideResetAndCascade(page, testCase);
       await assertGuideVariants(page, testCase);
+    }
+
+    if (!isPilot && CAPTURE_SCREENSHOTS && screenshotExampleIdFor(testCase)) {
+      for (const [width, height] of [
+        [1440, 1000],
+        [390, 844],
+      ])
+        await captureFreshScreenshot(browser, testCase, width, height);
     }
 
     assertNoPageErrors(errors, `${testCase.locale}/${routeName}`);

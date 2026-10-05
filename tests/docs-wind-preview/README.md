@@ -5,8 +5,12 @@ Japanese, all ten paired guide pages, and the installed zudo-doc `HtmlPreview`
 controls. It verifies all positive record/asset/source pairs, that expected
 diagnostics stay textual, and representative computed layout, spacing,
 typography, image, fragment, transition, reset, cascade, and variant behavior.
-The Gap/Padding pilots also cover copy, keyboard and viewport controls, theme
-contrast, old hashes, SPA remounts, and fresh 1440px/390px screenshots.
+Every positive iframe must keep the installed component's `allow-same-origin`
+sandbox while omitting script permission. The Gap/Padding pilots also cover
+copy, keyboard and viewport controls, theme contrast, old hashes, and SPA
+remounts. Fresh 1440px/390px screenshots cover those pilots plus grid,
+object-fit, transition, English/Japanese cascade reset, and the Japanese
+dark-surface guide sample.
 
 Build the docs tree first, then run from the repository root:
 

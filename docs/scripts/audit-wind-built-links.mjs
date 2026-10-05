@@ -12,6 +12,7 @@ const ADJACENT_BASELINE = join(
   "__tests__/fixtures/wind-adjacent-built-anchors.v1.json",
 );
 const SAFE_ORIGIN = "https://wind-docs.invalid";
+const SITE_ORIGIN = "https://zfb.takazudomodular.com";
 const HTML_PARSER = new Parser(Config.defaultConfig());
 
 function readBaseline(path) {
@@ -57,38 +58,42 @@ function walkHtml(directory) {
     });
 }
 
-function localTarget(distDir, documentRoute, href) {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) return null;
-  let url;
-  try {
-    const publicRoute = `/${documentRoute.replace(/index\.html$/, "")}`;
-    url = new URL(href, new URL(publicRoute, SAFE_ORIGIN));
-  } catch {
-    return { error: "invalid-url" };
-  }
-  if (url.origin !== SAFE_ORIGIN) return null;
+function normalizeBase(base) {
+  if (
+    typeof base !== "string" ||
+    !base.startsWith("/") ||
+    !base.endsWith("/") ||
+    base.includes("\\") ||
+    /[?#]/.test(base) ||
+    (base !== "/" &&
+      base
+        .split("/")
+        .slice(1, -1)
+        .some(
+          (segment) =>
+            !segment || segment === "." || segment === ".." || !/^[a-zA-Z0-9._~-]+$/.test(segment),
+        ))
+  )
+    throw new Error(`Invalid docs URL base: ${String(base)}`);
+  return base;
+}
 
+function mappedFile(distDir, pathname) {
   let rawSegments;
   try {
-    rawSegments = url.pathname
+    rawSegments = pathname
       .split("/")
       .filter(Boolean)
       .map((segment) => decodeURIComponent(segment));
   } catch {
     return { error: "invalid-path-encoding" };
   }
-  const candidates = [];
-  for (let start = 0; start <= rawSegments.length; start += 1) {
-    const segments = rawSegments.slice(start);
-    const path = resolve(distDir, ...segments);
-    if (!path.startsWith(`${resolve(distDir)}/`) && path !== resolve(distDir)) continue;
-    if (path.endsWith(".html") || path.endsWith(".htm")) candidates.push(path);
-    else if (path.endsWith(".mdx")) {
-      candidates.push(`${path.slice(0, -4)}/index.html`);
-    } else {
-      candidates.push(path, join(path, "index.html"), `${path}.html`);
-    }
-  }
+  if (rawSegments.some((segment) => /[\\/]/.test(segment) || segment === "." || segment === ".."))
+    return { error: "invalid-local-path" };
+  const path = resolve(distDir, ...rawSegments);
+  if (!path.startsWith(`${resolve(distDir)}/`) && path !== resolve(distDir))
+    return { error: "invalid-local-path" };
+  const candidates = [path, join(path, "index.html")];
   const targetPath = candidates.find((candidate) => {
     try {
       return statSync(candidate).isFile();
@@ -96,7 +101,36 @@ function localTarget(distDir, documentRoute, href) {
       return false;
     }
   });
-  if (!targetPath) return { error: "missing-local-target", pathname: url.pathname, hash: url.hash };
+  return targetPath ? { path: targetPath } : { error: "missing-local-target" };
+}
+
+function localTarget(distDir, documentRoute, href, base) {
+  let url;
+  try {
+    const publicRoute = documentRoute.replace(/index\.html$/, "");
+    const documentUrl = new URL(`${base}${publicRoute}`, SAFE_ORIGIN);
+    url = new URL(href, documentUrl);
+  } catch {
+    return { error: "invalid-url" };
+  }
+  // Canonical site links are local. Other absolute/protocol-relative URLs are
+  // intentionally outside this static-bundle audit.
+  if (url.origin !== SAFE_ORIGIN && url.origin !== SITE_ORIGIN) return null;
+
+  if (!url.pathname.startsWith(base)) {
+    // Preserve inbound coverage for an unprefixed link only when its exact
+    // root-relative path maps to a built page. Never strip arbitrary segments.
+    const unprefixed = mappedFile(distDir, url.pathname);
+    return {
+      error: "wrong-base-prefix",
+      pathname: url.pathname,
+      hash: url.hash,
+      likelyTargetPath: unprefixed.path,
+    };
+  }
+
+  const mapped = mappedFile(distDir, url.pathname.slice(base.length));
+  if (mapped.error) return { error: mapped.error, pathname: url.pathname, hash: url.hash };
 
   let fragment = "";
   try {
@@ -104,11 +138,11 @@ function localTarget(distDir, documentRoute, href) {
   } catch {
     return { error: "invalid-fragment-encoding", pathname: url.pathname, hash: url.hash };
   }
-  return { path: targetPath, fragment, pathname: url.pathname };
+  return { path: mapped.path, fragment, pathname: url.pathname };
 }
 
-function checkTarget(distDir, sourceRoute, href, expectedTargets, findings) {
-  const target = localTarget(distDir, sourceRoute, href);
+function checkTarget(distDir, sourceRoute, href, expectedTargets, base, findings, anchorCache) {
+  const target = localTarget(distDir, sourceRoute, href, base);
   if (!target) return null;
   if (target.error) {
     findings.push({
@@ -121,34 +155,44 @@ function checkTarget(distDir, sourceRoute, href, expectedTargets, findings) {
   }
   const inScope = expectedTargets.has(target.path);
   if (!target.fragment) return { local: true, inScope };
-  let html;
-  try {
-    html = readFileSync(target.path, "utf8");
-  } catch {
+  let parsed = anchorCache.get(target.path);
+  if (!parsed) {
+    let html;
+    try {
+      html = readFileSync(target.path, "utf8");
+    } catch (error) {
+      parsed = {
+        type: "unreadable-local-target",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!parsed) {
+      if (!/<html[\s>]/i.test(html) && !target.path.endsWith(".html")) parsed = { skip: true };
+      else {
+        try {
+          parsed = { anchors: collectBuiltAnchors(html) };
+        } catch (error) {
+          parsed = {
+            type: "invalid-target-html",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+    }
+    anchorCache.set(target.path, parsed);
+  }
+  if (parsed.skip) return { local: true, inScope: false };
+  if (parsed.error) {
     findings.push({
       source: sourceRoute,
       href,
-      type: "unreadable-local-target",
+      type: parsed.type,
       target: target.path,
+      message: parsed.error,
     });
     return { local: true, inScope };
   }
-  if (!/<html[\s>]/i.test(html) && !target.path.endsWith(".html"))
-    return { local: true, inScope: false };
-  let anchors;
-  try {
-    anchors = collectBuiltAnchors(html);
-  } catch (error) {
-    findings.push({
-      source: sourceRoute,
-      href,
-      type: "invalid-target-html",
-      target: target.path,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return { local: true, inScope };
-  }
-  if (!anchors.ids.includes(target.fragment)) {
+  if (!parsed.anchors.ids.includes(target.fragment)) {
     findings.push({
       source: sourceRoute,
       href,
@@ -170,9 +214,12 @@ export function auditBuiltMarkdownLinks(
   {
     windBaseline = readBaseline(WIND_BASELINE),
     adjacentBaseline = readBaseline(ADJACENT_BASELINE),
+    base = "/",
   } = {},
 ) {
+  base = normalizeBase(base);
   const findings = [];
+  const anchorCache = new Map();
   const scopedRoutes = [...Object.keys(windBaseline), ...Object.keys(adjacentBaseline)];
   const scopedFiles = new Set(scopedRoutes.map((route) => routeFile(distDir, route)));
   let checkedScopedLinks = 0;
@@ -188,7 +235,7 @@ export function auditBuiltMarkdownLinks(
     }
     const links = collectLinks(html);
     for (const href of links) {
-      const checked = checkTarget(distDir, route, href, scopedFiles, findings);
+      const checked = checkTarget(distDir, route, href, scopedFiles, base, findings, anchorCache);
       if (checked?.local) checkedScopedLinks += 1;
     }
   }
@@ -203,10 +250,24 @@ export function auditBuiltMarkdownLinks(
       continue;
     }
     for (const href of links) {
-      const target = localTarget(distDir, sourceRoute, href);
-      if (!target || target.error || !scopedFiles.has(target.path)) continue;
+      const target = localTarget(distDir, sourceRoute, href, base);
+      if (!target) continue;
+      if (target.error) {
+        if (target.likelyTargetPath && scopedFiles.has(target.likelyTargetPath))
+          checkTarget(distDir, sourceRoute, href, scopedFiles, base, findings, anchorCache);
+        continue;
+      }
+      if (!scopedFiles.has(target.path)) continue;
       const before = findings.length;
-      const checked = checkTarget(distDir, sourceRoute, href, scopedFiles, findings);
+      const checked = checkTarget(
+        distDir,
+        sourceRoute,
+        href,
+        scopedFiles,
+        base,
+        findings,
+        anchorCache,
+      );
       if (checked?.inScope && findings.length === before) checkedInboundLinks += 1;
     }
   }
@@ -227,12 +288,22 @@ function defaultDistDir() {
   return resolve(SCRIPT_DIR, "../dist");
 }
 
-export function main(distDir = process.argv[2] ? resolve(process.argv[2]) : defaultDistDir()) {
+export function main(
+  distDir = process.argv[2] ? resolve(process.argv[2]) : defaultDistDir(),
+  base = process.argv.includes("--base") ? process.argv[process.argv.indexOf("--base") + 1] : "/",
+) {
   if (!existsSync(distDir)) {
     console.error(`Built docs directory is missing: ${distDir}`);
     return 1;
   }
-  const { findings, summary } = auditBuiltMarkdownLinks(distDir);
+  let result;
+  try {
+    result = auditBuiltMarkdownLinks(distDir, { base });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const { findings, summary } = result;
   if (findings.length) {
     console.error(`Built Markdown link audit failed for ${distDir}`);
     for (const item of findings) {

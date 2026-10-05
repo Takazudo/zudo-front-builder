@@ -500,5 +500,9 @@ test("the required Docs gate changed-file closures cover content, assets, tests,
     "WIND_DOCS_BASE: /wind-docs-preview/",
   ])
     assert.ok(workflow.includes(contract), `Docs gate job is missing ${contract}`);
+  assert.ok(
+    workflow.includes("audit-wind-built-links.mjs docs/dist --base /wind-docs-preview/"),
+    "Docs gate job must audit links against the genuine subpath base",
+  );
   assert.match(workflow, /docs-gate:[\s\S]*?if: \$\{\{ always\(\) \}\}/);
 });

@@ -125,7 +125,7 @@ jobs:
     needs: changed-files
     if: ${{ needs.changed-files.outputs.docs == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -196,7 +196,7 @@ jobs:
         run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
 
       - name: Audit subpath Markdown links and fragments
-        run: node docs/scripts/audit-wind-built-links.mjs docs/dist
+        run: node docs/scripts/audit-wind-built-links.mjs docs/dist --base /wind-docs-preview/
 
       - name: Confirm subpath docs previews in Chromium
         env:
