@@ -161,6 +161,8 @@ function NameField() {
 
 An explicit model connects a supported control to a writable signal. Use signal for the model; computed and readonly signals are valid readable bindings, not writable models. The browser's current value wins when an island hydrates. The [Forms guide](./forms.mdx) lists the supported controls and their model props.
 
+For numeric inputs, `modelValue` is unsupported. Use a static initial `value` and `on:input`. If the handler clamps the value, write it back to the DOM explicitly, as shown in the [Forms guide](./forms.mdx); a signal update does not control this input.
+
 ### Inline styles
 
 Object styles use CSS-spelled keys, and nonzero CSS lengths must include a unit. Preact code that relied on automatic `px` needs explicit strings for values such as `left`, `top`, `width`, `max-height`, and an iframe's CSS `height`:

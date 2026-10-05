@@ -10,6 +10,8 @@ sidebar_position: 7
 
 予約済みの props は **defaultValue**、**defaultChecked**、**modelValue**、**modelChecked** です。HTML 属性にはなりません。モデルと対応する default、value と defaultValue、checked と defaultChecked を同時に指定するとエラーになります。
 
+`defaultValue` を使えるのは、type を省略した input、type が `text`、`search`、`email`、`url`、`tel`、`password` の input、textarea、単一選択の select です。`defaultChecked` を使えるのは checkbox と radio の input です。これらは signal のバインディングではなく初期値です。広い `string` 型の input type は非対応の type になる可能性があるため、どちらの default prop も使えません。対応するリテラル型だけからなる union なら、その default prop を使えます。`color`、`number`、`range`、`date`、`time` など、それ以外の input type では、そのコントロールが対応していれば静的な `value` 属性を使います。この制限はサーバーレンダリング、mount、hydration のいずれにも適用されます。
+
 ## 書き込み可能な signal をバインドする
 
 テキスト入力、textarea、checkbox、単一選択の select、radio グループでモデルを使えます。
@@ -55,7 +57,9 @@ function Preferences() {
 }
 ~~~
 
-グループ内の各 radio には静的な value と、同じ空でない name、フォームとの関連付け、ルート、共有する `modelValue` が必要です。radio グループを `checked` でバインドせず、`modelValue` で一致する選択肢を選びます。radio と select の選択肢の値は一意の文字列にします。radio モデルが null ならどれも選択されません。単一選択の select モデルは静的な選択肢に一致する必要がありますが、ハイドレーション時にはブラウザの未選択状態を選択を強制せずに記録できます。
+モデルを使わない場合、`defaultChecked` は radio の初期選択状態を設定します。name と value は必須ではありません。`checked` と併用しないでください。
+
+モデルを使うグループ内の各 radio には静的な value と、同じ空でない name、フォームとの関連付け、ルート、共有する `modelValue` が必要です。radio グループを `checked` でバインドせず、`modelValue` で一致する選択肢を選びます。radio と select の選択肢の値は一意の文字列にします。radio モデルが null ならどれも選択されません。単一選択の select モデルは静的な選択肢に一致する必要がありますが、ハイドレーション時にはブラウザの未選択状態を選択を強制せずに記録できます。
 
 ## モデルには書き込み可能な signal が必要
 
@@ -76,7 +80,35 @@ const label = computed(() => name.value.toUpperCase());
 
 computed と読み取り専用の signal は、テキストなど読み取り用のバインディングに使います。子が signal を読むだけなら有効な入力です。readonly 型注釈を付けても実行時の writable ブランドは消えませんが、その TypeScript 型のままモデルに渡すことはできません。ランタイムはモデルへの書き込み前に、writable ブランドのないモデルを拒否します。
 
-v1 は複数選択に対応しません。multiple の select は島モードで拒否され、model や defaultValue も使えません。file、contenteditable、数値、日付、range のモデルにも対応しません。select、optgroup、option の構造は静的にし、選択肢のラベルやリストをリアクティブにはできません。一致する選択肢のないプログラムからのモデル値やデフォルト値は、部分的に更新せず ZR_MODEL_VALUE を報告します。
+v1 は複数選択に対応しません。multiple の select は島モードで拒否され、model や defaultValue も使えません。file と contenteditable のモデル、および上の表にないすべての input type（color、number、range、date、time など）のモデルには対応しません。select、optgroup、option の構造は静的にし、選択肢のラベルやリストをリアクティブにはできません。一致する選択肢のないプログラムからのモデル値やデフォルト値は、部分的に更新せず ZR_MODEL_VALUE を報告します。
+
+## 数値入力の静的な値と input イベント
+
+数値入力にはモデルアダプターがありません。初期値には静的な `value` を使い、その後の編集は `on:input` で読みます。値を範囲内に丸めるなど変換した場合は、結果を DOM に明示的に書き戻してください。signal の更新だけでは非制御の input の表示は変わりません。
+
+~~~tsx
+import { signal } from "@takazudo/zfb/zudo-react";
+
+function Quantity() {
+  const quantity = signal(2);
+  return (
+    <input
+      type="number"
+      min="1"
+      max="8"
+      value={String(quantity.value)}
+      on:input={(event) => {
+        const raw = Number(event.currentTarget.value);
+        const next = Math.min(8, Math.max(1, Number.isFinite(raw) ? raw : 2));
+        quantity.value = next;
+        event.currentTarget.value = String(next);
+      }}
+    />
+  );
+}
+~~~
+
+この `value` 式は input の作成時に読み取られます。その後の signal への代入では DOM プロパティは更新されません。この方法にはモデルのハイドレーション時の同期動作もありません。
 
 ## ハイドレーションは入力済みの値を保つ
 

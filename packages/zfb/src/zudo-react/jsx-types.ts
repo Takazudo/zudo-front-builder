@@ -159,19 +159,20 @@ type IframeProps = Omit<HtmlBaseAttributes<HTMLIFrameElement>, "children" | "raw
   };
 type InputBase = Omit<HtmlBaseAttributes<HTMLInputElement>, "type"> &
   DataAria &
-  EventProps<HTMLInputElement, HTMLElementEventMap> & {
-    defaultValue?: string | undefined;
-    defaultChecked?: boolean | undefined;
-  };
+  EventProps<HTMLInputElement, HTMLElementEventMap>;
 export type InputProps = InputBase &
   (
     | {
         type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
+        defaultValue?: string | undefined;
+        defaultChecked?: never;
         modelValue?: Signal<string> | undefined;
         modelChecked?: never;
       }
     | {
         type: "checkbox";
+        defaultValue?: never;
+        defaultChecked?: boolean | undefined;
         modelChecked?: Signal<boolean> | undefined;
         modelValue?: never;
       }
@@ -179,11 +180,22 @@ export type InputProps = InputBase &
         type: "radio";
         name: string;
         value: string;
-        modelValue?: Signal<string | null> | undefined;
+        defaultValue?: never;
+        defaultChecked?: boolean | undefined;
+        modelValue: Signal<string | null>;
+        modelChecked?: never;
+      }
+    | {
+        type: "radio";
+        defaultValue?: never;
+        defaultChecked?: boolean | undefined;
+        modelValue?: undefined;
         modelChecked?: never;
       }
     | {
         type: string;
+        defaultValue?: never;
+        defaultChecked?: never;
         modelValue?: never;
         modelChecked?: never;
       }
