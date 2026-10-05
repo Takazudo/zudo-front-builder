@@ -1,1 +1,5 @@
-{"name":"independent-app","private":true,"type":"module"}
+{
+  "name": "independent-app",
+  "private": true,
+  "type": "module"
+}

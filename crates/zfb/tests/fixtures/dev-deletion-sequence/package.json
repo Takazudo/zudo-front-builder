@@ -1,1 +1,5 @@
-{"name":"workspace-root","private":true,"packageManager":"pnpm@11.5.2"}
+{
+  "name": "workspace-root",
+  "private": true,
+  "packageManager": "pnpm@11.5.2"
+}
