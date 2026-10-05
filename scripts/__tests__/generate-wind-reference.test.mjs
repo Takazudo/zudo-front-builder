@@ -348,7 +348,10 @@ describe("reader-first wind pages", () => {
 
   it("requires exhaustive bilingual schemas and supports explicit transitional missing records only", () => {
     expect(() =>
-      renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, { editorial, preview }),
+      renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, {
+        editorial: new Map(),
+        preview,
+      }),
     ).toThrow("Missing editorial family display");
     const gap = WIND_REFERENCE_FAMILIES.find((family) => family.id === "gap");
     const record = structuredClone(editorial.get("gap"));
