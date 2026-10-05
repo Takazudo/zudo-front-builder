@@ -2073,6 +2073,10 @@ fn css_command_multiline_jsx_invalid_class_keeps_utf8_crlf_source_position() {
     );
 
     let audit = run_wind_audit(temp.path(), &["--json"]);
+    assert_success(
+        &audit,
+        "default wind audit returns diagnostics without failing",
+    );
     let audit_json: serde_json::Value = serde_json::from_slice(&audit.stdout)
         .unwrap_or_else(|error| panic!("{error}:\n{}", process_stdout(&audit)));
     let diagnostics = audit_json["report"]["diagnostics"]
@@ -2091,9 +2095,31 @@ fn css_command_multiline_jsx_invalid_class_keeps_utf8_crlf_source_position() {
     assert_eq!(origin["byteColumn"], byte_column);
     assert_eq!(origin["byteLength"], candidate.len());
     assert_eq!(origin["positionKind"], "class");
-    assert!(origin["sourceId"]
+    assert_eq!(origin["kind"], "source");
+    let source_id = origin["sourceId"]
         .as_str()
-        .is_some_and(|source_id| source_id.ends_with("src/card.tsx")));
+        .filter(|source_id| !source_id.is_empty())
+        .expect("source origin has a nonempty opaque identity");
+
+    let repeated_audit = run_wind_audit(temp.path(), &["--json"]);
+    assert_success(
+        &repeated_audit,
+        "repeated default wind audit returns diagnostics without failing",
+    );
+    let repeated_json: serde_json::Value = serde_json::from_slice(&repeated_audit.stdout)
+        .unwrap_or_else(|error| panic!("{error}:\n{}", process_stdout(&repeated_audit)));
+    let repeated_diagnostic = repeated_json["report"]["diagnostics"]
+        .as_array()
+        .expect("repeated audit JSON diagnostics")
+        .iter()
+        .find(|diagnostic| diagnostic["candidate"] == candidate)
+        .expect("repeated audit preserves the invalid-class diagnostic");
+    assert_eq!(repeated_diagnostic["code"], "ZW006");
+    assert_eq!(repeated_diagnostic["origin"]["kind"], "source");
+    assert_eq!(
+        repeated_diagnostic["origin"]["sourceId"], source_id,
+        "opaque source identities must remain stable across repeated audits"
+    );
 }
 
 #[test]
