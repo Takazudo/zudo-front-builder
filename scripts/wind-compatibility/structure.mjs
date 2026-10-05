@@ -18,11 +18,11 @@ const contracts = {
     ":root, :host{--spacing-0:0px;}.p-0{padding:var(--spacing-0);}",
   ],
   "named-spacing": [
-    `@layer zw-tokens{:root{--zw-spacing-hsp-sm:17px;}}.p-hsp-sm{${padding("var(--zw-spacing-hsp-sm)")}}`,
+    `@layer zw-tokens{:root{--zw-color-surface:#123456;--zw-spacing-hsp-sm:17px;}}.p-hsp-sm{${padding("var(--zw-spacing-hsp-sm)")}}`,
     ":root, :host{--spacing-hsp-sm:17px;}.p-hsp-sm{padding:var(--spacing-hsp-sm);}",
   ],
   "named-color": [
-    "@layer zw-tokens{:root{--zw-color-surface:#123456;}}.bg-surface{background-color:var(--zw-color-surface);}",
+    "@layer zw-tokens{:root{--zw-color-surface:#123456;--zw-spacing-hsp-sm:17px;}}.bg-surface{background-color:var(--zw-color-surface);}",
     ":root, :host{--color-surface:#123456;}.bg-surface{background-color:var(--color-surface);}",
   ],
   "unconfigured-p-4": ["", ""],
@@ -199,7 +199,9 @@ export function differenceOccurrences(caseId, wind, reference, diagnosticsPass) 
       paths(
         wind,
         "wind",
-        (node) => node.kind === "declaration" && node.name === "--zw-spacing-hsp-sm",
+        (node) =>
+          node.kind === "declaration" &&
+          ["--zw-color-surface", "--zw-spacing-hsp-sm"].includes(node.name),
       ),
     );
   if (caseId === "named-color" && refText.includes("--color-surface"))
@@ -208,7 +210,9 @@ export function differenceOccurrences(caseId, wind, reference, diagnosticsPass) 
       paths(
         wind,
         "wind",
-        (node) => node.kind === "declaration" && node.name === "--zw-color-surface",
+        (node) =>
+          node.kind === "declaration" &&
+          ["--zw-color-surface", "--zw-spacing-hsp-sm"].includes(node.name),
       ),
     );
   if (caseId === "configured-p-4" && refText.includes('"name":"--spacing"'))
@@ -255,7 +259,11 @@ export function compareStructure(
     [...new Set([...differences, ...expectedIds])].sort().map((id) => [
       id,
       {
-        expectedCount: expectedIds.includes(id) ? 1 : 0,
+        expectedCount: expectedIds.includes(id)
+          ? id === "named-token-representation" && ["named-spacing", "named-color"].includes(caseId)
+            ? 2
+            : 1
+          : 0,
         observedCount: occurrences[id]?.length ?? 0,
         paths: occurrences[id] ?? [],
       },

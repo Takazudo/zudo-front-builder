@@ -1,6 +1,6 @@
 # Wind reference interface (v1)
 
-This is the test-only reference boundary for [profile 1/1](../../tests/wind-compatibility/profile.json). The initial candidate is exactly `tailwindcss@4.3.2`. It is a deliberate initial target because the existing lockfile resolves `@tailwindcss/browser@4.3.2` transitively; it is **not** a historical consumer baseline. No Tailwind dependency is added to a product or workspace manifest. The checked records at `tests/wind-compatibility/reference/{accepted,reviewed-through}.json` are separate and both remain null. The profile's `referencePolicy.initialState` is immutable bootstrap policy, not live state.
+This is the test-only reference boundary for [profile 1/2](../../tests/wind-compatibility/profile.json). The initial candidate is exactly `tailwindcss@4.3.2`. It is a deliberate initial target because the existing lockfile resolves `@tailwindcss/browser@4.3.2` transitively; it is **not** a historical consumer baseline. No Tailwind dependency is added to a product or workspace manifest. The checked records at `tests/wind-compatibility/reference/{accepted,reviewed-through}.json` are separate and both remain null. The profile's `referencePolicy.initialState` is immutable bootstrap policy, not live state.
 
 Run from the repository root with Node 24:
 
