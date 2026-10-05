@@ -20,6 +20,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub configured_output_dir: PathBuf,
     pub pass_output_dir: PathBuf,
     pub default_content_roots: Vec<PathBuf>,
+    pub declared_project_roots: Vec<PathBuf>,
     pub package_route_entrypoints: Vec<PathBuf>,
     pub sibling_mirror_roots: Vec<PathBuf>,
     pub declared_package_roots: Vec<PathBuf>,
@@ -102,6 +103,13 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
             );
             package_root.package_root = true;
             plan.roots.push(package_root);
+        }
+    }
+    for path in &inputs.declared_project_roots {
+        let path = absolute(&project, path);
+        if seen.insert(path.clone()) {
+            plan.roots
+                .push(root(stable_label("root", &first_party, &path), path, true));
         }
     }
     for path in &inputs.default_content_roots {
@@ -512,6 +520,36 @@ fn resolve_declared_package_root(
     Ok(path)
 }
 
+/// A project source root must remain strictly below its own declaring project
+/// or preset directory, including after following symlinks.
+fn resolve_declared_project_root(declaring_dir: &Path, root: &str) -> Result<PathBuf> {
+    if root.is_empty()
+        || root == "."
+        || root.contains('\\')
+        || Path::new(root).is_absolute()
+        || root.as_bytes().get(1) == Some(&b':')
+    {
+        bail!("project root must name a relative directory below the declaring root");
+    }
+    let declaring = fs::canonicalize(declaring_dir).with_context(|| {
+        format!(
+            "declaring root {} is missing or unreadable",
+            declaring_dir.display()
+        )
+    })?;
+    let path = absolute(declaring_dir, Path::new(root));
+    let canonical = fs::canonicalize(&path)
+        .with_context(|| format!("project root {} is missing or unreadable", path.display()))?;
+    if !canonical.is_dir() || !canonical.starts_with(&declaring) || canonical == declaring {
+        bail!(
+            "project root {} must be a directory below {}",
+            path.display(),
+            declaring.display()
+        );
+    }
+    Ok(canonical)
+}
+
 /// Declared package roots for dev's recursive watch. A declaration that does
 /// not resolve yet is skipped; its config or install edit triggers the next pass.
 pub(crate) fn declared_package_root_watch_paths(
@@ -543,6 +581,31 @@ pub(crate) fn declared_package_root_watch_paths(
         .collect()
 }
 
+/// Resolved project roots for the direct CSS walk and dev's recursive watch.
+/// The source plan performs authoritative validation; this snapshot is only
+/// used to arm watches and collect module import sources ahead of indexing.
+pub(crate) fn declared_project_root_paths(project_root: &Path, config: &Config) -> Vec<PathBuf> {
+    let Some(WindSetting::Enabled(wind)) = &config.wind else {
+        return Vec::new();
+    };
+    let project_root = zfb_types::normalize_path_lexical(project_root);
+    let mut roots = BTreeSet::new();
+    for declaration in wind.source_declarations() {
+        let Ok(dir) = resolve_source_declaring_dir(
+            wind.declaring_dir(&project_root),
+            declaration.source_package.as_deref(),
+        ) else {
+            continue;
+        };
+        for root in &declaration.sources.roots {
+            if let Ok(path) = resolve_declared_project_root(&dir, root) {
+                roots.insert(path);
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
 pub(crate) fn gather_css_source_plan_inputs(
     project_root: &Path,
@@ -561,6 +624,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         resolve_declared_manifest_paths_with(&project_root, config, resolve_manifest_path)?;
     let mut safelist = BTreeMap::new();
     let mut declared_package_roots = Vec::new();
+    let mut declared_project_roots = Vec::new();
     let mut author_exclusions = Vec::new();
     if let Some(WindSetting::Enabled(wind)) = &config.wind {
         for declaration in wind.source_declarations() {
@@ -577,6 +641,13 @@ pub(crate) fn gather_css_source_plan_inputs(
                                 "wind.sources.packageRoots[{index}] {root:?} declared by {origin}"
                             )
                         })?,
+                );
+            }
+            for (index, root) in declaration.sources.roots.iter().enumerate() {
+                declared_project_roots.push(
+                    resolve_declared_project_root(&declaring_dir, root).with_context(|| {
+                        format!("wind.sources.roots[{index}] {root:?} declared by {origin}")
+                    })?,
                 );
             }
             author_exclusions.extend(declaration.sources.exclude.iter().map(|pattern| {
@@ -616,6 +687,7 @@ pub(crate) fn gather_css_source_plan_inputs(
         package_route_entrypoints: package_route_entrypoints.to_vec(),
         sibling_mirror_roots: sibling_mirror_roots.to_vec(),
         declared_package_roots,
+        declared_project_roots,
         author_exclusions,
         root_package_claimed,
         plugin_virtual_modules: plugin_virtual_modules.iter().cloned().collect(),
@@ -924,6 +996,83 @@ mod tests {
         .unwrap();
         fs::write(package.join("index.js"), "export {};").unwrap();
         package
+    }
+
+    #[test]
+    fn project_roots_keep_provenance_ignores_exclusions_and_declarations_out() {
+        let (_temp, inputs) = fixture();
+        let project = &inputs.project_root;
+        let preset = install_package(project, "@scope/preset");
+        write(project, "ui/card.tsx", "p-1");
+        write(project, "ui/card.test.ts", "p-2");
+        write(project, "ui/ignored.tsx", "p-3");
+        write(project, "ui/excluded.tsx", "p-4");
+        write(project, "ui/types.d.ts", "p-5");
+        write(project, "ui/nested/card.tsx", "p-9");
+        write(project, "src/shared.tsx", "p-6");
+        write(&preset, "ui/preset.tsx", "p-7");
+        write(&preset, "ui/types.d.ts", "p-8");
+        fs::write(project.join(".gitignore"), "ui/ignored.tsx\n").unwrap();
+        let config = sources_config(vec![
+            (
+                Some("@scope/preset"),
+                serde_json::json!({ "roots": ["./ui"] }),
+            ),
+            (
+                None,
+                serde_json::json!({ "roots": ["./ui", "./src", "./ui", "./ui/nested"], "exclude": ["ui/excluded.tsx"] }),
+            ),
+        ]);
+        let gathered = gather(&inputs, &config).unwrap();
+        let plan = build_css_source_plan(&gathered);
+        assert_eq!(gathered.declared_project_roots.len(), 5);
+        let files = expand_file_set(&plan);
+        assert!(files.diagnostics.is_empty(), "{:?}", files.diagnostics);
+        let ids: Vec<_> = files.files.iter().map(|file| file.id.render()).collect();
+        assert!(
+            ids.iter()
+                .any(|id| id.starts_with("root/") && id.ends_with("/ui:card.tsx")),
+            "{ids:?}"
+        );
+        assert!(
+            ids.iter()
+                .any(|id| id.starts_with("root/") && id.ends_with("/ui:card.test.ts")),
+            "{ids:?}"
+        );
+        assert!(
+            ids.iter()
+                .any(|id| id.starts_with("root/") && id.ends_with("/src:shared.tsx")),
+            "{ids:?}"
+        );
+        assert!(ids.iter().any(|id| id.ends_with(":preset.tsx")), "{ids:?}");
+        assert!(
+            ids.iter().any(|id| id.ends_with("/ui/nested:card.tsx")),
+            "{ids:?}"
+        );
+        assert_eq!(ids.len(), 5, "{ids:?}");
+    }
+
+    #[test]
+    fn project_roots_reject_ancestors_missing_dirs_and_symlink_escapes() {
+        let (temp, inputs) = fixture();
+        let project = &inputs.project_root;
+        fs::create_dir_all(project.join("ui")).unwrap();
+        fs::write(project.join("file.ts"), "").unwrap();
+        for root in [".", "..", "../outside", "./missing", "./file.ts"] {
+            let config = sources_config(vec![(None, serde_json::json!({ "roots": [root] }))]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("wind.sources.roots[0]"), "{root}: {error}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.path(), project.join("outside-link")).unwrap();
+            let config = sources_config(vec![(
+                None,
+                serde_json::json!({ "roots": ["./outside-link"] }),
+            )]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("wind.sources.roots[0]"), "{error}");
+        }
     }
 
     #[test]

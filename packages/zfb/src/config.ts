@@ -116,11 +116,12 @@ export type WindConfig = {
   /**
    * Source controls resolved against the declaring project or preset package.
    * `exclude` globs remove matching files from every source root under that
-   * root and win over explicit sources; `packageRoots` are `./` paths or
-   * installed package names scanned as roots, including their `dist` and
-   * `node_modules`.
+   * root and win over explicit sources; `roots` are directories below the
+   * declaring root scanned with conventional gitignore rules; `packageRoots`
+   * are `./` paths or installed package names scanned as roots, including
+   * their `dist` and `node_modules`.
    */
-  sources?: { exclude?: string[]; packageRoots?: string[] };
+  sources?: { exclude?: string[]; roots?: string[]; packageRoots?: string[] };
 };
 
 /**

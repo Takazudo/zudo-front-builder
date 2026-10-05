@@ -480,6 +480,11 @@ fn plan_coverage(
                         origin: Some(exclusion.origin.clone()),
                     }),
             )
+            .chain(std::iter::once(CoverageExclusion {
+                pattern: "**/*.d.ts".to_owned(),
+                reason: "declarationFiles",
+                origin: None,
+            }))
             .collect(),
     }
 }
@@ -506,6 +511,7 @@ fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
     for exclusion in &coverage.exclusions {
         let reason = match &exclusion.origin {
             Some(origin) => format!("wind.sources.exclude from {origin}"),
+            None if exclusion.reason == "declarationFiles" => "declaration files".to_owned(),
             None => "output or scratch".to_owned(),
         };
         out.push_str(&format!("  excluded {} ({reason})\n", exclusion.pattern));
@@ -1063,6 +1069,14 @@ mod tests {
                 "origin": "project"
             })
         );
+        assert_eq!(
+            serde_json::to_value(&structured).unwrap()["exclusions"][2],
+            serde_json::json!({
+                "pattern": "**/*.d.ts",
+                "reason": "declarationFiles",
+                "origin": null
+            })
+        );
         let coverage = render_plan_coverage("audit", &structured);
         assert_eq!(
             coverage,
@@ -1072,7 +1086,8 @@ mod tests {
              \x20 root package-route/node_modules/@x/docs node_modules/@x/docs (required)\n\
              \x20 virtual plugin/virtual:menu\n\
              \x20 excluded dist (output or scratch)\n\
-             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n"
+             \x20 excluded src/**/__tests__/** (wind.sources.exclude from project)\n\
+             \x20 excluded **/*.d.ts (declaration files)\n"
         );
         assert!(render_plan_coverage(
             "audit",
