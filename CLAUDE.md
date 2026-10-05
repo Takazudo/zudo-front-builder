@@ -2,14 +2,74 @@
 
 Workspace for the `zfb` Rust workspace + `@takazudo/zfb-runtime` and `zfb` npm packages.
 
-## /x-wt-teams epic workflow rule
+## Development strategy: integrate first, use CI to find regressions
 
-For each `[Epic]` issue in this repo (e.g. issues #52, #53, and the rest of the super-epic's zfb-side epics), the epic PR is independent and safe to merge into `main` as soon as its workflow completes — siblings do not stack on one base. So:
+This repository is large. Repeating full builds and test suites for every child topic makes
+super-epic development unnecessarily slow. The default development structure is
+**super-epic → epic → sub-topic**, with one manager owning integration and CI triage.
+This repo-specific policy takes precedence over generic workflow-skill instructions that require
+heavy child verification or green CI before each development merge.
 
-- **Always invoke `/x-wt-teams` with `-a` / `--auto`** for an epic in this repo (in addition to whatever other flags the user passes — `-gcoc`, `--stay`, etc.). `-a` runs `/prc -c -w` after Step 15, which merges the root PR, closes the linked issue, and watches post-merge CI on `main`.
-- **After the merge succeeds**, the workflow's auto-suggest step prints the next epic's `/x-wt-teams` command for the user to copy-paste. Do not start the next epic in the same session.
-- If the user explicitly says "do NOT auto-merge" or passes a flag that conflicts with `-a`, defer to the user.
-- This rule is specific to `[Epic]` issues. Non-epic issues (one-off bug fixes, follow-ups like #58 inside an open epic PR) keep the default behaviour — leave the PR open for the user to review.
+### Branches and progression
+
+- Sub-topic branches merge into their epic base; epic PRs merge into the super-epic base; the
+  terminal super-epic PR merges into its recorded parent (normally `main`). Follow the issue's
+  explicit branch markers and dependencies. A standalone epic may target its recorded parent
+  directly; do not reinterpret a bundled epic as an independent main-targeted PR.
+- Run the authorized development chain autonomously (`-a`, plus `-m` for requested merges).
+  Continue to the next ready topic or sibling epic in the same session. Do not wait for another
+  user prompt at each boundary.
+- **Merge reviewed development work without waiting for CI to turn green**, at sub-topic,
+  epic, and super-epic levels. Pending CI, or a red result already triaged by the manager, is not
+  an automatic stop. Review, a clean committed worktree, dependency ordering, and honest reporting
+  still apply. Merge completion means integrated; it does not mean verification passed.
+- Only the manager pushes from the root checkout. Batch topic integration and pushes at useful
+  boundaries instead of pushing every intermediate child commit. Keep the existing worktree
+  push prohibition and remove clean merged worktrees promptly.
+- If the existing main ruleset requires green checks, use the owner's already-authorized
+  admin bypass for these development merges when available (for example, `gh pr merge --admin`).
+  Do not disable CI, weaken assertions, or rewrite repository rulesets to obtain a green result.
+  If the current actor cannot merge, report the actual restriction and continue safe independent
+  work; never claim the merge succeeded.
+- An explicit user instruction to stop, avoid merging, or wait for particular checks overrides
+  this default.
+
+### Child-agent checks and manager verification
+
+- Child agents implement the topic, add appropriate regression coverage, self-review, and commit
+  locally. Run inexpensive focused checks where practical: formatting, syntax, affected unit
+  tests, or scoped type checks. State exactly what ran and what remains for integration.
+- **Do not run heavy verification for each child topic.** No full workspace tests, b4push, full
+  builds, browser/e2e suites, or repeated cold Rust compilation in child worktrees by default.
+  A nominally scoped Rust test/check/clippy command that triggers a large rebuild belongs to
+  the manager's verification lane too. Do not create a separate multi-gigabyte target per child
+  merely to satisfy a generic completion template.
+- The manager owns broad verification and batches it across integrated changes, primarily in
+  CI. A dedicated confirmation topic collects/reviews evidence and can add missing coverage;
+  it does not recreate a mandatory heavy local suite or CI wait at every epic boundary.
+  Any necessary heavy local run still uses the machine-wide heavy guard.
+- Monitor CI while development proceeds. Record the tested SHA, failed jobs, logs, and the topic
+  or integration most likely responsible. Pending, cancelled, skipped, and deferred checks are
+  never reported as passed. Keep unresolved verification visible in the manager ledger.
+
+### CI alerts and fixing rounds
+
+- Treat red CI as an alert requiring diagnosis and a fixing round, including failures found after
+  a merge. The manager owns the failure until fixed or explicitly documented as unrelated or
+  environmentally blocked; moving to another topic does not discard that responsibility.
+- The manager decides whether to **continue development while fixing** or **finish diagnosis and
+  repair first**. Continue independent work when the failure is understood and localized, the
+  next work does not rely on the broken behavior, and a concrete fix is tracked.
+- Pause the affected dependency chain when the cause is unclear or cross-cutting, the build or
+  compiler/runtime foundation is broken, continuing would obscure attribution or compound the
+  defect, or there is a concrete security, data-loss, or deployment hazard. Diagnose, repair,
+  and run the checks needed to restore confidence before resuming that chain. Unaffected work
+  can continue when the manager judges it safe. Record the decision and reasoning.
+- Never ignore a red run, call pass-on-retry clean, weaken a test, or suppress a failure to keep
+  moving. Existing flake evidence, quarantine, and heavy-guard policies still apply.
+- Before declaring the overall development complete, reconcile the CI alerts and run the
+  necessary final verification/fixing round on the integrated result. Package publication is
+  a separate boundary: the release procedure's verification and publication gates still apply.
 
 ## Worktree push policy (enforced)
 
@@ -130,7 +190,7 @@ build, and emitted-HTML validation. The executable release procedure lives in
 zfb follows the **zudo-test-wisdom** strategy (the full guide: <https://takazudomodular.com/pj/zudo-test>). This section is the zfb-adapted, agent-facing summary — read it before writing or fixing tests. Every test sits on **two axes**:
 
 - **Level** = *what a test can see* (logic → DOM → build output → browser → pixels).
-- **Tier** = *where and when it runs* (inner loop → PR gate → scheduled → local heavy lane).
+- **Tier** = *where and when it runs* (focused inner loop → CI feedback → scheduled → manager heavy lane).
 
 The axes are independent. "Too heavy for the PR gate" is a **tier** question, never a reason to rewrite a test at a lower **level**.
 
@@ -153,18 +213,18 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 
 | Tier | What it is in zfb | Status |
 |---|---|---|
-| **T0 — inner loop** | `cargo check`/`clippy` + scoped `cargo test -p <crate>` (affected), `pnpm typecheck:workspace`, `pnpm test:workspace`. Retries 0. | run constantly while coding |
-| **T1 — PR gate** | `.github/workflows/health.yml` — fmt, `clippy -D warnings`, all-target build, the workspace-resolved esbuild-only `--run-ignored ignored-only` env-gate lane, `cargo nextest run --workspace --profile ci` + a separate `cargo test --workspace --doc`, `pnpm test:workspace`, `format:check`, and build-no-v8. Utility CSS now runs through zudo-wind in-process and has no separate binary lane. The standalone `.github/workflows/actionlint.yml` check is path-filtered to workflow changes and is non-required, but a red check still blocks its author under the flaky/red-check policy. `docs-checks.yml` also runs on every PR (#2827): its `changed-files (docs)` detector job-level-gates the strict docs build (`Build docs site (docs-checks.yml)`), and the always-reporting `Docs gate` job — required in the ruleset — is green when that build passed or was legitimately skipped and red when the detector or the build failed or was cancelled. The six-leg `wasm-md` matrix and packed-artifact browser check are optional job-level path-gated jobs; they run when the changed-files detector matches their md-wasm/browser closure. | **the authoritative gate.** A PR is mergeable when its required checks are green |
+| **T0 — inner loop** | Inexpensive affected unit/type/syntax/format checks. Use scoped Rust commands only when they avoid a heavy rebuild; broad workspace checks belong to manager/CI verification. Retries 0. | focused child checks, not repeated heavy suites |
+| **T1 — CI feedback** | `.github/workflows/health.yml` — fmt, `clippy -D warnings`, all-target build, the workspace-resolved esbuild-only `--run-ignored ignored-only` env-gate lane, `cargo nextest run --workspace --profile ci` + a separate `cargo test --workspace --doc`, `pnpm test:workspace`, `format:check`, and build-no-v8. Utility CSS now runs through zudo-wind in-process and has no separate binary lane. The standalone `.github/workflows/actionlint.yml` check is path-filtered to workflow changes and is non-required, and a red check still requires manager triage under the development strategy above. `docs-checks.yml` also runs on every PR (#2827): its `changed-files (docs)` detector job-level-gates the strict docs build (`Build docs site (docs-checks.yml)`), and the always-reporting `Docs gate` job — required in the ruleset — is green when that build passed or was legitimately skipped and red when the detector or the build failed or was cancelled. The six-leg `wasm-md` matrix and packed-artifact browser check are optional job-level path-gated jobs; they run when the changed-files detector matches their md-wasm/browser closure. | Authoritative integration evidence and regression alerts; development merges proceed without waiting for green CI under the strategy above |
 | **T3 — scheduled re-exam** | heavy/platform-bound lanes on a schedule. **Thin pre-release lane is LIVE; the full nightly upgrade is deferred** (see the T3 cutover manifest). `exam.yml` (#1344, weekly Sat 04:17 UTC) runs the `#[ignore]`d env-gate + heavy manifest allowed-to-fail, plus a full nextest + doctest re-exam on macOS (the FSEvents-vs-inotify gap ubuntu-only health.yml can't cover). `drift-net.yml` (#1342, weekly Wed 03:43 UTC) re-runs the release clean-room smoke against the live `latest` dist-tag on ubuntu + macos-15 and runs a provenance-drift leg. `security-audit.yml` (weekly Mon 07:17 UTC, #1394) covers `pnpm audit (prod)` + `cargo deny`. `yaml-candidate-watch.yml` (weekly Thu 05:29 UTC, `29 5 * * 4`) re-checks the YAML candidate drift baseline across all branches with role-aware classification: triage-severity deltas on the adopted noyalib/noyalib-serde-yaml pair (crates.io publish/yank/unyank, tag, Release, release-PR, archive) exit 10 as `CANDIDATE_DRIFT` and file the deduped tracking issue via `scripts/file-exam-issue.sh`; candidate-role deltas, branch-only movement, and crates.io record-touched tripwires are `informational-drift`, exit 0 with a `::notice::`, and close/keep closed that issue like `no-drift`. It is schedule + `workflow_dispatch` only, so it gates no PR and is deliberately not in ruleset `18452968`. `supervisor-watch.yml` (weekly Sun 05:37 UTC, `37 5 * * 0`) harvests the week's `health.yml` `[supervisor-timeline]` records — all branches for R-A/R-B, `main` only for strict identity drift — and files/closes `[exam-failure] Supervisor watch is failing` via `scripts/file-exam-issue.sh`; a week in which nothing was harvestable (no runs, or only runs still in progress / red before the test step) is neutral, while a green `health` job with zero records is red — on `main` even one such job beside emitting ones; schedule + `workflow_dispatch` only, not in ruleset `18452968`. None of the five gates a PR (schedule + `workflow_dispatch` only); all file/close one deduped tracking issue per workflow (`scripts/file-exam-issue.sh`) and IFTTT-notify on failure | live (thin) |
 | **T4 — local heavy lane** | `pnpm b4push` (below) | convenience, not enforcement |
 
 **Do not scaffold unused tiers.** zfb needs T0 + T1 now; T4 is `b4push`; T3 has the thin weekly stand-in — the full nightly upgrade stays documented-but-deferred until cutover (see the manifest below).
 
-### Branch ruleset on `main` (T1 enforcement)
+### Existing branch ruleset on `main`
 
-T1's "mergeable when required checks are green" is enforced by a GitHub **ruleset** on `main` (id `18452968`, `main-required-status-checks`; created via `scripts/apply-main-ruleset.sh`, checked in for reproducibility — rerun it to recreate/update). It requires only the checks that run on **every** PR unconditionally (no path filters, no tag/workflow_run-only triggers): `health`, `build (no-v8)`, `Build binary (x86_64-unknown-linux-gnu)`, `Build binary (aarch64-unknown-linux-gnu)` (the job's `name:` is keyed on `matrix.platform.target` so each leg has a unique check context), the 4 `Smoke * (local mode)` jobs, `Scaffold E2E (packed tarballs, pre-publish)` (#1345, unconditional on every PR), `pnpm audit (prod)`, and `Docs gate` (#2827). The docs build itself — `Build docs site (docs-checks.yml)` — stays excluded: #1336 made it docs-only and #2827 moved that gate from the workflow trigger to a job-level `changed-files (docs)` detector, so it legitimately does not run on non-docs PRs and a required check that stops running would hang them forever; `Docs gate` is the unconditional job (`if: always()`, fails closed on a failed/cancelled detector or build) that turns its pass/skip/fail into a context safe to require. The two create-zfb showcase jobs (`Showcase deploy (create-zfb, production)`, `Showcase preview (create-zfb, PR)`, #2279) are excluded for the same class of reason — see "The create-zfb showcase" below. A `RepositoryRole` (`admin`, `actor_id: 5`) bypass actor with `bypass_mode: always` keeps `/l-make-release`'s direct version-bump push to `main` working (`required_status_checks` also blocks direct pushes). **Pending manual verification:** that bypass actor has not been proven with a live test push (see issue #1333) — treat `/l-make-release`'s direct-push step as unverified until a repo owner confirms it.
+GitHub separately enforces required checks through a **ruleset** on `main` (id `18452968`, `main-required-status-checks`; created via `scripts/apply-main-ruleset.sh`, checked in for reproducibility — rerun it to recreate/update). It requires only the checks that run on **every** PR unconditionally (no path filters, no tag/workflow_run-only triggers): `health`, `build (no-v8)`, `Build binary (x86_64-unknown-linux-gnu)`, `Build binary (aarch64-unknown-linux-gnu)` (the job's `name:` is keyed on `matrix.platform.target` so each leg has a unique check context), the 4 `Smoke * (local mode)` jobs, `Scaffold E2E (packed tarballs, pre-publish)` (#1345, unconditional on every PR), `pnpm audit (prod)`, and `Docs gate` (#2827). The docs build itself — `Build docs site (docs-checks.yml)` — stays excluded: #1336 made it docs-only and #2827 moved that gate from the workflow trigger to a job-level `changed-files (docs)` detector, so it legitimately does not run on non-docs PRs and a required check that stops running would hang them forever; `Docs gate` is the unconditional job (`if: always()`, fails closed on a failed/cancelled detector or build) that turns its pass/skip/fail into a context safe to require. The two create-zfb showcase jobs (`Showcase deploy (create-zfb, production)`, `Showcase preview (create-zfb, PR)`, #2279) are excluded for the same class of reason — see "The create-zfb showcase" below. A `RepositoryRole` (`admin`, `actor_id: 5`) bypass actor with `bypass_mode: always` keeps `/l-make-release`'s direct version-bump push to `main` working (`required_status_checks` also blocks direct pushes). The development strategy above authorizes the existing owner/admin bypass for development merges; verify the actual merge/push result rather than assuming the current actor has that permission. This document does not change the ruleset or the release procedure.
 
-**`base/**` epic-PRs run the T1 gate too (#2076).** `health.yml` and `pr-checks.yml`'s `on.pull_request.branches` include `"base/**"` alongside `main`, so an `/x-wt-teams` epic-PR (which targets a super-epic `base/**` branch) triggers `health` + the required `pnpm audit (prod)` during its own review window. Deliberately **`pull_request`-only** — `health.yml`'s `push:` trigger stays main-only (a `base/**` push trigger would double-run the suite per commit), and `pr-checks.yml` carries no `push:` trigger. The CI-cost tradeoff (N sibling epics = N extra full runs per sweep) was accepted deliberately to catch a broken epic before it merges into the shared super-epic base. The `main` ruleset is unaffected — it targets only `refs/heads/main`.
+**`base/**` epic-PRs run T1 CI too (#2076).** `health.yml` and `pr-checks.yml`'s `on.pull_request.branches` include `"base/**"` alongside `main`, so an `/x-wt-teams` epic-PR (which targets a super-epic `base/**` branch) triggers `health` + the required `pnpm audit (prod)` during its own review window. Deliberately **`pull_request`-only** — `health.yml`'s `push:` trigger stays main-only (a `base/**` push trigger would double-run the suite per commit), and `pr-checks.yml` carries no `push:` trigger. These runs provide regression alerts during integration; they are not a per-epic wait-for-green barrier. The manager batches pushes and carries failures into fixing rounds under the development strategy above. The `main` ruleset is unaffected — it targets only `refs/heads/main`.
 
 ### The create-zfb showcase (#2279)
 
@@ -175,7 +235,7 @@ T1's "mergeable when required checks are green" is enforced by a GitHub **rulese
 | Surface | Tier | Blocking? |
 |---|---|---|
 | `scaffold-e2e` + its artifact export | T1 PR gate, unchanged | Required (already) |
-| `html-validate` over the scaffold's emitted HTML | L3 build-output, inside the non-required showcase jobs | Blocks the deploy and the author; never blocks **merge**, never blocks **unrelated** PRs |
+| `html-validate` over the scaffold's emitted HTML | L3 build-output, inside the non-required showcase jobs | Blocks the deploy; requires manager triage and repair, not an automatic halt to unrelated development |
 | `Showcase preview (create-zfb, PR)` | T1-adjacent, informational | **Not required** |
 | `Showcase deploy (create-zfb, production)` | **Alerting guard** — runs post-merge, so it detects a bad deploy and cannot prevent one | **Not required** |
 
@@ -201,9 +261,9 @@ Root-level vitest suites (`scripts/**/__tests__`, configured by the root `vitest
 4. **Default to Level 5 for any UI/CSS/visibility work.**
 5. **Report what was NOT tested** — state the blind spots.
 6. **Verification specs don't self-graduate.** A one-time "it was done" proof is tagged `#[ignore = "verification: <why>"]` (Rust) / `@verification` (TS) and excluded from gates. Propose promotion to a tier in the PR description; never self-promote.
-7. **Red checks block the author.** Any red check on a PR you authored blocks you, *even if it is not a required check* — the only exception is a test carrying a `flaky: <issue-url>` quarantine tag (Rust `#[ignore = "flaky: <url>"]`; TS `// flaky: <url>` above `it.skip(...)`) with a linked open issue.
+7. **Red checks require manager triage and a fixing round.** This includes non-required checks and failures after merge. Follow the development strategy above: the manager chooses whether to continue independent work or pause the affected chain. Keep failures tracked and never report unresolved verification as passed. Existing quarantine tags require their linked issue and evidence.
 8. **Never game the gate.** Never weaken a gate without a linked open issue; require fresh-context review for assertion changes made to pass the gate and all edits to gate-defining files; and treat runner timeouts and liveness deadlines as guardrails, not assertions, raising them only with a linked open issue and a value derived either from a measured latency distribution (baseline versus under load) or from the child deadline the budget must contain.
-9. **Scoped heavy verification.** When a change touches code covered only by a heavy/quarantined lane, run those tests on a capable host before declaring the work done.
+9. **Manager-owned heavy verification.** When a change is covered only by a heavy/quarantined lane, the manager schedules that coverage on a capable host as part of integrated verification. Child topics do not each run the heavy lane. Required coverage must pass before the overall work is declared verified.
 
 ### Flaky tests
 
@@ -243,7 +303,7 @@ it.skip("retries the SSE reconnect within the 3-attempt budget", async () => {
 
 - A one-time "it was done" proof uses `// @verification: <why>` above `it.skip(...)` instead (no issue URL needed). The other 3 Rust prefixes (`env-gate:`, `heavy:`, `pending-feature: <issue-url>`) follow the same comment-above-`it.skip(...)` shape if ever needed — no precedent yet.
 - **Audit**: the grep above — the TS mirror of the Rust manifest's re-measure pipeline in `crates/CLAUDE.md`.
-- Same rules as Rust apply: **never game the gate** (no `it.skip` for `flaky:` without a linked open issue), **quarantine has an exit with a deadline**, and a red check still blocks the author unless it carries a valid `// flaky: <issue-url>` tag (Required behavior rule 7). The first real TS quarantine/`@verification` adds a manifest table entry (mirroring the Rust manifest in `crates/CLAUDE.md`) so this section stops being purely aspirational.
+- Same rules as Rust apply: **never game the gate** (no `it.skip` for `flaky:` without a linked open issue), **quarantine has an exit with a deadline**, and every red check still requires manager triage under Required behavior rule 7; valid quarantine needs the linked evidence and issue. The first real TS quarantine/`@verification` adds a manifest table entry (mirroring the Rust manifest in `crates/CLAUDE.md`) so this section stops being purely aspirational.
 
 ### T3 cutover manifest (post-release)
 
@@ -266,4 +326,4 @@ What upgrades when zfb ships a stable release, each with an explicit trigger —
 - Heavy steps use the machine-wide `heavy-guard` queue when available: set `HEAVY_GUARD=/path/to/heavy-guard.sh` to choose it explicitly; otherwise b4push checks `$HOME/.claude/scripts/heavy-guard.sh` and then `$HOME/.codex/scripts/heavy-guard.sh`. CI and machines without a guard run the same commands directly. Exit 75 means the guard could not acquire the queue and the command did not run; b4push reports contention and exits 75 when no other check failed. Guard execution errors and command failures remain failures. Only full Rust suites, doctests, the syntax asset regeneration, and the env-gated integration/asset suites are queued; formatting, lint, typecheck, unit tests, no-V8 cargo check, and the generated-asset diff guard remain outside the queue.
 - Heavy opt-in: `B4PUSH_FULL=1 pnpm b4push` additionally runs the **required health.yml Rust parity set** (#1332): `cargo nextest run --workspace` (or `cargo test --workspace` when nextest is absent) on nextest's **default** profile (`retries = 0`, unlike CI's `--profile ci`); `cargo test --workspace --doc` (nextest branch only); the `zfb-md-extras` `test-utils`-gated suite plus its scoped `cargo clippy`; `cargo check --no-default-features -p zfb --tests`; and the three esbuild env-gate commands for islands, cross-pipeline acceptance, and command-layer coverage. Those env-gate commands run only when the staged esbuild binary is available; run `cargo build --workspace --all-targets` first for the b4push subset. Utility CSS uses the in-process zudo-wind engine and needs no external CLI binary. The optional path-gated `wasm-md` matrix and browser job are not part of b4push.
 - On heavy-guard `ENV_SUSPECT`, rerun that command once. If it is still red without an assertion, type, or lint error, defer that command to CI under a `deferred-verification` issue and report it as deferred, not passed. Fix real failures; do not weaken tests or tune the suite to fit one machine.
-- It is **not** wired into the git `pre-push` hook (that hook only enforces the worktree-push policy above) — run it manually before pushing.
+- It is **not** wired into the git `pre-push` hook (that hook only enforces the worktree-push policy above) — the manager runs it when useful for an integration/fixing round, not before every child-topic push or merge.
