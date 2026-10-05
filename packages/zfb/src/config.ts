@@ -119,9 +119,15 @@ export type WindConfig = {
    * root and win over explicit sources; `roots` are directories below the
    * declaring root scanned with conventional gitignore rules; `packageRoots`
    * are `./` paths or installed package names scanned as roots, including
-   * their `dist` and `node_modules`.
+   * their `dist` and `node_modules`; `classHelpers` explicitly names local
+   * functions whose string, array and object arguments are class lists.
    */
-  sources?: { exclude?: string[]; roots?: string[]; packageRoots?: string[] };
+  sources?: {
+    exclude?: string[];
+    roots?: string[];
+    packageRoots?: string[];
+    classHelpers?: string[];
+  };
 };
 
 /**

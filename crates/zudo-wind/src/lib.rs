@@ -75,6 +75,6 @@ pub const SPEC_REVISION: u32 = 4;
 
 pub mod extract;
 pub use extract::{
-    extract_candidates, ExtractedCandidate, ExtractionNote, ExtractionResult, NoteKind, Occurrence,
-    PositionKind, SourceKind,
+    extract_candidates, extract_candidates_with_options, ExtractedCandidate, ExtractionNote,
+    ExtractionOptions, ExtractionResult, NoteKind, Occurrence, PositionKind, SourceKind,
 };

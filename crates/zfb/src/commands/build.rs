@@ -1142,6 +1142,7 @@ impl WindSessionIndex {
             origins: Default::default(),
             diagnostics: Vec::new(),
         };
+        state.index = zfb_css::CandidateIndex::with_options(state.plan.extraction_options.clone());
         let expanded = zfb_css::expand_file_set(&state.plan);
         state.record_walk_diagnostics(expanded.diagnostics);
         for file in expanded.files {
@@ -1516,9 +1517,12 @@ fn build_css_payload_with_index(
                         .iter()
                         .find(|(name, _)| name == specifier)
                     {
-                        for candidate in
-                            zfb_css::extract_candidates(code.as_bytes(), zfb_css::SourceKind::Tsx)
-                                .candidates
+                        for candidate in zfb_css::extract_candidates_with_options(
+                            code.as_bytes(),
+                            zfb_css::SourceKind::Tsx,
+                            &plan.extraction_options,
+                        )
+                        .candidates
                         {
                             if !candidates.contains(&candidate.text) {
                                 continue;
@@ -19316,6 +19320,7 @@ mod tests {
                 exclude: Vec::new(),
                 roots: Vec::new(),
                 package_roots: vec!["./packages/ui".into()],
+                class_helpers: Vec::new(),
             },
             ..Default::default()
         };
