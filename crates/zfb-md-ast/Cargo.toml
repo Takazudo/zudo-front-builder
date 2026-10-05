@@ -8,6 +8,7 @@ description = "zfb-md-ast: shared MdastVisitor / HastVisitor traits and HastNode
 [lib]
 
 [dependencies]
+zfb-types = { path = "../zfb-types" }
 markdown = { workspace = true }
 serde = { workspace = true }
 

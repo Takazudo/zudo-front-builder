@@ -92,7 +92,8 @@
 // with no `id` and no reply expected:
 //
 //   { "log": { "level": "info|warn|error", "plugin": "<name>",
-//              "message": "<text>" } }
+//              "message": "<text>", "code"?: "plugin/class", "sourceId"?: "<id>",
+//              "file"?: "<source>", "line"?: <1-based>, "byteColumn"?: <1-based UTF-8> } }
 //
 // All envelopes are line-delimited; the Rust side splits on `\n`. We
 // take pains never to embed a literal newline in a payload (JSON
@@ -229,15 +230,28 @@ globalThis.console = new Console({
 });
 
 function makeLogger(pluginName) {
+  const log = (level, msg, diagnostic) => {
+    // Only additive diagnostic fields cross this boundary. A metadata object
+    // cannot override the owning plugin, log level, or message.
+    const fields = {};
+    for (const key of ["code", "sourceId", "file"]) {
+      if (typeof diagnostic?.[key] === "string") fields[key] = diagnostic[key];
+    }
+    for (const key of ["line", "byteColumn"]) {
+      const value = diagnostic?.[key];
+      if (Number.isInteger(value) && value > 0 && value <= 0xffffffff) fields[key] = value;
+    }
+    send({ log: { level, plugin: pluginName, message: String(msg), ...fields } });
+  };
   return {
-    info(msg) {
-      send({ log: { level: "info", plugin: pluginName, message: String(msg) } });
+    info(msg, diagnostic) {
+      log("info", msg, diagnostic);
     },
-    warn(msg) {
-      send({ log: { level: "warn", plugin: pluginName, message: String(msg) } });
+    warn(msg, diagnostic) {
+      log("warn", msg, diagnostic);
     },
-    error(msg) {
-      send({ log: { level: "error", plugin: pluginName, message: String(msg) } });
+    error(msg, diagnostic) {
+      log("error", msg, diagnostic);
     },
   };
 }

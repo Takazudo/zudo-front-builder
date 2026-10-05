@@ -157,7 +157,7 @@
 //!   `console.log(...)` on every invocation (routed through #2373's global
 //!   `console` redirection). Both must reach the captured terminal output
 //!   formatted exactly like every other plugin log line —
-//!   `` zfb info: [plugin:<name>] <message> `` (`plugin_runner.rs`'s
+//!   `` zfb info: ZB010 plugin:<name>: <message> `` (`plugin_runner.rs`'s
 //!   `format_plugin_log_line`) — asserted right after the existing V1→V2
 //!   freshness pass above, by which point both lines have necessarily been
 //!   written.
@@ -718,7 +718,7 @@ async fn run_scenario() -> ScenarioOutcome {
     let logs_so_far = session.logs();
     assert!(
         logs_so_far.contains(
-            "zfb info: [plugin:plugin-watch-hook-confirm-preset] plugin-watch-hook-confirm-preset: setup ran"
+            "zfb info: ZB010 plugin:plugin-watch-hook-confirm-preset: plugin-watch-hook-confirm-preset: setup ran"
         ),
         "expected the plugin's setup-time `logger.info` line in the captured dev terminal \
          output (issue #2374) — the setup hook's log rendering may have regressed.\n{}",
@@ -726,7 +726,7 @@ async fn run_scenario() -> ScenarioOutcome {
     );
     assert!(
         logs_so_far.contains(
-            "zfb info: [plugin:plugin-watch-hook-confirm-preset] plugin-watch-hook-confirm-preset: virtual:note loader read"
+            "zfb info: ZB010 plugin:plugin-watch-hook-confirm-preset: plugin-watch-hook-confirm-preset: virtual:note loader read"
         ),
         "expected the virtual:note loader's `console.log` line — routed through issue #2373's \
          global console redirection — in the captured dev terminal output (issue #2374).\n{}",
