@@ -611,7 +611,15 @@ fn foreign_filter_values_preserve_url_rejection() {
             outcome(&result, text),
             Some((DiagnosticCode::Zw005, Severity::Error))
         );
-        assert!(result.stylesheet.is_empty(), "{text}");
+        assert_eq!(
+            result
+                .rules
+                .iter()
+                .map(|rule| rule.candidate.as_str())
+                .collect::<Vec<_>>(),
+            ["p-2"],
+            "only the valid peer may emit CSS beside {text}"
+        );
         let explanation = explain(text, &config());
         assert_eq!(explanation.outcome, ExplanationOutcome::Invalid, "{text}");
         assert!(explanation.declarations.is_empty(), "{text}");
