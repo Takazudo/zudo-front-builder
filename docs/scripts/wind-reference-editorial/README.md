@@ -12,9 +12,11 @@ The additive editorial schema is version 1:
   example record). Cover every catalog entry at least once. The candidate must be
   declared in that example's `utilities`. Exact-only entries must match the whole
   utility root after removing variants. Every row must emit all of its catalog
-  entry's properties, preventing shared roots such as font from being assigned
-  to the wrong semantic entry. Additional emitted properties are allowed.
-  The generator reads the real emitted
+  entry's required properties, preventing shared roots such as font from being
+  assigned to the wrong semantic entry. A declaration template marked
+  `optionalFontSizeLeading` may be absent (for example, `text-[1rem]` emits
+  `font-size` without `line-height`); other catalog properties remain required.
+  Additional emitted properties are allowed. The generator reads the real emitted
   declarations from the committed compiler CSS, including child-selector rules;
   workers do not author a duplicate CSS/declaration string.
 - `locales.en` and `locales.ja`: each has `purpose`, `setup`, `customValues`, and

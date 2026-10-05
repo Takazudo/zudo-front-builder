@@ -393,6 +393,8 @@ function renderEditorial(family, record, strings, locale, preview, entriesById) 
     "",
     `## ${escapeMdxText(labels.workedExamples)}`,
     "",
+    "<WindPreviewEnhancer />",
+    "",
     ...content.examples.flatMap((item) => {
       const example = examples.get(item.id);
       const asset = preview.assets.get(`${family.id}/${item.id}`);

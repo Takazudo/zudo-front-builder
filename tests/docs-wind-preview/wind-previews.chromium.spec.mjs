@@ -333,6 +333,86 @@ async function checkOldTechnicalHash(page, testCase) {
   await expect(page).toHaveURL(new RegExp(`#${escapeRegExp(encodeURIComponent(id))}$`));
 }
 
+async function checkNativeCopyAfterRemount(page, testCase) {
+  const preview = page.locator("iframe").first().locator("xpath=../../..");
+  const codeBlocks = preview.locator(".zd-html-preview-code pre.hi-root code");
+  const copyButtons = preview.locator(".zd-html-preview-code .code-btn-copy");
+  await expect.poll(() => codeBlocks.count()).toBe(2);
+  await expect.poll(() => copyButtons.count()).toBe(2);
+  const code = codeBlocks.first();
+  const copy = copyButtons.first();
+  await expect(code).toHaveText(testCase.examples[0].html.trim());
+  await code.hover();
+  await expect(copy).toBeVisible();
+  await copy.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(testCase.examples[0].html.trim());
+}
+
+async function checkSharedNativeWrapState(page) {
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport, "the browser page has a configured viewport");
+  const staticCssCode = page
+    .locator("details pre.hi-root code")
+    .filter({ hasText: ".wind-demo-cell {" })
+    .first();
+  await expect(staticCssCode).toHaveCount(1);
+  const staticDetails = staticCssCode.locator("xpath=ancestor::details[1]");
+  await staticDetails.locator("summary").click();
+  await expect(staticDetails).toHaveAttribute("open", "");
+
+  try {
+    await page.setViewportSize({ width: 390, height: originalViewport.height });
+    const preview = page.locator("iframe").first().locator("xpath=../../..");
+    const previewCssCode = preview.locator(".zd-html-preview-code pre.hi-root code").nth(1);
+    const staticPre = staticCssCode.locator("xpath=..");
+    const previewPre = previewCssCode.locator("xpath=..");
+    const staticWrap = staticCssCode.locator("xpath=../..").locator(".code-btn-wrap");
+    const previewWrap = previewCssCode.locator("xpath=../..").locator(".code-btn-wrap");
+
+    await expect.poll(() => previewCssCode.count()).toBe(1);
+    await expect.poll(() => staticWrap.count()).toBe(1);
+    await expect.poll(() => previewWrap.count()).toBe(1);
+    await expect(previewWrap).toBeVisible();
+    const storedWrapMode = await page.evaluate(() => sessionStorage.getItem("zudo-doc-code-wrap"));
+    if (storedWrapMode === "1") await staticWrap.evaluate((button) => button.click());
+    await expect(staticWrap).toHaveAttribute("aria-pressed", "false");
+    await expect(previewWrap).toHaveAttribute("aria-pressed", "false");
+
+    await staticWrap.evaluate((button) => button.click());
+    await expect(staticWrap).toHaveAttribute("aria-pressed", "true");
+    await expect(previewWrap).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(() => staticPre.evaluate((pre) => pre.classList.contains("word-wrap")))
+      .toBe(true);
+    await expect
+      .poll(() => previewPre.evaluate((pre) => pre.classList.contains("word-wrap")))
+      .toBe(true);
+    await expect
+      .poll(() => page.evaluate(() => sessionStorage.getItem("zudo-doc-code-wrap")))
+      .toBe("1");
+
+    await previewWrap.evaluate((button) => button.click());
+    await expect(staticWrap).toHaveAttribute("aria-pressed", "false");
+    await expect(previewWrap).toHaveAttribute("aria-pressed", "false");
+    await expect
+      .poll(() => staticPre.evaluate((pre) => pre.classList.contains("word-wrap")))
+      .toBe(false);
+    await expect
+      .poll(() => previewPre.evaluate((pre) => pre.classList.contains("word-wrap")))
+      .toBe(false);
+    await expect
+      .poll(() => page.evaluate(() => sessionStorage.getItem("zudo-doc-code-wrap")))
+      .toBe("0");
+  } finally {
+    await page.setViewportSize(originalViewport);
+  }
+
+  await staticDetails.locator("summary").click();
+  await expect(staticDetails).not.toHaveAttribute("open", "");
+}
+
 async function checkPreviewSource(page, preview, example, index, labels) {
   const sourceToggle = preview.locator("button[aria-expanded]").first();
   await expect(sourceToggle).toHaveAttribute("aria-expanded", "true");
@@ -522,6 +602,8 @@ for (const testCase of CASES) {
     await checkThemeContrast(page, firstFrame.frame, testCase.labels);
     await checkOldTechnicalHash(page, testCase);
     await switchLocaleAndCheckRemount(page, testCase);
+    await checkNativeCopyAfterRemount(page, testCase);
+    await checkSharedNativeWrapState(page);
 
     if (CAPTURE_SCREENSHOTS) {
       await captureFreshScreenshot(browser, testCase, 1440, 1000);
