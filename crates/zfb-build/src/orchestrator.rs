@@ -1491,10 +1491,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // vanished paths to the prune loop.
         //
         // Why NOT pass the removed path through plan_for_changes? After
-        // remove_node the path has no consumers, so plan_for_changes would
-        // fall back to the All-sentinel for an "unknown" path — re-rendering
-        // every page rather than just the affected subset. Collecting the
-        // affected set from remove_node is the precise, conservative choice.
+        // remove_node even a formerly known path appears unknown, so that
+        // would re-render every page on every deletion. Capture the graph's
+        // pre-removal knowledge instead: former consumers stay precise, while
+        // an unknown Content path needs the normal conservative fallback.
         //
         // Excluding the removed path from plan_for_changes drops only the
         // page-fallback; its sub-pipeline side effects (CSS / islands / SSR
@@ -1505,9 +1505,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             .filter(|(_, kind)| *kind == ChangeKind::Removed)
             .map(|(p, _)| p.clone())
             .collect();
-        let removed_consumers: std::collections::BTreeSet<PageId> = {
+        let (removed_consumers, unknown_removed_content): (
+            std::collections::BTreeSet<PageId>,
+            bool,
+        ) = {
             if removed.is_empty() {
-                std::collections::BTreeSet::new()
+                (std::collections::BTreeSet::new(), false)
             } else {
                 let mut graph = self.graph.lock().unwrap_or_else(|p| {
                     warn!(
@@ -1516,11 +1519,27 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     );
                     p.into_inner()
                 });
+                // Inspect the whole batch before mutating the graph. Removing
+                // a page first also removes its outgoing Content edges, so a
+                // later content removal must not become spuriously unknown.
+                let unknown_content = removed.iter().any(|path| {
+                    // A failed provenance reconciliation may have cleared
+                    // Content edges before the watcher reports removal. An
+                    // empty reverse entry is also unknown (`knows` is false).
+                    let class = classify_change_with_content_roots(
+                        path,
+                        &self.config.project_root,
+                        &self.config.policy.content_roots,
+                        |p| graph.is_global(p),
+                    );
+                    let dirty: PageSelection = graph.dirty_pages(path).into();
+                    class == PathClass::Content && dirty.is_empty() && !graph.knows(path)
+                });
                 let mut affected = std::collections::BTreeSet::new();
                 for path in &removed {
                     affected.extend(graph.remove_node(path));
                 }
-                affected
+                (affected, unknown_content)
             }
         };
 
@@ -1549,8 +1568,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // Exclude removed paths from plan_for_changes: after remove_node the
         // path has no consumers. Passing it through plan_for_changes would
         // trigger the cold-start All-fallback ("unknown file → rebuild all")
-        // which is wrong for an intentional deletion. The former consumers
-        // collected above are added directly to the plan instead.
+        // even for formerly known paths. The pre-removal graph state above
+        // decides whether the removed Content path needs that fallback.
         let plan_paths: Vec<PathBuf> = changes
             .iter()
             .filter(|(_, kind)| *kind != ChangeKind::Removed)
@@ -1564,17 +1583,20 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if !removed_consumers.is_empty() {
             plan.mark_pages(PageSelection::Specific(removed_consumers));
         }
+        if unknown_removed_content {
+            plan.mark_pages(PageSelection::All);
+        }
 
-        // Removed paths are excluded from `plan_for_changes` above (the
-        // All-fallback would be wrong for a deletion), but a removal still
+        // Removed paths are excluded from `plan_for_changes` above (its
+        // post-removal All-fallback would be wrong for known deletions), but a removal still
         // has the SAME sub-pipeline side effects as a normal change: a
         // deleted stylesheet must rerun CSS, a deleted islands module must
         // rerun islands, a deleted global file must full-rebuild, and any
         // SSR-relevant source (page / module / content / data) must reload
         // the V8 host so SSR-only routes don't serve stale output (#807).
         // Classify each removed path and apply only those rerun/reload flags
-        // — NOT the page fallback, which the `removed_consumers` fold already
-        // handled precisely. Without this, a deletion-only tick leaves CSS /
+        // — NOT the page fallback, which the pre-removal graph fold already
+        // handled. Without this, a deletion-only tick leaves CSS /
         // islands / SSR stale until the next non-removed edit.
         for path in &removed {
             // Keep removals separate from upserts: a path can occur in both
@@ -2502,10 +2524,10 @@ mod tests {
     /// conservative `PageSelection::All` fallback.
     ///
     /// That is the load-bearing fact for #2063's hypothesis. A provenance
-    /// failure degrades to "rebuild EVERY page", never to "rebuild NO page",
-    /// so it cannot be what empties `BuildOutcome::pages_stale` and gates
-    /// `ReloadEvent::Page` out of `outcome_to_events`. #2063's missing
-    /// reload therefore has a different cause than #2064.
+    /// failure degrades to "rebuild EVERY page" for edits, never to "rebuild
+    /// NO page", so it cannot be what empties `BuildOutcome::pages_stale`
+    /// on an edit and gates `ReloadEvent::Page` out of `outcome_to_events`.
+    /// The removed-path fold needs its own pre-removal fallback (issue #3823).
     #[test]
     fn content_edit_after_a_provenance_wipe_falls_back_to_a_full_rebuild() {
         let mut g = DependencyGraph::new();
@@ -2527,6 +2549,151 @@ mod tests {
              whole-site fallback — narrowing off, NOT rendering off; got {:?}",
             plan.pages,
         );
+    }
+
+    /// Issue #3823: a request can clear Content provenance before the
+    /// watcher delivers Removed. The removal tick must still stale every
+    /// surviving page so an already-rendered collection index is refreshed.
+    #[test]
+    fn removed_content_with_unavailable_provenance_rebuilds_surviving_pages() {
+        for empty_reverse_entry in [false, true] {
+            let deleted = PathBuf::from("/proj/content/post.md");
+            let mut graph = DependencyGraph::new();
+            let index = pid("/proj/pages/index.tsx");
+            graph.upsert(PageDeps::new(
+                index.clone(),
+                vec![(deleted.clone(), DepKind::Content)],
+            ));
+            graph.upsert(PageDeps::new(pid("/proj/pages/other.tsx"), vec![]));
+            // Model the failed request's edge wipe before the Removed event.
+            graph.upsert(PageDeps::new(index, vec![]));
+            if empty_reverse_entry {
+                graph.add_node(deleted.clone());
+                assert!(graph.consumers_of(&deleted).unwrap().is_empty());
+            }
+            assert!(!graph.knows(&deleted));
+            let pipeline = CountingPipeline::default();
+            let applies = pipeline.applies.clone();
+            let orch = BuildOrchestrator::new(
+                OrchestratorConfig::new(
+                    "/proj",
+                    vec![PathBuf::from("pages"), PathBuf::from("content")],
+                ),
+                Arc::new(Mutex::new(graph)),
+                pipeline,
+            );
+            let dist = tempfile::tempdir().unwrap();
+            orch.tick_with_kinds(
+                vec![(deleted, ChangeKind::Removed)],
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+            let plans = applies.lock().unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(
+                plans[0].pages,
+                PageSelection::Specific(
+                    [pid("/proj/pages/index.tsx"), pid("/proj/pages/other.tsx")].into()
+                ),
+                "unknown content removal must resolve All before apply (empty reverse entry: {empty_reverse_entry})"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_content_with_known_consumers_stays_precise() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/content/post.md"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].pages,
+            PageSelection::Specific([pid("/proj/pages/c.tsx")].into()),
+        );
+    }
+
+    #[test]
+    fn removed_page_and_its_known_content_stay_precise_in_either_order() {
+        let page = PathBuf::from("/proj/pages/detail.tsx");
+        let content = PathBuf::from("/proj/content/post.md");
+        let unrelated = pid("/proj/pages/unrelated.tsx");
+        for page_first in [false, true] {
+            let mut graph = DependencyGraph::new();
+            graph.upsert(PageDeps::new(
+                PageId::new(page.clone()),
+                vec![(content.clone(), DepKind::Content)],
+            ));
+            graph.upsert(PageDeps::new(unrelated.clone(), vec![]));
+            let pipeline = CountingPipeline::default();
+            let applies = pipeline.applies.clone();
+            let orch = BuildOrchestrator::new(
+                OrchestratorConfig::new(
+                    "/proj",
+                    vec![PathBuf::from("pages"), PathBuf::from("content")],
+                ),
+                Arc::new(Mutex::new(graph)),
+                pipeline,
+            );
+            let removals = if page_first {
+                vec![page.clone(), content.clone()]
+            } else {
+                vec![content.clone(), page.clone()]
+            };
+            let dist = tempfile::tempdir().unwrap();
+            orch.tick_with_kinds(
+                removals
+                    .into_iter()
+                    .map(|path| (path, ChangeKind::Removed))
+                    .collect(),
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+            let plans = applies.lock().unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(
+                plans[0].pages,
+                PageSelection::Specific([PageId::new(page.clone())].into()),
+                "batch order must not select unrelated pages (page first: {page_first})"
+            );
+            assert!(
+                plans[0].rerun_islands,
+                "page removal must retain its boundary refresh"
+            );
+            assert!(
+                plans[0].ssr_reload_needed,
+                "removals must refresh the renderer"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_non_content_with_unknown_provenance_does_not_fan_out() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(
+                PathBuf::from("/proj/data/missing.json"),
+                ChangeKind::Removed,
+            )],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(plans[0].pages.is_empty());
     }
 
     #[test]

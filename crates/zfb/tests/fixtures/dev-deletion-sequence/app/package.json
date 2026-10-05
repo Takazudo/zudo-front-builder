@@ -1,0 +1,5 @@
+{
+  "name": "independent-app",
+  "private": true,
+  "type": "module"
+}
