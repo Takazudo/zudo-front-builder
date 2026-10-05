@@ -10,6 +10,9 @@ import {
   assertFresh,
   exampleAssetPath,
   exampleSource,
+  exampleInput,
+  exampleSources,
+  exampleCompilerConfig,
   generateAssets,
   loadRecords,
   mergeConfig,
@@ -149,6 +152,42 @@ test("only negative fixtures may select source origin and non-strict warning beh
     /mismatch/,
   );
 });
+test("CSS and source-plan lessons cannot relax positive validation", () => {
+  const record = seed();
+  record.examples[0].diagnosticStylesheet = "@apply p-4;";
+  assert.throws(() => validateRecord(record), /diagnosticStylesheet/);
+  delete record.examples[0].diagnosticStylesheet;
+  record.examples[0].sourceExclusion = "partial";
+  assert.throws(() => validateRecord(record), /sourceExclusion/);
+  const negative = diagnosticSeed();
+  const example = negative.examples[0];
+  example.diagnosticStylesheet = "@apply p-4;";
+  example.expectedDiagnostics = [{ code: "ZW009", severity: "error" }];
+  assert.doesNotThrow(() => validateRecord(negative));
+  assert.equal(exampleInput(example), "@apply p-4;\n");
+  example.diagnosticStylesheet += '\n@import "foreign.css";';
+  assert.throws(() => validateRecord(negative), /separate ZW009 error fixture/);
+  example.diagnosticStylesheet = '@import "tailwindcss/utilities";';
+  assert.doesNotThrow(() => validateRecord(negative));
+  example.diagnosticStylesheet = '@import "ordinary-package/styles.css";';
+  assert.throws(() => validateRecord(negative), /separate ZW009 error fixture/);
+  delete example.diagnosticStylesheet;
+  for (const mode of ["all", "partial"]) {
+    example.sourceExclusion = mode;
+    example.expectedDiagnostics = [
+      { code: "ZW010", severity: mode === "all" ? "error" : "warning" },
+    ];
+    assert.doesNotThrow(() => validateRecord(negative));
+    const base = { wind: { strict: true, tokens: { spacingUnit: "0.25rem" } } };
+    assert.deepEqual(exampleCompilerConfig(base, example).wind.sources, {
+      exclude: ["excluded.html"],
+    });
+    assert.equal(base.wind.sources, undefined);
+    assert.deepEqual(exampleSources(example), [mode === "all" ? "excluded.html" : "*.html"]);
+    example.expectedDiagnostics[0].severity = mode === "all" ? "warning" : "error";
+    assert.throws(() => validateRecord(negative), /matching diagnostic-only/);
+  }
+});
 test("positive warning-only ZW014 and missing-token failures are rejected", () => {
   const example = seed().examples[0];
   assert.throws(
@@ -259,6 +298,60 @@ test("fragment metadata changes freshness even when compiled CSS is unchanged", 
     assert.equal(before.htmlSha256, after.htmlSha256);
     assert.notEqual(before.headSha256, after.headSha256);
     assert.doesNotThrow(() => generateAssets({ ...options, check: true }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("source exclusion fixtures use exact shared files and stay freshness checked", () => {
+  const { root, run } = fixture();
+  try {
+    const path = join(root, "docs/wind-examples/source-plan.json");
+    const record = {
+      schemaVersion: 1,
+      family: "source-plan",
+      examples: [
+        {
+          ...seed().examples[0],
+          id: "excluded",
+          kind: "expected-diagnostic",
+          sourceExclusion: "all",
+          expectedDiagnostics: [{ code: "ZW010", severity: "error" }],
+        },
+      ],
+    };
+    writeFileSync(path, JSON.stringify(record));
+    const inspect = (compiler, args) => {
+      if (args[0] === "-V") return run(compiler, args);
+      const config = JSON.parse(readFileSync(args[args.indexOf("--config") + 1], "utf8"));
+      if (!config.wind.sources) return run(compiler, args);
+      const workspace = args[args.indexOf("--project-root") + 1];
+      assert.equal(
+        readFileSync(join(workspace, "sample.html"), "utf8"),
+        exampleSource(record.examples[0]),
+      );
+      assert.equal(
+        readFileSync(join(workspace, "excluded.html"), "utf8"),
+        exampleSource(record.examples[0]),
+      );
+      assert.deepEqual(config.wind.sources, { exclude: ["excluded.html"] });
+      const source = args[args.indexOf("--source") + 1];
+      assert.equal(
+        source,
+        record.examples[0].sourceExclusion === "all" ? "excluded.html" : "*.html",
+      );
+      return { status: source === "excluded.html" ? 1 : 0, stderr: "ZW010 excluded source" };
+    };
+    const options = { root, run: inspect, compiler: "/workspace/target/debug/zfb" };
+    const first = generateAssets(options);
+    assert.equal(
+      first.examples.find((entry) => entry.family === "source-plan").sourceExclusion,
+      "all",
+    );
+    assert.doesNotThrow(() => generateAssets({ ...options, check: true }));
+    record.examples[0].sourceExclusion = "partial";
+    record.examples[0].expectedDiagnostics[0].severity = "warning";
+    writeFileSync(path, JSON.stringify(record));
+    assert.throws(() => generateAssets({ ...options, check: true }), /manifest.json/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

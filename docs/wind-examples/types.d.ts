@@ -18,12 +18,18 @@ export interface WindPositiveExample extends WindExampleSource {
   head?: '<base href="about:srcdoc">';
   candidateOrigin?: never;
   expectedDiagnostics?: never;
+  diagnosticStylesheet?: never;
+  sourceExclusion?: never;
 }
 export interface WindDiagnosticExample extends WindExampleSource {
   kind: "expected-diagnostic";
   head?: never;
   candidateOrigin?: "source" | "safelist";
   expectedDiagnostics: WindExpectedDiagnostic[];
+  /** Separate rejected CSS entry, checked for ZW009; never rendered in an iframe. */
+  diagnosticStylesheet?: string;
+  /** Narrow explicit source-exclusion lessons checked for ZW010. */
+  sourceExclusion?: "all" | "partial";
 }
 export type WindExample = WindPositiveExample | WindDiagnosticExample;
 export interface WindExampleFamily {

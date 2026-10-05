@@ -5,9 +5,130 @@ sidebar_position: 56
 generated: true
 ---
 
-Set transition duration with a bounded millisecond value or arbitrary time.
+Set how long a transition takes. Duration does not choose which property changes, so pair it with a transition utility and a state change.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `duration-150` | `transition-duration: 150ms;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly uses spec: 1, reset: "none", strict mode, spacingUnit: "0.25rem", no breakpoints, and defaultTransitionTimingFunction: "ease". The buttons move only 8px on hover or focus-visible, and the longest sample is 420ms. Authored demo CSS sets transition time to zero for prefers-reduced-motion: reduce.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare two bounded timings
+
+Both buttons move by the same small amount; duration-150 and duration-300 change only the transition time.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-transform duration-150 hover:translate-x-[8px] focus-visible:translate-x-[8px]\"\u003e150ms\u003c/button\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-transform duration-300 hover:translate-x-[8px] focus-visible:translate-x-[8px]\"\u003e300ms\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-transform {\n  transition-property: transform,translate,rotate,scale;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n.duration-150 {\n  transition-duration: 150ms;\n}\n.duration-300 {\n  transition-duration: 300ms;\n}\n@media (hover: hover) {\n  .hover\\:translate-x-\\[8px\\]:hover {\n    --zw-translate-x: 8px;\n    translate: var(--zw-translate-x) var(--zw-translate-y);\n  }\n}\n.focus-visible\\:translate-x-\\[8px\\]:focus-visible {\n  --zw-translate-x: 8px;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"Compare two bounded timings"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-transform",
+        "duration-150",
+        "hover:translate-x-[8px]",
+        "focus-visible:translate-x-[8px]",
+        "duration-300"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+### Use an arbitrary time
+
+duration-[420ms] sets one custom duration while hover and focus-visible trigger an 8px vertical movement.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-transform duration-[420ms] hover:translate-y-[8px] focus-visible:translate-y-[8px]\"\u003eA one-off 420ms duration\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-transform {\n  transition-property: transform,translate,rotate,scale;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n.duration-\\[420ms\\] {\n  transition-duration: 420ms;\n}\n@media (hover: hover) {\n  .hover\\:translate-y-\\[8px\\]:hover {\n    --zw-translate-y: 8px;\n    translate: var(--zw-translate-x) var(--zw-translate-y);\n  }\n}\n.focus-visible\\:translate-y-\\[8px\\]:focus-visible {\n  --zw-translate-y: 8px;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"Use an arbitrary time"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-transform",
+        "duration-[420ms]",
+        "hover:translate-y-[8px]",
+        "focus-visible:translate-y-[8px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+## Custom and named values
+
+An integer suffix is interpreted as milliseconds from 0 through 60000, so duration-300 means 300ms and duration-0 disables interpolation. Use duration-[420ms] for a one-off CSS time. Duration has no named token scale. The default 150ms comes from transition utilities; adding duration-* overrides that value.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## duration
 
@@ -40,3 +161,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `duration-200` | `transition-duration: 200ms` |
+
+</Details>

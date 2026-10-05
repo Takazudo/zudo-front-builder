@@ -1,0 +1,52 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-motion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  max-width: 38rem;
+  color: #24364b;
+  font: 15px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-motion button {
+  min-width: 9rem;
+  border: 1px solid #526477;
+  border-radius: .35rem;
+  background: #eef3f8;
+  color: inherit;
+  padding: .65rem .9rem;
+  font: inherit;
+  text-align: left;
+}
+
+.wind-demo-motion button:focus-visible {
+  outline: 3px solid #1670b8;
+  outline-offset: 3px;
+}
+
+.wind-demo-motion .wind-demo-trigger {
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wind-demo-motion .wind-demo-trigger {
+    transition-duration: 0s !important;
+  }
+}
+.transition-none {
+  transition-property: none;
+}
+@media (hover: hover) {
+  .hover\:bg-\[\#dbeafe\]:hover {
+    background-color: #dbeafe;
+  }
+}
+.focus-visible\:bg-\[\#dbeafe\]:focus-visible {
+  background-color: #dbeafe;
+}

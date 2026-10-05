@@ -1,0 +1,49 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-object-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem;
+  color: #24364b;
+  font: 13px / 1.4 system-ui, sans-serif;
+}
+
+.wind-demo-object-card {
+  display: grid;
+  gap: .3rem;
+  margin: 0;
+}
+
+.wind-demo-frame {
+  display: block;
+  width: 7rem;
+  height: 5rem;
+  overflow: hidden;
+  border: 1px solid #849bb3;
+  background: #f2f6fa;
+}
+
+.wind-demo-image {
+  display: block;
+  width: 7rem;
+  height: 5rem;
+}
+.object-contain {
+  object-fit: contain;
+}
+.object-cover {
+  object-fit: cover;
+}
+.object-fill {
+  object-fit: fill;
+}
+.object-none {
+  object-fit: none;
+}
+.object-scale-down {
+  object-fit: scale-down;
+}

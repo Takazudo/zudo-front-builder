@@ -5,9 +5,188 @@ sidebar_position: 58
 generated: true
 ---
 
-Translate an element along an axis with spacing, full, fractions, or negative values.
+Move an element along the horizontal or vertical axis without changing the space it occupies in layout. The two axes compose on the same element.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `translate-x-8` | `--zw-translate-x: 2rem; translate: var(--zw-translate-x) var(--zw-translate-y);` |
+| `translate-y-4` | `--zw-translate-y: 1rem; translate: var(--zw-translate-x) var(--zw-translate-y);` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly uses spec: 1, reset: "none", strict mode, spacingUnit: "0.25rem", no breakpoints, and defaultTransitionTimingFunction: "ease". This makes translate-x-8 equal 2rem and translate-y-4 equal 1rem. One preview adds the named spacing token rail: 2rem. The diagrams use authored CSS only for the stage, anchor, and square; zudo-wind utilities supply the movement and rotation.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compose x and y movement
+
+translate-x-8 and translate-y-4 move the same square 2rem right and 1rem down. rotate-12 shows that translation and rotation compose without a transform utility.
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-8 translate-y-4 rotate-12\"\u003ex + y\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eThe blue square moves 2rem right and 1rem down, then rotates 12 degrees.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-8 {\n  --zw-translate-x: 2rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-4 {\n  --zw-translate-y: 1rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.rotate-12 {\n  rotate: 12deg;\n}\n"} title={"Compose x and y movement"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-8",
+        "translate-y-4",
+        "rotate-12"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### Use a named distance and a fraction
+
+The preview config defines rail as 2rem; translate-y-1/2 moves by half of the element’s own height.
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-rail translate-y-1/2\"\u003etoken\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eThe configured rail token moves it 2rem right; one half moves it by half of its own height.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-rail: 2rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-rail {\n  --zw-translate-x: var(--zw-spacing-rail);\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-1\\/2 {\n  --zw-translate-y: calc(100% * 1 / 2);\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"Use a named distance and a fraction"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "rail": "2rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-rail",
+        "translate-y-1/2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### Tune one measured offset
+
+translate-x-[11px] accepts a one-off CSS length without adding a named spacing token.
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-[11px]\"\u003e11px\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eAn arbitrary length is useful for a single measured adjustment.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-\\[11px\\] {\n  --zw-translate-x: 11px;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n"} title={"Tune one measured offset"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-[11px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Numeric suffixes use tokens.spacingUnit when configured. A named value such as translate-x-rail comes from tokens.spacing; fractions such as translate-y-1/2 are percentages of the element, and square-bracket values can provide a one-off CSS length. The fixed values 0 and full mean 0 and 100%. Negative forms are supported. No Tailwind spacing scale is inherited.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## translate-x
 
@@ -45,6 +224,8 @@ Translate an element along an axis with spacing, full, fractions, or negative va
 | --- | --- |
 | `translate-x-0` | `--zw-translate-x: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
 
+`{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
+
 ## translate-y
 
 | Field | Value |
@@ -80,3 +261,7 @@ Translate an element along an axis with spacing, full, fractions, or negative va
 | Example class | Expected declarations |
 | --- | --- |
 | `translate-y-0` | `--zw-translate-y: 0`; `translate: var(--zw-translate-x) var(--zw-translate-y)` |
+
+`{"registrations":[{"name":"--zw-translate-x","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"},{"name":"--zw-translate-y","syntax":"<length-percentage>","inherits":false,"initialValue":"0px"}]}`
+
+</Details>

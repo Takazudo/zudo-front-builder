@@ -1,0 +1,72 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+@property --zw-translate-x {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --zw-translate-y {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+.wind-demo-motion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  max-width: 38rem;
+  color: #24364b;
+  font: 15px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-motion button {
+  min-width: 9rem;
+  border: 1px solid #526477;
+  border-radius: .35rem;
+  background: #eef3f8;
+  color: inherit;
+  padding: .65rem .9rem;
+  font: inherit;
+  text-align: left;
+}
+
+.wind-demo-motion button:focus-visible {
+  outline: 3px solid #1670b8;
+  outline-offset: 3px;
+}
+
+.wind-demo-motion .wind-demo-trigger {
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wind-demo-motion .wind-demo-trigger {
+    transition-duration: 0s !important;
+  }
+}
+.transition-transform {
+  transition-property: transform,translate,rotate,scale;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+.duration-150 {
+  transition-duration: 150ms;
+}
+.duration-300 {
+  transition-duration: 300ms;
+}
+@media (hover: hover) {
+  .hover\:translate-x-\[8px\]:hover {
+    --zw-translate-x: 8px;
+    translate: var(--zw-translate-x) var(--zw-translate-y);
+  }
+}
+.focus-visible\:translate-x-\[8px\]:focus-visible {
+  --zw-translate-x: 8px;
+  translate: var(--zw-translate-x) var(--zw-translate-y);
+}
