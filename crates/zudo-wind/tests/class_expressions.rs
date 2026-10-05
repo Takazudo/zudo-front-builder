@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use zudo_wind::{
-    audit, extract_candidates, AuditInput, ExtractionResult, NoteKind, PositionKind, SourceKind,
-    WindConfig,
+    audit, extract_candidates, extract_candidates_with_options, AuditInput, ExtractionOptions,
+    ExtractionResult, NoteKind, PositionKind, SourceKind, WindConfig,
 };
 
 fn extract(source: &str) -> ExtractionResult {
@@ -240,4 +240,67 @@ fn compared_groups_are_conditions_not_class_values() {
     assert_literal(&result, "order-first");
     assert_class(&result, "flex");
     assert_class(&result, "grid");
+}
+
+#[test]
+fn configured_helper_traces_multiline_templates_nested_values_and_direct_attributes() {
+    let source = r#"const viaCtl = ctl(`
+  text-xl
+  bg-nope-1
+`);
+const other = mystery("text-hidden");
+const cvaValue = cva("text-cva");
+const twValue = twMerge("text-tw");
+const unicode = élément("text-wide");
+export const Page = ({ on }) => <>
+<p class={viaCtl} />
+<div class={ctl([
+  "p-2",
+  [on && "m-1"],
+  { "rounded-md": on }
+])} /><span class={unicode} />
+</>;"#;
+    let default = extract(source);
+    assert_literal(&default, "text-xl");
+    assert_literal(&default, "bg-nope-1");
+    assert_literal(&default, "p-2");
+    let mut options = ExtractionOptions::default();
+    options.class_helpers.insert("ctl".into());
+    options.class_helpers.insert("élément".into());
+    let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
+    for text in [
+        "text-xl",
+        "bg-nope-1",
+        "p-2",
+        "m-1",
+        "rounded-md",
+        "text-wide",
+    ] {
+        assert_class(&result, text);
+    }
+    assert_literal(&result, "text-hidden");
+    assert_literal(&result, "text-cva");
+    assert_literal(&result, "text-tw");
+}
+
+#[test]
+fn candidate_index_uses_helper_options_for_file_extraction() {
+    use zudo_wind::{CandidateIndex, SourceId};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("view.tsx");
+    std::fs::write(
+        &path,
+        "export const Page = () => <div class={ctl(`text-xl`)} />;",
+    )
+    .unwrap();
+    let file = zudo_wind::ExpandedFile {
+        id: SourceId::new("root", std::path::Path::new("view.tsx")).unwrap(),
+        path,
+    };
+    let mut options = ExtractionOptions::default();
+    options.class_helpers.insert("ctl".into());
+    let mut index = CandidateIndex::with_options(options);
+    let extraction = index.index_file(&file).unwrap();
+    assert_class(&extraction, "text-xl");
+    assert!(index.live_set().contains("text-xl"));
 }

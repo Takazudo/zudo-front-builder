@@ -122,7 +122,11 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let indexed = index_standalone_wind_sources(&plan)?;
     let manifest_owners = add_manifest_candidates_to_audit_config(&mut wind_config, &plan)?;
     let mut audit_sources = indexed.audit_sources;
-    append_plugin_audit_sources(&plugin_virtual_modules, &mut audit_sources);
+    append_plugin_audit_sources(
+        &plugin_virtual_modules,
+        &plan.extraction_options,
+        &mut audit_sources,
+    );
     append_role_class_audit_source(&plan, &mut audit_sources);
     let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
@@ -523,12 +527,17 @@ fn render_plan_coverage(command: &str, coverage: &PlanCoverage) -> String {
 /// `plugin/<specifier>` identity the build source plan uses.
 fn append_plugin_audit_sources(
     modules: &[(String, String)],
+    options: &zfb_css::ExtractionOptions,
     sources: &mut Vec<zfb_css::AuditSource>,
 ) {
     for (specifier, source) in modules {
         sources.push(zfb_css::AuditSource::new(
             format!("plugin/{specifier}"),
-            zfb_css::extract_candidates(source.as_bytes(), zfb_css::SourceKind::Tsx),
+            zfb_css::extract_candidates_with_options(
+                source.as_bytes(),
+                zfb_css::SourceKind::Tsx,
+                options,
+            ),
         ));
     }
 }
@@ -1101,7 +1110,11 @@ mod tests {
         .starts_with("wind audit plan: standalone\n"));
 
         let mut sources = Vec::new();
-        append_plugin_audit_sources(&modules, &mut sources);
+        append_plugin_audit_sources(
+            &modules,
+            &zfb_css::ExtractionOptions::default(),
+            &mut sources,
+        );
         assert_eq!(sources[0].source_id, "plugin/virtual:menu");
         assert_eq!(sources[0].extraction.candidates[0].text, "p-1");
     }

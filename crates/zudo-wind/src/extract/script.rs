@@ -6,7 +6,7 @@ use super::{Collector, NoteKind, PositionKind};
 /// provably reaches a class attribute to class positions.
 pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
     scan_literals(source, base, out);
-    class_expression::Module::new(source, base).scan(out);
+    class_expression::Module::new(source, base, out.options.class_helpers.clone()).scan(out);
 }
 
 fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {

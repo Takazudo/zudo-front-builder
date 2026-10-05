@@ -8,9 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::super::Collector;
 use super::emit;
 
-/// Helpers whose string arguments, arrays and object keys are class lists.
-const CLASS_HELPERS: &[&str] = &["clsx", "cn", "cx", "classNames", "classnames"];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kind {
     Ident,
@@ -434,10 +431,11 @@ pub(super) struct Module<'a> {
     base: usize,
     tokens: Vec<Token>,
     bindings: Bindings,
+    class_helpers: BTreeSet<String>,
 }
 
 impl<'a> Module<'a> {
-    pub(super) fn new(text: &'a str, base: usize) -> Self {
+    pub(super) fn new(text: &'a str, base: usize, class_helpers: BTreeSet<String>) -> Self {
         let tokens = tokenize(text, 0, text.len());
         let bindings = Bindings::collect(text, &tokens);
         Self {
@@ -445,6 +443,7 @@ impl<'a> Module<'a> {
             base,
             tokens,
             bindings,
+            class_helpers,
         }
     }
 
@@ -495,7 +494,8 @@ impl<'a> Module<'a> {
                 match spelling {
                     "(" => stack.push(match previous {
                         Some(p)
-                            if p.kind == Kind::Ident && CLASS_HELPERS.contains(&self.word(&p)) =>
+                            if p.kind == Kind::Ident
+                                && self.class_helpers.contains(self.word(&p)) =>
                         {
                             Container::Helper
                         }

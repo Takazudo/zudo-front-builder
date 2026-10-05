@@ -66,7 +66,31 @@ pub struct ExtractionResult {
     pub notes: Vec<ExtractionNote>,
 }
 
+/// Names with class-list argument semantics. Additional names are explicit opt-ins.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtractionOptions {
+    pub class_helpers: BTreeSet<String>,
+}
+
+impl Default for ExtractionOptions {
+    fn default() -> Self {
+        Self {
+            class_helpers: ["clsx", "cn", "cx", "classNames", "classnames"]
+                .map(str::to_owned)
+                .into(),
+        }
+    }
+}
+
 pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
+    extract_candidates_with_options(bytes, kind, &ExtractionOptions::default())
+}
+
+pub fn extract_candidates_with_options(
+    bytes: &[u8],
+    kind: SourceKind,
+    options: &ExtractionOptions,
+) -> ExtractionResult {
     let Ok(source) = std::str::from_utf8(bytes) else {
         return ExtractionResult {
             notes: vec![ExtractionNote {
@@ -89,6 +113,7 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
         found: BTreeMap::new(),
         notes: Vec::new(),
         frames: Vec::new(),
+        options,
     };
     match kind {
         SourceKind::Tsx | SourceKind::Ts | SourceKind::Jsx | SourceKind::Js | SourceKind::Mjs => {
@@ -104,6 +129,7 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
 
 pub(super) struct Collector<'a> {
     source: &'a str,
+    options: &'a ExtractionOptions,
     /// Byte offsets of newlines in the original source, sorted for position lookups.
     newline_offsets: Vec<usize>,
     found: BTreeMap<String, Vec<Occurrence>>,
