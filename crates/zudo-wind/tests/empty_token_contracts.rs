@@ -417,8 +417,10 @@ fn reset_mode_does_not_supply_design_tokens() {
     assert!(empty.stylesheet.is_empty());
     assert!(empty.parts.prelude.is_empty());
 
-    let mut reset = WindConfig::default();
-    reset.reset = ResetMode::MinimalV1;
+    let reset = WindConfig {
+        reset: ResetMode::MinimalV1,
+        ..Default::default()
+    };
     let result = run(&["p-4"], reset, source(SourcePositionKind::Class));
     assert_one_prelude(&result);
     assert!(!result.parts.reset.is_empty());
