@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "family": "overflow",
+  "lookup": [
+    {
+      "entry": "v1.overflow",
+      "candidate": "overflow-auto",
+      "example": "overflow-scroll"
+    },
+    {
+      "entry": "v1.overflow",
+      "candidate": "overflow-hidden",
+      "example": "overflow-clipping"
+    },
+    {
+      "entry": "v1.overflow",
+      "candidate": "overflow-clip",
+      "example": "overflow-clipping"
+    },
+    {
+      "entry": "v1.overflow",
+      "candidate": "overflow-visible",
+      "example": "overflow-clipping"
+    },
+    {
+      "entry": "v1.overflow",
+      "candidate": "overflow-scroll",
+      "example": "overflow-scroll"
+    },
+    {
+      "entry": "v1.overflow-x",
+      "candidate": "overflow-x-auto",
+      "example": "overflow-scroll"
+    },
+    {
+      "entry": "v1.overflow-x",
+      "candidate": "overflow-x-scroll",
+      "example": "overflow-scroll"
+    },
+    {
+      "entry": "v1.overflow-y",
+      "candidate": "overflow-y-scroll",
+      "example": "overflow-scroll"
+    },
+    {
+      "entry": "v1.overflow-y",
+      "candidate": "overflow-y-auto",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll",
+      "candidate": "overscroll-auto",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll",
+      "candidate": "overscroll-none",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll",
+      "candidate": "overscroll-contain",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll-x",
+      "candidate": "overscroll-x-contain",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll-y",
+      "candidate": "overscroll-y-contain",
+      "example": "overflow-overscroll"
+    },
+    {
+      "entry": "v1.overscroll-y",
+      "candidate": "overscroll-y-none",
+      "example": "overflow-overscroll"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose whether oversized content is clipped, visible, or scrollable. Use x/y forms when each axis needs a different rule. Overscroll utilities decide whether a scroll gesture can chain from an inner scroller to its parent at an edge.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "overflow accepts auto, hidden, clip, visible, and scroll; the x/y forms accept the same values. auto adds scrolling only when needed, while scroll requests a scroll container even when content fits. overscroll accepts auto, contain, or none on both or one axis. These utilities have fixed keywords and no token or arbitrary values.",
+      "examples": [
+        {
+          "id": "overflow-clipping",
+          "title": "Clip or reveal overflow",
+          "description": "hidden and clip cut off content outside the frame; visible allows the child to extend beyond it."
+        },
+        {
+          "id": "overflow-scroll",
+          "title": "Scroll on one or both axes",
+          "description": "overflow-x-auto scrolls the long row only when needed; overflow-x-scroll requests a horizontal scroll area, overflow-y-scroll always enables vertical scrolling, and overflow-scroll applies to both axes."
+        },
+        {
+          "id": "overflow-overscroll",
+          "title": "Control scroll chaining",
+          "description": "The inner vertical and horizontal scrollers use contain so gestures stop at their boundaries instead of moving the outer panel; none also disables boundary bounce where supported."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "大きすぎる内容を切り取るか、見せるか、スクロール可能にするかを選びます。各軸で別の扱いにする場合は x/y 形を使います。overscroll は、内側のスクロールが端に達したとき親へジェスチャーを伝えるかを決めます。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "overflow は auto、hidden、clip、visible、scroll を受け取り、x/y 形も同じ値に対応します。auto は必要なときだけスクロールを追加し、scroll は内容が収まってもスクロール領域を作ります。overscroll は両軸または片軸に auto、contain、none を指定します。いずれも固定キーワードで、トークンや任意値はありません。",
+      "examples": [
+        {
+          "id": "overflow-clipping",
+          "title": "はみ出しを切り取るか表示",
+          "description": "hidden と clip は枠の外側を切り取り、visible は子要素を枠の外にも表示します。"
+        },
+        {
+          "id": "overflow-scroll",
+          "title": "1軸または両軸でスクロール",
+          "description": "overflow-x-auto は長い行が必要な場合だけ横スクロールし、overflow-x-scroll は横スクロール領域を常に作ります。overflow-y-scroll は常に縦スクロールを有効にし、overflow-scroll は両軸に作用します。"
+        },
+        {
+          "id": "overflow-overscroll",
+          "title": "スクロールの連鎖を制御",
+          "description": "内側の縦横スクローラーは contain を使い、端で外側のパネルにジェスチャーが伝わらないようにします。none は対応環境で端のバウンスも抑えます。"
+        }
+      ]
+    }
+  }
+}

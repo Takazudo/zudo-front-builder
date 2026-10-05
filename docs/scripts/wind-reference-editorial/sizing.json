@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "family": "sizing",
+  "lookup": [
+    {
+      "entry": "v1.size",
+      "candidate": "size-12",
+      "example": "sizing-dimensions"
+    },
+    {
+      "entry": "v1.h",
+      "candidate": "h-24",
+      "example": "sizing-dimensions"
+    },
+    {
+      "entry": "v1.w",
+      "candidate": "w-1/2",
+      "example": "sizing-dimensions"
+    },
+    {
+      "entry": "v1.max-w",
+      "candidate": "max-w-64",
+      "example": "sizing-constraints"
+    },
+    {
+      "entry": "v1.min-w",
+      "candidate": "min-w-0",
+      "example": "sizing-constraints"
+    },
+    {
+      "entry": "v1.min-h",
+      "candidate": "min-h-24",
+      "example": "sizing-constraints"
+    },
+    {
+      "entry": "v1.max-h",
+      "candidate": "max-h-32",
+      "example": "sizing-constraints"
+    },
+    {
+      "entry": "v1.size",
+      "candidate": "size-card",
+      "example": "sizing-custom"
+    },
+    {
+      "entry": "v1.max-w",
+      "candidate": "max-w-reading",
+      "example": "sizing-custom"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use width, height and size for direct dimensions; use min- and max- constraints when a box should adapt within bounds. Pair w-full with max-w-* for fluid content that stops growing at a readable measure.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "The configured spacingUnit is 0.25rem, so numeric forms such as w-16 resolve to 4rem. Values may also use fractions like w-1/2, built-in keywords such as full, min, max, fit, auto, screen or dvh, named tokens from tokens.sizes or tokens.spacing, and arbitrary CSS values like w-[18rem]. size sets width and height together. This preview explicitly configures tokens.sizes.card and tokens.sizes.reading.",
+      "examples": [
+        {
+          "id": "sizing-dimensions",
+          "title": "Set a dimension",
+          "description": "size-12 sets both sides to 3rem; h-24 sets 6rem high, and w-1/2 takes half of the parent width."
+        },
+        {
+          "id": "sizing-constraints",
+          "title": "Bound a flexible box",
+          "description": "min-w-0 permits a flex child to shrink, max-w-48 caps its width, min-h-24 sets a floor, and max-h-32 caps a taller h-48 box."
+        },
+        {
+          "id": "sizing-custom",
+          "title": "Use named and arbitrary values",
+          "description": "size-card resolves tokens.sizes.card to 5rem; w-[18rem] is a one-off value and max-w-reading resolves the separately configured size token."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "width、height、size で寸法を直接設定し、min/max の制約で可変範囲を決めます。w-full と max-w-* を組み合わせると、幅が親に追従しながら読みやすい最大幅で止まる内容領域を作れます。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "spacingUnit は 0.25rem に設定しているため、w-16 は 4rem です。w-1/2 のような分数、full/min/max/fit/auto/screen/dvh などの組み込み値、tokens.sizes や tokens.spacing の名前付き値、w-[18rem] のような任意 CSS 値も使えます。size は幅と高さを同時に設定します。このプレビューでは tokens.sizes.card と tokens.sizes.reading を明示します。",
+      "examples": [
+        {
+          "id": "sizing-dimensions",
+          "title": "寸法を指定",
+          "description": "size-12 は幅と高さを 3rem にし、h-24 は高さを 6rem、w-1/2 は親幅の半分にします。"
+        },
+        {
+          "id": "sizing-constraints",
+          "title": "可変ボックスに上限と下限を設定",
+          "description": "min-w-0 は flex 子要素が縮めるようにし、max-w-48 は幅を制限します。min-h-24 は下限、max-h-32 は高さ h-48 の上限です。"
+        },
+        {
+          "id": "sizing-custom",
+          "title": "名前付き値と任意値",
+          "description": "size-card は tokens.sizes.card の 5rem を使い、w-[18rem] は一回限りの値、max-w-reading は別に設定したサイズトークンを使います。"
+        }
+      ]
+    }
+  }
+}

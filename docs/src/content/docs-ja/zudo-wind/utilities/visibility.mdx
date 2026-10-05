@@ -5,9 +5,132 @@ sidebar_position: 67
 generated: true
 ---
 
-レイアウト上の位置を保ったまま、要素を表示または非表示にします。
+visibility で場所を保ったまま要素を隠したり、再び表示したりします。箱をレイアウトから取り除き、後続の内容を詰めたい場合は display ファミリーの hidden を使います。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `invisible` | `visibility: hidden;` |
+| `visible` | `visibility: visible;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 場所を残して隠す
+
+invisible は中央の箱を隠しますが flex の位置を保つため、最後の箱は同じ場所にとどまります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eVisible\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile invisible\"\u003eInvisible box\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eSpace is still reserved\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.invisible {\n  visibility: hidden;\n}\n"} title={"場所を残して隠す"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "invisible",
+        "items-center"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### visibility と display を比較
+
+invisible は場所を残し、hidden は場所ごと取り除きます。最後の項目は visible で通常どおり表示します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003einvisible keeps its flex slot; hidden removes its slot from layout.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFirst\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile invisible\"\u003eInvisible\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile hidden\"\u003eHidden\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile visible\"\u003eVisible again\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.hidden {\n  display: none;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.invisible {\n  visibility: hidden;\n}\n.visible {\n  visibility: visible;\n}\n"} title={"visibility と display を比較"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "hidden",
+        "invisible",
+        "items-center",
+        "visible"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+このファミリーは任意値のない2つの固定クラスです。visible は visibility:visible、invisible は visibility:hidden を設定します。箱はレイアウト上の場所を保ちますが、visibility:hidden の内容は通常アクセシビリティツリーから外れ、操作できません。hidden は別の display:none ユーティリティです。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## invisible
 
@@ -76,3 +199,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `visible` | `visibility: visible` |
+
+</Details>

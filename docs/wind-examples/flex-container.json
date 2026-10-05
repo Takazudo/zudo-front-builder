@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "family": "flex-container",
+  "examples": [
+    {
+      "id": "flex-direction",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-note\">Main axis changes with direction; reverse changes visual order.</div>\n  <div class=\"wind-demo-frame flex flex-row gap-2\">\n    <div class=\"wind-demo-tile\">A row</div><div class=\"wind-demo-tile\">B</div><div class=\"wind-demo-tile\">C</div>\n  </div>\n  <div class=\"wind-demo-frame flex flex-row-reverse gap-2\">\n    <div class=\"wind-demo-tile\">A row-reverse</div><div class=\"wind-demo-tile\">B</div><div class=\"wind-demo-tile\">C</div>\n  </div>\n  <div class=\"wind-demo-frame flex flex-col gap-2\">\n    <div class=\"wind-demo-tile\">A column</div><div class=\"wind-demo-tile\">B</div>\n  </div>\n  <div class=\"wind-demo-frame flex flex-col-reverse gap-2\">\n    <div class=\"wind-demo-tile\">A column-reverse</div><div class=\"wind-demo-tile\">B</div>\n  </div>\n</div>",
+      "utilities": [
+        "flex",
+        "flex-col",
+        "flex-col-reverse",
+        "flex-row",
+        "flex-row-reverse",
+        "gap-2"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "flex-wrapping",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">The frame is narrow enough to make wrapping visible.</p>\n  <div class=\"wind-demo-frame flex flex-wrap w-64 gap-2\">\n    <div class=\"wind-demo-tile w-24\">wrap 1</div><div class=\"wind-demo-tile w-24\">wrap 2</div><div class=\"wind-demo-tile w-24\">wrap 3</div><div class=\"wind-demo-tile w-24\">wrap 4</div>\n  </div>\n  <div class=\"wind-demo-frame flex flex-nowrap w-64 gap-2\">\n    <div class=\"wind-demo-tile w-24\">nowrap 1</div><div class=\"wind-demo-tile w-24\">nowrap 2</div><div class=\"wind-demo-tile w-24\">nowrap 3</div>\n  </div>\n  <div class=\"wind-demo-frame flex flex-wrap-reverse w-64 gap-2\">\n    <div class=\"wind-demo-tile w-24\">reverse 1</div><div class=\"wind-demo-tile w-24\">reverse 2</div><div class=\"wind-demo-tile w-24\">reverse 3</div><div class=\"wind-demo-tile w-24\">reverse 4</div>\n  </div>\n</div>",
+      "utilities": [
+        "flex",
+        "flex-nowrap",
+        "flex-wrap",
+        "flex-wrap-reverse",
+        "gap-2",
+        "w-24",
+        "w-64"
+      ],
+      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    }
+  ]
+}
