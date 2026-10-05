@@ -316,6 +316,8 @@ mod tests {
             "group-hover:block",
             "focus-visible:block",
             "before:block",
+            "pointer-coarse:block",
+            "pointer-fine:block",
         ] {
             assert_eq!(accepted(text).variants.0.len(), 1);
         }
@@ -339,6 +341,15 @@ mod tests {
                 .code,
             DiagnosticCode::Zw002
         );
+    }
+
+    #[test]
+    fn pointer_capability_does_not_require_breakpoint_or_dark_config() {
+        for pointer in ["pointer-coarse", "pointer-fine"] {
+            assert!(
+                parse_candidate(&format!("{pointer}:block"), &VariantVocabulary::default()).is_ok()
+            );
+        }
     }
 
     #[test]
@@ -381,7 +392,14 @@ mod tests {
 
     #[test]
     fn g07_all_pseudo_elements() {
-        for pseudo in ["before", "after", "marker", "placeholder", "backdrop"] {
+        for pseudo in [
+            "before",
+            "after",
+            "marker",
+            "placeholder",
+            "backdrop",
+            "selection",
+        ] {
             accepted(&format!("{pseudo}:block"));
         }
     }
@@ -530,6 +548,17 @@ mod tests {
     #[test]
     fn r04_unknown_variant() {
         rejected("lg:block", DiagnosticCode::Zw002, "R04");
+        for variant in [
+            "any-pointer-coarse",
+            "any-pointer-fine",
+            "motion-safe",
+            "motion-reduce",
+            "print",
+            "portrait",
+            "max-pointer-coarse",
+        ] {
+            rejected(&format!("{variant}:block"), DiagnosticCode::Zw002, "R04");
+        }
         for state in ["indeterminate", "required", "invalid"] {
             for prefix in ["", "group-", "peer-"] {
                 rejected(
@@ -544,6 +573,14 @@ mod tests {
     #[test]
     fn r05_duplicate_variant_class() {
         rejected("hover:focus:block", DiagnosticCode::Zw003, "R05");
+        for text in [
+            "pointer-coarse:pointer-coarse:block",
+            "pointer-fine:pointer-fine:block",
+            "pointer-coarse:pointer-fine:block",
+            "pointer-fine:pointer-coarse:block",
+        ] {
+            rejected(text, DiagnosticCode::Zw003, "R05");
+        }
     }
 
     #[test]
@@ -551,6 +588,13 @@ mod tests {
         rejected("hover:sm:block", DiagnosticCode::Zw003, "R06");
         let error = parse_candidate("hover:sm:block", &vocabulary()).unwrap_err();
         assert_eq!(error.suggested_spelling.as_deref(), Some("sm:hover:block"));
+        let error =
+            parse_candidate("peer-focus:pointer-coarse:dark:sm:block", &vocabulary()).unwrap_err();
+        assert_eq!(error.rejection_id, Some("R06"));
+        assert_eq!(
+            error.suggested_spelling.as_deref(),
+            Some("sm:dark:pointer-coarse:peer-focus:block")
+        );
     }
 
     #[test]
@@ -568,6 +612,11 @@ mod tests {
     #[test]
     fn r09_arbitrary_selector_variant() {
         rejected("[&_a]:underline", DiagnosticCode::Zw004, "R09");
+        rejected(
+            "[@media(pointer:coarse)]:block",
+            DiagnosticCode::Zw004,
+            "R09",
+        );
     }
 
     #[test]
@@ -666,5 +715,7 @@ mod tests {
     #[test]
     fn r23_child_utility_with_pseudo_element() {
         rejected("before:divide-y", DiagnosticCode::Zw005, "R23");
+        rejected("selection:space-x-2", DiagnosticCode::Zw005, "R23");
+        rejected("selection:divide-y", DiagnosticCode::Zw005, "R23");
     }
 }
