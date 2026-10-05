@@ -1199,6 +1199,40 @@ fn wind_audit_error_threshold_is_opt_in_and_includes_complete_report() {
 }
 
 #[test]
+fn owned_factory_class_prop_fails_audit_and_build() {
+    let source = "import { h as make } from '@takazudo/zfb/zudo-react';\nexport default function Page() { return make('main', { class: 'rounded-missing-token' }); }\n";
+    let temp = wind_audit_fixture(r#"{"wind":{"spec":1}}"#, source);
+    fs::create_dir_all(temp.path().join("pages")).unwrap();
+    fs::write(temp.path().join("pages/index.ts"), source).unwrap();
+
+    let audit = run_wind_audit(temp.path(), &["--fail-on", "error"]);
+    let stdout = process_stdout(&audit);
+    assert!(
+        !audit.status.success(),
+        "audit accepted owned factory class:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ZW006 error") && stdout.contains("rounded-missing-token"),
+        "{stdout}"
+    );
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .output()
+        .expect("spawn build for owned factory class");
+    let output = format!("{}{}", process_stdout(&build), process_stderr(&build));
+    assert!(
+        !build.status.success(),
+        "build accepted owned factory class:\n{output}"
+    );
+    assert!(
+        output.contains("ZW006") && output.contains("rounded-missing-token"),
+        "{output}"
+    );
+}
+
+#[test]
 fn wind_audit_info_does_not_fail_warning_threshold() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,

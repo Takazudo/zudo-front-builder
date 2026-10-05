@@ -453,6 +453,7 @@ impl<'a> Module<'a> {
 
     /// Walks every `class={...}` / `className={...}` expression container.
     pub(super) fn scan(&self, out: &mut Collector<'_>) {
+        self.scan_owned_factories(out);
         let mut index = 0;
         while index + 2 < self.tokens.len() {
             let attribute = self.tokens[index];
@@ -472,6 +473,134 @@ impl<'a> Module<'a> {
             self.expression(&self.tokens[open + 1..close], out, &mut visiting);
             index = close.max(open + 1);
         }
+    }
+
+    /// Only a named, value import from the owned renderer proves that a call
+    /// constructs a zudo-react description. A name alone is not sufficient.
+    fn owned_factory_names(&self) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let tokens = &self.tokens;
+        let word = |at: usize| tokens.get(at).map(|token| self.word(token));
+        for index in 0..tokens.len() {
+            if word(index) != Some("import") || word(index + 1) == Some("type") {
+                continue;
+            }
+            let Some(open) = (index + 1..tokens.len())
+                .take_while(|&at| !matches!(word(at), Some(";" | "from")))
+                .find(|&at| word(at) == Some("{"))
+            else {
+                continue;
+            };
+            let close = self.matching(open);
+            if word(close + 1) != Some("from")
+                || !matches!(
+                    word(close + 2),
+                    Some("\"@takazudo/zfb/zudo-react\"" | "'@takazudo/zfb/zudo-react'")
+                )
+            {
+                continue;
+            }
+            let mut at = open + 1;
+            while at < close {
+                let end = (at..close).find(|&n| word(n) == Some(",")).unwrap_or(close);
+                let typed = word(at) == Some("type");
+                let first = at + usize::from(typed);
+                if !typed && word(first) == Some("h") {
+                    let alias = if word(first + 1) == Some("as") {
+                        first + 2
+                    } else {
+                        first
+                    };
+                    if alias < end && tokens[alias].kind == Kind::Ident {
+                        names.insert(self.word(&tokens[alias]).to_owned());
+                    }
+                }
+                at = end + 1;
+            }
+        }
+        let shadowed = pattern_bindings(self.text, tokens);
+        names.retain(|name| {
+            !shadowed.contains(name)
+                && !tokens.iter().enumerate().any(|(at, token)| {
+                    self.word(token) == name
+                        && (at > 0
+                            && matches!(
+                                word(at - 1),
+                                Some("const" | "let" | "var" | "function" | "class")
+                            )
+                            || matches!(
+                                word(at + 1),
+                                Some("=" | "+=" | "||=" | "&&=" | "??=" | "++" | "--")
+                            ))
+                })
+        });
+        names
+    }
+
+    fn scan_owned_factories(&self, out: &mut Collector<'_>) {
+        let names = self.owned_factory_names();
+        if names.is_empty() {
+            return;
+        }
+        let tokens = &self.tokens;
+        for at in 0..tokens.len().saturating_sub(1) {
+            if tokens[at].kind != Kind::Ident
+                || !names.contains(self.word(&tokens[at]))
+                || self.word(&tokens[at + 1]) != "("
+                || (at > 0 && matches!(self.word(&tokens[at - 1]), "." | "?." | "new" | "function"))
+            {
+                continue;
+            }
+            let close = self.matching(at + 1);
+            if close >= tokens.len() {
+                continue;
+            }
+            let Some(comma) = self.top_level_comma(at + 2, close) else {
+                continue;
+            };
+            let object = comma + 1;
+            if object >= close || self.word(&tokens[object]) != "{" {
+                continue;
+            }
+            let object_close = self.matching(object);
+            if object_close >= close || !matches!(self.word(&tokens[object_close + 1]), "," | ")") {
+                continue;
+            }
+            let mut field = object + 1;
+            while field < object_close {
+                let end = self
+                    .top_level_comma(field, object_close)
+                    .unwrap_or(object_close);
+                if field + 1 < end
+                    && self.class_key(&tokens[field])
+                    && self.word(&tokens[field + 1]) == ":"
+                {
+                    let mut visiting = BTreeSet::new();
+                    self.expression(&tokens[field + 2..end], out, &mut visiting);
+                }
+                field = end + 1;
+            }
+        }
+    }
+
+    fn class_key(&self, token: &Token) -> bool {
+        let spelling = self.word(token);
+        matches!(
+            spelling,
+            "class" | "className" | "\"class\"" | "'class'" | "\"className\"" | "'className'"
+        )
+    }
+
+    fn top_level_comma(&self, from: usize, to: usize) -> Option<usize> {
+        let mut at = from;
+        while at < to {
+            match self.word(&self.tokens[at]) {
+                "(" | "[" | "{" => at = self.matching(at).saturating_add(1),
+                "," => return Some(at),
+                _ => at += 1,
+            }
+        }
+        None
     }
 
     fn matching(&self, open: usize) -> usize {
