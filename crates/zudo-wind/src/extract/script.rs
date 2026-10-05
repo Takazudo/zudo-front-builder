@@ -37,7 +37,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     continue;
                 }
                 if quote == b'`' && bytes[i..].starts_with(b"${") {
-                    if !known_non_class {
+                    if !known_non_class && (class || !is_pure_url(&source[segment..i])) {
                         emit(
                             source,
                             base,
@@ -47,7 +47,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             open,
                             i + 2,
                             class,
-                            false,
+                            true,
                             true,
                             left,
                         );
@@ -71,7 +71,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                 if bytes[i] == quote {
                     let right = source[i + 1..].trim_start().starts_with('+');
                     let left = left || source[..open].trim_end().ends_with('+');
-                    let whole_url = !class && !left && !right && is_pure_url(&source[segment..i]);
+                    let whole_url = !class && is_pure_url(&source[segment..i]);
                     if !known_non_class && !whole_url {
                         emit(
                             source,
@@ -82,7 +82,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                             open,
                             i + 1,
                             class,
-                            quote != b'`',
+                            true,
                             right,
                             left,
                         );
@@ -290,19 +290,22 @@ fn emit(
     } else {
         PositionKind::Literal
     };
-    out.tokens(
-        &decoded,
-        base + start,
-        (base + open, close - open),
-        kind,
-        right,
-        left,
-        Some(&source_map),
-    );
-    if embedded && (raw.contains("class=") || raw.contains("className=")) {
-        out.within_decoded(base + start, source_map, |out| {
+    let scanned_markup = !class
+        && embedded
+        && decoded.contains('<')
+        && out.within_decoded(base + start, source_map.clone(), |out| {
             super::markup::scan(&decoded, 0, out, false)
         });
+    if !scanned_markup {
+        out.tokens(
+            &decoded,
+            base + start,
+            (base + open, close - open),
+            kind,
+            right,
+            left,
+            Some(&source_map),
+        );
     }
 }
 

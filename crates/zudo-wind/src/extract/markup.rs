@@ -1,8 +1,9 @@
 use super::{Collector, PositionKind};
 
-pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: bool) {
+pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: bool) -> bool {
     let bytes = source.as_bytes();
     let mut i = 0;
+    let mut class_attribute = false;
     while i < bytes.len() {
         if bytes[i..].starts_with(b"<!--") {
             i = source[i + 4..]
@@ -49,14 +50,16 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: 
             i += 1;
         }
         let tag_end = i.min(bytes.len());
-        attributes(&source[tag_start..tag_end], base + tag_start, out);
+        class_attribute |= attributes(&source[tag_start..tag_end], base + tag_start, out);
         i = (tag_end + 1).min(bytes.len());
     }
+    class_attribute
 }
 
-fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) {
+fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
     let bytes = tag.as_bytes();
     let mut i = 1;
+    let mut class_attribute = false;
     while i < bytes.len() {
         while i < bytes.len() && !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
             i += 1;
@@ -106,6 +109,7 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) {
         }
         let value_end = i.min(bytes.len());
         if name == "class" || name == "className" {
+            class_attribute = true;
             let (decoded, source_map) = entities(&tag[value_start..value_end]);
             // An unterminated value has no closing quote inside the tag.
             let close = if value_end < bytes.len() {
@@ -128,6 +132,7 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) {
             i += 1;
         }
     }
+    class_attribute
 }
 
 fn entities(value: &str) -> (String, Vec<usize>) {
