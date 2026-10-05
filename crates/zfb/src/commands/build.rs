@@ -8462,7 +8462,12 @@ mod tests {
         std::fs::write(widgets.join("ignored.tsx"), "export const ignored = 'p-3';").unwrap();
         std::fs::write(project.join(".gitignore"), "widgets/ignored.tsx\n").unwrap();
 
-        let sources = discover_css_source_files(project, &[], &BTreeSet::new(), &[widgets.clone()]);
+        let sources = discover_css_source_files(
+            project,
+            &[],
+            &BTreeSet::new(),
+            std::slice::from_ref(&widgets),
+        );
         assert!(sources.contains(&widgets.join("card.tsx")));
         assert!(sources.contains(&widgets.join("card.test.ts")));
         assert!(!sources.contains(&widgets.join("card.d.ts")));
