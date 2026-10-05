@@ -9,6 +9,8 @@ export default defineConfig(
     siteDescription:
       "A Request/Response content engine: write TSX and MDX once for static HTML, Cloudflare Workers, or local apps.",
     siteUrl: "https://zfb.takazudomodular.com",
+    // Browser CI also builds this supported setting at a non-root prefix.
+    base: "/",
     githubUrl: "https://github.com/Takazudo/zudo-front-builder",
     // zudoDoc() shallow-merges: a supplied nested object REPLACES the package
     // default wholesale, so all five keys are required even though only

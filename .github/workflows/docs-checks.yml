@@ -90,6 +90,7 @@ jobs:
           filters: |
             docs:
               - 'docs/**'
+              - 'tests/docs-wind-preview/**'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
               - 'package.json'
@@ -99,6 +100,7 @@ jobs:
               - 'docs/wind-examples/**'
               - 'docs/public/wind-examples/**'
               - 'docs/scripts/**'
+              - 'tests/docs-wind-preview/**'
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -149,6 +151,42 @@ jobs:
 
       - name: Check wrangler pin
         run: pnpm --filter docs check:wrangler-pin
+
+      - name: Test built docs verification contracts
+        run: node --test docs/scripts/__tests__/audit-wind-built-anchors.test.mjs docs/scripts/__tests__/build-wind-docs-base.test.mjs
+
+      - name: Audit preserved built routes and anchors
+        run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Confirm root docs previews in Chromium
+        env:
+          WIND_DOCS_SCREENSHOT_DIR: ${{ runner.temp }}/wind-docs-screenshots/root
+        run: pnpm exec playwright test --config tests/docs-wind-preview/playwright.config.mjs
+
+      - name: Build genuine subpath docs
+        run: node docs/scripts/build-wind-docs-base.mjs /wind-docs-preview/
+
+      - name: Audit subpath built routes and anchors
+        run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
+
+      - name: Confirm subpath docs previews in Chromium
+        env:
+          WIND_DOCS_BASE: /wind-docs-preview/
+          WIND_DOCS_SCREENSHOT_DIR: ${{ runner.temp }}/wind-docs-screenshots/subpath
+        run: pnpm exec playwright test --config tests/docs-wind-preview/playwright.config.mjs
+
+      - name: Upload browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wind-docs-browser-${{ github.event.pull_request.number }}
+          path: |
+            ${{ runner.temp }}/wind-docs-screenshots
+            /tmp/zfb-wind-doc-preview-results
+          if-no-files-found: ignore
 
   # Dedicated workspace compiler lane. Deploy/build scripts keep consuming the
   # committed assets and never acquire a Rust prerequisite.
