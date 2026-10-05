@@ -1,0 +1,25 @@
+[
+  {
+    "name": "inactive",
+    "property": "display",
+    "wind": "inline",
+    "reference": "inline"
+  },
+  {
+    "name": "active",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex",
+    "hover": true
+  },
+  {
+    "name": "no-hover-capability",
+    "property": "display",
+    "wind": "inline",
+    "reference": "inline",
+    "hoverCapability": "none",
+    "engines": [
+      "chromium"
+    ]
+  }
+]

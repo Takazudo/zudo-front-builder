@@ -1,0 +1,26 @@
+[
+  {
+    "name": "x",
+    "property": "geometry:left",
+    "wind": {
+      "min": 15,
+      "max": 17
+    },
+    "reference": {
+      "min": 15,
+      "max": 17
+    }
+  },
+  {
+    "name": "y",
+    "property": "geometry:top",
+    "wind": {
+      "min": 7,
+      "max": 9
+    },
+    "reference": {
+      "min": 7,
+      "max": 9
+    }
+  }
+]

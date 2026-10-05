@@ -1,0 +1,7 @@
+{
+  "caseId": "display-grid",
+  "reset": "none",
+  "explicitCandidates": [
+    "grid"
+  ]
+}

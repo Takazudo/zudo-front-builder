@@ -1,0 +1,9 @@
+{
+  "caseId": "duplicate-reordered",
+  "reset": "none",
+  "explicitCandidates": [
+    "flex",
+    "flex-row",
+    "flex"
+  ]
+}

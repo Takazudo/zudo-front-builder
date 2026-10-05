@@ -1,0 +1,21 @@
+{
+  "caseIds": [
+    "display-flex",
+    "display-grid",
+    "flex-direction",
+    "hover-flex",
+    "focus-flex",
+    "group-focus-flex",
+    "peer-focus-flex",
+    "padding-axis",
+    "margin-axis",
+    "dark-flex",
+    "pseudo-before",
+    "translate-composed",
+    "space-hidden-children",
+    "duplicate-reordered",
+    "arbitrary-width-zero",
+    "arbitrary-width-one",
+    "arbitrary-width-seventeen"
+  ]
+}

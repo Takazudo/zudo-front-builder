@@ -1,0 +1,13 @@
+{
+  "caseId": "padding-axis",
+  "reset": "none",
+  "explicitCandidates": [
+    "p-hsp-sm",
+    "px-vsp-md",
+    "pl-hsp-sm"
+  ],
+  "spacing": {
+    "hsp-sm": "17px",
+    "vsp-md": "29px"
+  }
+}
