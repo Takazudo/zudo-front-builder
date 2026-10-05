@@ -1,0 +1,53 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-tools {
+  display: grid;
+  gap: .8rem;
+  max-width: 34rem;
+  color: #24364b;
+  font: 15px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-tools p {
+  margin: 0;
+}
+
+.wind-demo-code {
+  display: inline-block;
+  border: 1px solid #a7bacd;
+  border-radius: .25rem;
+  background: #f2f6fa;
+  padding: .2rem .45rem;
+  font: .9em / 1.5 ui-monospace, monospace;
+}
+
+.wind-demo-note {
+  display: grid;
+  gap: .3rem;
+}
+
+.wind-demo-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 4rem;
+  border: 1px solid #849bb3;
+  border-radius: .35rem;
+  padding: .55rem;
+  color: inherit;
+  font: inherit;
+}
+
+.wind-demo-textarea:focus-visible {
+  outline: 3px solid #1670b8;
+  outline-offset: 2px;
+}
+.resize-y {
+  resize: vertical;
+}
+.select-all {
+  user-select: all;
+}

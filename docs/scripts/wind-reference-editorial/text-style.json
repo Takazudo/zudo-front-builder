@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "family": "text-style",
+  "lookup": [
+    {
+      "entry": "v1.underline",
+      "candidate": "underline",
+      "example": "decoration-lines"
+    },
+    {
+      "entry": "v1.overline",
+      "candidate": "overline",
+      "example": "decoration-lines"
+    },
+    {
+      "entry": "v1.line-through",
+      "candidate": "line-through",
+      "example": "decoration-lines"
+    },
+    {
+      "entry": "v1.no-underline",
+      "candidate": "no-underline",
+      "example": "decoration-lines"
+    },
+    {
+      "entry": "v1.uppercase",
+      "candidate": "uppercase",
+      "example": "letter-case"
+    },
+    {
+      "entry": "v1.lowercase",
+      "candidate": "lowercase",
+      "example": "letter-case"
+    },
+    {
+      "entry": "v1.capitalize",
+      "candidate": "capitalize",
+      "example": "letter-case"
+    },
+    {
+      "entry": "v1.normal-case",
+      "candidate": "normal-case",
+      "example": "letter-case"
+    },
+    {
+      "entry": "v1.italic",
+      "candidate": "italic",
+      "example": "font-treatment"
+    },
+    {
+      "entry": "v1.not-italic",
+      "candidate": "not-italic",
+      "example": "font-treatment"
+    },
+    {
+      "entry": "v1.tabular-nums",
+      "candidate": "tabular-nums",
+      "example": "font-treatment"
+    },
+    {
+      "entry": "v1.antialiased",
+      "candidate": "antialiased",
+      "example": "font-treatment"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Change the line decoration, letter case, or font treatment without changing the words in the source. These utilities affect different CSS properties, so combine them only when each behavior is intentional.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The examples apply each class directly to the text whose behavior it demonstrates. The scaffold adds only layout, borders, spacing, and inherited link color. Case transforms change Latin letters but do not case-convert Japanese kana or kanji.",
+      "customValues": "Underline, overline, line-through, and no-underline set text-decoration-line. The four case utilities set text-transform, where normal-case restores none. italic and not-italic set font-style. tabular-nums requests tabular numeric glyphs, which only show when the chosen font supports them. antialiased sets platform-specific font-smoothing properties; browser and operating-system rendering can make the visual difference subtle. This family has fixed classes rather than named value tokens.",
+      "examples": [
+        {
+          "id": "decoration-lines",
+          "title": "Choose a decoration line",
+          "description": "The rows compare underline, overline, and line-through. The link starts with the browser underline so no-underline shows its reset behavior."
+        },
+        {
+          "id": "letter-case",
+          "title": "Transform Latin letter case",
+          "description": "The same bilingual phrase demonstrates the four case controls; the Japanese characters stay unchanged."
+        },
+        {
+          "id": "font-treatment",
+          "title": "Style emphasis and numerals",
+          "description": "The example contrasts italic and roman emphasis, tabular figures, and font smoothing. Numeric shape and smoothing depend on the active font and platform."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "ソースの単語を変えずに、文字装飾、英字の大文字小文字、フォントの表示方法を調整します。異なる CSS プロパティを扱うため、必要な挙動だけを組み合わせます。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各クラスは挙動を確認するテキストに直接付けます。デモ用 CSS はレイアウト、枠、余白、リンク色のみを加えます。大文字小文字の変換はラテン文字に作用し、かなや漢字は変換しません。",
+      "customValues": "underline、overline、line-through、no-underline は text-decoration-line を指定します。4つの case クラスは text-transform を扱い、normal-case は none に戻します。italic と not-italic は font-style を指定します。tabular-nums は等幅の数字を要求しますが、選んだフォントが対応している場合にだけ見た目に表れます。antialiased は環境依存のフォントスムージングを設定するため、ブラウザーや OS によって差が小さいことがあります。このファミリーは固定クラスで、名前付き値トークンはありません。",
+      "examples": [
+        {
+          "id": "decoration-lines",
+          "title": "文字装飾線を選ぶ",
+          "description": "下線、上線、取り消し線を比べます。最後のリンクには標準の下線があるため、no-underline の解除結果を確認できます。"
+        },
+        {
+          "id": "letter-case",
+          "title": "ラテン文字の大小を変える",
+          "description": "同じ日英の文で4種類の変換を比べます。日本語の文字は変化しません。"
+        },
+        {
+          "id": "font-treatment",
+          "title": "強調と数字を整える",
+          "description": "italic と通常の強調、tabular-nums、スムージングを確認します。数字の形とスムージングはフォントや環境に依存します。"
+        }
+      ]
+    }
+  }
+}

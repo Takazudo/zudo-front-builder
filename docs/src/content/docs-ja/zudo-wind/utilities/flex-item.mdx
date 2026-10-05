@@ -5,9 +5,202 @@ sidebar_position: 25
 generated: true
 ---
 
-項目の伸長、収縮、簡略指定のサイズ動作を設定します。
+コンテナに余りや不足があるときの flex item のサイズ挙動を指定します。flex のプリセットは basis、grow、shrink の組み合わせを選び、grow と shrink はそれぞれの比率を個別に指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-1` | `flex: 1 1 0%;` |
+| `flex-auto` | `flex: 1 1 auto;` |
+| `flex-initial` | `flex: 0 1 auto;` |
+| `flex-none` | `flex: none;` |
+| `grow` | `flex-grow: 1;` |
+| `grow-0` | `flex-grow: 0;` |
+| `grow-[2]` | `flex-grow: 2;` |
+| `shrink` | `flex-shrink: 1;` |
+| `shrink-0` | `flex-shrink: 0;` |
+| `shrink-[2]` | `flex-shrink: 2;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### flex のプリセットを比較
+
+4つのプリセットは flex-basis、flex-grow、flex-shrink の値が異なるため、行の空間を別々に分配します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-note\"\u003eCompare how each item uses its base size and available space.\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-72 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile flex-1 w-16\"\u003eflex-1\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-auto w-16\"\u003eflex-auto\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-initial w-16\"\u003eflex-initial\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-none w-16\"\u003eflex-none\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-1 {\n  flex: 1 1 0%;\n}\n.flex-auto {\n  flex: 1 1 auto;\n}\n.flex-initial {\n  flex: 0 1 auto;\n}\n.flex-none {\n  flex: none;\n}\n.w-16 {\n  width: 4rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"flex のプリセットを比較"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-1",
+        "flex-auto",
+        "flex-initial",
+        "flex-none",
+        "gap-2",
+        "w-16",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 余った幅を分ける
+
+grow は比率1で広がり、grow-0 は固定項目を広げません。grow-[2] は grow の2倍の余り幅を受け取ります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eExtra space is split according to grow factors.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-72 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile grow\"\u003egrow 1\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile grow-0 w-16\"\u003egrow-0\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile grow-[2]\"\u003egrow-[2]\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.grow {\n  flex-grow: 1;\n}\n.grow-0 {\n  flex-grow: 0;\n}\n.grow-\\[2\\] {\n  flex-grow: 2;\n}\n.w-16 {\n  width: 4rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"余った幅を分ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "grow",
+        "grow-0",
+        "grow-[2]",
+        "w-16",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 縮み方を制御
+
+shrink の項目は初期幅より縮み、shrink-0 は幅を保ちます。比率2の最後の項目は不足分をより多く引き受けます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThese starting widths are wider than the row.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile shrink w-48\"\u003eshrink\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile shrink-0 w-48 wind-demo-alt\"\u003eshrink-0 keeps its width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile shrink-[2] w-48\"\u003eshrink-[2]\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.shrink {\n  flex-shrink: 1;\n}\n.shrink-0 {\n  flex-shrink: 0;\n}\n.shrink-\\[2\\] {\n  flex-shrink: 2;\n}\n.w-48 {\n  width: 12rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"縮み方を制御"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "shrink",
+        "shrink-0",
+        "shrink-[2]",
+        "w-48",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## flex-1
 
@@ -214,3 +407,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `shrink` | `flex-shrink: 1` |
+
+</Details>

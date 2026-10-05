@@ -5,9 +5,132 @@ sidebar_position: 42
 generated: true
 ---
 
-設定された色の値または検証済みの任意の色から文字色を設定します。
+文字の前景色を指定します。背景色や周囲のレイアウトには作用しません。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `text-ink` | `color: var(--zw-color-ink);` |
+| `text-[#8b1e3f]/90` | `color: color-mix(in oklab, #8b1e3f 90%, transparent);` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 設定した文字色を使う
+
+text-ink と text-accent は例に明示した色トークンを参照し、/85 はアクセント色だけを調整します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-copy\"\u003e\u003cp\u003e\u003cspan class=\"text-ink\"\u003ePrimary text\u003c/span\u003e uses a configured dark ink color.\u003c/p\u003e\u003cp\u003e\u003cspan class=\"text-accent/85\"\u003eAccent text at 85 percent\u003c/span\u003e stays legible on the light page.\u003c/p\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-copy {\n  max-width: 34rem;\n  color: #243447;\n  font: 16px / 1.7 system-ui, sans-serif;\n}\n\n.wind-demo-copy p {\n  margin: 0 0 .6rem;\n}\n.text-accent\\/85 {\n  color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n"} title={"設定した文字色を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-copy": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-accent/85",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-copy { max-width: 34rem; color: #243447; font: 16px/1.7 system-ui, sans-serif; }
+.wind-demo-copy p { margin: 0 0 0.6rem; }
+```
+
+</Details>
+
+### 個別の色を指定する
+
+角括弧の値は CSS 色として検証され、/90 は対応する色の不透明度修飾子を適用します。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-copy\"\u003eA validated custom color: \u003cspan class=\"text-[#8b1e3f]/90\"\u003edeep berry at 90 percent\u003c/span\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-copy {\n  max-width: 34rem;\n  color: #243447;\n  font: 16px / 1.7 system-ui, sans-serif;\n}\n.text-\\[\\#8b1e3f\\]\\/90 {\n  color: color-mix(in oklab, #8b1e3f 90%, transparent);\n}\n"} title={"個別の色を指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-copy": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-[#8b1e3f]/90"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-copy { max-width: 34rem; color: #243447; font: 16px/1.7 system-ui, sans-serif; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+text-ink のような名前は tokens.colors に設定した値だけを参照します。text-current と text-transparent もキーワードとして使えます。text-[#8b1e3f] のような角括弧の値は CSS 色として検証されます。スラッシュ修飾子には 0〜100 の整数を指定でき、色を Oklab で transparent と混ぜます。text-accent/85 は文字色自体を薄くします。このファミリーに組み込みパレットはありません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## text
 
@@ -43,3 +166,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `text-[red]/40` | `color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

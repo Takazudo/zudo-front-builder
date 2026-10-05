@@ -5,9 +5,228 @@ sidebar_position: 64
 generated: true
 ---
 
-Set vertical alignment, box sizing, object fitting, and screen-reader-only clipping.
+Use these focused helpers for inline vertical alignment, box dimensions, replaced-element fitting, and visually hiding supplemental text while keeping it available to assistive technology.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `align-baseline` | `vertical-align: baseline;` |
+| `align-top` | `vertical-align: top;` |
+| `align-middle` | `vertical-align: middle;` |
+| `align-bottom` | `vertical-align: bottom;` |
+| `box-border` | `box-sizing: border-box;` |
+| `box-content` | `box-sizing: content-box;` |
+| `object-contain` | `object-fit: contain;` |
+| `object-cover` | `object-fit: cover;` |
+| `object-fill` | `object-fit: fill;` |
+| `object-none` | `object-fit: none;` |
+| `object-scale-down` | `object-fit: scale-down;` |
+| `sr-only` | `position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border-width: 0;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly uses spec: 1, reset: "none", strict mode, spacingUnit: "0.25rem", no breakpoints, and defaultTransitionTimingFunction: "ease". The data image is an inline SVG with intrinsic dimensions of 160 by 100, so object-fit results are deterministic. Authored CSS sets the comparison frames and box dimensions; zudo-wind supplies each alignment, sizing, fit, or sr-only declaration.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Align inline labels to a text line
+
+The four fixed values place larger inline labels at the baseline, top, middle, or bottom of the surrounding line.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-align-line\"\u003eText baseline \u003cspan class=\"wind-demo-swatch align-baseline\"\u003ebaseline\u003c/span\u003e \u003cspan class=\"wind-demo-swatch align-top\"\u003etop\u003c/span\u003e \u003cspan class=\"wind-demo-swatch align-middle\"\u003emiddle\u003c/span\u003e \u003cspan class=\"wind-demo-swatch align-bottom\"\u003ebottom\u003c/span\u003e\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-align-line {\n  margin: 0;\n  max-width: 38rem;\n  border-bottom: 1px solid #a7bacd;\n  color: #24364b;\n  font: 16px / 3 system-ui, sans-serif;\n}\n\n.wind-demo-swatch {\n  border: 1px solid #6c88a4;\n  background: #e4eff9;\n  padding: .2rem;\n  font-size: 1.1rem;\n  line-height: 1;\n}\n.align-baseline {\n  vertical-align: baseline;\n}\n.align-bottom {\n  vertical-align: bottom;\n}\n.align-middle {\n  vertical-align: middle;\n}\n.align-top {\n  vertical-align: top;\n}\n"} title={"Align inline labels to a text line"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-align-line": true,
+      "wind-demo-swatch": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "align-baseline",
+        "align-top",
+        "align-middle",
+        "align-bottom"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-align-line { margin: 0; max-width: 38rem; border-bottom: 1px solid #a7bacd; color: #24364b; font: 16px/3 system-ui, sans-serif; }
+.wind-demo-swatch { border: 1px solid #6c88a4; background: #e4eff9; padding: 0.2rem; font-size: 1.1rem; line-height: 1; }
+```
+
+</Details>
+
+### Compare declared and total width
+
+Both boxes declare width: 12rem and use the same padding and border. box-border includes them in that width; box-content adds them outside it.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-boxes\"\u003e\u003cdiv class=\"wind-demo-box box-border\"\u003eborder-box\u003cbr\u003e12rem total\u003c/div\u003e\u003cdiv class=\"wind-demo-box box-content\"\u003econtent-box\u003cbr\u003e12rem content\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-boxes {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: start;\n  gap: 1rem;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-box {\n  width: 12rem;\n  border: 4px solid #52779a;\n  background: #e4eff9;\n  padding: 1rem;\n}\n.box-border {\n  box-sizing: border-box;\n}\n.box-content {\n  box-sizing: content-box;\n}\n"} title={"Compare declared and total width"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-boxes": true,
+      "wind-demo-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "box-border",
+        "box-content"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-boxes { display: flex; flex-wrap: wrap; align-items: start; gap: 1rem; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-box { width: 12rem; border: 4px solid #52779a; background: #e4eff9; padding: 1rem; }
+```
+
+</Details>
+
+### Fit one image five ways
+
+object-contain preserves the full image, object-cover crops to fill, object-fill stretches, object-none keeps its intrinsic size, and object-scale-down only shrinks when needed.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-object-grid\"\u003e\u003cfigure class=\"wind-demo-object-card\"\u003e\u003cfigcaption\u003econtain\u003c/figcaption\u003e\u003cspan class=\"wind-demo-frame\"\u003e\u003cimg width=\"160\" height=\"100\" src=\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'100'%20viewBox%3D'0%200%20160%20100'%3E%3Crect%20width%3D'160'%20height%3D'100'%20fill%3D'%23dbeafe'%2F%3E%3Ccircle%20cx%3D'48'%20cy%3D'50'%20r%3D'32'%20fill%3D'%231d4ed8'%2F%3E%3Crect%20x%3D'96'%20y%3D'15'%20width%3D'54'%20height%3D'70'%20rx%3D'8'%20fill%3D'%23f97316'%2F%3E%3C%2Fsvg%3E\" alt=\"Blue circle and orange rounded rectangle on a pale blue field\" class=\"wind-demo-image object-contain\"\u003e\u003c/span\u003e\u003c/figure\u003e\u003cfigure class=\"wind-demo-object-card\"\u003e\u003cfigcaption\u003ecover\u003c/figcaption\u003e\u003cspan class=\"wind-demo-frame\"\u003e\u003cimg width=\"160\" height=\"100\" src=\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'100'%20viewBox%3D'0%200%20160%20100'%3E%3Crect%20width%3D'160'%20height%3D'100'%20fill%3D'%23dbeafe'%2F%3E%3Ccircle%20cx%3D'48'%20cy%3D'50'%20r%3D'32'%20fill%3D'%231d4ed8'%2F%3E%3Crect%20x%3D'96'%20y%3D'15'%20width%3D'54'%20height%3D'70'%20rx%3D'8'%20fill%3D'%23f97316'%2F%3E%3C%2Fsvg%3E\" alt=\"Blue circle and orange rounded rectangle on a pale blue field\" class=\"wind-demo-image object-cover\"\u003e\u003c/span\u003e\u003c/figure\u003e\u003cfigure class=\"wind-demo-object-card\"\u003e\u003cfigcaption\u003efill\u003c/figcaption\u003e\u003cspan class=\"wind-demo-frame\"\u003e\u003cimg width=\"160\" height=\"100\" src=\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'100'%20viewBox%3D'0%200%20160%20100'%3E%3Crect%20width%3D'160'%20height%3D'100'%20fill%3D'%23dbeafe'%2F%3E%3Ccircle%20cx%3D'48'%20cy%3D'50'%20r%3D'32'%20fill%3D'%231d4ed8'%2F%3E%3Crect%20x%3D'96'%20y%3D'15'%20width%3D'54'%20height%3D'70'%20rx%3D'8'%20fill%3D'%23f97316'%2F%3E%3C%2Fsvg%3E\" alt=\"Blue circle and orange rounded rectangle on a pale blue field\" class=\"wind-demo-image object-fill\"\u003e\u003c/span\u003e\u003c/figure\u003e\u003cfigure class=\"wind-demo-object-card\"\u003e\u003cfigcaption\u003enone\u003c/figcaption\u003e\u003cspan class=\"wind-demo-frame\"\u003e\u003cimg width=\"160\" height=\"100\" src=\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'100'%20viewBox%3D'0%200%20160%20100'%3E%3Crect%20width%3D'160'%20height%3D'100'%20fill%3D'%23dbeafe'%2F%3E%3Ccircle%20cx%3D'48'%20cy%3D'50'%20r%3D'32'%20fill%3D'%231d4ed8'%2F%3E%3Crect%20x%3D'96'%20y%3D'15'%20width%3D'54'%20height%3D'70'%20rx%3D'8'%20fill%3D'%23f97316'%2F%3E%3C%2Fsvg%3E\" alt=\"Blue circle and orange rounded rectangle on a pale blue field\" class=\"wind-demo-image object-none\"\u003e\u003c/span\u003e\u003c/figure\u003e\u003cfigure class=\"wind-demo-object-card\"\u003e\u003cfigcaption\u003escale-down\u003c/figcaption\u003e\u003cspan class=\"wind-demo-frame\"\u003e\u003cimg width=\"160\" height=\"100\" src=\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'100'%20viewBox%3D'0%200%20160%20100'%3E%3Crect%20width%3D'160'%20height%3D'100'%20fill%3D'%23dbeafe'%2F%3E%3Ccircle%20cx%3D'48'%20cy%3D'50'%20r%3D'32'%20fill%3D'%231d4ed8'%2F%3E%3Crect%20x%3D'96'%20y%3D'15'%20width%3D'54'%20height%3D'70'%20rx%3D'8'%20fill%3D'%23f97316'%2F%3E%3C%2Fsvg%3E\" alt=\"Blue circle and orange rounded rectangle on a pale blue field\" class=\"wind-demo-image object-scale-down\"\u003e\u003c/span\u003e\u003c/figure\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-object-grid {\n  display: flex;\n  flex-wrap: wrap;\n  gap: .8rem;\n  color: #24364b;\n  font: 13px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-object-card {\n  display: grid;\n  gap: .3rem;\n  margin: 0;\n}\n\n.wind-demo-frame {\n  display: block;\n  width: 7rem;\n  height: 5rem;\n  overflow: hidden;\n  border: 1px solid #849bb3;\n  background: #f2f6fa;\n}\n\n.wind-demo-image {\n  display: block;\n  width: 7rem;\n  height: 5rem;\n}\n.object-contain {\n  object-fit: contain;\n}\n.object-cover {\n  object-fit: cover;\n}\n.object-fill {\n  object-fit: fill;\n}\n.object-none {\n  object-fit: none;\n}\n.object-scale-down {\n  object-fit: scale-down;\n}\n"} title={"Fit one image five ways"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-object-grid": true,
+      "wind-demo-object-card": true,
+      "wind-demo-frame": true,
+      "wind-demo-image": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "object-contain",
+        "object-cover",
+        "object-fill",
+        "object-none",
+        "object-scale-down"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-object-grid { display: flex; flex-wrap: wrap; gap: 0.8rem; color: #24364b; font: 13px/1.4 system-ui, sans-serif; }
+.wind-demo-object-card { display: grid; gap: 0.3rem; margin: 0; }
+.wind-demo-frame { display: block; width: 7rem; height: 5rem; overflow: hidden; border: 1px solid #849bb3; background: #f2f6fa; }
+.wind-demo-image { display: block; width: 7rem; height: 5rem; }
+```
+
+</Details>
+
+### Add optional screen-reader context
+
+The visible button remains labeled “Save”; sr-only adds a short supplemental phrase without hiding essential content.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-sr-example\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-sr-button\"\u003eSave\u003cspan class=\"sr-only\"\u003e profile changes\u003c/span\u003e\u003c/button\u003e\u003cp\u003eThe visible “Save” label stands on its own; the visually hidden words add optional context for a screen reader.\u003c/p\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-sr-example {\n  display: grid;\n  justify-items: start;\n  gap: .7rem;\n  max-width: 30rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-sr-example p {\n  margin: 0;\n}\n\n.wind-demo-sr-button {\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  padding: .55rem .8rem;\n  color: inherit;\n  font: inherit;\n}\n\n.wind-demo-sr-button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip: rect(0,0,0,0);\n  white-space: nowrap;\n  border-width: 0;\n}\n"} title={"Add optional screen-reader context"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-sr-example": true,
+      "wind-demo-sr-button": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "sr-only"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-sr-example { display: grid; justify-items: start; gap: 0.7rem; max-width: 30rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-sr-example p { margin: 0; }
+.wind-demo-sr-button { border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; padding: 0.55rem 0.8rem; color: inherit; font: inherit; }
+.wind-demo-sr-button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+```
+
+</Details>
+
+## Custom and named values
+
+All entries in this family are fixed keywords with no named token scale or arbitrary value form. Vertical alignment affects inline-level content relative to a line, not flex or grid alignment. box-border includes padding and border in the declared width; box-content measures the content box. object-fit controls how replaced content fits the element’s box. sr-only clips content visually but leaves it in the accessibility tree; do not use it to hide information that sighted users need.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## align-baseline
 
@@ -424,3 +643,5 @@ Set vertical alignment, box sizing, object fitting, and screen-reader-only clipp
 | Example class | Expected declarations |
 | --- | --- |
 | `sr-only` | `position: absolute`; `width: 1px`; `height: 1px`; `padding: 0`; `margin: -1px`; `overflow: hidden`; `clip: rect(0,0,0,0)`; `white-space: nowrap`; `border-width: 0` |
+
+</Details>

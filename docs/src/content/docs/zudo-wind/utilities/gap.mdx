@@ -5,9 +5,223 @@ sidebar_position: 31
 generated: true
 ---
 
-Set row and column gaps between items in a layout container.
+Use gap on a grid or flex container to separate its items. It adds space between tracks or items without adding padding around the container.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `gap-4` | `column-gap: 1rem; row-gap: 1rem;` |
+| `gap-x-8` | `column-gap: 2rem;` |
+| `gap-y-2` | `row-gap: 0.5rem;` |
+| `gap-gutter` | `column-gap: var(--zw-spacing-gutter); row-gap: var(--zw-spacing-gutter);` |
+| `gap-[18px]` | `column-gap: 18px; row-gap: 18px;` |
+
+<Details title={"Example setup"}>
+
+These examples explicitly use spacingUnit: "0.25rem", reset: "none", strict mode and no breakpoints. Numeric suffixes multiply that unit: gap-4 emits literal 1rem lengths. No Tailwind spacing scale or theme is inherited. wind-demo classes are authored demonstration scaffolding; their CSS is visible with each preview.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Space items evenly
+
+Apply gap-4 to the container. Each tile uses p-2 for its own inner spacing.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-4\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n"} title={"Space items evenly"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-4",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### Separate row and column spacing
+
+Use gap-x-8 for 2rem between columns and gap-y-2 for 0.5rem between rows.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-x-8 gap-y-2\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-x-8 {\n  column-gap: 2rem;\n}\n.gap-y-2 {\n  row-gap: 0.5rem;\n}\n"} title={"Separate row and column spacing"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-x-8",
+        "gap-y-2",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### Name a reusable gap
+
+The example explicitly configures tokens.spacing.gutter to 1.5rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-gutter\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-gutter: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-gutter {\n  column-gap: var(--zw-spacing-gutter);\n  row-gap: var(--zw-spacing-gutter);\n}\n"} title={"Name a reusable gap"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "gutter": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-gutter",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+### Use a one-off length
+
+gap-[18px] emits 18px for both gap properties.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo grid grid-cols-3 gap-[18px]\"\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eA\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eB\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eC\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eD\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eE\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell p-2\"\u003eF\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.gap-\\[18px\\] {\n  column-gap: 18px;\n  row-gap: 18px;\n}\n"} title={"Use a one-off length"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-3",
+        "gap-[18px]",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+gap-0 removes gaps and gap-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit. Named spacing values need tokens.spacing, as the gutter example shows; arbitrary values such as gap-[18px] do not need that scale. Gap values cannot be negative. Use underscore encoding for spaces in arbitrary calc values. gap-x sets column-gap and gap-y sets row-gap; in flex layouts, how these affect item and line spacing follows the flex direction.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## gap
 
@@ -114,3 +328,5 @@ Set row and column gaps between items in a layout container.
 | Example class | Expected declarations |
 | --- | --- |
 | `gap-y-0` | `row-gap: 0` |
+
+</Details>

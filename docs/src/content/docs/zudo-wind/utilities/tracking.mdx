@@ -5,9 +5,127 @@ sidebar_position: 39
 generated: true
 ---
 
-Set letter spacing with a configured token or arbitrary value; negatives are allowed.
+Adjust the spacing between letters. Slightly tight tracking can suit a short display label, while neutral or open spacing is often easier to read in longer passages.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `tracking-tight` | `letter-spacing: var(--zw-tracking-tight);` |
+| `tracking-[0.12em]` | `letter-spacing: 0.12em;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example declares tokens.letterSpacings. wind-demo only supplies a border, wrapping safety, labels, and color; the tracking classes control letter spacing.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare named letter spacing
+
+The same short bilingual label uses one negative and one positive configured value.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-tracking\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eTight\u003c/span\u003e\u003cspan class=\"tracking-tight\"\u003eSHORT LABEL / 短いラベル\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eWide\u003c/span\u003e\u003cspan class=\"tracking-wide\"\u003eSHORT LABEL / 短いラベル\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-tracking-tight: -.03em;\n    --zw-tracking-wide: .1em;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tracking {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n  overflow-wrap: anywhere;\n}\n\n.wind-demo-tracking p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-tracking p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  display: inline-block;\n  width: 4rem;\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.tracking-tight {\n  letter-spacing: var(--zw-tracking-tight);\n}\n.tracking-wide {\n  letter-spacing: var(--zw-tracking-wide);\n}\n"} title={"Compare named letter spacing"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "letterSpacings": {
+        "tight": "-0.03em",
+        "wide": "0.1em"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-tracking": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "tracking-tight",
+        "tracking-wide"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-tracking { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; overflow-wrap: anywhere; }
+.wind-demo-tracking p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-tracking p:last-child { border-bottom: 0; }
+.wind-demo-label { display: inline-block; width: 4rem; color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### Apply a one-off value
+
+tracking-[0.12em] gives a short label extra spacing without adding another token.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-tracking-custom tracking-[0.12em]\"\u003eA little extra space / 少し広めの字間\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-tracking-tight: -.03em;\n    --zw-tracking-wide: .1em;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tracking-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.tracking-\\[0\\.12em\\] {\n  letter-spacing: 0.12em;\n}\n"} title={"Apply a one-off value"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "letterSpacings": {
+        "tight": "-0.03em",
+        "wide": "0.1em"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-tracking-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "tracking-[0.12em]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-tracking-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+tracking-tight resolves through tokens.letterSpacings.tight. Negative values are supported and can pull letters closer together. Arbitrary values such as tracking-[0.12em] are validated as letter-spacing CSS. Use modest changes: wide tracking can make paragraphs and Japanese text harder to read, so reserve it for short labels or deliberate display treatments.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## tracking
 
@@ -40,3 +158,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `tracking-[0.08em]` | `letter-spacing: 0.08em` |
+
+</Details>

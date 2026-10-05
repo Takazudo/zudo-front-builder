@@ -5,9 +5,142 @@ sidebar_position: 24
 generated: true
 ---
 
-フレックスコンテナの主軸方向と折り返しを設定します。
+これらのユーティリティは flex コンテナに指定します。direction は主軸と項目の順序を決め、wrap は1行のままにするか次の行へ送るかを決めます。横並びには row、操作項目やカードの縦積みには column を使います。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flex-row` | `flex-direction: row;` |
+| `flex-row-reverse` | `flex-direction: row-reverse;` |
+| `flex-col` | `flex-direction: column;` |
+| `flex-col-reverse` | `flex-direction: column-reverse;` |
+| `flex-wrap` | `flex-wrap: wrap;` |
+| `flex-nowrap` | `flex-wrap: nowrap;` |
+| `flex-wrap-reverse` | `flex-wrap: wrap-reverse;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 主軸を選ぶ
+
+row と column は項目を横軸と縦軸に並べます。reverse 形は DOM の順序を変えず、見た目の方向を逆にします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-note\"\u003eMain axis changes with direction; reverse changes visual order.\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-row gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eC\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-row-reverse gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA row-reverse\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eC\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-col gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA column\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-col-reverse gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA column-reverse\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-col {\n  flex-direction: column;\n}\n.flex-col-reverse {\n  flex-direction: column-reverse;\n}\n.flex-row {\n  flex-direction: row;\n}\n.flex-row-reverse {\n  flex-direction: row-reverse;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"主軸を選ぶ"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-col",
+        "flex-col-reverse",
+        "flex-row",
+        "flex-row-reverse",
+        "gap-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 項目を複数行にする
+
+flex-wrap は折り返し、flex-nowrap は1行を保ち、flex-wrap-reverse は交差軸方向の行順を逆にします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe frame is narrow enough to make wrapping visible.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-wrap w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 3\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 4\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-nowrap w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 3\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-wrap-reverse w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 3\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 4\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-nowrap {\n  flex-wrap: nowrap;\n}\n.flex-wrap {\n  flex-wrap: wrap;\n}\n.flex-wrap-reverse {\n  flex-wrap: wrap-reverse;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"項目を複数行にする"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-nowrap",
+        "flex-wrap",
+        "flex-wrap-reverse",
+        "gap-2",
+        "w-24",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+7 個のクラス名は固定で、値の接尾辞はありません。flex-row と flex-col が方向を選び、reverse 形は見た目の順序を逆にします。flex-wrap、flex-nowrap、flex-wrap-reverse が折り返し方を決めます。これらは flex コンテナを作らないため、別途 display:flex が必要です。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## flex-col
 
@@ -246,3 +379,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `flex-wrap-reverse` | `flex-wrap: wrap-reverse` |
+
+</Details>

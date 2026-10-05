@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "family": "transition",
+  "examples": [
+    {
+      "id": "color-transition",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-motion\"><button type=\"button\" class=\"wind-demo-trigger transition-colors hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\">Save changes</button></div>",
+      "utilities": ["transition-colors", "hover:bg-[#dbeafe]", "focus-visible:bg-[#dbeafe]"],
+      "authoredClasses": ["wind-demo-motion", "wind-demo-trigger"],
+      "scaffoldCss": ".wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }\n.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n.wind-demo-motion .wind-demo-trigger { cursor: pointer; }\n@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }\n"
+    },
+    {
+      "id": "custom-property",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-motion\"><button type=\"button\" class=\"wind-demo-trigger transition-[border-color] hover:border-[#1d4ed8] focus-visible:border-[#1d4ed8]\">Show the outline change</button></div>",
+      "utilities": [
+        "transition-[border-color]",
+        "hover:border-[#1d4ed8]",
+        "focus-visible:border-[#1d4ed8]"
+      ],
+      "authoredClasses": ["wind-demo-motion", "wind-demo-trigger"],
+      "scaffoldCss": ".wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }\n.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n.wind-demo-motion .wind-demo-trigger { cursor: pointer; }\n@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }\n"
+    },
+    {
+      "id": "instant-change",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-motion\"><button type=\"button\" class=\"wind-demo-trigger transition-none hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\">Change without interpolation</button></div>",
+      "utilities": ["transition-none", "hover:bg-[#dbeafe]", "focus-visible:bg-[#dbeafe]"],
+      "authoredClasses": ["wind-demo-motion", "wind-demo-trigger"],
+      "scaffoldCss": ".wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }\n.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n.wind-demo-motion .wind-demo-trigger { cursor: pointer; }\n@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }\n"
+    }
+  ]
+}

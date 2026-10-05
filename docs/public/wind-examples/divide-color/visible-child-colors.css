@@ -1,0 +1,34 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-divider-list {
+  max-width: 28rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #16324f;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-divider-item {
+  padding: .75rem .2rem;
+}
+.divide-y-2 > :not([hidden]) ~ :not([hidden]) {
+  border-top-width: 2px;
+  border-top-style: solid;
+}
+.divide-accent\/75 > :not([hidden]) ~ :not([hidden]) {
+  border-top-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);
+  border-right-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);
+  border-bottom-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);
+  border-left-color: color-mix(in oklab, var(--zw-color-accent) 75%, transparent);
+}

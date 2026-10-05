@@ -1,0 +1,17 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-family-code: ui-monospace, monospace;
+    --zw-font-family-reading: Georgia, "Times New Roman", serif;
+    --zw-font-family-ui: system-ui, sans-serif;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-type {
+  color: #223247;
+  border-left: 3px solid #6d7f96;
+  padding: .5rem .75rem;
+}
+.font-\[Georgia\,_serif\] {
+  font-family: Georgia, serif;
+}

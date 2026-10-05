@@ -1,0 +1,27 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-stage {
+  max-width: 24rem;
+  padding: 1rem;
+  background: #f1f5f9;
+}
+
+.wind-demo-box {
+  padding: .5rem;
+  border: 1px solid #94a3b8;
+  background: #fff;
+}
+
+.wind-demo-box p {
+  margin: 0;
+}
+.p-4 {
+  padding-top: 1rem;
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+  padding-left: 1rem;
+}

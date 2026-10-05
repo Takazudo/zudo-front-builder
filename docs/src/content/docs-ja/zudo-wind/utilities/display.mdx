@@ -5,9 +5,194 @@ sidebar_position: 21
 generated: true
 ---
 
-要素の非表示、インライン、ブロック、フレックス、グリッドを選びます。
+display で、文章の流れに入るか、ブロックとして改行するか、子要素を flex または grid で並べるかを選びます。インラインのまま幅も指定したい場合は inline-block、レイアウトから箱ごと取り除く場合は hidden を使います。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inline` | `display: inline;` |
+| `inline-block` | `display: inline-block;` |
+| `block` | `display: block;` |
+| `flex` | `display: flex;` |
+| `inline-flex` | `display: inline-flex;` |
+| `grid` | `display: grid;` |
+| `inline-grid` | `display: inline-grid;` |
+| `hidden` | `display: none;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューは spec 1、reset "none"、strict モード、spacingUnit "0.25rem"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### インラインとブロック
+
+inline は文章の流れに残り、inline-block は幅を指定しても行内に並び、block は新しい行から始まります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eInline content stays in the sentence; block content starts a new line.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-72\"\u003e\n    A \u003cspan class=\"wind-demo-tile inline\"\u003einline\u003c/span\u003e B\n    \u003cspan class=\"wind-demo-tile inline-block w-24\"\u003einline-block\u003c/span\u003e\n    \u003cspan class=\"wind-demo-tile block w-full\"\u003eblock takes its own line\u003c/span\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.block {\n  display: block;\n}\n.inline {\n  display: inline;\n}\n.inline-block {\n  display: inline-block;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n"} title={"インラインとブロック"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "block",
+        "inline",
+        "inline-block",
+        "w-24",
+        "w-72",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### flex と grid で子要素を配置
+
+flex と grid はブロックレベルのレイアウトコンテナを作り、inline-flex と inline-grid は文章の流れに残ります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eFlex and grid arrange children; their inline forms can sit within text.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame\"\u003e\n    \u003cdiv class=\"flex gap-2\"\u003e\n      \u003cdiv class=\"wind-demo-tile flex-1\"\u003eflex\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eitem\u003c/div\u003e\n    \u003c/div\u003e\n    \u003cp\u003eRead \u003cspan class=\"wind-demo-tile inline-flex\"\u003einline-flex\u003c/span\u003e in a sentence.\u003c/p\u003e\n    \u003cdiv class=\"grid grid-cols-3 gap-2\"\u003e\n      \u003cdiv class=\"wind-demo-tile\"\u003egrid 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003egrid 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003egrid 3\u003c/div\u003e\n    \u003c/div\u003e\n    \u003cp\u003eRead \u003cspan class=\"wind-demo-tile inline-grid grid-cols-2\"\u003e\u003cspan\u003eA\u003c/span\u003e\u003cspan\u003eB\u003c/span\u003e\u003c/span\u003e inline-grid in a sentence.\u003c/p\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.grid {\n  display: grid;\n}\n.inline-flex {\n  display: inline-flex;\n}\n.inline-grid {\n  display: inline-grid;\n}\n.flex-1 {\n  flex: 1 1 0%;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"flex と grid で子要素を配置"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-1",
+        "gap-2",
+        "grid",
+        "grid-cols-2",
+        "grid-cols-3",
+        "inline-flex",
+        "inline-grid"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### 箱をレイアウトから取り除く
+
+hidden は display:none を設定するため、次の項目がその場所に詰めて配置されます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFirst\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile hidden\"\u003eHidden item\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eNext item moves into its place\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cp class=\"wind-demo-note\"\u003ehidden removes the box from layout.\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.hidden {\n  display: none;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"箱をレイアウトから取り除く"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "hidden",
+        "items-center"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+このファミリーは値の接尾辞や任意値を持たない、8 個の固定クラスです。inline、block、inline-block、flex、inline-flex、grid、inline-grid、hidden は display の種類に対応します。hidden は display:none です。invisible は箱の場所を残す別の visibility ユーティリティです。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## block
 
@@ -280,3 +465,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `inline-grid` | `display: inline-grid` |
+
+</Details>

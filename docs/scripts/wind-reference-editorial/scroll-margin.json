@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "family": "scroll-margin",
+  "lookup": [
+    { "entry": "v1.scroll-m", "candidate": "scroll-m-6", "example": "all-sides-offset" },
+    { "entry": "v1.scroll-mx", "candidate": "scroll-mx-8", "example": "axis-offsets" },
+    { "entry": "v1.scroll-my", "candidate": "scroll-my-2", "example": "axis-offsets" },
+    { "entry": "v1.scroll-mb", "candidate": "scroll-mb-4", "example": "edge-offsets" },
+    { "entry": "v1.scroll-ml", "candidate": "scroll-ml-6", "example": "edge-offsets" },
+    { "entry": "v1.scroll-mr", "candidate": "scroll-mr-6", "example": "edge-offsets" },
+    { "entry": "v1.scroll-mt", "candidate": "scroll-mt-8", "example": "top-offset" }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use scroll-margin to add an outset around a target when the browser scrolls it into view, including fragment navigation and scroll snapping. It does not create visible layout space around the element.",
+      "setup": "The examples explicitly use spacingUnit: \"0.25rem\", reset: \"none\", strict mode and no breakpoints. Each preview contains a real link and target inside its own scrollable frame. Its native base element points to about:srcdoc so a fragment such as #top-target resolves within the preview document. Numeric suffixes multiply spacingUnit; no Tailwind scale or theme is inherited. wind-demo classes draw only the scroll frames and targets.",
+      "customValues": "scroll-m-0 removes the outset and scroll-m-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit; named values such as scroll-mt-sticky need tokens.spacing; arbitrary lengths such as scroll-mt-[72px] need no spacing token. Negative values are supported with a dash before the root, as in -scroll-mt-4. The x and y roots use physical sides: scroll-mx means left and right, scroll-my means top and bottom. The side roots are also physical, not logical start/end directions. Set scroll-margin on the target whose position matters; use scroll-padding on the scroll container when you need an inset for all of its targets.",
+      "examples": [
+        {
+          "id": "top-offset",
+          "title": "Keep a fragment target below the top edge",
+          "description": "Follow the link to the target. scroll-mt-8 adds a 2rem outset at the target’s physical top side."
+        },
+        {
+          "id": "axis-offsets",
+          "title": "Set horizontal and vertical outsets",
+          "description": "The two linked targets show scroll-my-2 on a vertical scroller and scroll-mx-8 on a horizontal scroller."
+        },
+        {
+          "id": "edge-offsets",
+          "title": "Set individual physical sides",
+          "description": "The linked targets use scroll-mb-4, scroll-ml-6 and scroll-mr-6 so each edge can be inspected separately."
+        },
+        {
+          "id": "all-sides-offset",
+          "title": "Set an outset on every side",
+          "description": "The target sits at the lower-right of a two-axis scroller; scroll-m-6 sets all four physical sides."
+        },
+        {
+          "id": "named-offset",
+          "title": "Name a reusable target offset",
+          "description": "The example explicitly configures tokens.spacing.sticky to 3rem."
+        },
+        {
+          "id": "arbitrary-offset",
+          "title": "Use a one-off scroll offset",
+          "description": "scroll-mt-[72px] sets the target’s top scroll margin to 72px."
+        },
+        {
+          "id": "negative-offset",
+          "title": "Use a negative scroll margin",
+          "description": "-scroll-mt-4 uses the supported negative policy to reduce the target’s top outset by 1rem."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "scroll-margin は、フラグメント移動やスクロールスナップなどでブラウザーが対象を表示範囲へ移動するとき、対象の周囲に追加の範囲を設けます。要素の周囲に見えるレイアウト空間は作りません。",
+      "setup": "この例では spacingUnit: \"0.25rem\"、reset: \"none\"、strict モード、空のブレークポイントを明示しています。各プレビューには、独自のスクロール枠の中に実際のリンクと対象があります。ネイティブな base 要素を about:srcdoc に向け、#top-target のようなフラグメントをプレビュー内の文書で解決します。数値の接尾辞には spacingUnit を掛け、Tailwind のスケールやテーマは継承しません。wind-demo クラスはスクロール枠と対象の表示だけを担当します。",
+      "customValues": "scroll-m-0 は追加範囲をなくし、scroll-m-px はトークンなしで 1px を指定します。それ以外の数値には tokens.spacingUnit、scroll-mt-sticky のような名前付きの値には tokens.spacing が必要です。scroll-mt-[72px] のような任意の長さは spacing トークン不要です。-scroll-mt-4 のように root の前にハイフンを付けると負の値を使えます。x と y の root は物理的な辺を指します。scroll-mx は左右、scroll-my は上下です。個別の辺も論理的な start/end ではなく物理的な辺を指定します。位置を調整する対象側に scroll-margin を設定します。すべての対象に共通の内側余白を設ける場合は、スクロールコンテナ側に scroll-padding を設定します。",
+      "examples": [
+        {
+          "id": "top-offset",
+          "title": "フラグメント対象を上端から離す",
+          "description": "リンクから対象へ移動します。scroll-mt-8 は物理的な上側に 2rem の追加範囲を設定します。"
+        },
+        {
+          "id": "axis-offsets",
+          "title": "水平・垂直方向の範囲を指定する",
+          "description": "縦スクロール枠では scroll-my-2、横スクロール枠では scroll-mx-8 を対象に設定しています。"
+        },
+        {
+          "id": "edge-offsets",
+          "title": "物理的な辺を個別に指定する",
+          "description": "リンク先の対象ごとに scroll-mb-4、scroll-ml-6、scroll-mr-6 を使い、各辺を確認できます。"
+        },
+        {
+          "id": "all-sides-offset",
+          "title": "四辺すべてに追加範囲を設ける",
+          "description": "二軸スクロール枠の右下にある対象へ、scroll-m-6 で物理的な四辺すべてを設定します。"
+        },
+        {
+          "id": "named-offset",
+          "title": "再利用する対象位置に名前を付ける",
+          "description": "tokens.spacing.sticky に 3rem を明示的に設定しています。"
+        },
+        {
+          "id": "arbitrary-offset",
+          "title": "一度だけ使うスクロール位置を指定する",
+          "description": "scroll-mt-[72px] は対象の上 scroll-margin を 72px にします。"
+        },
+        {
+          "id": "negative-offset",
+          "title": "負の scroll-margin を使う",
+          "description": "対応している負の値 -scroll-mt-4 で、対象の上側の追加範囲を 1rem 減らします。"
+        }
+      ]
+    }
+  }
+}

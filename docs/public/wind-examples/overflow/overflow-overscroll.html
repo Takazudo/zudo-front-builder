@@ -1,0 +1,15 @@
+<div class="wind-demo">
+  <p class="wind-demo-note">Contain scroll gestures at an inner boundary so they do not chain to the outer panel.</p>
+  <div class="wind-demo-frame h-36 w-64 overflow-y-auto overscroll-auto overscroll-y-auto">
+    <div class="wind-demo-frame h-24 overflow-y-auto overscroll-contain overscroll-y-contain">
+      <div class="wind-demo-tile">Inner scroll area</div><div class="wind-demo-tile">More inner content</div><div class="wind-demo-tile">End of inner area</div>
+    </div>
+    <div class="wind-demo-tile">Outer content continues</div><div class="wind-demo-tile">Outer end</div>
+  </div>
+  <div class="wind-demo-frame h-24 w-64 overflow-x-auto overscroll-x-contain">
+    <div class="wind-demo-tile w-max">Horizontal boundary is contained</div>
+  </div>
+  <div class="wind-demo-frame h-24 overflow-y-auto overscroll-none overscroll-y-none">
+    <div class="wind-demo-tile">Overscroll none</div><div class="wind-demo-tile">More content</div><div class="wind-demo-tile">End</div>
+  </div>
+</div>

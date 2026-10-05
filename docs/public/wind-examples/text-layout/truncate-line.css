@@ -1,0 +1,17 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-truncate {
+  width: 15rem;
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: .6rem;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

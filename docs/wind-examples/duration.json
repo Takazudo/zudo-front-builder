@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "family": "duration",
+  "examples": [
+    {
+      "id": "compare-durations",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-motion\"><button type=\"button\" class=\"wind-demo-trigger transition-transform duration-150 hover:translate-x-[8px] focus-visible:translate-x-[8px]\">150ms</button><button type=\"button\" class=\"wind-demo-trigger transition-transform duration-300 hover:translate-x-[8px] focus-visible:translate-x-[8px]\">300ms</button></div>",
+      "utilities": [
+        "transition-transform",
+        "duration-150",
+        "hover:translate-x-[8px]",
+        "focus-visible:translate-x-[8px]",
+        "duration-300"
+      ],
+      "authoredClasses": ["wind-demo-motion", "wind-demo-trigger"],
+      "scaffoldCss": ".wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }\n.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n.wind-demo-motion .wind-demo-trigger { cursor: pointer; }\n@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }\n"
+    },
+    {
+      "id": "bounded-custom-duration",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-motion\"><button type=\"button\" class=\"wind-demo-trigger transition-transform duration-[420ms] hover:translate-y-[8px] focus-visible:translate-y-[8px]\">A one-off 420ms duration</button></div>",
+      "utilities": [
+        "transition-transform",
+        "duration-[420ms]",
+        "hover:translate-y-[8px]",
+        "focus-visible:translate-y-[8px]"
+      ],
+      "authoredClasses": ["wind-demo-motion", "wind-demo-trigger"],
+      "scaffoldCss": ".wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }\n.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n.wind-demo-motion .wind-demo-trigger { cursor: pointer; }\n@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }\n"
+    }
+  ]
+}

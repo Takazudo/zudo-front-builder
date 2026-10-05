@@ -1,0 +1,40 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-family-code: ui-monospace, monospace;
+    --zw-font-family-reading: Georgia, "Times New Roman", serif;
+    --zw-font-family-ui: system-ui, sans-serif;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-family {
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: 1rem;
+}
+
+.wind-demo-family p {
+  margin: 0;
+  padding: .45rem 0;
+  border-bottom: 1px solid #d8e0e8;
+}
+
+.wind-demo-family p:last-child {
+  border-bottom: 0;
+}
+
+.wind-demo-label {
+  display: inline-block;
+  width: 5.5rem;
+  color: #5d6c7c;
+  font-size: .8rem;
+}
+.font-code {
+  font-family: var(--zw-font-family-code);
+}
+.font-reading {
+  font-family: var(--zw-font-family-reading);
+}
+.font-ui {
+  font-family: var(--zw-font-family-ui);
+}

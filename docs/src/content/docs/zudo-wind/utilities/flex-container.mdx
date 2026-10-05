@@ -5,9 +5,142 @@ sidebar_position: 24
 generated: true
 ---
 
-Set a flex container's main direction and wrapping behavior.
+Apply these utilities to a flex container. Direction chooses the main axis and item order; wrapping decides whether items stay on one line or form additional lines. Use a row for horizontal groups and a column for stacked controls or cards.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-row` | `flex-direction: row;` |
+| `flex-row-reverse` | `flex-direction: row-reverse;` |
+| `flex-col` | `flex-direction: column;` |
+| `flex-col-reverse` | `flex-direction: column-reverse;` |
+| `flex-wrap` | `flex-wrap: wrap;` |
+| `flex-nowrap` | `flex-wrap: nowrap;` |
+| `flex-wrap-reverse` | `flex-wrap: wrap-reverse;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Choose the main axis
+
+row and column arrange items on horizontal and vertical axes. The reverse forms reverse visual order without changing the source order.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-note\"\u003eMain axis changes with direction; reverse changes visual order.\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-row gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eC\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-row-reverse gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA row-reverse\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eC\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-col gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA column\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-col-reverse gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eA column-reverse\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eB\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-col {\n  flex-direction: column;\n}\n.flex-col-reverse {\n  flex-direction: column-reverse;\n}\n.flex-row {\n  flex-direction: row;\n}\n.flex-row-reverse {\n  flex-direction: row-reverse;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Choose the main axis"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-col",
+        "flex-col-reverse",
+        "flex-row",
+        "flex-row-reverse",
+        "gap-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Let items form lines
+
+flex-wrap moves items onto additional lines, flex-nowrap keeps one line, and flex-wrap-reverse reverses the cross-axis line order.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThe frame is narrow enough to make wrapping visible.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-wrap w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 3\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ewrap 4\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-nowrap w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003enowrap 3\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex flex-wrap-reverse w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 3\u003c/div\u003e\u003cdiv class=\"wind-demo-tile w-24\"\u003ereverse 4\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-nowrap {\n  flex-wrap: nowrap;\n}\n.flex-wrap {\n  flex-wrap: wrap;\n}\n.flex-wrap-reverse {\n  flex-wrap: wrap-reverse;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Let items form lines"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-nowrap",
+        "flex-wrap",
+        "flex-wrap-reverse",
+        "gap-2",
+        "w-24",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+All seven class names are exact and have no value suffixes. flex-row and flex-col select the direction; their reverse forms reverse the visual direction. flex-wrap, flex-nowrap, and flex-wrap-reverse control line wrapping. They do not create the flex container; add display:flex separately.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## flex-col
 
@@ -246,3 +379,5 @@ Set a flex container's main direction and wrapping behavior.
 | Example class | Expected declarations |
 | --- | --- |
 | `flex-wrap-reverse` | `flex-wrap: wrap-reverse` |
+
+</Details>

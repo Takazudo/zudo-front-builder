@@ -4,6 +4,134 @@ description: zudo-wind のユーティリティ群で使うプロジェクト提
 sidebar_position: 3
 ---
 
+## プロジェクトの値に名前を付ける
+
+これらのマップを `zfb.config.ts` または `zfb.config.json` のルートにある `wind.tokens` に設定し、必要な場所で完全なクラスを使います。数値の余白は設定済みの `spacingUnit` を掛け合わせます。`spacing.card` のような名前付き値はそのまま使われます。色、角丸、フォントなどの名前付きスケールもプロジェクトが用意します。
+
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": { "card": "1.5rem" },
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+プレビューでは `p-4` と `p-card` を比較します。どちらも設定した単位または名前付きの値を常に使います。
+
+{/* wind-preview: guide-tokens/named-values "数値と名前付き余白を比較する" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <div class=\"wind-demo-card bg-panel text-ink p-4 rounded-card\">p-4 uses the configured spacing unit.</div>\n  <div class=\"wind-demo-card bg-panel text-ink p-card rounded-card\">p-card uses the named spacing token.</div>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-panel: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-card: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n  min-height: 4rem;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.p-card {\n  padding-top: var(--zw-spacing-card);\n  padding-right: var(--zw-spacing-card);\n  padding-bottom: var(--zw-spacing-card);\n  padding-left: var(--zw-spacing-card);\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"数値と名前付き余白を比較する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "card": "1.5rem"
+      },
+      "colors": {
+        "panel": "#f4f1ec",
+        "ink": "#203046"
+      },
+      "radii": {
+        "card": "0.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-grid": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-2",
+        "gap-4",
+        "bg-panel",
+        "text-ink",
+        "p-4",
+        "p-card",
+        "rounded-card"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-card { border: 1px solid #8797aa; min-height: 4rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+余白単位がない状態で 0 以外の数値余白を使うと、フレームワークのデフォルト値を補う代わりに `ZW006` が報告されます。
+
+{/* wind-preview: guide-tokens/missing-spacing-unit "余白単位がない場合" */}
+
+```html
+<div class="p-4">p-4 needs a configured spacingUnit.</div>
+```
+
+期待される診断: `ZW006 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {},
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+完全な設定スキーマは[設定ガイド](./configuration.mdx)、トークンを使う全ユーティリティは[ユーティリティ一覧](./utilities/index.mdx)を参照してください。
+
+<Details title="トークン名、検証、出力変数">
+
 ## 暗黙のテーマはありません
 
 v1 には、色パレット、余白単位、名前付きスケール、ブレークポイント、フォントファミリー、フォントウェイト、角丸、シャドウ、名前付きイージングトークンが組み込まれていません。トランジション系ユーティリティのデフォルトタイミング関数は `ease` です。別のプロジェクト共通値を使う場合は `wind.defaultTransitionTimingFunction` を設定してください。`0`、`px`、有限のカタログにある固定キーワードは言語定数であり、テーマの項目ではありません。プロジェクト固有のトークン値は `wind.tokens` に追加してください。
@@ -67,3 +195,5 @@ v1 には、色パレット、余白単位、名前付きスケール、ブレ�
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

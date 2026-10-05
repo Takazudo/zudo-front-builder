@@ -1,0 +1,20 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-weight-medium: 500;
+    --zw-font-weight-regular: 400;
+    --zw-font-weight-strong: 700;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-weight-line {
+  color: #223247;
+  border-left: 3px solid #6d7f96;
+  padding: .5rem .75rem;
+}
+.font-\[550\] {
+  font-weight: 550;
+}
+.font-medium {
+  font-weight: var(--zw-font-weight-medium);
+}

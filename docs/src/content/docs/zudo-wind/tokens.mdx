@@ -4,6 +4,134 @@ description: Define the project supplied values used by zudo-wind utility famili
 sidebar_position: 3
 ---
 
+## Give project values stable names
+
+Add these maps under the root `wind.tokens` object in `zfb.config.ts` or `zfb.config.json`, then use complete classes wherever they belong. Numeric spacing multiplies the configured `spacingUnit`; a named value such as `spacing.card` is used directly. Colors, radii, fonts, and other named scales are also project supplied.
+
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": { "card": "1.5rem" },
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+The preview compares `p-4` with `p-card`; both use the same configured unit or named value every time.
+
+{/* wind-preview: guide-tokens/named-values "Compare numeric and named spacing" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <div class=\"wind-demo-card bg-panel text-ink p-4 rounded-card\">p-4 uses the configured spacing unit.</div>\n  <div class=\"wind-demo-card bg-panel text-ink p-card rounded-card\">p-card uses the named spacing token.</div>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-panel: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-card: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n  min-height: 4rem;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.p-card {\n  padding-top: var(--zw-spacing-card);\n  padding-right: var(--zw-spacing-card);\n  padding-bottom: var(--zw-spacing-card);\n  padding-left: var(--zw-spacing-card);\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"Compare numeric and named spacing"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "card": "1.5rem"
+      },
+      "colors": {
+        "panel": "#f4f1ec",
+        "ink": "#203046"
+      },
+      "radii": {
+        "card": "0.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-grid": true,
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "grid",
+        "grid-cols-2",
+        "gap-4",
+        "bg-panel",
+        "text-ink",
+        "p-4",
+        "p-card",
+        "rounded-card"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-card { border: 1px solid #8797aa; min-height: 4rem; }
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+Without a spacing unit, nonzero numeric spacing reports `ZW006` instead of assuming a framework default.
+
+{/* wind-preview: guide-tokens/missing-spacing-unit "Missing spacing unit" */}
+
+```html
+<div class="p-4">p-4 needs a configured spacingUnit.</div>
+```
+
+Expected diagnostics: `ZW006 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {},
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
+{/* wind-preview:end */}
+
+See the [configuration guide](./configuration.mdx) for the full schema and the [utility index](./utilities/index.mdx) for every token-backed utility.
+
+<Details title="Token names, validation, and emitted variables">
+
 ## No implicit theme
 
 V1 ships no color palette, spacing unit, named scale, breakpoint, font family, font weight, radius, shadow, or named easing token. Transition utilities use `ease` as their default timing function; set `wind.defaultTransitionTimingFunction` to choose another project default. The values `0`, `px`, and the closed catalog's static keywords are language constants; they are not theme entries. Add every project-specific token value to `wind.tokens`.
@@ -67,3 +195,5 @@ All configured values are exposed under the `--zw-` namespace inside `@layer zw-
 - [Utility reference](./utilities/index.mdx)
 - [Utility grammar](./utility-grammar.mdx)
 - [Cascade and reset](./cascade-and-reset.mdx)
+
+</Details>

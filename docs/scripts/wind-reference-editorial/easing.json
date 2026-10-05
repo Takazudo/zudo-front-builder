@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "family": "easing",
+  "lookup": [
+    {
+      "entry": "v1.ease",
+      "candidate": "ease-gentle",
+      "example": "named-easing"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose the pace of a transition: how it accelerates and slows between its starting and ending values.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". The named example adds tokens.easings.gentle as cubic-bezier(0.2, 0, 0, 1); the other uses a direct CSS timing function. Both use a 300ms transition and move only 8px on hover or focus-visible. Authored demo CSS removes transition time for reduced-motion users.",
+      "customValues": "There are no built-in named easing tokens. Configure tokens.easings and refer to an entry with ease-<name>, as in ease-gentle. Arbitrary forms such as ease-[steps(3,end)] accept one CSS timing function. wind.defaultTransitionTimingFunction takes a CSS keyword or function, not a token name; an explicit ease-* utility overrides it in the same variant bucket.",
+      "examples": [
+        {
+          "id": "named-easing",
+          "title": "Name a reusable timing curve",
+          "description": "The preview config defines tokens.easings.gentle, then ease-gentle selects that curve for the 300ms movement."
+        },
+        {
+          "id": "arbitrary-easing",
+          "title": "Use a one-off timing function",
+          "description": "ease-[steps(3,end)] creates three visible steps; the same button movement can be inspected with hover or keyboard focus."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "開始値から終了値へ変わるときの加速と減速を決め、トランジションの進み方を選びます。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。名前付きの例では tokens.easings.gentle に cubic-bezier(0.2, 0, 0, 1) を設定し、もう一つの例では CSS のタイミング関数を直接使います。どちらも 300ms で 8px だけ動き、hover と focus-visible で操作できます。prefers-reduced-motion の利用者には自作デモ CSS が時間を 0 にします。",
+      "customValues": "組み込みの名前付きイージング値はありません。tokens.easings に値を設定し、ease-gentle のように ease-<name> で参照します。ease-[steps(3,end)] のような任意形式には、CSS のタイミング関数を一つ指定できます。wind.defaultTransitionTimingFunction にはトークン名ではなく CSS のキーワードまたは関数を指定します。同じバリアント区画では、明示した ease-* がこの初期値を上書きします。",
+      "examples": [
+        {
+          "id": "named-easing",
+          "title": "再利用する曲線に名前を付ける",
+          "description": "プレビュー設定で tokens.easings.gentle を定義し、ease-gentle で 300ms の移動に適用します。"
+        },
+        {
+          "id": "arbitrary-easing",
+          "title": "一度だけ使うタイミング関数",
+          "description": "ease-[steps(3,end)] は変化を三段階で見せます。hover とキーボードフォーカスの両方で確認できます。"
+        }
+      ]
+    }
+  }
+}

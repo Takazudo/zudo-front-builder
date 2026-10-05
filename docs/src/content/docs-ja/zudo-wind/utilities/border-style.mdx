@@ -5,9 +5,149 @@ sidebar_position: 46
 generated: true
 ---
 
-対応する線種またはボーダーの結合動作を選びます。
+対応するボーダー線のスタイル、線の非表示、またはテーブルの border-collapse を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `border-dashed` | `border-style: dashed;` |
+| `border-dotted` | `border-style: dotted;` |
+| `border-double` | `border-style: double;` |
+| `border-none` | `border-style: none;` |
+| `border-solid` | `border-style: solid;` |
+| `border-collapse` | `border-collapse: collapse;` |
+| `border-collapse-separate` | `border-collapse: separate;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 線のパターンを比べる
+
+幅ユーティリティで各線を見えるようにします。border-none は幅を残したままスタイルを none にします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-lines\"\u003e\u003cdiv class=\"wind-demo-line border-2 border-solid p-2\"\u003esolid\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-dashed p-2\"\u003edashed\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-dotted p-2\"\u003edotted\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-4 border-double p-2\"\u003edouble\u003c/div\u003e\u003cdiv class=\"wind-demo-line border-2 border-none p-2\"\u003enone · no line\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-lines {\n  max-width: 30rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-line {\n  margin: .55rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-2 {\n  border-top-width: 2px;\n  border-top-style: solid;\n  border-right-width: 2px;\n  border-right-style: solid;\n  border-bottom-width: 2px;\n  border-bottom-style: solid;\n  border-left-width: 2px;\n  border-left-style: solid;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-dashed {\n  border-style: dashed;\n}\n.border-dotted {\n  border-style: dotted;\n}\n.border-double {\n  border-style: double;\n}\n.border-none {\n  border-style: none;\n}\n.border-solid {\n  border-style: solid;\n}\n"} title={"線のパターンを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-line": true,
+      "wind-demo-lines": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-2",
+        "border-4",
+        "border-dashed",
+        "border-dotted",
+        "border-double",
+        "border-none",
+        "border-solid",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-lines { max-width: 30rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-line { margin: 0.55rem 0; }
+```
+
+</Details>
+
+### セルのボーダーの接続方法を選ぶ
+
+各テーブルのユーティリティが線を結合するか分離するかを決めます。比較用にデモ CSS がセルの辺と間隔を用意します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-tables\"\u003e\u003ctable class=\"wind-demo-table border-collapse\"\u003e\u003ctbody\u003e\u003ctr\u003e\u003ctd class=\"wind-demo-cell\"\u003eA\u003c/td\u003e\u003ctd class=\"wind-demo-cell\"\u003eB\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003c/table\u003e\u003ctable class=\"wind-demo-table border-collapse-separate\"\u003e\u003ctbody\u003e\u003ctr\u003e\u003ctd class=\"wind-demo-cell\"\u003eA\u003c/td\u003e\u003ctd class=\"wind-demo-cell\"\u003eB\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003c/table\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tables {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 1rem;\n  color: #16324f;\n  font: 14px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-table {\n  border-spacing: .45rem;\n}\n\n.wind-demo-cell {\n  border: 2px solid #0f766e;\n  padding: .6rem 1rem;\n  text-align: center;\n}\n.border-collapse {\n  border-collapse: collapse;\n}\n.border-collapse-separate {\n  border-collapse: separate;\n}\n"} title={"セルのボーダーの接続方法を選ぶ"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-cell": true,
+      "wind-demo-table": true,
+      "wind-demo-tables": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-collapse",
+        "border-collapse-separate"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-tables { display: flex; flex-wrap: wrap; gap: 1rem; color: #16324f; font: 14px/1.4 system-ui, sans-serif; }
+.wind-demo-table { border-spacing: 0.45rem; }
+.wind-demo-cell { border: 2px solid #0f766e; padding: 0.6rem 1rem; text-align: center; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+border-solid、border-dashed、border-dotted、border-double、border-none は border-style を設定します。線を見せるには幅ユーティリティも組み合わせます。スタイルだけでは幅を追加しません。border-none はスタイルだけを none にします。border-collapse と border-collapse-separate はテーブルの border-collapse プロパティを設定します。セルの線を接続するか分離するかを選べます。border の幅ユーティリティ自体も solid スタイルを設定します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## border-dashed
 
@@ -246,3 +386,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `border-collapse-separate` | `border-collapse: separate` |
+
+</Details>

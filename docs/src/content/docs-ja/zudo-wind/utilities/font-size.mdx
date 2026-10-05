@@ -5,9 +5,146 @@ sidebar_position: 37
 generated: true
 ---
 
-設定済みトークンまたは任意の CSS font-size 値から文字サイズを設定します。
+キャプション、本文、見出しなど用途に合わせて文字サイズを指定します。名前付きの font-size トークンにはサイズと行の高さを組み合わせられ、任意値では検証済みの CSS 値を1要素に指定できます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `text-copy` | `font-size: var(--zw-font-size-copy); line-height: var(--zw-font-size-copy-leading);` |
+| `text-[20px]` | `font-size: 20px;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は size と lineHeight を持つ tokens.fontSizes を宣言します。lineHeight がある名前付きテキストトークンは両方のプロパティを出力し、text-[20px] は font-size だけを出力します。wind-demo は枠と余白のみを加えます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### サイズと行の高さを比べる
+
+各トークンはサイズと行の高さを組み合わせ、大きい表示用サイズでは行を詰めています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-size\"\u003e\n  \u003cp class=\"text-caption\"\u003eCaption / 補足の文字: compact but readable.\u003c/p\u003e\n  \u003cp class=\"text-copy\"\u003eBody / 本文: choose a size that stays comfortable across a paragraph.\u003c/p\u003e\n  \u003cp class=\"text-display\"\u003eDisplay / 見出し: larger type uses a tighter paired leading.\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-size-caption: .875rem;\n    --zw-font-size-caption-leading: 1.45;\n    --zw-font-size-copy: 1rem;\n    --zw-font-size-copy-leading: 1.65;\n    --zw-font-size-display: 1.5rem;\n    --zw-font-size-display-leading: 1.2;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-size {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-size p {\n  margin: 0;\n  padding: .5rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-size p:last-child {\n  border-bottom: 0;\n}\n.text-caption {\n  font-size: var(--zw-font-size-caption);\n  line-height: var(--zw-font-size-caption-leading);\n}\n.text-copy {\n  font-size: var(--zw-font-size-copy);\n  line-height: var(--zw-font-size-copy-leading);\n}\n.text-display {\n  font-size: var(--zw-font-size-display);\n  line-height: var(--zw-font-size-display-leading);\n}\n"} title={"サイズと行の高さを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontSizes": {
+        "caption": {
+          "size": "0.875rem",
+          "lineHeight": "1.45"
+        },
+        "copy": {
+          "size": "1rem",
+          "lineHeight": "1.65"
+        },
+        "display": {
+          "size": "1.5rem",
+          "lineHeight": "1.2"
+        }
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-size": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-caption",
+        "text-copy",
+        "text-display"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-size { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-size p { margin: 0; padding: 0.5rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-size p:last-child { border-bottom: 0; }
+```
+
+</Details>
+
+### 一度だけ使うサイズを指定する
+
+text-[20px] は検証された font-size を出力し、line-height はブラウザーの値または別の明示的なユーティリティに任せます。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-size-custom text-[20px]\"\u003eOne-off 20px / 任意の20pxサイズ\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-size-caption: .875rem;\n    --zw-font-size-caption-leading: 1.45;\n    --zw-font-size-copy: 1rem;\n    --zw-font-size-copy-leading: 1.65;\n    --zw-font-size-display: 1.5rem;\n    --zw-font-size-display-leading: 1.2;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-size-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.text-\\[20px\\] {\n  font-size: 20px;\n}\n"} title={"一度だけ使うサイズを指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontSizes": {
+        "caption": {
+          "size": "0.875rem",
+          "lineHeight": "1.45"
+        },
+        "copy": {
+          "size": "1rem",
+          "lineHeight": "1.65"
+        },
+        "display": {
+          "size": "1.5rem",
+          "lineHeight": "1.2"
+        }
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-size-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "text-[20px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-size-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+設定済みの値には text-copy、1回だけの指定には text-[20px] を使います。名前付き font-size は text ルートを色トークンと共有するため、同じ設定内で名前が重複しないようにします。ペアの leading は font-size トークンの一部です。slash 構文を付けない任意サイズから行の高さは自動で作られません。文章に決まったリズムが必要な場合は行の高さも明示します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## text
 
@@ -41,3 +178,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `text-[1rem]` | `font-size: 1rem` |
+
+</Details>

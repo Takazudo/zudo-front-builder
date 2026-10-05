@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "family": "radius",
+  "examples": [
+    {
+      "id": "corner-groups",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-radius-grid\"><div class=\"wind-demo-radius-card rounded-card bg-panel text-ink p-2\">all</div><div class=\"wind-demo-radius-card rounded-t-card bg-panel text-ink p-2\">top</div><div class=\"wind-demo-radius-card rounded-r-card bg-panel text-ink p-2\">right</div><div class=\"wind-demo-radius-card rounded-b-card bg-panel text-ink p-2\">bottom</div><div class=\"wind-demo-radius-card rounded-l-card bg-panel text-ink p-2\">left</div><div class=\"wind-demo-radius-card rounded-tl-card bg-panel text-ink p-2\">top-left</div><div class=\"wind-demo-radius-card rounded-tr-card bg-panel text-ink p-2\">top-right</div><div class=\"wind-demo-radius-card rounded-br-card bg-panel text-ink p-2\">bottom-right</div><div class=\"wind-demo-radius-card rounded-bl-card bg-panel text-ink p-2\">bottom-left</div></div>",
+      "utilities": [
+        "bg-panel",
+        "p-2",
+        "rounded-b-card",
+        "rounded-bl-card",
+        "rounded-br-card",
+        "rounded-card",
+        "rounded-l-card",
+        "rounded-r-card",
+        "rounded-t-card",
+        "rounded-tl-card",
+        "rounded-tr-card",
+        "text-ink"
+      ],
+      "authoredClasses": ["wind-demo-radius-card", "wind-demo-radius-grid"],
+      "scaffoldCss": ".wind-demo-radius-grid { display: grid; grid-template-columns: repeat(3, minmax(5rem, 1fr)); gap: 0.6rem; max-width: 27rem; }\n.wind-demo-radius-card { display: grid; place-items: center; min-height: 3.2rem; text-align: center; font: 12px/1.25 system-ui, sans-serif; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            },
+            "radii": {
+              "card": "0.75rem",
+              "pill": "9999px"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "named-and-arbitrary",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-radius-values\"><div class=\"wind-demo-radius-value rounded-pill bg-panel text-ink p-2\">named pill</div><div class=\"wind-demo-radius-value rounded-[18px] bg-panel text-ink p-2\">custom 18px</div><div class=\"wind-demo-radius-value rounded-full bg-panel text-ink p-2\">full</div><div class=\"wind-demo-radius-value rounded-none bg-panel text-ink p-2\">none</div></div>",
+      "utilities": [
+        "bg-panel",
+        "p-2",
+        "rounded-[18px]",
+        "rounded-full",
+        "rounded-none",
+        "rounded-pill",
+        "text-ink"
+      ],
+      "authoredClasses": ["wind-demo-radius-value", "wind-demo-radius-values"],
+      "scaffoldCss": ".wind-demo-radius-values { display: flex; flex-wrap: wrap; gap: 0.7rem; max-width: 30rem; }\n.wind-demo-radius-value { display: inline-block; font: 13px/1.4 system-ui, sans-serif; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            },
+            "radii": {
+              "card": "0.75rem",
+              "pill": "9999px"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

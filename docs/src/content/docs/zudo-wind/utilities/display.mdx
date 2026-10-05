@@ -5,9 +5,194 @@ sidebar_position: 21
 generated: true
 ---
 
-Choose whether an element is hidden, inline, block-level, flex, or grid.
+Choose display to control whether an element joins the text flow, starts a block, or arranges its children as flex or grid items. Use inline-block when an inline element also needs a box size; use hidden when the box should leave layout.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `inline` | `display: inline;` |
+| `inline-block` | `display: inline-block;` |
+| `block` | `display: block;` |
+| `flex` | `display: flex;` |
+| `inline-flex` | `display: inline-flex;` |
+| `grid` | `display: grid;` |
+| `inline-grid` | `display: inline-grid;` |
+| `hidden` | `display: none;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Inline and block flow
+
+inline remains with surrounding text, inline-block accepts a width while staying in the line, and block starts a new line.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eInline content stays in the sentence; block content starts a new line.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-72\"\u003e\n    A \u003cspan class=\"wind-demo-tile inline\"\u003einline\u003c/span\u003e B\n    \u003cspan class=\"wind-demo-tile inline-block w-24\"\u003einline-block\u003c/span\u003e\n    \u003cspan class=\"wind-demo-tile block w-full\"\u003eblock takes its own line\u003c/span\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.block {\n  display: block;\n}\n.inline {\n  display: inline;\n}\n.inline-block {\n  display: inline-block;\n}\n.w-24 {\n  width: 6rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n"} title={"Inline and block flow"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "block",
+        "inline",
+        "inline-block",
+        "w-24",
+        "w-72",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Arrange children with flex and grid
+
+flex and grid create block-level layout containers; inline-flex and inline-grid remain in surrounding text flow.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eFlex and grid arrange children; their inline forms can sit within text.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame\"\u003e\n    \u003cdiv class=\"flex gap-2\"\u003e\n      \u003cdiv class=\"wind-demo-tile flex-1\"\u003eflex\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eitem\u003c/div\u003e\n    \u003c/div\u003e\n    \u003cp\u003eRead \u003cspan class=\"wind-demo-tile inline-flex\"\u003einline-flex\u003c/span\u003e in a sentence.\u003c/p\u003e\n    \u003cdiv class=\"grid grid-cols-3 gap-2\"\u003e\n      \u003cdiv class=\"wind-demo-tile\"\u003egrid 1\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003egrid 2\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003egrid 3\u003c/div\u003e\n    \u003c/div\u003e\n    \u003cp\u003eRead \u003cspan class=\"wind-demo-tile inline-grid grid-cols-2\"\u003e\u003cspan\u003eA\u003c/span\u003e\u003cspan\u003eB\u003c/span\u003e\u003c/span\u003e inline-grid in a sentence.\u003c/p\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.grid {\n  display: grid;\n}\n.inline-flex {\n  display: inline-flex;\n}\n.inline-grid {\n  display: inline-grid;\n}\n.flex-1 {\n  flex: 1 1 0%;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-cols-3 {\n  grid-template-columns: repeat(3,minmax(0,1fr));\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Arrange children with flex and grid"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-1",
+        "gap-2",
+        "grid",
+        "grid-cols-2",
+        "grid-cols-3",
+        "inline-flex",
+        "inline-grid"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Remove a box from layout
+
+hidden sets display:none, so the following item occupies its space.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame flex items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFirst\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile hidden\"\u003eHidden item\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eNext item moves into its place\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cp class=\"wind-demo-note\"\u003ehidden removes the box from layout.\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.hidden {\n  display: none;\n}\n.items-center {\n  align-items: center;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Remove a box from layout"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "hidden",
+        "items-center"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+This family has eight exact class names and no value suffixes or custom values. inline, block, inline-block, flex, inline-flex, grid, inline-grid, and hidden map directly to display modes. hidden is display:none; invisible is a separate visibility utility that preserves the box.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## block
 
@@ -280,3 +465,5 @@ Choose whether an element is hidden, inline, block-level, flex, or grid.
 | Example class | Expected declarations |
 | --- | --- |
 | `inline-grid` | `display: inline-grid` |
+
+</Details>

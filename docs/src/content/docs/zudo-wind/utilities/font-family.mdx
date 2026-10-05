@@ -5,9 +5,130 @@ sidebar_position: 35
 generated: true
 ---
 
-Select a configured font family or provide an arbitrary font-family value.
+Choose the typeface stack for an element. Use a named font-family token when the same stack should be reused across a site; use an arbitrary value for a one-off stack.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `font-ui` | `font-family: var(--zw-font-family-ui);` |
+| `font-[Georgia,_serif]` | `font-family: Georgia, serif;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each token example declares tokens.fontFamilies in its record. No browser theme or Tailwind font token is assumed. wind-demo classes add only spacing, borders, labels, and color; the font utilities supply the typeface.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare configured stacks
+
+The example configures ui, reading, and code in tokens.fontFamilies, then applies each named font directly to its text.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-family\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eInterface\u003c/span\u003e\u003cspan class=\"font-ui\"\u003eA clear system sans / 読みやすいサンセリフ\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eReading\u003c/span\u003e\u003cspan class=\"font-reading\"\u003eA serif voice / セリフ体の雰囲気\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eCode\u003c/span\u003e\u003cspan class=\"font-code\"\u003econst value = 42;\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-family-code: ui-monospace, monospace;\n    --zw-font-family-reading: Georgia, \"Times New Roman\", serif;\n    --zw-font-family-ui: system-ui, sans-serif;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-family {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-family p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-family p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  display: inline-block;\n  width: 5.5rem;\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.font-code {\n  font-family: var(--zw-font-family-code);\n}\n.font-reading {\n  font-family: var(--zw-font-family-reading);\n}\n.font-ui {\n  font-family: var(--zw-font-family-ui);\n}\n"} title={"Compare configured stacks"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontFamilies": {
+        "ui": "system-ui, sans-serif",
+        "reading": "Georgia, 'Times New Roman', serif",
+        "code": "ui-monospace, monospace"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-family": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-ui",
+        "font-reading",
+        "font-code"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-family { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-family p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-family p:last-child { border-bottom: 0; }
+.wind-demo-label { display: inline-block; width: 5.5rem; color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### Use a one-off stack
+
+font-[Georgia,_serif] resolves to Georgia, serif after underscore decoding. The example repeats the explicit token setup so the preview configuration is self-contained.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-type font-[Georgia,_serif]\"\u003eA one-off serif stack / 任意のフォント指定\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-family-code: ui-monospace, monospace;\n    --zw-font-family-reading: Georgia, \"Times New Roman\", serif;\n    --zw-font-family-ui: system-ui, sans-serif;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-type {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.font-\\[Georgia\\,_serif\\] {\n  font-family: Georgia, serif;\n}\n"} title={"Use a one-off stack"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontFamilies": {
+        "ui": "system-ui, sans-serif",
+        "reading": "Georgia, 'Times New Roman', serif",
+        "code": "ui-monospace, monospace"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-type": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-[Georgia,_serif]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-type { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+A class such as font-reading resolves tokens.fontFamilies.reading. Token names used by font-family and font-weight share the font root, so keep their names distinct in one configuration. An arbitrary stack such as font-[Georgia,_serif] replaces the underscore with a space and is validated as font-family CSS. Prefer a configured name for a stack reused in several places; arbitrary values are useful for a local exception. The selected font still needs to be installed or loaded by the application.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## font
 
@@ -40,3 +161,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `font-[sans-serif]` | `font-family: sans-serif` |
+
+</Details>

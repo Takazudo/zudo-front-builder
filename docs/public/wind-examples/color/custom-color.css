@@ -1,0 +1,20 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-accent: #075985;
+    --zw-color-alert: #8b1e3f;
+    --zw-color-focus: #0f766e;
+    --zw-color-ink: #16324f;
+    --zw-color-panel: #edf4f8;
+    --zw-color-white: #fff;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-copy {
+  max-width: 34rem;
+  color: #243447;
+  font: 16px / 1.7 system-ui, sans-serif;
+}
+.text-\[\#8b1e3f\]\/90 {
+  color: color-mix(in oklab, #8b1e3f 90%, transparent);
+}

@@ -13,15 +13,18 @@ names, dead utilities, declaration conflicts within a class literal, and
 dynamic constructions without treating low-confidence literals as class
 attributes.
 
-The language contract is `research/3242-zudo-wind-v1-spec.md` in the workspace.
+The language contract is the workspace
+[zudo-wind v1 specification](../../research/3242-zudo-wind-v1-spec.md).
 
 ## Catalog export
 
-The committed `catalog/zudo-wind-catalog.v1.json` file exports all v1 catalog
-entries and their examples. Its independent catalog schema version is `1`; the
-language spec version is `1`. Export fields use stable camelCase names and the
-entries follow the catalog's deterministic conflict and order ranks. The stale
-test compares parsed JSON values so Oxfmt can own the checked-in formatting.
+The committed
+[`catalog/zudo-wind-catalog.v1.json`](catalog/zudo-wind-catalog.v1.json) file
+exports all v1 catalog entries and their examples. Its independent catalog
+schema version is `1`; the language spec version is `1`. Export fields use
+stable camelCase names and the entries follow the catalog's deterministic
+conflict and order ranks. The stale test compares parsed JSON values so Oxfmt
+can own the checked-in formatting.
 
 Regenerate the file from the workspace root, then format it:
 

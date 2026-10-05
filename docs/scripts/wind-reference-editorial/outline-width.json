@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "family": "outline-width",
+  "lookup": [
+    {
+      "entry": "v1.outline.width",
+      "candidate": "outline-2",
+      "example": "width-and-offset"
+    },
+    {
+      "entry": "v1.outline.offset",
+      "candidate": "outline-offset-4",
+      "example": "width-and-offset"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set the outline thickness and its distance from the element.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "outline-2 uses pixels and sets a solid outline style along with the width. Bracket values accept validated CSS lengths. outline-offset-4 sets a 4px gap between the outline and the element; offset accepts integer pixels or an arbitrary length and may be negative. Outline does not take up layout space. Width and offset are separate catalog entries, so tune them independently. Keep a visible focus indicator on interactive controls.",
+      "examples": [
+        {
+          "id": "width-and-offset",
+          "title": "Separate the line from its target",
+          "description": "outline-2 draws a 2px line and outline-offset-4 places it 4px away; the configured outline color makes the boundary easy to see."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "アウトラインの太さと要素からの距離を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "outline-2 はピクセル幅を使い、幅とともに solid スタイルも設定します。角括弧には検証済み CSS 長さを指定できます。outline-offset-4 はアウトラインと要素の間を 4px 離します。offset は整数ピクセルまたは任意の長さを受け取り、負数も使えます。アウトラインはレイアウト上の場所を取りません。幅と offset は別のカタログ項目なので個別に調整できます。操作可能なコントロールではフォーカス表示を維持してください。",
+      "examples": [
+        {
+          "id": "width-and-offset",
+          "title": "線と対象要素の間隔を調整する",
+          "description": "outline-2 が 2px の線を描き、outline-offset-4 が 4px 離します。設定済みの色で境界を見分けやすくしています。"
+        }
+      ]
+    }
+  }
+}

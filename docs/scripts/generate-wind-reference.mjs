@@ -3,6 +3,13 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { loadRecords, exampleSource } from "./wind-preview-assets.mjs";
+import {
+  loadEditorial,
+  validateEditorial,
+  loadPreviewContext,
+  candidateDeclarations,
+} from "./wind-reference-editorial.mjs";
 import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -324,10 +331,118 @@ function renderEntry(entry, strings) {
   ].join("\n");
 }
 
-export function renderReferencePages(catalog, strings, families) {
+function expression(value) {
+  // JSON literals preserve exact bytes and keep user text inside an MDX expression.
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
+}
+
+function fenced(value, language) {
+  const fence = "`".repeat(
+    Math.max(3, ...[...String(value).matchAll(/`+/g)].map(([run]) => run.length + 1)),
+  );
+  return `${fence}${language}\n${String(value).trimEnd()}\n${fence}`;
+}
+
+function renderEditorial(family, record, strings, locale, preview, entriesById) {
+  validateEditorial(record, family, preview.examples.get(family.id), entriesById, preview.assets);
+  const content = record.locales[locale];
+  if (!content) throw new Error(`Editorial ${family.id}: unsupported locale ${locale}`);
+  const labels = strings.reader;
+  if (
+    !labels ||
+    [
+      "lookup",
+      "setup",
+      "workedExamples",
+      "customValues",
+      "technical",
+      "config",
+      "scaffold",
+      "diagnostics",
+      "taskColumn",
+      "browse",
+    ].some((key) => typeof labels[key] !== "string")
+  )
+    throw new Error("Missing reader locale labels");
+  const examples = new Map(
+    preview.examples.get(family.id).examples.map((example) => [example.id, example]),
+  );
+  const rows = record.lookup.map((row) => {
+    const asset = preview.assets.get(`${family.id}/${row.example}`);
+    if (!asset) throw new Error(`Missing preview asset ${family.id}/${row.example}`);
+    return [codeSpan(row.candidate), codeSpan(candidateDeclarations(asset.css, row.candidate))];
+  });
+  return [
+    escapeMdxText(content.purpose),
+    "",
+    `## ${escapeMdxText(labels.lookup)}`,
+    "",
+    table([strings.columns.candidate, strings.columns.expectedDeclarations], rows),
+    "",
+    `<Details title={${expression(labels.setup)}}>`,
+    "",
+    escapeMdxText(content.setup),
+    "",
+    "</Details>",
+    "",
+    `## ${escapeMdxText(labels.workedExamples)}`,
+    "",
+    "<WindPreviewEnhancer />",
+    "",
+    ...content.examples.flatMap((item) => {
+      const example = examples.get(item.id);
+      const asset = preview.assets.get(`${family.id}/${item.id}`);
+      const source = exampleSource(example);
+      return [
+        `### ${escapeMdxText(item.title)}`,
+        "",
+        escapeMdxText(item.description),
+        "",
+        ...(example.kind === "positive"
+          ? [
+              `<HtmlPreview html={${expression(source)}} css={${expression(asset.css)}}${asset.head ? ` head={${expression(asset.head)}}` : ""} title={${expression(item.title)}} lang=${expression(locale)} preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />`,
+            ]
+          : [
+              fenced(source, "html"),
+              "",
+              `${escapeMdxText(labels.diagnostics)}: ${example.expectedDiagnostics.map((item) => codeSpan(`${item.code} (${item.severity})`)).join(", ")}`,
+            ]),
+        "",
+        `<Details title={${expression(labels.config)}}>`,
+        "",
+        fenced(JSON.stringify(asset?.config ?? preview.baseConfig, null, 2), "json"),
+        "",
+        "</Details>",
+        "",
+        `<Details title={${expression(labels.scaffold)}}>`,
+        "",
+        fenced(example.scaffoldCss, "css"),
+        "",
+        "</Details>",
+        "",
+      ];
+    }),
+    `## ${escapeMdxText(labels.customValues)}`,
+    "",
+    escapeMdxText(content.customValues),
+  ].join("\n");
+}
+
+export function renderReferencePages(catalog, strings, families, options = {}) {
   const entriesById = validateCatalogFamilies(catalog, families);
   validateLocaleStrings(strings, families);
 
+  const { editorial, preview, locale = "en" } = options;
+  if (editorial) {
+    for (const id of editorial.keys())
+      if (!families.some((family) => family.id === id))
+        throw new Error(`Unknown editorial family ${id}`);
+    for (const family of families)
+      if (!editorial.has(family.id)) throw new Error(`Missing editorial family ${family.id}`);
+  }
   const output = new Map();
   const indexRows = [];
   for (const family of families) {
@@ -346,6 +461,7 @@ export function renderReferencePages(catalog, strings, families) {
           compareText(left.root, right.root) ||
           compareText(left.id, right.id),
       );
+    const record = editorial?.get(family.id);
     const page = [
       frontmatter({
         title: localized.title,
@@ -353,15 +469,22 @@ export function renderReferencePages(catalog, strings, families) {
         sidebarPosition: 20 + familyRank,
       }),
       "",
-      escapeMdxText(localized.description),
+      record
+        ? renderEditorial(family, record, strings, locale, preview, entriesById)
+        : escapeMdxText(localized.description),
       "",
       `**${escapeMdxText(strings.headings.relatedGuides)}:** [${escapeMdxText(strings.links.utilityGrammar)}](../utility-grammar.mdx) · [${escapeMdxText(strings.links.variants)}](../variants.mdx)`,
       "",
+      ...(record ? [`<Details title={${expression(strings.reader.technical)}}>`, ""] : []),
       ...entries.flatMap((entry, entryIndex) => [
         ...(entryIndex > 0 ? [""] : []),
         renderEntry(entry, strings),
+        ...(record && entry.registrations?.length
+          ? ["", codeSpan(JSON.stringify({ registrations: entry.registrations }))]
+          : []),
       ]),
       "",
+      ...(record ? ["</Details>", ""] : []),
     ].join("\n");
     output.set(`${family.id}.mdx`, page);
   }
@@ -375,9 +498,18 @@ export function renderReferencePages(catalog, strings, families) {
     "",
     escapeMdxText(strings.index.intro),
     "",
+    ...(strings.reader ? [`## ${escapeMdxText(strings.reader.browse)}`, ""] : []),
     table(
-      [strings.index.familyColumn, strings.index.entryCountColumn].map(escapeMdxText),
-      indexRows,
+      [
+        strings.index.familyColumn,
+        ...(strings.reader ? [strings.reader.taskColumn] : []),
+        strings.index.entryCountColumn,
+      ].map(escapeMdxText),
+      indexRows.map((row, index) =>
+        strings.reader
+          ? [row[0], escapeMdxText(strings.families[families[index].id].description), row[1]]
+          : row,
+      ),
     ),
     "",
     `${escapeMdxText(strings.index.specVersionLabel)}: ${codeSpan(catalog.specVersion)}.`,
@@ -468,7 +600,13 @@ async function runCli(args) {
   }
   const module = await import(pathToFileURL(stringsPath).href);
   const strings = module.default ?? module.strings;
-  const pages = renderReferencePages(catalog, strings, WIND_REFERENCE_FAMILIES);
+  const editorial = loadEditorial(join(SCRIPT_DIR, "wind-reference-editorial"));
+  const preview = loadPreviewContext(REPO_ROOT, loadRecords());
+  const pages = renderReferencePages(catalog, strings, WIND_REFERENCE_FAMILIES, {
+    editorial,
+    preview,
+    locale: options.locale,
+  });
   const outputDir = join(
     REPO_ROOT,
     options.locale === "en"

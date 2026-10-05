@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "family": "radius",
+  "lookup": [
+    {
+      "entry": "v1.rounded",
+      "candidate": "rounded-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-b",
+      "candidate": "rounded-b-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-l",
+      "candidate": "rounded-l-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-r",
+      "candidate": "rounded-r-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-t",
+      "candidate": "rounded-t-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-bl",
+      "candidate": "rounded-bl-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-br",
+      "candidate": "rounded-br-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-tl",
+      "candidate": "rounded-tl-card",
+      "example": "corner-groups"
+    },
+    {
+      "entry": "v1.rounded-tr",
+      "candidate": "rounded-tr-card",
+      "example": "corner-groups"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Round all corners, a physical side’s pair of corners, or one corner.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "Named values resolve through tokens.radii; rounded-card is configured as 0.75rem and rounded-pill as 9999px. The built-in keywords rounded-none and rounded-full map to 0 and 9999px. Bracket values such as rounded-[18px] accept validated CSS lengths. Side names are physical: t, r, b, and l select top, right, bottom, and left; two-letter forms select one corner. Values cannot be negative. No default radius scale is inherited.",
+      "examples": [
+        {
+          "id": "corner-groups",
+          "title": "Round sides and individual corners",
+          "description": "Every card uses the same explicitly configured card radius; only the selected side or corner changes."
+        },
+        {
+          "id": "named-and-arbitrary",
+          "title": "Use a named, built-in, or one-off value",
+          "description": "The pill name is configured, the bracket value is 18px, and full and none use the supported keywords."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "四隅、物理辺の二つの角、または一つの角を丸めます。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "名前付きの値は tokens.radii を参照します。rounded-card は 0.75rem、rounded-pill は 9999px と設定しています。rounded-none と rounded-full は組み込みキーワードで、それぞれ 0 と 9999px になります。rounded-[18px] のような角括弧には検証済み CSS 長さを指定できます。辺の名前は物理方向で、t/r/b/l は上/右/下/左、二文字の形は一つの角を選びます。負数は使えません。既定の半径スケールは継承しません。",
+      "examples": [
+        {
+          "id": "corner-groups",
+          "title": "辺と個別の角を丸める",
+          "description": "すべてのカードで同じ radius トークンを使い、対象にした辺または角だけを変えます。"
+        },
+        {
+          "id": "named-and-arbitrary",
+          "title": "名前付き、組み込み、個別の値を使う",
+          "description": "pill は設定済みの名前、角括弧は 18px、full と none は対応キーワードです。"
+        }
+      ]
+    }
+  }
+}

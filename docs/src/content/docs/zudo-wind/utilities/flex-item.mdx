@@ -5,9 +5,202 @@ sidebar_position: 25
 generated: true
 ---
 
-Set flex growth, shrinkage, and the shorthand sizing behavior of an item.
+Set a flex item's sizing behavior when the container has extra or insufficient room. The flex presets choose combinations of basis, growth and shrink; grow and shrink set those factors independently.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flex-1` | `flex: 1 1 0%;` |
+| `flex-auto` | `flex: 1 1 auto;` |
+| `flex-initial` | `flex: 0 1 auto;` |
+| `flex-none` | `flex: none;` |
+| `grow` | `flex-grow: 1;` |
+| `grow-0` | `flex-grow: 0;` |
+| `grow-[2]` | `flex-grow: 2;` |
+| `shrink` | `flex-shrink: 1;` |
+| `shrink-0` | `flex-shrink: 0;` |
+| `shrink-[2]` | `flex-shrink: 2;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare flex presets
+
+The four presets share the available row differently because their flex-basis, flex-grow, and flex-shrink values differ.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-note\"\u003eCompare how each item uses its base size and available space.\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-72 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile flex-1 w-16\"\u003eflex-1\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-auto w-16\"\u003eflex-auto\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-initial w-16\"\u003eflex-initial\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile flex-none w-16\"\u003eflex-none\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-1 {\n  flex: 1 1 0%;\n}\n.flex-auto {\n  flex: 1 1 auto;\n}\n.flex-initial {\n  flex: 0 1 auto;\n}\n.flex-none {\n  flex: none;\n}\n.w-16 {\n  width: 4rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Compare flex presets"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-1",
+        "flex-auto",
+        "flex-initial",
+        "flex-none",
+        "gap-2",
+        "w-16",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Distribute extra space
+
+grow expands an item at factor 1, grow-0 keeps the fixed item from expanding, and grow-[2] gets twice the free-space share of grow.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eExtra space is split according to grow factors.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-72 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile grow\"\u003egrow 1\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile grow-0 w-16\"\u003egrow-0\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile grow-[2]\"\u003egrow-[2]\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.grow {\n  flex-grow: 1;\n}\n.grow-0 {\n  flex-grow: 0;\n}\n.grow-\\[2\\] {\n  flex-grow: 2;\n}\n.w-16 {\n  width: 4rem;\n}\n.w-72 {\n  width: 18rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Distribute extra space"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "grow",
+        "grow-0",
+        "grow-[2]",
+        "w-16",
+        "w-72"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Control compression
+
+shrink items can compress below their starting widths; shrink-0 preserves its width. A factor of 2 gives the final item a larger share of the shrink.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eThese starting widths are wider than the row.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex w-64 gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile shrink w-48\"\u003eshrink\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile shrink-0 w-48 wind-demo-alt\"\u003eshrink-0 keeps its width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile shrink-[2] w-48\"\u003eshrink-[2]\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-alt {\n  border-color: #b39761;\n  background: #efe5cb;\n  color: #483a1d;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.shrink {\n  flex-shrink: 1;\n}\n.shrink-0 {\n  flex-shrink: 0;\n}\n.shrink-\\[2\\] {\n  flex-shrink: 2;\n}\n.w-48 {\n  width: 12rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Control compression"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-alt": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "shrink",
+        "shrink-0",
+        "shrink-[2]",
+        "w-48",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## flex-1
 
@@ -214,3 +407,5 @@ Set flex growth, shrinkage, and the shorthand sizing behavior of an item.
 | Example class | Expected declarations |
 | --- | --- |
 | `shrink` | `flex-shrink: 1` |
+
+</Details>

@@ -1,40 +1,46 @@
 #!/usr/bin/env node
 
+import { Config, Parser } from "html-validate";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
 
-// Keep the route/marker contract in one place. Adding another playground is a
-// single-line change here; both the default locale and `ja` are expanded below.
-export const EXPECTED_ISLANDS = [
+// Keep the route/marker contract in one place; both the default locale and
+// `ja` are expanded below. The wind examples use zudo-doc's installed
+// HtmlPreview island, so a static page marker alone is not enough.
+export const EXPECTED_ISLANDS = Object.freeze([
   { route: "docs/playground/render", marker: "RenderPlayground" },
   { route: "docs/playground/compile", marker: "CompilePlayground" },
   { route: "docs/playground/parse", marker: "ParsePlayground" },
   { route: "docs/playground/highlight", marker: "HighlightPlayground" },
-];
+  ...WIND_REFERENCE_FAMILIES.map(({ id }) => ({
+    route: `docs/zudo-wind/utilities/${id}`,
+    marker: "HtmlPreviewWrapperInner",
+  })),
+]);
 
 export const EXPECTED_LOCALES = ["", "ja/"];
 
-const ELEMENT_TAG = /<[A-Za-z][^>]*>/g;
-const ISLAND_ATTRIBUTE =
-  /\sdata-zfb-island(?:-skip-ssr)?\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
 const ISLAND_ASSET = /^islands(?:-[^/]+)?\.js$/;
 
 /**
  * Return the non-empty island marker values in an emitted HTML document.
  *
- * zfb's production HTML is minified, so values can be either quoted or
- * unquoted. This deliberately inspects element attributes rather than doing a
- * plain `html.includes()` check: a code sample containing the marker spelling
- * must not make the marker half green.
+ * Parse emitted HTML rather than scanning tag-shaped strings: data-props may
+ * contain complete HTML snippets before the island attribute, so a naive
+ * `<...>` regexp can stop at a quoted `>` and miss the real marker. Parsing
+ * also keeps marker-looking examples or scripts from satisfying the guard.
  */
 export function collectIslandMarkers(html) {
   const markers = new Set();
-  for (const tag of html.matchAll(ELEMENT_TAG)) {
-    for (const match of tag[0].matchAll(ISLAND_ATTRIBUTE)) {
-      const marker = match[1] ?? match[2] ?? match[3] ?? "";
-      if (marker !== "") markers.add(marker);
-    }
+  const root = new Parser(Config.defaultConfig()).parseHtml(html);
+  for (const element of root.querySelectorAll("[data-zfb-island],[data-zfb-island-skip-ssr]")) {
+    const marker =
+      element.getAttribute("data-zfb-island")?.value ??
+      element.getAttribute("data-zfb-island-skip-ssr")?.value ??
+      "";
+    if (marker !== "") markers.add(marker);
   }
   return markers;
 }

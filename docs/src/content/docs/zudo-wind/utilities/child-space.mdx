@@ -5,9 +5,220 @@ sidebar_position: 32
 generated: true
 ---
 
-Add spacing between later visible siblings with direct child selectors.
+Use space-x or space-y to add a margin to later eligible children of one parent. The parent must contain the children directly; the utility does not add padding to the parent or a gap between layout tracks.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `space-x-4` | `margin-left: 1rem;` |
+| `space-y-3` | `margin-top: 0.75rem;` |
+
+<Details title={"Example setup"}>
+
+These examples explicitly use spacingUnit: "0.25rem", reset: "none", strict mode and no breakpoints. space-x adds margin-left to later eligible siblings and space-y adds margin-top. No Tailwind scale or theme is inherited. wind-demo classes only draw the cards and frames; their CSS is shown with each preview.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Space later children in a row
+
+space-x-4 adds 1rem of left margin to each later eligible sibling in DOM order.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-row flex space-x-4\"\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eFirst\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eSecond\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eThird\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-row {\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-cell {\n  min-width: 5rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.space-x-4 \u003e :not([hidden]) ~ :not([hidden]) {\n  margin-left: 1rem;\n}\n"} title={"Space later children in a row"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-row": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "space-x-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-row { border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-cell { min-width: 5rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+### Filter children with the hidden attribute
+
+space-y-3 adds 0.75rem top margin to later siblings without hidden. A display:none scaffold child without that attribute still matches the selector, even though it cannot be seen.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-stack space-y-3\"\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eFirst eligible child\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell wind-demo-display-none\"\u003edisplay:none, without hidden\u003c/div\u003e\n  \u003cdiv hidden class=\"wind-demo-cell\"\u003ehidden attribute\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eLater eligible child\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-stack {\n  width: 18rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-cell {\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n\n.wind-demo-display-none {\n  display: none;\n}\n.space-y-3 \u003e :not([hidden]) ~ :not([hidden]) {\n  margin-top: 0.75rem;\n}\n"} title={"Filter children with the hidden attribute"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-stack": true,
+      "wind-demo-cell": true,
+      "wind-demo-display-none": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "space-y-3"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-stack { width: 18rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-cell { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+.wind-demo-display-none { display: none; }
+```
+
+</Details>
+
+### Pull row items closer together
+
+-space-x-2 applies a negative left margin to later siblings, so the cards overlap.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-row flex -space-x-2\"\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eFirst\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eSecond overlaps\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eThird\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-row {\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-cell {\n  width: 6rem;\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n\n.wind-demo-cell:last-child {\n  background: #c6d8e9;\n}\n.flex {\n  display: flex;\n}\n.-space-x-2 \u003e :not([hidden]) ~ :not([hidden]) {\n  margin-left: -0.5rem;\n}\n"} title={"Pull row items closer together"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-row": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-space-x-2",
+        "flex"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-row { border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-cell { width: 6rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+.wind-demo-cell:last-child { background: #c6d8e9; }
+```
+
+</Details>
+
+### Use a named spacing token
+
+The example explicitly configures tokens.spacing.stack to 1.5rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-stack space-y-stack\"\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eFirst\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eSecond\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-cell\"\u003eThird\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-stack: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-stack {\n  width: 18rem;\n  border: 2px dashed #849bb3;\n  background: #eef3f8;\n}\n\n.wind-demo-cell {\n  min-height: 3rem;\n  border: 1px solid #59718b;\n  background: #dce8f2;\n  text-align: center;\n}\n.space-y-stack \u003e :not([hidden]) ~ :not([hidden]) {\n  margin-top: var(--zw-spacing-stack);\n}\n"} title={"Use a named spacing token"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "stack": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-stack": true,
+      "wind-demo-cell": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "space-y-stack"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-stack { width: 18rem; border: 2px dashed #849bb3; background: #eef3f8; }
+.wind-demo-cell { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+space-x-0 and space-y-0 add no margin; the px suffix means 1px. Other numeric suffixes need tokens.spacingUnit, named values need tokens.spacing, and bracket values such as space-y-[18px] can use a one-off length. Negative values are supported, so -space-x-2 can pull items together or make them overlap. The child selector filters siblings with the hidden attribute. It does not inspect computed display, so display:none without hidden still matches. These utilities follow DOM sibling order and are a margin shortcut: use gap for grids, wrapping layouts, or reversed visual order, and use explicit margins when children need different spacing.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## space-x
 
@@ -78,3 +289,5 @@ Add spacing between later visible siblings with direct child selectors.
 | Example class | Expected declarations |
 | --- | --- |
 | `space-y-0` | `margin-top: 0` |
+
+</Details>

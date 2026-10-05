@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "family": "gap",
+  "examples": [
+    {
+      "id": "grid-gap",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo grid grid-cols-3 gap-4\">\n  <div class=\"wind-demo-cell p-2\">A</div>\n  <div class=\"wind-demo-cell p-2\">B</div>\n  <div class=\"wind-demo-cell p-2\">C</div>\n  <div class=\"wind-demo-cell p-2\">D</div>\n  <div class=\"wind-demo-cell p-2\">E</div>\n  <div class=\"wind-demo-cell p-2\">F</div>\n</div>",
+      "utilities": ["grid", "grid-cols-3", "gap-4", "p-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n"
+    },
+    {
+      "id": "axis-gap",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo grid grid-cols-3 gap-x-8 gap-y-2\">\n  <div class=\"wind-demo-cell p-2\">A</div>\n  <div class=\"wind-demo-cell p-2\">B</div>\n  <div class=\"wind-demo-cell p-2\">C</div>\n  <div class=\"wind-demo-cell p-2\">D</div>\n  <div class=\"wind-demo-cell p-2\">E</div>\n  <div class=\"wind-demo-cell p-2\">F</div>\n</div>",
+      "utilities": ["grid", "grid-cols-3", "gap-x-8", "gap-y-2", "p-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n"
+    },
+    {
+      "id": "custom-gap",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo grid grid-cols-3 gap-gutter\">\n  <div class=\"wind-demo-cell p-2\">A</div>\n  <div class=\"wind-demo-cell p-2\">B</div>\n  <div class=\"wind-demo-cell p-2\">C</div>\n  <div class=\"wind-demo-cell p-2\">D</div>\n  <div class=\"wind-demo-cell p-2\">E</div>\n  <div class=\"wind-demo-cell p-2\">F</div>\n</div>",
+      "utilities": ["grid", "grid-cols-3", "gap-gutter", "p-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "gutter": "1.5rem"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "arbitrary-gap",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo grid grid-cols-3 gap-[18px]\">\n  <div class=\"wind-demo-cell p-2\">A</div>\n  <div class=\"wind-demo-cell p-2\">B</div>\n  <div class=\"wind-demo-cell p-2\">C</div>\n  <div class=\"wind-demo-cell p-2\">D</div>\n  <div class=\"wind-demo-cell p-2\">E</div>\n  <div class=\"wind-demo-cell p-2\">F</div>\n</div>",
+      "utilities": ["grid", "grid-cols-3", "gap-[18px]", "p-2"],
+      "authoredClasses": ["wind-demo", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }\n"
+    }
+  ]
+}
