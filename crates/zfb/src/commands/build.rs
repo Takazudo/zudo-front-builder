@@ -94,6 +94,7 @@ use crate::render_pipeline::{
     eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route, DeferredDynamicRoute,
     DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
 };
+use zfb_types::build_diagnostics::{codes, BuildDiagnostic, DiagnosticSeverity};
 
 /// Entry point for `zfb build`.
 ///
@@ -102,7 +103,41 @@ use crate::render_pipeline::{
 /// surfaces a clear runtime error.
 #[cfg(feature = "embed_v8")]
 pub async fn run(args: &BuildArgs) -> Result<()> {
+    let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
     let started = Instant::now();
+    // Clear stale evidence before configuration or setup can fail.
+    if let Some(path) = &args.warnings_json {
+        if path.is_file() {
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing prior diagnostic report {}", path.display()))?;
+        }
+    }
+    let result = run_inner(args, &sink).await;
+    let report_result = args
+        .warnings_json
+        .as_ref()
+        .map(|path| write_diagnostic_report(path, &sink, result.is_ok()));
+    match (result, report_result) {
+        (Err(build), Some(Err(report))) => Err(anyhow!(
+            "build failed: {build:#}; diagnostic report failed: {report:#}"
+        )),
+        (Err(build), _) => Err(build),
+        (Ok(_), Some(Err(report))) => Err(report),
+        (Ok(pages_built), _) => {
+            output::success(format!(
+                "{pages_built} pages built in {:.2}s",
+                started.elapsed().as_secs_f64()
+            ));
+            Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "embed_v8")]
+async fn run_inner(
+    args: &BuildArgs,
+    sink: &zfb_types::build_diagnostic_sink::BuildDiagnosticSink,
+) -> Result<usize> {
     let timing_enabled = build_timing_enabled();
 
     let project_root = env::current_dir().context("failed to read current working directory")?;
@@ -195,196 +230,338 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // claude-resources index emission). If no plugins are declared, we
     // skip the spawn entirely so a config-less project pays nothing.
     let phase_started = build_phase_start(timing_enabled);
-    let plugin_host = crate::commands::plugins::maybe_spawn_host(&config).await?;
-    emit_build_phase_timing("plugin-host-spawn", phase_started);
-
-    // #255 / #260 / #261 / #268 — shared plugin setup phase:
-    // setup → virtual-module prefetch → alias/virtual-module derivation.
-    //
-    // `SetupCommand::Build` is the per-command difference (dev uses
-    // `SetupCommand::Dev`).  As of #1193, `injectRoute` is ACCEPTED
-    // during a build — a registered route becomes a package-owned build
-    // route the overlay materialiser prerenders (see below) — rather than
-    // the pre-#1193 dev-only hard error.
-    let phase_started = build_phase_start(timing_enabled);
-    let plugin_setup = crate::commands::plugins::run_plugin_setup(
-        &plugin_host,
-        &project_root,
-        &scratch.layout().plugin_scratch_dir(),
+    let plugin_host = crate::commands::plugins::maybe_spawn_host_with_diagnostic_sink(
         &config,
-        zfb_build::SetupCommand::Build,
+        Some(sink.clone()),
     )
     .await?;
-    emit_build_phase_timing("plugin-setup", phase_started);
+    let result: Result<usize> = async {
+        emit_build_phase_timing("plugin-host-spawn", phase_started);
 
-    // Destructure all outputs from the shared setup phase before any
-    // moves so the borrow checker is happy.
-    let crate::commands::plugins::PluginSetupResult {
-        v8_plugin_hooks,
-        plugin_alias_entries: main_bundler_alias_entries,
-        plugin_virtual_modules: main_bundler_virtual_modules,
-        setup_registries,
-    } = plugin_setup;
+        // #255 / #260 / #261 / #268 — shared plugin setup phase:
+        // setup → virtual-module prefetch → alias/virtual-module derivation.
+        //
+        // `SetupCommand::Build` is the per-command difference (dev uses
+        // `SetupCommand::Dev`).  As of #1193, `injectRoute` is ACCEPTED
+        // during a build — a registered route becomes a package-owned build
+        // route the overlay materialiser prerenders (see below) — rather than
+        // the pre-#1193 dev-only hard error.
+        let phase_started = build_phase_start(timing_enabled);
+        let plugin_setup = crate::commands::plugins::run_plugin_setup(
+            &plugin_host,
+            &project_root,
+            &scratch.layout().plugin_scratch_dir(),
+            &config,
+            zfb_build::SetupCommand::Build,
+        )
+        .await?;
+        emit_build_phase_timing("plugin-setup", phase_started);
 
-    // #1193 — the package-owned build routes registered during setup. The
-    // overlay that materialises them is built AFTER preBuild (below), so a
-    // preBuild hook that generates `pages/` files is reflected in both the
-    // user-wins precedence check and the merged scan.
-    let injected_routes = setup_registries.injected_routes.as_slice();
-
-    // Build the IslandsPluginConfig from the same data — cheap clones since
-    // the alias/virtual-module vecs are shared with the main bundler path.
-    let islands_plugin_config = IslandsPluginConfig {
-        alias_entries: main_bundler_alias_entries.clone(),
-        virtual_modules: main_bundler_virtual_modules.clone(),
-    };
-
-    // #805 — wipe outdir before preBuild so plugin-emitted files (emitted
-    // after this point) always land in a clean directory.
-    validate_outdir_safety(&project_root, &outdir).context("outdir safety check failed")?;
-    wipe_outdir_contents(&outdir)
-        .with_context(|| format!("failed to wipe outdir {}", outdir.display()))?;
-
-    if let Some(host) = plugin_host.as_ref() {
-        let ctx = zfb_build::BuildHookContext {
-            project_root: project_root.clone(),
-            out_dir: outdir.clone(),
-            scratch_dir: scratch.layout().plugin_scratch_dir(),
-            config: serde_json::to_value(&config)
-                .context("plugin lifecycle: serialise config for preBuild ctx")?,
-            // preBuild: routes absent (undefined in JS) — spec AC for #262.
-            routes: None,
-        };
-        host.run_pre_build(&ctx)
-            .await
-            .map_err(zfb_build::annotate_with_plugin_error)
-            .context("preBuild lifecycle hook")?;
-    }
-
-    // #1193 — package-owned routes. Resolve the build pages root: with no
-    // build routes this is `project_root/pages` and the overlay machinery
-    // is entirely bypassed (byte-identical parity); with build routes it
-    // is a per-build temp overlay that copies the user's real `pages/`
-    // plus the synthesized package modules (user-`pages/`-wins precedence
-    // is enforced inside via a pre-scan shape-key drop). Done AFTER preBuild
-    // so any `pages/` files a preBuild hook generated are copied in and seen
-    // by the precedence check + merged scan. `_overlay_guard` is the RAII
-    // handle for the temp dir — it must outlive the bundle + render + any
-    // `paths()` V8 eval, so it stays in scope to end-of-run.
-    let overlay =
-        crate::commands::package_routes::resolve_build_pages_root(&pages_dir, injected_routes)
-            .context("resolving build pages root for package-owned routes")?;
-    let build_pages_root = overlay.build_pages_root.clone();
-    let _overlay_guard = overlay.guard;
-
-    // Surface which package routes were materialised (and at what overlay
-    // path) so the build output is legible when a preset owns routes.
-    for mr in &overlay.materialized {
-        crate::output::info(format!(
-            "package route `{}` → pages/{}",
-            mr.pattern,
-            mr.pages_rel.display()
-        ));
-    }
-
-    // codex P1 (#1191 review) — the islands seed must NOT walk the overlay
-    // for user pages (the overlay has no `components/`). Collect the REAL
-    // package-route entrypoints to seed package-route island discovery; user
-    // pages are seeded from the real `pages_dir` below. Empty on the
-    // no-package-route parity path.
-    let package_route_entrypoints: Vec<PathBuf> = overlay
-        .materialized
-        .iter()
-        .map(|mr| mr.entrypoint.clone())
-        .collect();
-
-    // Project-root sanity check, relaxed for package-owned routes (#1193):
-    // a project with build routes may ship an empty/absent `pages/` (the
-    // overlay is built from package routes alone). When there are no build
-    // routes, the conventional `pages/` dir is still required.
-    if !build_pages_root.is_dir() {
-        return Err(anyhow!(
-            "no `pages/` directory found in {}; run `zfb build` from a project root \
-             (or have a plugin contribute build routes via injectRoute)",
-            project_root.display()
-        ));
-    }
-
-    // #1193 — scan the build pages root (the overlay when package routes
-    // are present, else `project_root/pages`), so the merged route table
-    // includes package-owned routes.
-    let router = Router::scan(&build_pages_root)
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("scanning routes under {}", build_pages_root.display()))?;
-    let routes = router.routes();
-
-    let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
-        run_build(BuildArgsResolved {
-            project_root: &project_root,
-            scratch: scratch.layout(),
-            build_pages_root: &build_pages_root,
-            // codex P1 — user-page islands resolve against the REAL pages
-            // dir, never the overlay; package-route islands seed from their
-            // real entrypoints.
-            user_pages_dir: &pages_dir,
-            package_route_entrypoints: &package_route_entrypoints,
-            outdir: &outdir,
-            config: &config,
-            routes,
-            runner: &DefaultRunner {
-                timing_enabled,
-                islands_plugin_config,
-                v8_plugin_hooks,
-                registered_client_entries: setup_registries.client_entries.clone(),
-            },
-            adapter_runner: &DefaultAdapterRunner,
+        // Destructure all outputs from the shared setup phase before any
+        // moves so the borrow checker is happy.
+        let crate::commands::plugins::PluginSetupResult {
+            v8_plugin_hooks,
             plugin_alias_entries: main_bundler_alias_entries,
             plugin_virtual_modules: main_bundler_virtual_modules,
-            minify_html,
-        })
-    })?;
+            setup_registries,
+        } = plugin_setup;
 
-    // #347 — emit the on-disk route manifest before postBuild runs so
-    // any consumer script wired into `pnpm build` (sitemap generator,
-    // OGP indexer, search shard builder) can read the same data the
-    // plugin API exposes without writing a plugin. Default-on; opt out
-    // via `emitRoutesManifest: false` in `zfb.config.ts`. Disabling the
-    // emit does NOT affect `ctx.routes` — postBuild plugins still see
-    // the in-memory manifest below.
-    if config.emit_routes_manifest.unwrap_or(true) {
-        emit_routes_manifest_file(&outdir, &route_manifest)
-            .context("failed to emit dist/__zfb/routes.json")?;
-    }
+        // #1193 — the package-owned build routes registered during setup. The
+        // overlay that materialises them is built AFTER preBuild (below), so a
+        // preBuild hook that generates `pages/` files is reflected in both the
+        // user-wins precedence check and the merged scan.
+        let injected_routes = setup_registries.injected_routes.as_slice();
 
-    // postBuild fires AFTER the renderer has finished writing dist/
-    // (and the adapter has wrapped any SSR output). Run it before the
-    // success banner so a failure here surfaces as a build error
-    // rather than a phantom "build succeeded but plugin crashed".
-    if let Some(host) = plugin_host.as_ref() {
-        let ctx = zfb_build::BuildHookContext {
-            project_root: project_root.clone(),
-            out_dir: outdir.clone(),
-            scratch_dir: scratch.layout().plugin_scratch_dir(),
-            config: serde_json::to_value(&config)
-                .context("plugin lifecycle: serialise config for postBuild ctx")?,
-            // postBuild: routes present with all emitted URLs (#262).
-            routes: Some(route_manifest),
+        // Build the IslandsPluginConfig from the same data — cheap clones since
+        // the alias/virtual-module vecs are shared with the main bundler path.
+        let islands_plugin_config = IslandsPluginConfig {
+            alias_entries: main_bundler_alias_entries.clone(),
+            virtual_modules: main_bundler_virtual_modules.clone(),
         };
-        host.run_post_build(&ctx)
-            .await
-            .map_err(zfb_build::annotate_with_plugin_error)
-            .context("postBuild lifecycle hook")?;
+
+        // #805 — wipe outdir before preBuild so plugin-emitted files (emitted
+        // after this point) always land in a clean directory.
+        validate_outdir_safety(&project_root, &outdir).context("outdir safety check failed")?;
+        wipe_outdir_contents(&outdir)
+            .with_context(|| format!("failed to wipe outdir {}", outdir.display()))?;
+
+        if let Some(host) = plugin_host.as_ref() {
+            let ctx = zfb_build::BuildHookContext {
+                project_root: project_root.clone(),
+                out_dir: outdir.clone(),
+                scratch_dir: scratch.layout().plugin_scratch_dir(),
+                config: serde_json::to_value(&config)
+                    .context("plugin lifecycle: serialise config for preBuild ctx")?,
+                // preBuild: routes absent (undefined in JS) — spec AC for #262.
+                routes: None,
+            };
+            host.run_pre_build(&ctx)
+                .await
+                .map_err(zfb_build::annotate_with_plugin_error)
+                .context("preBuild lifecycle hook")?;
+        }
+
+        // #1193 — package-owned routes. Resolve the build pages root: with no
+        // build routes this is `project_root/pages` and the overlay machinery
+        // is entirely bypassed (byte-identical parity); with build routes it
+        // is a per-build temp overlay that copies the user's real `pages/`
+        // plus the synthesized package modules (user-`pages/`-wins precedence
+        // is enforced inside via a pre-scan shape-key drop). Done AFTER preBuild
+        // so any `pages/` files a preBuild hook generated are copied in and seen
+        // by the precedence check + merged scan. `_overlay_guard` is the RAII
+        // handle for the temp dir — it must outlive the bundle + render + any
+        // `paths()` V8 eval, so it stays in scope to end-of-run.
+        let overlay =
+            crate::commands::package_routes::resolve_build_pages_root(&pages_dir, injected_routes)
+                .context("resolving build pages root for package-owned routes")?;
+        let build_pages_root = overlay.build_pages_root.clone();
+        let _overlay_guard = overlay.guard;
+
+        // Surface which package routes were materialised (and at what overlay
+        // path) so the build output is legible when a preset owns routes.
+        for mr in &overlay.materialized {
+            crate::output::info(format!(
+                "package route `{}` → pages/{}",
+                mr.pattern,
+                mr.pages_rel.display()
+            ));
+        }
+
+        // codex P1 (#1191 review) — the islands seed must NOT walk the overlay
+        // for user pages (the overlay has no `components/`). Collect the REAL
+        // package-route entrypoints to seed package-route island discovery; user
+        // pages are seeded from the real `pages_dir` below. Empty on the
+        // no-package-route parity path.
+        let package_route_entrypoints: Vec<PathBuf> = overlay
+            .materialized
+            .iter()
+            .map(|mr| mr.entrypoint.clone())
+            .collect();
+
+        // Project-root sanity check, relaxed for package-owned routes (#1193):
+        // a project with build routes may ship an empty/absent `pages/` (the
+        // overlay is built from package routes alone). When there are no build
+        // routes, the conventional `pages/` dir is still required.
+        if !build_pages_root.is_dir() {
+            return Err(anyhow!(
+                "no `pages/` directory found in {}; run `zfb build` from a project root \
+             (or have a plugin contribute build routes via injectRoute)",
+                project_root.display()
+            ));
+        }
+
+        // #1193 — scan the build pages root (the overlay when package routes
+        // are present, else `project_root/pages`), so the merged route table
+        // includes package-owned routes.
+        let router = Router::scan(&build_pages_root)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("scanning routes under {}", build_pages_root.display()))?;
+        let routes = router.routes();
+
+        let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
+            zfb_types::build_diagnostic_sink::with_sink(sink, || {
+                run_build(BuildArgsResolved {
+                    project_root: &project_root,
+                    scratch: scratch.layout(),
+                    build_pages_root: &build_pages_root,
+                    // codex P1 — user-page islands resolve against the REAL pages
+                    // dir, never the overlay; package-route islands seed from their
+                    // real entrypoints.
+                    user_pages_dir: &pages_dir,
+                    package_route_entrypoints: &package_route_entrypoints,
+                    outdir: &outdir,
+                    config: &config,
+                    routes,
+                    runner: &DefaultRunner {
+                        timing_enabled,
+                        islands_plugin_config,
+                        v8_plugin_hooks,
+                        registered_client_entries: setup_registries.client_entries.clone(),
+                    },
+                    adapter_runner: &DefaultAdapterRunner,
+                    plugin_alias_entries: main_bundler_alias_entries,
+                    plugin_virtual_modules: main_bundler_virtual_modules,
+                    minify_html,
+                })
+            })
+        })?;
+
+        // #347 — emit the on-disk route manifest before postBuild runs so
+        // any consumer script wired into `pnpm build` (sitemap generator,
+        // OGP indexer, search shard builder) can read the same data the
+        // plugin API exposes without writing a plugin. Default-on; opt out
+        // via `emitRoutesManifest: false` in `zfb.config.ts`. Disabling the
+        // emit does NOT affect `ctx.routes` — postBuild plugins still see
+        // the in-memory manifest below.
+        if config.emit_routes_manifest.unwrap_or(true) {
+            emit_routes_manifest_file(&outdir, &route_manifest)
+                .context("failed to emit dist/__zfb/routes.json")?;
+        }
+
+        // postBuild fires AFTER the renderer has finished writing dist/
+        // (and the adapter has wrapped any SSR output). Run it before the
+        // success banner so a failure here surfaces as a build error
+        // rather than a phantom "build succeeded but plugin crashed".
+        if let Some(host) = plugin_host.as_ref() {
+            let ctx = zfb_build::BuildHookContext {
+                project_root: project_root.clone(),
+                out_dir: outdir.clone(),
+                scratch_dir: scratch.layout().plugin_scratch_dir(),
+                config: serde_json::to_value(&config)
+                    .context("plugin lifecycle: serialise config for postBuild ctx")?,
+                // postBuild: routes present with all emitted URLs (#262).
+                routes: Some(route_manifest),
+            };
+            host.run_post_build(&ctx)
+                .await
+                .map_err(zfb_build::annotate_with_plugin_error)
+                .context("postBuild lifecycle hook")?;
+        }
+        Ok(pages_built)
     }
+    .await;
     if let Some(host) = plugin_host {
-        // Best-effort shutdown — we already extracted whatever errors
-        // matter from the hook calls.
+        // Join reader tasks on both success and error before taking a report snapshot.
         let _ = host.shutdown().await;
     }
+    result
+}
 
-    let elapsed = started.elapsed().as_secs_f64();
-    output::success(format!("{pages_built} pages built in {elapsed:.2}s"));
+fn warn_build(code: &str, message: impl AsRef<str>) {
+    warn_build_with_file(code, message, None);
+}
 
+fn warn_build_with_file(code: &str, message: impl AsRef<str>, file: Option<&Path>) {
+    let mut record = BuildDiagnostic::new(code, DiagnosticSeverity::Warning, message.as_ref());
+    record.file = file.map(|p| p.to_string_lossy().into_owned());
+    output::build_diagnostic(&record);
+}
+
+fn emit_wind_diagnostic(diagnostic: &zfb_css::CssDiagnostic) {
+    let mut record = BuildDiagnostic::new(
+        diagnostic.code.clone(),
+        match diagnostic.severity {
+            zfb_css::CssDiagnosticSeverity::Warning => DiagnosticSeverity::Warning,
+            zfb_css::CssDiagnosticSeverity::Error => DiagnosticSeverity::Error,
+        },
+        match &diagnostic.candidate {
+            Some(candidate) => format!("{candidate}: {}", diagnostic.message),
+            None => diagnostic.message.clone(),
+        },
+    );
+    // Wind source IDs are opaque; stylesheet and manifest paths stay files.
+    record.source_id = diagnostic.origin.source_id.clone();
+    record.file = diagnostic
+        .origin
+        .path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    record.line = diagnostic.origin.line.and_then(|n| u32::try_from(n).ok());
+    record.byte_column = diagnostic.origin.column.and_then(|n| u32::try_from(n).ok());
+    output::build_diagnostic(&record);
+}
+
+fn write_diagnostic_report(
+    path: &Path,
+    sink: &zfb_types::build_diagnostic_sink::BuildDiagnosticSink,
+    success: bool,
+) -> Result<()> {
+    use zfb_types::build_diagnostics::{BuildDiagnosticStatus, BuildDiagnosticsReport};
+    let status = if !success {
+        BuildDiagnosticStatus::Failed
+    } else if !sink.is_complete() {
+        BuildDiagnosticStatus::Incomplete
+    } else {
+        BuildDiagnosticStatus::Success
+    };
+    let report = BuildDiagnosticsReport::new(status, sink.snapshot_sorted());
+    let bytes = serde_json::to_vec_pretty(&report)?;
+    // A previous invocation's report must not survive a failed write.
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("removing prior diagnostic report {}", path.display()))?;
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating diagnostic report near {}", path.display()))?;
+    use std::io::Write;
+    tmp.write_all(&bytes)
+        .with_context(|| format!("writing diagnostic report {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!(e.error))
+        .with_context(|| format!("persisting diagnostic report {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod warning_report_tests {
+    use super::*;
+    use zfb_types::build_diagnostics::BuildDiagnosticsReport;
+
+    #[test]
+    fn report_writes_empty_success_and_replaces_stale_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warnings.json");
+        let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
+        write_diagnostic_report(&path, &sink, true).unwrap();
+        let report: BuildDiagnosticsReport =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            report.status,
+            zfb_types::build_diagnostics::BuildDiagnosticStatus::Success
+        );
+        assert!(report.diagnostics.is_empty());
+        sink.push(BuildDiagnostic::new(
+            codes::EMPTY_ROUTES,
+            DiagnosticSeverity::Warning,
+            "empty",
+        ));
+        write_diagnostic_report(&path, &sink, false).unwrap();
+        let report: BuildDiagnosticsReport =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            report.status,
+            zfb_types::build_diagnostics::BuildDiagnosticStatus::Failed
+        );
+        assert_eq!(report.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn incomplete_sink_does_not_claim_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warnings.json");
+        let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
+        sink.mark_incomplete();
+        write_diagnostic_report(&path, &sink, true).unwrap();
+        let report: BuildDiagnosticsReport =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            report.status,
+            zfb_types::build_diagnostics::BuildDiagnosticStatus::Incomplete
+        );
+        write_diagnostic_report(&path, &sink, false).unwrap();
+        let report: BuildDiagnosticsReport =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            report.status,
+            zfb_types::build_diagnostics::BuildDiagnosticStatus::Failed
+        );
+    }
+
+    #[test]
+    fn unwritable_destination_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
+        assert!(write_diagnostic_report(
+            &dir.path().join("missing").join("warnings.json"),
+            &sink,
+            false
+        )
+        .is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -431,13 +608,20 @@ fn format_build_phase_timing_line(phase: &str, elapsed_ms: u128) -> String {
 /// surface a clear error at the call site rather than partially
 /// running a doomed pipeline.
 #[cfg(not(feature = "embed_v8"))]
-pub async fn run(_args: &BuildArgs) -> Result<()> {
-    anyhow::bail!(
+pub async fn run(args: &BuildArgs) -> Result<()> {
+    let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
+    let error = anyhow!(
         "zfb was built without V8 support (`--no-default-features` / \
          `embed_v8 = off`); `zfb build` requires the embedded V8 host \
          to render SSG pages. Rebuild with default features \
          (`cargo build`) or with `--features embed_v8` to enable this command."
-    )
+    );
+    if let Some(path) = &args.warnings_json {
+        write_diagnostic_report(path, &sink, false).map_err(|report| {
+            anyhow!("build failed: {error:#}; diagnostic report failed: {report:#}")
+        })?;
+    }
+    Err(error)
 }
 
 // ---------------------------------------------------------------------------
@@ -965,11 +1149,19 @@ impl BuildRunner for DefaultRunner {
             &|_roots| {},
             zfb_written_roots,
         )
+        .map_err(|error| {
+            if let Some(wind) = error.downcast_ref::<zfb_css::WindDiagnosticsError>() {
+                for diagnostic in &wind.diagnostics {
+                    emit_wind_diagnostic(diagnostic);
+                }
+            }
+            error
+        })
         .context("CSS emitter (DefaultRunner) failed")?;
         emit_build_phase_timing("css", css_started);
         for diagnostic in &css_pass.diagnostics {
             if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-                output::warn(diagnostic.render());
+                emit_wind_diagnostic(diagnostic);
             }
         }
         let _css_input_dependencies = &css_pass.input_dependencies;
@@ -4513,17 +4705,21 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             match islands_glob_policy {
                 IslandsGlobPolicy::HardError => return Err(anyhow!(message)),
                 IslandsGlobPolicy::WarnAndSkip => {
-                    output::warn(format!(
-                        "{message}. Skipping this islands rebundle; the dev server stays up."
-                    ));
+                    warn_build(
+                        codes::DEV_ISLAND_REBUNDLE,
+                        format!(
+                            "{message}. Skipping this islands rebundle; the dev server stays up."
+                        ),
+                    );
                     return Ok((None, std::collections::BTreeSet::new()));
                 }
             }
         }
         Err(e) => {
-            output::warn(format!(
-                "islands scanner failed ({e}); skipping islands asset emission"
-            ));
+            warn_build(
+                codes::ISLAND_SCAN,
+                format!("islands scanner failed ({e}); skipping islands asset emission"),
+            );
             return Ok((None, std::collections::BTreeSet::new()));
         }
     };
@@ -4611,10 +4807,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                         return Err(anyhow!("zfb islands: {message}"));
                     }
                     IslandsGlobPolicy::WarnAndSkip => {
-                        output::warn(format!(
-                            "zfb islands: {message} Skipping this islands rebundle; the dev \
+                        warn_build(
+                            codes::DEV_ISLAND_REBUNDLE,
+                            format!(
+                                "zfb islands: {message} Skipping this islands rebundle; the dev \
                              server stays up — fix the file(s) above and save again."
-                        ));
+                            ),
+                        );
                         return Ok((None, std::collections::BTreeSet::new()));
                     }
                 }
@@ -4677,15 +4876,18 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             // runtime. Surface it loudly so authoring problems (a missing
             // malformed directive, or a target route that needs authoring
             // attention) become discoverable.
-            output::warn(format!(
-                "scanned {} page entr{} but found no SDK Island boundary targets; \
+            warn_build(
+                codes::NO_ISLAND_TARGETS,
+                format!(
+                    "scanned {} page entr{} but found no SDK Island boundary targets; \
                  no islands asset will be emitted. \
                  Check the malformed \"use client\" directive and pass one \
                  exported function from a client module as the single child \
                  of a reachable SDK Island boundary.",
-                entries.len(),
-                if entries.len() == 1 { "y" } else { "ies" }
-            ));
+                    entries.len(),
+                    if entries.len() == 1 { "y" } else { "ies" }
+                ),
+            );
         }
         return Ok((None, std::collections::BTreeSet::new()));
     }
@@ -4802,10 +5004,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded @takazudo packages for islands bundler ({e}); \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded @takazudo packages for islands bundler ({e}); \
                      falling back to project_root node_modules walk"
-                ));
+                    ),
+                );
                 _embedded_nm_handle = None;
             }
         }
@@ -4817,10 +5022,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 _embedded_esbuild_handle = Some(handle);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded esbuild for islands bundler ({e}); \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded esbuild for islands bundler ({e}); \
                      falling back to default slot resolver"
-                ));
+                    ),
+                );
                 _embedded_esbuild_handle = None;
             }
         }
@@ -4991,11 +5199,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 match islands_glob_policy {
                     IslandsGlobPolicy::HardError => return Err(error),
                     IslandsGlobPolicy::WarnAndSkip => {
-                        output::warn(format!(
+                        warn_build(
+                            codes::DEV_ISLAND_REBUNDLE,
+                            format!(
                             "zfb islands: {error:#} The dev server stays up, but this rebundle \
                              emits no islands bundle at all — the page will serve without \
                              islands until the file(s) above are fixed and saved."
-                        ));
+                        ),
+                        );
                         return Ok((None, std::collections::BTreeSet::new()));
                     }
                 }
@@ -6067,10 +6278,13 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded @takazudo packages for client-script bundler \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded @takazudo packages for client-script bundler \
                      ({e}); falling back to project_root node_modules walk"
-                ));
+                    ),
+                );
                 _embedded_nm_handle = None;
             }
         }
@@ -6082,10 +6296,13 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
                 _embedded_esbuild_handle = Some(handle);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded esbuild for client-script bundler ({e}); \
                      falling back to default slot resolver"
-                ));
+                    ),
+                );
                 _embedded_esbuild_handle = None;
             }
         }
@@ -6485,10 +6702,13 @@ fn prune_unretained_dev_client_script_outputs(
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
         Err(error) => {
-            output::warn(format!(
-                "client-scripts dev: failed to inspect output directory {}: {error}",
-                client_dir.display()
-            ));
+            warn_build(
+                codes::DEV_CLIENT_SCRIPT_CLEANUP,
+                format!(
+                    "client-scripts dev: failed to inspect output directory {}: {error}",
+                    client_dir.display()
+                ),
+            );
             return false;
         }
     };
@@ -6515,10 +6735,13 @@ fn prune_unretained_dev_client_script_outputs(
         }
         let stale_path = entry.path();
         if let Err(error) = std::fs::remove_file(&stale_path) {
-            output::warn(format!(
-                "client-scripts dev: failed to prune stale file {}: {error}",
-                stale_path.display()
-            ));
+            warn_build(
+                codes::DEV_CLIENT_SCRIPT_CLEANUP,
+                format!(
+                    "client-scripts dev: failed to prune stale file {}: {error}",
+                    stale_path.display()
+                ),
+            );
         } else {
             changed = true;
         }
@@ -6605,14 +6828,17 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     // development).
     if !collisions.is_empty() {
         for c in &collisions {
-            output::warn(format!(
-                "client-script name collision: `{}` is claimed by both {} and {} \
+            warn_build(
+                codes::DEV_CLIENT_SCRIPT_COLLISION,
+                format!(
+                    "client-script name collision: `{}` is claimed by both {} and {} \
                  — only {} will be bundled",
-                c.name,
-                c.kept_path.display(),
-                c.dropped_path.display(),
-                c.kept_path.display(),
-            ));
+                    c.name,
+                    c.kept_path.display(),
+                    c.dropped_path.display(),
+                    c.kept_path.display(),
+                ),
+            );
         }
     }
 
@@ -6747,10 +6973,13 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded @takazudo packages for client-script bundler \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded @takazudo packages for client-script bundler \
                      ({e}); falling back to project_root node_modules walk"
-                ));
+                    ),
+                );
                 _embedded_nm_handle = None;
             }
         }
@@ -6762,10 +6991,13 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
                 _embedded_esbuild_handle = Some(handle);
             }
             Err(e) => {
-                output::warn(format!(
-                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                warn_build(
+                    codes::EMBEDDED_TOOL_FALLBACK,
+                    format!(
+                        "could not extract embedded esbuild for client-script bundler ({e}); \
                      falling back to default slot resolver"
-                ));
+                    ),
+                );
                 _embedded_esbuild_handle = None;
             }
         }
@@ -6847,15 +7079,18 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         deferred_dynamic,
     } = build_route_universe(routes);
     let (prerender_map, ssr_request_param_findings) =
-        build_prerender_map(routes, project_root, |msg| output::warn(msg));
+        build_prerender_map(routes, project_root, |msg| {
+            warn_build(codes::PRERENDER_EXTRACTION, msg)
+        });
     // SSR route-contract guard (#2354): warn-only under `zfb build` — a
     // build on this broken shape must still SUCCEED (the epic's
     // compatibility guarantee); `zfb check` is the surface that fails on
     // it.
     for finding in &ssr_request_param_findings {
-        output::warn(crate::render_pipeline::render_ssr_request_param_finding(
-            finding,
-        ));
+        warn_build(
+            codes::SSR_ROUTE_CONTRACT,
+            crate::render_pipeline::render_ssr_request_param_finding(finding),
+        );
     }
 
     // Pre-filter: split deferred_dynamic by prerender flag, mirroring dev.rs.
@@ -6963,7 +7198,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // what they asked for — both warn and exit happy. This matches
         // the previous "no pages found" behaviour shape so existing CI
         // configs don't regress.
-        output::warn(
+        warn_build(codes::EMPTY_ROUTES,
             "no routes to render; dist will be empty (every dynamic route deferred to runtime evaluation)",
         );
         return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
@@ -7212,7 +7447,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     }
 
     if static_routes.is_empty() {
-        output::warn("no routes to render after runtime paths() evaluation; dist will be empty");
+        warn_build(
+            codes::EMPTY_ROUTES,
+            "no routes to render after runtime paths() evaluation; dist will be empty",
+        );
         return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
     }
 
@@ -7497,7 +7735,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         }
         if !adapter_out.stderr.trim().is_empty() {
             for line in adapter_out.stderr.lines() {
-                output::warn(format!("adapter stderr: {line}"));
+                warn_build(codes::ADAPTER_STDERR, format!("adapter stderr: {line}"));
             }
         }
     }
@@ -7783,10 +8021,13 @@ fn build_prod_rendered_files(
                 });
             }
             Err(err) => {
-                output::warn(format!(
-                    "production asset pipeline: skipping invalid output path {} ({err})",
-                    rel.display(),
-                ));
+                warn_build(
+                    codes::INVALID_ASSET_OUTPUT,
+                    format!(
+                        "production asset pipeline: skipping invalid output path {} ({err})",
+                        rel.display(),
+                    ),
+                );
             }
         }
     }
@@ -7819,12 +8060,16 @@ pub(crate) fn is_html_output_path(path: &Path) -> bool {
 
 fn warn_deferred_dynamic(routes: &[DeferredDynamicRoute]) {
     for r in routes {
-        output::warn(format!(
-            "skipping {} ({}) — {}",
-            r.template,
-            r.source_path.display(),
-            r.reason,
-        ));
+        warn_build_with_file(
+            codes::DEFERRED_DYNAMIC_ROUTE,
+            format!(
+                "skipping {} ({}) — {}",
+                r.template,
+                r.source_path.display(),
+                r.reason,
+            ),
+            Some(&r.source_path),
+        );
     }
 }
 
@@ -7939,7 +8184,7 @@ pub(crate) fn serialize_content_snapshot(
     match serde_json::to_string(snapshot) {
         Ok(json) => Some(json),
         Err(e) => {
-            output::warn(format!(
+            warn_build(codes::CONTENT_SNAPSHOT, format!(
                 "content snapshot serialization failed ({e}); getCollection(...) will see empty collections"
             ));
             None
@@ -7986,9 +8231,12 @@ pub(crate) fn build_content_snapshot(
     match zfb_content::build_snapshot_with_options(&collections, &snapshot_config, options) {
         Ok(snap) => Some(snap),
         Err(e) => {
-            output::warn(format!(
+            warn_build(
+                codes::CONTENT_SNAPSHOT,
+                format!(
                 "content snapshot build failed ({e}); getCollection(...) will see empty collections"
-            ));
+            ),
+            );
             None
         }
     }
@@ -8056,10 +8304,13 @@ fn extend_render_metadata_with_direct_pages(
     let mut pipeline = match spec.build_pipeline() {
         Ok(p) => p,
         Err(e) => {
-            output::warn(format!(
+            warn_build(
+                codes::RENDER_ARTIFACT,
+                format!(
                 "render artifacts: could not build the markdown pipeline for direct pages ({e}); \
                  those routes will get no artifact"
-            ));
+            ),
+            );
             return;
         }
     };
@@ -8069,10 +8320,14 @@ fn extend_render_metadata_with_direct_pages(
         let raw = match std::fs::read_to_string(source) {
             Ok(raw) => raw,
             Err(e) => {
-                output::warn(format!(
-                    "render artifacts: could not read {} ({e}); it will get no artifact",
-                    source.display()
-                ));
+                warn_build_with_file(
+                    codes::RENDER_ARTIFACT,
+                    format!(
+                        "render artifacts: could not read {} ({e}); it will get no artifact",
+                        source.display()
+                    ),
+                    Some(source),
+                );
                 continue;
             }
         };
@@ -8082,11 +8337,15 @@ fn extend_render_metadata_with_direct_pages(
         }
         match zfb_content::render_region_metadata(source, &raw, Some(&mut pipeline), Some(cache)) {
             Ok((specifier, metadata)) => index.insert(&specifier, metadata),
-            Err(e) => output::warn(format!(
-                "render artifacts: could not derive region metadata for {} ({e}); \
+            Err(e) => warn_build_with_file(
+                codes::RENDER_ARTIFACT,
+                format!(
+                    "render artifacts: could not derive region metadata for {} ({e}); \
                  it will get no artifact",
-                source.display()
-            )),
+                    source.display()
+                ),
+                Some(source),
+            ),
         }
     }
 }
@@ -8169,7 +8428,10 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
         })
         .collect();
     if let Err(err) = zfb_content::build_snapshot(&collections) {
-        output::warn(format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"));
+        warn_build(
+            codes::SNAPSHOT_PROBE,
+            format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"),
+        );
     }
 }
 
@@ -8225,7 +8487,10 @@ fn copy_public_dir(
         .filter_map(|r| match r {
             Ok(e) => Some(e),
             Err(err) => {
-                output::warn(format!("public dir copy: skipping unreadable entry: {err}"));
+                warn_build(
+                    codes::PUBLIC_COPY,
+                    format!("public dir copy: skipping unreadable entry: {err}"),
+                );
                 None
             }
         })
@@ -8260,12 +8525,16 @@ fn copy_public_dir(
             // PageCache / html_root waterfall runs before the public_root
             // fallback in `serve_page`.
             if dest.is_dir() {
-                output::warn(format!(
-                    "public dir copy: skipping {} because destination {} is a \
+                warn_build_with_file(
+                    codes::PUBLIC_COPY,
+                    format!(
+                        "public dir copy: skipping {} because destination {} is a \
                      rendered-route directory (page route takes precedence over public file)",
-                    entry.path().display(),
-                    dest.display(),
-                ));
+                        entry.path().display(),
+                        dest.display(),
+                    ),
+                    Some(entry.path()),
+                );
                 continue;
             }
             if let Some(parent) = dest.parent() {

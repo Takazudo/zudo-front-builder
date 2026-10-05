@@ -389,6 +389,10 @@ pub fn parse_define_override(raw: &str) -> Result<(String, String), String> {
 /// Arguments for `zfb build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
+    /// Write versioned build diagnostics to this JSON file.
+    #[arg(long = "warnings-json")]
+    pub warnings_json: Option<PathBuf>,
+
     #[command(flatten)]
     pub scratch: ScratchDirArg,
 

@@ -540,10 +540,13 @@ where
     // not already filtered out (zfb#1032) — those are the only ones being
     // *silently* dropped, which is what the #856 warning exists for.
     for path in warnable_data_files(dir, &skipped_data_files, filter) {
-        eprintln!(
-            "zfb warning: unsupported data-file extension in collection — file will be skipped: {}",
-            path.display()
+        let mut diagnostic = zfb_types::build_diagnostics::BuildDiagnostic::new(
+            zfb_types::build_diagnostics::codes::UNSUPPORTED_COLLECTION_FILE,
+            zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
+            "unsupported data-file extension in collection — file will be skipped",
         );
+        diagnostic.file = Some(path.to_string_lossy().into_owned());
+        zfb_types::build_diagnostic_sink::emit(diagnostic);
     }
 
     // Apply include + exclude globs against POSIX-normalised relative

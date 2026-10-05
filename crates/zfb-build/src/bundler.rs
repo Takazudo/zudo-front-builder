@@ -118,6 +118,17 @@ use std::collections::HashSet;
 use walkdir::WalkDir;
 
 use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
+
+fn emit_build_warning(code: &str, message: impl Into<String>, file: Option<&Path>) {
+    let mut record = zfb_types::build_diagnostics::BuildDiagnostic::new(
+        code,
+        zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
+        message,
+    );
+    record.file = file.map(|p| p.to_string_lossy().into_owned());
+    zfb_types::build_diagnostic_sink::emit(record);
+}
+
 use zfb_content::frontmatter as zfb_frontmatter;
 // Shared with `zfb_content::render_metadata`, which must strip a direct
 // page's body byte-identically to this crate or it addresses a different
@@ -4797,16 +4808,13 @@ pub fn bundle_with_session(
         // errors — the user should see all findings before the build aborts.
         for d in &all_markdown_diagnostics {
             if d.severity() < DiagnosticSeverity::Error {
-                let loc = fmt_location(d);
-                let msg = fmt_message(d);
-                if loc.is_empty() {
-                    eprintln!("zfb warn: {msg}");
-                } else {
-                    eprintln!("zfb warn: {loc}: {msg}");
-                }
+                zfb_types::build_diagnostic_sink::emit(d.to_build_diagnostic());
             }
         }
 
+        for d in &errors {
+            zfb_types::build_diagnostic_sink::emit(d.to_build_diagnostic());
+        }
         if !errors.is_empty() {
             let mut msg = format!(
                 "bundler: {} markdown diagnostic error(s) found:\n",
@@ -4845,13 +4853,27 @@ pub fn bundle_with_session(
             OnBrokenLinks::Ignore => {}
             OnBrokenLinks::Warn => {
                 for (file, url) in &all_broken_links {
-                    eprintln!(
-                        "zfb warn: broken markdown link in {file}: \
-                         {url} could not be resolved to a known doc URL"
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::BROKEN_LINK,
+                        format!(
+                            "broken markdown link: {url} could not be resolved to a known doc URL"
+                        ),
+                        Some(Path::new(file)),
                     );
                 }
             }
             OnBrokenLinks::Error => {
+                for (file, url) in &all_broken_links {
+                    let mut record = zfb_types::build_diagnostics::BuildDiagnostic::new(
+                        zfb_types::build_diagnostics::codes::BROKEN_LINK,
+                        zfb_types::build_diagnostics::DiagnosticSeverity::Error,
+                        format!(
+                            "broken markdown link: {url} could not be resolved to a known doc URL"
+                        ),
+                    );
+                    record.file = Some(file.clone());
+                    zfb_types::build_diagnostic_sink::emit(record);
+                }
                 let mut msg = format!(
                     "bundler: {} broken markdown link(s) found:\n",
                     all_broken_links.len()
@@ -5245,7 +5267,11 @@ pub fn bundle_with_session(
                     format_args!("{error:#}"),
                 );
                 tracing::warn!("{msg}");
-                eprintln!("zfb warn: {msg}");
+                emit_build_warning(
+                    zfb_types::build_diagnostics::codes::MIRROR_PREPROCESSING,
+                    msg,
+                    Some(physical),
+                );
             }
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -7826,7 +7852,11 @@ fn stage_glob_matched_files_to_fixed_point(
                         format_args!("{error:#}"),
                     );
                     tracing::warn!("{msg}");
-                    eprintln!("zfb warn: {msg}");
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::MIRROR_PREPROCESSING,
+                        msg,
+                        Some(&target),
+                    );
                     continue;
                 }
                 return Err(error).with_context(|| {
@@ -8262,7 +8292,11 @@ fn skip_dangling_symlink_or_fail<T>(
     if let Some((link, target)) = dangling_symlink_from_walk_error(&err) {
         let msg = dangling_symlink_warning_message(&link, &target);
         tracing::warn!("{msg}");
-        eprintln!("zfb warn: {msg}");
+        emit_build_warning(
+            zfb_types::build_diagnostics::codes::DANGLING_SYMLINK,
+            msg,
+            Some(&link),
+        );
         return Ok(None);
     }
     Err(err).with_context(context)
@@ -8300,7 +8334,11 @@ fn plain_css_import_dropped_warning_message(path: &Path, project_root: &Path) ->
 fn warn_dropped_plain_css_input(path: &Path, project_root: &Path) {
     let msg = plain_css_import_dropped_warning_message(path, project_root);
     tracing::warn!("{msg}");
-    eprintln!("zfb warn: {msg}");
+    emit_build_warning(
+        zfb_types::build_diagnostics::codes::DROPPED_CSS,
+        msg,
+        Some(path),
+    );
 }
 
 fn retained_dropped_plain_css_inputs(
@@ -9359,6 +9397,11 @@ fn materialise_shadow(
                         error = %err,
                         "md page frontmatter failed to parse; \
                          falling back to slug title and default lang"
+                    );
+                    emit_build_warning(
+                        zfb_types::build_diagnostics::codes::MARKDOWN_FRONTMATTER_FALLBACK,
+                        format!("md page frontmatter failed to parse ({err}); falling back to slug title and default lang"),
+                        Some(from),
                     );
                     (
                         serde_json::Value::Null,

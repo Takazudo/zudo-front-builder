@@ -39,6 +39,7 @@ pub fn check_forbidden_directives(
                         directive.name
                     ),
                     origin: CssDiagnosticOrigin {
+                        source_id: None,
                         path: Some(path.clone()),
                         line: Some(directive.line),
                         column: Some(directive.column),

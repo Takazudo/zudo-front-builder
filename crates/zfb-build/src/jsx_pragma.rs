@@ -198,14 +198,21 @@ pub fn emit_foreign_pragma_warnings<'a>(
     project_root: &Path,
     files: impl IntoIterator<Item = &'a Path>,
 ) {
-    for (_, message) in foreign_pragma_warnings(project_root, files) {
-        let fresh = REPORTED
-            .lock()
-            .map(|mut reported| reported.insert(message.clone()))
-            .unwrap_or(true);
+    for (file, message) in foreign_pragma_warnings(project_root, files) {
+        let fresh = zfb_types::build_diagnostic_sink::in_scope()
+            || REPORTED
+                .lock()
+                .map(|mut reported| reported.insert(message.clone()))
+                .unwrap_or(true);
         if fresh {
             tracing::warn!("{message}");
-            eprintln!("zfb warn: {message}");
+            let mut diagnostic = zfb_types::build_diagnostics::BuildDiagnostic::new(
+                zfb_types::build_diagnostics::codes::FOREIGN_JSX_PRAGMA,
+                zfb_types::build_diagnostics::DiagnosticSeverity::Warning,
+                message,
+            );
+            diagnostic.file = Some(file.to_string_lossy().into_owned());
+            zfb_types::build_diagnostic_sink::emit(diagnostic);
         }
     }
 }
