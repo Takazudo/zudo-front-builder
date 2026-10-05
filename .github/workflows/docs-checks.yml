@@ -153,7 +153,7 @@ jobs:
         run: pnpm --filter docs check:wrangler-pin
 
       - name: Test built docs verification contracts
-        run: node --test docs/scripts/__tests__/audit-wind-built-anchors.test.mjs docs/scripts/__tests__/build-wind-docs-base.test.mjs
+        run: node --test docs/scripts/__tests__/audit-wind-built-anchors.test.mjs docs/scripts/__tests__/build-wind-docs-base.test.mjs docs/scripts/__tests__/assert-island-markers.test.mjs docs/scripts/__tests__/wind-pilot-assets.test.mjs
 
       - name: Audit preserved built routes and anchors
         run: node docs/scripts/audit-wind-built-anchors.mjs docs/dist
