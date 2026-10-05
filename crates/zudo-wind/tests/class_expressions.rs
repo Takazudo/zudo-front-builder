@@ -78,7 +78,13 @@ fn multiline_direct_jsx_quotes_keep_complete_class_spans_and_raw_positions() {
             .occurrences;
         assert_eq!(occurrences.len(), 1, "{text}: {occurrences:?}");
         let found = &occurrences[0];
-        assert_eq!(found.byte_offset, source.find(text).unwrap(), "{text}");
+        // `p-2` also occurs inside the earlier `gap-2`; anchor its own line.
+        let expected_offset = if text == "p-2" {
+            source.find("\n    p-2\n").unwrap() + "\n    ".len()
+        } else {
+            source.find(text).unwrap()
+        };
+        assert_eq!(found.byte_offset, expected_offset, "{text}");
         assert_eq!(found.byte_length, text.len(), "{text}");
         assert_eq!(
             &source[found.byte_offset..found.byte_offset + found.byte_length],
