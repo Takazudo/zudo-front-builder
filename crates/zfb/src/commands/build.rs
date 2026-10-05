@@ -8680,11 +8680,11 @@ mod tests {
         assert!(events.is_empty(), "disabled timing must stay silent");
 
         let mut failure_events = Vec::new();
-        let result: Result<(), &str> = (|| {
+        let result: Result<(), &str> = {
             let _started =
                 build_phase_start_with("esbuild", true, |line| failure_events.push(line));
             Err("synthetic phase failure")
-        })();
+        };
         assert_eq!(result, Err("synthetic phase failure"));
         assert_eq!(
             failure_events,
