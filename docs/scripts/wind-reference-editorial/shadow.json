@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "family": "shadow",
+  "lookup": [
+    {
+      "entry": "v1.shadow",
+      "candidate": "shadow-panel",
+      "example": "named-and-custom-shadows"
+    },
+    {
+      "entry": "v1.shadow",
+      "candidate": "shadow-[0_12px_24px_#16324f33]",
+      "example": "named-and-custom-shadows"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Apply a configured box shadow, an arbitrary CSS box-shadow, or remove the shadow.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "A named value such as shadow-panel resolves only from tokens.shadows. shadow-none is the supported keyword for no shadow. Bracket values are validated as CSS box-shadow values, with underscores separating spaces in a class candidate. There is no default shadow scale and no shadow opacity modifier. The catalog does not add ring utilities.",
+      "examples": [
+        {
+          "id": "named-and-custom-shadows",
+          "title": "Compare named, custom, and absent shadows",
+          "description": "The first card uses the configured panel token, the second uses a validated one-off box-shadow, and shadow-none removes it."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "設定済みの box-shadow、任意の CSS box-shadow、または影なしを指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "shadow-panel のような名前は tokens.shadows に設定した値だけを参照します。shadow-none は影なしのキーワードです。角括弧の値は CSS box-shadow として検証され、クラス内のアンダースコアは空白を表します。既定の影スケールも影用の不透明度修飾子もありません。カタログには ring ユーティリティもありません。",
+      "examples": [
+        {
+          "id": "named-and-custom-shadows",
+          "title": "名前付き、個別、影なしを比べる",
+          "description": "最初のカードは panel トークン、次は検証済みの個別 box-shadow、最後は shadow-none を使います。"
+        }
+      ]
+    }
+  }
+}

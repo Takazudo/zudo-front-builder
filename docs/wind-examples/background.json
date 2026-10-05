@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "family": "background",
+  "examples": [
+    {
+      "id": "surface-colors",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-backgrounds\"><div class=\"wind-demo-card bg-panel text-ink\">Light panel · configured surface</div><div class=\"wind-demo-card bg-accent text-white\">Dark accent · white text</div></div>",
+      "utilities": ["bg-accent", "bg-panel", "text-ink", "text-white"],
+      "authoredClasses": ["wind-demo-backgrounds", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo-backgrounds { max-width: 30rem; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-card { margin: 0 0 0.65rem; padding: 0.8rem 1rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "color-opacity",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-backgrounds\"><div class=\"wind-demo-card bg-accent/18 text-ink\">Accent at 18 percent over the white preview page</div><div class=\"wind-demo-card bg-[#e7f0f5] text-ink\">Custom pale surface</div></div>",
+      "utilities": ["bg-[#e7f0f5]", "bg-accent/18", "text-ink"],
+      "authoredClasses": ["wind-demo-backgrounds", "wind-demo-card"],
+      "scaffoldCss": ".wind-demo-backgrounds { max-width: 30rem; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-card { margin: 0 0 0.65rem; padding: 0.8rem 1rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "colors": {
+              "ink": "#16324f",
+              "accent": "#075985",
+              "focus": "#0f766e",
+              "alert": "#8b1e3f",
+              "panel": "#edf4f8",
+              "white": "#ffffff"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

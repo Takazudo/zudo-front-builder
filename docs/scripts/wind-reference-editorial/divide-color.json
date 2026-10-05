@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "family": "divide-color",
+  "lookup": [
+    {
+      "entry": "v1.divide.color",
+      "candidate": "divide-accent/75",
+      "example": "visible-child-colors"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set the border color on later visible direct children, where a divide-width utility has drawn separators.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "Names resolve only through tokens.colors; divide-current and divide-transparent are also supported, as are validated bracket colors. A slash accepts an integer from 0 through 100 and mixes the color with transparent in Oklab. The divide color rule sets all four border-color longhands on matching later siblings; pair it with divide-x or divide-y for line width and direction. Hidden-attribute children are skipped, so the next visible child is still separated from the previous visible child. This is a child-selector utility, not a color applied to the container.",
+      "examples": [
+        {
+          "id": "visible-child-colors",
+          "title": "Color separators between visible rows",
+          "description": "divide-accent/75 configures the separator color and divide-y-2 supplies the top borders. The hidden row is omitted by the selector."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "後続する表示中の直下の子要素に、区切り線の色を設定します。線幅は divide-width と組み合わせます。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "名前は tokens.colors に設定した値だけを参照します。divide-current、divide-transparent と検証済みの角括弧色も使えます。スラッシュには 0〜100 の整数を指定し、色を Oklab で transparent と混ぜます。divide の色ルールは、該当する後続の子要素に四辺すべての border-color を設定します。線の幅と方向には divide-x または divide-y を組み合わせます。hidden 属性の子要素は除外されるため、次の表示中の子は直前の表示中の子との間で区切られます。コンテナ自身の色を変えるユーティリティではありません。",
+      "examples": [
+        {
+          "id": "visible-child-colors",
+          "title": "表示中の行の区切り色を変える",
+          "description": "divide-accent/75 が色を設定し、divide-y-2 が上ボーダーを用意します。hidden の行はセレクターから除外されます。"
+        }
+      ]
+    }
+  }
+}

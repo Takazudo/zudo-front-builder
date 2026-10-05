@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "family": "border-width",
+  "lookup": [
+    {
+      "entry": "v1.border.width",
+      "candidate": "border",
+      "example": "all-and-axes"
+    },
+    {
+      "entry": "v1.border.width.x",
+      "candidate": "border-x-4",
+      "example": "all-and-axes"
+    },
+    {
+      "entry": "v1.border.width.y",
+      "candidate": "border-y-2",
+      "example": "all-and-axes"
+    },
+    {
+      "entry": "v1.border.width.b",
+      "candidate": "border-b-[3px]",
+      "example": "individual-edges"
+    },
+    {
+      "entry": "v1.border.width.l",
+      "candidate": "border-l-4",
+      "example": "individual-edges"
+    },
+    {
+      "entry": "v1.border.width.r",
+      "candidate": "border-r-2",
+      "example": "individual-edges"
+    },
+    {
+      "entry": "v1.border.width.t",
+      "candidate": "border-t-4",
+      "example": "individual-edges"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set the thickness of a physical border on every side, an axis, or one edge.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "The bare border utility emits a 1px solid border on all four sides. Integer suffixes are pixel lengths: border-x-4 means 4px on the left and right, while border-y-2 means 2px on the top and bottom. The x/y names refer to physical sides, not writing-mode-aware logical axes. border-t, border-r, border-b, and border-l target individual edges. Bracket values accept validated CSS lengths. These widths do not use spacingUnit and cannot be negative; each width utility also sets that edge’s style to solid.",
+      "examples": [
+        {
+          "id": "all-and-axes",
+          "title": "Set all sides or a physical axis",
+          "description": "border is 1px on all sides; x maps to left and right, and y maps to top and bottom. Numeric widths are pixels."
+        },
+        {
+          "id": "individual-edges",
+          "title": "Tune one edge at a time",
+          "description": "The four utilities target the named physical edge; border-b-[3px] supplies a one-off pixel width."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "四辺すべて、軸、または一辺の物理ボーダー幅を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "引数なしの border は四辺に 1px solid を出力します。数値の接尾辞はピクセル長です。border-x-4 は左右、border-y-2 は上下に作用します。x/y は書字方向に応じて変化する論理軸ではなく物理辺です。border-t、border-r、border-b、border-l は各辺を指定します。角括弧には検証済み CSS 長さを指定できます。spacingUnit は使わず、負数も使えません。幅ユーティリティは対象辺のスタイルも solid にします。",
+      "examples": [
+        {
+          "id": "all-and-axes",
+          "title": "四辺または物理軸の幅を指定する",
+          "description": "border は四辺が 1px です。x は左右、y は上下を表し、数値はピクセルです。"
+        },
+        {
+          "id": "individual-edges",
+          "title": "一辺ずつ幅を調整する",
+          "description": "各ユーティリティは名前の物理辺を対象にし、border-b-[3px] は個別のピクセル幅を指定します。"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "family": "outline-style",
+  "lookup": [
+    {
+      "entry": "v1.outline.style.dashed",
+      "candidate": "outline-dashed",
+      "example": "outline-patterns"
+    },
+    {
+      "entry": "v1.outline.style.dotted",
+      "candidate": "outline-dotted",
+      "example": "outline-patterns"
+    },
+    {
+      "entry": "v1.outline.style.double",
+      "candidate": "outline-double",
+      "example": "outline-patterns"
+    },
+    {
+      "entry": "v1.outline.style.none",
+      "candidate": "outline-none",
+      "example": "outline-patterns"
+    },
+    {
+      "entry": "v1.outline.style.solid",
+      "candidate": "outline-solid",
+      "example": "outline-patterns"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose a supported outline line style, including a style that removes the outline.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "The exact classes outline-solid, outline-dashed, outline-dotted, outline-double, and outline-none set outline-style. They do not supply width or color, so pair a visible style with outline width and color utilities. outline-none removes the outline completely; use it only when another clear focus indicator replaces it. The catalog does not include Tailwind’s outline-hidden utility.",
+      "examples": [
+        {
+          "id": "outline-patterns",
+          "title": "Compare outline patterns",
+          "description": "Each tile combines a width, offset, and configured color with one exact style. The none example retains a visible border and shows that the outline itself is removed."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "対応するアウトラインの線種を選びます。アウトラインを消す指定もあります。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "outline-solid、outline-dashed、outline-dotted、outline-double、outline-none は完全一致のクラスで outline-style を設定します。幅と色は含まれないため、見える線には幅と色のユーティリティも組み合わせます。outline-none はアウトラインを完全に削除します。使う場合は、明確な別のフォーカス表示を用意してください。カタログには Tailwind の outline-hidden は含まれません。",
+      "examples": [
+        {
+          "id": "outline-patterns",
+          "title": "アウトラインのパターンを比べる",
+          "description": "各タイルでは幅、距離、設定済みの色と一つの線種を組み合わせます。none の例は枠線を残し、アウトライン自体が消えることを示します。"
+        }
+      ]
+    }
+  }
+}

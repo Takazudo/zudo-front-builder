@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "outline-color",
+  "lookup": [
+    {
+      "entry": "v1.outline.color",
+      "candidate": "outline-focus/90",
+      "example": "configured-color"
+    },
+    {
+      "entry": "v1.outline.color",
+      "candidate": "outline-[#8b1e3f]",
+      "example": "arbitrary-color"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Color an outline independently of its thickness, distance, and line style.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "Named outline colors use tokens.colors; outline-current and outline-transparent are supported keywords. Arbitrary values such as outline-[#8b1e3f] are validated as CSS colors. A slash modifier accepts an integer from 0 through 100 and mixes the color with transparent in Oklab. The outline root is shared: integer suffixes resolve as width, while configured color names and CSS colors resolve as color. No automatic color palette is provided.",
+      "examples": [
+        {
+          "id": "configured-color",
+          "title": "Use a configured focus color",
+          "description": "outline-focus/90 uses an explicit color token and the supported color-opacity modifier; width and offset come from their own utilities."
+        },
+        {
+          "id": "arbitrary-color",
+          "title": "Use a one-off outline color",
+          "description": "The bracket color is validated CSS; the example keeps width and offset as separate utilities."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "アウトラインの太さ、距離、線種とは独立して色を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "名前付きの色は tokens.colors を使います。outline-current と outline-transparent もキーワードとして使えます。outline-[#8b1e3f] のような任意値は CSS 色として検証されます。スラッシュ修飾子には 0〜100 の整数を指定し、色を Oklab で transparent と混ぜます。outline の根は共有されており、整数の接尾辞は幅、設定済みの色名や CSS 色は色として解決します。自動パレットはありません。",
+      "examples": [
+        {
+          "id": "configured-color",
+          "title": "設定したフォーカス色を使う",
+          "description": "outline-focus/90 は明示した色トークンと色の不透明度修飾子を使います。幅と距離は別のユーティリティで指定します。"
+        },
+        {
+          "id": "arbitrary-color",
+          "title": "個別のアウトライン色を使う",
+          "description": "角括弧内は検証済み CSS 色です。幅と距離は別のユーティリティに分けています。"
+        }
+      ]
+    }
+  }
+}

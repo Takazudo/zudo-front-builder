@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "family": "border-style",
+  "lookup": [
+    {
+      "entry": "v1.border.style.dashed",
+      "candidate": "border-dashed",
+      "example": "line-styles"
+    },
+    {
+      "entry": "v1.border.style.dotted",
+      "candidate": "border-dotted",
+      "example": "line-styles"
+    },
+    {
+      "entry": "v1.border.style.double",
+      "candidate": "border-double",
+      "example": "line-styles"
+    },
+    {
+      "entry": "v1.border.style.none",
+      "candidate": "border-none",
+      "example": "line-styles"
+    },
+    {
+      "entry": "v1.border.style.solid",
+      "candidate": "border-solid",
+      "example": "line-styles"
+    },
+    {
+      "entry": "v1.border.style.collapse",
+      "candidate": "border-collapse",
+      "example": "table-collapse"
+    },
+    {
+      "entry": "v1.border.style.separate",
+      "candidate": "border-collapse-separate",
+      "example": "table-collapse"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Choose a supported border line style, remove its line, or set a table’s border-collapse mode.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes provide only the labeled layout and typography.",
+      "customValues": "border-solid, border-dashed, border-dotted, border-double, and border-none set border-style. Pair a visible line style with a width utility; the style utility itself does not add width. border-none only changes the style. The exact utilities border-collapse and border-collapse-separate set the table border-collapse property. They are useful for table cells whose borders should merge or remain separated. Bare border widths independently establish solid style.",
+      "examples": [
+        {
+          "id": "line-styles",
+          "title": "Compare line patterns",
+          "description": "The width utilities make each line visible; border-none changes the style to none while leaving the width value in place."
+        },
+        {
+          "id": "table-collapse",
+          "title": "Choose how table cell borders meet",
+          "description": "The utility on each table selects collapsed or separated borders; the scaffold supplies cell edges and spacing for comparison."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "対応するボーダー線のスタイル、線の非表示、またはテーブルの border-collapse を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスは説明用の配置と文字組みだけを担当します。",
+      "customValues": "border-solid、border-dashed、border-dotted、border-double、border-none は border-style を設定します。線を見せるには幅ユーティリティも組み合わせます。スタイルだけでは幅を追加しません。border-none はスタイルだけを none にします。border-collapse と border-collapse-separate はテーブルの border-collapse プロパティを設定します。セルの線を接続するか分離するかを選べます。border の幅ユーティリティ自体も solid スタイルを設定します。",
+      "examples": [
+        {
+          "id": "line-styles",
+          "title": "線のパターンを比べる",
+          "description": "幅ユーティリティで各線を見えるようにします。border-none は幅を残したままスタイルを none にします。"
+        },
+        {
+          "id": "table-collapse",
+          "title": "セルのボーダーの接続方法を選ぶ",
+          "description": "各テーブルのユーティリティが線を結合するか分離するかを決めます。比較用にデモ CSS がセルの辺と間隔を用意します。"
+        }
+      ]
+    }
+  }
+}
