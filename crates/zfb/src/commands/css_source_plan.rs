@@ -86,8 +86,10 @@ fn root(label: String, path: PathBuf, required: bool) -> PositiveRoot {
 pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan {
     let project = absolute(&inputs.first_party_root, &inputs.project_root);
     let first_party = absolute(&project, &inputs.first_party_root);
-    let mut plan = SourcePlan::default();
-    plan.extraction_options = inputs.extraction_options.clone();
+    let mut plan = SourcePlan {
+        extraction_options: inputs.extraction_options.clone(),
+        ..SourcePlan::default()
+    };
     for path in [&inputs.configured_output_dir, &inputs.pass_output_dir]
         .into_iter()
         .chain(&inputs.zfb_written_roots)
@@ -1025,13 +1027,18 @@ mod tests {
     }
 
     fn gather(inputs: &CssSourcePlanInputs, config: &Config) -> Result<CssSourcePlanInputs> {
+        let plugin_virtual_modules: Vec<_> = inputs
+            .plugin_virtual_modules
+            .iter()
+            .map(|(specifier, source)| (specifier.clone(), source.clone()))
+            .collect();
         gather_css_source_plan_inputs(
             &inputs.project_root,
             &inputs.pass_output_dir,
             config,
             &[],
             &[],
-            &[],
+            &plugin_virtual_modules,
             &inputs.zfb_written_roots,
         )
     }
