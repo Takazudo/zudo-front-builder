@@ -82,12 +82,15 @@ export function rootPath(element: Element): string {
   }
   return `/${parts.join("/")}`;
 }
+export type RootOwned =
+  | { readonly kind: "node"; readonly node: Node }
+  | { readonly kind: "range"; readonly start: Node; readonly end: Node };
 export function createRoot(
   container: Element,
   options: RootOptions,
   scope: RuntimeScope,
   cleanups: Array<() => void>,
-  owned: readonly Node[],
+  owned: readonly RootOwned[],
 ): RootHandle {
   let disposed = false;
   let removed = false;
@@ -123,7 +126,23 @@ export function createRoot(
       handle.dispose();
       if (removed || storedRoot(container) !== handle) return;
       removed = true;
-      for (const node of owned) if (node.parentNode === container) container.removeChild(node);
+      for (const entry of owned) {
+        if (entry.kind === "node") {
+          if (entry.node.parentNode === container) container.removeChild(entry.node);
+          continue;
+        }
+        const { start, end } = entry;
+        if (start.parentNode !== container || end.parentNode !== container) continue;
+        // Dynamic children can change after the initial render. The markers bound
+        // only this root's range, leaving direct siblings outside it untouched.
+        const nodes: Node[] = [];
+        for (let node: Node | null = start; node; node = node.nextSibling) {
+          nodes.push(node);
+          if (node === end) break;
+        }
+        if (nodes.at(-1) !== end) continue;
+        for (const node of nodes) container.removeChild(node);
+      }
       if (storedRoot(container) === handle) delete (container as RootElement)[ROOT_KEY];
     },
   };

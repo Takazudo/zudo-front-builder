@@ -10,6 +10,7 @@ import {
   storedRoot,
   type RootHandle,
   type RootOptions,
+  type RootOwned,
 } from "./root.js";
 import type { ReadonlySignal } from "./reactive-types.js";
 import { subscribe } from "./reactive.js";
@@ -67,6 +68,8 @@ interface BuildContext {
   readonly formOwners: Map<FormPlan, Owned>;
   readonly opaque: Set<Node>;
   readonly textSlots: Set<Node>;
+  readonly dynamicRanges: Array<readonly [Comment, Comment]>;
+  collectRootRanges: boolean;
 }
 interface Owned {
   scope: RuntimeScope;
@@ -182,7 +185,33 @@ function marker(
   parent.appendChild(close);
   if (kind === "h") context.opaque.add(open);
   if (kind === "t") context.textSlots.add(open);
+  if (context.collectRootRanges && (kind === "t" || kind === "l" || kind.startsWith("s:")))
+    context.dynamicRanges.push([open, close]);
   return [open, close];
+}
+function rootOwned(container: Element, context: BuildContext, map: Map<Node, Node>): RootOwned[] {
+  const starts = new Map<Node, Node>();
+  for (const [open, close] of context.dynamicRanges) {
+    const start = map.get(open);
+    const end = map.get(close);
+    if (start?.parentNode === container && end?.parentNode === container) starts.set(start, end);
+  }
+  const nodes: Node[] = [...container.childNodes];
+  const owned: RootOwned[] = [];
+  for (let index = 0; index < nodes.length; index++) {
+    const start = nodes[index]!;
+    const end = starts.get(start);
+    if (end) {
+      const endIndex = nodes.indexOf(end, index + 1);
+      if (endIndex >= 0) {
+        owned.push({ kind: "range", start, end });
+        index = endIndex;
+        continue;
+      }
+    }
+    owned.push({ kind: "node", node: start });
+  }
+  return owned;
 }
 function range(start: Node, end: Node): Node[] {
   const nodes: Node[] = [];
@@ -1081,9 +1110,12 @@ function execute(
       formOwners: new Map(),
       opaque: new Set(),
       textSlots: new Set(),
+      dynamicRanges: [],
+      collectRootRanges: true,
     };
     const fragment = container.ownerDocument.createDocumentFragment();
     render(node, fragment, context, HTML, "", rootPath(container));
+    context.collectRootRanges = false;
     const built = [...fragment.childNodes];
     const map = new Map<Node, Node>();
     if (mode === "hydrate") compareChildren(fragment, container, map, context, rootPath(container));
@@ -1121,7 +1153,8 @@ function execute(
     }
     for (const [owner, bindings] of ownedForms)
       activateForms(bindings, owner.scope, owner.cleanups, options, container);
-    const owned = mode === "hydrate" ? [...container.childNodes] : built;
+    const owned = rootOwned(container, context, map);
+    context.dynamicRanges.length = 0;
     const handle = createRoot(container, options, scope, cleanups, owned);
     try {
       scope.activate();
