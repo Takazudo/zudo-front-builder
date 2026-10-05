@@ -96,7 +96,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Exercise real production SSR and client hydration
         env:
-          PLAYWRIGHT_JUNIT_OUTPUT_NAME: target/mdx-map-acceptance/browser.junit.xml
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: target/mdx-map-acceptance/browser.junit.xml
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs --reporter=list,junit
       - name: Require executed native and browser cases
         shell: bash
