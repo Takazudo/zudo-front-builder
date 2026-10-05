@@ -1,0 +1,68 @@
+name: Temporary translate audit evidence
+on:
+  pull_request:
+    branches: ["agent-fix/translate-axis-audit"]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/translate-audit-evidence.yml"
+      - ".github/translate-audit-probe/**"
+permissions:
+  contents: read
+concurrency:
+  group: translate-audit-evidence
+  cancel-in-progress: true
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: translate-audit-pair
+      - name: Retain identical fixture and comparison harness
+        run: |
+          set -euo pipefail
+          mkdir -p target/translate-evidence/fixtures
+          cp -R .github/translate-audit-probe/composition target/translate-evidence/fixtures/
+          cp .github/translate-audit-probe/check.py target/translate-evidence/check.py
+          git rev-parse HEAD > target/translate-evidence/probe-source-sha.txt
+          sha256sum target/translate-evidence/check.py target/translate-evidence/fixtures/composition/* > target/translate-evidence/harness-sha256.txt
+          rustc +1.99.0 --version --verbose > target/translate-evidence/rust.txt
+      - name: Compile the recorded unmodified parent
+        run: |
+          set -euo pipefail
+          git checkout --detach 20afaf16eb6dfcdf556ea579184f09bee65edbf1
+          git rev-parse HEAD > target/translate-evidence/source-before.txt
+          sha256sum Cargo.lock crates/zudo-wind/examples/wind_fixture_css.rs > target/translate-evidence/inputs-before.txt
+          cargo +1.99.0 run --locked -p zudo-wind --example wind_fixture_css -- target/translate-evidence/fixtures target/translate-evidence/before 2>&1 | tee target/translate-evidence/before.log
+          sha256sum target/debug/examples/wind_fixture_css > target/translate-evidence/compiler-before.txt
+      - name: Compile and test the fixed source
+        run: |
+          set -euo pipefail
+          git checkout --detach 43f2924b9c12c55da1b6e464be8d81bbf68301b7
+          git rev-parse HEAD > target/translate-evidence/source-after.txt
+          sha256sum Cargo.lock crates/zudo-wind/examples/wind_fixture_css.rs > target/translate-evidence/inputs-after.txt
+          cargo +1.99.0 run --locked -p zudo-wind --example wind_fixture_css -- target/translate-evidence/fixtures target/translate-evidence/after 2>&1 | tee target/translate-evidence/after.log
+          sha256sum target/debug/examples/wind_fixture_css > target/translate-evidence/compiler-after.txt
+          cargo +1.99.0 test --locked -p zudo-wind --lib translate_composition_ -- --nocapture 2>&1 | tee target/translate-evidence/tests.log
+          cargo +1.99.0 clippy --locked -p zudo-wind --all-targets -- -D warnings
+      - name: Compare actual CSS and retained audit controls
+        run: python3 target/translate-evidence/check.py target/translate-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: translate-audit-evidence
+          path: target/translate-evidence/
+          if-no-files-found: error
+          retention-days: 7
