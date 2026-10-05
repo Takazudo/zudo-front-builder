@@ -127,6 +127,7 @@ export function loadPreviewContext(root, exampleRecords) {
   for (const record of exampleRecords)
     for (const example of record.examples) {
       const config = mergeConfig(baseConfig, example.config);
+      if (example.kind === "positive") config.wind.strict = true;
       config.wind.authoredClasses = Object.fromEntries(
         example.authoredClasses.map((name) => [name, true]),
       );

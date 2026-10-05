@@ -378,6 +378,32 @@ describe("reader-first wind pages", () => {
     );
   });
 
+  it("shows diagnostic teaching source and configured severity without creating a runnable iframe", () => {
+    const diagnostic = structuredClone(
+      records.find((record) => record.family === "diagnostics").examples[0],
+    );
+    const changedRecords = structuredClone(records);
+    changedRecords.find((record) => record.family === "gap").examples.push(diagnostic);
+    const changedEditorial = structuredClone(editorial);
+    for (const locale of ["en", "ja"])
+      changedEditorial.get("gap").locales[locale].examples.push({
+        id: diagnostic.id,
+        title: "Unsupported input",
+        description: "Expected compiler diagnostic",
+      });
+    const context = loadPreviewContext(root, changedRecords);
+    const page = renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, {
+      ...options,
+      editorial: changedEditorial,
+      preview: context,
+    }).get("gap.mdx");
+    expect(page).toContain(diagnostic.html);
+    expect(page).toContain(
+      `${diagnostic.expectedDiagnostics[0].code} (${diagnostic.expectedDiagnostics[0].severity})`,
+    );
+    expect(page.match(/<HtmlPreview /g)).toHaveLength(4);
+  });
+
   it("escapes authored text and JSX strings, including source-like delimiters", () => {
     const changed = structuredClone(editorial);
     changed.get("gap").locales.en.purpose = "<script>{secret}</script> & |";
