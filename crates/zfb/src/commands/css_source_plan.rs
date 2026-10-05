@@ -642,10 +642,16 @@ pub(crate) fn gather_css_source_plan_inputs(
         extraction_options
             .class_helpers
             .extend(wind.sources.class_helpers.iter().cloned());
+        extraction_options
+            .ignore_attributes
+            .extend(wind.sources.ignore_attributes.iter().cloned());
         for declaration in wind.source_declarations() {
             extraction_options
                 .class_helpers
                 .extend(declaration.sources.class_helpers.iter().cloned());
+            extraction_options
+                .ignore_attributes
+                .extend(declaration.sources.ignore_attributes.iter().cloned());
             let origin = declaration.origin();
             let declaring_dir = resolve_source_declaring_dir(
                 wind.declaring_dir(&project_root),
@@ -798,6 +804,29 @@ mod tests {
             .occurrences
             .iter()
             .all(|o| o.position_kind == zfb_css::PositionKind::Class));
+    }
+
+    #[test]
+    fn ignored_attribute_options_change_plan_identity_and_reach_plugin_extraction() {
+        let (_temp, mut inputs) = fixture();
+        inputs.plugin_virtual_modules.insert(
+            "virtual:preview".into(),
+            "export const View = () => <Preview html={`<i class=\"bg-red-500\">x</i>`} />;".into(),
+        );
+        let default = build_css_source_plan(&inputs);
+        assert!(default.generated_sources["plugin/virtual:preview"].contains("bg-red-500"));
+        let config = sources_config(vec![(
+            None,
+            serde_json::json!({"ignoreAttributes": ["html"]}),
+        )]);
+        let gathered = gather(&inputs, &config).unwrap();
+        assert!(gathered
+            .extraction_options
+            .ignore_attributes
+            .contains("html"));
+        let configured = build_css_source_plan(&gathered);
+        assert_ne!(default, configured);
+        assert!(!configured.generated_sources["plugin/virtual:preview"].contains("bg-red-500"));
     }
 
     #[test]

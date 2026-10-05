@@ -89,7 +89,15 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
                     i += 1;
                 }
                 if depth == 0 {
-                    super::script::scan(&clean[start..i - 1], start, out);
+                    // MDX scans each brace expression as a separate script.
+                    // The attribute name sits outside that slice, so preserve
+                    // the parent context before entering the script scanner.
+                    if !super::script::known_non_class_context(
+                        &clean[..start],
+                        &out.options.ignore_attributes,
+                    ) {
+                        super::script::scan(&clean[start..i - 1], start, out);
+                    }
                 }
             } else {
                 i += 1;

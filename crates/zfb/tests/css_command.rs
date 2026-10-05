@@ -1658,6 +1658,45 @@ fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
     }
 }
 
+#[test]
+fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"sources":{"ignoreAttributes":["css","html","title"]}}}"#,
+        "export default () => <div class=\"flex\" />;\n",
+    );
+    fs::write(
+        temp.path().join("src/demo.mdx"),
+        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+<div class="flex bg-missing-real">Real content</div>
+"#,
+    )
+    .unwrap();
+    let audit = run_wind_audit(temp.path(), &["--json"]);
+    assert!(audit.status.success(), "{}", combined_output(&audit));
+    let report: serde_json::Value = serde_json::from_slice(&audit.stdout).unwrap();
+    let diagnostics = report["report"]["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|item| item["candidate"] == "bg-missing-real"),
+        "{report}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|item| item["candidate"] == "bg-missing-preview"
+                || item["candidate"] == "irrelevant"),
+        "{report}"
+    );
+
+    fs::write(temp.path().join("entry.css"), "").unwrap();
+    let css = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_success(&css, "mixed MDX CSS");
+    let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap();
+    assert!(emitted.contains(".flex"), "{emitted}");
+    assert!(!emitted.contains("bg-missing-preview"), "{emitted}");
+}
+
 /// A package with no site config or pages, plus a sibling directory holding
 /// the zfb config its consumers use (#3531).
 fn package_with_external_config_fixture() -> TempDir {

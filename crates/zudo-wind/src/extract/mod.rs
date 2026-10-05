@@ -70,12 +70,16 @@ pub struct ExtractionResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtractionOptions {
     pub class_helpers: BTreeSet<String>,
+    pub ignore_attributes: BTreeSet<String>,
 }
 
 impl Default for ExtractionOptions {
     fn default() -> Self {
         Self {
             class_helpers: ["clsx", "cn", "cx", "classNames", "classnames"]
+                .map(str::to_owned)
+                .into(),
+            ignore_attributes: ["href", "src", "content", "name", "rel", "type"]
                 .map(str::to_owned)
                 .into(),
         }

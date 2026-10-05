@@ -1,6 +1,79 @@
 use zudo_wind::{
-    audit, extract_candidates, AuditInput, NoteKind, PositionKind, SourceKind, WindConfig,
+    audit, extract_candidates, extract_candidates_with_options, AuditInput, ExtractionOptions,
+    NoteKind, PositionKind, SourceKind, WindConfig,
 };
+
+#[test]
+fn configured_ignored_attributes_skip_preview_literals_and_embedded_markup() {
+    let mut options = ExtractionOptions::default();
+    options.ignore_attributes.extend(
+        [
+            "html",
+            "css",
+            "title",
+            "displayJs",
+            "data-preview",
+            "preview:html",
+            "étiquette",
+        ]
+        .map(str::to_owned),
+    );
+    for (source, kind) in [
+        (
+            r#"<Preview html={`<div class="hidden bg-red-500">x</div>`} css={`.x { color: red; }`} title="suppressed" /><div class="flex missing-class" />"#,
+            SourceKind::Mdx,
+        ),
+        (
+            r#"export const View = () => <><Preview html={`<div class="hidden bg-red-500">x</div>`} css={`.x { color: red; }`} title="suppressed" /><div className="flex missing-class" /></>;"#,
+            SourceKind::Tsx,
+        ),
+        (
+            r#"<Preview html="<div class='hidden bg-red-500'>x</div>" css=".x { color: red; }" title="suppressed"></Preview><div class="flex missing-class"></div>"#,
+            SourceKind::Html,
+        ),
+    ] {
+        let result = extract_candidates_with_options(source.as_bytes(), kind, &options);
+        let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            found.contains(&"flex") && found.contains(&"missing-class"),
+            "{kind:?}: {found:?}"
+        );
+        assert!(
+            !found.contains(&"hidden")
+                && !found.contains(&"bg-red-500")
+                && !found.contains(&"suppressed"),
+            "{kind:?}: {found:?}"
+        );
+        assert!(result
+            .candidates
+            .iter()
+            .find(|c| c.text == "missing-class")
+            .unwrap()
+            .occurrences
+            .iter()
+            .any(|o| o.position_kind == PositionKind::Class));
+    }
+    let ordinary = extract_candidates_with_options(
+        b"const html = 'flex'; const title = 'grid'; widget.html = 'block';",
+        SourceKind::Ts,
+        &options,
+    );
+    assert!(ordinary.candidates.iter().any(|c| c.text == "flex"));
+    assert!(ordinary.candidates.iter().any(|c| c.text == "grid"));
+    assert!(ordinary.candidates.iter().any(|c| c.text == "block"));
+    let named = extract_candidates_with_options(
+        br#"const node = <Preview data-preview="hidden" preview:html="block" displayJs="grid" />;"#,
+        SourceKind::Tsx,
+        &options,
+    );
+    assert!(named.candidates.is_empty(), "{named:?}");
+    let unicode = extract_candidates_with_options(
+        "<Preview étiquette=\"hidden\" />".as_bytes(),
+        SourceKind::Tsx,
+        &options,
+    );
+    assert!(unicode.candidates.is_empty(), "{unicode:?}");
+}
 
 fn names(bytes: &[u8], kind: SourceKind) -> Vec<String> {
     extract_candidates(bytes, kind)

@@ -26,7 +26,8 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
         if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
             let quote = bytes[i];
             let class = class_context(&source[..i]);
-            let known_non_class = !class && known_non_class_context(&source[..i]);
+            let known_non_class =
+                !class && known_non_class_context(&source[..i], &out.options.ignore_attributes);
             let open = i;
             i += 1;
             let mut segment = i;
@@ -57,7 +58,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
                     // An unterminated interpolation runs to the end of the
                     // source and has no closing `}` to strip.
                     let body_end = if source[..i].ends_with('}') { i - 1 } else { i };
-                    if body_end > expression_start {
+                    if !known_non_class && body_end > expression_start {
                         scan_literals(
                             &source[expression_start..body_end],
                             base + expression_start,
@@ -156,13 +157,12 @@ fn class_context(prefix: &str) -> bool {
     !matches!(preceding_word, "const" | "let" | "var")
 }
 
-/// Attributes whose value is never a class list: links, sources, metadata
-/// and input types (`type="hidden"` is not the `hidden` utility).
-const NON_CLASS_ATTRIBUTES: &[&str] = &["href", "src", "content", "name", "rel", "type"];
-
 /// A literal that is a module specifier (`import`/`export … from`,
 /// `import()`, `require()`) or an intrinsic non-class attribute value.
-fn known_non_class_context(prefix: &str) -> bool {
+pub(super) fn known_non_class_context(
+    prefix: &str,
+    ignore_attributes: &std::collections::BTreeSet<String>,
+) -> bool {
     let trimmed = prefix.trim_end();
     let word = |text: &str| {
         text.rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
@@ -186,12 +186,21 @@ fn known_non_class_context(prefix: &str) -> bool {
         return false;
     };
     let before = before.trim_end();
-    let name = word(before);
-    if !NON_CLASS_ATTRIBUTES.contains(&name.as_str()) {
+    let name = before
+        .rsplit(|c: char| {
+            !(c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}'))
+        })
+        .next()
+        .unwrap_or("");
+    if !ignore_attributes.contains(name) {
         return false;
     }
-    // `const name = "..."` is a variable, not an attribute.
-    let preceding = word(before.strip_suffix(name.as_str()).unwrap_or("").trim_end());
+    // Declarations and member assignments are not JSX/MDX attributes.
+    let before_name = before.strip_suffix(name).unwrap_or("").trim_end();
+    if before_name.ends_with('.') {
+        return false;
+    }
+    let preceding = word(before_name);
     !matches!(preceding.as_str(), "const" | "let" | "var")
 }
 
