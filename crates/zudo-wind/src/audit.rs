@@ -710,6 +710,8 @@ fn effective_write_set(property: &str) -> Vec<String> {
         ],
         "flex" => &["flex-grow", "flex-shrink", "flex-basis"],
         "place-items" => &["align-items", "justify-items"],
+        "place-self" => &["align-self", "justify-self"],
+        "place-content" => &["align-content", "justify-content"],
         _ => return vec![property.to_owned()],
     };
     longhands
@@ -1071,6 +1073,68 @@ mod tests {
             .dynamic_constructions
             .iter()
             .any(|item| item.text == "bg-"));
+    }
+
+    #[test]
+    fn alignment_shorthand_conflicts_expand_to_longhands_and_keep_disjoint_pairs_clear() {
+        let source = extract_candidates(
+            br#"<div class="place-self-center self-start justify-self-end place-content-between justify-center items-center justify-items-end place-items-start"></div>"#,
+            SourceKind::Html,
+        );
+        let report = audit(
+            &AuditInput::single("src/page.html", source),
+            &WindConfig::default(),
+        );
+        let conflicts = report
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                (
+                    conflict.first_candidate.as_str(),
+                    conflict.second_candidate.as_str(),
+                    conflict
+                        .overlapping_properties
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            conflicts,
+            std::collections::BTreeSet::from([
+                (
+                    "justify-center",
+                    "place-content-between",
+                    vec!["justify-content"]
+                ),
+                (
+                    "justify-self-end",
+                    "place-self-center",
+                    vec!["justify-self"]
+                ),
+                (
+                    "justify-items-end",
+                    "place-items-start",
+                    vec!["justify-items"]
+                ),
+                ("items-center", "place-items-start", vec!["align-items"]),
+                ("place-self-center", "self-start", vec!["align-self"]),
+            ])
+        );
+        assert!(!report.conflicts.iter().any(|conflict| {
+            (conflict.first_candidate == "place-content-between"
+                && conflict.second_candidate == "items-center")
+                || (conflict.first_candidate == "items-center"
+                    && conflict.second_candidate == "place-content-between")
+        }));
+        assert!(!report.conflicts.iter().any(|conflict| {
+            (conflict.first_candidate == "place-items-start"
+                && conflict.second_candidate == "place-self-center")
+                || (conflict.first_candidate == "place-self-center"
+                    && conflict.second_candidate == "place-items-start")
+        }));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "specVersion": 1,
-  "specRevision": 10,
+  "specRevision": 11,
   "entries": [
     {
       "id": "v1.block",
@@ -2111,6 +2111,208 @@
       ]
     },
     {
+      "id": "v1.justify-items",
+      "root": "justify-items",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["justify-items"],
+      "declarationTemplates": [
+        {
+          "property": "justify-items",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "justify-items-center",
+          "declarations": [
+            {
+              "property": "justify-items",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.justify-self",
+      "root": "justify-self",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["justify-self"],
+      "declarationTemplates": [
+        {
+          "property": "justify-self",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "justify-self-center",
+          "declarations": [
+            {
+              "property": "justify-self",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.place-content",
+      "root": "place-content",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "between",
+          "emittedValue": "space-between"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "around",
+          "emittedValue": "space-around"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "evenly",
+          "emittedValue": "space-evenly"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["place-content"],
+      "declarationTemplates": [
+        {
+          "property": "place-content",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "place-content-center",
+          "declarations": [
+            {
+              "property": "place-content",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "v1.place-items",
       "root": "place-items",
       "grammar": {
@@ -2163,6 +2365,70 @@
           "declarations": [
             {
               "property": "place-items",
+              "value": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v1.place-self",
+      "root": "place-self",
+      "grammar": {
+        "acceptedKinds": ["keyword"],
+        "arbitraryProperty": null,
+        "allowsFractionSlash": false,
+        "allowsColorOpacity": false
+      },
+      "acceptedValues": [
+        {
+          "kind": "keyword",
+          "suffix": "start",
+          "emittedValue": "start"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "end",
+          "emittedValue": "end"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "center",
+          "emittedValue": "center"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "stretch",
+          "emittedValue": "stretch"
+        },
+        {
+          "kind": "keyword",
+          "suffix": "baseline",
+          "emittedValue": "baseline"
+        }
+      ],
+      "tokenCategories": [],
+      "negativePolicy": "forbidden",
+      "conflictGroup": "alignment",
+      "conflictGroupRank": 7,
+      "orderRank": 0,
+      "selectorShape": "ownElement",
+      "emitter": ["place-self"],
+      "declarationTemplates": [
+        {
+          "property": "place-self",
+          "valueKind": "resolved",
+          "fixedValue": null
+        }
+      ],
+      "registrations": [],
+      "specVersion": 1,
+      "examples": [
+        {
+          "candidate": "place-self-center",
+          "declarations": [
+            {
+              "property": "place-self",
               "value": "center"
             }
           ]

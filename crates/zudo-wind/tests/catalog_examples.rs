@@ -70,6 +70,89 @@ fn every_catalog_example_resolves_to_its_declared_output() {
 }
 
 #[test]
+fn alignment_roots_resolve_the_approved_keyword_matrix_and_preserve_existing_outputs() {
+    for (root, suffix, property, emitted) in [
+        ("justify-self", "start", "justify-self", "start"),
+        ("justify-self", "end", "justify-self", "end"),
+        ("justify-self", "center", "justify-self", "center"),
+        ("justify-self", "stretch", "justify-self", "stretch"),
+        ("justify-self", "baseline", "justify-self", "baseline"),
+        ("justify-items", "start", "justify-items", "start"),
+        ("justify-items", "end", "justify-items", "end"),
+        ("justify-items", "center", "justify-items", "center"),
+        ("justify-items", "stretch", "justify-items", "stretch"),
+        ("justify-items", "baseline", "justify-items", "baseline"),
+        ("place-self", "start", "place-self", "start"),
+        ("place-self", "end", "place-self", "end"),
+        ("place-self", "center", "place-self", "center"),
+        ("place-self", "stretch", "place-self", "stretch"),
+        ("place-self", "baseline", "place-self", "baseline"),
+        ("place-content", "start", "place-content", "start"),
+        ("place-content", "end", "place-content", "end"),
+        ("place-content", "center", "place-content", "center"),
+        ("place-content", "stretch", "place-content", "stretch"),
+        ("place-content", "between", "place-content", "space-between"),
+        ("place-content", "around", "place-content", "space-around"),
+        ("place-content", "evenly", "place-content", "space-evenly"),
+    ] {
+        let candidate = format!("{root}-{suffix}");
+        let resolved = rule(&candidate);
+        assert_eq!(resolved.root, root, "{candidate}");
+        assert_eq!(
+            resolved
+                .declarations
+                .iter()
+                .map(|declaration| (declaration.property.as_str(), declaration.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(property, emitted)],
+            "{candidate}"
+        );
+    }
+
+    for (candidate, property, emitted) in [
+        ("items-start", "align-items", "flex-start"),
+        ("self-end", "align-self", "flex-end"),
+        ("justify-start", "justify-content", "flex-start"),
+        ("place-items-start", "place-items", "start"),
+    ] {
+        let resolved = rule(candidate);
+        assert_eq!(resolved.declarations[0].property, property, "{candidate}");
+        assert_eq!(resolved.declarations[0].value, emitted, "{candidate}");
+    }
+}
+
+#[test]
+fn alignment_roots_reject_unapproved_values_and_modifiers() {
+    for candidate in [
+        "justify-self-flex-start",
+        "justify-self-flex-end",
+        "justify-items-flex-start",
+        "justify-items-flex-end",
+        "justify-items-between",
+        "justify-items-around",
+        "place-self-flex-start",
+        "place-self-around",
+        "place-content-baseline",
+        "justify-self-between",
+        "place-items-baseline",
+        "-justify-self-start",
+        "-place-content-center",
+        "justify-self-start/50",
+        "justify-items-end/50",
+        "place-content-between/25",
+        "justify-self-[start]",
+    ] {
+        assert!(
+            matches!(
+                resolve(candidate, &origin(SourcePositionKind::Class)),
+                Resolution::Diagnostic(_)
+            ),
+            "{candidate}"
+        );
+    }
+}
+
+#[test]
 fn every_batch_a_group_has_accepted_and_rejected_examples() {
     let cases = [
         ("block", "block-unknown"),
