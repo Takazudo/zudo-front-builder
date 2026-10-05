@@ -11,7 +11,7 @@ import { defaultExclude, defineConfig } from "vite-plus";
 // stays the hang guardrail everywhere except the suites that genuinely await
 // real child processes.
 //
-// Why only these four: they, and nothing else, reach child_process on an
+// Why only these five: they, and nothing else, reach child_process on an
 // awaited path (a transitive import-graph audit of the scripts/__tests__
 // files), so only they wait out multi-second subprocess phases. Under Vitest 2
 // a suite that blocked on execFileSync was immune to testTimeout -- #3061
@@ -26,6 +26,7 @@ import { defaultExclude, defineConfig } from "vite-plus";
 const SUBPROCESS_SUITES = [
   "scripts/__tests__/docs-dev-supervisor.test.mjs",
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
+  "scripts/__tests__/plugin-logger-diagnostics.test.mjs",
   "scripts/__tests__/supervisor-watch-handoff.test.mjs",
   "scripts/__tests__/supervisor-watch.test.mjs",
 ];
