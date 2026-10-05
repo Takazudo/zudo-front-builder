@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "4b6b45478a8d63c735f9be7a8ce144fe861da366",
+  "baselineSourceSha": "2ffc69d647bf0518c0d449e9a0abd7a473c1fe51",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -29,7 +29,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
-    "cargoLockSha256": "62cb06933c5048c43f20ed696f53dfc5ba57b444876396e3822b860b2bc0b21d"
+    "cargoLockSha256": "695094eb4031b7e0578130ce339ab7cac6c66aedbb0bfb219640a0112d3cc75e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63209,
-        "gzip": 21137
+        "raw": 64661,
+        "gzip": 21548
       },
       "scalar-signal": {
-        "raw": 63217,
-        "gzip": 21133
+        "raw": 64669,
+        "gzip": 21546
       },
       "show-for": {
-        "raw": 63363,
-        "gzip": 21214
+        "raw": 64815,
+        "gzip": 21625
       },
       "model": {
-        "raw": 63208,
-        "gzip": 21144
+        "raw": 64660,
+        "gzip": 21548
       },
       "blog-theme": {
-        "raw": 63558,
-        "gzip": 21280
+        "raw": 65010,
+        "gzip": 21689
       },
       "json-api": {
-        "raw": 63363,
-        "gzip": 21229
+        "raw": 64815,
+        "gzip": 21637
       },
       "multi-island": {
-        "raw": 63485,
-        "gzip": 21236
+        "raw": 64937,
+        "gzip": 21650
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 63271,
-        "gzip": 21156
+        "raw": 64723,
+        "gzip": 21571
       },
       "scalar-signal": {
-        "raw": 63279,
-        "gzip": 21159
+        "raw": 64731,
+        "gzip": 21573
       },
       "show-for": {
-        "raw": 63425,
-        "gzip": 21243
+        "raw": 64877,
+        "gzip": 21660
       },
       "model": {
-        "raw": 63270,
-        "gzip": 21169
+        "raw": 64722,
+        "gzip": 21583
       },
       "blog-theme": {
-        "raw": 63620,
-        "gzip": 21298
+        "raw": 65072,
+        "gzip": 21711
       },
       "json-api": {
-        "raw": 63425,
-        "gzip": 21253
+        "raw": 64877,
+        "gzip": 21665
       },
       "multi-island": {
-        "raw": 63547,
-        "gzip": 21262
+        "raw": 64999,
+        "gzip": 21673
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v3.2.0 ceilings measured on the pinned CI toolchain; gzip bytes are platform-specific.",
+  "platformStatus": "Linux x64 has exact zero-allowance v3.2.0 ceilings measured after the script rawHtml closing-boundary guard on the pinned CI toolchain; gzip bytes are platform-specific.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37207983124,
-    "jobId": 111453095659,
-    "sourceSha": "4b6b45478a8d63c735f9be7a8ce144fe861da366",
-    "note": "The v3.2.0 version bump left every raw total unchanged and moved three gzip totals (workspace blog-theme +1, workspace json-api +1, packed model +3), reported by the failed health budget step; the other eleven totals were within their ceilings. Prior ceilings and evidence remain in git history."
+    "runId": 37254863769,
+    "jobId": 111589659768,
+    "sourceSha": "2ffc69d647bf0518c0d449e9a0abd7a473c1fe51",
+    "note": "Complete workspace and packed eight-fixture matrices, two byte-identical passes each, saved in bounded-fixes-linux-island-size-evidence. Includes SWC 74, rb support and the script rawHtml closing-boundary guard. Prior exact ceilings remain in git history."
   }
 }

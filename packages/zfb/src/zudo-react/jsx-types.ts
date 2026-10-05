@@ -359,6 +359,7 @@ type HtmlTag =
   | "param"
   | "q"
   | "rp"
+  | "rb"
   | "rt"
   | "ruby"
   | "s"
