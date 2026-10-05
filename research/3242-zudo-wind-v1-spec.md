@@ -753,3 +753,11 @@ node-free receives no wind stylesheet after final cutover because absent wind ha
 Revision 2 locks #3248–#3257, #3261, #3263–#3271, #3285, #3292–#3296, #3299, #3301, #3302, #3305, #3306, #3309 and #3310 under the expanded #3246 planner addendum. Their “Locked by the zudo-wind v1 spec” sections name the binding decision ids. Scheduling headers and every other body section are preserved. All implementations must read this spec under the authority order.
 
 Required downstream verification: parser rejection fixtures per G/R id (#3248); config and token validation (#3249); executable catalog examples (#3250/#3251); exact reset/output goldens and permutation tests (#3252); extractor/source-index fixtures (#3253/#3254); schema/export/explain tests (#3255); browser computed values for spacing, variant specificity, noninherited translation, all resets and unlayered cascade (#3257); real clean/warm builds, manifest ownership and authored/package assets (#3269). No browser, compiler or performance claim is certified by this document-only decision task.
+
+## Later compatibility policy (2026-10-06)
+
+The separate [Wind preset-free compatibility profile](wind-compatibility-profile.md)
+(#3826) defines the bounded compatibility promise and evidence requirements. It
+preserves this document's historical revision and owned-language boundary while
+allowing reviewed native utility adoptions. Its version is independent of language
+spec/catalog revisions; it does not certify this spec's historical verification.
