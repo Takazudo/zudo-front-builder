@@ -1,0 +1,50 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo {
+  font: 14px / 1.5 system-ui, sans-serif;
+  color: #203046;
+}
+
+.wind-demo-scroller {
+  width: 17rem;
+  height: 9rem;
+  overflow: auto;
+  border: 2px dashed #849bb3;
+  background: #eef3f8;
+}
+
+.wind-demo-two-axis-scroller {
+  width: 17rem;
+  height: 9rem;
+}
+
+.wind-demo-link {
+  display: block;
+  border-bottom: 1px solid #849bb3;
+  background: #dce8f2;
+}
+
+.wind-demo-canvas {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  width: 34rem;
+  height: 20rem;
+}
+
+.wind-demo-target {
+  width: 10rem;
+  min-height: 4rem;
+  border: 2px solid #59718b;
+  background: #c6d8e9;
+}
+.scroll-m-6 {
+  scroll-margin-top: 1.5rem;
+  scroll-margin-right: 1.5rem;
+  scroll-margin-bottom: 1.5rem;
+  scroll-margin-left: 1.5rem;
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "child-space",
+  "examples": [
+    {
+      "id": "horizontal-child-space",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-row flex space-x-4\">\n  <div class=\"wind-demo-cell\">First</div>\n  <div class=\"wind-demo-cell\">Second</div>\n  <div class=\"wind-demo-cell\">Third</div>\n</div>",
+      "utilities": ["flex", "space-x-4"],
+      "authoredClasses": ["wind-demo", "wind-demo-row", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-row { border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-cell { min-width: 5rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }"
+    },
+    {
+      "id": "vertical-hidden-siblings",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-stack space-y-3\">\n  <div class=\"wind-demo-cell\">First eligible child</div>\n  <div class=\"wind-demo-cell wind-demo-display-none\">display:none, without hidden</div>\n  <div hidden class=\"wind-demo-cell\">hidden attribute</div>\n  <div class=\"wind-demo-cell\">Later eligible child</div>\n</div>",
+      "utilities": ["space-y-3"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-stack",
+        "wind-demo-cell",
+        "wind-demo-display-none"
+      ],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-stack { width: 18rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-cell { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }\n.wind-demo-display-none { display: none; }"
+    },
+    {
+      "id": "negative-child-space",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-row flex -space-x-2\">\n  <div class=\"wind-demo-cell\">First</div>\n  <div class=\"wind-demo-cell\">Second overlaps</div>\n  <div class=\"wind-demo-cell\">Third</div>\n</div>",
+      "utilities": ["-space-x-2", "flex"],
+      "authoredClasses": ["wind-demo", "wind-demo-row", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-row { border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-cell { width: 6rem; min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }\n.wind-demo-cell:last-child { background: #c6d8e9; }"
+    },
+    {
+      "id": "named-child-space",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo wind-demo-stack space-y-stack\">\n  <div class=\"wind-demo-cell\">First</div>\n  <div class=\"wind-demo-cell\">Second</div>\n  <div class=\"wind-demo-cell\">Third</div>\n</div>",
+      "utilities": ["space-y-stack"],
+      "authoredClasses": ["wind-demo", "wind-demo-stack", "wind-demo-cell"],
+      "scaffoldCss": ".wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-stack { width: 18rem; border: 2px dashed #849bb3; background: #eef3f8; }\n.wind-demo-cell { min-height: 3rem; border: 1px solid #59718b; background: #dce8f2; text-align: center; }",
+      "config": {
+        "wind": {
+          "tokens": {
+            "spacing": {
+              "stack": "1.5rem"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
