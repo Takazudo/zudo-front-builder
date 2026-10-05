@@ -41,21 +41,187 @@ zfb wind audit --plan build --fail-on warning
 The preview uses the token and numeric spacing in compiled zudo-wind rules:
 
 {/* wind-preview: guide-coming-from-tailwind/token-migration "Move a theme value into wind.tokens" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<article class=\"wind-demo-card bg-panel p-4\"><h2>Workspace panel</h2><p>Token-backed color and numeric spacing.</p></article>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-reset {\n  *,\n  *::before,\n  *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n    border-width: 0;\n    border-style: solid;\n    border-color: currentColor;\n  }\n  html {\n    line-height: 1.5;\n    font-family: ui-sans-serif, system-ui, sans-serif;\n    -webkit-text-size-adjust: 100%;\n    tab-size: 4;\n  }\n  body {\n    line-height: inherit;\n  }\n  h1,\n  h2,\n  h3,\n  h4,\n  h5,\n  h6 {\n    font-size: inherit;\n    font-weight: inherit;\n  }\n  a {\n    color: inherit;\n    text-decoration: inherit;\n  }\n  b,\n  strong {\n    font-weight: bolder;\n  }\n  code,\n  kbd,\n  samp,\n  pre {\n    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n    font-size: 1em;\n  }\n  ol,\n  ul,\n  menu {\n    list-style: none;\n  }\n  button,\n  input,\n  optgroup,\n  select,\n  textarea {\n    font: inherit;\n    letter-spacing: inherit;\n    color: inherit;\n  }\n  button,\n  input:where([type=\"button\"], [type=\"reset\"], [type=\"submit\"]) {\n    background-color: transparent;\n    background-image: none;\n  }\n  textarea {\n    resize: vertical;\n  }\n  img,\n  svg,\n  video,\n  canvas,\n  audio,\n  iframe,\n  embed,\n  object {\n    display: block;\n    vertical-align: middle;\n  }\n  img,\n  video {\n    max-width: 100%;\n    height: auto;\n  }\n  table {\n    border-collapse: collapse;\n    border-color: inherit;\n    text-indent: 0;\n  }\n  summary {\n    display: list-item;\n  }\n  hr {\n    height: 0;\n    border-top-width: 1px;\n  }\n}\n@layer zw-tokens {\n  :root {\n    --zw-color-panel: #eaf2ff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-card {\n  max-width: 24rem;\n  border: 1px solid #b6c4d2;\n  border-radius: .5rem;\n  color: #172b4d;\n}\n\n.wind-demo-card h2 {\n  margin: 0 0 .5rem;\n  font-size: 1.1rem;\n}\n\n.wind-demo-card p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n"} title={"Move a theme value into wind.tokens"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "owned-v1",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#eaf2ff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }
+.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.wind-demo-card p { margin: 0; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 A remaining Tailwind directive is a hard ZW009 error, including when <code>wind</code> is <code>false</code>. This typed fixture shows the rejected entry stylesheet:
 
 {/* wind-preview: guide-coming-from-tailwind/leftover-directive "Leftover Tailwind directive: ZW009" */}
+
+```css
+@tailwind utilities;
+```
+
+```html
+<p>Legacy entry check</p>
+```
+
+Expected diagnostics: `ZW009 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": []
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 A Tailwind import is rejected by the same ZW009 stylesheet check:
 
 {/* wind-preview: guide-coming-from-tailwind/tailwind-import "Tailwind import: ZW009" */}
+
+```css
+@import "tailwindcss/utilities";
+```
+
+```html
+<p>Legacy entry check</p>
+```
+
+Expected diagnostics: `ZW009 (error)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": []
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 An old <code>line-clamp-2</code> class is unsupported and produces ZW014. Keep it as a warning while inventorying lost styles, or make it an error at class positions with strict mode:
 
 {/* wind-preview: guide-coming-from-tailwind/unsupported-utility "Unsupported class-position utility: ZW014" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+Expected diagnostics: `ZW014 (warning)`
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 Write each unported selector or declaration in authored CSS or a CSS Module. The reference below retains exact reset differences, specificity, placement ties, and unsupported syntax alternatives.

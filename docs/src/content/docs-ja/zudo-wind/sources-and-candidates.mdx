@@ -41,14 +41,157 @@ zfb wind audit --plan build
 利用側は生成者 <code>ui</code> を指定し、マニフェストが使うトークンをすべて設定します。このサンプルは設定済みの色と余白で 2 つの完全な候補をコンパイルします。
 
 {/* wind-preview: guide-sources-and-candidates/static-status "完全な候補が解決される様子" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-status\"><p class=\"bg-accent text-white p-2\">Ready</p><p class=\"bg-muted text-white p-2\">Queued</p></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #155eef;\n    --zw-color-muted: #475467;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-status {\n  max-width: 18rem;\n}\n\n.wind-demo-status p {\n  margin: 0 0 .5rem;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.text-white {\n  color: var(--zw-color-white);\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n.bg-muted {\n  background-color: var(--zw-color-muted);\n}\n"} title={"完全な候補が解決される様子"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "accent": "#155eef",
+        "muted": "#475467",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-status": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "bg-muted",
+        "p-2",
+        "text-white"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-status { max-width: 18rem; }
+.wind-demo-status p { margin: 0 0 0.5rem; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 明示した glob の一致がすべて除外されると ZW010 で失敗します。一部が残る場合は警告し、そのファイルを走査します。次のレコードは全除外と一部除外のソースプランを示します。
 
 {/* wind-preview: guide-sources-and-candidates/excluded-all "一致がすべて除外: エラー" */}
+
+```html
+<p class="p-4">Excluded source</p>
+```
+
+sample.html と excluded.html は上記と同じ HTML を含みます。設定で excluded.html を除外します。
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source 'excluded.html' --no-auto-source --no-default-highlight-styles
+```
+
+期待される診断: `ZW010 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-sources-and-candidates/excluded-partial "一部の一致を除外: 警告" */}
+
+```html
+<p class="p-4">Accepted source</p>
+```
+
+sample.html と excluded.html は上記と同じ HTML を含みます。設定で excluded.html を除外します。
+
+```sh
+zfb css --input input.css --output compiled.css --config zfb.config.json --project-root . --source '*.html' --no-auto-source --no-default-highlight-styles
+```
+
+期待される診断: `ZW010 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {},
+    "sources": {
+      "exclude": [
+        "excluded.html"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 抽出器はアプリケーションを実行せず、実行時の値からクラスを推測しません。

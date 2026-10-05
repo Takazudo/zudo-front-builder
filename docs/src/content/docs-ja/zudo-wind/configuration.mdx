@@ -45,6 +45,57 @@ zfb css --input src/styles.css --output dist/app.css --project-root .
 ソース発見で見つからない完全なアプリ候補はセーフリストに追加します。パッケージ所有の候補はマニフェストとして公開します。CSS がユーティリティ基部と重なる名前を所有する場合は、完全な表記を <code>authoredClasses</code> に予約します。
 
 {/* wind-preview: guide-configuration/configured-panel "トークンを使うユーティリティの出力" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<article class=\"wind-demo-card bg-panel p-4 sm:p-8\"><h2>Workspace panel</h2><p>A token and responsive spacing compiled by zudo-wind.</p></article>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-panel: #eaf2ff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-card {\n  max-width: 24rem;\n  border: 1px solid #b6c4d2;\n  border-radius: .5rem;\n  color: #172b4d;\n}\n\n.wind-demo-card h2 {\n  margin: 0 0 .5rem;\n  font-size: 1.1rem;\n}\n\n.wind-demo-card p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n@media (min-width: 640px) {\n  .sm\\:p-8 {\n    padding-top: 2rem;\n    padding-right: 2rem;\n    padding-bottom: 2rem;\n    padding-left: 2rem;\n  }\n}\n"} title={"トークンを使うユーティリティの出力"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "panel": "#eaf2ff"
+      }
+    },
+    "breakpoints": {
+      "sm": {
+        "minWidthPx": 640
+      }
+    },
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-card": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-4",
+        "sm:p-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+.wind-demo-card { max-width: 24rem; border: 1px solid #b6c4d2; border-radius: 0.5rem; color: #172b4d; }
+.wind-demo-card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.wind-demo-card p { margin: 0; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 サンプルには明示的な余白単位、ブレークポイント、トークン、リセットと、コンパイル済み zudo-wind CSS が含まれます。カードの手書きスタイルは表示の補助で、ユーティリティの CSS はコンパイラが生成します。

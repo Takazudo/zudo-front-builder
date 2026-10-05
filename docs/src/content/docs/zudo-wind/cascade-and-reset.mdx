@@ -22,12 +22,126 @@ zfb wind audit --plan build
 ~~~
 
 {/* wind-preview: guide-cascade-and-reset/reset-none "Reset none: browser defaults" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n\n.underline {\n  text-decoration-line: underline;\n}\n"} head={"<base href=\"about:srcdoc\">"} title={"Reset none: browser defaults"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "underline"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-cascade-and-reset/reset-minimal "Minimal reset: owned basics" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-reset {\n  *,\n  *::before,\n  *::after {\n    box-sizing: border-box;\n  }\n  body {\n    margin: 0;\n  }\n  button,\n  input,\n  optgroup,\n  select,\n  textarea {\n    font: inherit;\n  }\n}\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n\n.underline {\n  text-decoration-line: underline;\n}\n"} head={"<base href=\"about:srcdoc\">"} title={"Minimal reset: owned basics"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "minimal-v1",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "underline"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-cascade-and-reset/reset-owned "Owned reset: normalized headings and lists" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<main id=\"task-list\"><h2>Task list</h2><ul><li>Review source roots</li><li>Check the manifest</li></ul><form><label><input type=\"checkbox\"> Notify the team</label><button type=\"button\">Save</button></form><p><a href=\"#task-list\" class=\"underline\">Open task details</a></p></main>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-reset {\n  *,\n  *::before,\n  *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n    border-width: 0;\n    border-style: solid;\n    border-color: currentColor;\n  }\n  html {\n    line-height: 1.5;\n    font-family: ui-sans-serif, system-ui, sans-serif;\n    -webkit-text-size-adjust: 100%;\n    tab-size: 4;\n  }\n  body {\n    line-height: inherit;\n  }\n  h1,\n  h2,\n  h3,\n  h4,\n  h5,\n  h6 {\n    font-size: inherit;\n    font-weight: inherit;\n  }\n  a {\n    color: inherit;\n    text-decoration: inherit;\n  }\n  b,\n  strong {\n    font-weight: bolder;\n  }\n  code,\n  kbd,\n  samp,\n  pre {\n    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n    font-size: 1em;\n  }\n  ol,\n  ul,\n  menu {\n    list-style: none;\n  }\n  button,\n  input,\n  optgroup,\n  select,\n  textarea {\n    font: inherit;\n    letter-spacing: inherit;\n    color: inherit;\n  }\n  button,\n  input:where([type=\"button\"], [type=\"reset\"], [type=\"submit\"]) {\n    background-color: transparent;\n    background-image: none;\n  }\n  textarea {\n    resize: vertical;\n  }\n  img,\n  svg,\n  video,\n  canvas,\n  audio,\n  iframe,\n  embed,\n  object {\n    display: block;\n    vertical-align: middle;\n  }\n  img,\n  video {\n    max-width: 100%;\n    height: auto;\n  }\n  table {\n    border-collapse: collapse;\n    border-color: inherit;\n    text-indent: 0;\n  }\n  summary {\n    display: list-item;\n  }\n  hr {\n    height: 0;\n    border-top-width: 1px;\n  }\n}\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n\n.underline {\n  text-decoration-line: underline;\n}\n"} head={"<base href=\"about:srcdoc\">"} title={"Owned reset: normalized headings and lists"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "owned-v1",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "underline"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 ## Resolve a cascade tie
@@ -43,12 +157,150 @@ wind: {
 The records compare an actual <code>p-4</code> rule with an authored <code>padding</code> declaration. The default puts the utility after authored global CSS; <code>before-authored</code> puts the authored rule last:
 
 {/* wind-preview: guide-cascade-and-reset/layered-authored "Unlayered utility beats a normal layered rule" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from an unlayered utility</p></div></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-stage {\n  max-width: 24rem;\n  padding: 1rem;\n  background: #f1f5f9;\n}\n\n@layer components {\n  .wind-demo-box {\n    padding: .5rem;\n    border: 1px solid #94a3b8;\n    background: #fff;\n  }\n}\n\n.wind-demo-box p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n"} title={"Unlayered utility beats a normal layered rule"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "utilities": {
+      "placement": "after-authored"
+    },
+    "authoredClasses": {
+      "wind-demo-box": true,
+      "wind-demo-stage": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }
+@layer components { .wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; } }
+.wind-demo-box p { margin: 0; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-cascade-and-reset/after-authored "Default placement: utility wins an equal-specificity tie" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from the later rule</p></div></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-stage {\n  max-width: 24rem;\n  padding: 1rem;\n  background: #f1f5f9;\n}\n\n.wind-demo-box {\n  padding: .5rem;\n  border: 1px solid #94a3b8;\n  background: #fff;\n}\n\n.wind-demo-box p {\n  margin: 0;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n"} title={"Default placement: utility wins an equal-specificity tie"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "utilities": {
+      "placement": "after-authored"
+    },
+    "authoredClasses": {
+      "wind-demo-box": true,
+      "wind-demo-stage": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }
+.wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; }
+.wind-demo-box p { margin: 0; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-cascade-and-reset/before-authored "Before-authored placement: authored rule wins the tie" */}
+
+<WindPreviewEnhancer />
+
+<HtmlPreview html={"<div class=\"wind-demo-stage\"><div class=\"wind-demo-box p-4\"><p>Padding from the later rule</p></div></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.wind-demo-stage {\n  max-width: 24rem;\n  padding: 1rem;\n  background: #f1f5f9;\n}\n\n.wind-demo-box {\n  padding: .5rem;\n  border: 1px solid #94a3b8;\n  background: #fff;\n}\n\n.wind-demo-box p {\n  margin: 0;\n}\n"} title={"Before-authored placement: authored rule wins the tie"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "utilities": {
+      "placement": "before-authored"
+    },
+    "authoredClasses": {
+      "wind-demo-box": true,
+      "wind-demo-stage": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-stage { max-width: 24rem; padding: 1rem; background: #f1f5f9; }
+.wind-demo-box { padding: 0.5rem; border: 1px solid #94a3b8; background: #ffffff; }
+.wind-demo-box p { margin: 0; }
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 Placement changes source order, not selector specificity. <code>group-*</code> and <code>peer-*</code> keep their zudo-wind specificity; see [relation variant specificity](./coming-from-tailwind.mdx#relation-variant-specificity).

@@ -28,14 +28,124 @@ wind: {
 次の型付きソースレコードは、警告からエラーへの変化を示します。
 
 {/* wind-preview: guide-diagnostics-and-tools/source-warning "strict でないソースクラス: 警告" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+期待される診断: `ZW014 (warning)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": false,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 {/* wind-preview: guide-diagnostics-and-tools/source-strict "strict なソースクラス: エラー" */}
+
+```html
+<p class="line-clamp-2">Two-line label</p>
+```
+
+期待される診断: `ZW014 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {}
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 トークンや余白単位を設定するか、手書き CSS が所有する完全な表記を予約します。たとえば <code>p-4</code> には <code>tokens.spacingUnit</code> が必要です。<code>text-link</code> には一致する色またはフォントサイズのトークンが必要です。
 
 {/* wind-preview: guide-diagnostics-and-tools/missing-spacing-unit "余白単位の不足: ZW006" */}
+
+```html
+<div class="p-4">p-4 requires tokens.spacingUnit</div>
+```
+
+期待される診断: `ZW006 (error)`
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {},
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {},
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"表示用の補助 CSS"}>
+
+```css
+
+```
+
+</Details>
+
 {/* wind-preview:end */}
 
 <code>site-header</code> のような名前はユーティリティの基部から始まらないため予約不要です。診断レコードはソースと期待する重大度を表示し、実行可能なプレビューにはしません。
