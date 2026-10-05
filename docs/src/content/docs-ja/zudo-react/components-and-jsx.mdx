@@ -44,6 +44,8 @@ function ResultsTable({ rows }: { rows: { name: string }[] }) {
 
 組み込み属性は HTML と SVG の表記に従います。class、for、readonly、tabindex、viewBox を使います。className、htmlFor、charSet、autoComplete、readOnly、tabIndex、onClick、strokeWidth、dangerouslySetInnerHTML などの React 式の表記は検証に失敗し、書き換えもそのままの出力もされません。対応する HTML または SVG の表記がサポートされていれば、エラーにはその名前が示されます（例: ``use `charset` instead of `charSet` ``）。`onClick` には `on:click` が提示されます。未対応の標準属性は、代替案を示さずにエラーになります。data 属性と ARIA 属性には文字列、数値、真偽値のスカラー値を使えます。ARIA の真偽値は false を含め、対応する文字列として出力されます。
 
+ESLint を使う場合は、ファイル単位に適用する設定を [v3 移行ガイド](../guides/migrating-to-v3.mdx)で確認してください。`eslint-plugin-react` は、これらの HTML 表記を拒否したり自動修正したりすることがあります。
+
 真偽値の HTML 属性は true なら存在し、false なら省略されます。contenteditable などの列挙属性は文字列です。通常の属性では null と undefined は省略されます。サポートされるスカラー属性にはリアクティブな値を使えますが、[フォームガイド](./forms.mdx)のフォーム制御の規則に従います。
 
 hidden 属性は真偽値だけを受け付け、until-found は使えません。inert も真偽値です。ランタイムは非表示用の CSS を追加しないため、表示の挙動はページ側のスタイルで指定します。

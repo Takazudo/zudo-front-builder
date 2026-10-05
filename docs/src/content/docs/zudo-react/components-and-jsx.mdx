@@ -44,6 +44,8 @@ function ResultsTable({ rows }: { rows: { name: string }[] }) {
 
 Intrinsic attributes follow HTML and SVG spelling. Use class, for, readonly, tabindex, and viewBox. React spellings such as className, htmlFor, charSet, autoComplete, readOnly, tabIndex, onClick, strokeWidth, and dangerouslySetInnerHTML fail validation; they are not rewritten or emitted as-is. When an HTML or SVG spelling is supported, the error names it (for example, ``use `charset` instead of `charSet` ``); `onClick` suggests `on:click`. Unsupported standard attributes fail without a suggested replacement. Data and ARIA attributes accept scalar string, number, or boolean values; a boolean ARIA value is serialized as the corresponding string, including false.
 
+If you use ESLint, see the [v3 migration guide](../guides/migrating-to-v3.mdx) for a file-scoped override: `eslint-plugin-react` can reject or autofix these HTML spellings.
+
 Boolean HTML attributes use presence for true and absence for false. Enumerated attributes such as contenteditable are strings. Null and undefined omit ordinary attributes. A reactive value is allowed for a supported scalar attribute, subject to the form-control rules in the [forms guide](./forms.mdx).
 
 The hidden attribute accepts booleans only, not until-found, and inert is boolean. The runtime does not add hiding CSS, so the page's authored styles remain responsible for display behavior.
