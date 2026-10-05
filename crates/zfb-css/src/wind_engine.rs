@@ -392,7 +392,10 @@ mod tests {
         };
         let origins = vec![
             source("default/src:a.tsx", 3, 29, 70),
+            // Identical input is one authored occurrence. A different span in
+            // the same file must survive alongside the other source origins.
             source("default/src:a.tsx", 3, 29, 70),
+            source("default/src:a.tsx", 5, 7, 110),
             source("default/src:b.tsx", 1, 12, 11),
             source("plugin/virtual:widgets", 2, 5, 30),
             OriginCandidate {
@@ -424,25 +427,24 @@ mod tests {
             .iter()
             .map(|diagnostic| diagnostic.origin.location().unwrap())
             .collect();
-        assert_eq!(locations.len(), 5, "{locations:?}");
-        for expected in [
-            "default/src:a.tsx:3:29",
-            "default/src:b.tsx:1:12",
-            "plugin/virtual:widgets:2:5",
-            "node_modules/widgets/wind.json (manifest widgets[2])",
-        ] {
-            assert!(
-                locations.iter().any(|location| location == expected),
-                "{locations:?}"
-            );
-        }
+        assert_eq!(
+            locations,
+            [
+                "default/src:a.tsx:3:29",
+                "default/src:a.tsx:5:7",
+                "default/src:b.tsx:1:12",
+                "plugin/virtual:widgets:2:5",
+                "node_modules/widgets/wind.json (manifest widgets[2])",
+            ],
+            "distinct authored occurrences survive; identical input is normalized"
+        );
         let first = &failure.diagnostics[0];
         assert_eq!(first.code, "ZW006");
         assert_eq!(first.candidate.as_deref(), Some("rounded-missing"));
         assert_eq!(first.origin.byte_offset, Some(70));
         let rendered = error.to_string();
         assert!(
-            rendered.starts_with("wind CSS failed with 4 errors:"),
+            rendered.starts_with("wind CSS failed with 5 errors:"),
             "{rendered}"
         );
         assert!(
