@@ -335,6 +335,7 @@ pub struct PluginHost {
 }
 
 struct HostInner {
+    diagnostic_sink: Option<zfb_types::build_diagnostic_sink::BuildDiagnosticSink>,
     init_trace: Option<InitTrace>,
     /// Pending in-flight requests keyed by id. The reader task pops
     /// the matching sender when a reply arrives.
@@ -402,6 +403,12 @@ struct HostInner {
 }
 
 impl HostInner {
+    fn emit_diagnostic(&self, diagnostic: zfb_types::build_diagnostics::BuildDiagnostic) {
+        eprintln!("{}", diagnostic.render());
+        if let Some(sink) = &self.diagnostic_sink {
+            sink.push(diagnostic);
+        }
+    }
     /// True when a pipe EOF is the expected result of a termination this
     /// process itself initiated — either a normal `shutdown()` or a
     /// hook-timeout `force_kill_child()` — as opposed to the child dying
@@ -555,22 +562,62 @@ impl PluginHost {
         embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
     ) -> Result<Self> {
         let trace = std::env::var("ZFB_PLUGIN_INIT_TRACE").as_deref() == Ok("1");
-        Self::spawn_with_timeout_trace(
+        Self::spawn_with_timeout_trace_and_sink(
             plugins,
             node_binary,
             hook_timeout_secs,
             embedded_esbuild_getter,
             trace,
+            None,
         )
         .await
     }
 
+    pub async fn spawn_with_timeout_and_diagnostic_sink(
+        plugins: Vec<PluginSpec>,
+        node_binary: Option<OsString>,
+        hook_timeout_secs: Option<u64>,
+        embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
+        diagnostic_sink: Option<zfb_types::build_diagnostic_sink::BuildDiagnosticSink>,
+    ) -> Result<Self> {
+        let trace = std::env::var("ZFB_PLUGIN_INIT_TRACE").as_deref() == Ok("1");
+        Self::spawn_with_timeout_trace_and_sink(
+            plugins,
+            node_binary,
+            hook_timeout_secs,
+            embedded_esbuild_getter,
+            trace,
+            diagnostic_sink,
+        )
+        .await
+    }
+
+    #[cfg(test)]
     async fn spawn_with_timeout_trace(
+        plugins: Vec<PluginSpec>,
+        node_binary: Option<OsString>,
+        hook_timeout_secs: Option<u64>,
+        embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
+        trace_enabled: bool,
+    ) -> Result<Self> {
+        Self::spawn_with_timeout_trace_and_sink(
+            plugins,
+            node_binary,
+            hook_timeout_secs,
+            embedded_esbuild_getter,
+            trace_enabled,
+            None,
+        )
+        .await
+    }
+
+    async fn spawn_with_timeout_trace_and_sink(
         mut plugins: Vec<PluginSpec>,
         node_binary: Option<OsString>,
         hook_timeout_secs: Option<u64>,
         embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
         trace_enabled: bool,
+        diagnostic_sink: Option<zfb_types::build_diagnostic_sink::BuildDiagnosticSink>,
     ) -> Result<Self> {
         let hook_timeout = resolve_hook_timeout(hook_timeout_secs);
 
@@ -691,6 +738,7 @@ impl PluginHost {
             .ok_or_else(|| anyhow!("plugin host: child stderr missing after spawn"))?;
 
         let inner = Arc::new(HostInner {
+            diagnostic_sink,
             init_trace,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),
@@ -1115,8 +1163,8 @@ impl PluginHost {
             }
         }
         drop(guard);
-        Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
-        Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
+        let _ = Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
+        let _ = Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
     }
 
     /// Send a `shutdown` command and wait for the child to exit.
@@ -1173,8 +1221,14 @@ impl PluginHost {
         // pipes close and each reader loop returns on its own, having drained
         // whatever the plugin wrote last; the deadline is a guard against a
         // wedged pipe so teardown can't hang here.
-        Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
-        Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
+        let stdout_drained = Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
+        let stderr_drained =
+            Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
+        if !(stdout_drained && stderr_drained) {
+            if let Some(sink) = &self.inner.diagnostic_sink {
+                sink.mark_incomplete();
+            }
+        }
         Ok(())
     }
 
@@ -1183,14 +1237,17 @@ impl PluginHost {
     async fn join_reader_task(
         slot: &Mutex<Option<tokio::task::JoinHandle<()>>>,
         which: &'static str,
-    ) {
+    ) -> bool {
         let Some(handle) = slot.lock().await.take() else {
-            return;
+            return true;
         };
         let abort = handle.abort_handle();
         match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!(error = %e, reader = which, "plugin host: reader task join failed"),
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                warn!(error = %e, reader = which, "plugin host: reader task join failed");
+                false
+            }
             Err(_) => {
                 warn!(
                     reader = which,
@@ -1199,6 +1256,7 @@ impl PluginHost {
                 // Bounded teardown: abort the wedged reader rather than
                 // dropping its JoinHandle (which would only detach it).
                 abort.abort();
+                false
             }
         }
     }
@@ -1482,7 +1540,7 @@ impl PluginHost {
                             }
                         }
                         warn!(target: "zfb_plugin", "{line}");
-                        eprintln!("{}", Self::format_plugin_host_warn_line("stderr", &line));
+                        inner.emit_diagnostic(Self::plugin_host_diagnostic("stderr", &line));
                     }
                     continue;
                 }
@@ -1505,6 +1563,7 @@ impl PluginHost {
 
     /// Format a plugin log with its producer-supplied code, or ZB010 for
     /// legacy envelopes. Severity comes from the existing level contract.
+    #[cfg(test)]
     fn format_plugin_log_line(log: &LogPayload) -> String {
         log.to_build_diagnostic().render()
     }
@@ -1514,6 +1573,7 @@ impl PluginHost {
     /// line that failed to parse as a `{log:...}`/reply envelope — for the
     /// same visible `eprintln!` channel. `source` names which pipe it came
     /// from (`"stderr"` / `"stdout"`) so a reader can tell the two apart.
+    #[cfg(test)]
     fn format_plugin_host_warn_line(source: &str, detail: &str) -> String {
         Self::plugin_host_diagnostic(source, detail).render()
     }
@@ -1540,7 +1600,7 @@ impl PluginHost {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, raw = %line, "plugin host: failed to parse stdout line");
-                eprintln!("{}", Self::format_plugin_host_warn_line("stdout", line));
+                inner.emit_diagnostic(Self::plugin_host_diagnostic("stdout", line));
                 return;
             }
         };
@@ -1548,15 +1608,15 @@ impl PluginHost {
             HostLine::Log(LogLine { log }) => match log.level.as_str() {
                 "warn" => {
                     warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!("{}", Self::format_plugin_log_line(&log));
+                    inner.emit_diagnostic(log.to_build_diagnostic());
                 }
                 "error" => {
                     error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!("{}", Self::format_plugin_log_line(&log));
+                    inner.emit_diagnostic(log.to_build_diagnostic());
                 }
                 _ => {
                     info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    eprintln!("{}", Self::format_plugin_log_line(&log));
+                    inner.emit_diagnostic(log.to_build_diagnostic());
                 }
             },
             HostLine::Reply(reply) => {
@@ -3340,6 +3400,7 @@ mod tests {
         // We need a valid tempdir even though the host script is never run.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let inner = Arc::new(HostInner {
+            diagnostic_sink: None,
             init_trace: None,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),
@@ -3567,6 +3628,7 @@ mod tests {
         let stderr = child.stderr.take().expect("stderr");
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let inner = Arc::new(HostInner {
+            diagnostic_sink: None,
             init_trace: None,
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(stdin),

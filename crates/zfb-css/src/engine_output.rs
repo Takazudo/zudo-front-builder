@@ -59,6 +59,8 @@ pub enum CssDiagnosticSeverity {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct CssDiagnosticOrigin {
+    /// Opaque Wind source identity, distinct from an authored file path.
+    pub source_id: Option<String>,
     pub path: Option<PathBuf>,
     /// One-based line in the original source.
     pub line: Option<usize>,
@@ -79,7 +81,14 @@ impl CssDiagnosticOrigin {
                 Some(format!("{}:{line}:{column}", path.display()))
             }
             (Some(path), _, _) => Some(path.display().to_string()),
-            _ => None,
+            _ => self
+                .source_id
+                .as_ref()
+                .map(|id| match (self.line, self.column) {
+                    (Some(line), Some(column)) => format!("{id}:{line}:{column}"),
+                    (Some(line), None) => format!("{id}:{line}"),
+                    _ => id.clone(),
+                }),
         };
         match (place, &self.label) {
             (Some(place), Some(label)) => Some(format!("{place} ({label})")),
@@ -124,7 +133,7 @@ pub fn dedup_diagnostics(diagnostics: Vec<CssDiagnostic>) -> Vec<CssDiagnostic> 
         .collect()
 }
 
-/// Error-severity wind diagnostics that stopped a compile, kept structured so
+/// All Wind diagnostics observed before a compile stopped, kept structured so
 /// a caller can render or serialize them instead of parsing a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindDiagnosticsError {
@@ -133,7 +142,11 @@ pub struct WindDiagnosticsError {
 
 impl std::fmt::Display for WindDiagnosticsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let count = self.diagnostics.len();
+        let count = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == CssDiagnosticSeverity::Error)
+            .count();
         write!(
             formatter,
             "wind CSS failed with {count} error{}:",
@@ -177,5 +190,38 @@ impl CssEngineId {
             name: name.into(),
             version,
         }
+    }
+}
+
+#[cfg(test)]
+mod build_diagnostic_failure_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_failure_counts_errors_and_keeps_preceding_warnings() {
+        let warning = CssDiagnostic {
+            severity: CssDiagnosticSeverity::Warning,
+            code: "ZW001".into(),
+            message: "warning first".into(),
+            origin: CssDiagnosticOrigin::default(),
+            candidate: None,
+        };
+        let error = CssDiagnostic {
+            severity: CssDiagnosticSeverity::Error,
+            code: "ZW006".into(),
+            message: "invalid candidate".into(),
+            origin: CssDiagnosticOrigin::default(),
+            candidate: None,
+        };
+        let failure = WindDiagnosticsError {
+            diagnostics: vec![warning, error],
+        };
+        let rendered = failure.to_string();
+        assert!(
+            rendered.starts_with("wind CSS failed with 1 error:"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("ZW001"));
+        assert!(rendered.contains("ZW006"));
     }
 }
