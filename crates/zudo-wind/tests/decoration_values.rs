@@ -137,7 +137,9 @@ fn missing_and_invalid_decoration_values_keep_diagnostics() {
         ("-decoration-[3px]", "ZW005", "R12"),
         ("-decoration-dotted", "ZW005", "R12"),
         ("decoration-2/4", "ZW005", "R14"),
-        ("decoration-[3px]/40", "ZW005", "R14"),
+        // The shared-root fallback selects the slash-compatible color member;
+        // `3px` then fails color validation, while still emitting no CSS.
+        ("decoration-[3px]/40", "ZW005", "R15"),
         ("decoration-dotted/40", "ZW005", "R14"),
     ] {
         let explanation = explain(candidate, &config);
