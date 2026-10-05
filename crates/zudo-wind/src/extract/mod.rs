@@ -4,7 +4,7 @@ mod markup;
 mod script;
 
 use crate::structural_split;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceKind {
@@ -81,6 +81,11 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
     };
     let mut collector = Collector {
         source,
+        newline_offsets: source
+            .bytes()
+            .enumerate()
+            .filter_map(|(at, byte)| (byte == b'\n').then_some(at))
+            .collect(),
         found: BTreeMap::new(),
         notes: Vec::new(),
         frames: Vec::new(),
@@ -99,6 +104,8 @@ pub fn extract_candidates(bytes: &[u8], kind: SourceKind) -> ExtractionResult {
 
 pub(super) struct Collector<'a> {
     source: &'a str,
+    /// Byte offsets of newlines in the original source, sorted for position lookups.
+    newline_offsets: Vec<usize>,
     found: BTreeMap<String, Vec<Occurrence>>,
     notes: Vec<ExtractionNote>,
     /// Decoded texts being scanned in place of their raw spelling, innermost
@@ -143,13 +150,15 @@ impl Collector<'_> {
         while !self.source.is_char_boundary(at) {
             at -= 1;
         }
-        let prefix = &self.source.as_bytes()[..at];
-        let line_start = prefix
-            .iter()
-            .rposition(|&byte| byte == b'\n')
-            .map_or(0, |i| i + 1);
-        let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
-        (at, line, at - line_start + 1)
+        let preceding_lines = self
+            .newline_offsets
+            .partition_point(|&newline| newline < at);
+        let line_start = if preceding_lines == 0 {
+            0
+        } else {
+            self.newline_offsets[preceding_lines - 1] + 1
+        };
+        (at, preceding_lines + 1, at - line_start + 1)
     }
 
     pub(super) fn note(&mut self, kind: NoteKind, at: usize, text: impl Into<String>) {
@@ -266,7 +275,7 @@ impl Collector<'_> {
             .map(|(text, mut occurrences)| {
                 // A class-context pass re-records some literal spans; the
                 // class position supersedes the low-confidence one.
-                let classes: Vec<(usize, usize)> = occurrences
+                let classes: BTreeSet<(usize, usize)> = occurrences
                     .iter()
                     .filter(|occurrence| occurrence.position_kind == PositionKind::Class)
                     .map(|occurrence| (occurrence.byte_offset, occurrence.byte_length))
