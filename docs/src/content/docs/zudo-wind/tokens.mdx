@@ -4,6 +4,37 @@ description: Define the project supplied values used by zudo-wind utility famili
 sidebar_position: 3
 ---
 
+## Give project values stable names
+
+Choose values once in `wind.tokens`, then use complete classes wherever they belong. Numeric spacing multiplies the configured `spacingUnit`; a named value such as `spacing.card` is used directly. Colors, radii, fonts, and other named scales are also project supplied.
+
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": { "card": "1.5rem" },
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+The preview compares `p-4` with `p-card`; both use the same configured unit or named value every time.
+
+{/* wind-preview: guide-tokens/named-values "Compare numeric and named spacing" */}
+{/* wind-preview:end */}
+
+Without a spacing unit, nonzero numeric spacing reports `ZW006` instead of assuming a framework default.
+
+{/* wind-preview: guide-tokens/missing-spacing-unit "Missing spacing unit" */}
+{/* wind-preview:end */}
+
+See the [configuration guide](./configuration.mdx) for the full schema and the [utility index](./utilities/index.mdx) for every token-backed utility.
+
+<Details title="Token names, validation, and emitted variables">
+
 ## No implicit theme
 
 V1 ships no color palette, spacing unit, named scale, breakpoint, font family, font weight, radius, shadow, or named easing token. Transition utilities use `ease` as their default timing function; set `wind.defaultTransitionTimingFunction` to choose another project default. The values `0`, `px`, and the closed catalog's static keywords are language constants; they are not theme entries. Add every project-specific token value to `wind.tokens`.
@@ -67,3 +98,5 @@ All configured values are exposed under the `--zw-` namespace inside `@layer zw-
 - [Utility reference](./utilities/index.mdx)
 - [Utility grammar](./utility-grammar.mdx)
 - [Cascade and reset](./cascade-and-reset.mdx)
+
+</Details>

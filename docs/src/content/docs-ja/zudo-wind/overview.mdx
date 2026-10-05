@@ -4,6 +4,34 @@ description: zudo-wind が完全なクラス候補とプロジェクトのトー
 sidebar_position: 1
 ---
 
+## コンポーネントを設定して使う
+
+まず、プロジェクトで使う値を設定します。次の短い設定では、例に必要な静的でない値をすべて定義しています。zudo-wind はパレットや余白スケールを用意しません。
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+`p-4` は `spacingUnit` の 4 倍を使います。`bg-panel`、`text-ink`、`rounded-card` はそれぞれ設定済みのトークンを参照します。これらはマークアップ内に完全な候補として記述され、コンパイラがユーティリティのルールを生成します。
+
+{/* wind-preview: guide-overview/quickstart "プロジェクト値を使うコンポーネント" */}
+{/* wind-preview:end */}
+
+続けて[設定](./configuration.mdx)と[ソースと候補](./sources-and-candidates.mdx)を読み、[トークンガイド](./tokens.mdx)や[全ユーティリティ一覧](./utilities/index.mdx)を参照してください。
+
+<Details title="言語とビルドの詳細">
+
 ## zudo-wind の役割
 
 zudo-wind は zfb が提供するユーティリティ CSS 言語です。有限の集合に属する完全なクラス候補を認識し、設定されたトークンとブレークポイントを使って解決し、zfb コンパイラに CSS の生成を依頼します。言語の契約はバージョン管理されるため、別のツールが変わってもサポート範囲が暗黙に広がることはありません。
@@ -66,3 +94,5 @@ Tailwind を使ったことがあればユーティリティ構文に見覚え�
 - [ソースと候補](./sources-and-candidates.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

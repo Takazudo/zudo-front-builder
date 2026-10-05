@@ -4,6 +4,37 @@ description: zudo-wind のユーティリティ群で使うプロジェクト提
 sidebar_position: 3
 ---
 
+## プロジェクトの値に名前を付ける
+
+値は `wind.tokens` に一度設定し、必要な場所で完全なクラスを使います。数値の余白は設定済みの `spacingUnit` を掛け合わせます。`spacing.card` のような名前付き値はそのまま使われます。色、角丸、フォントなどの名前付きスケールもプロジェクトが用意します。
+
+```json
+{
+  "wind": {
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": { "card": "1.5rem" },
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+プレビューでは `p-4` と `p-card` を比較します。どちらも設定した単位または名前付きの値を常に使います。
+
+{/* wind-preview: guide-tokens/named-values "数値と名前付き余白を比較する" */}
+{/* wind-preview:end */}
+
+余白単位がない状態で 0 以外の数値余白を使うと、フレームワークのデフォルト値を補う代わりに `ZW006` が報告されます。
+
+{/* wind-preview: guide-tokens/missing-spacing-unit "余白単位がない場合" */}
+{/* wind-preview:end */}
+
+完全な設定スキーマは[設定ガイド](./configuration.mdx)、トークンを使う全ユーティリティは[ユーティリティ一覧](./utilities/index.mdx)を参照してください。
+
+<Details title="トークン名、検証、出力変数">
+
 ## 暗黙のテーマはありません
 
 v1 には、色パレット、余白単位、名前付きスケール、ブレークポイント、フォントファミリー、フォントウェイト、角丸、シャドウ、名前付きイージングトークンが組み込まれていません。トランジション系ユーティリティのデフォルトタイミング関数は `ease` です。別のプロジェクト共通値を使う場合は `wind.defaultTransitionTimingFunction` を設定してください。`0`、`px`、有限のカタログにある固定キーワードは言語定数であり、テーマの項目ではありません。プロジェクト固有のトークン値は `wind.tokens` に追加してください。
@@ -67,3 +98,5 @@ v1 には、色パレット、余白単位、名前付きスケール、ブレ�
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

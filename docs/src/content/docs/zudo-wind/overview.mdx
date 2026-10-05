@@ -4,6 +4,34 @@ description: Learn how zudo-wind turns complete class candidates and project tok
 sidebar_position: 1
 ---
 
+## Configure and use a component
+
+Start with the values your project intends to use. This compact setup defines every non-static value in the example; zudo-wind supplies no palette or spacing scale.
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "radii": { "card": "0.5rem" }
+    }
+  }
+}
+```
+
+`p-4` uses four times `spacingUnit`; `bg-panel`, `text-ink`, and `rounded-card` each name a configured token. These classes are complete candidates in the markup, and the compiler emits their real utility rules.
+
+{/* wind-preview: guide-overview/quickstart "A component using project values" */}
+{/* wind-preview:end */}
+
+From here, open [configuration](./configuration.mdx) and [sources and candidates](./sources-and-candidates.mdx), or browse the [token guide](./tokens.mdx) and [complete utility index](./utilities/index.mdx).
+
+<Details title="Language and build details">
+
 ## What zudo-wind does
 
 zudo-wind is the utility CSS language owned by zfb. It recognizes a closed set of complete class candidates, resolves them against the tokens and breakpoints you configure, and asks the zfb compiler to emit CSS. Its contract is versioned, so the supported language does not expand implicitly when another tool changes.
@@ -66,3 +94,5 @@ The utility syntax may look familiar if you have used Tailwind, but zudo-wind do
 - [Sources and candidates](./sources-and-candidates.mdx)
 - [Utility reference](./utilities/index.mdx)
 - [Cascade and reset](./cascade-and-reset.mdx)
+
+</Details>

@@ -4,6 +4,97 @@ description: 設定済みのレスポンシブ、ダーク、関係、状態、�
 sidebar_position: 6
 ---
 
+## 作業に合わせてバリアントを適用する
+
+バリアントは完全なユーティリティ候補に条件を加えます。zudo-wind にはデフォルトのブレークポイントもダークモードもありません。使う前に両方を設定してください。
+
+```json
+{
+  "wind": {
+    "breakpoints": { "sm": { "minWidthPx": 640 } },
+    "dark": { "attribute": "data-theme", "value": "dark" }
+  }
+}
+```
+
+コンパイル済みプレビューのコントロールで幅を変え、コントロールを hover または focus し、ライトとダークの面を比べてください。プレビューの設定は明示され、CSS はワークスペースのコンパイラが生成しています。
+
+### 設定した幅でレイアウトを変える
+
+接頭辞のない候補はどの幅でも適用されます。`sm:grid-cols-2` は、設定した 640px 以上で 2 列目を追加します。
+
+{/* wind-preview: guide-variants/responsive-grid "レスポンシブグリッドの幅を変える" */}
+{/* wind-preview:end */}
+
+### ダークモードでルールを適用する
+
+`dark:` は、要素自身または祖先に設定した属性と一致します。この例では 1 枚のカードに `data-theme="dark"` を指定し、両方のモードを並べて表示します。
+
+{/* wind-preview: guide-variants/dark-surface "設定済みのライト値とダーク値を比べる" */}
+{/* wind-preview:end */}
+
+### 要素自身の状態に応じる
+
+状態バリアントはユーティリティ自身の要素を対象にします。最初のボタンは hover とキーボード操作時の `focus-visible` で変わり、無効化したボタンはポインター操作に依存しない状態を示します。
+
+{/* wind-preview: guide-variants/element-states "hover、focus、disabled を試す" */}
+{/* wind-preview:end */}
+
+### 関係する要素の状態に応じる
+
+祖先に名前なしの `group` マーカーを置くか、前の兄弟要素に名前なしの `peer` マーカーを置きます。関係バリアントは、そのマーカーが指定状態のとき、子孫または後続の兄弟要素をスタイルします。
+
+{/* wind-preview: guide-variants/group-and-peer "group と前の peer の関係を試す" */}
+{/* wind-preview:end */}
+
+### 疑似要素にルールを追加する
+
+`before` と `after` は `content` を作りません。この例では手書き CSS が疑似要素の内容と形を用意し、zudo-wind が表示方法と色のユーティリティを適用します。
+
+{/* wind-preview: guide-variants/pseudo-element "手書きの疑似要素をスタイルする" */}
+{/* wind-preview:end */}
+
+<Details title="バリアントが拒否される例を見る">
+
+バリアント群には正規順序があります。`hover:sm:block` は拒否されます。設定済みのレスポンシブバリアントを先に記述してください。
+
+{/* wind-preview: guide-variants/noncanonical-order "正規順序でないバリアント" */}
+{/* wind-preview:end */}
+
+ダークモードを設定していない場合、`dark` はこのコンパイラでは未知のバリアントです。
+
+{/* wind-preview: guide-variants/unconfigured-dark "ダークモードは設定が必要" */}
+{/* wind-preview:end */}
+
+名前付き group と peer の形式は v1 の対象外です。
+
+{/* wind-preview: guide-variants/named-group "名前付き group の形式" */}
+{/* wind-preview:end */}
+
+属性バリアントは手書き CSS に記述します。
+
+{/* wind-preview: guide-variants/attribute-variant "未対応の ARIA 属性バリアント" */}
+{/* wind-preview:end */}
+
+`data-*` 属性にも同じ制限があります。
+
+{/* wind-preview: guide-variants/data-attribute-variant "未対応の data 属性バリアント" */}
+{/* wind-preview:end */}
+
+疑似要素を対象にする候補と、子要素間の余白や区切り線のユーティリティは組み合わせられません。
+
+{/* wind-preview: guide-variants/arbitrary-selector-variant "未対応の任意セレクタバリアント" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-variants/pseudo-child-utility "疑似要素と子要素ユーティリティ" */}
+{/* wind-preview:end */}
+
+</Details>
+
+順序、セレクタの動作、バリアントの制限は以下の[技術情報](#利用できるバリアント)を参照してください。[トークンガイド](./tokens.mdx)、[ユーティリティ文法](./utility-grammar.mdx)、[設定](./configuration.mdx)、[全ユーティリティ一覧](./utilities/index.mdx)も続けて読めます。
+
+<Details title="バリアントの順序とセレクタの詳細">
+
 ## 利用できるバリアント
 
 v1 では、設定済みのレスポンシブブレークポイント、任意のダークモード、名前のない group と peer の関係、`open` を含む 9 つの要素状態、5 つの疑似要素を使えます。候補には各カテゴリから最大 1 つのバリアントを指定できます。正規順は次のとおりです。
@@ -59,3 +150,5 @@ v1 では `aria-*` と `data-*` の属性バリアント、および任意セレ
 - [ユーティリティの文法](./utility-grammar.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

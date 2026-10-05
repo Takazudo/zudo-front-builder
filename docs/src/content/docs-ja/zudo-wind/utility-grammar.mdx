@@ -4,6 +4,65 @@ description: v1 ユーティリティ言語で受け入れる候補の構文、�
 sidebar_position: 5
 ---
 
+## 完全な候補を記述する
+
+スキャナーはソースをテキストとして読みます。アプリケーションを実行してクラス名を組み立てることはありません。`grid-cols-2` や `sm:hover:bg-panel` のように、候補全体をソースに記述してください。`` `p-${size}` `` のような文字列からコンパイラが候補を推測することはできません。
+
+一度だけ使う値は、対応するユーティリティの角括弧内に記述します。括弧内の空白はアンダースコアで書きます。CSS の `calc()` では二項の `+` と `-` の前後に空白が必要なので、`w-[calc(100vw_-_2rem)]` と記述します。エスケープした `\_` はアンダースコアのまま残ります。
+
+次の無効な綴りは診断フィクスチャです。表示されるソースと期待されるコードは、コンパイラが確認する同じレコードから生成されます。
+
+{/* wind-preview: guide-utility-grammar/calc-needs-underscores "calc の空白にはアンダースコアを使う" */}
+{/* wind-preview:end */}
+
+データ型ヒント、任意プロパティ、カタログにないユーティリティには、それぞれ異なる代替方法があります。曖昧な変数には名前付きトークンを使い、未対応の宣言は手書きの CSS に記述します。以下の構文例は、装飾的なプレビューではなく文字情報として示します。
+
+<Details title="候補の診断例を見る">
+
+レスポンシブ名は、ユーティリティの接頭辞に使う前に設定が必要です。
+
+{/* wind-preview: guide-utility-grammar/unconfigured-breakpoint "未設定のブレークポイント" */}
+{/* wind-preview:end */}
+
+データ型ヒントはこの言語では使えません。
+
+{/* wind-preview: guide-utility-grammar/unsupported-type-hint "未対応のデータ型ヒント" */}
+{/* wind-preview:end */}
+
+任意プロパティは拒否されます。宣言は手書きの CSS に記述してください。
+
+{/* wind-preview: guide-utility-grammar/arbitrary-property "任意プロパティには手書きの CSS を使う" */}
+{/* wind-preview:end */}
+
+見慣れた接頭辞でも、意図的に未対応のものがあります。`ring-2` はその一例です。
+
+{/* wind-preview: guide-utility-grammar/unsupported-ring "未対応のユーティリティ群" */}
+{/* wind-preview:end */}
+
+負の値を使えるユーティリティ群は限定されています。padding に負の接頭辞は使えません。
+
+{/* wind-preview: guide-utility-grammar/negative-padding "負の padding は拒否される" */}
+{/* wind-preview:end */}
+
+空の区間は構文エラーになります。
+
+{/* wind-preview: guide-utility-grammar/empty-variant-segment "空のバリアント区間" */}
+{/* wind-preview:end */}
+
+非 strict モードでは、ソース上の 未対応ユーティリティ（foreign utility）は警告になり、strict モードではエラーになります。
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-warning "ソース位置の foreign utility 警告" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-utility-grammar/foreign-utility-strict-error "strict モードのソース位置エラー" */}
+{/* wind-preview:end */}
+
+</Details>
+
+候補の文法、値の検証、カタログ範囲、代替方法の詳細は、以下の[技術情報](#候補の形)、[ソースと候補](./sources-and-candidates.mdx)、[バリアント](./variants.mdx)、[全ユーティリティ一覧](./utilities/index.mdx)を参照してください。
+
+<Details title="候補と値の全リファレンス">
+
 ## 候補の形
 
 候補は完全なユーティリティで、任意でコロン区切りのバリアントを先頭に付けられます。一般形は `variant:variant:utility` です。トークナイザーは角括弧、丸括弧、引用符の対応を取ってから分割するため、その内側のコロンとスラッシュはバリアントや修飾子の開始にはなりません。文字どおりの空白、NUL、ほかの制御文字、禁止された外側の句読記号は使えません。
@@ -15,7 +74,7 @@ sidebar_position: 5
 | G03 breakpoint | `sm` が設定済みの場合の `max-sm:hidden` | `md` がない場合の `max-md:hidden`、ZW002 |
 | G04 dark | ダークモードが設定済みの場合の `dark:block` | ダークモードが無効な場合の `dark:block`、ZW002 |
 | G05 state | `first:pt-0` | `hover:focus:hover:block` — 状態の重複、ZW003 |
-| G06 relation | `group-open:rotate-90` | `group/menu:block` — 名前付き group 形式、ZW004 |
+| G06 relation | `group-open:rotate-90` | `group-hover/menu:block` — 名前付き関係形式、ZW004 |
 | G07 pseudo-element | `placeholder:underline` | `before:before:block` — 疑似要素の重複、ZW003 |
 | G08 utility | 余白単位がある場合の `-mt-2` | `-p-2` — この群では負の値が使えません、ZW005 |
 | G09 named suffix | 余白単位がある場合の `gap-x-1.5` | `w-(10px)` — 禁止された外側の句読記号、ZW001 |
@@ -67,3 +126,5 @@ v1 は有限の集合としてカタログを受け入れます。群には表�
 - [トークン](./tokens.mdx)
 - [ユーティリティリファレンス](./utilities/index.mdx)
 - [カスケードとリセット](./cascade-and-reset.mdx)
+
+</Details>

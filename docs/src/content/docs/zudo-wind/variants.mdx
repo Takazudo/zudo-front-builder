@@ -4,6 +4,97 @@ description: Apply the configured responsive, dark, relation, state, and pseudo-
 sidebar_position: 6
 ---
 
+## Apply a variant to a task
+
+Variants add a condition to a complete utility candidate. zudo-wind has no default breakpoints or dark mode; configure both before using them:
+
+```json
+{
+  "wind": {
+    "breakpoints": { "sm": { "minWidthPx": 640 } },
+    "dark": { "attribute": "data-theme", "value": "dark" }
+  }
+}
+```
+
+Use the controls on each compiled preview to resize it, hover or focus the control, and compare the light and dark surfaces. The preview configuration is explicit and its CSS comes from the workspace compiler.
+
+### Change layout at a configured width
+
+An unprefixed candidate applies at every width; `sm:grid-cols-2` adds the second column from the configured 640px threshold.
+
+{/* wind-preview: guide-variants/responsive-grid "Resize the responsive grid" */}
+{/* wind-preview:end */}
+
+### Scope a rule to dark mode
+
+`dark:` matches the configured attribute on the element itself or any ancestor. This example marks one card with `data-theme="dark"` so both modes remain visible together.
+
+{/* wind-preview: guide-variants/dark-surface "Compare configured light and dark values" */}
+{/* wind-preview:end */}
+
+### Respond to an element state
+
+State variants target the utility's own element. The first button changes on hover and `focus-visible`; the disabled button shows a state that does not depend on pointer input.
+
+{/* wind-preview: guide-variants/element-states "Try hover, focus, and disabled states" */}
+{/* wind-preview:end */}
+
+### Respond to a related element
+
+Place an unnamed `group` marker on an ancestor or an unnamed `peer` marker on a preceding sibling. Relation variants style a descendant or later sibling when that marker has the requested state.
+
+{/* wind-preview: guide-variants/group-and-peer "Try group and preceding-peer relations" */}
+{/* wind-preview:end */}
+
+### Add a pseudo-element rule
+
+`before` and `after` do not create `content`. Authored CSS supplies the pseudo-element content and geometry here; zudo-wind supplies its display and color utilities.
+
+{/* wind-preview: guide-variants/pseudo-element "Style an authored pseudo-element" */}
+{/* wind-preview:end */}
+
+<Details title="Inspect variant rejection examples">
+
+Variant groups have a canonical order. `hover:sm:block` is rejected; put the configured responsive variant first.
+
+{/* wind-preview: guide-variants/noncanonical-order "Noncanonical variant order" */}
+{/* wind-preview:end */}
+
+An unconfigured dark variant is unknown to this compiler invocation.
+
+{/* wind-preview: guide-variants/unconfigured-dark "Dark mode must be configured" */}
+{/* wind-preview:end */}
+
+Named group and peer forms are outside v1.
+
+{/* wind-preview: guide-variants/named-group "Named group form" */}
+{/* wind-preview:end */}
+
+Attribute variants stay in authored CSS.
+
+{/* wind-preview: guide-variants/attribute-variant "Unsupported ARIA attribute variant" */}
+{/* wind-preview:end */}
+
+The same restriction applies to `data-*` attributes.
+
+{/* wind-preview: guide-variants/data-attribute-variant "Unsupported data attribute variant" */}
+{/* wind-preview:end */}
+
+A pseudo-element subject cannot be combined with child-space or divide utilities.
+
+{/* wind-preview: guide-variants/arbitrary-selector-variant "Unsupported arbitrary-selector variant" */}
+{/* wind-preview:end */}
+
+{/* wind-preview: guide-variants/pseudo-child-utility "Pseudo-element with a child utility" */}
+{/* wind-preview:end */}
+
+</Details>
+
+For the full ordering, selector behavior, and variant limits, open [technical details](#admitted-variants). Continue with the [token guide](./tokens.mdx), [utility grammar](./utility-grammar.mdx), [configuration](./configuration.mdx), or [complete utility index](./utilities/index.mdx).
+
+<Details title="Variant ordering and selector details">
+
 ## Admitted variants
 
 V1 admits configured responsive breakpoints, optional dark mode, unnamed group and peer relations, eight element states plus `open`, and five pseudo-elements. At most one variant from each category may appear in a candidate. The canonical order is:
@@ -59,3 +150,5 @@ V1 rejects `aria-*` and `data-*` attribute variants with ZW004, and arbitrary-se
 - [Utility grammar](./utility-grammar.mdx)
 - [Utility reference](./utilities/index.mdx)
 - [Cascade and reset](./cascade-and-reset.mdx)
+
+</Details>
