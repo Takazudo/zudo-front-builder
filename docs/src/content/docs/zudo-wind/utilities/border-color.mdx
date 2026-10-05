@@ -5,9 +5,148 @@ sidebar_position: 45
 generated: true
 ---
 
-Set physical border colors from configured values or a validated arbitrary color.
+Color every border, an axis, or an individual physical edge.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `border-ink` | `border-top-color: var(--zw-color-ink); border-right-color: var(--zw-color-ink); border-bottom-color: var(--zw-color-ink); border-left-color: var(--zw-color-ink);` |
+| `border-x-accent/85` | `border-left-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent); border-right-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);` |
+| `border-y-focus` | `border-top-color: var(--zw-color-focus); border-bottom-color: var(--zw-color-focus);` |
+| `border-b-alert/90` | `border-bottom-color: color-mix(in oklab, var(--zw-color-alert) 90%, transparent);` |
+| `border-l-ink` | `border-left-color: var(--zw-color-ink);` |
+| `border-r-accent` | `border-right-color: var(--zw-color-accent);` |
+| `border-t-focus` | `border-top-color: var(--zw-color-focus);` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly sets spec 1, reset: "none", strict mode, tokens.spacingUnit: "0.25rem", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Color a full border or both sides of an axis
+
+border-ink colors all four edges, border-x-accent/85 colors left and right, and border-y-focus colors top and bottom.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-border-colors\"\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-ink p-2\"\u003eborder-ink · all sides\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-x-accent/85 p-2\"\u003eborder-x-accent/85 · left and right\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-y-focus p-2\"\u003eborder-y-focus · top and bottom\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-border-colors {\n  max-width: 34rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-color-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-ink {\n  border-top-color: var(--zw-color-ink);\n  border-right-color: var(--zw-color-ink);\n  border-bottom-color: var(--zw-color-ink);\n  border-left-color: var(--zw-color-ink);\n}\n.border-x-accent\\/85 {\n  border-left-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);\n  border-right-color: color-mix(in oklab, var(--zw-color-accent) 85%, transparent);\n}\n.border-y-focus {\n  border-top-color: var(--zw-color-focus);\n  border-bottom-color: var(--zw-color-focus);\n}\n"} title={"Color a full border or both sides of an axis"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-border-colors": true,
+      "wind-demo-color-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-4",
+        "border-ink",
+        "border-x-accent/85",
+        "border-y-focus",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-color-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+### Give individual edges separate colors
+
+The edge utilities change only the named physical side; border-4 supplies a visible width.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-border-colors\"\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-t-focus p-2\"\u003etop · focus\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-r-accent p-2\"\u003eright · accent\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-b-alert/90 p-2\"\u003ebottom · alert\u003c/div\u003e\u003cdiv class=\"wind-demo-color-box border-4 border-l-ink p-2\"\u003eleft · ink\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-border-colors {\n  max-width: 34rem;\n  color: #16324f;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-color-box {\n  margin: .7rem 0;\n}\n.p-2 {\n  padding-top: 0.5rem;\n  padding-right: 0.5rem;\n  padding-bottom: 0.5rem;\n  padding-left: 0.5rem;\n}\n.border-4 {\n  border-top-width: 4px;\n  border-top-style: solid;\n  border-right-width: 4px;\n  border-right-style: solid;\n  border-bottom-width: 4px;\n  border-bottom-style: solid;\n  border-left-width: 4px;\n  border-left-style: solid;\n}\n.border-b-alert\\/90 {\n  border-bottom-color: color-mix(in oklab, var(--zw-color-alert) 90%, transparent);\n}\n.border-l-ink {\n  border-left-color: var(--zw-color-ink);\n}\n.border-r-accent {\n  border-right-color: var(--zw-color-accent);\n}\n.border-t-focus {\n  border-top-color: var(--zw-color-focus);\n}\n"} title={"Give individual edges separate colors"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-border-colors": true,
+      "wind-demo-color-box": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "border-4",
+        "border-b-alert/90",
+        "border-l-ink",
+        "border-r-accent",
+        "border-t-focus",
+        "p-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-border-colors { max-width: 34rem; color: #16324f; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-color-box { margin: 0.7rem 0; }
+```
+
+</Details>
+
+## Custom and named values
+
+Named colors such as border-ink must be configured in tokens.colors; there is no default palette. border-current and border-transparent are supported keywords. A color slash modifier accepts an integer from 0 through 100, such as border-x-accent/85. Bracket values accept validated CSS colors. The border, border-x, border-y, and edge forms select physical sides; combine them with a border-width utility to make the color visible. Width and color share class roots, so numeric suffixes mean width while configured color names mean color.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## border
 
@@ -258,3 +397,5 @@ Set physical border colors from configured values or a validated arbitrary color
 | Example class | Expected declarations |
 | --- | --- |
 | `border-t-[red]/40` | `border-top-color: color-mix(in oklab, red 40%, transparent)` |
+
+</Details>

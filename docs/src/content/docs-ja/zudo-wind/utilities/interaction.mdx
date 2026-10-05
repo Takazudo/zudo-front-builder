@@ -5,9 +5,185 @@ sidebar_position: 60
 generated: true
 ---
 
-カーソル、ポインター、選択、リサイズ、アクセント色の動作を設定します。
+ネイティブコントロールの周辺にあるブラウザー動作を調整します。アクセント色、ポインターの対象、カーソル表示、サイズ変更、テキスト選択を指定できます。意味のある HTML やラベルの代わりにはなりません。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `accent-brand` | `accent-color: var(--zw-color-brand);` |
+| `cursor-pointer` | `cursor: pointer;` |
+| `pointer-events-none` | `pointer-events: none;` |
+| `resize-y` | `resize: vertical;` |
+| `select-all` | `user-select: all;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューで spec: 1、reset: "none"、strict モード、spacingUnit: "0.25rem"、空のブレークポイント、defaultTransitionTimingFunction: "ease" を明示します。設定例ではチェックボックスのアクセント用に tokens.colors.brand を定義します。チェックボックス、ボタン、検索入力欄、コード文字列、テキストエリアは、標準のキーボード操作とポインター操作を保ちます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 実際の設定フォームを整える
+
+ラベル付きチェックボックスに accent-brand を使い、二つのネイティブボタンで通常と not-allowed のカーソルを示します。利用不可のボタンには disabled も指定します。
+
+<HtmlPreview html={"\u003cfieldset class=\"wind-demo-form\"\u003e\u003clegend\u003ePreferences\u003c/legend\u003e\u003clabel\u003e\u003cinput type=\"checkbox\" checked class=\"accent-brand\"\u003e Enable email updates\u003c/label\u003e\u003cbutton type=\"button\" class=\"wind-demo-button cursor-pointer\"\u003eSave preferences\u003c/button\u003e\u003cbutton type=\"button\" disabled class=\"wind-demo-button cursor-not-allowed\"\u003eUnavailable while saving\u003c/button\u003e\u003c/fieldset\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-brand: #0f766e;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-form {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: .8rem 1.2rem;\n  max-width: 35rem;\n  padding: 1rem;\n  border: 1px solid #a7bacd;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-form legend {\n  padding: 0 .35rem;\n  font-weight: 650;\n}\n\n.wind-demo-form label {\n  display: inline-flex;\n  align-items: center;\n  gap: .45rem;\n}\n\n.wind-demo-button {\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  padding: .55rem .75rem;\n  color: inherit;\n  font: inherit;\n}\n\n.wind-demo-button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n.accent-brand {\n  accent-color: var(--zw-color-brand);\n}\n.cursor-not-allowed {\n  cursor: not-allowed;\n}\n.cursor-pointer {\n  cursor: pointer;\n}\n"} title={"実際の設定フォームを整える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "brand": "#0f766e"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-form": true,
+      "wind-demo-button": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "accent-brand",
+        "cursor-pointer",
+        "cursor-not-allowed"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem 1.2rem; max-width: 35rem; padding: 1rem; border: 1px solid #a7bacd; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-form legend { padding: 0 0.35rem; font-weight: 650; }
+.wind-demo-form label { display: inline-flex; align-items: center; gap: 0.45rem; }
+.wind-demo-button { border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; padding: 0.55rem 0.75rem; color: inherit; font: inherit; }
+.wind-demo-button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+```
+
+</Details>
+
+### 装飾を通してクリックを届ける
+
+pointer-events-none を検索アイコンに指定し、アイコンではなくラベル付き入力欄がクリックを受け取るようにします。
+
+<HtmlPreview html={"\u003clabel class=\"wind-demo-search\"\u003e\u003cspan class=\"wind-demo-label\"\u003eSearch\u003c/span\u003e\u003cspan class=\"wind-demo-searchbox\"\u003e\u003cspan class=\"wind-demo-search-icon pointer-events-none\" aria-hidden=\"true\"\u003e⌕\u003c/span\u003e\u003cinput type=\"search\" value=\"motion utilities\" class=\"wind-demo-search-input\"\u003e\u003c/span\u003e\u003c/label\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-search {\n  display: grid;\n  gap: .35rem;\n  width: min(24rem, 100%);\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-searchbox {\n  position: relative;\n}\n\n.wind-demo-search-icon {\n  position: absolute;\n  left: .7rem;\n  top: .35rem;\n  color: #526477;\n  font-size: 1.5rem;\n  line-height: 1;\n}\n\n.wind-demo-search-input {\n  box-sizing: border-box;\n  width: 100%;\n  border: 1px solid #849bb3;\n  border-radius: .35rem;\n  padding: .55rem .75rem .55rem 2.3rem;\n  color: inherit;\n  font: inherit;\n}\n\n.wind-demo-search-input:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 2px;\n}\n.pointer-events-none {\n  pointer-events: none;\n}\n"} title={"装飾を通してクリックを届ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-search": true,
+      "wind-demo-label": true,
+      "wind-demo-searchbox": true,
+      "wind-demo-search-icon": true,
+      "wind-demo-search-input": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "pointer-events-none"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-search { display: grid; gap: 0.35rem; width: min(24rem, 100%); color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-searchbox { position: relative; }
+.wind-demo-search-icon { position: absolute; left: 0.7rem; top: 0.35rem; color: #526477; font-size: 1.5rem; line-height: 1; }
+.wind-demo-search-input { box-sizing: border-box; width: 100%; border: 1px solid #849bb3; border-radius: 0.35rem; padding: 0.55rem 0.75rem 0.55rem 2.3rem; color: inherit; font: inherit; }
+.wind-demo-search-input:focus-visible { outline: 3px solid #1670b8; outline-offset: 2px; }
+```
+
+</Details>
+
+### コマンド全体を選択してメモ欄を広げる
+
+select-all はクリックでコマンド全文を選択し、resize-y はネイティブのテキストエリアに垂直方向のサイズ変更を追加します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-tools\"\u003e\u003cp\u003eClick the command to select it in full: \u003ccode class=\"wind-demo-code select-all\"\u003epnpm --filter docs check\u003c/code\u003e\u003c/p\u003e\u003clabel class=\"wind-demo-note\"\u003eScratch notes\u003ctextarea class=\"wind-demo-textarea resize-y\"\u003eYou can resize this field vertically.\u003c/textarea\u003e\u003c/label\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-tools {\n  display: grid;\n  gap: .8rem;\n  max-width: 34rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-tools p {\n  margin: 0;\n}\n\n.wind-demo-code {\n  display: inline-block;\n  border: 1px solid #a7bacd;\n  border-radius: .25rem;\n  background: #f2f6fa;\n  padding: .2rem .45rem;\n  font: .9em / 1.5 ui-monospace, monospace;\n}\n\n.wind-demo-note {\n  display: grid;\n  gap: .3rem;\n}\n\n.wind-demo-textarea {\n  box-sizing: border-box;\n  width: 100%;\n  min-height: 4rem;\n  border: 1px solid #849bb3;\n  border-radius: .35rem;\n  padding: .55rem;\n  color: inherit;\n  font: inherit;\n}\n\n.wind-demo-textarea:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 2px;\n}\n.resize-y {\n  resize: vertical;\n}\n.select-all {\n  user-select: all;\n}\n"} title={"コマンド全体を選択してメモ欄を広げる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-tools": true,
+      "wind-demo-code": true,
+      "wind-demo-note": true,
+      "wind-demo-textarea": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "select-all",
+        "resize-y"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-tools { display: grid; gap: 0.8rem; max-width: 34rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-tools p { margin: 0; }
+.wind-demo-code { display: inline-block; border: 1px solid #a7bacd; border-radius: 0.25rem; background: #f2f6fa; padding: 0.2rem 0.45rem; font: 0.9em/1.5 ui-monospace, monospace; }
+.wind-demo-note { display: grid; gap: 0.3rem; }
+.wind-demo-textarea { box-sizing: border-box; width: 100%; min-height: 4rem; border: 1px solid #849bb3; border-radius: 0.35rem; padding: 0.55rem; color: inherit; font: inherit; }
+.wind-demo-textarea:focus-visible { outline: 3px solid #1670b8; outline-offset: 2px; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+アクセント色には accent-brand のような色トークン、固定値 transparent と current、または有効な任意色を指定できます。cursor、pointer-events、resize、select はカタログにある有限のキーワードを使い、テーマ値は継承しません。装飾用の検索アイコンに pointer-events-none を指定すると、クリックは下の入力欄に届きます。利用できないボタンでは not-allowed カーソルだけでなく、disabled も指定します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## accent
 
@@ -208,3 +384,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `select-none` | `user-select: none` |
+
+</Details>

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "family": "duration",
+  "lookup": [
+    {
+      "entry": "v1.duration",
+      "candidate": "duration-150",
+      "example": "compare-durations"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set how long a transition takes. Duration does not choose which property changes, so pair it with a transition utility and a state change.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". The buttons move only 8px on hover or focus-visible, and the longest sample is 420ms. Authored demo CSS sets transition time to zero for prefers-reduced-motion: reduce.",
+      "customValues": "An integer suffix is interpreted as milliseconds from 0 through 60000, so duration-300 means 300ms and duration-0 disables interpolation. Use duration-[420ms] for a one-off CSS time. Duration has no named token scale. The default 150ms comes from transition utilities; adding duration-* overrides that value.",
+      "examples": [
+        {
+          "id": "compare-durations",
+          "title": "Compare two bounded timings",
+          "description": "Both buttons move by the same small amount; duration-150 and duration-300 change only the transition time."
+        },
+        {
+          "id": "bounded-custom-duration",
+          "title": "Use an arbitrary time",
+          "description": "duration-[420ms] sets one custom duration while hover and focus-visible trigger an 8px vertical movement."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "トランジションにかかる時間を設定します。duration は変化させるプロパティを選ばないため、トランジション系ユーティリティと状態変化を組み合わせます。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。ボタンは hover または focus-visible で 8px だけ動き、最長の例も 420ms です。prefers-reduced-motion: reduce では自作デモ CSS が時間を 0 にします。",
+      "customValues": "整数の接尾辞は 0 から 60000 までのミリ秒として解釈されるため、duration-300 は 300ms、duration-0 は補間なしです。duration-[420ms] なら個別の CSS 時間を指定できます。名前付きの時間スケールはありません。150ms の初期値はトランジション系ユーティリティが設定し、duration-* を追加すると上書きします。",
+      "examples": [
+        {
+          "id": "compare-durations",
+          "title": "範囲を抑えた時間を比べる",
+          "description": "二つのボタンは同じ距離だけ動き、duration-150 と duration-300 で時間だけが変わります。"
+        },
+        {
+          "id": "bounded-custom-duration",
+          "title": "任意の時間を指定する",
+          "description": "duration-[420ms] で個別の時間を指定し、hover と focus-visible で 8px の垂直移動を起こします。"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "family": "border-color",
+  "lookup": [
+    {
+      "entry": "v1.border.color",
+      "candidate": "border-ink",
+      "example": "whole-and-axes"
+    },
+    {
+      "entry": "v1.border.color.x",
+      "candidate": "border-x-accent/85",
+      "example": "whole-and-axes"
+    },
+    {
+      "entry": "v1.border.color.y",
+      "candidate": "border-y-focus",
+      "example": "whole-and-axes"
+    },
+    {
+      "entry": "v1.border.color.b",
+      "candidate": "border-b-alert/90",
+      "example": "edge-colors"
+    },
+    {
+      "entry": "v1.border.color.l",
+      "candidate": "border-l-ink",
+      "example": "edge-colors"
+    },
+    {
+      "entry": "v1.border.color.r",
+      "candidate": "border-r-accent",
+      "example": "edge-colors"
+    },
+    {
+      "entry": "v1.border.color.t",
+      "candidate": "border-t-focus",
+      "example": "edge-colors"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Color every border, an axis, or an individual physical edge.",
+      "setup": "The shared preview base explicitly sets spec 1, reset: \"none\", strict mode, tokens.spacingUnit: \"0.25rem\", and no breakpoints. Each named value is configured in that example; there is no inherited palette or theme. wind-demo classes are authored context styles; their CSS is shown separately from the utility declarations.",
+      "customValues": "Named colors such as border-ink must be configured in tokens.colors; there is no default palette. border-current and border-transparent are supported keywords. A color slash modifier accepts an integer from 0 through 100, such as border-x-accent/85. Bracket values accept validated CSS colors. The border, border-x, border-y, and edge forms select physical sides; combine them with a border-width utility to make the color visible. Width and color share class roots, so numeric suffixes mean width while configured color names mean color.",
+      "examples": [
+        {
+          "id": "whole-and-axes",
+          "title": "Color a full border or both sides of an axis",
+          "description": "border-ink colors all four edges, border-x-accent/85 colors left and right, and border-y-focus colors top and bottom."
+        },
+        {
+          "id": "edge-colors",
+          "title": "Give individual edges separate colors",
+          "description": "The edge utilities change only the named physical side; border-4 supplies a visible width."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "ボーダー全体、軸、または物理的な一辺に色を指定します。",
+      "setup": "共通プレビュー設定では spec 1、reset: \"none\"、strict モード、tokens.spacingUnit: \"0.25rem\"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。",
+      "customValues": "border-ink のような名前は tokens.colors に設定します。既定パレットはありません。border-current と border-transparent も使えます。border-x-accent/85 のような色のスラッシュ修飾子には 0〜100 の整数を指定します。角括弧には検証済み CSS 色を指定できます。border、border-x、border-y と辺別の形は物理辺を選びます。色を見せるには幅ユーティリティと組み合わせます。幅と色は同じクラス根を共有するため、数値の接尾辞は幅、設定済み色名は色として解釈されます。",
+      "examples": [
+        {
+          "id": "whole-and-axes",
+          "title": "全体または軸の両側に色を付ける",
+          "description": "border-ink は四辺、border-x-accent/85 は左右、border-y-focus は上下を着色します。"
+        },
+        {
+          "id": "edge-colors",
+          "title": "辺ごとに色を分ける",
+          "description": "辺別ユーティリティは指定した物理辺だけを変え、border-4 が見える幅を与えます。"
+        }
+      ]
+    }
+  }
+}

@@ -5,9 +5,89 @@ sidebar_position: 54
 generated: true
 ---
 
-要素の不透明度を整数の割合または検証済みの任意の値で設定します。
+要素全体とその子要素に opacity を指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `opacity-55` | `opacity: 0.55;` |
+| `opacity-[0.35]` | `opacity: 0.35;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 要素全体の不透明度を比べる
+
+一つの色トークンを 100%、55%、任意値の 0.35 で表示します。ラベルはスウォッチの外に置き、不透明のままにします。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-opacity-list\"\u003e\u003cdiv class=\"wind-demo-opacity-row\"\u003e\u003cspan class=\"wind-demo-opacity-label\"\u003e100 percent\u003c/span\u003e\u003cdiv class=\"wind-demo-swatch bg-accent opacity-100\"\u003e\u003c/div\u003e\u003c/div\u003e\u003cdiv class=\"wind-demo-opacity-row\"\u003e\u003cspan class=\"wind-demo-opacity-label\"\u003e55 percent\u003c/span\u003e\u003cdiv class=\"wind-demo-swatch bg-accent opacity-55\"\u003e\u003c/div\u003e\u003c/div\u003e\u003cdiv class=\"wind-demo-opacity-row\"\u003e\u003cspan class=\"wind-demo-opacity-label\"\u003e35 percent\u003c/span\u003e\u003cdiv class=\"wind-demo-swatch bg-accent opacity-[0.35]\"\u003e\u003c/div\u003e\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-opacity-list {\n  display: grid;\n  gap: .55rem;\n  max-width: 28rem;\n  color: #16324f;\n  font: 14px / 1.4 system-ui, sans-serif;\n}\n\n.wind-demo-opacity-row {\n  display: grid;\n  grid-template-columns: 8rem 1fr;\n  align-items: center;\n  gap: .8rem;\n}\n\n.wind-demo-swatch {\n  height: 2.4rem;\n}\n.bg-accent {\n  background-color: var(--zw-color-accent);\n}\n.opacity-100 {\n  opacity: 1;\n}\n.opacity-55 {\n  opacity: 0.55;\n}\n.opacity-\\[0\\.35\\] {\n  opacity: 0.35;\n}\n"} title={"要素全体の不透明度を比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-opacity-label": true,
+      "wind-demo-opacity-list": true,
+      "wind-demo-opacity-row": true,
+      "wind-demo-swatch": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-accent",
+        "opacity-100",
+        "opacity-55",
+        "opacity-[0.35]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-opacity-list { display: grid; gap: 0.55rem; max-width: 28rem; color: #16324f; font: 14px/1.4 system-ui, sans-serif; }
+.wind-demo-opacity-row { display: grid; grid-template-columns: 8rem 1fr; align-items: center; gap: 0.8rem; }
+.wind-demo-swatch { height: 2.4rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+整数の接尾辞は 0〜100 の割合です。opacity-55 は 0.55、opacity-100 は完全不透明になります。角括弧には 0〜1 の数値、または 0%〜100% の割合を指定できます。このユーティリティは要素全体と子要素を一緒に薄くします。色のスラッシュ修飾子は異なり、色プロパティだけを transparent と混ぜます。小さな文字やコントロールではコントラストが落ちるため、要素 opacity の使用に注意してください。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## opacity
 
@@ -40,3 +120,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `opacity-50` | `opacity: 0.5` |
+
+</Details>

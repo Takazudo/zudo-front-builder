@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "family": "miscellaneous",
+  "lookup": [
+    {
+      "entry": "v1.align-baseline",
+      "candidate": "align-baseline",
+      "example": "vertical-alignment"
+    },
+    {
+      "entry": "v1.align-top",
+      "candidate": "align-top",
+      "example": "vertical-alignment"
+    },
+    {
+      "entry": "v1.align-middle",
+      "candidate": "align-middle",
+      "example": "vertical-alignment"
+    },
+    {
+      "entry": "v1.align-bottom",
+      "candidate": "align-bottom",
+      "example": "vertical-alignment"
+    },
+    {
+      "entry": "v1.box-border",
+      "candidate": "box-border",
+      "example": "box-sizing"
+    },
+    {
+      "entry": "v1.box-content",
+      "candidate": "box-content",
+      "example": "box-sizing"
+    },
+    {
+      "entry": "v1.object-contain",
+      "candidate": "object-contain",
+      "example": "object-fit-options"
+    },
+    {
+      "entry": "v1.object-cover",
+      "candidate": "object-cover",
+      "example": "object-fit-options"
+    },
+    {
+      "entry": "v1.object-fill",
+      "candidate": "object-fill",
+      "example": "object-fit-options"
+    },
+    {
+      "entry": "v1.object-none",
+      "candidate": "object-none",
+      "example": "object-fit-options"
+    },
+    {
+      "entry": "v1.object-scale-down",
+      "candidate": "object-scale-down",
+      "example": "object-fit-options"
+    },
+    {
+      "entry": "v1.sr-only",
+      "candidate": "sr-only",
+      "example": "supplemental-sr-only"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use these focused helpers for inline vertical alignment, box dimensions, replaced-element fitting, and visually hiding supplemental text while keeping it available to assistive technology.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". The data image is an inline SVG with intrinsic dimensions of 160 by 100, so object-fit results are deterministic. Authored CSS sets the comparison frames and box dimensions; zudo-wind supplies each alignment, sizing, fit, or sr-only declaration.",
+      "customValues": "All entries in this family are fixed keywords with no named token scale or arbitrary value form. Vertical alignment affects inline-level content relative to a line, not flex or grid alignment. box-border includes padding and border in the declared width; box-content measures the content box. object-fit controls how replaced content fits the element’s box. sr-only clips content visually but leaves it in the accessibility tree; do not use it to hide information that sighted users need.",
+      "examples": [
+        {
+          "id": "vertical-alignment",
+          "title": "Align inline labels to a text line",
+          "description": "The four fixed values place larger inline labels at the baseline, top, middle, or bottom of the surrounding line."
+        },
+        {
+          "id": "box-sizing",
+          "title": "Compare declared and total width",
+          "description": "Both boxes declare width: 12rem and use the same padding and border. box-border includes them in that width; box-content adds them outside it."
+        },
+        {
+          "id": "object-fit-options",
+          "title": "Fit one image five ways",
+          "description": "object-contain preserves the full image, object-cover crops to fill, object-fill stretches, object-none keeps its intrinsic size, and object-scale-down only shrinks when needed."
+        },
+        {
+          "id": "supplemental-sr-only",
+          "title": "Add optional screen-reader context",
+          "description": "The visible button remains labeled “Save”; sr-only adds a short supplemental phrase without hiding essential content."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "行内の垂直位置、ボックスの寸法、置換要素の収まり方、そして支援技術に伝えたまま視覚的に隠す補足テキストを調整します。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。データ画像は intrinsic size が 160 × 100 のインライン SVG なので、object-fit の結果を再現できます。自作 CSS は比較用の枠とボックス寸法を設定し、配置、サイズ計算、画像の収まり方、sr-only の宣言は zudo-wind が出力します。",
+      "customValues": "このファミリーの項目はすべて固定キーワードで、名前付きトークンスケールや任意値形式はありません。vertical-align は行内コンテンツを行に対して配置し、flex や grid の整列には使いません。box-border は padding と border を幅に含め、box-content は内容領域の幅を指定します。object-fit は置換要素の内容を要素の枠にどう収めるかを決めます。sr-only は支援技術のツリーには残したまま視覚的に切り取ります。視覚で読む人に必要な情報を隠す用途には使わないでください。",
+      "examples": [
+        {
+          "id": "vertical-alignment",
+          "title": "行内ラベルをテキスト行に合わせる",
+          "description": "四つの固定値で、大きな行内ラベルを周囲の行の baseline、top、middle、bottom に配置します。"
+        },
+        {
+          "id": "box-sizing",
+          "title": "指定した幅と外形幅を比べる",
+          "description": "両方のボックスで width: 12rem と同じ padding、border を使います。box-border はそれらを幅に含め、box-content は外側に加算します。"
+        },
+        {
+          "id": "object-fit-options",
+          "title": "同じ画像を五通りに収める",
+          "description": "object-contain は全体を表示し、object-cover は枠を埋めて切り抜き、object-fill は引き伸ばし、object-none は元サイズを保ち、object-scale-down は必要な場合だけ縮小します。"
+        },
+        {
+          "id": "supplemental-sr-only",
+          "title": "任意の読み上げ補足を加える",
+          "description": "見えるボタン名「Save」はそのままに、sr-only で短い補足を追加します。重要な内容は隠しません。"
+        }
+      ]
+    }
+  }
+}

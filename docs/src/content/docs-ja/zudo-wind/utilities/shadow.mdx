@@ -5,9 +5,91 @@ sidebar_position: 53
 generated: true
 ---
 
-設定済みのボックスシャドウを適用するか、シャドウを取り除きます。
+設定済みの box-shadow、任意の CSS box-shadow、または影なしを指定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `shadow-panel` | `box-shadow: var(--zw-shadow-panel);` |
+| `shadow-[0_12px_24px_#16324f33]` | `box-shadow: 0 12px 24px #16324f33;` |
+
+<Details title={"例の設定"}>
+
+共通プレビュー設定では spec 1、reset: "none"、strict モード、tokens.spacingUnit: "0.25rem"、ブレークポイントなしを明示しています。名前付きの値は各例で設定し、既定のパレットやテーマは継承しません。wind-demo クラスはデモ用の自作スタイルです。各例では、その CSS とユーティリティの宣言を分けて確認できます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 名前付き、個別、影なしを比べる
+
+最初のカードは panel トークン、次は検証済みの個別 box-shadow、最後は shadow-none を使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-shadow-grid\"\u003e\u003cdiv class=\"wind-demo-shadow-card bg-panel text-ink p-3 shadow-panel\"\u003eConfigured panel shadow\u003c/div\u003e\u003cdiv class=\"wind-demo-shadow-card bg-panel text-ink p-3 shadow-[0_12px_24px_#16324f33]\"\u003eOne-off CSS shadow\u003c/div\u003e\u003cdiv class=\"wind-demo-shadow-card bg-panel text-ink p-3 shadow-none\"\u003eNo shadow\u003c/div\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-accent: #075985;\n    --zw-color-alert: #8b1e3f;\n    --zw-color-focus: #0f766e;\n    --zw-color-ink: #16324f;\n    --zw-color-panel: #edf4f8;\n    --zw-color-white: #fff;\n    --zw-shadow-panel: 0 6px 18px #16324f2e;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-shadow-grid {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 1.1rem;\n  max-width: 36rem;\n  padding: .8rem;\n  color: #16324f;\n  font: 14px / 1.45 system-ui, sans-serif;\n}\n\n.wind-demo-shadow-card {\n  min-width: 8rem;\n}\n.p-3 {\n  padding-top: 0.75rem;\n  padding-right: 0.75rem;\n  padding-bottom: 0.75rem;\n  padding-left: 0.75rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.shadow-\\[0_12px_24px_\\#16324f33\\] {\n  box-shadow: 0 12px 24px #16324f33;\n}\n.shadow-none {\n  box-shadow: none;\n}\n.shadow-panel {\n  box-shadow: var(--zw-shadow-panel);\n}\n"} title={"名前付き、個別、影なしを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "colors": {
+        "ink": "#16324f",
+        "accent": "#075985",
+        "focus": "#0f766e",
+        "alert": "#8b1e3f",
+        "panel": "#edf4f8",
+        "white": "#ffffff"
+      },
+      "shadows": {
+        "panel": "0 6px 18px rgba(22, 50, 79, 0.18)"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-shadow-card": true,
+      "wind-demo-shadow-grid": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "bg-panel",
+        "p-3",
+        "shadow-[0_12px_24px_#16324f33]",
+        "shadow-none",
+        "shadow-panel",
+        "text-ink"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-shadow-grid { display: flex; flex-wrap: wrap; gap: 1.1rem; max-width: 36rem; padding: 0.8rem; color: #16324f; font: 14px/1.45 system-ui, sans-serif; }
+.wind-demo-shadow-card { min-width: 8rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+shadow-panel のような名前は tokens.shadows に設定した値だけを参照します。shadow-none は影なしのキーワードです。角括弧の値は CSS box-shadow として検証され、クラス内のアンダースコアは空白を表します。既定の影スケールも影用の不透明度修飾子もありません。カタログには ring ユーティリティもありません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## shadow
 
@@ -42,3 +124,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `shadow-none` | `box-shadow: none` |
+
+</Details>

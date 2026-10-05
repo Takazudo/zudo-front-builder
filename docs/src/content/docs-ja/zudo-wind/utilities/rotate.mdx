@@ -5,9 +5,134 @@ sidebar_position: 59
 generated: true
 ---
 
-対応する角度または任意の角度値で要素を回転します。
+要素を時計回りまたは反時計回りに回転します。CSS の rotate プロパティを使うため、x と y の translate ユーティリティと独立して合成できます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `rotate-12` | `rotate: 12deg;` |
+
+<Details title={"例の設定"}>
+
+すべてのプレビューで spec: 1、reset: "none"、strict モード、spacingUnit: "0.25rem"、空のブレークポイント、defaultTransitionTimingFunction: "ease" を明示します。一つ目の図では translate-x-8、translate-y-4、rotate-12 を同時に適用し、もう一つでは負の度数と任意の回転角を比べます。図の CSS は四角形を描いて配置するためだけに使います。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 一つの要素を移動して回転する
+
+rotate-12 は translate-x-8 と translate-y-4 に独立した CSS プロパティで合成され、transform ユーティリティは不要です。
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-8 translate-y-4 rotate-12\"\u003e12°\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eIndependent translate-x, translate-y, and rotate utilities compose on one element without a transform utility.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-8 {\n  --zw-translate-x: 2rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-4 {\n  --zw-translate-y: 1rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.rotate-12 {\n  rotate: 12deg;\n}\n"} title={"一つの要素を移動して回転する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-8",
+        "translate-y-4",
+        "rotate-12"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### 負の角度と任意の角度を使う
+
+-rotate-45 は反時計回り、rotate-[0.125turn] は任意の 8 分の 1 回転を指定します。
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-piece -rotate-45\"\u003e−45°\u003c/span\u003e\u003cspan class=\"wind-demo-piece wind-demo-piece-alt rotate-[0.125turn]\"\u003e⅛ turn\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eA negative class turns the other way; an arbitrary CSS angle can use turns or radians.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-piece, .wind-demo-piece-alt {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n\n.wind-demo-piece-alt {\n  left: 11rem;\n}\n.-rotate-45 {\n  rotate: -45deg;\n}\n.rotate-\\[0\\.125turn\\] {\n  rotate: 0.125turn;\n}\n"} title={"負の角度と任意の角度を使う"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-caption": true,
+      "wind-demo-figure": true,
+      "wind-demo-piece": true,
+      "wind-demo-piece-alt": true,
+      "wind-demo-stage": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-rotate-45",
+        "rotate-[0.125turn]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-piece, .wind-demo-piece-alt { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+.wind-demo-piece-alt { left: 11rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+0 から 360 までの整数は度として解釈します。対応する整数にマイナスを付けると反時計回りになります。任意の CSS 角度では deg、rad、grad、turn を使えます。例: rotate-[0.125turn]。名前付き回転スケールはありません。v1 のカタログには transform、scale、skew、GPU 用 transform ユーティリティは含まれません。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## rotate
 
@@ -40,3 +165,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `rotate-90` | `rotate: 90deg` |
+
+</Details>
