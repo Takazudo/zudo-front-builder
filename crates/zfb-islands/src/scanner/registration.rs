@@ -65,6 +65,79 @@ struct SourceModule {
     client: bool,
 }
 
+/// Declaration facts only: resolving aliases still uses Discovery's cycle guard.
+/// Keep function bodies out of this index so nested declarations do not clone
+/// the surrounding AST. SWC IDs distinguish same-spelled lexical bindings.
+#[derive(Default)]
+struct NestedBindings {
+    functions: HashMap<swc_core::ecma::ast::Id, (String, Span)>,
+    variables: HashMap<swc_core::ecma::ast::Id, NestedVariable>,
+    #[cfg(test)]
+    expression_visits: usize,
+}
+
+struct NestedVariable {
+    kind: swc_core::ecma::ast::VarDeclKind,
+    init: Option<NestedInitializer>,
+}
+
+enum NestedInitializer {
+    Function { marker: String, span: Span },
+    Alias(swc_core::ecma::ast::Ident),
+    Unsupported,
+}
+
+impl Visit for NestedBindings {
+    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
+        self.functions.insert(
+            node.ident.to_id(),
+            (node.ident.sym.to_string(), node.function.span),
+        );
+        node.visit_children_with(self);
+    }
+
+    fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
+        for declaration in &node.decls {
+            let Pat::Ident(binding) = &declaration.name else {
+                continue;
+            };
+            let init = declaration
+                .init
+                .as_deref()
+                .map(|init| match unwrap_expr(init) {
+                    Expr::Fn(function) => NestedInitializer::Function {
+                        marker: function
+                            .ident
+                            .as_ref()
+                            .map(|name| name.sym.to_string())
+                            .unwrap_or_else(|| binding.id.sym.to_string()),
+                        span: function.function.span,
+                    },
+                    Expr::Arrow(arrow) => NestedInitializer::Function {
+                        marker: binding.id.sym.to_string(),
+                        span: arrow.span,
+                    },
+                    Expr::Ident(alias) => NestedInitializer::Alias(alias.clone()),
+                    _ => NestedInitializer::Unsupported,
+                });
+            self.variables.insert(
+                binding.id.to_id(),
+                NestedVariable {
+                    kind: node.kind,
+                    init,
+                },
+            );
+        }
+        node.visit_children_with(self);
+    }
+
+    #[cfg(test)]
+    fn visit_expr(&mut self, node: &Expr) {
+        self.expression_visits += 1;
+        node.visit_children_with(self);
+    }
+}
+
 #[derive(Clone)]
 enum Form {
     Jsx(JSXElement),
@@ -131,6 +204,9 @@ struct Discovery<'a, R: Resolver> {
     summary_cache: BTreeMap<Definition, WrapperSummary>,
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
     owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
+    nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
+    #[cfg(test)]
+    nested_binding_expression_visits: usize,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
@@ -146,6 +222,9 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             summary_cache: BTreeMap::new(),
             deferred_forward_sites: HashSet::new(),
             owned_factory_sites: HashMap::new(),
+            nested_bindings: HashMap::new(),
+            #[cfg(test)]
+            nested_binding_expression_visits: 0,
         }
     }
 
@@ -439,72 +518,28 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 _ => {}
             }
         }
-        // Wrappers may be local to a page function. SWC's syntax context
-        // distinguishes that binding from same-spelled module imports.
-        struct NestedFinder {
-            id: swc_core::ecma::ast::Id,
-            function: Option<swc_core::ecma::ast::FnDecl>,
-            variable: Option<(swc_core::ecma::ast::VarDeclKind, VarDeclarator)>,
+        // Large packed dependencies contain many nested locals, parameters,
+        // and globals. A missing name must not trigger a fresh full AST walk
+        // for every reference (#3648, fixed-scanner CPU profiles).
+        let bindings = self.nested_bindings(path)?;
+        let id = ident.to_id();
+        if let Some((marker, span)) = bindings.functions.get(&id) {
+            return Ok(self.definition(path, &ident.sym, marker.clone(), *span));
         }
-        impl Visit for NestedFinder {
-            fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
-                if node.ident.to_id() == self.id {
-                    self.function = Some(node.clone());
-                } else {
-                    node.visit_children_with(self);
-                }
-            }
-
-            fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
-                for declaration in &node.decls {
-                    if let Pat::Ident(binding) = &declaration.name {
-                        if binding.id.to_id() == self.id {
-                            self.variable = Some((node.kind, declaration.clone()));
-                            return;
-                        }
-                    }
-                }
-                node.visit_children_with(self);
-            }
-        }
-        let mut finder = NestedFinder {
-            id: ident.to_id(),
-            function: None,
-            variable: None,
-        };
-        module.ast.visit_with(&mut finder);
-        if let Some(function) = finder.function {
-            return Ok(self.definition(
-                path,
-                &function.ident.sym,
-                function.ident.sym.to_string(),
-                function.function.span,
-            ));
-        }
-        if let Some((kind, variable)) = finder.variable {
-            if kind != swc_core::ecma::ast::VarDeclKind::Const {
+        if let Some(variable) = bindings.variables.get(&id) {
+            if variable.kind != swc_core::ecma::ast::VarDeclKind::Const {
                 return Ok(Value::Unsupported(format!(
                     "mutable target binding {} is not a stable function",
                     ident.sym
                 )));
             }
-            if let Some(init) = variable.init {
-                return match unwrap_expr(&init) {
-                    Expr::Fn(function) => Ok(self.definition(
-                        path,
-                        &ident.sym,
-                        function
-                            .ident
-                            .as_ref()
-                            .map(|name| name.sym.to_string())
-                            .unwrap_or_else(|| ident.sym.to_string()),
-                        function.function.span,
-                    )),
-                    Expr::Arrow(arrow) => {
-                        Ok(self.definition(path, &ident.sym, ident.sym.to_string(), arrow.span))
+            if let Some(init) = &variable.init {
+                return match init {
+                    NestedInitializer::Function { marker, span } => {
+                        Ok(self.definition(path, &ident.sym, marker.clone(), *span))
                     }
-                    Expr::Ident(alias) => self.resolve_local(path, alias),
-                    _ => Ok(Value::Unsupported(format!(
+                    NestedInitializer::Alias(alias) => self.resolve_local(path, alias),
+                    NestedInitializer::Unsupported => Ok(Value::Unsupported(format!(
                         "target {} has unsupported initializer",
                         ident.sym
                     ))),
@@ -512,6 +547,23 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             }
         }
         Ok(Value::Other)
+    }
+
+    fn nested_bindings(&mut self, path: &Path) -> ScanResult<Rc<NestedBindings>> {
+        if let Some(bindings) = self.nested_bindings.get(path) {
+            return Ok(Rc::clone(bindings));
+        }
+        let module = self.module(path)?;
+        let mut bindings = NestedBindings::default();
+        module.ast.visit_with(&mut bindings);
+        #[cfg(test)]
+        {
+            self.nested_binding_expression_visits += bindings.expression_visits;
+        }
+        let bindings = Rc::new(bindings);
+        self.nested_bindings
+            .insert(path.to_path_buf(), Rc::clone(&bindings));
+        Ok(bindings)
     }
 
     fn resolve_export(&mut self, path: &Path, name: &str) -> ScanResult<Value> {
@@ -2198,6 +2250,117 @@ mod tests {
             .iter()
             .map(|island| island.marker_name.clone())
             .collect()
+    }
+
+    #[test]
+    fn packed_module_nested_binding_search_has_a_linear_ast_budget() {
+        const FUNCTIONS: usize = 96;
+        let path = PathBuf::from("/proj/packed.ts");
+        let mut source = String::from("function outer() {\n");
+        for index in 0..FUNCTIONS {
+            source.push_str(&format!(
+                "function helper{index}(callback{index}) {{ const alias{index} = callback{index}; return missing{index}(alias{index}); }}\n"
+            ));
+        }
+        source.push_str("return null; }");
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = InMemoryResolver::new().with_file(path.clone(), source.clone());
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        struct Names(Vec<swc_core::ecma::ast::Ident>);
+        impl Visit for Names {
+            fn visit_ident(&mut self, ident: &swc_core::ecma::ast::Ident) {
+                self.0.push(ident.clone());
+            }
+        }
+        let mut names = Names(Vec::new());
+        discovery.module(&path).unwrap().ast.visit_with(&mut names);
+        let mut seen = HashSet::new();
+        names.0.retain(|ident| seen.insert(ident.to_id()));
+        for _ in 0..3 {
+            let mut functions = 0;
+            let mut missing = 0;
+            for ident in &names.0 {
+                let value = discovery.resolve_local(&path, ident).unwrap();
+                if ident.sym.starts_with("helper") {
+                    let Value::Function(function) = value else {
+                        panic!("nested helper must retain its function identity");
+                    };
+                    assert_eq!(function.marker, ident.sym.to_string());
+                    functions += 1;
+                } else if ident.sym.starts_with("missing")
+                    || ident.sym.starts_with("callback")
+                    || ident.sym.starts_with("alias")
+                {
+                    assert!(matches!(value, Value::Other));
+                    missing += 1;
+                }
+            }
+            assert_eq!(functions, FUNCTIONS);
+            assert_eq!(missing, FUNCTIONS * 3);
+        }
+        // Measure AST work, not elapsed time. Parameters, globals and aliases
+        // must not each walk every packed function again, including on misses.
+        assert!(discovery.nested_binding_expression_visits > 0);
+        assert!(
+            discovery.nested_binding_expression_visits < FUNCTIONS * 8,
+            "{} AST expression visits for {FUNCTIONS} packed functions",
+            discovery.nested_binding_expression_visits,
+        );
+    }
+
+    #[test]
+    fn indexed_nested_wrapper_alias_keeps_parameter_shadowing() {
+        let islands = scan(&[
+            (
+                "pages/home.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                import { Counter } from '../counter';
+                export default function Page() {
+                    const Fixed = () => <Island><Counter /></Island>;
+                    const Alias = Fixed;
+                    function Ordinary(Alias) { return <Alias />; }
+                    return <Alias />;
+                }
+            "#,
+            ),
+            (
+                "counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[test]
+    fn indexed_nested_alias_cycle_keeps_a_finite_diagnostic() {
+        let error = scan(&[(
+            "pages/home.tsx",
+            r#"
+            import { Island } from '@takazudo/zfb';
+            import { h } from '@takazudo/zfb/zudo-react';
+            export default function Page() {
+                const First = Second;
+                const Second = First;
+                return h(Island, { children: h(First, {}) });
+            }
+        "#,
+        )])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("recursive binding"), "{error}");
+        assert!(error.contains("/proj/pages/home.tsx:"), "{error}");
     }
 
     #[test]
