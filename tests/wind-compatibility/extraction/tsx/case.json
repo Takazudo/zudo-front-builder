@@ -1,0 +1,6 @@
+{
+  "caseId": "tsx",
+  "reset": "none",
+  "sourceFile": "index.tsx",
+  "expectedCandidates": ["inline-flex", "mx-auto"]
+}

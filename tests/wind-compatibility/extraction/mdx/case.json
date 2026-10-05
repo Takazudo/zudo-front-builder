@@ -1,0 +1,6 @@
+{
+  "caseId": "mdx",
+  "reset": "none",
+  "sourceFile": "index.mdx",
+  "expectedCandidates": ["block"]
+}

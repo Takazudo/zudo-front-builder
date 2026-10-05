@@ -60,3 +60,18 @@ WIND_PINNED_SOURCE_ARCHIVE=/tmp/zfb-wind-reference-cache/response-1d73680e19488b
 ```
 
 `validate` checks upstream and Wind membership both ways, unique IDs, row counts, actual catalog mappings, source/catalog/profile/docs digests and profile case references. It replays the complete source-derived reviewed contract, including evidence, semantics, variants and configured patterns, so data-only claims cannot silently change. An added runtime registration or source literal/template registration fails until it is classified; the validator also checks the actual compiler module against the pinned npm tarball when both external paths are supplied. Extraction deliberately does not auto-accept a new reference or update evidence. Every inventory evidence record remains `source-inspected`; `reportId`, build and browser fields are null. Browser/CSS differential evidence belongs to the later harness and must identify exact case/config/source/reference/profile/report inputs. Do not summarize this seed with a single compatibility percentage.
+
+## Differential pilot (#3829)
+
+The strict compiler fixtures are in `tests/wind-compatibility/pilot`. Their `manifest.json` lists all 15 profile case IDs; each `case.json` supplies the same explicit candidate to both compilers. `observations.json` contains browser probes and side-specific expected values. Extraction fixtures live in `tests/wind-compatibility/extraction`: each original HTML, TSX or MDX source goes independently to Wind's source extractor and the pinned `@tailwindcss/oxide@4.3.2` scanner. The scanner's JS and platform binary are downloaded to the external cache only after exact SHA-512 and package identity verification. There is no project installation and no regex or Wind-scanner oracle for the reference side.
+
+Build the Wind example once, then run the differential adapter with that exact Cargo artifact:
+
+```sh
+node scripts/wind-compatibility/differential-runner.mjs build-wind /tmp/zfb-wind-build.json
+node scripts/wind-compatibility/differential-runner.mjs --wind-binary "$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/zfb-wind-build.json")).binaryPath')" --wind-build-manifest /tmp/zfb-wind-build.json --output /tmp/zfb-wind-differential
+```
+
+The first command runs `cargo build --locked -p zudo-wind --example wind_fixture_css --message-format=json` through the workstation heavy guard, or directly in CI, and records Cargo's emitted executable path with source, reset asset, lockfile and binary hashes. The second command rejects a changed source or binary. It rechecks the exact Tailwind compiler tarball and module, compiles a cleared default theme with only each case's explicit mapping, starts Chromium, and saves independent stylesheets and a JSON report outside the checkout. Each engine has its own browser context and same-origin served stylesheet; the adapter checks the actual CSS response bytes and retains the CSSOM selector, layer, media and declaration tree. It runs mutations for missing CSS, wrong declarations, wrong selectors, extra rules and wrong hover media. The native reset and authored CSS control is separate from the shared utility lane.
+
+The report lists every profile case and required control, including any missing executions. A nonzero result means a mismatch, infrastructure failure, incomplete required comparison, or browser outside the profile's Linux admission matrix. This pilot does not accept a reference version or advance `reviewed-through`; the broad corpus and matrix admission belong to later topics.

@@ -1,0 +1,6 @@
+{
+  "caseId": "native-reset",
+  "reset": "minimal-v1",
+  "explicitCandidates": ["block"],
+  "authoredCss": "authored.css"
+}

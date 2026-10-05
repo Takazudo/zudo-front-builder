@@ -1,0 +1,226 @@
+{
+  "block": {
+    "caseId": "block",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "block",
+        "reference": "block"
+      }
+    ]
+  },
+  "hidden": {
+    "caseId": "hidden",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "none",
+        "reference": "none"
+      }
+    ]
+  },
+  "inline-flex": {
+    "caseId": "inline-flex",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "inline-flex",
+        "reference": "inline-flex"
+      }
+    ]
+  },
+  "mx-auto": {
+    "caseId": "mx-auto",
+    "probes": [
+      {
+        "name": "horizontal-left-margin",
+        "property": "margin-left",
+        "wind": "auto",
+        "reference": "auto",
+        "element": "div"
+      },
+      {
+        "name": "vertical-left-margin",
+        "property": "margin-left",
+        "wind": "auto",
+        "reference": {
+          "notValue": "auto"
+        },
+        "element": "div",
+        "writingMode": "vertical-rl"
+      },
+      {
+        "name": "vertical-top-margin",
+        "property": "margin-top",
+        "wind": {
+          "notValue": "auto"
+        },
+        "reference": "auto",
+        "element": "div",
+        "writingMode": "vertical-rl"
+      }
+    ]
+  },
+  "grid-cols-2": {
+    "caseId": "grid-cols-2",
+    "probes": [
+      {
+        "name": "columns",
+        "property": "grid-template-columns",
+        "wind": {
+          "notValue": "none"
+        },
+        "reference": {
+          "notValue": "none"
+        },
+        "element": "div"
+      }
+    ]
+  },
+  "p-0-empty": {
+    "caseId": "p-0-empty",
+    "probes": [
+      {
+        "name": "button-padding",
+        "property": "padding-top",
+        "wind": "0px",
+        "reference": {
+          "min": 1
+        },
+        "element": "button"
+      }
+    ]
+  },
+  "p-0-mapped": {
+    "caseId": "p-0-mapped",
+    "probes": [
+      {
+        "name": "button-padding",
+        "property": "padding-top",
+        "wind": "0px",
+        "reference": "0px",
+        "element": "button"
+      }
+    ]
+  },
+  "named-spacing": {
+    "caseId": "named-spacing",
+    "probes": [
+      {
+        "name": "named-padding",
+        "property": "padding-top",
+        "wind": "17px",
+        "reference": "17px",
+        "element": "button"
+      }
+    ]
+  },
+  "named-color": {
+    "caseId": "named-color",
+    "probes": [
+      {
+        "name": "named-background",
+        "property": "background-color",
+        "wind": "rgb(18, 52, 86)",
+        "reference": "rgb(18, 52, 86)"
+      }
+    ]
+  },
+  "unconfigured-p-4": {
+    "caseId": "unconfigured-p-4",
+    "probes": [
+      {
+        "name": "unconfigured-padding",
+        "property": "padding-top",
+        "wind": {
+          "min": 1
+        },
+        "reference": {
+          "min": 1
+        },
+        "element": "button"
+      }
+    ]
+  },
+  "undeclared-palette": {
+    "caseId": "undeclared-palette",
+    "probes": [
+      {
+        "name": "unconfigured-background",
+        "property": "background-color",
+        "wind": "rgba(0, 0, 0, 0)",
+        "reference": "rgba(0, 0, 0, 0)"
+      }
+    ]
+  },
+  "configured-p-4": {
+    "caseId": "configured-p-4",
+    "probes": [
+      {
+        "name": "numeric-padding",
+        "property": "padding-top",
+        "wind": "16px",
+        "reference": "16px",
+        "element": "button"
+      }
+    ]
+  },
+  "contents-gap": {
+    "caseId": "contents-gap",
+    "probes": [
+      {
+        "name": "contents-display",
+        "property": "display",
+        "wind": "inline",
+        "reference": "contents"
+      }
+    ]
+  },
+  "hover-block": {
+    "caseId": "hover-block",
+    "probes": [
+      {
+        "name": "hover-inactive",
+        "property": "display",
+        "wind": "inline",
+        "reference": "inline"
+      },
+      {
+        "name": "hover-active",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "hover": true
+      }
+    ]
+  },
+  "breakpoint-block": {
+    "caseId": "breakpoint-block",
+    "probes": [
+      {
+        "name": "below-breakpoint",
+        "property": "display",
+        "wind": "inline",
+        "reference": "inline",
+        "viewportWidth": 639
+      },
+      {
+        "name": "at-breakpoint",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "viewportWidth": 640
+      },
+      {
+        "name": "above-breakpoint",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "viewportWidth": 641
+      }
+    ]
+  }
+}
