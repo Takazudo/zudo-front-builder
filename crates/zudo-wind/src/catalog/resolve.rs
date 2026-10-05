@@ -191,7 +191,9 @@ impl Catalog {
             .collect();
         if successful.is_empty() {
             // A vocabulary name can share a catalog root's prefix
-            // (`inline-table` under `inline`); it is foreign, not a bad value.
+            // (`inline-table` under `inline`); after a catalog value fails, it
+            // is foreign, not a bad value. Successful configured tokens above
+            // keep their catalog meaning.
             if let Some(family) = super::migration::foreign_family(candidate, tokens) {
                 return foreign(candidate, origin, family);
             }
