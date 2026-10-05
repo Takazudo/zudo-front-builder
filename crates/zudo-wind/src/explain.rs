@@ -80,6 +80,7 @@ pub struct DeclarationView {
 pub struct SortTuple {
     pub responsive_rank: usize,
     pub dark_rank: u8,
+    pub pointer_rank: u8,
     pub relation_rank: u8,
     pub state_rank: u8,
     pub pseudo_rank: u8,
@@ -335,9 +336,10 @@ pub fn render_explanation(explanation: &Explanation) -> String {
     }
     if let Some(tuple) = &explanation.sort_tuple {
         output.push_str(&format!(
-            "sort: responsive={}, dark={}, relation={}, state={}, pseudo={}, conflict-group={}, scope={}, catalog={}, candidate={}\n",
+            "sort: responsive={}, dark={}, pointer={}, relation={}, state={}, pseudo={}, conflict-group={}, scope={}, catalog={}, candidate={}\n",
             tuple.responsive_rank,
             tuple.dark_rank,
+            tuple.pointer_rank,
             tuple.relation_rank,
             tuple.state_rank,
             tuple.pseudo_rank,
@@ -484,6 +486,7 @@ fn sort_tuple(key: &SortKey) -> SortTuple {
     SortTuple {
         responsive_rank: key.responsive_rank,
         dark_rank: key.dark_rank,
+        pointer_rank: key.pointer_rank,
         relation_rank: key.relation_rank,
         state_rank: key.state_rank,
         pseudo_rank: key.pseudo_rank,
@@ -844,6 +847,27 @@ mod tests {
             explain("sm:dark:hover:bg-panel", &configured()),
             explanation
         );
+    }
+
+    #[test]
+    fn pointer_explanation_serializes_sort_rank_and_media_condition() {
+        let explanation = explain("sm:dark:pointer-coarse:group-hover:bg-panel", &configured());
+        assert_eq!(explanation.outcome, ExplanationOutcome::ResolvedUtility);
+        assert_eq!(
+            explanation.conditions,
+            ["(min-width: 640px)", "(pointer: coarse)", "(hover: hover)"]
+        );
+        let tuple = explanation.sort_tuple.as_ref().unwrap();
+        assert_eq!(
+            (
+                tuple.responsive_rank,
+                tuple.dark_rank,
+                tuple.pointer_rank,
+                tuple.relation_rank
+            ),
+            (1, 1, 1, 5)
+        );
+        assert_eq!(serde_json::to_value(tuple).unwrap()["pointerRank"], 1);
     }
 
     #[test]

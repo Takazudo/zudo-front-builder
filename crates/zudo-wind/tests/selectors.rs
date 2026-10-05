@@ -153,9 +153,16 @@ fn assert_specificity(selector: &str, expected: Specificity) {
 
 #[test]
 fn all_pseudo_elements_append_last_without_inventing_content() {
-    for (index, pseudo) in ["before", "after", "marker", "placeholder", "backdrop"]
-        .into_iter()
-        .enumerate()
+    for (index, pseudo) in [
+        "before",
+        "after",
+        "marker",
+        "placeholder",
+        "backdrop",
+        "selection",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let candidate = format!("dark:group-focus:focus-visible:{pseudo}:block");
         let result = compile(&common::input(&[&candidate]));
@@ -181,6 +188,66 @@ fn all_pseudo_elements_append_last_without_inventing_content() {
         assert_specificity(rule.selector.as_ref().unwrap(), rule.specificity);
         assert!(!result.stylesheet.contains("content:"));
     }
+}
+
+#[test]
+fn pointer_conditions_have_one_canonical_slot_and_zero_specificity() {
+    let result = compile(&common::input(&[
+        "sm:dark:pointer-coarse:group-hover:bg-panel",
+        "sm:dark:pointer-fine:group-hover:bg-panel",
+        "dark:group-hover:bg-panel",
+    ]));
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    let coarse = result
+        .rules
+        .iter()
+        .find(|rule| rule.candidate.contains("pointer-coarse"))
+        .unwrap();
+    assert_eq!(
+        coarse.conditions,
+        ["(min-width: 640px)", "(pointer: coarse)", "(hover: hover)"]
+    );
+    assert_eq!(coarse.sort_key.as_ref().unwrap().pointer_rank, 1);
+    assert_eq!(
+        coarse.specificity,
+        Specificity {
+            ids: 0,
+            classes: 1,
+            types: 0
+        }
+    );
+    assert_specificity(coarse.selector.as_ref().unwrap(), coarse.specificity);
+    let fine = result
+        .rules
+        .iter()
+        .find(|rule| rule.candidate.contains("pointer-fine"))
+        .unwrap();
+    assert_eq!(
+        fine.conditions,
+        ["(min-width: 640px)", "(pointer: fine)", "(hover: hover)"]
+    );
+    assert_eq!(fine.sort_key.as_ref().unwrap().pointer_rank, 2);
+    assert_eq!(result.parts.utilities.matches("@media").count(), 3);
+    assert!(result
+        .parts
+        .utilities
+        .contains("@media (min-width: 640px) and (pointer: coarse) and (hover: hover)"));
+    assert!(result
+        .parts
+        .utilities
+        .contains("@media (min-width: 640px) and (pointer: fine) and (hover: hover)"));
+    assert_eq!(
+        result
+            .rules
+            .iter()
+            .find(|rule| rule.candidate == "dark:group-hover:bg-panel")
+            .unwrap()
+            .sort_key
+            .as_ref()
+            .unwrap()
+            .pointer_rank,
+        0
+    );
 }
 
 #[test]
