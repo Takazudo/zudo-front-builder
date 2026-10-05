@@ -181,7 +181,7 @@ origin provenance before flattening. Frontmatter/body-relative markdown spans
 must not be claimed as authored absolute positions without mapping.
 
 #3728 adds Rust schema/markdown/plugin backward-input tests and a cheap real
-Node-host protocol test (`node --test scripts/__tests__/plugin-logger-diagnostics.test.mjs`).
+Node-host protocol test (`pnpm exec vp test run scripts/__tests__/plugin-logger-diagnostics.test.mjs`).
 Manager/CI must run the affected Rust unit tests and existing plugin acceptance
 fixtures; #3729 supplies successful/failed/empty-build, unwritable destination,
 repeated occurrence and full-emitter sink fixtures. No warning suppression list,
