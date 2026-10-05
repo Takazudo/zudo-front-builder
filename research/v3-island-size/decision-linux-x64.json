@@ -29,7 +29,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
-    "cargoLockSha256": "c8e6f7bad9414d21248bf9b3b4518c14aa11d9719275576a558ede10b1514f58"
+    "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -113,6 +113,6 @@
     "runId": 37254863769,
     "jobId": 111589659768,
     "sourceSha": "2ffc69d647bf0518c0d449e9a0abd7a473c1fe51",
-    "note": "Complete workspace and packed eight-fixture matrices, two byte-identical passes each, saved in bounded-fixes-linux-island-size-evidence. Includes SWC 74, rb support and the script rawHtml closing-boundary guard. Prior exact ceilings remain in git history. Metadata follow-up for #3716: Cargo.lock's digest was refreshed after review confirmed its only new edge is direct unicode-id-start, whose package, version, and checksum already existed transitively. No runtime package, size ceiling, or allowance changed. Historical run/source SHA and measured bytes remain unchanged; no remeasurement is claimed and fresh measurement remains pending. Reviewed input follow-up for #3721: the current lockfile differs from the reviewed base only by adding zudo-wind's direct unicode-id-start dependency edge; the already-locked package remains version 1.4.0 with the same checksum. This metadata update makes no fresh size-measurement claim; historical run IDs, source SHAs, measured totals, ceilings, and zero allowance are unchanged, and fresh Linux x64 and Darwin arm64 matrices remain pending."
+    "note": "Complete workspace and packed eight-fixture matrices, two byte-identical passes each, saved in bounded-fixes-linux-island-size-evidence. Includes SWC 74, rb support and the script rawHtml closing-boundary guard. Prior exact ceilings remain in git history. Metadata follow-up for #3716: Cargo.lock's digest was refreshed after review confirmed its only new edge is direct unicode-id-start, whose package, version, and checksum already existed transitively. No runtime package, size ceiling, or allowance changed. Historical run/source SHA and measured bytes remain unchanged; no remeasurement is claimed and fresh measurement remains pending. Reviewed input follow-up for #3721: the current lockfile differs from the reviewed base only by adding zudo-wind's direct unicode-id-start dependency edge; the already-locked package remains version 1.4.0 with the same checksum. This metadata update makes no fresh size-measurement claim; historical run IDs, source SHAs, measured totals, ceilings, and zero allowance are unchanged, and fresh Linux x64 and Darwin arm64 matrices remain pending. Reviewed input follow-up for #3731: the current Cargo.lock differs from the original warning-channel epic base only by adding the direct zfb-types edge to zfb-md-ast; no package versions or checksums changed. This metadata update does not claim fresh island-size measurement; historical runs/source SHAs, measured bytes, ceilings, and zero allowance remain unchanged, while the final integrated Linux x64 and Darwin arm64 workspace/packed matrices remain pending."
   }
 }
