@@ -3,22 +3,43 @@ use zudo_wind::{
     WindConfig,
 };
 
-const COLORS: [(&str, &str, &str); 5] = [
-    ("text-missing/70", "v1.text.color", "color"),
-    ("border-missing/20", "v1.border.color", "border-color"),
+const COLORS: [(&str, &str, &[&str], &str); 5] = [
+    ("text-missing/70", "v1.text.color", &["color"], "70"),
+    (
+        "border-missing/20",
+        "v1.border.color",
+        &[
+            "border-top-color",
+            "border-right-color",
+            "border-bottom-color",
+            "border-left-color",
+        ],
+        "20",
+    ),
     (
         "border-x-missing/20",
         "v1.border.color.x",
-        "border-left-color",
+        &["border-left-color", "border-right-color"],
+        "20",
     ),
-    ("outline-missing/20", "v1.outline.color", "outline-color"),
-    ("placeholder:text-missing/50", "v1.text.color", "color"),
+    (
+        "outline-missing/20",
+        "v1.outline.color",
+        &["outline-color"],
+        "20",
+    ),
+    (
+        "placeholder:text-missing/50",
+        "v1.text.color",
+        &["color"],
+        "50",
+    ),
 ];
 
 #[test]
 fn missing_color_tokens_with_opacity_report_the_token_on_shared_roots() {
     let config = WindConfig::default();
-    for (candidate, _, _) in COLORS {
+    for (candidate, _, _, _) in COLORS {
         let explanation = explain(candidate, &config);
         assert_eq!(
             explanation.outcome,
@@ -34,7 +55,7 @@ fn missing_color_tokens_with_opacity_report_the_token_on_shared_roots() {
             "{candidate}"
         );
         assert_eq!(
-            diagnostic.message, "unknown value or token missing",
+            diagnostic.message, format!("unknown value or token missing. If this is a genuine authored class, reserve its complete name with wind.authoredClasses: {{ \"{candidate}\": true }}; otherwise correct or declare the intended token. No generated utility CSS is emitted for this candidate"),
             "{candidate}"
         );
 
@@ -64,7 +85,7 @@ fn configured_color_tokens_with_opacity_resolve_on_shared_roots() {
         .tokens
         .colors
         .insert("missing".into(), "#888888".into());
-    for (candidate, entry, property) in COLORS {
+    for (candidate, entry, properties, opacity) in COLORS {
         let explanation = explain(candidate, &config);
         assert_eq!(
             explanation.outcome,
@@ -77,13 +98,18 @@ fn configured_color_tokens_with_opacity_resolve_on_shared_roots() {
             Some(entry),
             "{candidate}"
         );
-        assert!(
-            explanation.declarations.iter().any(|declaration| {
-                declaration.property == property
-                    && declaration.value.contains("var(--zw-color-missing)")
-            }),
-            "{candidate}: {:?}",
-            explanation.declarations
+        let value = format!("color-mix(in oklab, var(--zw-color-missing) {opacity}%, transparent)");
+        assert_eq!(
+            explanation
+                .declarations
+                .iter()
+                .map(|declaration| (declaration.property.as_str(), declaration.value.as_str()))
+                .collect::<Vec<_>>(),
+            properties
+                .iter()
+                .map(|property| (*property, value.as_str()))
+                .collect::<Vec<_>>(),
+            "{candidate}"
         );
     }
 }
@@ -99,11 +125,7 @@ fn unsupported_shapes_still_report_shape_errors() {
             "R14",
             "colour opacity must be an integer from 0 through 100",
         ),
-        (
-            "outline-missing/nope",
-            "R14",
-            "colour opacity must be an integer from 0 through 100",
-        ),
+        ("outline-missing/nope", "R14", "invalid slash modifier"),
     ] {
         let explanation = explain(candidate, &config);
         assert_eq!(
