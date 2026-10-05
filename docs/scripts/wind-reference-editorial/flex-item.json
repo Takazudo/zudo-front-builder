@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "family": "flex-item",
+  "lookup": [
+    {
+      "entry": "v1.flex-1",
+      "candidate": "flex-1",
+      "example": "flex-values"
+    },
+    {
+      "entry": "v1.flex-auto",
+      "candidate": "flex-auto",
+      "example": "flex-values"
+    },
+    {
+      "entry": "v1.flex-initial",
+      "candidate": "flex-initial",
+      "example": "flex-values"
+    },
+    {
+      "entry": "v1.flex-none",
+      "candidate": "flex-none",
+      "example": "flex-values"
+    },
+    {
+      "entry": "v1.grow",
+      "candidate": "grow",
+      "example": "flex-grow"
+    },
+    {
+      "entry": "v1.grow",
+      "candidate": "grow-0",
+      "example": "flex-grow"
+    },
+    {
+      "entry": "v1.grow",
+      "candidate": "grow-[2]",
+      "example": "flex-grow"
+    },
+    {
+      "entry": "v1.shrink",
+      "candidate": "shrink",
+      "example": "flex-shrink"
+    },
+    {
+      "entry": "v1.shrink",
+      "candidate": "shrink-0",
+      "example": "flex-shrink"
+    },
+    {
+      "entry": "v1.shrink",
+      "candidate": "shrink-[2]",
+      "example": "flex-shrink"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set a flex item's sizing behavior when the container has extra or insufficient room. The flex presets choose combinations of basis, growth and shrink; grow and shrink set those factors independently.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect.",
+      "examples": [
+        {
+          "id": "flex-values",
+          "title": "Compare flex presets",
+          "description": "The four presets share the available row differently because their flex-basis, flex-grow, and flex-shrink values differ."
+        },
+        {
+          "id": "flex-grow",
+          "title": "Distribute extra space",
+          "description": "grow expands an item at factor 1, grow-0 keeps the fixed item from expanding, and grow-[2] gets twice the free-space share of grow."
+        },
+        {
+          "id": "flex-shrink",
+          "title": "Control compression",
+          "description": "shrink items can compress below their starting widths; shrink-0 preserves its width. A factor of 2 gives the final item a larger share of the shrink."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "コンテナに余りや不足があるときの flex item のサイズ挙動を指定します。flex のプリセットは basis、grow、shrink の組み合わせを選び、grow と shrink はそれぞれの比率を個別に指定します。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。",
+      "examples": [
+        {
+          "id": "flex-values",
+          "title": "flex のプリセットを比較",
+          "description": "4つのプリセットは flex-basis、flex-grow、flex-shrink の値が異なるため、行の空間を別々に分配します。"
+        },
+        {
+          "id": "flex-grow",
+          "title": "余った幅を分ける",
+          "description": "grow は比率1で広がり、grow-0 は固定項目を広げません。grow-[2] は grow の2倍の余り幅を受け取ります。"
+        },
+        {
+          "id": "flex-shrink",
+          "title": "縮み方を制御",
+          "description": "shrink の項目は初期幅より縮み、shrink-0 は幅を保ちます。比率2の最後の項目は不足分をより多く引き受けます。"
+        }
+      ]
+    }
+  }
+}

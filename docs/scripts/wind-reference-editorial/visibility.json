@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "visibility",
+  "lookup": [
+    {
+      "entry": "v1.invisible",
+      "candidate": "invisible",
+      "example": "visibility-preserves-space"
+    },
+    {
+      "entry": "v1.visible",
+      "candidate": "visible",
+      "example": "visibility-vs-display"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use visibility to hide an element while preserving its place in layout, or make it visible again. Choose hidden from the display family when the box should be removed and following content should move into its place.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "This family has two exact class names and no custom values: visible sets visibility:visible and invisible sets visibility:hidden. The box keeps its layout space, while visibility:hidden content is generally omitted from the accessibility tree and cannot be interacted with. hidden is a separate display:none utility.",
+      "examples": [
+        {
+          "id": "visibility-preserves-space",
+          "title": "Hide while reserving space",
+          "description": "invisible hides the middle box but preserves its flex slot, so the final box stays at the same position."
+        },
+        {
+          "id": "visibility-vs-display",
+          "title": "Compare visibility and display",
+          "description": "invisible retains a slot; hidden removes its slot, and visible makes the last item render normally."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "visibility で場所を保ったまま要素を隠したり、再び表示したりします。箱をレイアウトから取り除き、後続の内容を詰めたい場合は display ファミリーの hidden を使います。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "このファミリーは任意値のない2つの固定クラスです。visible は visibility:visible、invisible は visibility:hidden を設定します。箱はレイアウト上の場所を保ちますが、visibility:hidden の内容は通常アクセシビリティツリーから外れ、操作できません。hidden は別の display:none ユーティリティです。",
+      "examples": [
+        {
+          "id": "visibility-preserves-space",
+          "title": "場所を残して隠す",
+          "description": "invisible は中央の箱を隠しますが flex の位置を保つため、最後の箱は同じ場所にとどまります。"
+        },
+        {
+          "id": "visibility-vs-display",
+          "title": "visibility と display を比較",
+          "description": "invisible は場所を残し、hidden は場所ごと取り除きます。最後の項目は visible で通常どおり表示します。"
+        }
+      ]
+    }
+  }
+}

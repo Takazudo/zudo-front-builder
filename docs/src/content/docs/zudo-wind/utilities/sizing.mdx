@@ -5,9 +5,201 @@ sidebar_position: 28
 generated: true
 ---
 
-Set width and height constraints using spacing, size tokens, fractions, and keywords.
+Use width, height and size for direct dimensions; use min- and max- constraints when a box should adapt within bounds. Pair w-full with max-w-* for fluid content that stops growing at a readable measure.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `size-12` | `width: 3rem; height: 3rem;` |
+| `h-24` | `height: 6rem;` |
+| `w-1/2` | `width: calc(100% * 1 / 2);` |
+| `max-w-64` | `max-width: 16rem;` |
+| `min-w-0` | `min-width: 0;` |
+| `min-h-24` | `min-height: 6rem;` |
+| `max-h-32` | `max-height: 8rem;` |
+| `size-card` | `width: var(--zw-size-card); height: var(--zw-size-card);` |
+| `max-w-reading` | `max-width: var(--zw-size-reading);` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Set a dimension
+
+size-12 sets both sides to 3rem; h-24 sets 6rem high, and w-1/2 takes half of the parent width.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-64 flex flex-col gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile size-12\"\u003esize-12 square\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile h-24 w-1/2\"\u003eh-24 and half width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile w-full\"\u003ew-full fills the frame\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-col {\n  flex-direction: column;\n}\n.size-12 {\n  width: 3rem;\n  height: 3rem;\n}\n.h-24 {\n  height: 6rem;\n}\n.w-1\\/2 {\n  width: calc(100% * 1 / 2);\n}\n.w-64 {\n  width: 16rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Set a dimension"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-col",
+        "gap-2",
+        "h-24",
+        "size-12",
+        "w-1/2",
+        "w-64",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Bound a flexible box
+
+min-w-0 permits a flex child to shrink, max-w-48 caps its width, min-h-24 sets a floor, and max-h-32 caps a taller h-48 box.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eMinimums keep a box from getting smaller; maximums cap it.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-64 flex flex-row gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile min-w-0 max-w-48 w-full\"\u003emin-w-0 allows this flex item to shrink; max-w-48 caps width\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile min-h-24\"\u003emin-h-24 keeps this box at least 6rem tall\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile h-48 max-h-32 overflow-hidden\"\u003eh-48 is capped by max-h-32\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile max-w-64\"\u003emax-w-64 sets a maximum width\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.flex-row {\n  flex-direction: row;\n}\n.h-48 {\n  height: 12rem;\n}\n.max-h-32 {\n  max-height: 8rem;\n}\n.max-w-48 {\n  max-width: 12rem;\n}\n.max-w-64 {\n  max-width: 16rem;\n}\n.min-h-24 {\n  min-height: 6rem;\n}\n.min-w-0 {\n  min-width: 0;\n}\n.w-64 {\n  width: 16rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n.overflow-hidden {\n  overflow: hidden;\n}\n"} title={"Bound a flexible box"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "flex-row",
+        "gap-2",
+        "h-48",
+        "max-h-32",
+        "max-w-48",
+        "max-w-64",
+        "min-h-24",
+        "min-w-0",
+        "overflow-hidden",
+        "w-64",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Use named and arbitrary values
+
+size-card resolves tokens.sizes.card to 5rem; w-[18rem] is a one-off value and max-w-reading resolves the separately configured size token.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cdiv class=\"wind-demo-frame w-full\"\u003e\n    \u003cdiv class=\"wind-demo-tile size-card\"\u003eNamed size token: card\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile w-[18rem] max-w-reading\"\u003eArbitrary width with a named maximum\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-size-card: 5rem;\n    --zw-size-reading: 20rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.size-card {\n  width: var(--zw-size-card);\n  height: var(--zw-size-card);\n}\n.max-w-reading {\n  max-width: var(--zw-size-reading);\n}\n.w-\\[18rem\\] {\n  width: 18rem;\n}\n.w-full {\n  width: 100%;\n}\n"} title={"Use named and arbitrary values"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "sizes": {
+        "card": "5rem",
+        "reading": "20rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "max-w-reading",
+        "size-card",
+        "w-[18rem]",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+The configured spacingUnit is 0.25rem, so numeric forms such as w-16 resolve to 4rem. Values may also use fractions like w-1/2, built-in keywords such as full, min, max, fit, auto, screen or dvh, named tokens from tokens.sizes or tokens.spacing, and arbitrary CSS values like w-[18rem]. size sets width and height together. This preview explicitly configures tokens.sizes.card and tokens.sizes.reading.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## size
 
@@ -307,3 +499,5 @@ Set width and height constraints using spacing, size tokens, fractions, and keyw
 | Example class | Expected declarations |
 | --- | --- |
 | `w-full` | `width: 100%` |
+
+</Details>

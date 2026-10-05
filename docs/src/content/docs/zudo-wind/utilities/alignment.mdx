@@ -5,9 +5,141 @@ sidebar_position: 27
 generated: true
 ---
 
-Align items, individual items, and grid content along supported axes.
+Use alignment utilities on a flex or grid container to position its children. items aligns along a flex container’s cross axis and the grid block axis; justify controls the main axis in flex layouts, place-items combines both grid item axes, and self overrides one item.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `items-center` | `align-items: center;` |
+| `justify-between` | `justify-content: space-between;` |
+| `self-end` | `align-self: flex-end;` |
+| `place-items-center` | `place-items: center;` |
+| `self-start` | `align-self: flex-start;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Align a flex row
+
+justify-between distributes items along the row; items-center aligns them across it, while self-end overrides one child's cross-axis position.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eOn a row, justify-content moves along the main axis and align-items moves across it.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame flex h-32 w-full items-center justify-between gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eStart\u003c/div\u003e\u003cdiv class=\"wind-demo-tile self-end\"\u003eSelf end\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eEnd\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.flex {\n  display: flex;\n}\n.items-center {\n  align-items: center;\n}\n.justify-between {\n  justify-content: space-between;\n}\n.self-end {\n  align-self: flex-end;\n}\n.h-32 {\n  height: 8rem;\n}\n.w-full {\n  width: 100%;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Align a flex row"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "gap-2",
+        "h-32",
+        "items-center",
+        "justify-between",
+        "self-end",
+        "w-full"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Align grid items on both axes
+
+place-items-center centers each item in its cell on both axes; self-start changes one item without moving the others.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eplace-items sets both axes for each grid item; self overrides one item.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame grid grid-cols-2 grid-rows-2 h-36 place-items-center gap-2\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile self-start\"\u003eSelf start\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eCentered\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.grid-rows-2 {\n  grid-template-rows: repeat(2,minmax(0,1fr));\n}\n.place-items-center {\n  place-items: center;\n}\n.self-start {\n  align-self: flex-start;\n}\n.h-36 {\n  height: 9rem;\n}\n.gap-2 {\n  column-gap: 0.5rem;\n  row-gap: 0.5rem;\n}\n"} title={"Align grid items on both axes"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "gap-2",
+        "grid",
+        "grid-cols-2",
+        "grid-rows-2",
+        "h-36",
+        "place-items-center",
+        "self-start"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+These roots accept a fixed keyword set. items and self support start, end, center, baseline, and stretch; justify supports start, end, center, between, around, and evenly; place-items supports start, end, center, and stretch. The container must provide the relevant layout context and available space.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## items
 
@@ -160,3 +292,5 @@ Align items, individual items, and grid content along supported axes.
 | Example class | Expected declarations |
 | --- | --- |
 | `self-center` | `align-self: center` |
+
+</Details>

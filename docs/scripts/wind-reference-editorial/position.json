@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "family": "position",
+  "lookup": [
+    {
+      "entry": "v1.static",
+      "candidate": "static",
+      "example": "position-static"
+    },
+    {
+      "entry": "v1.relative",
+      "candidate": "relative",
+      "example": "position-relative"
+    },
+    {
+      "entry": "v1.absolute",
+      "candidate": "absolute",
+      "example": "position-relative"
+    },
+    {
+      "entry": "v1.sticky",
+      "candidate": "sticky",
+      "example": "position-sticky"
+    },
+    {
+      "entry": "v1.fixed",
+      "candidate": "fixed",
+      "example": "position-fixed"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Use position to choose the reference for offsets and whether a box stays in normal flow. relative keeps its place and anchors absolute children; absolute leaves flow, fixed follows the preview viewport, and sticky sticks within a scrolling ancestor.",
+      "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
+      "customValues": "The five class names are exact and have no values. Offset utilities such as top-4 only move positioned boxes; static ignores offsets and cannot anchor absolute descendants. Sticky needs a non-auto inset threshold and a scrolling context. A transformed ancestor can also establish a containing block for fixed descendants in CSS.",
+      "examples": [
+        {
+          "id": "position-static",
+          "title": "Keep normal flow",
+          "description": "static leaves the box in document flow; the top-4 and left-4 offsets are intentionally ignored."
+        },
+        {
+          "id": "position-relative",
+          "title": "Position against a nearby frame",
+          "description": "relative stays in flow and establishes the reference box for its absolute child."
+        },
+        {
+          "id": "position-sticky",
+          "title": "Stick within a scroll area",
+          "description": "sticky follows normal flow until top-0 reaches the scrollport, then remains there while its containing block continues."
+        },
+        {
+          "id": "position-fixed",
+          "title": "Pin to the preview viewport",
+          "description": "fixed uses bottom-2 and right-2 against the iframe viewport rather than the scroll panel."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "position で、オフセットの基準と通常フローへの残り方を選びます。relative は場所を保ったまま absolute 子要素の基準になり、absolute はフローから外れます。fixed はプレビューのビューポートに固定され、sticky はスクロール領域の中で端に張り付きます。",
+      "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
+      "customValues": "5 個のクラス名は固定で、値は付きません。top-4 などのオフセットは位置指定された箱だけを動かし、static は無視して、absolute 子要素の基準にもなりません。sticky には auto 以外の inset 閾値とスクロール領域が必要です。CSS では transform の祖先が fixed 子要素の包含ブロックになることもあります。",
+      "examples": [
+        {
+          "id": "position-static",
+          "title": "通常フローに置く",
+          "description": "static は通常フローに残ります。top-4 と left-4 のオフセットは意図的に無視されます。"
+        },
+        {
+          "id": "position-relative",
+          "title": "近くの枠を基準にする",
+          "description": "relative はフロー上の場所を保ち、absolute 子要素の基準になります。"
+        },
+        {
+          "id": "position-sticky",
+          "title": "スクロール領域内で固定する",
+          "description": "sticky は top-0 がスクロール領域の上端に達すると張り付き、包含ブロックの範囲内でその状態を保ちます。"
+        },
+        {
+          "id": "position-fixed",
+          "title": "プレビューのビューポートに固定する",
+          "description": "fixed はスクロールパネルではなく iframe のビューポートを基準に bottom-2 と right-2 を使います。"
+        }
+      ]
+    }
+  }
+}

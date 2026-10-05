@@ -5,9 +5,209 @@ sidebar_position: 33
 generated: true
 ---
 
-Control content overflow and overscroll behavior on an element or axis.
+Choose whether oversized content is clipped, visible, or scrollable. Use x/y forms when each axis needs a different rule. Overscroll utilities decide whether a scroll gesture can chain from an inner scroller to its parent at an edge.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `overflow-auto` | `overflow: auto;` |
+| `overflow-hidden` | `overflow: hidden;` |
+| `overflow-clip` | `overflow: clip;` |
+| `overflow-visible` | `overflow: visible;` |
+| `overflow-scroll` | `overflow: scroll;` |
+| `overflow-x-auto` | `overflow-x: auto;` |
+| `overflow-x-scroll` | `overflow-x: scroll;` |
+| `overflow-y-scroll` | `overflow-y: scroll;` |
+| `overflow-y-auto` | `overflow-y: auto;` |
+| `overscroll-auto` | `overscroll-behavior: auto;` |
+| `overscroll-none` | `overscroll-behavior: none;` |
+| `overscroll-contain` | `overscroll-behavior: contain;` |
+| `overscroll-x-contain` | `overscroll-behavior-x: contain;` |
+| `overscroll-y-contain` | `overscroll-behavior-y: contain;` |
+| `overscroll-y-none` | `overscroll-behavior-y: none;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly starts from spec 1, reset "none", strict mode, spacingUnit "0.25rem", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Clip or reveal overflow
+
+hidden and clip cut off content outside the frame; visible allows the child to extend beyond it.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eCompare clipping, clipping at the edge, and allowing overflow to show.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-40 overflow-hidden\"\u003e\u003cdiv class=\"wind-demo-tile w-64\"\u003eoverflow-hidden clips this wide child\u003c/div\u003e\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame w-40 overflow-clip\"\u003e\u003cdiv class=\"wind-demo-tile w-64\"\u003eoverflow-clip also clips\u003c/div\u003e\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame w-40 overflow-visible\"\u003e\u003cdiv class=\"wind-demo-tile w-64\"\u003eoverflow-visible shows the wide child\u003c/div\u003e\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.w-40 {\n  width: 10rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.overflow-clip {\n  overflow: clip;\n}\n.overflow-hidden {\n  overflow: hidden;\n}\n.overflow-visible {\n  overflow: visible;\n}\n"} title={"Clip or reveal overflow"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "overflow-clip",
+        "overflow-hidden",
+        "overflow-visible",
+        "w-40",
+        "w-64"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Scroll on one or both axes
+
+overflow-x-auto scrolls the long row only when needed; overflow-x-scroll requests a horizontal scroll area, overflow-y-scroll always enables vertical scrolling, and overflow-scroll applies to both axes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eUse one axis when only one direction should scroll.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame w-48 overflow-auto overflow-x-auto\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-max\"\u003eHorizontal content: one long row continues past the frame\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame w-48 overflow-x-scroll\"\u003e\u003cdiv class=\"wind-demo-tile w-max\"\u003eAlways scrollable horizontal track\u003c/div\u003e\u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame h-24 w-48 overflow-auto overflow-y-scroll\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eFirst row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eSecond row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eThird row\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eFourth row\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame h-24 w-48 overflow-scroll\"\u003eScroll is enabled on both axes; content can continue here.\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.h-24 {\n  height: 6rem;\n}\n.w-48 {\n  width: 12rem;\n}\n.w-max {\n  width: max-content;\n}\n.overflow-auto {\n  overflow: auto;\n}\n.overflow-scroll {\n  overflow: scroll;\n}\n.overflow-x-auto {\n  overflow-x: auto;\n}\n.overflow-x-scroll {\n  overflow-x: scroll;\n}\n.overflow-y-scroll {\n  overflow-y: scroll;\n}\n"} title={"Scroll on one or both axes"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "h-24",
+        "overflow-auto",
+        "overflow-scroll",
+        "overflow-x-auto",
+        "overflow-x-scroll",
+        "overflow-y-scroll",
+        "w-48",
+        "w-max"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Control scroll chaining
+
+The inner vertical and horizontal scrollers use contain so gestures stop at their boundaries instead of moving the outer panel; none also disables boundary bounce where supported.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo\"\u003e\n  \u003cp class=\"wind-demo-note\"\u003eContain scroll gestures at an inner boundary so they do not chain to the outer panel.\u003c/p\u003e\n  \u003cdiv class=\"wind-demo-frame h-36 w-64 overflow-y-auto overscroll-auto overscroll-y-auto\"\u003e\n    \u003cdiv class=\"wind-demo-frame h-24 overflow-y-auto overscroll-contain overscroll-y-contain\"\u003e\n      \u003cdiv class=\"wind-demo-tile\"\u003eInner scroll area\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eMore inner content\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eEnd of inner area\u003c/div\u003e\n    \u003c/div\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eOuter content continues\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eOuter end\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame h-24 w-64 overflow-x-auto overscroll-x-contain\"\u003e\n    \u003cdiv class=\"wind-demo-tile w-max\"\u003eHorizontal boundary is contained\u003c/div\u003e\n  \u003c/div\u003e\n  \u003cdiv class=\"wind-demo-frame h-24 overflow-y-auto overscroll-none overscroll-y-none\"\u003e\n    \u003cdiv class=\"wind-demo-tile\"\u003eOverscroll none\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eMore content\u003c/div\u003e\u003cdiv class=\"wind-demo-tile\"\u003eEnd\u003c/div\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.45 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-frame {\n  border: 1px solid #9aaabd;\n  background: #f8fafc;\n  padding: .75rem;\n}\n\n.wind-demo-note {\n  color: #53677f;\n  font-size: .875rem;\n}\n\n.wind-demo-tile {\n  border: 1px solid #849bb3;\n  background: #dce8f2;\n  color: #203046;\n  padding: .5rem;\n  text-align: center;\n}\n.h-24 {\n  height: 6rem;\n}\n.h-36 {\n  height: 9rem;\n}\n.w-64 {\n  width: 16rem;\n}\n.w-max {\n  width: max-content;\n}\n.overscroll-auto {\n  overscroll-behavior: auto;\n}\n.overscroll-contain {\n  overscroll-behavior: contain;\n}\n.overscroll-none {\n  overscroll-behavior: none;\n}\n.overflow-x-auto {\n  overflow-x: auto;\n}\n.overflow-y-auto {\n  overflow-y: auto;\n}\n.overscroll-x-contain {\n  overscroll-behavior-x: contain;\n}\n.overscroll-y-auto {\n  overscroll-behavior-y: auto;\n}\n.overscroll-y-contain {\n  overscroll-behavior-y: contain;\n}\n.overscroll-y-none {\n  overscroll-behavior-y: none;\n}\n"} title={"Control scroll chaining"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-frame": true,
+      "wind-demo-note": true,
+      "wind-demo-tile": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "h-24",
+        "h-36",
+        "overflow-x-auto",
+        "overflow-y-auto",
+        "overscroll-auto",
+        "overscroll-contain",
+        "overscroll-none",
+        "overscroll-x-contain",
+        "overscroll-y-auto",
+        "overscroll-y-contain",
+        "overscroll-y-none",
+        "w-64",
+        "w-max"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }
+.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
+.wind-demo-note { color: #53677f; font-size: 0.875rem; }
+.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+## Custom and named values
+
+overflow accepts auto, hidden, clip, visible, and scroll; the x/y forms accept the same values. auto adds scrolling only when needed, while scroll requests a scroll container even when content fits. overscroll accepts auto, contain, or none on both or one axis. These utilities have fixed keywords and no token or arbitrary values.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## overflow
 
@@ -230,3 +430,5 @@ Control content overflow and overscroll behavior on an element or axis.
 | Example class | Expected declarations |
 | --- | --- |
 | `overscroll-y-auto` | `overscroll-behavior-y: auto` |
+
+</Details>
