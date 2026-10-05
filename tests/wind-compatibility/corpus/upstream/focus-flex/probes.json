@@ -1,0 +1,16 @@
+[
+  {
+    "name": "inactive",
+    "property": "display",
+    "wind": "inline-block",
+    "reference": "inline-block"
+  },
+  {
+    "name": "active",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex",
+    "focusSelector": "#target",
+    "keyboardFocus": true
+  }
+]

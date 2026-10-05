@@ -1,0 +1,7 @@
+{
+  "caseId": "group-focus-flex",
+  "reset": "none",
+  "explicitCandidates": [
+    "group-focus:flex"
+  ]
+}

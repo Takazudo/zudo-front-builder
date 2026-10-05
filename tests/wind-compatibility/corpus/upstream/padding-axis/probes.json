@@ -1,0 +1,28 @@
+[
+  {
+    "name": "horizontal-left",
+    "property": "padding-left",
+    "wind": "17px",
+    "reference": "17px"
+  },
+  {
+    "name": "horizontal-right",
+    "property": "padding-right",
+    "wind": "29px",
+    "reference": "29px"
+  },
+  {
+    "name": "vertical-left",
+    "property": "padding-left",
+    "wind": "17px",
+    "reference": "17px",
+    "writingMode": "vertical-rl"
+  },
+  {
+    "name": "vertical-bottom",
+    "property": "padding-bottom",
+    "wind": "17px",
+    "reference": "29px",
+    "writingMode": "vertical-rl"
+  }
+]

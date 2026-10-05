@@ -1,0 +1,8 @@
+[
+  {
+    "name": "base",
+    "property": "flex-direction",
+    "wind": "row",
+    "reference": "row"
+  }
+]

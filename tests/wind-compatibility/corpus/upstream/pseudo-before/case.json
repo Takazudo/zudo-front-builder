@@ -1,0 +1,7 @@
+{
+  "caseId": "pseudo-before",
+  "reset": "none",
+  "explicitCandidates": [
+    "before:flex"
+  ]
+}
