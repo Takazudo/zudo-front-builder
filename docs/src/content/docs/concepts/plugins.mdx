@@ -109,7 +109,7 @@ Plugin bundling invokes esbuild with `--target=node22`. As a consequence, `.ts` 
 
 ### JSX in `.tsx` plugin entries
 
-The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. With no tsconfig present, esbuild's default classic JSX transform applies. A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
+The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. When esbuild bundles a `.tsx` plugin entry without a tsconfig, it uses its default classic JSX transform. Page, component, and island JSX instead uses zfb's fixed automatic transform; see [Configure JSX](../zudo-react/overview.mdx). A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
 
 ### Bundling errors
 

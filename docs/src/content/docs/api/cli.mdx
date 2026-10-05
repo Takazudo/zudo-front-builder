@@ -472,6 +472,8 @@ This command checks TypeScript, collection schemas, and SSR routes, and reports 
 1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Catches type errors in `zfb.config.ts`, collection schemas, and `src/`.
 2. **Collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build itself does not validate frontmatter, so this is the enforcement gate.
 
+The TypeScript step uses the project's `tsconfig.json`, so a full `zfb check` requires one. Use `--skip-tsc` to run the other checks without it.
+
 Either failure mode exits with a non-zero code.
 
 The ZB005 advisory scans authored `.tsx` and `.jsx` files throughout the project, including components outside `pages/`; it excludes dependencies, generated output, scratch directories, and symlinks. It runs with `--skip-tsc` and never fails the check by itself. The SSR route-contract check also runs where routes exist: strong findings fail, while heuristic findings warn.

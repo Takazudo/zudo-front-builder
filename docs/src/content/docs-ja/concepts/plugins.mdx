@@ -109,7 +109,7 @@ zfb <level>: ZB010 plugin:<name>: <message>
 
 ### `.tsx` プラグイン entry における JSX
 
-プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig が存在しない場合は、esbuild のデフォルトである classic JSX transform が適用されます。zfb が所有する JSX ランタイムを使う `.tsx` プラグイン entry は、自身の tsconfig に `"jsx": "react-jsx"` と `"jsxImportSource": "@takazudo/zfb/zudo-react"` を設定するか、互換性のある factory を明示的に import してください。
+プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig なしで esbuild が `.tsx` プラグイン entry をバンドルする場合、デフォルトの classic JSX transform を使います。ページ、コンポーネント、アイランドの JSX は zfb 固定の自動変換を使います。[JSX を設定する](../zudo-react/overview.mdx)を参照してください。zfb が所有する JSX ランタイムを使う `.tsx` プラグイン entry は、自身の tsconfig に `"jsx": "react-jsx"` と `"jsxImportSource": "@takazudo/zfb/zudo-react"` を設定するか、互換性のある factory を明示的に import してください。
 
 ### バンドルエラー
 
