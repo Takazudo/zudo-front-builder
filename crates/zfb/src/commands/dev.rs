@@ -4806,6 +4806,8 @@ fn build_dev_css_and_publish_mirror_roots(
     raw_import_invalidation.replace_css_package_roots(
         crate::commands::css_source_plan::declared_package_root_watch_paths(project_root, cfg),
     );
+    let project_source_roots =
+        crate::commands::css_source_plan::declared_project_root_paths(project_root, cfg);
     let pass = crate::commands::build::build_dev_css_payload_with_index(
         project_root,
         dev_assets_root,
@@ -4813,7 +4815,11 @@ fn build_dev_css_and_publish_mirror_roots(
         package_route_entrypoints,
         plugin_alias_entries,
         plugin_virtual_modules,
-        &|roots| raw_import_invalidation.replace_css_mirror_roots(roots.to_vec()),
+        &|roots| {
+            let mut watched_roots = roots.to_vec();
+            watched_roots.extend(project_source_roots.iter().cloned());
+            raw_import_invalidation.replace_css_mirror_roots(watched_roots);
+        },
         zfb_written_roots,
         wind_session_index,
         changes,
@@ -21384,6 +21390,42 @@ mod tests {
         assert_lookup(&session, "/new", "/new");
         assert_lookup(&session, "/new/", "/new");
         assert_lookup(&session, "/new/index.html", "/new");
+    }
+
+    #[test]
+    fn dev_css_publishes_declared_project_root_for_recursive_watch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let widgets = project.join("widgets");
+        std::fs::create_dir_all(&widgets).unwrap();
+        let mut cfg = config::Config::default();
+        let mut wind = config::WindConfig::default();
+        wind.source_declarations
+            .push(config::WindSourceDeclaration {
+                source_package: None,
+                sources: serde_json::from_value(serde_json::json!({ "roots": ["./widgets"] }))
+                    .unwrap(),
+            });
+        cfg.wind = Some(config::WindSetting::Enabled(Box::new(wind)));
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        let _ = build_dev_css_and_publish_mirror_roots(
+            project,
+            &project.join(".zfb-dev-assets"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &invalidation,
+            &zfb_types::ScratchLayout::default_for(project).written_roots(),
+            &mut None,
+            None,
+        );
+        let policy =
+            zfb_build::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy
+            .css_mirror_root_paths()
+            .contains(&widgets.canonicalize().unwrap()));
+        assert!(policy.is_under_css_mirror_root(&widgets.join("card.tsx")));
     }
 
     /// Issue #1802 (epic #1799 gap (a)): the dev boot CSS pass must publish
