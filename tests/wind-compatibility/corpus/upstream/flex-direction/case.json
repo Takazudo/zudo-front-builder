@@ -1,8 +1,5 @@
 {
   "caseId": "flex-direction",
   "reset": "none",
-  "explicitCandidates": [
-    "flex",
-    "flex-row"
-  ]
+  "explicitCandidates": ["flex", "flex-row"]
 }

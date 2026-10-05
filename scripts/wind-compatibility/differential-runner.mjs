@@ -6,7 +6,12 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { gunzipSync } from "node:zlib";
-import { browserIdentity, observePair, observeIsolated, requiredMatrixMember } from "./browser-adapter.mjs";
+import {
+  browserIdentity,
+  observePair,
+  observeIsolated,
+  requiredMatrixMember,
+} from "./browser-adapter.mjs";
 import {
   artifactIdentity,
   classify,

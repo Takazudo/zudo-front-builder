@@ -1,7 +1,5 @@
 {
   "caseId": "hover-flex",
   "reset": "none",
-  "explicitCandidates": [
-    "hover:flex"
-  ]
+  "explicitCandidates": ["hover:flex"]
 }

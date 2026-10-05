@@ -1,7 +1,5 @@
 {
   "caseId": "peer-focus-flex",
   "reset": "none",
-  "explicitCandidates": [
-    "peer-focus:flex"
-  ]
+  "explicitCandidates": ["peer-focus:flex"]
 }

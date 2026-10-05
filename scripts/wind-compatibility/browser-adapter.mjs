@@ -83,9 +83,13 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
     const cssResponse = page.waitForResponse((response) => response.url() === cssUrl);
     await page.goto(documentUrl, { waitUntil: "load" });
     for (const [name, value] of Object.entries(probe.targetAttributes ?? {}))
-      await page.locator("#target").evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
+      await page
+        .locator("#target")
+        .evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
     for (const [name, value] of Object.entries(probe.ancestorAttributes ?? {}))
-      await page.locator("#ancestor").evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
+      await page
+        .locator("#ancestor")
+        .evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
     const response = await cssResponse;
     const served = { status: response.status(), body: await response.body() };
     const targetClasses = await page.locator("#target").evaluate((el) => [...el.classList]);
@@ -95,7 +99,10 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
     if (probe.hover) await page.locator(probe.hoverSelector ?? "#target").hover();
     if (probe.keyboardFocus) {
       await page.keyboard.press("Tab");
-      if (probe.focusSelector && !(await page.locator(probe.focusSelector).evaluate((el) => el === document.activeElement)))
+      if (
+        probe.focusSelector &&
+        !(await page.locator(probe.focusSelector).evaluate((el) => el === document.activeElement))
+      )
         throw Error(`Keyboard focus missed ${probe.focusSelector}`);
     } else if (probe.focusSelector) await page.locator(probe.focusSelector).focus();
     const observation = await page.locator(selector).evaluate(
@@ -193,8 +200,11 @@ export async function browserIdentity(browser, executable) {
   if (!browserEntry) throw Error(`Playwright ${browserName} manifest entry absent`);
   let releaseText = "";
   if (process.platform === "linux") {
-    try { releaseText = await readFile("/etc/os-release", "utf8"); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
+    try {
+      releaseText = await readFile("/etc/os-release", "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
   }
   const host = hostPlatformIdentity(process.platform, process.arch, releaseText);
   return {
@@ -225,36 +235,50 @@ export async function browserIdentity(browser, executable) {
 
 export function hostPlatformIdentity(platform, architecture, releaseText = "") {
   if (platform !== "linux") return { hostPlatform: null, linuxDistribution: null };
-  const fields = Object.fromEntries(releaseText.split(/\r?\n/).flatMap((line) => {
-    const match = /^([A-Z_]+)=(.*)$/.exec(line);
-    if (!match) return [];
-    let value = match[2];
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    return [[match[1], value]];
-  }));
+  const fields = Object.fromEntries(
+    releaseText.split(/\r?\n/).flatMap((line) => {
+      const match = /^([A-Z_]+)=(.*)$/.exec(line);
+      if (!match) return [];
+      let value = match[2];
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      )
+        value = value.slice(1, -1);
+      return [[match[1], value]];
+    }),
+  );
   const id = fields.ID?.toLowerCase();
   const versionId = fields.VERSION_ID;
   const valid = /^[a-z0-9.-]+$/;
   return {
-    hostPlatform: id && versionId && valid.test(id) && valid.test(versionId) && valid.test(architecture)
-      ? `${id}${versionId}-${architecture}` : null,
+    hostPlatform:
+      id && versionId && valid.test(id) && valid.test(versionId) && valid.test(architecture)
+        ? `${id}${versionId}-${architecture}`
+        : null,
     linuxDistribution: id && versionId ? { id, versionId } : null,
   };
 }
 
 export function requiredMatrixMember(profile, environment) {
   const policy = profile.browserPolicy;
-  if (environment.playwrightVersion !== policy.playwrightTestVersion ||
-      environment.playwrightCoreVersion !== policy.playwrightCoreVersion ||
-      environment.browserManifestSha256 !== policy.browserManifest.sha256 ||
-      !environment.hostPlatform || !environment.linuxDistribution ||
-      environment.hostPlatform !== `${environment.linuxDistribution.id}${environment.linuxDistribution.versionId}-${environment.architecture}`) return false;
-  return policy.requiredMatrix.some((member) =>
-    member.os === environment.platform &&
-    member.hostPlatform === environment.hostPlatform &&
-    member.browser === environment.name &&
-    member.revision === environment.revision &&
-    member.browserVersion === environment.version &&
-    member.browserVersion === environment.manifestBrowserVersion);
+  if (
+    environment.playwrightVersion !== policy.playwrightTestVersion ||
+    environment.playwrightCoreVersion !== policy.playwrightCoreVersion ||
+    environment.browserManifestSha256 !== policy.browserManifest.sha256 ||
+    !environment.hostPlatform ||
+    !environment.linuxDistribution ||
+    environment.hostPlatform !==
+      `${environment.linuxDistribution.id}${environment.linuxDistribution.versionId}-${environment.architecture}`
+  )
+    return false;
+  return policy.requiredMatrix.some(
+    (member) =>
+      member.os === environment.platform &&
+      member.hostPlatform === environment.hostPlatform &&
+      member.browser === environment.name &&
+      member.revision === environment.revision &&
+      member.browserVersion === environment.version &&
+      member.browserVersion === environment.manifestBrowserVersion,
+  );
 }

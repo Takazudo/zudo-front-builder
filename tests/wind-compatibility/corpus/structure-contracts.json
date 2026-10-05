@@ -8,12 +8,7 @@
           "candidate": "flex",
           "selector": ".flex",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -26,12 +21,7 @@
           "candidate": "grid",
           "selector": ".grid",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "grid"
-            ]
-          ]
+          "writes": [["display", "grid"]]
         }
       ],
       "tokens": {},
@@ -44,23 +34,13 @@
           "candidate": "flex",
           "selector": ".flex",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         },
         {
           "candidate": "flex-row",
           "selector": ".flex-row",
           "media": null,
-          "writes": [
-            [
-              "flex-direction",
-              "row"
-            ]
-          ]
+          "writes": [["flex-direction", "row"]]
         }
       ],
       "tokens": {},
@@ -73,12 +53,7 @@
           "candidate": "hover:flex",
           "selector": ".hover\\:flex:hover",
           "media": "(hover: hover)",
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -91,12 +66,7 @@
           "candidate": "focus:flex",
           "selector": ".focus\\:flex:focus",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -109,12 +79,7 @@
           "candidate": "group-focus:flex",
           "selector": ":where(.group:focus) .group-focus\\:flex",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -127,12 +92,7 @@
           "candidate": "peer-focus:flex",
           "selector": ":where(.peer:focus) ~ .peer-focus\\:flex",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -150,22 +110,10 @@
           "selector": ".p-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "padding-top",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-right",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-bottom",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["padding-top", "var(--zw-spacing-hsp-sm)"],
+            ["padding-right", "var(--zw-spacing-hsp-sm)"],
+            ["padding-bottom", "var(--zw-spacing-hsp-sm)"],
+            ["padding-left", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
@@ -173,26 +121,15 @@
           "selector": ".px-vsp-md",
           "media": null,
           "writes": [
-            [
-              "padding-left",
-              "var(--zw-spacing-vsp-md)"
-            ],
-            [
-              "padding-right",
-              "var(--zw-spacing-vsp-md)"
-            ]
+            ["padding-left", "var(--zw-spacing-vsp-md)"],
+            ["padding-right", "var(--zw-spacing-vsp-md)"]
           ]
         },
         {
           "candidate": "pl-hsp-sm",
           "selector": ".pl-hsp-sm",
           "media": null,
-          "writes": [
-            [
-              "padding-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
-          ]
+          "writes": [["padding-left", "var(--zw-spacing-hsp-sm)"]]
         }
       ],
       "registrations": {},
@@ -209,22 +146,10 @@
           "selector": ".m-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "margin-top",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "margin-right",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "margin-bottom",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "margin-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["margin-top", "var(--zw-spacing-hsp-sm)"],
+            ["margin-right", "var(--zw-spacing-hsp-sm)"],
+            ["margin-bottom", "var(--zw-spacing-hsp-sm)"],
+            ["margin-left", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
@@ -232,26 +157,15 @@
           "selector": ".mx-vsp-md",
           "media": null,
           "writes": [
-            [
-              "margin-left",
-              "var(--zw-spacing-vsp-md)"
-            ],
-            [
-              "margin-right",
-              "var(--zw-spacing-vsp-md)"
-            ]
+            ["margin-left", "var(--zw-spacing-vsp-md)"],
+            ["margin-right", "var(--zw-spacing-vsp-md)"]
           ]
         },
         {
           "candidate": "ml-hsp-sm",
           "selector": ".ml-hsp-sm",
           "media": null,
-          "writes": [
-            [
-              "margin-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
-          ]
+          "writes": [["margin-left", "var(--zw-spacing-hsp-sm)"]]
         }
       ],
       "registrations": {},
@@ -263,12 +177,7 @@
           "candidate": "dark:flex",
           "selector": ".dark\\:flex:where([data-theme=\"dark\"], [data-theme=\"dark\"] *)",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -281,12 +190,7 @@
           "candidate": "before:flex",
           "selector": ".before\\:flex::before",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         }
       ],
       "tokens": {},
@@ -303,14 +207,8 @@
           "selector": ".translate-x-4",
           "media": null,
           "writes": [
-            [
-              "--zw-translate-x",
-              "1rem"
-            ],
-            [
-              "translate",
-              "var(--zw-translate-x) var(--zw-translate-y)"
-            ]
+            ["--zw-translate-x", "1rem"],
+            ["translate", "var(--zw-translate-x) var(--zw-translate-y)"]
           ]
         },
         {
@@ -318,14 +216,8 @@
           "selector": ".translate-y-2",
           "media": null,
           "writes": [
-            [
-              "--zw-translate-y",
-              ".5rem"
-            ],
-            [
-              "translate",
-              "var(--zw-translate-x) var(--zw-translate-y)"
-            ]
+            ["--zw-translate-y", ".5rem"],
+            ["translate", "var(--zw-translate-x) var(--zw-translate-y)"]
           ]
         }
       ],
@@ -352,12 +244,7 @@
           "candidate": "space-x-4",
           "selector": ".space-x-4 > :not([hidden]) ~ :not([hidden])",
           "media": null,
-          "writes": [
-            [
-              "margin-left",
-              "1rem"
-            ]
-          ]
+          "writes": [["margin-left", "1rem"]]
         }
       ],
       "registrations": {},
@@ -369,23 +256,13 @@
           "candidate": "flex",
           "selector": ".flex",
           "media": null,
-          "writes": [
-            [
-              "display",
-              "flex"
-            ]
-          ]
+          "writes": [["display", "flex"]]
         },
         {
           "candidate": "flex-row",
           "selector": ".flex-row",
           "media": null,
-          "writes": [
-            [
-              "flex-direction",
-              "row"
-            ]
-          ]
+          "writes": [["flex-direction", "row"]]
         }
       ],
       "tokens": {},
@@ -398,12 +275,7 @@
           "candidate": "w-[0px]",
           "selector": ".w-\\[0px\\]",
           "media": null,
-          "writes": [
-            [
-              "width",
-              "0px"
-            ]
-          ]
+          "writes": [["width", "0px"]]
         }
       ],
       "tokens": {},
@@ -416,12 +288,7 @@
           "candidate": "w-[1px]",
           "selector": ".w-\\[1px\\]",
           "media": null,
-          "writes": [
-            [
-              "width",
-              "1px"
-            ]
-          ]
+          "writes": [["width", "1px"]]
         }
       ],
       "tokens": {},
@@ -434,12 +301,7 @@
           "candidate": "w-[17px]",
           "selector": ".w-\\[17px\\]",
           "media": null,
-          "writes": [
-            [
-              "width",
-              "17px"
-            ]
-          ]
+          "writes": [["width", "17px"]]
         }
       ],
       "tokens": {},
@@ -461,48 +323,25 @@
           "selector": ".p-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "padding-top",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-right",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-bottom",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["padding-top", "var(--zw-spacing-hsp-sm)"],
+            ["padding-right", "var(--zw-spacing-hsp-sm)"],
+            ["padding-bottom", "var(--zw-spacing-hsp-sm)"],
+            ["padding-left", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
           "candidate": "pt-vsp-md",
           "selector": ".pt-vsp-md",
           "media": null,
-          "writes": [
-            [
-              "padding-top",
-              "var(--zw-spacing-vsp-md)"
-            ]
-          ]
+          "writes": [["padding-top", "var(--zw-spacing-vsp-md)"]]
         },
         {
           "candidate": "mx-hsp-sm",
           "selector": ".mx-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "margin-left",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "margin-right",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["margin-left", "var(--zw-spacing-hsp-sm)"],
+            ["margin-right", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
@@ -510,37 +349,21 @@
           "selector": ".my-vsp-md",
           "media": null,
           "writes": [
-            [
-              "margin-top",
-              "var(--zw-spacing-vsp-md)"
-            ],
-            [
-              "margin-bottom",
-              "var(--zw-spacing-vsp-md)"
-            ]
+            ["margin-top", "var(--zw-spacing-vsp-md)"],
+            ["margin-bottom", "var(--zw-spacing-vsp-md)"]
           ]
         },
         {
           "candidate": "text-surface",
           "selector": ".text-surface",
           "media": null,
-          "writes": [
-            [
-              "color",
-              "var(--zw-color-surface)"
-            ]
-          ]
+          "writes": [["color", "var(--zw-color-surface)"]]
         },
         {
           "candidate": "bg-surface",
           "selector": ".bg-surface",
           "media": null,
-          "writes": [
-            [
-              "background-color",
-              "var(--zw-color-surface)"
-            ]
-          ]
+          "writes": [["background-color", "var(--zw-color-surface)"]]
         }
       ],
       "empty": false,
@@ -559,48 +382,25 @@
           "selector": ".p-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "padding-top",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-right",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-bottom",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "padding-left",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["padding-top", "var(--zw-spacing-hsp-sm)"],
+            ["padding-right", "var(--zw-spacing-hsp-sm)"],
+            ["padding-bottom", "var(--zw-spacing-hsp-sm)"],
+            ["padding-left", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
           "candidate": "pt-vsp-md",
           "selector": ".pt-vsp-md",
           "media": null,
-          "writes": [
-            [
-              "padding-top",
-              "var(--zw-spacing-vsp-md)"
-            ]
-          ]
+          "writes": [["padding-top", "var(--zw-spacing-vsp-md)"]]
         },
         {
           "candidate": "mx-hsp-sm",
           "selector": ".mx-hsp-sm",
           "media": null,
           "writes": [
-            [
-              "margin-left",
-              "var(--zw-spacing-hsp-sm)"
-            ],
-            [
-              "margin-right",
-              "var(--zw-spacing-hsp-sm)"
-            ]
+            ["margin-left", "var(--zw-spacing-hsp-sm)"],
+            ["margin-right", "var(--zw-spacing-hsp-sm)"]
           ]
         },
         {
@@ -608,37 +408,21 @@
           "selector": ".my-vsp-md",
           "media": null,
           "writes": [
-            [
-              "margin-top",
-              "var(--zw-spacing-vsp-md)"
-            ],
-            [
-              "margin-bottom",
-              "var(--zw-spacing-vsp-md)"
-            ]
+            ["margin-top", "var(--zw-spacing-vsp-md)"],
+            ["margin-bottom", "var(--zw-spacing-vsp-md)"]
           ]
         },
         {
           "candidate": "text-surface",
           "selector": ".text-surface",
           "media": null,
-          "writes": [
-            [
-              "color",
-              "var(--zw-color-surface)"
-            ]
-          ]
+          "writes": [["color", "var(--zw-color-surface)"]]
         },
         {
           "candidate": "bg-surface",
           "selector": ".bg-surface",
           "media": null,
-          "writes": [
-            [
-              "background-color",
-              "var(--zw-color-surface)"
-            ]
-          ]
+          "writes": [["background-color", "var(--zw-color-surface)"]]
         }
       ],
       "empty": false,
@@ -661,12 +445,7 @@
           "candidate": "bg-gray-500",
           "selector": ".bg-gray-500",
           "media": null,
-          "writes": [
-            [
-              "background-color",
-              "var(--zw-color-gray-500)"
-            ]
-          ]
+          "writes": [["background-color", "var(--zw-color-gray-500)"]]
         }
       ],
       "empty": false,

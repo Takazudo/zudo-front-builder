@@ -58,15 +58,9 @@
       "upstreamTest": "display",
       "originalInput": "'flex'",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "flex"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["flex"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "display-grid",
@@ -75,15 +69,9 @@
       "upstreamTest": "display",
       "originalInput": "'grid'",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "grid"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["grid"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "flex-direction",
@@ -92,16 +80,9 @@
       "upstreamTest": "flex-direction",
       "originalInput": "['flex-row', 'flex-row-reverse', 'flex-col', 'flex-col-reverse']",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "flex",
-        "flex-row"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["flex", "flex-row"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "hover-flex",
@@ -110,17 +91,9 @@
       "upstreamTest": "hover",
       "originalInput": "['hover:flex', 'group-hover:flex', 'peer-hover:flex']",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "hover:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["hover:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "focus-flex",
@@ -129,17 +102,9 @@
       "upstreamTest": "focus",
       "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "focus:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "group-focus-flex",
@@ -148,17 +113,9 @@
       "upstreamTest": "focus",
       "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "group-focus:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["group-focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "peer-focus-flex",
@@ -167,17 +124,9 @@
       "upstreamTest": "focus",
       "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
       "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
-      "candidates": [
-        "peer-focus:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["peer-focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "padding-axis",
@@ -186,20 +135,9 @@
       "upstreamTest": "p",
       "originalInput": "['p-1', 'p-4', 'p-99', 'p-big', 'p-[4px]']",
       "adaptation": "Retain the upstream margin or padding ordering input and replace stock spacing with explicit 17px/29px semantic tokens. The vertical writing-mode expectations preserve Wind physical and upstream logical axes.",
-      "candidates": [
-        "p-hsp-sm",
-        "px-vsp-md",
-        "pl-hsp-sm"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract",
-        "physical-logical-axis-composition"
-      ]
+      "candidates": ["p-hsp-sm", "px-vsp-md", "pl-hsp-sm"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "physical-logical-axis-composition"]
     },
     {
       "id": "margin-axis",
@@ -208,20 +146,9 @@
       "upstreamTest": "margin sort order",
       "originalInput": "['mb-4', 'me-4', 'mx-4', 'ml-4', 'ms-4', 'm-4', 'mr-4', 'mt-4', 'my-4']",
       "adaptation": "Retain the upstream margin or padding ordering input and replace stock spacing with explicit 17px/29px semantic tokens. The vertical writing-mode expectations preserve Wind physical and upstream logical axes.",
-      "candidates": [
-        "m-hsp-sm",
-        "mx-vsp-md",
-        "ml-hsp-sm"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract",
-        "physical-logical-axis-composition"
-      ]
+      "candidates": ["m-hsp-sm", "mx-vsp-md", "ml-hsp-sm"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "physical-logical-axis-composition"]
     },
     {
       "id": "dark-flex",
@@ -230,17 +157,9 @@
       "upstreamTest": "dark",
       "originalInput": "['dark:flex']",
       "adaptation": "Replace upstream media dark mode with an explicit project-owned data-theme=dark self/ancestor selector on both compiler sides; test inactive, self and ancestor states.",
-      "candidates": [
-        "dark:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["dark:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "pseudo-before",
@@ -249,18 +168,9 @@
       "upstreamTest": "before",
       "originalInput": "['before:flex']",
       "adaptation": "Keep the upstream pseudo variant and test with and without authored content; record Wind/reference content behavior separately.",
-      "candidates": [
-        "before:flex"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract",
-        "pseudo-default-content"
-      ]
+      "candidates": ["before:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "pseudo-default-content"]
     },
     {
       "id": "translate-composed",
@@ -269,18 +179,9 @@
       "upstreamTest": "translate-x",
       "originalInput": "['translate-x-full', '-translate-x-full', 'translate-x-px', '-translate-x-[var(--value)]']",
       "adaptation": "Use a separate explicit numeric spacing profile and compose x/y translations; geometry checks both axes.",
-      "candidates": [
-        "translate-x-4",
-        "translate-y-2"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["translate-x-4", "translate-y-2"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "space-hidden-children",
@@ -289,18 +190,9 @@
       "upstreamTest": "space-x",
       "originalInput": "'space-x-4'",
       "adaptation": "Keep the upstream child-spacing candidate and add hidden attribute, display:none and visible children; candidate selection and browser layout are separate observations.",
-      "candidates": [
-        "space-x-4"
-      ],
-      "engines": [
-        "chromium",
-        "firefox",
-        "webkit"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract",
-        "space-child-selection-axis"
-      ]
+      "candidates": ["space-x-4"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "space-child-selection-axis"]
     },
     {
       "id": "duplicate-reordered",
@@ -309,17 +201,9 @@
       "upstreamTest": "flex-direction",
       "originalInput": "['flex-row', 'flex-row-reverse', 'flex-col', 'flex-col-reverse']",
       "adaptation": "Repeat and reverse candidate input while preserving the upstream flex-direction utility; compare exact emitted structure and computed outcome.",
-      "candidates": [
-        "flex",
-        "flex-row",
-        "flex"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["flex", "flex-row", "flex"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "arbitrary-width-zero",
@@ -328,15 +212,9 @@
       "upstreamTest": "width",
       "originalInput": "'w-[4px]'",
       "adaptation": "Seeded synthetic boundary specimen 0px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
-      "candidates": [
-        "w-[0px]"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["w-[0px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "arbitrary-width-one",
@@ -345,15 +223,9 @@
       "upstreamTest": "width",
       "originalInput": "'w-[4px]'",
       "adaptation": "Seeded synthetic boundary specimen 1px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
-      "candidates": [
-        "w-[1px]"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["w-[1px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     },
     {
       "id": "arbitrary-width-seventeen",
@@ -362,15 +234,9 @@
       "upstreamTest": "width",
       "originalInput": "'w-[4px]'",
       "adaptation": "Seeded synthetic boundary specimen 17px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
-      "candidates": [
-        "w-[17px]"
-      ],
-      "engines": [
-        "chromium"
-      ],
-      "reviewedDifferenceIds": [
-        "exact-tree-contract"
-      ]
+      "candidates": ["w-[17px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     }
   ],
   "counts": {
@@ -393,46 +259,32 @@
     {
       "id": "block",
       "disposition": "equivalent-shared",
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
     },
     {
       "id": "hidden",
       "disposition": "equivalent-shared",
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
     },
     {
       "id": "inline-flex",
       "disposition": "equivalent-shared",
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
     },
     {
       "id": "mx-auto",
       "disposition": "intentional-difference",
-      "reviewedDifferenceIds": [
-        "physical-logical-margin",
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"]
     },
     {
       "id": "grid-cols-2",
       "disposition": "equivalent-shared",
-      "reviewedDifferenceIds": [
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
     },
     {
       "id": "p-0-empty",
       "disposition": "intentional-difference",
-      "reviewedDifferenceIds": [
-        "zero-without-theme",
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["zero-without-theme", "wind-layer-order-prelude"]
     },
     {
       "id": "p-0-mapped",
@@ -455,24 +307,17 @@
     {
       "id": "named-color",
       "disposition": "equivalent-mapped",
-      "reviewedDifferenceIds": [
-        "named-token-representation",
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"]
     },
     {
       "id": "unconfigured-p-4",
       "disposition": "intentional-difference",
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ]
+      "reviewedDifferenceIds": ["missing-token-diagnostics"]
     },
     {
       "id": "undeclared-palette",
       "disposition": "intentional-difference",
-      "reviewedDifferenceIds": [
-        "missing-token-diagnostics"
-      ]
+      "reviewedDifferenceIds": ["missing-token-diagnostics"]
     },
     {
       "id": "configured-p-4",
@@ -491,18 +336,12 @@
     {
       "id": "hover-block",
       "disposition": "equivalent-shared",
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"]
     },
     {
       "id": "breakpoint-block",
       "disposition": "equivalent-mapped",
-      "reviewedDifferenceIds": [
-        "variant-nesting",
-        "wind-layer-order-prelude"
-      ]
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"]
     }
   ],
   "compositionObligations": {
@@ -526,10 +365,7 @@
       "upstream/hover-flex/active",
       "upstream/hover-flex/no-hover-capability"
     ],
-    "keyboard-focus": [
-      "upstream/focus-flex/inactive",
-      "upstream/focus-flex/active"
-    ],
+    "keyboard-focus": ["upstream/focus-flex/inactive", "upstream/focus-flex/active"],
     "group-peer-relationships": [
       "upstream/group-focus-flex/inactive",
       "upstream/group-focus-flex/matching",
@@ -547,10 +383,7 @@
       "upstream/pseudo-before/without-content",
       "upstream/pseudo-before/with-authored-content"
     ],
-    "translation-composition": [
-      "upstream/translate-composed/x",
-      "upstream/translate-composed/y"
-    ],
+    "translation-composition": ["upstream/translate-composed/x", "upstream/translate-composed/y"],
     "hidden-versus-display-none": [
       "upstream/space-hidden-children/hidden-attribute-left",
       "upstream/space-hidden-children/hidden-attribute-right",
@@ -608,26 +441,19 @@
     },
     {
       "id": "physical-logical-axis-composition",
-      "caseIds": [
-        "padding-axis",
-        "margin-axis"
-      ],
+      "caseIds": ["padding-axis", "margin-axis"],
       "reason": "Wind physical x/side declarations and Tailwind logical inline declarations resolve to different physical sides in vertical writing mode; exact expected values are stored per probe.",
       "reviewedCount": 2
     },
     {
       "id": "pseudo-default-content",
-      "caseIds": [
-        "pseudo-before"
-      ],
+      "caseIds": ["pseudo-before"],
       "reason": "Tailwind before variant synthesizes empty content; Wind before variant only selects the pseudo-element and requires authored content to create its box.",
       "reviewedCount": 1
     },
     {
       "id": "space-child-selection-axis",
-      "caseIds": [
-        "space-hidden-children"
-      ],
+      "caseIds": ["space-hidden-children"],
       "reason": "Wind spaces later non-hidden siblings on physical left; Tailwind spaces non-last children on logical inline end, including hidden-attribute and display:none children.",
       "reviewedCount": 1
     }

@@ -3,16 +3,8 @@
   "seed": "0x3831c0de",
   "generatedCount": 8,
   "permanentSpecimens": [
-    [
-      "flex",
-      "flex-row",
-      "flex"
-    ],
-    [
-      "relative",
-      "flex",
-      "flex-row"
-    ]
+    ["flex", "flex-row", "flex"],
+    ["relative", "flex", "flex-row"]
   ],
   "failurePromotion": "A generated failure is minimized to shrunk-failure.json outside the checkout. Review the counterexample and add its candidate list here in a source change; no output is auto-accepted.",
   "generatedWidthCount": 6,

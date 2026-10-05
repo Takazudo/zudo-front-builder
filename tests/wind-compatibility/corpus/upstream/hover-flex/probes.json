@@ -18,8 +18,6 @@
     "wind": "inline",
     "reference": "inline",
     "hoverCapability": "none",
-    "engines": [
-      "chromium"
-    ]
+    "engines": ["chromium"]
   }
 ]

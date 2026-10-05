@@ -1,11 +1,7 @@
 {
   "caseId": "margin-axis",
   "reset": "none",
-  "explicitCandidates": [
-    "m-hsp-sm",
-    "mx-vsp-md",
-    "ml-hsp-sm"
-  ],
+  "explicitCandidates": ["m-hsp-sm", "mx-vsp-md", "ml-hsp-sm"],
   "spacing": {
     "hsp-sm": "17px",
     "vsp-md": "29px"

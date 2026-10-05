@@ -30,7 +30,7 @@ export function generatedWidths() {
     state ^= state << 13;
     state ^= state >>> 17;
     state ^= state << 5;
-    widths.push(2 + (state >>> 0) % 254);
+    widths.push(2 + ((state >>> 0) % 254));
   }
   return widths;
 }
@@ -52,7 +52,7 @@ export async function shrinkWidthFailure(width, fails) {
   if (!(await fails(width))) throw Error("Cannot shrink a passing width");
   let smallest = width;
   for (const candidate of [0, 1, Math.floor(width / 2)]) {
-    if (candidate < smallest && await fails(candidate)) smallest = candidate;
+    if (candidate < smallest && (await fails(candidate))) smallest = candidate;
   }
   return smallest;
 }
@@ -66,7 +66,7 @@ export async function shrinkSourceFailure(source, fails) {
     '<span class="block hidden">x</span>',
   ];
   for (const variant of variants) {
-    if (variant.length < smallest.length && await fails(variant)) smallest = variant;
+    if (variant.length < smallest.length && (await fails(variant))) smallest = variant;
   }
   return smallest;
 }
@@ -76,7 +76,7 @@ export async function shrinkFailure(candidates, fails) {
   if (!(await fails(smallest))) throw Error("Cannot shrink a passing specimen");
   for (let index = 0; index < smallest.length;) {
     const next = smallest.filter((_, current) => current !== index);
-    if (next.length && await fails(next)) smallest = next;
+    if (next.length && (await fails(next))) smallest = next;
     else index++;
   }
   return smallest;

@@ -1,9 +1,6 @@
 {
   "caseId": "translate-composed",
   "reset": "none",
-  "explicitCandidates": [
-    "translate-x-4",
-    "translate-y-2"
-  ],
+  "explicitCandidates": ["translate-x-4", "translate-y-2"],
   "spacingUnit": "0.25rem"
 }

@@ -1,9 +1,7 @@
 {
   "caseId": "dark-flex",
   "reset": "none",
-  "explicitCandidates": [
-    "dark:flex"
-  ],
+  "explicitCandidates": ["dark:flex"],
   "dark": {
     "attribute": "data-theme",
     "value": "dark"

@@ -1,7 +1,5 @@
 {
   "caseId": "display-flex",
   "reset": "none",
-  "explicitCandidates": [
-    "flex"
-  ]
+  "explicitCandidates": ["flex"]
 }
