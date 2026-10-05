@@ -1,9 +1,16 @@
 # Built docs wind preview browser check
 
-This focused Chromium suite exercises the built static docs site and the
-installed zudo-doc `HtmlPreview` controls. It reads the shared Gap/Padding
-records and generated public assets to check source, copied code, reset
-isolation, computed values, locale controls, theme behavior and route remounts.
+This Chromium suite exercises every built utility family in English and
+Japanese, all ten paired guide pages, and the installed zudo-doc `HtmlPreview`
+controls. It verifies all positive record/asset/source pairs, that expected
+diagnostics stay textual, and representative computed layout, spacing,
+typography, image, fragment, transition, reset, cascade, and variant behavior.
+Every positive iframe must keep the installed component's `allow-same-origin`
+sandbox while omitting script permission. The Gap/Padding pilots also cover
+copy, keyboard and viewport controls, theme contrast, old hashes, and SPA
+remounts. Fresh 1440px/390px screenshots cover those pilots plus grid,
+object-fit, transition, English/Japanese cascade reset, and the Japanese
+dark-surface guide sample.
 
 Build the docs tree first, then run from the repository root:
 
@@ -27,6 +34,10 @@ and rejects requests outside it. It does not rewrite emitted HTML or URLs.
 Screenshots are captured from fresh contexts at 1440×1000 and 390×844 under
 `$TMPDIR/zfb-wind-doc-preview-screenshots` (override with
 `WIND_DOCS_SCREENSHOT_DIR`). Set `WIND_DOCS_CAPTURE_SCREENSHOTS=0` to skip them.
+The utility and guide routes run at the built tree's actual root or configured
+prefix. The job separately checks all 116 captured historical wind routes, 42
+adjacent routes, their emitted local links/fragments, and inbound fragments
+from other built docs pages.
 
 Failure traces retain actions, screenshots and source files, with DOM snapshots
 disabled. HtmlPreview uses sandboxed `about:srcdoc` documents without script

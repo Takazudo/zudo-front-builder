@@ -88,16 +88,30 @@ those fixtures as diagnostic teaching examples, never as runnable previews.
 `exampleAssetPath(family, id)` returns a base-neutral asset path;
 `assetUrl(path, base)` prepends a configured URL base such as `/project/`.
 For installed `HtmlPreview`, pass the CSS bytes and `exampleSource(example)` into its
-isolated iframe rather than adding preview CSS to the parent document.
-The forthcoming generator/UI owns that integration and source-hash enforcement.
+isolated iframe rather than adding preview CSS to the parent document. The utility
+and guide generators enforce the same HTML/CSS bytes and source hashes shown by
+the built docs browser suite.
+
+## Coverage contract
+
+CI requires all 47 utility families and 187 catalog entries exactly once, with a
+bilingual editorial record for every family. It also checks all ten English and
+Japanese guide pages, all 57 source records, and the complete 168-example
+inventory: 138 runnable positives and 30 expected diagnostics. Every utility and
+guide example appears in both locales; the five `diagnostics.json` seeds are
+pipeline-only fixtures and intentionally have no locale page. Positive previews
+must match their committed HTML/CSS assets and manifest hashes. Expected
+diagnostics stay textual and never become iframes.
 
 Normal docs build/deploy consumes committed assets and never builds Rust.
 The narrowly gated `wind-previews` job in `docs-checks.yml` builds one no-V8
 workspace binary, checks all fixtures and freshness, and feeds the required,
 fail-closed `Docs gate`. Compiler/catalog, records/config, generator scripts,
-assets, and Rust manifests trigger it. Failure, cancellation, detector failure,
-and unexplained skipping all fail the gate. Subsequent content branches must
-regenerate their assets before merge.
+assets, and Rust manifests trigger it. The docs job checks both utility locales,
+guide blocks, exact coverage, built routes and fragments, and native Chromium
+previews in English and Japanese at root and genuine prefix mounts. Failure,
+cancellation, detector failure, and unexplained skipping all fail the gate.
+Content branches regenerate their assets before merge.
 
 ## Authored guide previews
 

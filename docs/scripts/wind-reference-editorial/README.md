@@ -56,10 +56,9 @@ node docs/scripts/generate-wind-reference.mjs --locale ja --check
 pnpm exec vp test run scripts/__tests__/generate-wind-reference.test.mjs
 ```
 
-The generator loads each family independently in sorted filename order. During
-rollout, `TRANSITIONAL_ALLOW_MISSING_EDITORIAL` explicitly preserves legacy output
-for families without records. Final confirmation must set it to false; then a
-missing family fails generation. All existing catalog h2/h3 headings remain
+The generator loads every family in sorted filename order and fails when any
+family lacks an editorial record. CI checks the exact 47-family and 187-entry
+inventory, both generated locales, and the committed preview hashes. All existing catalog h2/h3 headings remain
 unchanged inside the optional technical disclosure, preserving public root,
 duplicate and nested heading IDs. New editorial headings must not collide with
 those IDs; the focused test checks both locales and every family.

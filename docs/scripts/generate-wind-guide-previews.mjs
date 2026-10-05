@@ -13,6 +13,19 @@ const fence = (source, language) => {
   return `${ticks}${language}\n${source.trimEnd()}\n${ticks}`;
 };
 
+export const WIND_GUIDE_PAGES = Object.freeze([
+  "index",
+  "overview",
+  "tokens",
+  "utility-grammar",
+  "variants",
+  "configuration",
+  "sources-and-candidates",
+  "diagnostics-and-tools",
+  "cascade-and-reset",
+  "coming-from-tailwind",
+]);
+
 /** Guide prose stays authored; only marked source/preview blocks are generated. */
 export function renderGuidePreviews(source, locale, context) {
   if (!["en", "ja"].includes(locale)) throw new Error("Unsupported guide locale");
@@ -85,23 +98,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const args = process.argv.slice(2);
   const check = args.includes("--check");
   const files = args.filter((arg) => arg !== "--check");
-  const guides = [
-    "index",
-    "overview",
-    "tokens",
-    "utility-grammar",
-    "variants",
-    "configuration",
-    "sources-and-candidates",
-    "diagnostics-and-tools",
-    "cascade-and-reset",
-    "coming-from-tailwind",
-  ];
   generateGuidePreviews(
     files.length
       ? files
       : ["docs", "docs-ja"].flatMap((locale) =>
-          guides.map((guide) => `docs/src/content/${locale}/zudo-wind/${guide}.mdx`),
+          WIND_GUIDE_PAGES.map((guide) => `docs/src/content/${locale}/zudo-wind/${guide}.mdx`),
         ),
     check,
   );
