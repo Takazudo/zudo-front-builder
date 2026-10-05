@@ -961,6 +961,274 @@ fn declared_project_root_matches_build_css_and_both_audit_plans() {
     }
 }
 
+fn root_package_isolation_fixture(root: &Path) -> PathBuf {
+    let app = root.join("app");
+    fs::create_dir_all(app.join("pages")).unwrap();
+    fs::create_dir_all(app.join("styles")).unwrap();
+    fs::create_dir_all(app.join("required")).unwrap();
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'app'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"wind-root-workspace","private":true}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("root.tsx"),
+        "export const RootOnly = () => <div class=\"text-root-only\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        app.join("package.json"),
+        r#"{"name":"wind-app","private":true}"#,
+    )
+    .unwrap();
+    fs::write(app.join("styles/global.css"), "/* app styles */\n").unwrap();
+    fs::write(
+        app.join("pages/index.tsx"),
+        "import \"../styles/global.css\";\nexport default () => <main class=\"p-4\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        app.join("required/declared.tsx"),
+        "export const Declared = () => <section class=\"m-2\" />;\n",
+    )
+    .unwrap();
+    app
+}
+
+fn write_root_package_isolation_json(app: &Path, root_package: Option<bool>) {
+    let mut sources = serde_json::json!({"roots": ["required"]});
+    if let Some(enabled) = root_package {
+        sources["rootPackage"] = serde_json::json!(enabled);
+    }
+    let config = serde_json::json!({
+        "wind": {
+            "tokens": {"spacingUnit": "0.25rem"},
+            "sources": sources
+        }
+    });
+    fs::write(
+        app.join("zfb.config.json"),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn root_package_wind_source_isolation_is_scoped_and_keeps_other_inputs() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[root_package_wind_source_isolation] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let temp = tempfile::tempdir().expect("create root-package isolation workspace");
+    let workspace = temp.path().canonicalize().unwrap();
+    let app = root_package_isolation_fixture(&workspace);
+    let build = |project: &Path| {
+        Command::new(zfb_binary!())
+            .arg("build")
+            .current_dir(project)
+            .env("ZFB_ESBUILD_BIN", &esbuild)
+            .output()
+            .expect("spawn root-package isolation `zfb build`")
+    };
+    let audit = |project: &Path, plan: &str, fail_on_error: bool| {
+        let mut command = Command::new(zfb_binary!());
+        command
+            .args(["wind", "audit", "--plan", plan, "--project-root"])
+            .arg(project)
+            .current_dir(project)
+            .env("ZFB_ESBUILD_BIN", &esbuild);
+        if fail_on_error {
+            command.args(["--fail-on", "error"]);
+        }
+        command
+            .output()
+            .expect("spawn root-package isolation `zfb wind audit`")
+    };
+
+    // Omission keeps the existing behavior: an explicitly claimed workspace
+    // root is an implicit Wind source and its unresolved text utility is ZW006.
+    write_root_package_isolation_json(&app, None);
+    let default_build = build(&app);
+    assert_failure(&default_build, "rootPackage omitted in a claimed workspace");
+    let default_output = combined_output(&default_build);
+    assert!(default_output.contains("ZW006"), "{default_output}");
+    assert!(
+        default_output.contains("text-root-only"),
+        "{default_output}"
+    );
+
+    // The explicit true setting retains the root source in the build plan.
+    write_root_package_isolation_json(&app, Some(true));
+    let enabled_audit = audit(&app, "build", true);
+    assert_failure(&enabled_audit, "rootPackage true build-plan audit");
+    let enabled_stdout = process_stdout(&enabled_audit);
+    let root_package_entry = format!("root root-package {} (required)", workspace.display());
+    assert!(
+        enabled_stdout.contains(&root_package_entry),
+        "{enabled_stdout}"
+    );
+    assert!(
+        enabled_stdout.contains("text-root-only"),
+        "{enabled_stdout}"
+    );
+    assert!(enabled_stdout.contains("ZW006"), "{enabled_stdout}");
+
+    // false removes only the implicit root scan. The app's conventional page
+    // and its explicit required root still compile, and build audit reports
+    // the same project-owned sources without a root-package entry.
+    write_root_package_isolation_json(&app, Some(false));
+    let isolated_build = build(&app);
+    assert_success(&isolated_build, "rootPackage false build");
+    let css = fs::read_to_string(find_build_css(&app)).unwrap();
+    assert!(css.contains(".p-4"), "app page utility missing:\n{css}");
+    assert!(
+        css.contains(".m-2"),
+        "declared required-root utility missing:\n{css}"
+    );
+    assert!(
+        !css.contains("text-root-only"),
+        "root utility leaked:\n{css}"
+    );
+
+    let isolated_audit = audit(&app, "build", false);
+    assert_success(&isolated_audit, "rootPackage false build-plan audit");
+    let isolated_stdout = process_stdout(&isolated_audit);
+    assert!(
+        isolated_stdout.contains("wind audit plan: build\n"),
+        "{isolated_stdout}"
+    );
+    assert!(
+        isolated_stdout.contains("root root/app/required required (required)"),
+        "declared project root missing from build audit:\n{isolated_stdout}"
+    );
+    assert!(
+        !isolated_stdout.contains("root-package"),
+        "{isolated_stdout}"
+    );
+    assert!(
+        !isolated_stdout.contains("text-root-only"),
+        "{isolated_stdout}"
+    );
+
+    // The standalone audit remains scoped to app even when the implicit
+    // build/dev root scan is enabled.
+    write_root_package_isolation_json(&app, Some(true));
+    let standalone_audit = audit(&app, "standalone", false);
+    assert_success(&standalone_audit, "standalone audit with rootPackage true");
+    let standalone_stdout = process_stdout(&standalone_audit);
+    assert!(
+        standalone_stdout.contains("wind audit plan: standalone\n"),
+        "{standalone_stdout}"
+    );
+    assert!(
+        !standalone_stdout.contains("root-package"),
+        "{standalone_stdout}"
+    );
+    assert!(
+        !standalone_stdout.contains("text-root-only"),
+        "{standalone_stdout}"
+    );
+
+    // A project's own missing token remains an error with rootPackage false.
+    write_root_package_isolation_json(&app, Some(false));
+    fs::write(
+        app.join("pages/index.tsx"),
+        "import \"../styles/global.css\";\nexport default () => <main class=\"text-app-missing\" />;\n",
+    )
+    .unwrap();
+    let missing_token_build = build(&app);
+    assert_failure(
+        &missing_token_build,
+        "app-local missing token with rootPackage false",
+    );
+    let missing_output = combined_output(&missing_token_build);
+    assert!(missing_output.contains("ZW006"), "{missing_output}");
+    assert!(
+        missing_output.contains("text-app-missing"),
+        "{missing_output}"
+    );
+    assert!(
+        !missing_output.contains("text-root-only"),
+        "{missing_output}"
+    );
+
+    // Removing the `.` workspace claim keeps the root out even when enabled.
+    fs::write(
+        app.join("pages/index.tsx"),
+        "import \"../styles/global.css\";\nexport default () => <main class=\"p-4\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'app'\n",
+    )
+    .unwrap();
+    write_root_package_isolation_json(&app, Some(true));
+    let unclaimed_audit = audit(&app, "build", true);
+    assert_success(
+        &unclaimed_audit,
+        "build-plan audit without a root package claim",
+    );
+    let unclaimed_stdout = process_stdout(&unclaimed_audit);
+    assert!(
+        !unclaimed_stdout.contains("root-package"),
+        "{unclaimed_stdout}"
+    );
+    assert!(
+        !unclaimed_stdout.contains("text-root-only"),
+        "{unclaimed_stdout}"
+    );
+
+    // Exercise the real TS evaluator and definePreset stamping/merge path.
+    // The preset opts out while the project adds an owner-relative required
+    // root; omission at the project level must inherit the preset's false.
+    fs::write(
+        workspace.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'app'\n",
+    )
+    .unwrap();
+    fs::remove_file(app.join("zfb.config.json")).unwrap();
+    fs::write(
+        app.join("zfb.config.ts"),
+        r#"import { defineConfig, definePreset } from "zfb/config";
+
+const isolation = definePreset("@fixture/root-policy", {
+  wind: { sources: { rootPackage: false } }
+});
+
+export default defineConfig({
+  presets: [isolation],
+  wind: { tokens: { spacingUnit: "0.25rem" }, sources: { roots: ["required"] } }
+});
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("pages/index.tsx"),
+        "import \"../styles/global.css\";\nexport default () => <main class=\"p-4\" />;\n",
+    )
+    .unwrap();
+    let preset_audit = audit(&app, "build", true);
+    assert_success(&preset_audit, "TypeScript definePreset rootPackage opt-out");
+    let preset_stdout = process_stdout(&preset_audit);
+    assert!(
+        preset_stdout.contains("wind audit plan: build\n"),
+        "{preset_stdout}"
+    );
+    assert!(
+        preset_stdout.contains("root root/app/required required (required)"),
+        "project source declaration missing after definePreset merge:\n{preset_stdout}"
+    );
+    assert!(!preset_stdout.contains("root-package"), "{preset_stdout}");
+    assert!(!preset_stdout.contains("text-root-only"), "{preset_stdout}");
+}
+
 #[test]
 fn wind_audit_prints_its_plan_and_build_plan_honors_source_exclusions() {
     let temp = wind_audit_fixture(
