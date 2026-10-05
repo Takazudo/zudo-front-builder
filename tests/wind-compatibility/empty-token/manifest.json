@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "fixtureId": "wind-empty-token-contracts-v1",
   "issue": 3830,
-  "profile": "wind-preset-free@1.1",
+  "profile": "wind-preset-free@1.2",
   "source": "tests/wind-compatibility/empty-token/index.html",
   "profileCaseIds": [
     "block",

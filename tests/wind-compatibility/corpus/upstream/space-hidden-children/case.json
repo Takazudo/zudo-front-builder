@@ -1,0 +1,6 @@
+{
+  "caseId": "space-hidden-children",
+  "reset": "none",
+  "explicitCandidates": ["space-x-4"],
+  "spacingUnit": "0.25rem"
+}

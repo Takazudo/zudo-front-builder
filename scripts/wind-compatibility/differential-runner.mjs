@@ -6,7 +6,12 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { gunzipSync } from "node:zlib";
-import { browserIdentity, observePair, observeIsolated } from "./browser-adapter.mjs";
+import {
+  browserIdentity,
+  observePair,
+  observeIsolated,
+  requiredMatrixMember,
+} from "./browser-adapter.mjs";
 import {
   artifactIdentity,
   classify,
@@ -45,7 +50,7 @@ function args(argv) {
   return { ...defaults, ...options };
 }
 
-async function treeDigest(directory) {
+export async function treeDigest(directory) {
   const entries = [];
   async function visit(path) {
     for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -179,7 +184,7 @@ export async function loadReference(cache, bootstrap) {
   };
 }
 
-function referenceTheme(profile, row) {
+export function referenceTheme(profile, row) {
   const config = profile.configurations[row.configuration];
   if (!config || config.wind.reset !== "none")
     throw Error(`Unsupported shared configuration ${row.configuration}`);
@@ -201,7 +206,7 @@ async function runWind(binary, root, output, mode) {
   return { status: run.status, stderr: run.stderr, stdout: run.stdout };
 }
 
-function expectedWindConfig(row, fixture, profile) {
+export function expectedWindConfig(row, fixture, profile) {
   const config = profile.configurations[row.configuration].wind;
   const allowed = new Set([
     "caseId",
@@ -227,7 +232,7 @@ function expectedWindConfig(row, fixture, profile) {
     throw Error(`Candidate fixture drift: ${row.id}`);
 }
 
-function structuralChecks(row, windCss, referenceCss, windReport, diagnosticsPass) {
+export function structuralChecks(row, windCss, referenceCss, windReport, diagnosticsPass) {
   const expectWind =
     row.implementation === "implemented" &&
     !["unconfigured-p-4", "undeclared-palette"].includes(row.id);
@@ -421,19 +426,7 @@ async function main() {
   let environment;
   try {
     environment = await browserIdentity(browser, browserExecutable);
-    if (
-      environment.playwrightVersion !== profile.browserPolicy.playwrightTestVersion ||
-      environment.playwrightCoreVersion !== profile.browserPolicy.playwrightCoreVersion ||
-      environment.browserManifestSha256 !== profile.browserPolicy.browserManifest.sha256
-    )
-      throw Error("Browser toolchain differs from profile pin");
-    environment.requiredMatrixMember = profile.browserPolicy.requiredMatrix.some(
-      (member) =>
-        member.os === environment.platform &&
-        member.browser === environment.name &&
-        member.revision === environment.revision &&
-        member.browserVersion === environment.version,
-    );
+    environment.requiredMatrixMember = requiredMatrixMember(profile, environment);
     let missingRejected = false;
     try {
       validatePilot(profile, { caseIds: [...manifest.caseIds, "not-a-fixture"] }, observations);

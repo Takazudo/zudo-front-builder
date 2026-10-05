@@ -23,7 +23,7 @@ function documentFor(candidate, probe) {
   );
 }
 
-function matchesExpected(actual, expected) {
+export function matchesExpected(actual, expected) {
   if (typeof expected === "string") return actual.value === expected;
   if (expected === null) return true;
   if (typeof expected === "object") {
@@ -44,6 +44,12 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
     viewportWidth: probe.viewportWidth ?? 800,
     viewportHeight: 700,
     hover: Boolean(probe.hover),
+    hoverSelector: probe.hoverSelector ?? "#target",
+    keyboardFocus: Boolean(probe.keyboardFocus),
+    focusSelector: probe.focusSelector ?? null,
+    targetAttributes: probe.targetAttributes ?? {},
+    ancestorAttributes: probe.ancestorAttributes ?? {},
+    pseudo: probe.pseudo ?? null,
     writingMode: probe.writingMode ?? "horizontal-tb",
     direction: probe.direction ?? "ltr",
     selector,
@@ -52,41 +58,57 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
     servedDocumentSha256: sha256(html),
     authoredCssSha256: sha256(probe.authoredCss ?? ""),
     scopeVars: probe.scopeVars ?? "",
-    hasTouch: false,
-    isMobile: false,
+    hasTouch: probe.hoverCapability === "none",
+    isMobile: probe.hoverCapability === "none",
     deviceScaleFactor: 1,
     colorScheme: "light",
     reducedMotion: "no-preference",
-    hoverCapability: "desktop-hover",
+    hoverCapability: probe.hoverCapability ?? "desktop-hover",
   };
   const context = await browser.newContext({
     viewport: { width: settings.viewportWidth, height: settings.viewportHeight },
     reducedMotion: "no-preference",
     colorScheme: "light",
-    hasTouch: false,
-    isMobile: false,
+    hasTouch: settings.hasTouch,
+    isMobile: settings.isMobile,
   });
   try {
     await context.route(cssUrl, (route) =>
-      route.fulfill({ status: 200, contentType: "text/css", body: css }),
+      route.fulfill({ status: 200, contentType: "text/css; charset=utf-8", body: css }),
     );
     await context.route(documentUrl, (route) =>
-      route.fulfill({ status: 200, contentType: "text/html", body: html }),
+      route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html }),
     );
     const page = await context.newPage();
     const cssResponse = page.waitForResponse((response) => response.url() === cssUrl);
     await page.goto(documentUrl, { waitUntil: "load" });
+    for (const [name, value] of Object.entries(probe.targetAttributes ?? {}))
+      await page
+        .locator("#target")
+        .evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
+    for (const [name, value] of Object.entries(probe.ancestorAttributes ?? {}))
+      await page
+        .locator("#ancestor")
+        .evaluate((el, [key, val]) => el.setAttribute(key, val), [name, value]);
     const response = await cssResponse;
     const served = { status: response.status(), body: await response.body() };
     const targetClasses = await page.locator("#target").evaluate((el) => [...el.classList]);
     if (!candidate.split(/\s+/).every((name) => targetClasses.includes(name)))
       throw Error(`Probe DOM candidate mismatch: ${probe.name}`);
     await page.locator(selector).evaluate(() => document.fonts.ready);
-    if (probe.hover) await page.locator("#target").hover();
+    if (probe.hover) await page.locator(probe.hoverSelector ?? "#target").hover();
+    if (probe.keyboardFocus) {
+      await page.keyboard.press("Tab");
+      if (
+        probe.focusSelector &&
+        !(await page.locator(probe.focusSelector).evaluate((el) => el === document.activeElement))
+      )
+        throw Error(`Keyboard focus missed ${probe.focusSelector}`);
+    } else if (probe.focusSelector) await page.locator(probe.focusSelector).focus();
     const observation = await page.locator(selector).evaluate(
       (el, input) => {
-        const { property, relativeTo } = input;
-        const style = getComputedStyle(el),
+        const { property, relativeTo, pseudo } = input;
+        const style = getComputedStyle(el, pseudo ?? null),
           box = el.getBoundingClientRect();
         const parent = document.querySelector(relativeTo).getBoundingClientRect();
         const value = property.startsWith("geometry:")
@@ -131,7 +153,7 @@ export async function observeIsolated(browser, css, candidate, probe, engine) {
           ),
         };
       },
-      { property: probe.property, relativeTo: settings.relativeTo },
+      { property: probe.property, relativeTo: settings.relativeTo, pseudo: probe.pseudo },
     );
     const servedBytes = served?.body;
     const verified = served?.status === 200 && servedBytes && sha256(servedBytes) === sha256(css);
@@ -173,23 +195,35 @@ export async function browserIdentity(browser, executable) {
   const corePackage = JSON.parse(await readFile(corePackagePath));
   const manifestBytes = await readFile(resolve(dirname(corePackagePath), "browsers.json"));
   const manifest = JSON.parse(manifestBytes);
-  const chromium = manifest.browsers.find((entry) => entry.name === "chromium");
-  if (!chromium) throw Error("Playwright Chromium manifest entry absent");
+  const browserName = browser.browserType().name();
+  const browserEntry = manifest.browsers.find((entry) => entry.name === browserName);
+  if (!browserEntry) throw Error(`Playwright ${browserName} manifest entry absent`);
+  let releaseText = "";
+  if (process.platform === "linux") {
+    try {
+      releaseText = await readFile("/etc/os-release", "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  const host = hostPlatformIdentity(process.platform, process.arch, releaseText);
   return {
     name: browser.browserType().name(),
     version: browser.version(),
     executable,
     executableSha256: executable ? sha256(await readFile(executable)) : null,
-    launchExecutableKind: "chromium-full-explicit",
+    launchExecutableKind: `${browserName}-full-explicit`,
     platform: process.platform,
+    hostPlatform: host.hostPlatform,
+    linuxDistribution: host.linuxDistribution,
     osVersion: release(),
     architecture: process.arch,
     node: process.version,
     playwrightVersion: playwrightPackage.version,
     playwrightCoreVersion: corePackage.version,
     browserManifestSha256: sha256(manifestBytes),
-    revision: chromium.revision,
-    manifestBrowserVersion: chromium.browserVersion,
+    revision: browserEntry.revision,
+    manifestBrowserVersion: browserEntry.browserVersion,
     headless: true,
     deviceScaleFactor: 1,
     colorScheme: "light",
@@ -197,4 +231,54 @@ export async function browserIdentity(browser, executable) {
     isolation: "new context per engine and probe",
     styleDelivery: "same-origin intercepted 200 text/css response",
   };
+}
+
+export function hostPlatformIdentity(platform, architecture, releaseText = "") {
+  if (platform !== "linux") return { hostPlatform: null, linuxDistribution: null };
+  const fields = Object.fromEntries(
+    releaseText.split(/\r?\n/).flatMap((line) => {
+      const match = /^([A-Z_]+)=(.*)$/.exec(line);
+      if (!match) return [];
+      let value = match[2];
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      )
+        value = value.slice(1, -1);
+      return [[match[1], value]];
+    }),
+  );
+  const id = fields.ID?.toLowerCase();
+  const versionId = fields.VERSION_ID;
+  const valid = /^[a-z0-9.-]+$/;
+  return {
+    hostPlatform:
+      id && versionId && valid.test(id) && valid.test(versionId) && valid.test(architecture)
+        ? `${id}${versionId}-${architecture}`
+        : null,
+    linuxDistribution: id && versionId ? { id, versionId } : null,
+  };
+}
+
+export function requiredMatrixMember(profile, environment) {
+  const policy = profile.browserPolicy;
+  if (
+    environment.playwrightVersion !== policy.playwrightTestVersion ||
+    environment.playwrightCoreVersion !== policy.playwrightCoreVersion ||
+    environment.browserManifestSha256 !== policy.browserManifest.sha256 ||
+    !environment.hostPlatform ||
+    !environment.linuxDistribution ||
+    environment.hostPlatform !==
+      `${environment.linuxDistribution.id}${environment.linuxDistribution.versionId}-${environment.architecture}`
+  )
+    return false;
+  return policy.requiredMatrix.some(
+    (member) =>
+      member.os === environment.platform &&
+      member.hostPlatform === environment.hostPlatform &&
+      member.browser === environment.name &&
+      member.revision === environment.revision &&
+      member.browserVersion === environment.version &&
+      member.browserVersion === environment.manifestBrowserVersion,
+  );
 }

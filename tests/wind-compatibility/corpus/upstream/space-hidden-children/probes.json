@@ -1,0 +1,44 @@
+[
+  {
+    "name": "hidden-attribute-left",
+    "selector": "#hidden-attr",
+    "property": "margin-left",
+    "wind": "0px",
+    "reference": "0px"
+  },
+  {
+    "name": "hidden-attribute-right",
+    "selector": "#hidden-attr",
+    "property": "margin-right",
+    "wind": "0px",
+    "reference": "16px"
+  },
+  {
+    "name": "display-none-left",
+    "selector": "#display-none",
+    "property": "margin-left",
+    "wind": "16px",
+    "reference": "0px"
+  },
+  {
+    "name": "display-none-right",
+    "selector": "#display-none",
+    "property": "margin-right",
+    "wind": "0px",
+    "reference": "16px"
+  },
+  {
+    "name": "visible-last-left",
+    "selector": "#last",
+    "property": "margin-left",
+    "wind": "16px",
+    "reference": "0px"
+  },
+  {
+    "name": "visible-last-right",
+    "selector": "#last",
+    "property": "margin-right",
+    "wind": "0px",
+    "reference": "0px"
+  }
+]
