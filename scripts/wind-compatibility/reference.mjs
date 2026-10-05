@@ -29,6 +29,12 @@ export function exactVersion(version) {
       match[4]?.split('.').some(x => /^\d+$/.test(x) && x.length > 1 && x.startsWith('0'))) throw Error(`Unsafe or invalid semver ${version}`);
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease: match[4] ?? null };
 }
+export function requireChannel(version, channel = 'stable') {
+  const prerelease = Boolean(exactVersion(version).prerelease);
+  if (!['stable', 'prerelease'].includes(channel) || (channel === 'prerelease') !== prerelease) {
+    throw Error(`Channel ${channel} does not match exact version ${version}`);
+  }
+}
 export function compareVersion(a, b) {
   const x = exactVersion(a), y = exactVersion(b);
   for (const key of ['major', 'minor', 'patch']) if (x[key] !== y[key]) return Math.sign(x[key] - y[key]);
@@ -60,7 +66,7 @@ export function resolveCatalog(catalog, requested, channel = 'stable') {
   const releases = [], seen = new Set();
   for (let i = 0; i < catalog.pages.length; i++) {
     const page = catalog.pages[i];
-    if (page.index !== i + 1 || page.totalPages !== catalog.pages.length || page.truncated || !Array.isArray(page.items)) throw Error('Catalog pagination/truncation');
+    if (page.index !== i + 1 || page.totalPages !== catalog.pages.length || page.truncated !== false || !Array.isArray(page.items)) throw Error('Catalog pagination/truncation');
     if (i < catalog.pages.length - 1 && page.next !== catalog.pages[i + 1].url) throw Error('Catalog page cursor mismatch');
     for (const item of page.items) {
       if (seen.has(item.version)) throw Error(`Duplicate release ${item.version}`);
@@ -70,18 +76,24 @@ export function resolveCatalog(catalog, requested, channel = 'stable') {
   if (catalog.pages.at(-1).next !== null) throw Error('Catalog has unvisited next page');
   const candidate = releases.find(item => item.version === requested);
   if (!candidate) throw Error(`Release ${requested} absent from complete catalog`);
-  const parsed = exactVersion(requested);
-  if (parsed.prerelease && channel !== 'prerelease') throw Error('Prerelease requires explicit channel opt-in');
+  requireChannel(requested, channel);
   return validateMetadata(candidate, requested);
 }
 export async function identity() {
   const result = {};
   for (const [key, path] of Object.entries(paths)) result[key] = sha256(await readFile(fromRoot(path)));
-  for (const path of ['scripts/wind-compatibility/reference.mjs', 'scripts/wind-compatibility/reference-cli.mjs']) result[path] = sha256(await readFile(fromRoot(path)));
+  for (const path of ['scripts/wind-compatibility/reference.mjs', 'scripts/wind-compatibility/reference-cli.mjs', 'scripts/wind-compatibility/upstream.mjs']) result[path] = sha256(await readFile(fromRoot(path)));
   result.runtime = digest({ node: process.version, platform: process.platform, arch: process.arch, executable: await realpath(process.execPath) });
   return result;
 }
 export function makePlan({ candidate, state, hashes, channel, toolchain }) {
+  if (candidate?.package !== 'tailwindcss' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(candidate.integrity ?? '') ||
+      candidate.tarball !== `https://registry.npmjs.org/tailwindcss/-/tailwindcss-${candidate.version}.tgz` ||
+      (candidate.artifactSha256 !== undefined && !/^[0-9a-f]{64}$/.test(candidate.artifactSha256)) ||
+      !candidate.source || !['unknown', 'tag-observed-artifact-link-unverified', 'registry-gitHead-unverified-artifact-link'].includes(candidate.source.status) ||
+      (candidate.source.status === 'tag-observed-artifact-link-unverified' &&
+        (candidate.source.tag !== `v${candidate.version}` || !/^[0-9a-f]{40}$/.test(candidate.source.observedTagCommit ?? ''))) ||
+      (candidate.source.packageGitSha !== null && !/^[0-9a-f]{40}$/.test(candidate.source.packageGitSha ?? ''))) throw Error('Invalid candidate package or provenance');
   if (state.profile.schemaVersion !== 1 || state.profile.profileId !== 'wind-preset-free' || state.profile.profileVersion !== 1 ||
       !Number.isSafeInteger(state.profile.profileRevision) || state.profile.profileRevision < 1 ||
       state.accepted.schemaVersion !== 1 || state.reviewed.schemaVersion !== 1 ||
@@ -99,8 +111,7 @@ export function makePlan({ candidate, state, hashes, channel, toolchain }) {
       !['stable', 'prerelease'].includes(reviewed.channel) || !reviewed.integrity || !reviewed.disposition ||
       !reviewed.planId || !reviewed.assessmentId)) throw Error('Malformed reviewed-through record');
   const parsed = exactVersion(candidate.version);
-  if (parsed.prerelease && channel !== 'prerelease') throw Error('Prerelease requires explicit channel opt-in');
-  if (channel !== 'stable' && channel !== 'prerelease') throw Error('Unknown channel');
+  requireChannel(candidate.version, channel);
   const prior = state.accepted.acceptedReference;
   if (prior && compareVersion(candidate.version, prior.version) <= 0) throw Error('Candidate must advance accepted reference');
   const plan = {
@@ -114,10 +125,14 @@ export function makePlan({ candidate, state, hashes, channel, toolchain }) {
   };
   return { ...plan, planId: `sha256:${digest(plan)}` };
 }
-export function validatePlan(plan, hashes) {
+export function validatePlan(plan, hashes, state, expectedCandidate, expectedToolchain) {
+  if (!plan || plan.schemaVersion !== 1 || plan.kind !== 'wind-reference-plan' || plan.admission !== 'unassessed') throw Error('Unknown plan schema or state');
   const { planId, ...body } = plan;
   if (planId !== `sha256:${digest(body)}`) throw Error('Plan has been modified');
   if (JSON.stringify(plan.inputs) !== JSON.stringify(hashes)) throw Error('Stale plan inputs');
+  if (digest(plan.candidate) !== digest(expectedCandidate) || digest(plan.toolchain) !== digest(expectedToolchain)) throw Error('Plan candidate/toolchain provenance mismatch');
+  const expected = makePlan({ candidate: expectedCandidate, state, hashes, channel: plan.channel, toolchain: expectedToolchain });
+  if (digest(plan) !== digest(expected)) throw Error('Plan semantics do not match current state');
   return plan;
 }
 export function assessBundle(bundle, plan) {
@@ -159,7 +174,7 @@ export function assessBundle(bundle, plan) {
     if (ids.size !== entry.totalItems) missing.push(`${section}: item count mismatch`);
   }
   return { schemaVersion: 1, kind: 'wind-reference-assessment', planId: plan.planId, candidate: plan.candidate,
-    status: missing.length ? 'incomplete' : 'ready-for-comparison', missing, bundleDigest: digest(bundle),
+    status: missing.length ? 'incomplete' : 'unverified-capture', missing, bundleDigest: digest(bundle),
     sourceIdentityStatus: plan.candidate.source?.status ?? 'unknown', sourceGitSha: plan.candidate.source?.packageGitSha ?? null,
     acceptedReferenceAdvanced: false, reviewedThroughAdvanced: false };
 }
@@ -176,13 +191,13 @@ async function physicalPath(path) {
     }
   }
 }
-async function outsideCheckout(path) {
+export async function outsideCheckout(path) {
   const cache = await physicalPath(path), checkout = await realpath(root);
   if (cache === checkout || cache.startsWith(`${checkout}${sep}`)) throw Error('Cache must be outside checkout');
   return cache;
 }
 
-export function tarPackageVersion(gz) {
+export function tarPackageIdentity(gz) {
   const tar = gunzipSync(gz);
   for (let at = 0; at + 512 <= tar.length;) {
     const name = tar.toString('utf8', at, at + 100).replace(/\0.*$/, '');
@@ -190,7 +205,10 @@ export function tarPackageVersion(gz) {
     const sizeText = tar.toString('ascii', at + 124, at + 136).replace(/\0.*$/, '').trim();
     const size = parseInt(sizeText, 8);
     if (!Number.isFinite(size)) throw Error('Invalid tar entry size');
-    if (name === 'package/package.json') return JSON.parse(tar.toString('utf8', at + 512, at + 512 + size)).version;
+    if (name === 'package/package.json') {
+      const manifest = JSON.parse(tar.toString('utf8', at + 512, at + 512 + size));
+      return { name: manifest.name, version: manifest.version };
+    }
     at += 512 + Math.ceil(size / 512) * 512;
   }
   throw Error('package/package.json absent from tarball');
@@ -198,7 +216,7 @@ export function tarPackageVersion(gz) {
 export async function probe(acquisition, candidates) {
   if (!Array.isArray(candidates) || !candidates.length || candidates.some(x => typeof x !== 'string' || !x)) throw Error('Probe requires explicit candidates');
   const bytes = await readFile(acquisition.cachePath);
-  if (sha256(bytes) !== acquisition.sha256 || tarPackageVersion(bytes) !== acquisition.version) throw Error('Cached artifact identity changed');
+  if (sha256(bytes) !== acquisition.sha256 || JSON.stringify(tarPackageIdentity(bytes)) !== JSON.stringify({ name: 'tailwindcss', version: acquisition.version })) throw Error('Cached artifact identity changed');
   const tar = gunzipSync(bytes), base = await outsideCheckout(resolve(dirname(acquisition.cachePath), `tailwindcss-${acquisition.version}-${acquisition.sha256}`));
   for (let at = 0; at + 512 <= tar.length;) {
     const name = tar.toString('utf8', at, at + 100).replace(/\0.*$/, '');
@@ -222,6 +240,7 @@ export async function probe(acquisition, candidates) {
     css: compiler.build(candidates), candidates };
 }
 export async function acquire(meta, cacheDir, fetcher = fetch) {
+  if (meta.package !== 'tailwindcss') throw Error('Acquisition package must be tailwindcss');
   const cache = await outsideCheckout(cacheDir);
   const response = await fetcher(meta.tarball);
   if (!response.ok) throw Error(`Artifact fetch HTTP ${response.status}`);
@@ -229,7 +248,8 @@ export async function acquire(meta, cacheDir, fetcher = fetch) {
   const [algorithm, expected] = meta.integrity.split('-');
   if (algorithm !== 'sha512' || createHash('sha512').update(bytes).digest('base64') !== expected) throw Error('Artifact integrity mismatch');
   if (meta.sha1 && createHash('sha1').update(bytes).digest('hex') !== meta.sha1) throw Error('Artifact SHA-1 mismatch');
-  if (tarPackageVersion(bytes) !== meta.version) throw Error('Tarball package version mismatch');
+  const embedded = tarPackageIdentity(bytes);
+  if (embedded.name !== 'tailwindcss' || embedded.version !== meta.version) throw Error('Tarball package identity/version mismatch');
   await mkdir(cache, { recursive: true });
   await outsideCheckout(cache);
   const output = resolve(cache, `tailwindcss-${meta.version}-${sha256(bytes)}.tgz`);

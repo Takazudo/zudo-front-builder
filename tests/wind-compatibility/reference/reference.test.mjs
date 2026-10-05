@@ -6,11 +6,11 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { acquire, assessBundle, compareVersion, digest, exactVersion, fromRoot, identity, makePlan, probe, resolveCatalog, validatePlan } from '../../../scripts/wind-compatibility/reference.mjs';
+import { acquire, assessBundle, compareVersion, digest, exactVersion, fromRoot, identity, makePlan, probe, requireChannel, resolveCatalog, validatePlan } from '../../../scripts/wind-compatibility/reference.mjs';
 
 const meta = version => ({ name: 'tailwindcss', version,
   dist: { integrity: 'sha512-AAAAAAAA', tarball: `https://registry.npmjs.org/tailwindcss/-/tailwindcss-${version}.tgz` } });
-const catalog = (...items) => ({ complete: true, pages: [{ index: 1, totalPages: 1, next: null, items }] });
+const catalog = (...items) => ({ complete: true, pages: [{ index: 1, totalPages: 1, truncated: false, next: null, items }] });
 const hashes = { profile: 'a', bootstrap: 'b', accepted: 'c', reviewed: 'd', lock: 'e' };
 const state = { profile: { schemaVersion: 1, profileId: 'wind-preset-free', profileVersion: 1, profileRevision: 1,
   referencePolicy: { initialState: { acceptedReference: null, reviewedThrough: null } } },
@@ -25,8 +25,11 @@ test('exact resolution, channels, major transition, duplicates and pagination', 
   for (const invalid of ['4.3.2-next..1', '4.3.2-next.01', '9007199254740992.0.0']) assert.throws(() => exactVersion(invalid));
   assert.throws(() => resolveCatalog(catalog(meta('4.3.2'), meta('4.3.2')), '4.3.2'), /Duplicate/);
   assert.throws(() => resolveCatalog({ ...catalog(meta('4.3.2')), complete: false }, '4.3.2'), /Incomplete/);
-  assert.throws(() => resolveCatalog({ complete: true, pages: [{ index: 1, totalPages: 1, next: 'page2', items: [meta('4.3.2')] }] }, '4.3.2'), /unvisited/);
-  assert.throws(() => resolveCatalog(catalog(meta('5.0.0-next.1')), '5.0.0-next.1'), /opt-in/);
+  assert.throws(() => resolveCatalog({ complete: true, pages: [{ index: 1, totalPages: 1, next: null, items: [meta('4.3.2')] }] }, '4.3.2'), /pagination/);
+  assert.throws(() => resolveCatalog({ complete: true, pages: [{ index: 1, totalPages: 1, truncated: false, next: 'page2', items: [meta('4.3.2')] }] }, '4.3.2'), /unvisited/);
+  assert.throws(() => resolveCatalog(catalog(meta('5.0.0-next.1')), '5.0.0-next.1'), /Channel/);
+  assert.throws(() => requireChannel('5.0.0-next.1', 'stable'), /Channel/);
+  assert.throws(() => requireChannel('4.3.2', 'prerelease'), /Channel/);
   const next = resolveCatalog(catalog(meta('5.0.0-next.1')), '5.0.0-next.1', 'prerelease');
   const prior = { package: 'tailwindcss', version: '4.3.2', channel: 'stable', integrity: 'sha512-x', artifactSha256: 'artifact',
     lockfileSha256: 'lock', toolchain: { node: 'test' }, source: { packageGitSha: null, status: 'reviewed-unknown' },
@@ -37,11 +40,22 @@ test('exact resolution, channels, major transition, duplicates and pagination', 
 });
 
 test('plan is immutable and rejects stale profile/reference/lock replay', () => {
-  assert.equal(validatePlan(plan, hashes).planId, plan.planId);
-  assert.throws(() => validatePlan({ ...plan, channel: 'prerelease' }, hashes), /modified/);
-  assert.throws(() => validatePlan(plan, { ...hashes, lock: 'new' }), /Stale/);
-  assert.throws(() => validatePlan(plan, { ...hashes, 'scripts/wind-compatibility/reference.mjs': 'changed' }), /Stale/);
-  assert.throws(() => validatePlan(plan, { ...hashes, accepted: 'advanced' }), /Stale/);
+  const checked = (value, inputs = hashes) => validatePlan(value, inputs, state, candidate, plan.toolchain);
+  assert.equal(checked(plan).planId, plan.planId);
+  assert.throws(() => checked({ ...plan, channel: 'prerelease' }), /modified/);
+  assert.throws(() => checked(plan, { ...hashes, lock: 'new' }), /Stale/);
+  assert.throws(() => checked(plan, { ...hashes, 'scripts/wind-compatibility/upstream.mjs': 'changed' }), /Stale/);
+  assert.throws(() => checked(plan, { ...hashes, accepted: 'advanced' }), /Stale/);
+  for (const altered of [{ ...plan, schemaVersion: 99 }, { ...plan, changes: { ...plan.changes, major: true } }]) {
+    const { planId: _, ...body } = altered;
+    assert.throws(() => checked({ ...body, planId: `sha256:${digest(body)}` }), /schema|semantics/);
+  }
+  const changedCandidate = { ...plan, candidate: { ...candidate, integrity: 'sha512-other' } };
+  const { planId: candidateId, ...candidateBody } = changedCandidate;
+  assert.throws(() => checked({ ...candidateBody, planId: `sha256:${digest(candidateBody)}` }), /provenance mismatch/);
+  const changedToolchain = { ...plan, toolchain: { node: 'v0.0.0' } };
+  const { planId: toolchainId, ...toolchainBody } = changedToolchain;
+  assert.throws(() => checked({ ...toolchainBody, planId: `sha256:${digest(toolchainBody)}` }), /provenance mismatch/);
   assert.throws(() => makePlan({ candidate, state: { ...state, profile: { ...state.profile, schemaVersion: 2 } }, hashes, channel: 'stable', toolchain: {} }), /Unknown/);
 });
 
@@ -55,7 +69,7 @@ test('assessment requires every complete delta source and detects truncation, id
   const bundle = { schemaVersion: 1, candidateVersion: candidate.version, candidateIntegrity: candidate.integrity, planId: plan.planId,
     baselineMode: 'bootstrap-snapshot', previousVersion: null, bootstrapRationale: 'First exact candidate; no historical consumer baseline',
     changelog: section('changelog'), artifacts: section('artifacts'), source: section('source'), tests: section('tests') };
-  assert.equal(assessBundle(bundle, plan).status, 'ready-for-comparison');
+  assert.equal(assessBundle(bundle, plan).status, 'unverified-capture');
   assert.equal(assessBundle({ ...bundle, tests: { ...bundle.tests, pages: [{ ...bundle.tests.pages[0], truncated: true }] } }, plan).status, 'incomplete');
   assert.equal(assessBundle({ ...bundle, source: { ...bundle.source, sourceDigest: null } }, plan).status, 'incomplete');
   assert.equal(assessBundle({ ...bundle, artifacts: { ...bundle.artifacts, pages: [{ ...bundle.artifacts.pages[0], body: JSON.stringify({ index: 1, totalPages: 1, next: null, totalItems: 1, items: [{ id: 'x' }, { id: 'x' }] }) }] } }, plan).status, 'incomplete');
@@ -63,8 +77,8 @@ test('assessment requires every complete delta source and detects truncation, id
   assert.equal(assessBundle({ ...bundle, planId: 'stale' }, plan).status, 'incomplete');
 });
 
-function tarball(version) {
-  const data = Buffer.from(JSON.stringify({ name: 'tailwindcss', version }));
+function tarball(version, name = 'tailwindcss') {
+  const data = Buffer.from(JSON.stringify({ name, version }));
   const header = Buffer.alloc(512);
   header.write('package/package.json'); header.write(data.length.toString(8).padStart(11, '0'), 124);
   const pad = Buffer.alloc(Math.ceil(data.length / 512) * 512 - data.length);
@@ -84,6 +98,8 @@ test('acquisition rejects offline, auth, 404, integrity mismatch and wrong packa
     await assert.rejects(acquire(candidate, dir, async () => response(200)), /integrity mismatch/);
     const wrong = tarball('4.3.3');
     await assert.rejects(acquire({ ...exact, integrity: `sha512-${createHash('sha512').update(wrong).digest('base64')}` }, dir, async () => response(200, wrong)), /version mismatch/);
+    const wrongName = tarball('4.3.2', 'unrelated-package');
+    await assert.rejects(acquire({ ...exact, integrity: `sha512-${createHash('sha512').update(wrongName).digest('base64')}` }, dir, async () => response(200, wrongName)), /identity\/version mismatch/);
     assert.equal((await acquire(exact, dir, async () => response(200))).version, '4.3.2');
     await assert.rejects(acquire(exact, fromRoot('tests/wind-compatibility'), async () => response(200)), /outside checkout/);
     const link = join(dir, 'checkout-link');
@@ -106,4 +122,14 @@ test('CLI dry run leaves checkout tracked and untracked identity unchanged', asy
   assert.equal(emitted.previousAccepted, null);
   assert.equal(emitted.previousReviewedThrough, null);
   assert.deepEqual({ status: status(), inputs: await identity() }, before);
+});
+
+test('all CLI acquisition entry points enforce exact channel before network access', () => {
+  for (const command of ['acquire', 'probe']) {
+    const args = [fromRoot('scripts/wind-compatibility/reference-cli.mjs'), command, '--candidate', '5.0.0-next.1', '--cache', '/tmp/wind-channel-test'];
+    if (command === 'probe') args.push('--candidates', 'block');
+    const run = spawnSync(process.execPath, args, { cwd: fromRoot('.'), encoding: 'utf8' });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /Channel stable does not match exact version/);
+  }
 });
