@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "font-size",
+  "lookup": [
+    {
+      "entry": "v1.text.size",
+      "candidate": "text-copy",
+      "example": "size-tokens"
+    },
+    {
+      "entry": "v1.text.size",
+      "candidate": "text-[20px]",
+      "example": "size-arbitrary"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set the size of text for a role such as a caption, paragraph, or heading. A configured font-size token can pair size with its own line height; an arbitrary size lets one element use a validated CSS value.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example declares tokens.fontSizes with size and lineHeight values. A named text token emits both properties when its lineHeight is present; the arbitrary text-[20px] sample emits font-size only. wind-demo supplies borders and spacing, not typography.",
+      "customValues": "Use text-copy for a configured token or text-[20px] for a one-off CSS font-size. Named font-size keys share the text root with colors, so the configuration must keep those token names disjoint. Paired leading is part of the configured font-size token; an arbitrary size without slash syntax does not invent a line height. Choose line height separately when the surrounding text needs a specific rhythm.",
+      "examples": [
+        {
+          "id": "size-tokens",
+          "title": "Compare paired size tokens",
+          "description": "Each token configures both size and leading, with a tighter paired line height for the larger display role."
+        },
+        {
+          "id": "size-arbitrary",
+          "title": "Set a one-off size",
+          "description": "text-[20px] emits the validated font-size and leaves line-height to the browser or another explicit utility."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "キャプション、本文、見出しなど用途に合わせて文字サイズを指定します。名前付きの font-size トークンにはサイズと行の高さを組み合わせられ、任意値では検証済みの CSS 値を1要素に指定できます。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は size と lineHeight を持つ tokens.fontSizes を宣言します。lineHeight がある名前付きテキストトークンは両方のプロパティを出力し、text-[20px] は font-size だけを出力します。wind-demo は枠と余白のみを加えます。",
+      "customValues": "設定済みの値には text-copy、1回だけの指定には text-[20px] を使います。名前付き font-size は text ルートを色トークンと共有するため、同じ設定内で名前が重複しないようにします。ペアの leading は font-size トークンの一部です。slash 構文を付けない任意サイズから行の高さは自動で作られません。文章に決まったリズムが必要な場合は行の高さも明示します。",
+      "examples": [
+        {
+          "id": "size-tokens",
+          "title": "サイズと行の高さを比べる",
+          "description": "各トークンはサイズと行の高さを組み合わせ、大きい表示用サイズでは行を詰めています。"
+        },
+        {
+          "id": "size-arbitrary",
+          "title": "一度だけ使うサイズを指定する",
+          "description": "text-[20px] は検証された font-size を出力し、line-height はブラウザーの値または別の明示的なユーティリティに任せます。"
+        }
+      ]
+    }
+  }
+}

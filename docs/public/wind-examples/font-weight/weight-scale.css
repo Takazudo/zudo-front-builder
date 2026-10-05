@@ -1,0 +1,40 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-font-weight-medium: 500;
+    --zw-font-weight-regular: 400;
+    --zw-font-weight-strong: 700;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-weight {
+  color: #223247;
+  border: 1px solid #b7c5d4;
+  padding: 1rem;
+}
+
+.wind-demo-weight p {
+  margin: 0;
+  padding: .45rem 0;
+  border-bottom: 1px solid #d8e0e8;
+}
+
+.wind-demo-weight p:last-child {
+  border-bottom: 0;
+}
+
+.wind-demo-label {
+  display: inline-block;
+  width: 5.5rem;
+  color: #5d6c7c;
+  font-size: .8rem;
+}
+.font-medium {
+  font-weight: var(--zw-font-weight-medium);
+}
+.font-regular {
+  font-weight: var(--zw-font-weight-regular);
+}
+.font-strong {
+  font-weight: var(--zw-font-weight-strong);
+}

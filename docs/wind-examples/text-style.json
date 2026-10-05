@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "family": "text-style",
+  "examples": [
+    {
+      "id": "decoration-lines",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-style-stack\">\n  <p><span class=\"underline\">Underline / 下線</span></p>\n  <p><span class=\"overline\">Overline / 上線</span></p>\n  <p><span class=\"line-through\">Line through / 取り消し線</span></p>\n  <p><a href=\"#normal-text\" class=\"no-underline\">No underline / 下線なし</a></p>\n</div>",
+      "utilities": ["underline", "overline", "line-through", "no-underline"],
+      "authoredClasses": ["wind-demo-style-stack"],
+      "scaffoldCss": ".wind-demo-style-stack { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }\n.wind-demo-style-stack p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-style-stack p:last-child { border-bottom: 0; }\n.wind-demo-style-stack a { color: inherit; }\n"
+    },
+    {
+      "id": "letter-case",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-style-stack\">\n  <p><span class=\"uppercase\">Wind notes / 見出しの整え方</span></p>\n  <p><span class=\"lowercase\">Wind notes / 見出しの整え方</span></p>\n  <p><span class=\"capitalize\">wind notes / 見出しの整え方</span></p>\n  <p><span class=\"normal-case\">WIND NOTES / 見出しの整え方</span></p>\n</div>",
+      "utilities": ["uppercase", "lowercase", "capitalize", "normal-case"],
+      "authoredClasses": ["wind-demo-style-stack"],
+      "scaffoldCss": ".wind-demo-style-stack { color: #223247; border: 1px solid #b7c5d4; padding: 0.6rem 1rem; }\n.wind-demo-style-stack p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-style-stack p:last-child { border-bottom: 0; }\n"
+    },
+    {
+      "id": "font-treatment",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-type-grid\">\n  <p>Style: <em class=\"italic\">italic</em> and <em class=\"not-italic\">roman emphasis</em>.</p>\n  <div class=\"wind-demo-number-grid\"><span>Default digits</span><span>1,111.11</span><span>Tabular digits</span><span class=\"tabular-nums\">1,111.11</span></div>\n  <p class=\"antialiased\">Smoothing can look different on each display. / 画面によって見え方が変わります。</p>\n</div>",
+      "utilities": ["italic", "not-italic", "tabular-nums", "antialiased"],
+      "authoredClasses": ["wind-demo-type-grid", "wind-demo-number-grid"],
+      "scaffoldCss": ".wind-demo-type-grid { max-width: 28rem; color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }\n.wind-demo-type-grid > p { margin: 0 0 0.85rem; }\n.wind-demo-type-grid > p:last-child { margin: 0.85rem 0 0; border-top: 1px solid #d8e0e8; padding-top: 0.75rem; }\n.wind-demo-number-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.35rem 1rem; }\n"
+    }
+  ]
+}

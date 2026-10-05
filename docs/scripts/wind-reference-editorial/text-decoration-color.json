@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "text-decoration-color",
+  "lookup": [
+    {
+      "entry": "v1.decoration.color",
+      "candidate": "decoration-accent",
+      "example": "decoration-token"
+    },
+    {
+      "entry": "v1.decoration.color",
+      "candidate": "decoration-[#b42318]/80",
+      "example": "decoration-arbitrary"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Change the color of an existing underline, overline, or other text decoration while leaving the text color alone. Put the utility on an element that has a visible decoration.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. The named example declares tokens.colors.accent. Authored CSS sets a readable text color and preserves the browser’s link underline; it does not set text-decoration-color.",
+      "customValues": "decoration-accent resolves through tokens.colors.accent. decoration-current uses the element’s current text color, and decoration-transparent keeps the decoration geometry while hiding its color. Arbitrary colors such as decoration-[#b42318] are validated by the color parser; a supported opacity modifier such as /80 mixes the color with transparency. This family has no automatic palette: every named color must be configured.",
+      "examples": [
+        {
+          "id": "decoration-token",
+          "title": "Use named and keyword colors",
+          "description": "The configured accent, currentColor, and transparent keyword change only the link underline color."
+        },
+        {
+          "id": "decoration-arbitrary",
+          "title": "Add an arbitrary color and opacity",
+          "description": "The bracket color is parsed as CSS and /80 applies the supported opacity modifier while the text stays its inherited color."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "既存の下線、上線などの文字装飾の色を変え、文字色はそのまま保ちます。見える装飾がある要素に適用します。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。名前付きの例では tokens.colors.accent を設定します。自作 CSS は読みやすい文字色を指定してブラウザー標準のリンク下線を残し、text-decoration-color は指定しません。",
+      "customValues": "decoration-accent は tokens.colors.accent を参照します。decoration-current は要素の現在の文字色を使い、decoration-transparent は装飾の位置を保ったまま色を透明にします。decoration-[#b42318] のような任意色は CSS カラーパーサーで検証され、/80 のような対応する不透明度修飾子は色に透明度を加えます。このファミリーに自動パレットはないため、名前付き色はすべて設定が必要です。",
+      "examples": [
+        {
+          "id": "decoration-token",
+          "title": "名前付き色とキーワードを使う",
+          "description": "設定済み accent、currentColor、transparent でリンクの下線色だけを変えます。"
+        },
+        {
+          "id": "decoration-arbitrary",
+          "title": "任意色と不透明度を加える",
+          "description": "角括弧の色を CSS として検証し、/80 で対応する不透明度を適用します。文字色は継承した色のままです。"
+        }
+      ]
+    }
+  }
+}

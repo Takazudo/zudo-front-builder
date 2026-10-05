@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "family": "font-family",
+  "examples": [
+    {
+      "id": "family-token-set",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-family\">\n  <p><span class=\"wind-demo-label\">Interface</span><span class=\"font-ui\">A clear system sans / 読みやすいサンセリフ</span></p>\n  <p><span class=\"wind-demo-label\">Reading</span><span class=\"font-reading\">A serif voice / セリフ体の雰囲気</span></p>\n  <p><span class=\"wind-demo-label\">Code</span><span class=\"font-code\">const value = 42;</span></p>\n</div>",
+      "utilities": ["font-ui", "font-reading", "font-code"],
+      "authoredClasses": ["wind-demo-family", "wind-demo-label"],
+      "scaffoldCss": ".wind-demo-family { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }\n.wind-demo-family p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-family p:last-child { border-bottom: 0; }\n.wind-demo-label { display: inline-block; width: 5.5rem; color: #5d6c7c; font-size: 0.8rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontFamilies": {
+              "ui": "system-ui, sans-serif",
+              "reading": "Georgia, 'Times New Roman', serif",
+              "code": "ui-monospace, monospace"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "family-arbitrary",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-type font-[Georgia,_serif]\">A one-off serif stack / 任意のフォント指定</p>",
+      "utilities": ["font-[Georgia,_serif]"],
+      "authoredClasses": ["wind-demo-type"],
+      "scaffoldCss": ".wind-demo-type { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontFamilies": {
+              "ui": "system-ui, sans-serif",
+              "reading": "Georgia, 'Times New Roman', serif",
+              "code": "ui-monospace, monospace"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

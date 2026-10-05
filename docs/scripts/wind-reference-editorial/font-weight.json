@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "font-weight",
+  "lookup": [
+    {
+      "entry": "v1.font.weight",
+      "candidate": "font-medium",
+      "example": "weight-scale"
+    },
+    {
+      "entry": "v1.font.weight",
+      "candidate": "font-[550]",
+      "example": "weight-custom"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Control how heavy the glyph strokes appear without changing the selected font family or size. Choose a named weight for a reusable role and an arbitrary numeric weight for a value outside that scale.",
+      "setup": "The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example configures tokens.fontWeights with regular 400, medium 500, and strong 700. wind-demo classes style only labels and borders; they do not set font weight.",
+      "customValues": "font-medium resolves through tokens.fontWeights.medium. A class such as font-[550] supplies a validated arbitrary font-weight value. The browser can only show weights supported by the chosen font; synthetic bolding and variable-font axes can change the appearance.",
+      "examples": [
+        {
+          "id": "weight-scale",
+          "title": "Compare named weights",
+          "description": "Three configured weights keep the text and surrounding layout steady so the difference in stroke weight is easy to see."
+        },
+        {
+          "id": "weight-custom",
+          "title": "Specify an intermediate value",
+          "description": "font-[550] requests weight 550 while font-medium remains tied to the configured 500 token."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "フォントファミリーやサイズを変えずに、文字の線の太さを調整します。繰り返し使う役割には名前付きの重みを、設定した尺度にない値には任意の数値を使います。",
+      "setup": "共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。各例は tokens.fontWeights に regular 400、medium 500、strong 700 を設定します。wind-demo クラスはラベルと枠だけを整え、font-weight は指定しません。",
+      "customValues": "font-medium は tokens.fontWeights.medium を参照します。font-[550] のようなクラスは検証済みの任意の font-weight 値を指定します。見た目に反映できる重みは選択したフォントに依存します。ブラウザーによる擬似的な太字化や可変フォントの軸によっても印象が変わります。",
+      "examples": [
+        {
+          "id": "weight-scale",
+          "title": "名前付きの太さを比べる",
+          "description": "周囲のレイアウトと文章をそろえ、設定した3段階の線の太さを比べます。"
+        },
+        {
+          "id": "weight-custom",
+          "title": "中間の数値を指定する",
+          "description": "font-[550] は 550 を要求し、font-medium は設定した 500 のトークンを使います。"
+        }
+      ]
+    }
+  }
+}

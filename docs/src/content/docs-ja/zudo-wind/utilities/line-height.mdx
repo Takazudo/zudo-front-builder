@@ -5,9 +5,127 @@ sidebar_position: 38
 generated: true
 ---
 
-設定済みトークンまたは任意の CSS 値から行の高さを設定します。none トークンを設定していない場合、leading-none は 1 になります。
+テキストの行と行の間隔を調整します。短いラベルや大きな見出しには詰めた値、本文には読みやすい余裕を持たせた値が向きます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `leading-copy` | `line-height: var(--zw-leading-copy);` |
+| `leading-[1.8]` | `line-height: 1.8;` |
+
+<Details title={"例の設定"}>
+
+共通のプレビュー設定では spec 1、reset none、strict モード、spacingUnit 0.25rem、ブレークポイントなしを明示しています。トークンを使う例は tokens.lineHeights を宣言します。名前付きの compact と copy は倍率で、leading-[1.8] は任意の倍率です。leading ユーティリティから font-size トークンは生成されません。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### 名前付きの行の高さを比べる
+
+同じ文章に異なる倍率を設定し、行の基準線の間隔を比べます。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-leading\"\u003e\n  \u003cdiv\u003e\u003cspan class=\"wind-demo-label\"\u003eCompact\u003c/span\u003e\u003cp class=\"leading-compact\"\u003eLine height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。\u003c/p\u003e\u003c/div\u003e\n  \u003cdiv\u003e\u003cspan class=\"wind-demo-label\"\u003eCopy\u003c/span\u003e\u003cp class=\"leading-copy\"\u003eLine height controls the distance between baselines. The same paragraph makes the spacing easier to compare. / 行の高さは行の基準線の間隔を調整します。\u003c/p\u003e\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-leading-compact: 1.25;\n    --zw-leading-copy: 1.65;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-leading {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-leading \u003e div + div {\n  margin-top: 1rem;\n  border-top: 1px solid #d8e0e8;\n  padding-top: .75rem;\n}\n\n.wind-demo-leading p {\n  margin: .35rem 0 0;\n}\n\n.wind-demo-label {\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.leading-compact {\n  line-height: var(--zw-leading-compact);\n}\n.leading-copy {\n  line-height: var(--zw-leading-copy);\n}\n"} title={"名前付きの行の高さを比べる"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "lineHeights": {
+        "compact": "1.25",
+        "copy": "1.65"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-leading": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "leading-compact",
+        "leading-copy"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-leading { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-leading > div + div { margin-top: 1rem; border-top: 1px solid #d8e0e8; padding-top: 0.75rem; }
+.wind-demo-leading p { margin: 0.35rem 0 0; }
+.wind-demo-label { color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### 任意の倍率を指定する
+
+leading-[1.8] は名前付きトークンを増やさずに、このブロックの行間を広げます。
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-leading-custom leading-[1.8]\"\u003eA custom ratio can open the lines when a short block needs more air. / 短い文章では行間を広げると読みやすくなることがあります。\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-leading-compact: 1.25;\n    --zw-leading-copy: 1.65;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-leading-custom {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.leading-\\[1\\.8\\] {\n  line-height: 1.8;\n}\n"} title={"任意の倍率を指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "lineHeights": {
+        "compact": "1.25",
+        "copy": "1.65"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-leading-custom": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "leading-[1.8]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-leading-custom { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+役割に合わせた倍率には leading-copy のような名前を付けられます。leading-none は tokens.lineHeights.none があればその値を使い、なければ 1 にフォールバックします。角括弧には倍率や長さなど、検証済みの line-height 値を指定できます。行の高さは継承されるため、同じリズムを共有する最小のブロックに適用します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## leading
 
@@ -42,3 +160,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `leading-[1.5]` | `line-height: 1.5` |
+
+</Details>

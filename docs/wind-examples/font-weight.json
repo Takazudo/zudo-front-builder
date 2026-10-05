@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "family": "font-weight",
+  "examples": [
+    {
+      "id": "weight-scale",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-weight\">\n  <p><span class=\"wind-demo-label\">Regular</span><span class=\"font-regular\">The same words at regular weight</span></p>\n  <p><span class=\"wind-demo-label\">Medium</span><span class=\"font-medium\">The same words at medium weight</span></p>\n  <p><span class=\"wind-demo-label\">Strong</span><span class=\"font-strong\">The same words at strong weight</span></p>\n</div>",
+      "utilities": ["font-regular", "font-medium", "font-strong"],
+      "authoredClasses": ["wind-demo-weight", "wind-demo-label"],
+      "scaffoldCss": ".wind-demo-weight { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }\n.wind-demo-weight p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }\n.wind-demo-weight p:last-child { border-bottom: 0; }\n.wind-demo-label { display: inline-block; width: 5.5rem; color: #5d6c7c; font-size: 0.8rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontWeights": {
+              "regular": "400",
+              "medium": "500",
+              "strong": "700"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "weight-custom",
+      "kind": "positive",
+      "html": "<p class=\"wind-demo-weight-line\">Compare <span class=\"font-medium\">medium</span> with <span class=\"font-[550]\">an arbitrary 550</span>.</p>",
+      "utilities": ["font-medium", "font-[550]"],
+      "authoredClasses": ["wind-demo-weight-line"],
+      "scaffoldCss": ".wind-demo-weight-line { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }\n",
+      "config": {
+        "wind": {
+          "tokens": {
+            "fontWeights": {
+              "regular": "400",
+              "medium": "500",
+              "strong": "700"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

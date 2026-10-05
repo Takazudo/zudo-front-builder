@@ -5,9 +5,131 @@ sidebar_position: 36
 generated: true
 ---
 
-Select a configured font weight or provide an arbitrary weight value.
+Control how heavy the glyph strokes appear without changing the selected font family or size. Choose a named weight for a reusable role and an arbitrary numeric weight for a value outside that scale.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `font-medium` | `font-weight: var(--zw-font-weight-medium);` |
+| `font-[550]` | `font-weight: 550;` |
+
+<Details title={"Example setup"}>
+
+The shared preview base explicitly selects spec 1, reset none, strict mode, spacingUnit 0.25rem, and no breakpoints. Each example configures tokens.fontWeights with regular 400, medium 500, and strong 700. wind-demo classes style only labels and borders; they do not set font weight.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Compare named weights
+
+Three configured weights keep the text and surrounding layout steady so the difference in stroke weight is easy to see.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-weight\"\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eRegular\u003c/span\u003e\u003cspan class=\"font-regular\"\u003eThe same words at regular weight\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eMedium\u003c/span\u003e\u003cspan class=\"font-medium\"\u003eThe same words at medium weight\u003c/span\u003e\u003c/p\u003e\n  \u003cp\u003e\u003cspan class=\"wind-demo-label\"\u003eStrong\u003c/span\u003e\u003cspan class=\"font-strong\"\u003eThe same words at strong weight\u003c/span\u003e\u003c/p\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-weight-medium: 500;\n    --zw-font-weight-regular: 400;\n    --zw-font-weight-strong: 700;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-weight {\n  color: #223247;\n  border: 1px solid #b7c5d4;\n  padding: 1rem;\n}\n\n.wind-demo-weight p {\n  margin: 0;\n  padding: .45rem 0;\n  border-bottom: 1px solid #d8e0e8;\n}\n\n.wind-demo-weight p:last-child {\n  border-bottom: 0;\n}\n\n.wind-demo-label {\n  display: inline-block;\n  width: 5.5rem;\n  color: #5d6c7c;\n  font-size: .8rem;\n}\n.font-medium {\n  font-weight: var(--zw-font-weight-medium);\n}\n.font-regular {\n  font-weight: var(--zw-font-weight-regular);\n}\n.font-strong {\n  font-weight: var(--zw-font-weight-strong);\n}\n"} title={"Compare named weights"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontWeights": {
+        "regular": "400",
+        "medium": "500",
+        "strong": "700"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-weight": true,
+      "wind-demo-label": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-regular",
+        "font-medium",
+        "font-strong"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-weight { color: #223247; border: 1px solid #b7c5d4; padding: 1rem; }
+.wind-demo-weight p { margin: 0; padding: 0.45rem 0; border-bottom: 1px solid #d8e0e8; }
+.wind-demo-weight p:last-child { border-bottom: 0; }
+.wind-demo-label { display: inline-block; width: 5.5rem; color: #5d6c7c; font-size: 0.8rem; }
+```
+
+</Details>
+
+### Specify an intermediate value
+
+font-[550] requests weight 550 while font-medium remains tied to the configured 500 token.
+
+<HtmlPreview html={"\u003cp class=\"wind-demo-weight-line\"\u003eCompare \u003cspan class=\"font-medium\"\u003emedium\u003c/span\u003e with \u003cspan class=\"font-[550]\"\u003ean arbitrary 550\u003c/span\u003e.\u003c/p\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-font-weight-medium: 500;\n    --zw-font-weight-regular: 400;\n    --zw-font-weight-strong: 700;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-weight-line {\n  color: #223247;\n  border-left: 3px solid #6d7f96;\n  padding: .5rem .75rem;\n}\n.font-\\[550\\] {\n  font-weight: 550;\n}\n.font-medium {\n  font-weight: var(--zw-font-weight-medium);\n}\n"} title={"Specify an intermediate value"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "fontWeights": {
+        "regular": "400",
+        "medium": "500",
+        "strong": "700"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-weight-line": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "font-medium",
+        "font-[550]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-weight-line { color: #223247; border-left: 3px solid #6d7f96; padding: 0.5rem 0.75rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+font-medium resolves through tokens.fontWeights.medium. A class such as font-[550] supplies a validated arbitrary font-weight value. The browser can only show weights supported by the chosen font; synthetic bolding and variable-font axes can change the appearance.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## font
 
@@ -40,3 +162,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `font-[400]` | `font-weight: 400` |
+
+</Details>
