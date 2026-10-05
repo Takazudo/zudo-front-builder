@@ -2,11 +2,11 @@
 //! deliberately does not implement. A match is reported, never generated, so
 //! a migrating project learns which classes silently lost their CSS.
 
-use crate::Candidate;
+use crate::{Candidate, TokenCategory, ValidatedTokens};
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 2;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -16,6 +16,9 @@ enum ForeignValue {
     Integer,
     /// A bracketed value, such as `content-[""]`.
     Arbitrary,
+    /// A configured token in the named category. Shared with gradient stops,
+    /// where arbitrary authored prefixes must not be claimed wholesale.
+    Token(TokenCategory),
     /// Any nonempty suffix; only for roots no authored class plausibly shares.
     Any,
 }
@@ -28,11 +31,235 @@ pub struct ForeignFamily {
     pub alternative: &'static str,
 }
 
-use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword};
+use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword, Token};
 
 const DISPLAY: &str = "a display declaration";
 
 const FAMILIES: &[ForeignFamily] = &[
+    ForeignFamily {
+        root: "isolate",
+        values: &[Bare],
+        alternative: "an isolation declaration",
+    },
+    ForeignFamily {
+        root: "isolation",
+        values: &[Keyword("auto")],
+        alternative: "an isolation declaration",
+    },
+    ForeignFamily {
+        root: "float",
+        values: &[
+            Keyword("left"),
+            Keyword("right"),
+            Keyword("none"),
+            Keyword("start"),
+            Keyword("end"),
+        ],
+        alternative: "a float declaration",
+    },
+    ForeignFamily {
+        root: "clear",
+        values: &[
+            Keyword("left"),
+            Keyword("right"),
+            Keyword("both"),
+            Keyword("none"),
+            Keyword("start"),
+            Keyword("end"),
+        ],
+        alternative: "a clear declaration",
+    },
+    ForeignFamily {
+        root: "break",
+        values: &[Keyword("keep")],
+        alternative: "a word-break declaration",
+    },
+    ForeignFamily {
+        root: "break-before",
+        values: &[
+            Keyword("auto"),
+            Keyword("avoid"),
+            Keyword("all"),
+            Keyword("avoid-page"),
+            Keyword("page"),
+            Keyword("left"),
+            Keyword("right"),
+            Keyword("column"),
+        ],
+        alternative: "a break-before declaration",
+    },
+    ForeignFamily {
+        root: "break-after",
+        values: &[
+            Keyword("auto"),
+            Keyword("avoid"),
+            Keyword("all"),
+            Keyword("avoid-page"),
+            Keyword("page"),
+            Keyword("left"),
+            Keyword("right"),
+            Keyword("column"),
+        ],
+        alternative: "a break-after declaration",
+    },
+    ForeignFamily {
+        root: "break-inside",
+        values: &[
+            Keyword("auto"),
+            Keyword("avoid"),
+            Keyword("avoid-page"),
+            Keyword("avoid-column"),
+        ],
+        alternative: "a break-inside declaration",
+    },
+    ForeignFamily {
+        root: "origin",
+        values: &[
+            Keyword("center"),
+            Keyword("top"),
+            Keyword("top-right"),
+            Keyword("right"),
+            Keyword("bottom-right"),
+            Keyword("bottom"),
+            Keyword("bottom-left"),
+            Keyword("left"),
+            Keyword("top-left"),
+            Arbitrary,
+        ],
+        alternative: "a transform-origin declaration",
+    },
+    ForeignFamily {
+        root: "blur",
+        values: &[
+            Bare,
+            Keyword("none"),
+            Keyword("xs"),
+            Keyword("sm"),
+            Keyword("md"),
+            Keyword("lg"),
+            Keyword("xl"),
+            Keyword("2xl"),
+            Keyword("3xl"),
+            Arbitrary,
+        ],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "brightness",
+        values: &[Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "contrast",
+        values: &[Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "saturate",
+        values: &[Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "hue-rotate",
+        values: &[Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "grayscale",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "invert",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "sepia",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "drop-shadow",
+        values: &[
+            Bare,
+            Keyword("none"),
+            Keyword("xs"),
+            Keyword("sm"),
+            Keyword("md"),
+            Keyword("lg"),
+            Keyword("xl"),
+            Keyword("2xl"),
+            Arbitrary,
+            Token(TokenCategory::Shadow),
+        ],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "filter",
+        values: &[Keyword("none"), Arbitrary],
+        alternative: "a filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-filter",
+        values: &[Keyword("none"), Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-brightness",
+        values: &[Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-contrast",
+        values: &[Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-saturate",
+        values: &[Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-hue-rotate",
+        values: &[Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-grayscale",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-invert",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-sepia",
+        values: &[Bare, Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "backdrop-opacity",
+        values: &[Integer, Arbitrary],
+        alternative: "a backdrop-filter declaration",
+    },
+    ForeignFamily {
+        root: "text-shadow",
+        values: &[
+            Bare,
+            Keyword("none"),
+            Keyword("2xs"),
+            Keyword("xs"),
+            Keyword("sm"),
+            Keyword("md"),
+            Keyword("lg"),
+            Arbitrary,
+            Token(TokenCategory::Shadow),
+        ],
+        alternative: "a text-shadow declaration",
+    },
     ForeignFamily {
         root: "ms",
         values: &[Any],
@@ -176,7 +403,10 @@ const FAMILIES: &[ForeignFamily] = &[
 /// The foreign family a parsed candidate's utility names, if any. Variants
 /// and slash modifiers do not affect membership (`before:content-none`,
 /// `basis-1/2`).
-pub fn foreign_family(candidate: &Candidate) -> Option<&'static ForeignFamily> {
+pub fn foreign_family(
+    candidate: &Candidate,
+    tokens: &ValidatedTokens,
+) -> Option<&'static ForeignFamily> {
     let name = candidate.utility.named.as_str();
     FAMILIES.iter().find(|family| {
         if name == family.root {
@@ -189,14 +419,22 @@ pub fn foreign_family(candidate: &Candidate) -> Option<&'static ForeignFamily> {
             return false;
         };
         !suffix.is_empty()
-            && family.values.iter().any(|value| match value {
-                Bare => false,
-                Keyword(keyword) => suffix == *keyword,
-                Integer => suffix.bytes().all(|byte| byte.is_ascii_digit()),
-                Arbitrary => suffix.starts_with('[') && suffix.ends_with(']') && suffix.len() > 2,
-                Any => true,
-            })
+            && family
+                .values
+                .iter()
+                .any(|value| matches_value(*value, suffix, tokens))
     })
+}
+
+fn matches_value(value: ForeignValue, suffix: &str, tokens: &ValidatedTokens) -> bool {
+    match value {
+        Bare => false,
+        Keyword(keyword) => suffix == keyword,
+        Integer => suffix.bytes().all(|byte| byte.is_ascii_digit()),
+        Arbitrary => suffix.starts_with('[') && suffix.ends_with(']') && suffix.len() > 2,
+        Token(category) => tokens.contains(category, suffix),
+        Any => true,
+    }
 }
 
 #[cfg(test)]
@@ -205,8 +443,12 @@ mod tests {
     use crate::{parse_candidate, VariantVocabulary};
 
     fn family(text: &str) -> Option<&'static str> {
-        let vocabulary = VariantVocabulary::new(Vec::<String>::new(), false);
-        foreign_family(&parse_candidate(text, &vocabulary).unwrap()).map(|family| family.root)
+        let vocabulary = VariantVocabulary::new(vec!["lg".to_owned()], false);
+        foreign_family(
+            &parse_candidate(text, &vocabulary).unwrap(),
+            &crate::TokenConfig::default().validate().unwrap(),
+        )
+        .map(|family| family.root)
     }
 
     #[test]
@@ -239,6 +481,37 @@ mod tests {
             ("border-s-[3px]", "border-s"),
             ("border-e-accent", "border-e"),
             ("border-e-[red]", "border-e"),
+            ("isolate", "isolate"),
+            ("isolation-auto", "isolation"),
+            ("float-right", "float"),
+            ("lg:float-start", "float"),
+            ("clear-both", "clear"),
+            ("break-keep", "break"),
+            ("break-before-page", "break-before"),
+            ("break-after-avoid", "break-after"),
+            ("break-inside-avoid-column", "break-inside"),
+            ("origin-left", "origin"),
+            ("origin-[25%_75%]", "origin"),
+            ("blur-sm", "blur"),
+            ("brightness-0", "brightness"),
+            ("contrast-125", "contrast"),
+            ("saturate-150", "saturate"),
+            ("-hue-rotate-90", "hue-rotate"),
+            ("hue-rotate-[30deg]", "hue-rotate"),
+            ("grayscale", "grayscale"),
+            ("invert-0", "invert"),
+            ("sepia", "sepia"),
+            ("drop-shadow", "drop-shadow"),
+            ("filter-none", "filter"),
+            ("filter-[url(#fx)]", "filter"),
+            ("backdrop-filter-none", "backdrop-filter"),
+            ("backdrop-filter-[url(#fx)]", "backdrop-filter"),
+            ("backdrop-blur-sm", "backdrop-blur"),
+            ("backdrop-brightness-50", "backdrop-brightness"),
+            ("backdrop-grayscale", "backdrop-grayscale"),
+            ("backdrop-opacity-70", "backdrop-opacity"),
+            ("text-shadow-none", "text-shadow"),
+            ("text-shadow-md", "text-shadow"),
         ] {
             assert_eq!(family(text), Some(root), "{text}");
         }
@@ -261,8 +534,45 @@ mod tests {
             "start",
             "end",
             "border-started",
+            "origin-story",
+            "float-label",
+            "clear-fix",
+            "to-do",
+            "from-top",
+            "brightness-panel",
+            "hue-rotate-wheel",
+            "backdrop-card",
+            "text-shadow-title",
         ] {
             assert_eq!(family(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn token_values_are_exact_and_category_scoped() {
+        let mut config = crate::TokenConfig::default();
+        config.colors.insert("zd-black".into(), "#000".into());
+        config
+            .shadows
+            .insert("editorial".into(), "0 1px 2px #000".into());
+        let tokens = config.validate().unwrap();
+        let vocabulary = VariantVocabulary::new(Vec::<String>::new(), false);
+        let parsed = parse_candidate("text-shadow-editorial", &vocabulary).unwrap();
+        assert_eq!(
+            foreign_family(&parsed, &tokens).map(|family| family.root),
+            Some("text-shadow")
+        );
+        let parsed = parse_candidate("text-shadow-zd-black", &vocabulary).unwrap();
+        assert!(foreign_family(&parsed, &tokens).is_none());
+        assert!(matches_value(
+            Token(TokenCategory::Color),
+            "zd-black",
+            &tokens
+        ));
+        assert!(!matches_value(
+            Token(TokenCategory::Color),
+            "black",
+            &tokens
+        ));
     }
 }
