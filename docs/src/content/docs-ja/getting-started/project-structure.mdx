@@ -150,7 +150,7 @@ export default defineConfig({
 
 標準的なプロジェクトの設定ファイル群です。`package.json` はプロジェクトの依存関係と `dev`、`build`、`preview`、`typecheck` の 4 つのスクリプトを宣言します。所有 JSX ランタイムは `@takazudo/zfb` のサブパスで、別のフレームワークパッケージは不要です。`zfb new` は zfb のパッケージをスキャフォールドに使用した CLI のバージョンへ厳密に固定し、新しいリリースへ静かに移らないようにします。
 
-`tsconfig.json` は自動 JSX 変換の `jsxImportSource` に `@takazudo/zfb/zudo-react` を指定し、`~/*` をプロジェクトルートに解決するパスエイリアスを設定します。ルート直下のファイルを import するときは `~/lib/types` のように `~/` を使ってください。`lib/types` のようなベア import はプロジェクトルート基準にはなりません。このエイリアスは `baseUrl` なしで使え、テンプレート内の import も一貫してこの形式です。
+`tsconfig.json` では `jsx` と `jsxImportSource` を指定し、TypeScript が zfb と同じランタイムに対して JSX を検査するようにします。`zfb build` と `zfb dev` はページ、コンポーネント、アイランドの JSX を自動変換と `@takazudo/zfb/zudo-react` でコンパイルします（ファイル単位の `@jsxImportSource` pragma がある場合を除く）。これらの tsconfig 設定は読みません。また、`~/*` をプロジェクトルートに解決するパスエイリアスを設定します。ルート直下のファイルを import するときは `~/lib/types` のように `~/` を使ってください。`lib/types` のようなベア import はプロジェクトルート基準にはなりません。このエイリアスは `baseUrl` なしで使え、テンプレート内の import も一貫してこの形式です。
 
 `README.md` は同じツリーの短い案内に加えて、このスターターで有効になっている markdown 機能と、利用可能だが無効にしてある機能を、それぞれリファレンスページへのリンク付きで表にまとめたものです。
 

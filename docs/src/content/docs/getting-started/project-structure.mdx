@@ -150,7 +150,7 @@ A plain `zfb.config.json` is also accepted as a legacy fallback — the schema i
 
 Standard project plumbing. `package.json` declares project dependencies and four scripts: `dev`, `build`, `preview`, and `typecheck` (which runs `zfb check` — TypeScript plus collection-schema validation). The owned JSX runtime is a subpath of `@takazudo/zfb`, so it does not require a separate framework package. `zfb new` pins its zfb packages to the version of the CLI that scaffolded the project, so a fresh scaffold does not silently drift to a future release.
 
-`tsconfig.json` points the automatic JSX transform at `@takazudo/zfb/zudo-react` through `jsxImportSource` and configures one path alias: `~/*` resolves to the project root. Use imports such as `~/lib/types` for root-relative files; bare imports such as `lib/types` are not root-relative. This alias works without `baseUrl`, and the template uses it consistently in every import.
+`tsconfig.json` sets `jsx` and `jsxImportSource` so TypeScript checks JSX against the same runtime that zfb uses. `zfb build` and `zfb dev` already compile page, component, and island JSX with the automatic transform and `@takazudo/zfb/zudo-react`, unless a file's `@jsxImportSource` pragma overrides it; they do not read those two tsconfig settings. The config also defines one path alias: `~/*` resolves to the project root. Use imports such as `~/lib/types` for root-relative files; bare imports such as `lib/types` are not root-relative. This alias works without `baseUrl`, and the template uses it consistently in every import.
 
 `README.md` is a short tour of the same tree, plus two tables listing which markdown features are on in the starter and which are available but left off, each linked to its reference page.
 
