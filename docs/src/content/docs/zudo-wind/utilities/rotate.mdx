@@ -5,9 +5,134 @@ sidebar_position: 59
 generated: true
 ---
 
-Rotate an element by a supported degree value or arbitrary angle.
+Turn an element by a clockwise or counterclockwise angle. Rotation uses the CSS rotate property, so it composes independently with the x and y translate utilities.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `rotate-12` | `rotate: 12deg;` |
+
+<Details title={"Example setup"}>
+
+Every preview explicitly uses spec: 1, reset: "none", strict mode, spacingUnit: "0.25rem", no breakpoints, and defaultTransitionTimingFunction: "ease". The first diagram applies translate-x-8, translate-y-4, and rotate-12 together; the second compares a negative degree value with an arbitrary turn value. The diagram styles only draw and place the pieces.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Rotate and translate one element
+
+rotate-12 composes with translate-x-8 and translate-y-4 through independent CSS properties; no transform utility is required.
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-origin\"\u003estart\u003c/span\u003e\u003cspan class=\"wind-demo-piece translate-x-8 translate-y-4 rotate-12\"\u003e12°\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eIndependent translate-x, translate-y, and rotate utilities compose on one element without a transform utility.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n@property --zw-translate-x {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n@property --zw-translate-y {\n  syntax: \"\u003clength-percentage\u003e\";\n  inherits: false;\n  initial-value: 0px;\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-origin, .wind-demo-piece {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-origin {\n  border: 1px dashed #54708b;\n  background: #e5edf5;\n  color: #38516b;\n  font-size: .7rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n.translate-x-8 {\n  --zw-translate-x: 2rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.translate-y-4 {\n  --zw-translate-y: 1rem;\n  translate: var(--zw-translate-x) var(--zw-translate-y);\n}\n.rotate-12 {\n  rotate: 12deg;\n}\n"} title={"Rotate and translate one element"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-figure": true,
+      "wind-demo-stage": true,
+      "wind-demo-origin": true,
+      "wind-demo-piece": true,
+      "wind-demo-caption": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "translate-x-8",
+        "translate-y-4",
+        "rotate-12"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-origin, .wind-demo-piece { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-origin { border: 1px dashed #54708b; background: #e5edf5; color: #38516b; font-size: 0.7rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+```
+
+</Details>
+
+### Use negative and arbitrary angles
+
+-rotate-45 turns counterclockwise; rotate-[0.125turn] uses an arbitrary one-eighth turn.
+
+<HtmlPreview html={"\u003cfigure class=\"wind-demo-figure\"\u003e\u003cdiv class=\"wind-demo-stage\" aria-hidden=\"true\"\u003e\u003cspan class=\"wind-demo-piece -rotate-45\"\u003e−45°\u003c/span\u003e\u003cspan class=\"wind-demo-piece wind-demo-piece-alt rotate-[0.125turn]\"\u003e⅛ turn\u003c/span\u003e\u003c/div\u003e\u003cfigcaption class=\"wind-demo-caption\"\u003eA negative class turns the other way; an arbitrary CSS angle can use turns or radians.\u003c/figcaption\u003e\u003c/figure\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-figure {\n  margin: 0;\n  color: #24364b;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-stage {\n  position: relative;\n  width: min(20rem, 100%);\n  height: 10rem;\n  border: 1px solid #a7bacd;\n  background: linear-gradient(90deg, #f7f9fc 1px, #0000 1px), linear-gradient(#f7f9fc 1px, #0000 1px);\n  background-size: 1rem 1rem;\n}\n\n.wind-demo-piece, .wind-demo-piece-alt {\n  position: absolute;\n  left: 5rem;\n  top: 3rem;\n  display: grid;\n  place-items: center;\n  width: 3.25rem;\n  height: 3.25rem;\n}\n\n.wind-demo-piece {\n  border: 1px solid #22598e;\n  background: #a8d0f4;\n  color: #153c60;\n  font-weight: 650;\n}\n\n.wind-demo-caption {\n  display: block;\n  margin-top: .5rem;\n}\n\n.wind-demo-piece-alt {\n  left: 11rem;\n}\n.-rotate-45 {\n  rotate: -45deg;\n}\n.rotate-\\[0\\.125turn\\] {\n  rotate: 0.125turn;\n}\n"} title={"Use negative and arbitrary angles"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-caption": true,
+      "wind-demo-figure": true,
+      "wind-demo-piece": true,
+      "wind-demo-piece-alt": true,
+      "wind-demo-stage": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "-rotate-45",
+        "rotate-[0.125turn]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-figure { margin: 0; color: #24364b; font: 14px/1.5 system-ui, sans-serif; }
+.wind-demo-stage { position: relative; width: min(20rem, 100%); height: 10rem; border: 1px solid #a7bacd; background: linear-gradient(90deg, #f7f9fc 1px, transparent 1px), linear-gradient(#f7f9fc 1px, transparent 1px); background-size: 1rem 1rem; }
+.wind-demo-piece, .wind-demo-piece-alt { position: absolute; left: 5rem; top: 3rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; }
+.wind-demo-piece { border: 1px solid #22598e; background: #a8d0f4; color: #153c60; font-weight: 650; }
+.wind-demo-caption { display: block; margin-top: 0.5rem; }
+.wind-demo-piece-alt { left: 11rem; }
+```
+
+</Details>
+
+## Custom and named values
+
+Integer values from 0 through 360 are interpreted as degrees. Prefix a supported integer with a minus sign to rotate counterclockwise. An arbitrary CSS angle can use deg, rad, grad, or turn, for example rotate-[0.125turn]. There is no named rotation scale. The v1 catalog does not include transform, scale, skew, or GPU transform utilities.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## rotate
 
@@ -40,3 +165,5 @@ The catalog has no separate accepted-value records for this entry.
 | Example class | Expected declarations |
 | --- | --- |
 | `rotate-90` | `rotate: 90deg` |
+
+</Details>

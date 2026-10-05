@@ -1,0 +1,52 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-color-brand: #0f766e;
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .8rem 1.2rem;
+  max-width: 35rem;
+  padding: 1rem;
+  border: 1px solid #a7bacd;
+  color: #24364b;
+  font: 15px / 1.5 system-ui, sans-serif;
+}
+
+.wind-demo-form legend {
+  padding: 0 .35rem;
+  font-weight: 650;
+}
+
+.wind-demo-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+}
+
+.wind-demo-button {
+  border: 1px solid #526477;
+  border-radius: .35rem;
+  background: #eef3f8;
+  padding: .55rem .75rem;
+  color: inherit;
+  font: inherit;
+}
+
+.wind-demo-button:focus-visible {
+  outline: 3px solid #1670b8;
+  outline-offset: 3px;
+}
+.accent-brand {
+  accent-color: var(--zw-color-brand);
+}
+.cursor-not-allowed {
+  cursor: not-allowed;
+}
+.cursor-pointer {
+  cursor: pointer;
+}
