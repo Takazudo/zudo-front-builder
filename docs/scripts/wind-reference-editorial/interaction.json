@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "family": "interaction",
+  "lookup": [
+    {
+      "entry": "v1.accent",
+      "candidate": "accent-brand",
+      "example": "native-settings"
+    },
+    {
+      "entry": "v1.cursor",
+      "candidate": "cursor-pointer",
+      "example": "native-settings"
+    },
+    {
+      "entry": "v1.pointer-events",
+      "candidate": "pointer-events-none",
+      "example": "pointer-transparent-icon"
+    },
+    {
+      "entry": "v1.resize",
+      "candidate": "resize-y",
+      "example": "select-and-resize"
+    },
+    {
+      "entry": "v1.select",
+      "candidate": "select-all",
+      "example": "select-and-resize"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Adjust the small browser behaviors around native controls: accent color, pointer targeting, cursor feedback, resizing, and text selection. These classes complement semantic HTML; they do not replace control behavior or labels.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". The settings example configures tokens.colors.brand for the checkbox accent. Checkboxes, buttons, a search input, code text, and a textarea keep their native keyboard and pointer behavior.",
+      "customValues": "The accent utility accepts a configured colors token such as accent-brand, the fixed values transparent and current, or a valid arbitrary color. Cursor, pointer-events, resize, and select use finite catalog keywords; they have no inherited named theme values. pointer-events-none on the decorative search glyph lets the pointer reach the underlying input. Use disabled on an actually unavailable button as well as a not-allowed cursor.",
+      "examples": [
+        {
+          "id": "native-settings",
+          "title": "Style a real settings form",
+          "description": "The labeled checkbox uses accent-brand, and two native buttons show pointer and not-allowed cursor feedback; the disabled button remains semantically disabled."
+        },
+        {
+          "id": "pointer-transparent-icon",
+          "title": "Let clicks pass through decoration",
+          "description": "pointer-events-none prevents the decorative search glyph from intercepting a click intended for the labeled search input."
+        },
+        {
+          "id": "select-and-resize",
+          "title": "Select a command and resize notes",
+          "description": "select-all lets a click select the full command, while resize-y gives a native textarea a vertical resize handle."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "ネイティブコントロールの周辺にあるブラウザー動作を調整します。アクセント色、ポインターの対象、カーソル表示、サイズ変更、テキスト選択を指定できます。意味のある HTML やラベルの代わりにはなりません。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。設定例ではチェックボックスのアクセント用に tokens.colors.brand を定義します。チェックボックス、ボタン、検索入力欄、コード文字列、テキストエリアは、標準のキーボード操作とポインター操作を保ちます。",
+      "customValues": "アクセント色には accent-brand のような色トークン、固定値 transparent と current、または有効な任意色を指定できます。cursor、pointer-events、resize、select はカタログにある有限のキーワードを使い、テーマ値は継承しません。装飾用の検索アイコンに pointer-events-none を指定すると、クリックは下の入力欄に届きます。利用できないボタンでは not-allowed カーソルだけでなく、disabled も指定します。",
+      "examples": [
+        {
+          "id": "native-settings",
+          "title": "実際の設定フォームを整える",
+          "description": "ラベル付きチェックボックスに accent-brand を使い、二つのネイティブボタンで通常と not-allowed のカーソルを示します。利用不可のボタンには disabled も指定します。"
+        },
+        {
+          "id": "pointer-transparent-icon",
+          "title": "装飾を通してクリックを届ける",
+          "description": "pointer-events-none を検索アイコンに指定し、アイコンではなくラベル付き入力欄がクリックを受け取るようにします。"
+        },
+        {
+          "id": "select-and-resize",
+          "title": "コマンド全体を選択してメモ欄を広げる",
+          "description": "select-all はクリックでコマンド全文を選択し、resize-y はネイティブのテキストエリアに垂直方向のサイズ変更を追加します。"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "family": "rotate",
+  "lookup": [
+    {
+      "entry": "v1.rotate",
+      "candidate": "rotate-12",
+      "example": "compose-with-translation"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Turn an element by a clockwise or counterclockwise angle. Rotation uses the CSS rotate property, so it composes independently with the x and y translate utilities.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". The first diagram applies translate-x-8, translate-y-4, and rotate-12 together; the second compares a negative degree value with an arbitrary turn value. The diagram styles only draw and place the pieces.",
+      "customValues": "Integer values from 0 through 360 are interpreted as degrees. Prefix a supported integer with a minus sign to rotate counterclockwise. An arbitrary CSS angle can use deg, rad, grad, or turn, for example rotate-[0.125turn]. There is no named rotation scale. The v1 catalog does not include transform, scale, skew, or GPU transform utilities.",
+      "examples": [
+        {
+          "id": "compose-with-translation",
+          "title": "Rotate and translate one element",
+          "description": "rotate-12 composes with translate-x-8 and translate-y-4 through independent CSS properties; no transform utility is required."
+        },
+        {
+          "id": "negative-and-angle",
+          "title": "Use negative and arbitrary angles",
+          "description": "-rotate-45 turns counterclockwise; rotate-[0.125turn] uses an arbitrary one-eighth turn."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "要素を時計回りまたは反時計回りに回転します。CSS の rotate プロパティを使うため、x と y の translate ユーティリティと独立して合成できます。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。一つ目の図では translate-x-8、translate-y-4、rotate-12 を同時に適用し、もう一つでは負の度数と任意の回転角を比べます。図の CSS は四角形を描いて配置するためだけに使います。",
+      "customValues": "0 から 360 までの整数は度として解釈します。対応する整数にマイナスを付けると反時計回りになります。任意の CSS 角度では deg、rad、grad、turn を使えます。例: rotate-[0.125turn]。名前付き回転スケールはありません。v1 のカタログには transform、scale、skew、GPU 用 transform ユーティリティは含まれません。",
+      "examples": [
+        {
+          "id": "compose-with-translation",
+          "title": "一つの要素を移動して回転する",
+          "description": "rotate-12 は translate-x-8 と translate-y-4 に独立した CSS プロパティで合成され、transform ユーティリティは不要です。"
+        },
+        {
+          "id": "negative-and-angle",
+          "title": "負の角度と任意の角度を使う",
+          "description": "-rotate-45 は反時計回り、rotate-[0.125turn] は任意の 8 分の 1 回転を指定します。"
+        }
+      ]
+    }
+  }
+}

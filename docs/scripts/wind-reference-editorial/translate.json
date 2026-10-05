@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "family": "translate",
+  "lookup": [
+    {
+      "entry": "v1.translate.x",
+      "candidate": "translate-x-8",
+      "example": "compose-axes"
+    },
+    {
+      "entry": "v1.translate.y",
+      "candidate": "translate-y-4",
+      "example": "compose-axes"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Move an element along the horizontal or vertical axis without changing the space it occupies in layout. The two axes compose on the same element.",
+      "setup": "Every preview explicitly uses spec: 1, reset: \"none\", strict mode, spacingUnit: \"0.25rem\", no breakpoints, and defaultTransitionTimingFunction: \"ease\". This makes translate-x-8 equal 2rem and translate-y-4 equal 1rem. One preview adds the named spacing token rail: 2rem. The diagrams use authored CSS only for the stage, anchor, and square; zudo-wind utilities supply the movement and rotation.",
+      "customValues": "Numeric suffixes use tokens.spacingUnit when configured. A named value such as translate-x-rail comes from tokens.spacing; fractions such as translate-y-1/2 are percentages of the element, and square-bracket values can provide a one-off CSS length. The fixed values 0 and full mean 0 and 100%. Negative forms are supported. No Tailwind spacing scale is inherited.",
+      "examples": [
+        {
+          "id": "compose-axes",
+          "title": "Compose x and y movement",
+          "description": "translate-x-8 and translate-y-4 move the same square 2rem right and 1rem down. rotate-12 shows that translation and rotation compose without a transform utility."
+        },
+        {
+          "id": "fraction-and-token",
+          "title": "Use a named distance and a fraction",
+          "description": "The preview config defines rail as 2rem; translate-y-1/2 moves by half of the element’s own height."
+        },
+        {
+          "id": "arbitrary-offset",
+          "title": "Tune one measured offset",
+          "description": "translate-x-[11px] accepts a one-off CSS length without adding a named spacing token."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "レイアウト上の占有領域を変えずに、要素を水平方向または垂直方向へ移動します。同じ要素上で二つの軸を合成できます。",
+      "setup": "すべてのプレビューで spec: 1、reset: \"none\"、strict モード、spacingUnit: \"0.25rem\"、空のブレークポイント、defaultTransitionTimingFunction: \"ease\" を明示します。これにより translate-x-8 は 2rem、translate-y-4 は 1rem になります。一つの例では名前付き間隔 rail に 2rem を設定します。図のステージ、基準位置、四角形だけを自作 CSS で描き、移動と回転は zudo-wind のユーティリティで指定します。",
+      "customValues": "数値の接尾辞には、設定した tokens.spacingUnit を使います。translate-x-rail のような名前付きの値は tokens.spacing から参照します。translate-y-1/2 のような分数は要素の寸法に対する割合で、角括弧内には個別の CSS 長さを指定できます。固定値 0 と full はそれぞれ 0 と 100% です。負の値も使えます。Tailwind の間隔スケールは継承しません。",
+      "examples": [
+        {
+          "id": "compose-axes",
+          "title": "x と y の移動を合成する",
+          "description": "translate-x-8 と translate-y-4 で同じ四角形を右へ 2rem、下へ 1rem 動かします。rotate-12 も組み合わせ、transform ユーティリティなしで移動と回転が合成される様子を示します。"
+        },
+        {
+          "id": "fraction-and-token",
+          "title": "名前付き距離と割合を使う",
+          "description": "プレビュー設定で rail を 2rem にし、translate-y-1/2 は要素自身の高さの半分だけ移動します。"
+        },
+        {
+          "id": "arbitrary-offset",
+          "title": "測定した距離を個別に調整する",
+          "description": "translate-x-[11px] は名前付きトークンを追加せずに、一度だけ使う CSS 長さを指定します。"
+        }
+      ]
+    }
+  }
+}
